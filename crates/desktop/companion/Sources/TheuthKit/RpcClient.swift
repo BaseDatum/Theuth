@@ -50,8 +50,15 @@ public actor RpcClient {
         self.onEvent = onEvent
     }
 
+    /// How long a socket must stay up before a later drop redials from the shortest backoff again (176 K3).
+    static let stableAfter: Duration = .seconds(10)
+
     private static func request(for location: EngineLocation) -> URLRequest {
-        var r = URLRequest(url: location.url)
+        // 176 C3: the engine names this socket `companion` in its ws open/close log lines.
+        var url = URLComponents(url: location.url, resolvingAgainstBaseURL: false)
+        let items = url?.queryItems ?? []
+        url?.queryItems = items + [URLQueryItem(name: "client", value: "companion")]
+        var r = URLRequest(url: url?.url ?? location.url)
         r.setValue("Bearer \(location.token)", forHTTPHeaderField: "Authorization")
         r.setValue("companion", forHTTPHeaderField: "X-Theuth-Client")
         return r
@@ -102,10 +109,19 @@ public actor RpcClient {
         guard task === t, !closed else { return }
         if error != nil { return lost(t) }
         open = true
-        attempt = 0
         onState(.open)
         receive(t)
         if wantsEvents { Task { await self.issueSubscription() } }
+        // A ping only proves the upgrade (an engine that accepts and drops would redial at 1 s forever): the backoff
+        // resets once the socket has stayed up `stableAfter`, or on the first call that succeeds (`dispatch`).
+        Task {
+            try? await Task.sleep(for: Self.stableAfter)
+            self.stable(t)
+        }
+    }
+
+    private func stable(_ t: URLSessionWebSocketTask) {
+        if task === t, open { attempt = 0 }
     }
 
     private func receive(_ t: URLSessionWebSocketTask) {
@@ -204,6 +220,7 @@ public actor RpcClient {
         if let err = obj["error"] as? [String: Any] {
             cont.resume(throwing: RpcError(code: err["code"] as? Int ?? -1, message: err["message"] as? String ?? "error"))
         } else if let d = try? JSONSerialization.data(withJSONObject: obj["result"] ?? NSNull(), options: .fragmentsAllowed) {
+            attempt = 0
             cont.resume(returning: d)
         } else {
             cont.resume(throwing: RpcError(code: -32700, message: "unreadable result"))

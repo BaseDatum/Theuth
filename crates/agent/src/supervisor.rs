@@ -104,8 +104,8 @@ use crate::{
     TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
-    AdvisorConfig, DurableStore, GetPolishModel, ModelRole, ObservedState, Polish, PolishReply,
-    Rewrite, SessionCostQuery, SessionKind, SetPolishModel, SpendReportQuery, SubagentsConfig,
+    AdvisorConfig, DurableStore, GetPolishModel, ModelRole, Polish, PolishReply, Rewrite,
+    SessionCostQuery, SessionKind, SetPolishModel, SpendReportQuery, SubagentsConfig,
     UnloadSession, cost::CallKind, polish,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
@@ -128,6 +128,7 @@ pub mod child_waits; // 139 W3
 mod drain;
 mod resume;
 pub mod transfer; // 139 W2
+mod view; // 176 E1
 mod waits;
 pub use acp_resume::LastBootPass; // 146 D4
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
@@ -264,6 +265,12 @@ pub struct Agents {
     talk: HashMap<SessionId, Talk>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
     approvals: HashMap<SessionId, (ApprovalId, String, u64)>,
+    /// 176 A1: ACP children this process parked idle → when; taken by the
+    /// resume (`acp_session`) for its log line.
+    parked: HashMap<SessionId, Instant>,
+    /// 176 A1: ACP children with a park probe in flight → the inputs
+    /// `route` / `enqueue_peer` held for them until [`ParkRound`].
+    parking: HashMap<SessionId, Vec<Held>>,
     /// Session search index (design doc 26), rebuilt after the rows change.
     search: Arc<search::Cache>,
     /// Registered nodes (32 §6.5); shared with the `spawn_subagent` tool's description.
@@ -1068,7 +1075,16 @@ impl Agents {
         if self.communication.0.read().root_of(id).is_ok() {
             return;
         }
-        let lineage = match self.store.lineage(id).await {
+        let lineage = self.store.lineage(id).await;
+        self.apply_lineage(id, lineage);
+    }
+
+    /// [`Self::mirror`] given its lineage read, which 176 E1 may have done
+    /// off the mailbox: a no-op when `id` became known meanwhile, and a root
+    /// already known keeps its live scope (a `SetPeerScope` since the read
+    /// is never undone).
+    fn apply_lineage(&self, id: SessionId, lineage: anyhow::Result<store::communication::Lineage>) {
+        let lineage = match lineage {
             Ok(l) => l,
             // No row: nothing to mirror; every route for `id` fails closed.
             Err(e) if e.downcast_ref::<CommError>() == Some(&CommError::NotFound) => return,
@@ -1078,13 +1094,18 @@ impl Agents {
             }
         };
         let mut p = self.communication.0.write();
-        let root = lineage.root();
-        if let Err(e) = p.record_root(root, lineage.scope) {
-            tracing::error!(session = %root, "record_root: {e}");
+        if p.root_of(id).is_ok() {
             return;
         }
-        if lineage.alias.is_some() {
-            let _ = p.set_scope(root, lineage.scope, lineage.alias.clone());
+        let root = lineage.root();
+        if p.root_of(root).is_err() {
+            if let Err(e) = p.record_root(root, lineage.scope) {
+                tracing::error!(session = %root, "record_root: {e}");
+                return;
+            }
+            if lineage.alias.is_some() {
+                let _ = p.set_scope(root, lineage.scope, lineage.alias.clone());
+            }
         }
         // Root first, then each child of the one just recorded.
         for pair in lineage.chain.windows(2).rev() {
@@ -1240,6 +1261,21 @@ impl Agents {
         self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
             .await;
         self.mirror(id).await;
+        // 176 A2: a child parked idle is back. Like `relaunch_acp_child`,
+        // a cancelled last turn is not to be picked up from the replay.
+        if let Some(at) = self.parked.remove(&id) {
+            tracing::info!(
+                "acp: resumed parked child session={id} after={}s",
+                at.elapsed().as_secs()
+            );
+            if self
+                .last_stop
+                .get(&id)
+                .is_some_and(|(r, _)| r == "cancelled")
+            {
+                notes.push(crate::acp_child::CANCELLED_NOTE.to_owned());
+            }
+        }
         // Unbounded (R2.6): the supervisor `tell`s into this mailbox from
         // its own handlers and must never block on a chatty harness.
         let child = AcpChild::new(
@@ -1352,9 +1388,15 @@ impl Agents {
         defer: bool,
     ) -> Result<(), String> {
         // The child's brief waits for a permit: nothing reaches its session
-        // before the brief (01 §2.6). Replayed by `replay`, flags intact.
-        if let Some(q) = self.queued.get_mut(&sid) {
-            q.held.push(Held::Routed {
+        // before the brief (01 §2.6); 176 A1: an ACP child mid park probe
+        // may stop before reading it. Replayed by `replay`, flags intact.
+        if let Some(held) = self
+            .queued
+            .get_mut(&sid)
+            .map(|q| &mut q.held)
+            .or_else(|| self.parking.get_mut(&sid))
+        {
+            held.push(Held::Routed {
                 id,
                 text,
                 files,
@@ -1937,6 +1979,11 @@ impl Agents {
         if let LiveActor::Acp(_) = &actor {
             self.acp_journal_open(to, "peer", &input.record.text, Some(&input.record.from))
                 .await;
+        }
+        // 176 A1: a child mid park probe may stop before reading it.
+        if let Some(held) = self.parking.get_mut(&to) {
+            held.push(Held::Peer(Box::new(input)));
+            return Ok(());
         }
         self.offer_peer(actor, to, input);
         Ok(())
@@ -5501,10 +5548,38 @@ impl Message<SetPeerScope> for Agents {
 }
 
 impl Message<ListPeers> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<PeerPage, String>>;
+
+    /// 176 E1: the session list, lineages, mesh names and job counts are
+    /// read off the mailbox ([`PeerRead`]); the policy walk and paging come
+    /// back to it ([`PeersRead`]), where every policy mutation happens.
+    async fn handle(&mut self, m: ListPeers, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (store, policy) = (self.store.clone(), self.communication.clone());
+        let me = ctx.actor_ref().clone();
+        ctx.spawn(async move {
+            let read = PeerRead::fetch(&store, &policy, m.session).await?;
+            me.ask(PeersRead { m, read }).await.map_err(|e| match e {
+                SendError::HandlerError(e) => e,
+                e => e.to_string(),
+            })
+        })
+    }
+}
+
+/// `ask` (internal, 176 E1): [`ListPeers`] once its [`PeerRead`] is in.
+struct PeersRead {
+    m: ListPeers,
+    read: PeerRead,
+}
+
+impl Message<PeersRead> for Agents {
     type Reply = Result<PeerPage, String>;
 
-    async fn handle(&mut self, m: ListPeers, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.mirror(m.session).await;
+    async fn handle(
+        &mut self,
+        PeersRead { m, read }: PeersRead,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let limit = m
             .limit
             .filter(|l| *l > 0)
@@ -5515,7 +5590,7 @@ impl Message<ListPeers> for Agents {
             .as_deref()
             .map(str::to_lowercase)
             .filter(|q| !q.is_empty());
-        let mut rows = self.directory(m.session).await?;
+        let mut rows = self.directory_from(m.session, read)?;
         arrange(&mut rows, m.active_only);
         if let Some(q) = &query {
             rows.retain(|p| p.name.to_lowercase().contains(q) || p.address.contains(q.as_str()));
@@ -5538,33 +5613,79 @@ impl Message<ListPeers> for Agents {
     }
 }
 
+/// [`Agents::directory_from`]'s I/O, read off the mailbox: the durable rows
+/// in creation order, the lineage of `session` and of every row the policy
+/// does not know yet, the mesh engine names and every row's job counts.
+struct PeerRead {
+    rows: Vec<SessionSummary>,
+    lineages: Vec<(SessionId, anyhow::Result<store::communication::Lineage>)>,
+    engines: (String, HashMap<String, String>),
+    counts: HashMap<SessionId, (u16, u16)>,
+}
+
+impl PeerRead {
+    async fn fetch(
+        store: &Store,
+        policy: &SharedPolicy,
+        session: SessionId,
+    ) -> Result<Self, String> {
+        let mut rows = store.list_sessions().await.map_err(|e| e.to_string())?;
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.0.cmp(&b.id.0)));
+        let mut lineages = Vec::new();
+        for id in std::iter::once(session).chain(rows.iter().map(|r| r.id)) {
+            let known = policy.0.read().root_of(id).is_ok();
+            if !known {
+                lineages.push((id, store.lineage(id).await));
+            }
+        }
+        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
+        Ok(Self {
+            engines: peer_mesh::engine_names().await,
+            counts: view::job_counts(&ids).await,
+            rows,
+            lineages,
+        })
+    }
+}
+
 impl Agents {
+    /// [`PeerRead::fetch`] then [`Self::directory_from`] in one go.
+    #[cfg(test)]
+    async fn directory(&mut self, session: SessionId) -> Result<Vec<PeerInfo>, String> {
+        let read = PeerRead::fetch(&self.store, &self.communication, session).await?;
+        self.directory_from(session, read)
+    }
+
     /// The full permitted directory for `session` (50 §5.1) in stable order:
     /// same-tree sessions (parent, children, siblings, ancestors,
     /// descendants), then other `owner` roots and their trees when this
     /// root is `owner`, then configured remotes. Each local candidate passes
     /// [`Policy::route`]; nothing dormant is woken and no network is probed.
-    async fn directory(&mut self, session: SessionId) -> Result<Vec<PeerInfo>, String> {
+    /// Every row is mirrored first, so `route` never fails on a dangling link.
+    fn directory_from(
+        &mut self,
+        session: SessionId,
+        read: PeerRead,
+    ) -> Result<Vec<PeerInfo>, String> {
+        let PeerRead {
+            rows,
+            lineages,
+            engines,
+            counts,
+        } = read;
+        for (id, lineage) in lineages {
+            self.apply_lineage(id, lineage);
+        }
         let root = {
             let p = self.communication.0.read();
             p.enabled(session).map_err(|e| e.to_string())?;
             p.root_of(session).map_err(|e| e.to_string())?
         };
-        let mut rows = self
-            .store
-            .list_sessions()
-            .await
-            .map_err(|e| e.to_string())?;
-        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.0.cmp(&b.id.0)));
-        // Mirror every row so `route` never fails on a dangling link.
-        for r in &rows {
-            self.mirror(r.id).await;
-        }
         let me_parent = rows.iter().find(|r| r.id == session).and_then(|r| r.parent);
         // 69 P: engine display names, asked once; rows owned elsewhere are
         // `remote` (no activity here — their owner would know), ours carry
         // this engine's name for symmetry.
-        let (me_name, names) = peer_mesh::engine_names().await;
+        let (me_name, names) = engines;
         // Rows keep their session id for the activity lookup, which runs once
         // the policy guard is released.
         let mut same = Vec::new();
@@ -5664,12 +5785,14 @@ impl Agents {
         }
         same.extend(other);
         // Remote rows have no activity here: their owner's engine would know.
-        let ids: Vec<SessionId> = same
+        let wanted: HashSet<SessionId> = same
             .iter()
             .filter(|(_, info)| info.state != PeerState::Remote)
             .map(|(id, _)| *id)
             .collect();
-        let mut activity = self.activity_for(&ids).await;
+        let mut activity = self
+            .view()
+            .activity_of_rows(rows.iter().filter(|r| wanted.contains(&r.id)), &counts);
         let now = Instant::now();
         let mut out: Vec<PeerInfo> = same
             .into_iter()
@@ -6174,198 +6297,6 @@ impl Message<PeerContext> for Agents {
 }
 
 impl Agents {
-    /// [`AgentInfo`] for every descendant of `session`, store rows in
-    /// pre-order plus live state from this actor (design doc 19 §2.1).
-    async fn agents(&self, session: SessionId) -> Vec<AgentInfo> {
-        let store = self.store_for(session);
-        let rows = match store.descendants(session).await {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::error!(session = %session, "descendants: {e:#}");
-                return Vec::new();
-            }
-        };
-        let names: HashMap<SessionId, &str> = rows
-            .iter()
-            .filter_map(|(_, s)| Some((s.id, s.name.as_deref()?)))
-            .collect();
-        let ids: Vec<SessionId> = rows.iter().map(|(_, r)| r.id).collect();
-        let mut activity = self.activity_for(&ids).await;
-        let mut out = Vec::with_capacity(rows.len());
-        for (depth, row) in &rows {
-            let parent = row.parent.unwrap_or(session);
-            // Names of cold siblings are known here; keep the two states equal.
-            let state = self.state_of_row(row, Some(parent), &names);
-            let mut activity = activity.remove(&row.id).unwrap_or_default();
-            activity.state = state.clone();
-            out.push(
-                self.info_row(store, row, *depth, parent, state, activity)
-                    .await,
-            );
-        }
-        out
-    }
-
-    /// [`SessionActivity`] for `ids` (62 §0.5): one `JobCounts` ask for all
-    /// of them, the rest from this actor's maps; the store is read only for
-    /// a cold session's `updated_at`.
-    async fn activity_for(&self, ids: &[SessionId]) -> HashMap<SessionId, SessionActivity> {
-        let counts = match ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR) {
-            Ok(Some(jobs)) => jobs
-                .ask(tools::JobCounts(ids.to_vec()))
-                .await
-                .unwrap_or_default(),
-            _ => HashMap::new(),
-        };
-        self.assemble_activity(ids, &counts).await
-    }
-
-    /// [`Self::activity_for`] given the `JobCounts` reply.
-    async fn assemble_activity(
-        &self,
-        ids: &[SessionId],
-        counts: &HashMap<SessionId, (u16, u16)>,
-    ) -> HashMap<SessionId, SessionActivity> {
-        // Live descendants per ancestor: walk each live session's parent chain.
-        let mut children: HashMap<SessionId, u16> = HashMap::new();
-        for (id, live) in &self.sessions {
-            if !live.actor.is_alive() {
-                continue;
-            }
-            let mut cur = *id;
-            while let Some((p, _)) = self.sessions.get(&cur).and_then(|l| l.parent.as_ref()) {
-                *children.entry(*p).or_default() += 1;
-                cur = *p;
-            }
-        }
-        let names = HashMap::new();
-        let mut out = HashMap::with_capacity(ids.len());
-        for &id in ids {
-            let parent = self
-                .sessions
-                .get(&id)
-                .and_then(|l| l.parent.as_ref().map(|(p, _)| *p));
-            let turn_started_at = self.child_turns.get(&id).map(|ct| ct.started_at);
-            let mut last_active = [
-                self.last_input.get(&id).copied(),
-                self.last_stop.get(&id).map(|(_, at)| *at),
-                turn_started_at,
-            ]
-            .into_iter()
-            .flatten()
-            .max();
-            if last_active.is_none() {
-                last_active = self
-                    .store_for(id)
-                    .session(id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|s| s.updated_at);
-            }
-            let (jobs, ptys) = counts.get(&id).copied().unwrap_or_default();
-            let state = self.state_of(id, parent, &names);
-            // 130 E2: how long the user (or a peer) has been waited on.
-            let waiting_since_ms = match &state {
-                AgentState::Approval { .. } => self.approvals.get(&id).map(|(.., at)| *at),
-                AgentState::Awaiting { .. } => self
-                    .waits
-                    .values()
-                    .find(|w| w.session == id)
-                    .map(|w| w.since_ms),
-                _ => None,
-            };
-            out.insert(
-                id,
-                SessionActivity {
-                    state,
-                    last_active,
-                    turn_started_at,
-                    jobs,
-                    ptys,
-                    children: children.get(&id).copied().unwrap_or_default(),
-                    asks: None,
-                    live: self.live(id).is_some(),
-                    waiting_since_ms,
-                },
-            );
-        }
-        out
-    }
-
-    /// Every stored session row, durable store first then each open private
-    /// tree's, in each store's `list_sessions` order.
-    async fn all_rows(&self) -> Vec<SessionSummary> {
-        let mut rows = self.store.list_sessions().await.unwrap_or_else(|e| {
-            tracing::error!("list sessions: {e:#}");
-            Vec::new()
-        });
-        for p in self.private.values().filter(|p| !p.closing) {
-            rows.extend(p.store.list_sessions().await.unwrap_or_default());
-        }
-        rows
-    }
-
-    /// Live state of `id` as the roster shows it (design doc 19 §2.1).
-    /// `names` maps sibling ids to their peer names for `Awaiting { from }`.
-    fn state_of(
-        &self,
-        id: SessionId,
-        parent: Option<SessionId>,
-        names: &HashMap<SessionId, &str>,
-    ) -> AgentState {
-        if let Some((_, tool, _)) = self.approvals.get(&id) {
-            AgentState::Approval { tool: tool.clone() }
-        } else if let Some(w) = self.waits.values().find(|w| w.session == id) {
-            // The awaited peer by its convenience name when it has one.
-            let from = match PeerAddress::local(&w.to) {
-                Some(p) if Some(p) == parent => "parent".to_owned(),
-                Some(p) => names
-                    .get(&p)
-                    .map(|n| (*n).to_owned())
-                    .or_else(|| Some(self.sessions.get(&p)?.parent.as_ref()?.1.clone()))
-                    .unwrap_or_else(|| w.to.clone()),
-                None => w.to.clone(),
-            };
-            AgentState::Awaiting { from }
-        } else if self.running.contains(&id) {
-            AgentState::Running
-        } else {
-            match self.last_stop.get(&id).map(|(reason, _)| reason.as_str()) {
-                Some("error") => AgentState::Error,
-                Some("cancelled") => AgentState::Cancelled,
-                _ => AgentState::Idle,
-            }
-        }
-    }
-
-    /// [`Self::state_of`] for a store row: a watch-only child's state comes
-    /// from the harness (141 §5.2 table) — except an unanswered permission
-    /// ask keyed to it, which is `Approval` like anyone's.
-    fn state_of_row(
-        &self,
-        row: &SessionSummary,
-        parent: Option<SessionId>,
-        names: &HashMap<SessionId, &str>,
-    ) -> AgentState {
-        let live = self.state_of(row.id, parent, names);
-        match &row.observed {
-            Some(o) if !matches!(live, AgentState::Approval { .. }) => match o.state {
-                ObservedState::Running => AgentState::Running,
-                ObservedState::RequiresAction => AgentState::Approval {
-                    tool: o.description.clone().unwrap_or_default(),
-                },
-                ObservedState::Failed => AgentState::Error,
-                ObservedState::Cancelled => AgentState::Cancelled,
-                ObservedState::Pending
-                | ObservedState::Idle
-                | ObservedState::Completed
-                | ObservedState::Unknown => AgentState::Idle,
-            },
-            _ => live,
-        }
-    }
-
     /// 141 §7.7: stop watch-only `row` through the live harness actor that
     /// runs it — its parent, or the nearest ACP ancestor when nested. No
     /// live harness: nothing to tell; the row is already lost or terminal.
@@ -6426,106 +6357,29 @@ impl Agents {
                 .await;
         }
     }
-
-    /// One roster row from its store row plus live state.
-    async fn info_row(
-        &self,
-        store: &Store,
-        row: &SessionSummary,
-        depth: u8,
-        parent: SessionId,
-        state: AgentState,
-        activity: SessionActivity,
-    ) -> AgentInfo {
-        let id = row.id;
-        // ponytail: one message replay per row; a `last_text` column if the picker gets slow.
-        let last = store.last_turn_text(id).await.unwrap_or_else(|e| {
-            tracing::error!(session = %id, "last_turn_text: {e:#}");
-            String::new()
-        });
-        AgentInfo {
-            id,
-            name: row.name.clone().unwrap_or_default(),
-            parent,
-            depth,
-            agent: row.agent.clone(),
-            model: row.model.clone(),
-            state,
-            started_at: self.child_turns.get(&id).map(|ct| ct.started_at),
-            finished_at: self.last_stop.get(&id).map(|(_, at)| *at),
-            last: first_line(&last),
-            project: row.project.clone(),
-            retention: self.retention_of(id),
-            activity,
-            cap: self.caps.get(&id).copied(),
-            kind: row.kind,
-            observed: row.observed.clone(),
-        }
-    }
-
-    /// [`ListActivity`]'s rows (62 §3.2): every root, plus every session with
-    /// a live actor or a running job; `depth` from its own root.
-    async fn activity_rows(&self) -> Vec<AgentInfo> {
-        let rows = self.all_rows().await;
-        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
-        let mut activity = self.activity_for(&ids).await;
-        // Pre-order like `agents()`: roots in roster order, then each one's
-        // children oldest first. A cold child is skipped but its live
-        // descendants are still walked (their depth counts it).
-        let mut kids: HashMap<SessionId, Vec<&SessionSummary>> = HashMap::new();
-        for r in &rows {
-            if let Some(p) = r.parent {
-                kids.entry(p).or_default().push(r);
-            }
-        }
-        for v in kids.values_mut() {
-            v.sort_by_key(|r| r.created_at);
-        }
-        let mut stack: Vec<(&SessionSummary, u8)> = rows
-            .iter()
-            .filter(|r| r.parent.is_none())
-            .rev()
-            .map(|r| (r, 0))
-            .collect();
-        let mut out = Vec::new();
-        while let Some((row, depth)) = stack.pop() {
-            if let Some(children) = kids.get(&row.id) {
-                stack.extend(children.iter().rev().map(|c| (*c, depth.saturating_add(1))));
-            }
-            let Some(a) = activity.remove(&row.id) else {
-                continue;
-            };
-            if depth > 0 && !a.live && a.jobs + a.ptys == 0 {
-                continue;
-            }
-            let parent = row.parent.unwrap_or(row.id);
-            let state = if row.observed.is_some() {
-                self.state_of_row(row, row.parent, &HashMap::new())
-            } else {
-                a.state.clone()
-            };
-            out.push(
-                self.info_row(self.store_for(row.id), row, depth, parent, state, a)
-                    .await,
-            );
-        }
-        out
-    }
 }
 
 impl Message<ListActivity> for Agents {
-    type Reply = Vec<AgentInfo>;
+    type Reply = kameo::reply::DelegatedReply<Vec<AgentInfo>>;
 
-    async fn handle(&mut self, _: ListActivity, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.activity_rows().await
+    /// 176 E1: the session list, job counts and last replies are read off
+    /// the mailbox, over the state as of this handler.
+    async fn handle(
+        &mut self,
+        _: ListActivity,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let view = self.view();
+        ctx.spawn(async move { view.activity_rows().await })
     }
 }
 
 impl Message<ActivityOf> for Agents {
-    type Reply = HashMap<SessionId, SessionActivity>;
+    type Reply = kameo::reply::DelegatedReply<HashMap<SessionId, SessionActivity>>;
 
-    async fn handle(&mut self, m: ActivityOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.activity_for(&m.0).await
+    async fn handle(&mut self, m: ActivityOf, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let view = self.view();
+        ctx.spawn(async move { view.activity_for(&m.0).await })
     }
 }
 
@@ -6534,9 +6388,10 @@ impl Agents {
     /// filled, every resolved row `Skipped{"dry run"}` and an unknown id
     /// `Failed{"unknown session"}`. `Running`/`Roots` never name a child.
     async fn resolve_targets(&self, targets: &BroadcastTargets) -> Vec<BroadcastRow> {
-        let rows = self.all_rows().await;
+        let view = self.view();
+        let rows = view.all_rows().await;
         let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
-        let mut activity = self.activity_for(&ids).await;
+        let mut activity = view.activity_of_rows(&rows, &view::job_counts(&ids).await);
         let by_id: HashMap<SessionId, &SessionSummary> = rows.iter().map(|r| (r.id, r)).collect();
         let row = |id: SessionId, before: SessionActivity| {
             let s = by_id[&id];
@@ -6703,32 +6558,37 @@ fn first_line(text: &str) -> String {
 }
 
 impl Message<ListAgents> for Agents {
-    type Reply = Vec<AgentInfo>;
+    type Reply = kameo::reply::DelegatedReply<Vec<AgentInfo>>;
 
-    async fn handle(&mut self, m: ListAgents, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.agents(m.session).await
+    /// 176 E1: read off the mailbox like [`ListActivity`].
+    async fn handle(&mut self, m: ListAgents, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let view = self.view();
+        ctx.spawn(async move { view.agents(m.session).await })
     }
 }
 
 impl Message<Roster> for Agents {
-    type Reply = String;
+    type Reply = kameo::reply::DelegatedReply<String>;
 
-    async fn handle(&mut self, m: Roster, _: &mut Context<Self, Self::Reply>) -> String {
-        let agents = self.agents(m.session).await;
-        if agents.is_empty() {
-            return String::new();
-        }
-        let mut s = String::from("Subagents: ");
-        for (i, a) in agents.iter().enumerate() {
-            if i > 0 {
-                s.push_str(", ");
+    async fn handle(&mut self, m: Roster, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let view = self.view();
+        ctx.spawn(async move {
+            let agents = view.agents(m.session).await;
+            if agents.is_empty() {
+                return String::new();
             }
-            s.push_str(&a.name);
-            s.push_str(" (");
-            s.push_str(a.state.word());
-            s.push(')');
-        }
-        s
+            let mut s = String::from("Subagents: ");
+            for (i, a) in agents.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&a.name);
+                s.push_str(" (");
+                s.push_str(a.state.word());
+                s.push(')');
+            }
+            s
+        })
     }
 }
 
@@ -6918,28 +6778,26 @@ impl Agents {
 }
 
 impl Message<ListSessions> for Agents {
-    type Reply = Vec<SessionSummary>;
+    type Reply = kameo::reply::DelegatedReply<Vec<SessionSummary>>;
 
+    /// The durable session list with each row's live `running` flag; 176
+    /// E1: read off the mailbox, `running` as of this handler.
     async fn handle(
         &mut self,
         _: ListSessions,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Vec<SessionSummary> {
-        self.list_sessions().await
-    }
-}
-
-impl Agents {
-    /// The durable session list with each row's live `running` flag.
-    async fn list_sessions(&self) -> Vec<SessionSummary> {
-        let mut rows = self.store.list_sessions().await.unwrap_or_else(|e| {
-            tracing::error!("list sessions: {e:#}");
-            Vec::new()
-        });
-        for r in &mut rows {
-            r.running = self.running.contains(&r.id);
-        }
-        rows
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (store, running) = (self.store.clone(), self.running.clone());
+        ctx.spawn(async move {
+            let mut rows = store.list_sessions().await.unwrap_or_else(|e| {
+                tracing::error!("list sessions: {e:#}");
+                Vec::new()
+            });
+            for r in &mut rows {
+                r.running = running.contains(&r.id);
+            }
+            rows
+        })
     }
 }
 
@@ -6981,316 +6839,373 @@ impl Message<Ancestors> for Agents {
 }
 
 impl Message<ReadSession> for Agents {
-    type Reply = Result<SessionRead, String>;
+    type Reply = kameo::reply::DelegatedReply<Result<SessionRead, String>>;
 
-    async fn handle(&mut self, m: ReadSession, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    /// 176 E1: the transcript is read and rendered off the mailbox.
+    async fn handle(
+        &mut self,
+        m: ReadSession,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         // 51 §4.2 / 66 §9: a private tree's sessions are readable only from
         // inside that tree; everything durable is readable from anywhere.
         let target_root = self.private_member.get(&m.session);
         if target_root.is_some() && target_root != self.private_member.get(&m.caller) {
-            return Err(format!("session {} is private to another tree", m.session));
+            return ctx.reply(Err(format!(
+                "session {} is private to another tree",
+                m.session
+            )));
         }
         let store = self.store_for(m.session).clone();
-        let mut summary = store
-            .session(m.session)
-            .await
-            .map_err(|e| format!("{e:#}"))?
-            .ok_or_else(|| format!("session {} not found", m.session))?;
-        // 125 §4.2: an advisor's transcript is readable by nobody else.
-        if summary.kind == SessionKind::Advisor {
-            return Err(format!("session {} is not a peer", m.session));
-        }
-        summary.retention = self.retention_of(m.session);
-        let h = store
-            .context_history(m.session)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-        let advisories = store.advisories(m.session).await.unwrap_or_default();
-        let mut out = render_with(&h.messages, &h.entries, &h.thinking, &advisories);
-        // Peer provenance (50 §9), as `load_session` marks it.
-        if let Ok(rows) = store.consumed_exchanges(m.session).await {
-            let peers: HashMap<i64, PeerOrigin> = rows
-                .into_iter()
-                .map(|(seq, r)| (seq, origin_of(&r)))
-                .collect();
-            for (seq, entry) in &mut out {
-                if let HistoryEntry::User { peer, .. } = entry
-                    && let Some(o) = peers.get(seq)
-                {
-                    *peer = Some(o.clone());
-                }
+        let retention = self.retention_of(m.session);
+        ctx.spawn(async move { read_session(&store, m.session, retention).await })
+    }
+}
+
+/// [`ReadSession`]'s reads once the caller may see `session`.
+async fn read_session(
+    store: &Store,
+    session: SessionId,
+    retention: Retention,
+) -> Result<SessionRead, String> {
+    let mut summary = store
+        .session(session)
+        .await
+        .map_err(|e| format!("{e:#}"))?
+        .ok_or_else(|| format!("session {session} not found"))?;
+    // 125 §4.2: an advisor's transcript is readable by nobody else.
+    if summary.kind == SessionKind::Advisor {
+        return Err(format!("session {session} is not a peer"));
+    }
+    summary.retention = retention;
+    let h = store
+        .context_history(session)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let advisories = store.advisories(session).await.unwrap_or_default();
+    let mut out = render_with(&h.messages, &h.entries, &h.thinking, &advisories);
+    // Peer provenance (50 §9), as `load_session` marks it.
+    if let Ok(rows) = store.consumed_exchanges(session).await {
+        let peers: HashMap<i64, PeerOrigin> = rows
+            .into_iter()
+            .map(|(seq, r)| (seq, origin_of(&r)))
+            .collect();
+        for (seq, entry) in &mut out {
+            if let HistoryEntry::User { peer, .. } = entry
+                && let Some(o) = peers.get(seq)
+            {
+                *peer = Some(o.clone());
             }
         }
-        // 172: channel provenance, as `load_session` marks it.
-        if let Ok(channels) = store.channels(m.session).await {
-            mark_channels(&mut out, &channels);
-        }
-        Ok(SessionRead {
-            summary,
-            history: out.into_iter().map(|(_, e)| e).collect(),
+    }
+    // 172: channel provenance, as `load_session` marks it.
+    if let Ok(channels) = store.channels(session).await {
+        mark_channels(&mut out, &channels);
+    }
+    Ok(SessionRead {
+        summary,
+        history: out.into_iter().map(|(_, e)| e).collect(),
+    })
+}
+
+impl Message<LoadSession> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Loaded>;
+
+    /// 176 E1: the store reads and the session actor's asks run off the
+    /// mailbox; only the lineage mirror and the communication state come
+    /// back to it ([`Mirrored`]).
+    async fn handle(
+        &mut self,
+        m: LoadSession,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let session = m.session;
+        let store = self.store_for(session).clone();
+        let durable = self.store.clone();
+        let live = self.live(session).cloned();
+        let root = self.resources_for(session).root.clone();
+        let retention = self.retention_of(session);
+        let known = self.communication.0.read().root_of(session).is_ok();
+        let me = ctx.actor_ref().clone();
+        ctx.spawn(async move {
+            let mut loaded = load_session(m, &store, &durable, live, &root, retention).await;
+            let lineage = if known {
+                None
+            } else {
+                Some(durable.lineage(session).await)
+            };
+            loaded.communication = me.ask(Mirrored { session, lineage }).await.ok().flatten();
+            loaded
         })
     }
 }
 
-impl Message<LoadSession> for Agents {
-    type Reply = Loaded;
+/// `ask` (internal, 176 E1) → `Option<CommunicationState>`: apply a lineage
+/// read off the mailbox (`None`: it was already known) and read `session`'s
+/// switches, as [`Agents::mirror`] then `GetCommunication` would.
+struct Mirrored {
+    session: SessionId,
+    lineage: Option<anyhow::Result<store::communication::Lineage>>,
+}
 
-    async fn handle(&mut self, m: LoadSession, _: &mut Context<Self, Self::Reply>) -> Loaded {
-        // Raw rows and their context metadata in one consistent read (48 §5):
-        // through the session actor when it is live (it owns admission and
-        // fills editable/reason), from the store when no actor exists (idle
-        // by construction) or the session runs on an external harness.
-        let store = self.store_for(m.session).clone();
-        let row = store.session(m.session).await.unwrap_or_else(|e| {
-            tracing::error!(session = %m.session, "load session: {e:#}");
-            None
-        });
-        let external = row.as_ref().is_some_and(|r| r.agent.is_some());
-        let live = self.live(m.session).cloned();
-        let native = live.as_ref().and_then(|a| a.native().ok());
-        // `Err(reason)` = the actor refused a settled read (busy); the store
-        // still answers so the reply is honest but not installable.
-        let (read, refused) = match native {
-            Some(a) => match a
-                .ask(ContextHistoryNow {
-                    settled_only: m.settled_only,
-                })
-                .await
-            {
-                Ok(h) => (Ok(h), None),
-                Err(SendError::HandlerError(busy)) => {
-                    (store.context_history(m.session).await, Some(busy))
-                }
-                Err(e) => (Err(anyhow::anyhow!("{e}")), None),
+impl Message<Mirrored> for Agents {
+    type Reply = Option<CommunicationState>;
+
+    async fn handle(&mut self, m: Mirrored, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(lineage) = m.lineage {
+            self.apply_lineage(m.session, lineage);
+        }
+        self.communication.0.read().state(Some(m.session)).ok()
+    }
+}
+
+/// [`LoadSession`]'s reads over the handler's snapshot; `communication` is
+/// left `None` for the mailbox to fill.
+async fn load_session(
+    m: LoadSession,
+    store: &Store,
+    durable: &Store,
+    live: Option<LiveActor>,
+    root: &Path,
+    retention: Retention,
+) -> Loaded {
+    // Raw rows and their context metadata in one consistent read (48 §5):
+    // through the session actor when it is live (it owns admission and
+    // fills editable/reason), from the store when no actor exists (idle
+    // by construction) or the session runs on an external harness.
+    let row = store.session(m.session).await.unwrap_or_else(|e| {
+        tracing::error!(session = %m.session, "load session: {e:#}");
+        None
+    });
+    let external = row.as_ref().is_some_and(|r| r.agent.is_some());
+    let native = live.as_ref().and_then(|a| a.native().ok());
+    // `Err(reason)` = the actor refused a settled read (busy); the store
+    // still answers so the reply is honest but not installable.
+    let (read, refused) = match native {
+        Some(a) => match a
+            .ask(ContextHistoryNow {
+                settled_only: m.settled_only,
+            })
+            .await
+        {
+            Ok(h) => (Ok(h), None),
+            Err(SendError::HandlerError(busy)) => {
+                (store.context_history(m.session).await, Some(busy))
+            }
+            Err(e) => (Err(anyhow::anyhow!("{e}")), None),
+        },
+        None => (store.context_history(m.session).await, None),
+    };
+    let (running, resumed, queued) = match &live {
+        Some(actor) => (
+            actor.is_running().await,
+            actor.resumed_turn().await,
+            match actor.native() {
+                Ok(a) => a.ask(QueuedInputs).await.unwrap_or_default(),
+                Err(_) => Vec::new(),
             },
-            None => (store.context_history(m.session).await, None),
-        };
-        let (running, resumed, queued) = match &live {
-            Some(actor) => (
-                actor.is_running().await,
-                actor.resumed_turn().await,
-                match actor.native() {
-                    Ok(a) => a.ask(QueuedInputs).await.unwrap_or_default(),
-                    Err(_) => Vec::new(),
-                },
-            ),
-            None => (false, None, Vec::new()),
-        };
-        // ponytail: every row is read and rendered per page; a seq-ranged
-        // query is the upgrade if a measured session makes this slow.
-        let (history, first_seq, more, skills, context) = match read {
-            Ok(h) => {
-                let ContextHistory {
-                    revision,
-                    messages,
-                    epochs,
-                    entries,
-                    thinking,
-                    heads,
-                    snapshot,
-                } = h;
-                // The frame is the latest epoch's tail (07 §8.4); its skills
-                // are the badge (04 §2.4), read off the effective rows.
-                let from = epochs.last().map_or(0, |e| e.tail_from);
-                let at = messages.partition_point(|(seq, _)| *seq < from);
-                let tail = &messages[at..];
-                let removed = |seq: &i64| entries.get(seq).is_some_and(|e| e.removed);
-                let skills = if tail.iter().any(|(seq, _)| removed(seq)) {
-                    let kept: Vec<_> = tail.iter().filter(|(s, _)| !removed(s)).cloned().collect();
-                    skills::in_frame(&kept)
-                } else {
-                    skills::in_frame(tail)
+        ),
+        None => (false, None, Vec::new()),
+    };
+    // ponytail: every row is read and rendered per page; a seq-ranged
+    // query is the upgrade if a measured session makes this slow.
+    let (history, first_seq, more, skills, context) = match read {
+        Ok(h) => {
+            let ContextHistory {
+                revision,
+                messages,
+                epochs,
+                entries,
+                thinking,
+                heads,
+                snapshot,
+            } = h;
+            // The frame is the latest epoch's tail (07 §8.4); its skills
+            // are the badge (04 §2.4), read off the effective rows.
+            let from = epochs.last().map_or(0, |e| e.tail_from);
+            let at = messages.partition_point(|(seq, _)| *seq < from);
+            let tail = &messages[at..];
+            let removed = |seq: &i64| entries.get(seq).is_some_and(|e| e.removed);
+            let skills = if tail.iter().any(|(seq, _)| removed(seq)) {
+                let kept: Vec<_> = tail.iter().filter(|(s, _)| !removed(s)).cloned().collect();
+                skills::in_frame(&kept)
+            } else {
+                skills::in_frame(tail)
+            }
+            .into_iter()
+            .collect();
+            // A boundary sits right after the last entry completed at or
+            // before `at_seq`, i.e. before the first entry past it.
+            let mut dividers = epochs.iter().peekable();
+            let mut out = Vec::new();
+            // 125 §5.4: Advisory rows render as typed cards (`role: "advisory"`).
+            let advisories = store.advisories(m.session).await.unwrap_or_default();
+            for (seq, entry) in render_with(&messages, &entries, &thinking, &advisories) {
+                while let Some(e) = dividers.next_if(|e| e.at_seq < seq) {
+                    out.push((e.at_seq, compacted(e, heads.get(&e.n).cloned())));
                 }
-                .into_iter()
-                .collect();
-                // A boundary sits right after the last entry completed at or
-                // before `at_seq`, i.e. before the first entry past it.
-                let mut dividers = epochs.iter().peekable();
-                let mut out = Vec::new();
-                // 125 §5.4: Advisory rows render as typed cards (`role: "advisory"`).
-                let advisories = store.advisories(m.session).await.unwrap_or_default();
-                for (seq, entry) in render_with(&messages, &entries, &thinking, &advisories) {
-                    while let Some(e) = dividers.next_if(|e| e.at_seq < seq) {
-                        out.push((e.at_seq, compacted(e, heads.get(&e.n).cloned())));
-                    }
-                    out.push((seq, entry));
+                out.push((seq, entry));
+            }
+            out.extend(dividers.map(|e| (e.at_seq, compacted(e, heads.get(&e.n).cloned()))));
+            // 172: the channel that delivered each user row (`messages.channel`).
+            match store.channels(m.session).await {
+                Ok(channels) => mark_channels(&mut out, &channels),
+                Err(e) => tracing::error!(session = %m.session, "channels: {e:#}"),
+            }
+            // Durable failures sit behind their anchor's whole seq group
+            // (tool siblings, a divider), so paging keeps them with it.
+            match store.errors(m.session).await {
+                Ok(errors) if !errors.is_empty() => {
+                    out.extend(errors.into_iter().map(|(at, text)| {
+                        (
+                            at,
+                            HistoryEntry::Error {
+                                text,
+                                context: None,
+                            },
+                        )
+                    }));
+                    // Unfinished calls trail the transcript, regardless of
+                    // their older call seq (they have no completion seq).
+                    out.sort_by_key(|(seq, entry)| {
+                        (
+                            matches!(entry, HistoryEntry::Tool { result: None, .. }),
+                            *seq,
+                        )
+                    });
                 }
-                out.extend(dividers.map(|e| (e.at_seq, compacted(e, heads.get(&e.n).cloned()))));
-                // 172: the channel that delivered each user row (`messages.channel`).
-                match store.channels(m.session).await {
-                    Ok(channels) => mark_channels(&mut out, &channels),
-                    Err(e) => tracing::error!(session = %m.session, "channels: {e:#}"),
-                }
-                // Durable failures sit behind their anchor's whole seq group
-                // (tool siblings, a divider), so paging keeps them with it.
-                match store.errors(m.session).await {
-                    Ok(errors) if !errors.is_empty() => {
-                        out.extend(errors.into_iter().map(|(at, text)| {
-                            (
-                                at,
-                                HistoryEntry::Error {
-                                    text,
-                                    context: None,
-                                },
-                            )
-                        }));
-                        // Unfinished calls trail the transcript, regardless of
-                        // their older call seq (they have no completion seq).
-                        out.sort_by_key(|(seq, entry)| {
-                            (
-                                matches!(entry, HistoryEntry::Tool { result: None, .. }),
-                                *seq,
-                            )
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::error!(session = %m.session, "errors: {e:#}"),
-                }
-                // Typed provenance for replay (50 §9): the exchange rows this
-                // session consumed, keyed by the history row they became.
-                match store.consumed_exchanges(m.session).await {
-                    Ok(rows) => {
-                        let peers: HashMap<i64, PeerOrigin> = rows
-                            .into_iter()
-                            .map(|(seq, r)| (seq, origin_of(&r)))
-                            .collect();
-                        for (seq, entry) in &mut out {
-                            if let HistoryEntry::User { peer, .. } = entry
-                                && let Some(o) = peers.get(seq)
-                            {
-                                *peer = Some(o.clone());
-                            }
+                Ok(_) => {}
+                Err(e) => tracing::error!(session = %m.session, "errors: {e:#}"),
+            }
+            // Typed provenance for replay (50 §9): the exchange rows this
+            // session consumed, keyed by the history row they became.
+            match store.consumed_exchanges(m.session).await {
+                Ok(rows) => {
+                    let peers: HashMap<i64, PeerOrigin> = rows
+                        .into_iter()
+                        .map(|(seq, r)| (seq, origin_of(&r)))
+                        .collect();
+                    for (seq, entry) in &mut out {
+                        if let HistoryEntry::User { peer, .. } = entry
+                            && let Some(o) = peers.get(seq)
+                        {
+                            *peer = Some(o.clone());
                         }
                     }
-                    Err(e) => tracing::error!(session = %m.session, "consumed_exchanges: {e:#}"),
                 }
-                let (mut history, first_seq, more) = page(out, m.before, m.limit);
-                match store.inner_calls(m.session).await {
-                    Ok(mut inner) if !inner.is_empty() => {
-                        attach_inner(&mut history, &mut inner, running);
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::error!(session = %m.session, "inner_calls: {e:#}"),
+                Err(e) => tracing::error!(session = %m.session, "consumed_exchanges: {e:#}"),
+            }
+            let (mut history, first_seq, more) = page(out, m.before, m.limit);
+            match store.inner_calls(m.session).await {
+                Ok(mut inner) if !inner.is_empty() => {
+                    attach_inner(&mut history, &mut inner, running);
                 }
-                // Previews land under the tree's root (51 §4.5): the data
-                // dir for durable, the scratch dir for private.
-                let root = self.resources_for(m.session).root.clone();
-                materialize(&mut history, &messages, &epochs, &root);
-                let (editable, reason, settled) = match (&refused, native.is_some(), external) {
-                    (Some(busy), _, _) => (false, Some(busy.clone()), false),
-                    (None, _, true) => (false, Some(NOT_NATIVE.to_owned()), !running),
-                    // The actor filled these from its own idle state.
-                    (None, true, false) => (snapshot.editable, snapshot.reason, snapshot.editable),
-                    // No actor: nothing runs; a removal resumes one.
-                    (None, false, false) => (true, None, true),
-                };
-                let context = (
-                    revision,
-                    editable,
-                    reason,
-                    (!external).then_some(snapshot.estimated_tokens),
-                    settled,
-                );
-                (history, first_seq, more, skills, context)
+                Ok(_) => {}
+                Err(e) => tracing::error!(session = %m.session, "inner_calls: {e:#}"),
             }
-            Err(e) => {
-                tracing::error!(session = %m.session, "load session: {e:#}");
-                let reason = Some(format!("load session: {e:#}"));
-                (
-                    Vec::new(),
-                    None,
-                    false,
-                    Vec::new(),
-                    (String::new(), false, reason, None, false),
-                )
-            }
-        };
-        let undone = store.hidden_turns(m.session).await.unwrap_or_else(|e| {
-            tracing::error!(session = %m.session, "hidden_turns: {e:#}");
-            0
-        });
-        let (
-            model,
-            effort,
-            agent,
-            harness_model,
-            context_size,
-            name,
-            parent,
-            project,
-            kind,
-            observed,
-        ) = row
-            .map(|r| {
-                (
-                    r.model,
-                    r.effort,
-                    r.agent,
-                    r.harness_model,
-                    r.context_size,
-                    r.name,
-                    r.parent,
-                    r.project,
-                    r.kind,
-                    r.observed,
-                )
-            })
-            .unwrap_or_default();
-        // 75 §3: the harness's manifest, only where a harness exists.
-        let harness_commands = if external {
-            store.harness_commands(m.session).await.unwrap_or_else(|e| {
-                tracing::error!(session = %m.session, "harness_commands: {e:#}");
-                Vec::new()
-            })
-        } else {
-            Vec::new()
-        };
-        let (context_revision, context_editable, context_reason, context_estimate, settled) =
-            context;
-        // 47 §5.1: the committed plan, independent of paging and of a running
-        // turn; a failed read is `None` (unavailable), never an empty plan.
-        let todos = store
-            .todos(m.session)
-            .await
-            .map_err(|e| tracing::error!(session = %m.session, "todos: {e:#}"))
-            .ok();
-        self.mirror(m.session).await;
-        let communication = self.communication.0.read().state(Some(m.session)).ok();
-        // 109 W5 §10.3: the open turn's state and its partial, after everything
-        // stored. `resumed` tells a relaunched open turn from one that is
-        // simply running (no banner for the latter).
-        let (resume, partial) = self.resume_state(m.session, running, resumed).await;
-        let mut history = history;
-        history.extend(partial);
-        Loaded {
-            history,
-            running,
-            model,
-            effort,
-            queued,
-            undone,
-            agent,
-            harness_model,
-            harness_commands,
-            context_size,
-            name,
-            parent,
-            skills,
-            first_seq,
-            more,
-            context_revision,
-            context_editable,
-            context_reason,
-            context_estimate,
-            settled,
-            todos,
-            communication,
-            project,
-            retention: self.retention_of(m.session),
-            resume,
-            kind,
-            observed,
+            // Previews land under the tree's root (51 §4.5): the data
+            // dir for durable, the scratch dir for private.
+            materialize(&mut history, &messages, &epochs, root);
+            let (editable, reason, settled) = match (&refused, native.is_some(), external) {
+                (Some(busy), _, _) => (false, Some(busy.clone()), false),
+                (None, _, true) => (false, Some(NOT_NATIVE.to_owned()), !running),
+                // The actor filled these from its own idle state.
+                (None, true, false) => (snapshot.editable, snapshot.reason, snapshot.editable),
+                // No actor: nothing runs; a removal resumes one.
+                (None, false, false) => (true, None, true),
+            };
+            let context = (
+                revision,
+                editable,
+                reason,
+                (!external).then_some(snapshot.estimated_tokens),
+                settled,
+            );
+            (history, first_seq, more, skills, context)
         }
+        Err(e) => {
+            tracing::error!(session = %m.session, "load session: {e:#}");
+            let reason = Some(format!("load session: {e:#}"));
+            (
+                Vec::new(),
+                None,
+                false,
+                Vec::new(),
+                (String::new(), false, reason, None, false),
+            )
+        }
+    };
+    let undone = store.hidden_turns(m.session).await.unwrap_or_else(|e| {
+        tracing::error!(session = %m.session, "hidden_turns: {e:#}");
+        0
+    });
+    let (model, effort, agent, harness_model, context_size, name, parent, project, kind, observed) =
+        row.map(|r| {
+            (
+                r.model,
+                r.effort,
+                r.agent,
+                r.harness_model,
+                r.context_size,
+                r.name,
+                r.parent,
+                r.project,
+                r.kind,
+                r.observed,
+            )
+        })
+        .unwrap_or_default();
+    // 75 §3: the harness's manifest, only where a harness exists.
+    let harness_commands = if external {
+        store.harness_commands(m.session).await.unwrap_or_else(|e| {
+            tracing::error!(session = %m.session, "harness_commands: {e:#}");
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
+    let (context_revision, context_editable, context_reason, context_estimate, settled) = context;
+    // 47 §5.1: the committed plan, independent of paging and of a running
+    // turn; a failed read is `None` (unavailable), never an empty plan.
+    let todos = store
+        .todos(m.session)
+        .await
+        .map_err(|e| tracing::error!(session = %m.session, "todos: {e:#}"))
+        .ok();
+    // 109 W5 §10.3: the open turn's state and its partial, after everything
+    // stored. `resumed` tells a relaunched open turn from one that is
+    // simply running (no banner for the latter).
+    let (resume, partial) = Agents::resume_state(durable, m.session, running, resumed).await;
+    let mut history = history;
+    history.extend(partial);
+    Loaded {
+        history,
+        running,
+        model,
+        effort,
+        queued,
+        undone,
+        agent,
+        harness_model,
+        harness_commands,
+        context_size,
+        name,
+        parent,
+        skills,
+        first_seq,
+        more,
+        context_revision,
+        context_editable,
+        context_reason,
+        context_estimate,
+        settled,
+        todos,
+        communication: None,
+        project,
+        retention,
+        resume,
+        kind,
+        observed,
     }
 }
 
@@ -7498,33 +7413,38 @@ impl Message<ContextItems> for Agents {
 }
 
 impl Message<SessionContextBreakdown> for Agents {
-    type Reply = Result<ContextBreakdown, String>;
+    type Reply = kameo::reply::DelegatedReply<Result<ContextBreakdown, String>>;
 
+    /// 176 E1: the store reads and the session actor's ask run off the mailbox.
     async fn handle(
         &mut self,
         m: SessionContextBreakdown,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.stored(m.session).await?;
-        if let Some(a) = self.live(m.session).and_then(|a| a.native().ok())
-            && let Ok(Some(b)) = a.ask(ContextBreakdownNow).await
-        {
-            return Ok(b);
-        }
-        // Busy or not running: the stored frame, without the live turn's
-        // system prompt, calibration and provider bill.
-        let (_, head, tail) = self
-            .store_for(m.session)
-            .frame(m.session)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-        Ok(ContextBreakdown::build(
-            0,
-            head.as_ref(),
-            tail.iter().map(|(_, m)| m),
-            None,
-            None,
-        ))
+        let store = self.store_for(m.session).clone();
+        let live = self.live(m.session).and_then(|a| a.native().ok()).cloned();
+        ctx.spawn(async move {
+            store
+                .session(m.session)
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .ok_or_else(|| "unknown session".to_owned())?;
+            if let Some(a) = live
+                && let Ok(Some(b)) = a.ask(ContextBreakdownNow).await
+            {
+                return Ok(b);
+            }
+            // Busy or not running: the stored frame, without the live turn's
+            // system prompt, calibration and provider bill.
+            let (_, head, tail) = store.frame(m.session).await.map_err(|e| format!("{e:#}"))?;
+            Ok(ContextBreakdown::build(
+                0,
+                head.as_ref(),
+                tail.iter().map(|(_, m)| m),
+                None,
+                None,
+            ))
+        })
     }
 }
 
@@ -7955,6 +7875,8 @@ impl Message<DeleteSession> for Agents {
             self.caps.remove(id);
             self.remote_parent.remove(id);
             self.desk_models.remove(id);
+            self.parked.remove(id);
+            self.parking.remove(id);
             if let Some(live) = self.sessions.remove(id) {
                 live.actor.kill().await;
             }
@@ -8097,6 +8019,35 @@ impl Message<SetModel> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<ModelInfo, String> {
         self.set_model(m).await
+    }
+}
+
+impl Message<crate::GetInfoDefaults> for Agents {
+    type Reply = Result<crate::InfoDefaults, String>;
+
+    /// 176 E3: the fields the per-field `Get*` handlers answer, read alike.
+    async fn handle(
+        &mut self,
+        _: crate::GetInfoDefaults,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        Ok(crate::InfoDefaults {
+            default_model: self.default_model.clone(),
+            default_effort: self.default_effort.clone(),
+            favorite_models: self.favorite_models.clone(),
+            compact_style: *self.compact_style.read().unwrap_or_else(|p| p.into_inner()),
+            subagent_timeout_secs: self.cfg.subagents.max_runtime_secs,
+            max_tool_rounds: self.cfg.max_tool_rounds,
+            stream_idle_secs: self.cfg.stream_idle_secs,
+            max_salvages: self.cfg.max_salvages,
+            communication: self
+                .communication
+                .0
+                .read()
+                .state(None)
+                .map_err(|e| e.to_string())?,
+            advisor: self.advisor_cfg.defaults(),
+        })
     }
 }
 
@@ -8507,6 +8458,130 @@ impl Message<ResumeChild> for Agents {
         } else {
             ChildResumed::Idle
         })
+    }
+}
+
+/// 176 A1: how often idle ACP children are looked for.
+const PARK_EVERY: Duration = Duration::from_secs(60);
+/// 176 A1: longest one child's park probe may take; a busy child mailbox
+/// is skipped this round rather than holding this one.
+const PARK_PROBE: Duration = Duration::from_secs(2);
+
+/// `tell` (176 A1): park every external ACP child idle at least `.0` — its
+/// harness process stopped, its row kept; the next input resumes it
+/// through `session()` → `acp_session` (`session/load`), the path a
+/// restart's lazy resume takes. The handler only snapshots; the Jobs ask
+/// and the probes run on a task ([`park_round`]) that reports
+/// [`ParkRound`]. Until then the candidates are in `Agents.parking`, where
+/// `route` and `enqueue_peer` hold their inputs, so nothing is told into a
+/// mailbox that is about to stop.
+#[derive(Clone, Copy, Debug)]
+pub struct ParkIdle(pub Duration);
+
+impl Message<ParkIdle> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, ParkIdle(after): ParkIdle, ctx: &mut Context<Self, ()>) {
+        let children: Vec<(SessionId, ActorRef<AcpChild>, bool)> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, l)| match &l.actor {
+                LiveActor::Acp(a) if a.is_alive() && !self.parking.contains_key(id) => {
+                    let pending = self.running.contains(id)
+                        || self.approvals.contains_key(id)
+                        || self.waits.values().any(|w| w.session == *id)
+                        || self.child_turns.contains_key(id)
+                        || self.queued.contains_key(id);
+                    Some((*id, a.clone(), pending))
+                }
+                _ => None,
+            })
+            .collect();
+        if children.is_empty() {
+            return;
+        }
+        for (id, ..) in &children {
+            self.parking.insert(*id, Vec::new());
+        }
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let round = park_round(children, after).await;
+            let _ = me.tell(ParkRound(round)).await;
+        });
+    }
+}
+
+/// 176 A1, off the mailbox: the Jobs counts, then every child probed at
+/// once, each bounded by [`PARK_PROBE`]. `(session, actor, parked)` per
+/// candidate; a Jobs actor that does not answer parks none this round.
+async fn park_round(
+    children: Vec<(SessionId, ActorRef<AcpChild>, bool)>,
+    after: Duration,
+) -> Vec<(SessionId, kameo::actor::ActorId, bool)> {
+    let ids: Vec<SessionId> = children.iter().map(|(id, ..)| *id).collect();
+    // No Jobs actor, or a stopped one, runs no jobs (`activity_for` reads it
+    // the same way).
+    let counts = match ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR) {
+        Ok(Some(jobs)) => {
+            match tokio::time::timeout(PARK_PROBE, jobs.ask(tools::JobCounts(ids))).await {
+                Ok(r) => Some(r.unwrap_or_default()),
+                Err(_) => None,
+            }
+        }
+        _ => Some(HashMap::new()),
+    };
+    futures::future::join_all(children.into_iter().map(|(id, actor, pending)| {
+        let jobs = counts.as_ref().map(|c| {
+            let (jobs, ptys) = c.get(&id).copied().unwrap_or_default();
+            u32::from(jobs) + u32::from(ptys)
+        });
+        async move {
+            let parked = match jobs {
+                Some(jobs) => {
+                    let probe = crate::acp_child::ParkIfIdle {
+                        after,
+                        pending,
+                        jobs,
+                        until: Instant::now() + PARK_PROBE,
+                    };
+                    matches!(
+                        tokio::time::timeout(PARK_PROBE, actor.ask(probe)).await,
+                        Ok(Ok(true))
+                    )
+                }
+                None => false,
+            };
+            (id, actor.id(), parked)
+        }
+    }))
+    .await
+}
+
+/// `tell` (internal, 176 A1): a park round's outcome. A parked child leaves
+/// `sessions` (when the entry is still that actor) for `parked`; either way
+/// the inputs held meanwhile are replayed — into the live child, or through
+/// `session()` into its resume.
+struct ParkRound(Vec<(SessionId, kameo::actor::ActorId, bool)>);
+
+impl Message<ParkRound> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, ParkRound(round): ParkRound, _: &mut Context<Self, ()>) {
+        for (id, actor, parked) in round {
+            // Gone from `parking`: the session was deleted meanwhile.
+            let Some(held) = self.parking.remove(&id) else {
+                continue;
+            };
+            let same = self
+                .sessions
+                .get(&id)
+                .is_some_and(|l| matches!(&l.actor, LiveActor::Acp(a) if a.id() == actor));
+            if parked && same {
+                self.sessions.remove(&id);
+                self.parked.insert(id, Instant::now());
+            }
+            self.replay(id, held).await;
+        }
     }
 }
 
@@ -9524,6 +9599,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     if rt.config.contains("advisor") {
         cfg.advisor = rt.section("advisor")?;
     }
+    // 176 A1: the top-level `acp:` section (the `surface:` pattern).
+    if rt.config.contains("acp") {
+        cfg.acp = rt.section("acp")?;
+    }
     let cfg = Arc::new(cfg);
     // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
     // starts after us, so read (or create) the identity file directly.
@@ -9755,6 +9834,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         });
         costs.install();
     }
+    let idle_stop = Duration::from_secs(cfg.acp.idle_stop_secs);
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -9804,6 +9884,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             seen: HashMap::new(),
             talk: HashMap::new(),
             approvals: HashMap::new(),
+            parked: HashMap::new(),
+            parking: HashMap::new(),
             search: Arc::default(),
             nodes: nodes.clone(),
             ledger: Ledger::default(),
@@ -9822,6 +9904,22 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         runtime::subscriber_mailbox(),
     );
     agents.register(AGENT_ACTOR)?;
+    // 176 A1: idle ACP children are parked, checked once a minute.
+    if !idle_stop.is_zero() {
+        let agents = agents.clone();
+        let shutdown = rt.shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    () = tokio::time::sleep(PARK_EVERY) => {}
+                }
+                if agents.tell(ParkIdle(idle_stop)).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
     // 137 §8.7: pumps for every endless session with unbuilt nodes.
     match endless.resume_all().await {
         Ok(0) => {}
@@ -10747,34 +10845,40 @@ impl Message<PrivateClosed> for Agents {
 }
 
 impl Message<SessionCostQuery> for Agents {
-    type Reply = Result<Option<crate::cost::SessionCost>, String>;
+    type Reply = kameo::reply::DelegatedReply<Result<Option<crate::cost::SessionCost>, String>>;
 
+    /// 176 E1: read off the mailbox.
     async fn handle(
         &mut self,
         m: SessionCostQuery,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.store_for(m.0)
-            .session_cost(m.0)
-            .await
-            .map_err(|e| format!("{e:#}"))
+        let store = self.store_for(m.0).clone();
+        ctx.spawn(async move { store.session_cost(m.0).await.map_err(|e| format!("{e:#}")) })
     }
 }
 
 impl Message<SpendReportQuery> for Agents {
-    type Reply = Result<crate::cost::SpendReport, String>;
+    type Reply = kameo::reply::DelegatedReply<Result<crate::cost::SpendReport, String>>;
 
+    /// 176 E1: read off the mailbox.
     async fn handle(
         &mut self,
         m: SpendReportQuery,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         // The durable store only: private trees (51 §4.5) never reach the HUD's ledger.
         // 160 H5: plus the cube's placed reported money.
-        self.costs
-            .spend_report(Utc::now().timestamp_millis().max(0) as u64, m.0)
-            .await
-            .map_err(|e| format!("{e:#}"))
+        let (costs, now) = (
+            self.costs.clone(),
+            Utc::now().timestamp_millis().max(0) as u64,
+        );
+        ctx.spawn(async move {
+            costs
+                .spend_report(now, m.0)
+                .await
+                .map_err(|e| format!("{e:#}"))
+        })
     }
 }
 
@@ -10864,6 +10968,8 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         seen: HashMap::new(),
         talk: HashMap::new(),
         approvals: HashMap::new(),
+        parked: HashMap::new(),
+        parking: HashMap::new(),
         search: Arc::default(),
         nodes: Nodes::default(),
         ledger: Ledger::default(),
@@ -10902,6 +11008,7 @@ pub async fn spawn_test_agents(
 pub(crate) mod tests {
     use super::*;
     use crate::CreateSessionOptions;
+    use crate::ObservedState;
     use crate::context::ContextAttachment;
 
     #[tokio::test]
@@ -13347,7 +13454,7 @@ pub(crate) mod tests {
         let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let counts = HashMap::from([(root, (0u16, 1u16))]);
-        let act = a.assemble_activity(&[root], &counts).await;
+        let act = a.view().assemble_activity(&[root], &counts).await;
         let act = &act[&root];
         assert_eq!(act.state, AgentState::Idle);
         assert_eq!((act.jobs, act.ptys, act.children), (0, 1, 0));
@@ -13369,7 +13476,7 @@ pub(crate) mod tests {
             root,
             (ApprovalId(uuid::Uuid::now_v7()), "bash".into(), 4_200),
         );
-        let act = a.assemble_activity(&[root], &HashMap::new()).await;
+        let act = a.view().assemble_activity(&[root], &HashMap::new()).await;
         assert_eq!(
             act[&root].state,
             AgentState::Approval {
@@ -13380,7 +13487,7 @@ pub(crate) mod tests {
         let v = serde_json::to_value(&act[&root]).unwrap();
         assert_eq!(v["waiting_since_ms"], 4_200);
         a.approvals.clear();
-        let act = a.assemble_activity(&[root], &HashMap::new()).await;
+        let act = a.view().assemble_activity(&[root], &HashMap::new()).await;
         assert_eq!(
             act[&root].waiting_since_ms, None,
             "cleared when the state leaves"
@@ -13405,7 +13512,7 @@ pub(crate) mod tests {
             .unwrap();
         a.sessions.remove(&child);
         a.running.insert(root);
-        let rows = a.activity_for(&[root, child]).await;
+        let rows = a.view().activity_for(&[root, child]).await;
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[&root].state, AgentState::Running);
         assert!(rows[&root].live && !rows[&child].live);
@@ -13413,7 +13520,7 @@ pub(crate) mod tests {
             rows[&child].last_active.is_some(),
             "cold: the store's updated_at"
         );
-        assert!(a.activity_for(&[]).await.is_empty());
+        assert!(a.view().activity_for(&[]).await.is_empty());
     }
 
     /// 62 §3.2: `ListActivity` lists every root, cold or not, and a child only
@@ -13434,7 +13541,7 @@ pub(crate) mod tests {
         a.sessions.remove(&cold_root);
         a.sessions.remove(&cold_child);
 
-        let rows = a.activity_rows().await;
+        let rows = a.view().activity_rows().await;
         let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
         assert!(ids.contains(&root) && ids.contains(&cold_root));
         assert!(ids.contains(&live_child) && !ids.contains(&cold_child));
@@ -13462,9 +13569,75 @@ pub(crate) mod tests {
             .await
             .unwrap();
         a.running.insert(child);
-        let rows = a.list_sessions().await;
+        let rows = Agents::spawn(a).ask(ListSessions).await.unwrap();
         let running = |id| rows.iter().find(|r| r.id == id).unwrap().running;
         assert!(running(child) && !running(root));
+    }
+
+    /// 176 E5: a read never holds the mailbox for its I/O. Every
+    /// `session`/`list_sessions`/`descendants` read is stalled 1 s
+    /// (`Store::set_read_delay`); while `ListActivity`, `ListAgents` or
+    /// `LoadSession` is in flight, `GetCompactStyle` answers in < 100 ms and
+    /// before it. Shown to fail without E1: with those three handlers made
+    /// to await their reads inline again (the pre-176 shape), it failed at
+    /// its first case — "ListActivity: GetCompactStyle took 953.556083ms".
+    #[tokio::test]
+    async fn trivial_ask_answers_while_a_read_is_in_flight() {
+        let (_scratch, mut a) = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.session(
+            Some(SessionId::new()),
+            Some((root, "kid")),
+            None,
+            (None, None),
+        )
+        .await
+        .unwrap();
+        let store = a.store.clone();
+        let agents = Agents::spawn(a);
+        store.set_read_delay(Duration::from_secs(1));
+        for which in ["ListActivity", "ListAgents", "LoadSession"] {
+            let reader = {
+                let agents = agents.clone();
+                tokio::spawn(async move {
+                    match which {
+                        "ListActivity" => {
+                            assert!(!agents.ask(ListActivity).await.unwrap().is_empty())
+                        }
+                        "ListAgents" => {
+                            let rows = agents.ask(ListAgents { session: root }).await.unwrap();
+                            assert_eq!(rows.len(), 1);
+                        }
+                        _ => {
+                            let load = LoadSession {
+                                session: root,
+                                before: None,
+                                limit: None,
+                                settled_only: false,
+                            };
+                            agents.ask(load).await.unwrap();
+                        }
+                    }
+                    Instant::now()
+                })
+            };
+            // The read is in the mailbox (and, inline, would be mid-stall).
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let asked = Instant::now();
+            agents.ask(GetCompactStyle).await.unwrap();
+            let answered = Instant::now();
+            let read_done = reader.await.unwrap();
+            assert!(
+                answered - asked < Duration::from_millis(100),
+                "{which}: GetCompactStyle took {:?}",
+                answered - asked
+            );
+            assert!(answered < read_done, "{which}: answered after the read");
+            assert!(
+                read_done - asked >= Duration::from_millis(900),
+                "{which}: the read was not stalled"
+            );
+        }
     }
 
     /// 62 §0.2, §3.3: `Running` names roots only — a running child is never
@@ -15409,7 +15582,7 @@ pub(crate) mod tests {
             .find(|r| r.address == format!("session:{child}"))
             .expect("listed");
         assert!(!row.send && !row.reply, "{row:?}");
-        let infos = a.agents(root).await;
+        let infos = a.view().agents(root).await;
         let info = infos.iter().find(|i| i.id == child).expect("in the tree");
         assert_eq!(info.state, AgentState::Running, "{info:?}");
         assert_eq!(info.kind, SessionKind::Observed);
@@ -15432,7 +15605,7 @@ pub(crate) mod tests {
         };
         assert_eq!(observed.state, ObservedState::Unknown);
         assert_eq!(observed.stop.as_deref(), Some("lost contact"));
-        let infos = a.agents(root).await;
+        let infos = a.view().agents(root).await;
         let info = infos.iter().find(|i| i.id == child).unwrap();
         assert_eq!(
             info.state,
@@ -15701,6 +15874,241 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(state(&agents).await, (AgentState::Idle, false));
+    }
+
+    /// 176: a local harness — the `Fake` dials and runs no process — as a
+    /// shell loop: one session, every prompt answered `pong`; each process
+    /// appends its pid to `pids` and every method it reads to `methods`.
+    const FAKE_ACP: &str = r#"echo $$ >> "$DIR/pids"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | grep -o '"id":[^,}]*' | head -n1 | cut -d: -f2-)
+  method=$(printf '%s' "$line" | grep -o '"method":"[^"]*"' | head -n1 | cut -d'"' -f4)
+  [ -n "$method" ] && echo "$method" >> "$DIR/methods"
+  case "$method" in
+    initialize) echo '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}' ;;
+    session/new) echo '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"fake-1"}}' ;;
+    session/load) echo '{"jsonrpc":"2.0","id":'"$id"',"result":{}}' ;;
+    session/prompt)
+      echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pong"}}}}'
+      echo '{"jsonrpc":"2.0","id":'"$id"',"result":{"stopReason":"end_turn"}}' ;;
+  esac
+done
+"#;
+
+    /// 176 A1/A2: an idle local harness child past the threshold is parked
+    /// — its process gone, the parent still sees it idle — and the next
+    /// input resumes it with `session/load` and is answered.
+    #[tokio::test]
+    async fn idle_acp_child_parks_and_resumes() {
+        let (scratch, a) = agents().await;
+        let dir = scratch.0.clone();
+        let script = dir.join("fake-acp.sh");
+        std::fs::write(
+            &script,
+            FAKE_ACP.replace("$DIR", &dir.display().to_string()),
+        )
+        .unwrap();
+        let yaml = format!(
+            "fake:\n  command: /bin/sh\n  args: [\"{}\"]\n  mcp: false\n  skills: false\n",
+            script.display()
+        );
+        acp::save(&a.rt.data_dir, &serde_yaml::from_str(&yaml).unwrap()).unwrap();
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let answered = |c: SessionId| {
+            move |e: &AgentEvent| {
+                matches!(e, AgentEvent::TurnFinished { session, stop_reason, .. }
+                    if *session == c && stop_reason == "end_turn")
+            }
+        };
+        let (_, c, _) = agents
+            .ask(SpawnChild {
+                agent: Some("fake".into()),
+                cwd: Some(dir.clone()),
+                ..spawn(p, "c", "ping")
+            })
+            .await
+            .unwrap();
+        next_event(&mut rx, answered(c)).await;
+        let pids = || {
+            std::fs::read_to_string(dir.join("pids"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let first = pids();
+        assert_eq!(first.len(), 1, "{first:?}");
+
+        // Swept until parked: a probe may time out under a loaded suite (the
+        // live sweep simply retries a minute later).
+        let parked = |agents: &ActorRef<Agents>| {
+            let agents = agents.clone();
+            async move {
+                agents
+                    .ask(With(move |a: &mut Agents| {
+                        (a.live(c).is_some(), a.parked.contains_key(&c))
+                    }))
+                    .await
+                    .unwrap()
+            }
+        };
+        let t0 = Instant::now();
+        loop {
+            agents.ask(ParkIdle(Duration::ZERO)).await.unwrap();
+            if parked(&agents).await == (false, true) {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(30), "never parked");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let alive = |pid: &str| {
+            std::process::Command::new("kill")
+                .args(["-0", pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let t0 = Instant::now();
+        while alive(&first[0]) {
+            assert!(
+                t0.elapsed() < Duration::from_secs(30),
+                "harness still running"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let rows = agents.ask(ListAgents { session: p }).await.unwrap();
+        let row = rows.into_iter().find(|r| r.id == c).unwrap();
+        assert_eq!(row.state, AgentState::Idle, "parked reads idle, not failed");
+
+        agents
+            .ask(SendInput {
+                channel: None,
+                session: Some(c),
+                text: "again".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+        next_event(&mut rx, answered(c)).await;
+        assert_eq!(pids().len(), 2, "a second harness process");
+        let methods = std::fs::read_to_string(dir.join("methods")).unwrap();
+        assert_eq!(
+            methods.lines().collect::<Vec<_>>(),
+            [
+                "initialize",
+                "session/new",
+                "session/prompt",
+                "initialize",
+                "session/load",
+                "session/prompt"
+            ]
+        );
+        let parked = agents
+            .ask(With(move |a: &mut Agents| a.parked.contains_key(&c)))
+            .await
+            .unwrap();
+        assert!(!parked, "the resume took the park");
+
+        // 176 R1: an input that arrives while a park round is in flight is
+        // held and replayed — into the live child, or into the resume when
+        // the child parked — never told into a stopping mailbox.
+        agents.tell(ParkIdle(Duration::ZERO)).await.unwrap();
+        agents
+            .ask(SendInput {
+                channel: None,
+                session: Some(c),
+                text: "during the round".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+        next_event(&mut rx, answered(c)).await;
+    }
+
+    /// 176 R1: a park round never holds this mailbox. With the child's
+    /// mailbox stuck on a `set_config_option` its harness has not answered,
+    /// the round waits on the probe while `GetCompactStyle` answers at once.
+    #[tokio::test]
+    async fn park_round_runs_off_the_mailbox() {
+        let (_scratch, a) = agents().await;
+        let mut fake = node(&a, "box");
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, e1, _) = agents.ask(spawn_on(p, "box", "e1", "go")).await.unwrap();
+        let options = crate::acp_child::tests::omp_options;
+        fake.handshake(options("anthropic/claude-opus-4-8"), None)
+            .await;
+        let (id, _) = fake.prompt().await;
+        fake.end_turn(&id);
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        let actor = agents
+            .ask(With(move |a: &mut Agents| match &a.sessions[&e1].actor {
+                LiveActor::Acp(a) => a.clone(),
+                LiveActor::Native(_) => unreachable!(),
+            }))
+            .await
+            .unwrap();
+        let set = tokio::spawn(async move {
+            actor
+                .ask(crate::acp_child::SetOption {
+                    config_id: "model".into(),
+                    value: "openai/gpt-5.4".into(),
+                })
+                .await
+                .is_ok()
+        });
+        let (option, ..) = fake.set_option().await;
+        agents.tell(ParkIdle(Duration::ZERO)).await.unwrap();
+        let in_flight = |agents: &ActorRef<Agents>| {
+            let agents = agents.clone();
+            async move {
+                agents
+                    .ask(With(move |a: &mut Agents| a.parking.contains_key(&e1)))
+                    .await
+                    .unwrap()
+            }
+        };
+        // The child stays stuck for over a second; the supervisor answers
+        // throughout.
+        for _ in 0..3 {
+            let t0 = Instant::now();
+            agents.ask(GetCompactStyle).await.unwrap();
+            let took = t0.elapsed();
+            assert!(took < Duration::from_millis(100), "{took:?}");
+            assert!(in_flight(&agents).await, "the round waits on the probe");
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        fake.respond(
+            &option,
+            agent_client_protocol::schema::v1::SetSessionConfigOptionResponse::new(options(
+                "openai/gpt-5.4",
+            )),
+        );
+        assert!(set.await.unwrap());
+        let t0 = Instant::now();
+        while in_flight(&agents).await {
+            assert!(t0.elapsed() < Duration::from_secs(10), "round never ended");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let live = agents
+            .ask(With(move |a: &mut Agents| a.live(e1).is_some()))
+            .await
+            .unwrap();
+        assert!(live, "a dialled node child is never parked");
     }
 
     /// R2.7: a child result the parent's intake refuses (its pending quota

@@ -3,6 +3,7 @@
 
 mod bench_models;
 mod link_cli;
+mod logs;
 mod mcp;
 mod secret_cli;
 mod service;
@@ -15,6 +16,8 @@ use figment::Figment;
 use figment::providers::{Env, Format, Yaml};
 use runtime::{Plugin, Runtime, SessionId};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 /// The worker's memory limits are enforced by the allocator, so the process
 /// that runs `t subprocess` must own it. Unarmed (every other mode) it is
@@ -1580,7 +1583,9 @@ async fn run() -> anyhow::Result<()> {
     models::onnx::prefer_webgpu_adapter(models_cfg.webgpu_adapter);
     if cli.bench_models {
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(logs::env_filter(
+                &std::env::var("RUST_LOG").unwrap_or_default(),
+            ))
             .with_writer(std::io::stderr)
             .try_init();
         let decision_cfg: decision::DecisionConfig =
@@ -1728,16 +1733,16 @@ async fn run() -> anyhow::Result<()> {
     let writer = tracing_appender::rolling::daily(&logs, "theuth.log")
         .with_max_level(tracing::Level::WARN)
         .and(writer.with_min_level(tracing::Level::INFO));
-    // iroh's pkarr publisher warns "Failed to publish to pkarr" every 1–13 s while the DNS relay is
-    // unreachable (69 Z); the endpoint keeps working, so that target only speaks at error.
+    // ORT's INFO flood and iroh's pkarr warnings are muted in `logs::engine_filter`; a
+    // kameo handler that holds its mailbox ≥ 1 s logs a WARN (`logs::SlowHandlers`, 176).
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("info".parse()?)
-                .add_directive("iroh::address_lookup::pkarr=error".parse()?),
-        )
+        .with_env_filter(logs::engine_filter(
+            &std::env::var("RUST_LOG").unwrap_or_default(),
+        ))
         .with_writer(writer)
         .with_ansi(false)
+        .finish()
+        .with(logs::SlowHandlers)
         .init();
     // A panic's message goes to stderr, which the TUI owns in raw mode: log it too.
     let default_hook = std::panic::take_hook();

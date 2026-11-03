@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { INITIAL, type LinkFailure, failure } from '@/lib/link-status'
 import { cn } from '@/lib/utils'
 import { LOCAL, useEngines } from '@/link/engines'
+import { useConnection } from '@/store/connection'
 
 /** The named failure of one link engine's socket, re-evaluated every second while it is not connected (parked/backoff counters). */
 export function useLinkFailure(id: string): LinkFailure | null {
@@ -43,12 +44,22 @@ export function FailureText({ failure: f, onRepair, compact, className }: { fail
   )
 }
 
-/** Strip under the chat header while the active link engine's socket is failing (the startup overlay only covers a first connect). */
+/**
+ * Strip under the chat header while the active link engine's socket is failing (the startup overlay only covers a first connect).
+ * The local engine's drop shows a quiet "Reconnecting…" here while its router stays mounted (176 U3).
+ */
 export function LinkBanner() {
   const active = useEngines((s) => s.active)
   const navigate = useNavigate()
   const f = useLinkFailure(active)
-  if (active === LOCAL || !f) return null
+  const down = useConnection((s) => s.state !== 'open')
+  if (active === LOCAL)
+    return down ? (
+      <div role="status" className="mx-auto w-full shrink-0 px-4 py-1 text-xs text-fg-tertiary md:max-w-[768px]">
+        Reconnecting…
+      </div>
+    ) : null
+  if (!f) return null
   return (
     <div role="status" className="mx-auto w-full shrink-0 px-4 py-1 text-xs md:max-w-[768px]">
       <FailureText compact failure={f} onRepair={() => void navigate({ to: '/link', search: { repair: active } })} />

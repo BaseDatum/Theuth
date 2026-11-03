@@ -1983,6 +1983,36 @@ pub struct AppendAdvisory {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetFavoriteModels;
 
+/// `ask` → `Result<InfoDefaults, String>`: every live default the RPC `info`
+/// reads from the supervisor, in one ask (176 E3) instead of ten.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetInfoDefaults;
+
+/// [`GetInfoDefaults`]'s reply: what the per-field `Get*` asks answer.
+#[derive(Clone, Debug)]
+pub struct InfoDefaults {
+    /// [`GetDefaultModel`].
+    pub default_model: String,
+    /// [`GetDefaultEffort`].
+    pub default_effort: Option<String>,
+    /// [`GetFavoriteModels`].
+    pub favorite_models: Vec<String>,
+    /// [`GetCompactStyle`].
+    pub compact_style: CompactStyle,
+    /// [`GetSubagentTimeout`].
+    pub subagent_timeout_secs: u64,
+    /// [`GetMaxToolRounds`].
+    pub max_tool_rounds: u32,
+    /// [`GetStreamIdle`].
+    pub stream_idle_secs: u64,
+    /// [`GetMaxSalvages`].
+    pub max_salvages: u32,
+    /// [`GetCommunication`] with `session: None`.
+    pub communication: CommunicationState,
+    /// [`GetAdvisorDefaults`].
+    pub advisor: AdvisorDefaults,
+}
+
 /// `ask` → `Result<Vec<String>, String>`: star or unstar a model (127 §1).
 /// `model` is resolved through the catalog like [`SetModel`] (aliases
 /// normalised, unknown ids rejected with the same error). A no-op when the
@@ -3423,6 +3453,10 @@ pub struct AgentConfig {
     /// `supervisor::start` the way `surface` is — not part of `agent:`.
     #[serde(skip)]
     pub advisor: AdvisorConfig,
+    /// The top-level `acp:` section (176), filled by `supervisor::start`
+    /// the way `surface` is — not part of `agent:`.
+    #[serde(skip)]
+    pub acp: AcpConfig,
 }
 
 impl Default for AgentConfig {
@@ -3453,6 +3487,25 @@ impl Default for AgentConfig {
             surface: SurfaceConfig::default(),
             durability: durability::DurabilityConfig::default(),
             advisor: AdvisorConfig::default(),
+            acp: AcpConfig::default(),
+        }
+    }
+}
+
+/// `acp:` (176 A1): external ACP harness children.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AcpConfig {
+    /// Seconds without a turn, an approval, a job or any ACP traffic after
+    /// which an external harness child's process is stopped; the next input
+    /// resumes it with `session/load`. 0 = never.
+    pub idle_stop_secs: u64,
+}
+
+impl Default for AcpConfig {
+    fn default() -> Self {
+        Self {
+            idle_stop_secs: 1800,
         }
     }
 }
