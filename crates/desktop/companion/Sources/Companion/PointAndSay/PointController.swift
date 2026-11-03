@@ -503,8 +503,9 @@ final class PointController {
         await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
     }
 
-    func screenContext(samples: [PointerSample], durationMs: UInt64, color: String = PointController.accentHex) async -> ScreenContextReply? {
-        let req = ScreenContextReq(samples: samples, color: color, sinceMs: durationMs, accessibility: VoiceKeySettings.accessibility)
+    /// `color` nil = the accent, resolved at request time (in the body: a default argument is evaluated nonisolated).
+    func screenContext(samples: [PointerSample], durationMs: UInt64, color: String? = nil) async -> ScreenContextReply? {
+        let req = ScreenContextReq(samples: samples, color: color ?? Self.accentHex, sinceMs: durationMs, accessibility: VoiceKeySettings.accessibility)
         do {
             let r = try await store.client.screenContext(req)
             PointLog.write("screen_context: \(r.lines.count) lines, \(r.files.count) files")
@@ -907,7 +908,7 @@ enum CommandSettings {
 extension PointController {
     /// The accent colour as drawn (`OverlayView.show` uses `controlAccentColor.cgColor`, which resolves under the app's
     /// effective appearance — the dark-mode accent is a lighter blue than the light-mode one), as sRGB components.
-    nonisolated static var accentSRGB: NSColor {
+    static var accentSRGB: NSColor {
         var c = NSColor.controlAccentColor
         NSApp.effectiveAppearance.performAsCurrentDrawingAppearance {
             // nil only for pattern colours, never for a system colour (the fallback must be RGB: `redComponent` throws on gray).
@@ -917,7 +918,7 @@ extension PointController {
     }
 
     /// The trail colour the engine stamps on its capture (`screen_context.color`) as `#rrggbb`, resolved at request time.
-    nonisolated static var accentHex: String {
+    static var accentHex: String {
         let c = accentSRGB
         return OverlayModel.hex(red: c.redComponent, green: c.greenComponent, blue: c.blueComponent)
     }

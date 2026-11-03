@@ -80,7 +80,8 @@ final class AgentsPanelController: NSObject {
     private var tickTimer: Timer?
     private var receiptTimer: Timer?
 
-    init(store: Store, hover: HoverSync = W1Hover.shared) {
+    init(store: Store) {
+        let hover = W1Hover.shared
         self.store = store
         self.hover = hover
         voice = HoldToTalk(store: store)
@@ -153,10 +154,11 @@ final class AgentsPanelController: NSObject {
         panel.makeKeyAndOrderFront(nil)
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] e in
-                MainActor.assumeIsolated {
-                    guard let self, self.panel.isKeyWindow else { return e }
-                    return self.handle(e) ? nil : e
+                let consumed = MainActor.assumeIsolated {
+                    guard let self, self.panel.isKeyWindow else { return false }
+                    return self.handle(e)
                 }
+                return consumed ? nil : e
             }
         }
     }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use mcp_server::{Audit, Bridge, Catalog, McpCallResult, Rpc, RpcError, catalog};
-use rmcp::model::{CallToolRequestParams, CallToolResult, ClientInfo, Implementation, Tool};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ClientConfig, Implementation, Tool};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientHandler, ServiceExt};
@@ -341,8 +341,8 @@ async fn raw(port: u16, headers: &str) -> String {
 struct Named;
 
 impl ClientHandler for Named {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::new(Default::default(), Implementation::new("test-client", "0"))
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(Default::default(), Implementation::new("test-client", "0"))
     }
 }
 
@@ -386,12 +386,9 @@ async fn http_rejections_and_round_trip() {
         "foreign host"
     );
     assert!(
-        raw(
-            port,
-            &format!("Host: 127.0.0.1:1\r\nAuthorization: Bearer tok\r\n")
-        )
-        .await
-        .contains("403"),
+        raw(port, "Host: 127.0.0.1:1\r\nAuthorization: Bearer tok\r\n")
+            .await
+            .contains("403"),
         "wrong port"
     );
     assert!(
@@ -519,11 +516,8 @@ async fn stdio_bridge_forwards_to_the_engine() {
     assert!(!text(&s).contains("hunter2-secret-value"), "{}", text(&s));
     assert!(text(&s).starts_with("# Summary\nthe api key is "));
     // The same call through the engine-side catalogue directly: identical bytes.
-    let direct: McpCallResult = fake
-        .catalog
-        .lock()
-        .clone()
-        .unwrap()
+    let catalog = fake.catalog.lock().clone().unwrap();
+    let direct: McpCallResult = catalog
         .call(
             "meeting_summary",
             json!({"id": "m1"}).as_object().unwrap().clone(),

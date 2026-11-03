@@ -35,9 +35,9 @@ final class RailController {
     /// 149 W1 probe: used instead of `Settings.railSide` when set.
     var sideOverride: String?
 
-    init(store: Store, hover: HoverSync = W1Hover.shared) {
+    init(store: Store) {
         self.store = store
-        self.hover = hover
+        hover = W1Hover.shared
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 100),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .statusBar
@@ -223,7 +223,7 @@ struct RailView: View {
                     Text("+\(store.rail.overflow)").font(.caption2.monospaced()).foregroundColor(.secondary)
                 }
                 if store.connection != .open {
-                    Circle().fill(Color.failed).frame(width: 4, height: 4).help("engine: \(store.connection)")
+                    Circle().fill(Color.failed).frame(width: 4, height: 4).help("engine: \(store.connection)" as String)
                 }
             }
             .padding(.vertical, 10)

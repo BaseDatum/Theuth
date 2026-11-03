@@ -44,13 +44,14 @@ final class LegendController {
         panel.makeKeyAndOrderFront(nil)
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-                MainActor.assumeIsolated {
-                    guard let self, self.panel.isKeyWindow else { return e }
+                let consumed = MainActor.assumeIsolated {
+                    guard let self, self.panel.isKeyWindow else { return false }
                     if e.keyCode == 53 || KeyGrammar.intent(for: Self.press(e), scope: .panel, table: SettingsModel.shared.keys) == .legend {
-                        self.close(returnKey: true); return nil
+                        self.close(returnKey: true); return true
                     }
-                    return e
+                    return false
                 }
+                return consumed ? nil : e
             }
         }
     }

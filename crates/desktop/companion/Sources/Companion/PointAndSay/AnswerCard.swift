@@ -413,10 +413,11 @@ final class AnswerCard {
             panel.makeKeyAndOrderFront(nil)
             if keyMonitor == nil {
                 keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-                    MainActor.assumeIsolated {
-                        guard let self, self.panel.isKeyWindow else { return e }
-                        return self.handle(e) ? nil : e
+                    let consumed = MainActor.assumeIsolated {
+                        guard let self, self.panel.isKeyWindow else { return false }
+                        return self.handle(e)
                     }
+                    return consumed ? nil : e
                 }
             }
         } else {
