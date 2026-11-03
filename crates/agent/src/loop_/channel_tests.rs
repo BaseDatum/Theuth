@@ -83,6 +83,9 @@ async fn scenario() {
         h.store.channels(h.id).await.unwrap(),
         BTreeMap::from([(turn, origin())])
     );
+    // The seeded title skips Slack's marker line (the stored text keeps it).
+    let title = h.store.session(h.id).await.unwrap().unwrap().title;
+    assert_eq!(title, "hi there");
     // The model saw the text alone: no origin in any request.
     let sent: Vec<String> = h.requests().await.iter().flat_map(texts).collect();
     assert!(sent.iter().all(|t| !t.contains("@ops")), "{sent:?}");
@@ -140,6 +143,15 @@ async fn scenario() {
         .tell(input(Some(steer), STEER, Some(origin())))
         .await
         .unwrap();
+    // A UI reloading the queue (`ListQueued`) still sees the origin.
+    let listed = actor.ask(QueuedInputs).await.unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|q| (q.id, q.channel.clone()))
+            .collect::<Vec<_>>(),
+        [(steer, Some(origin()))]
+    );
     let events = h
         .drain_until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
         .await;

@@ -1872,6 +1872,7 @@ impl Message<QueuedInputs> for Session {
                 Some(QueuedInput {
                     id: (*id)?,
                     text: input.text.clone(),
+                    channel: input.channel.clone(),
                 })
             })
             .collect()

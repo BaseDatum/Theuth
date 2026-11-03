@@ -325,6 +325,10 @@ pub struct QueuedInput {
     pub id: InputId,
     /// User text.
     pub text: String,
+    /// 172: the channel that delivered this steer, if any (as on `InputQueued`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub channel: Option<ChannelOrigin>,
 }
 
 /// `ask` → `Result<String, String>`: hide the last turn (a user message and

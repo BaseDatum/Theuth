@@ -6438,6 +6438,7 @@ impl Model {
                     self.queued.push(QueuedInput {
                         id: *id,
                         text: text.clone(),
+                        channel: None,
                     });
                 }
                 return;
@@ -7333,6 +7334,7 @@ impl Model {
                 self.queued.push(QueuedInput {
                     id,
                     text: text.clone(),
+                    channel: None,
                 });
                 send(
                     tx,
