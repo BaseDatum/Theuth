@@ -1,6 +1,6 @@
 # 164 as built — ENG (channel pictures, engine side)
 
-Branch `feat/164-eng` off main `cc757054` + the contract commit `e9eebf92`. Crates touched: `surface`, `artifact`, `rpc`, `signal`, `telegram`, `slack` (+ `Cargo.lock`: the `telegram → surface` edge only). The contract (`164-channel-pictures.md`) is unchanged; deviations are listed below.
+Branch `feat/164-eng` off main `cc757054` + the contract commit `e9eebf92`. Crates touched: `surface`, `artifact`, `rpc`, `signal`, `telegram`, `slack`, and — granted by the orchestrator for this one change — `crates/agent/src/user.rs` (+ `Cargo.lock`: the `telegram → surface` edge only). The contract (`164-channel-pictures.md`) is unchanged; deviations are listed below.
 
 ## Ask
 
@@ -59,12 +59,21 @@ Sky (2026-11-03): on Signal, Telegram and Slack, render json-render and the othe
 ### D10
 `signal.pictures`, `telegram.pictures`, `slack.pictures`: `bool`, serde default `true` (each struct's `Default`); `false` → `paint(.., false)` / D7 text only, nothing requested. Read at channel construction like the other render switches (not live-reloaded). No Settings UI change.
 
+### `message_user` — `crates/agent/src/user.rs`
+`MessageUserTool` now hands the sinks `text: args.text` (was `surface::flatten(&args.text, 60)`); `Outbound.text` is documented as the model's markdown, picture fences included, which every sink must draw or flatten. Every consumer of `Outbound.text` in the workspace (grep of `impl UserSink`, `RegisterUserSink`, `Outbound {`):
+- `signal::channel::Handle` (`crates/signal/src/user.rs`) — paints: PNG attachments in place, D7 text otherwise.
+- `telegram::channel::Handle` (`crates/telegram/src/user.rs`) — paints: photos/documents in place.
+- `slack::channel::Handle` (`crates/slack/src/user.rs`) — Block Kit for block-capable json-render, uploads for the rest, D7 text otherwise.
+- `agent::user::tests::Fake` — test sink, records the text.
+- `UserChannels`' `Deliver` handler only routes to the sinks. No other sink or `Outbound.text` reader exists, so no other place needed `surface::flatten`. Producers `schedule` (`lib.rs:1745`) and `autoresearch` (`actor.rs:1654`, `world.rs:965`) already sent raw text.
+Test: `message_user_text_is_flattened` → `message_user_text_reaches_the_sinks_unflattened` (the sink receives the json-render fence verbatim). With this, test (g) of every channel (`UserSink::deliver` with a raw fence → picture in place) covers `message_user` end to end.
+
 ### D1, D12
-No transcript, agent, desktop or TUI code touched; the engine code is platform-independent Rust.
+No transcript, desktop or TUI code touched; in `agent` only the `message_user` hand-off above. The engine code is platform-independent Rust.
 
 ## Deviations and decisions (with reasons)
 
-1. **`message_user` pictures are blocked outside this branch.** `crates/agent/src/user.rs:210` runs `surface::flatten(&args.text, 60)` before the text reaches the channel sinks; `agent` is outside my ownership. Today `message_user` therefore arrives as D7 text (no raw body — the new `flatten` guarantees that), without pictures. All three sinks paint raw fences (schedule and autoresearch deliveries already pass raw text; tests (g) drive the sinks with a raw fence). Follow-up for the `agent` owner: replace that line with `text: args.text,`. Reported to the orchestrator during the run.
+1. **`message_user` pictures needed an `agent` edit.** `crates/agent/src/user.rs:210` flattened the text before the sinks saw it. Reported mid-run; the orchestrator granted the edit (section "`message_user`" above). Resolved on this branch.
 2. **No subscriber → `NoRenderer` at once, without starting the back-off**, and "no rpc bridge at all" (`FEED` unset) counts as no subscriber (page_preview waits 2 s there). The check is free, so re-evaluating it lets pictures start the moment a client connects; the 60 s back-off only spares the 3 s wait it exists for.
 3. **`TimedOut` / `Failed` do not start the back-off**: a renderer exists; only `NoRenderer` from the 3 s window does (D3 wording).
 4. **`Done` width/height come from the PNG header**, not the answer's numbers (the bytes are the truth; Telegram's photo limits use them); a PNG without IHDR or with a zero side is `Failed`.
@@ -89,14 +98,15 @@ No transcript, agent, desktop or TUI code touched; the engine code is platform-i
 
 ## Gates (all run on the final tree)
 
-1. `cargo fmt -p surface -p artifact -p rpc -p signal -p telegram -p slack` — clean.
+1. `cargo fmt -p surface -p artifact -p rpc -p signal -p telegram -p slack` — clean; `crates/agent/src/user.rs` formatted with `rustfmt --edition 2024` on that file only (agent is not rustfmt-clean on main).
 2. `BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx clippy -p surface -p artifact -p rpc -p signal -p telegram -p slack --all-targets --no-deps -- -D warnings` — exit 0; the only warnings printed are the pre-existing `link` `fetch_update` and `mcp-server` rmcp deprecations from dependencies.
 3. `BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx test -p surface -p artifact -p rpc -p signal -p telegram -p slack --lib --no-run` — exit 0; `mbx test -p surface -p artifact -p rpc -p signal -p telegram -p slack --lib` — run 1: all green except the listed flake `slack channel::tests::observed_child_is_a_watch_row_on_the_board_and_gets_no_thread`; that test alone: 1 passed; run 2 (full): artifact 95, rpc 61, signal 69, slack 162, surface 104, telegram 139 — all passed.
+   With `-p agent` added after the `message_user` change: `BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx test -p surface -p artifact -p rpc -p signal -p telegram -p slack -p agent --lib --no-run` — exit 0; `mbx test` with the same seven crates — artifact 95, rpc 61, signal 69, slack 162, surface 104, telegram 139 all passed; agent 658 passed, 4 failed, all outside this change and reproducible alone (`/tmp/164eng-test-agent-rerun.log`): `sensor::tests::{fs_exists_through_monty, monty_budgets_and_allowlist, pr_watch_type_checks}` and `loop_::runtime_bridge_tests::guessed_direct_calls_are_bridged_or_refused` — every one needs the monty worker pool, which crashes on this machine with "unsupported protocol version 6 (server supports protocol version 5)" (an installed worker older than the client; `monty_budgets_and_allowlist` is also on the listed-flake list). `capping_binds_out_name` passed in this run. `user::tests::message_user_text_reaches_the_sinks_unflattened` passed.
+   Clippy with agent: `BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx clippy -p surface -p artifact -p rpc -p signal -p telegram -p slack -p agent --all-targets --no-deps -- -D warnings -A deprecated` — exit 0 (`-A deprecated` per the build rules: without it the run stops on the pre-existing `fetch_update` in `crates/agent/src/loop_/thinking_tests.rs:52`).
 4. `BUILD_SLOTS=1 BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` — 8 passed. New in `bindings/`: `FenceLang.ts`, `FenceSnapshotRequested.ts`, `FenceSnapshotResolved.ts`, `FenceSnapshotAnswer.ts`, `SnapshotId.ts`; `methods.json` gains `answer_fence_snapshot`. Shapes match the contract (ts-rs adds JSDoc comments).
 
 ## Residual risks / open items
 
-- `agent/src/user.rs:210` pre-flatten (deviation 1) — one-line follow-up outside this branch.
 - **`SnapshotId.ts` name clash**: `sandbox::vm::SnapshotId` (`crates/sandbox/src/vm/mod.rs:250`, a `"<vm>:<label>"` string) also exports as `SnapshotId`; both are `export type SnapshotId = string`, so the file is correct for both, but it carries whichever doc comment was written last (currently the sandbox one). Harmless while both stay strings; renaming either TS name needs a contract change (mine) or a sandbox change (not mine).
 - Relay-served web clients (link records, 64 KiB chunks reassembled) were not measured for a 6 MB message; the desktop shell and a direct browser connection go through the 10 MiB jsonrpsee limit proven above.
 - Telegram: whether a sent photo clears a live `sendMessageDraft` like a sent rich message is [INFERENCE] from the existing close path (the photo always follows a closed bubble, so a stale draft is not expected).
