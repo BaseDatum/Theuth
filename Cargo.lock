@@ -11958,6 +11958,7 @@ dependencies = [
  "base64 0.23.1",
  "calcard",
  "chrono",
+ "cpal",
  "decision",
  "document",
  "figment",
