@@ -242,7 +242,9 @@ pub fn run(
     let mut labeller = Labeller::default();
     let mut last = Instant::now();
     let mut was_paused = false;
-    let mut drops = 0u32;
+    // 173 R2-5: pops that leave the ring at least half full (behind) / that found it full (the
+    // producer was dropping chunks), per minute.
+    let (mut behind, mut full) = (0u32, 0u32);
     let mut drop_log = Instant::now();
     let mut report = |labeller: &Labeller, at: Instant, position: usize, scored_m: usize| -> bool {
         sink(view(labeller, at, position, scored_m))
@@ -267,15 +269,17 @@ pub fn run(
         if paused {
             continue;
         }
-        // A full ring means we fell behind: the producer dropped chunks (time shifts 20 ms each).
-        if ring.slots() == 0 {
-            drops += 1;
-        }
-        if drops > 0 && drop_log.elapsed() >= Duration::from_secs(60) {
-            tracing::warn!(
-                "meeting: live diarization behind real time: {drops} full-ring chunks in the last minute"
-            );
-            drops = 0;
+        let (late, dropped) = backlog(ring.slots(), ring.buffer().capacity());
+        behind += u32::from(late);
+        full += u32::from(dropped);
+        if drop_log.elapsed() >= Duration::from_secs(60) {
+            if behind > 0 {
+                tracing::warn!(
+                    "meeting: live diarization behind real time: {behind} chunks popped with half the ring or more queued in the last minute ({full} with it full: chunks dropped)"
+                );
+            }
+            behind = 0;
+            full = 0;
             drop_log = Instant::now();
         }
         last = at;
@@ -314,6 +318,13 @@ pub fn run(
         labeller.push(&probs);
     }
     Ok(view(&labeller, last, position, scored_m))
+}
+
+/// 173 R2-5: `remaining` = what an rtrb `Consumer::slots()` returns right after a pop (chunks
+/// still queued, NOT free space) in a ring of `capacity`. `(behind, dropped)`: at least half the
+/// ring still queued / the ring was full before the pop, so the producer's `try_push` was failing.
+fn backlog(remaining: usize, capacity: usize) -> (bool, bool) {
+    (remaining * 2 >= capacity, remaining + 1 >= capacity)
 }
 
 /// The labeller's spans in 16 kHz samples, with the horizon, anchored to `at`.
@@ -365,6 +376,25 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backlog_counts_queued_chunks_not_free_space() {
+        let (mut p, mut c) = rtrb::RingBuffer::<u8>::new(10);
+        // Caught up: push one, pop one → empty. Round 1 counted exactly this as "behind".
+        p.push(0).unwrap();
+        c.pop().unwrap();
+        assert_eq!(backlog(c.slots(), c.buffer().capacity()), (false, false));
+        // Five queued after the pop: behind, nothing dropped yet.
+        for _ in 0..6 {
+            p.push(0).unwrap();
+        }
+        c.pop().unwrap();
+        assert_eq!(backlog(c.slots(), c.buffer().capacity()), (true, false));
+        // Full: the producer's next push fails; the pop that finds it full says so.
+        while p.push(0).is_ok() {}
+        c.pop().unwrap();
+        assert_eq!(backlog(c.slots(), c.buffer().capacity()), (true, true));
+    }
 
     fn frames(active: &[(usize, std::ops::Range<usize>)], n: usize) -> Vec<f32> {
         let mut p = vec![0.0f32; n * SPEAKERS];
