@@ -9110,9 +9110,15 @@ impl Auth {
         self.key(ns).is_none() && oauth::provider(ns).is_some() && self.oauth.load(ns).is_some()
     }
 
-    /// OpenAI-compatible gateway for user-facing provider id `ns`.
+    /// The custom provider (OpenAI-compatible gateway) for user-facing provider id `ns`.
+    /// Its key is read from the vault on every call (162 D5); the copy taken at start
+    /// or add is used only when the vault has none.
     pub(crate) fn gateway(&self, ns: &str) -> Option<crate::providers::Gateway> {
-        self.gateways.read().ok()?.get(ns).cloned()
+        let mut g = self.gateways.read().ok()?.get(ns).cloned()?;
+        if let Some(key) = self.key(ns).filter(|k| !k.is_empty()) {
+            g.key = key;
+        }
+        Some(g)
     }
 }
 
