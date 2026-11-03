@@ -518,6 +518,10 @@ fn keyboard(k: &Keyboard) -> InlineKeyboardMarkup {
 
 /// `sendPhoto` cap (98 §2.2).
 const PHOTO_MAX: usize = 10 * 1024 * 1024;
+/// `sendPhoto` cap on width + height (164 D9).
+const PHOTO_MAX_SIDES: u64 = 10_000;
+/// `sendPhoto` cap on the long side over the short side (164 D9).
+const PHOTO_MAX_RATIO: u64 = 20;
 
 /// Which upload method a file takes (98 §8.10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -530,16 +534,44 @@ pub enum FileKind {
     Document,
 }
 
-/// Photo for `image/*` ≤ 10 MB, voice for MP3/OGG/M4A, document otherwise.
+/// Photo for `image/*` within [`photo_fits`] (a PNG's IHDR gives its size;
+/// other images are judged by size alone), voice for MP3/OGG/M4A, document otherwise.
 #[must_use]
-pub fn file_kind(mime: &str, len: usize) -> FileKind {
-    if mime.starts_with("image/") && len <= PHOTO_MAX {
+pub fn file_kind(mime: &str, bytes: &[u8]) -> FileKind {
+    let photo = mime.starts_with("image/")
+        && png_size(bytes).map_or(bytes.len() <= PHOTO_MAX, |(w, h)| {
+            photo_fits(bytes.len(), w, h)
+        });
+    if photo {
         FileKind::Photo
     } else if matches!(mime, "audio/mpeg" | "audio/ogg" | "audio/mp4") {
         FileKind::Voice
     } else {
         FileKind::Document
     }
+}
+
+/// Telegram's `sendPhoto` limits (164 D9): ≤ 10 MB, width + height ≤ 10000,
+/// long side at most 20× the short one. Outside them the image is a document.
+#[must_use]
+pub fn photo_fits(len: usize, width: u32, height: u32) -> bool {
+    let (w, h) = (u64::from(width), u64::from(height));
+    len <= PHOTO_MAX && w + h <= PHOTO_MAX_SIDES && w.max(h) <= PHOTO_MAX_RATIO * w.min(h)
+}
+
+/// `(width, height)` from a PNG's IHDR chunk; `None` for anything else.
+fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    const MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let rest = bytes.strip_prefix(&MAGIC)?;
+    if rest.get(4..8)? != b"IHDR" {
+        return None;
+    }
+    let be = |r: std::ops::Range<usize>| {
+        rest.get(r)
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_be_bytes)
+    };
+    Some((be(8..12)?, be(12..16)?))
 }
 
 fn reader(file: &OutFile) -> InputFileReader {
@@ -691,7 +723,7 @@ impl Sender for Api {
         self.pace(&[(PaceKey::Chat(to.chat), chat_gap(to.chat))])
             .await;
         let reply = reply_to.map(ReplyParameters::new);
-        let msg = match file_kind(&file.mime, file.bytes.len()) {
+        let msg = match file_kind(&file.mime, &file.bytes) {
             FileKind::Photo => {
                 let mut m = SendPhoto::new(to.chat, reader(file));
                 if let Some(t) = to.thread {
@@ -914,7 +946,7 @@ pub mod mock {
             to: Target,
             name: String,
             mime: String,
-            len: usize,
+            bytes: Vec<u8>,
             caption: Option<String>,
             reply_to: Option<i64>,
         },
@@ -939,6 +971,17 @@ pub mod mock {
         },
         DeleteWebhook,
         Me,
+    }
+
+    /// A PNG the snapshot engine accepts: signature + IHDR with `w` × `h` (164 tests).
+    #[must_use]
+    pub fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut b = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        b.extend(b"IHDR");
+        b.extend(w.to_be_bytes());
+        b.extend(h.to_be_bytes());
+        b.extend([8, 6, 0, 0, 0]);
+        b
     }
 
     /// Records every call; message ids count up from 1000; queued failures
@@ -1163,7 +1206,7 @@ pub mod mock {
                     to: *to,
                     name: file.name.clone(),
                     mime: file.mime.clone(),
-                    len: file.bytes.len(),
+                    bytes: file.bytes.clone(),
                     caption: caption.map(str::to_owned),
                     reply_to,
                 },
@@ -1264,6 +1307,7 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
+    use super::mock::png;
     use super::*;
 
     const TOKEN: &str = "123:TEST";
@@ -1675,23 +1719,63 @@ mod tests {
         )
         .await
         .unwrap();
+        // 164 D9: a PNG past the photo limits is a document, mime unchanged.
+        let wide = OutFile {
+            name: "wide.png".into(),
+            mime: "image/png".into(),
+            bytes: mock::png(12_000, 100),
+        };
+        api.send_file(&to, &wide, Some("wide"), None).await.unwrap();
         let reqs = s.received_requests().await.unwrap();
         let paths: Vec<_> = reqs.iter().map(|r| r.url.path().to_owned()).collect();
         assert_eq!(
             paths,
-            vec![p("sendPhoto"), p("sendVoice"), p("sendDocument")]
+            vec![
+                p("sendPhoto"),
+                p("sendVoice"),
+                p("sendDocument"),
+                p("sendDocument")
+            ]
         );
         assert_eq!(body(&reqs[0])["caption"], "cap");
         assert_eq!(body(&reqs[2])["reply_parameters"]["message_id"], 4);
+        assert_eq!(body(&reqs[3])["caption"], "wide");
     }
 
     #[test]
     fn file_kind_by_mime_and_size() {
-        assert_eq!(file_kind("image/jpeg", 10), FileKind::Photo);
-        assert_eq!(file_kind("image/jpeg", PHOTO_MAX + 1), FileKind::Document);
-        assert_eq!(file_kind("audio/mpeg", 10), FileKind::Voice);
-        assert_eq!(file_kind("audio/wav", 10), FileKind::Document);
-        assert_eq!(file_kind("text/plain", 10), FileKind::Document);
+        assert_eq!(file_kind("image/jpeg", &[0; 10]), FileKind::Photo);
+        assert_eq!(
+            file_kind("image/jpeg", &vec![0; PHOTO_MAX + 1]),
+            FileKind::Document
+        );
+        assert_eq!(file_kind("audio/mpeg", &[0; 10]), FileKind::Voice);
+        assert_eq!(file_kind("audio/wav", &[0; 10]), FileKind::Document);
+        assert_eq!(file_kind("text/plain", &[0; 10]), FileKind::Document);
+    }
+
+    /// 164 D9: a PNG's IHDR decides photo vs document at Telegram's limits.
+    #[test]
+    fn photo_limits_at_each_boundary() {
+        assert!(photo_fits(PHOTO_MAX, 5_000, 5_000));
+        assert!(!photo_fits(PHOTO_MAX + 1, 100, 100));
+        assert!(!photo_fits(10, 5_001, 5_000));
+        assert!(photo_fits(10, 2_000, 100));
+        assert!(!photo_fits(10, 2_001, 100));
+        assert!(!photo_fits(10, 100, 2_001));
+        assert!(!photo_fits(10, 0, 21), "a zero side is an infinite ratio");
+        assert_eq!(png_size(&png(1120, 600)), Some((1120, 600)));
+        assert_eq!(png_size(b"\x89PNG\r\n\x1a\n\0\0\0\rIDAT"), None);
+        assert_eq!(png_size(b"GIF89a"), None);
+        assert_eq!(file_kind("image/png", &png(1120, 600)), FileKind::Photo);
+        assert_eq!(
+            file_kind("image/png", &png(12_000, 100)),
+            FileKind::Document
+        );
+        assert_eq!(
+            file_kind("image/png", &png(9_000, 1_001)),
+            FileKind::Document
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use crate::ToolsMode;
 use crate::api::{MsgRef, OutFile, Sender, Target};
 use crate::board::Board;
-use crate::bubble::{Bubble, clip, footer, footer_line, report, send_rich_or_plain};
+use crate::bubble::{Bubble, clip, footer, footer_line, report, send_painted, send_rich_or_plain};
 use crate::cards::Card;
 use crate::port::Port;
 use crate::threads::{OpenMsg, ThreadKey, Topic};
@@ -29,6 +29,8 @@ pub struct RenderConfig {
     pub tools: ToolsMode,
     /// Reasoning text in the expandable quote.
     pub reasoning: bool,
+    /// Picture fences as PNGs (164 D10); `false` = D7 text.
+    pub pictures: bool,
 }
 
 /// Voice synthesis and transcription actors, when the voice plugin is up (45 §4.5).
@@ -253,9 +255,9 @@ impl Turn {
     }
 
     /// End of a prose block on a voice turn: synthesise it and send the clip
-    /// after the previous one (45 §4.5.4).
+    /// after the previous one (45 §4.5.4). Picture fences are never read (164 D9).
     fn speak(&mut self, ctx: &WorkerCtx) {
-        let text = std::mem::take(&mut self.unspoken);
+        let text = surface::strip_pictures(&std::mem::take(&mut self.unspoken)).into_owned();
         if !self.voice || text.trim().is_empty() {
             return;
         }
@@ -401,21 +403,29 @@ impl Worker {
                     .get_or_insert_with(|| Turn::new(String::new(), false));
                 t.end_reasoning(None);
                 t.close_card(ctx, None).await;
-                let fresh = t.bubble.is_none();
+                // Fresh = no prose shown yet: the first draft goes out at once.
+                let mut fresh = t.bubble.as_ref().is_none_or(|b| b.text.raw().is_empty());
                 let b = t.bubble(ctx);
                 b.push(&text);
                 t.unspoken.push_str(&text);
-                if let Some((head, tail)) = t.bubble.as_ref().and_then(Bubble::split) {
+                // Block boundaries (a closed picture fence, 164 D9; the soft cap, 98 §8.5):
+                // persist up to each one, continue in a new bubble. An empty tail still
+                // opens one so the turn footer has a bubble to land in.
+                while let Some((head, tail)) = t.bubble.as_ref().and_then(Bubble::split) {
                     if let Some(mut old) = t.bubble.take() {
                         old.truncate_to(&head);
                         old.close(ctx, None).await;
                     }
                     t.speak(ctx);
+                    fresh = true;
                     let b = t.bubble(ctx);
+                    if tail.is_empty() {
+                        break;
+                    }
                     b.push(&tail);
+                }
+                if fresh && let Some(b) = &mut t.bubble {
                     b.flush(ctx, true, false).await;
-                } else if fresh {
-                    t.bubble(ctx).flush(ctx, true, false).await;
                 }
             }
             AgentEvent::ReasoningDelta { text, .. } => {
@@ -547,9 +557,10 @@ impl Worker {
                 let marks = self.marks.clone();
                 self.react(&marks, reaction("failed")).await;
             }
+            // 164 D6: a peer's text is painted too (pictures in place, fallback text otherwise).
             AgentEvent::MessageDelivered { from, text, .. } => {
-                let md = format!("⟵ **{from}**\n\n{}", clip(&text, DELIVERED_MAX));
-                let _ = send_rich_or_plain(ctx, &brand(ctx, &md)).await;
+                let lead = format!("⟵ **{from}**\n\n");
+                send_painted(ctx, &lead, &clip(&text, DELIVERED_MAX)).await;
             }
             // 125 §9: a concern or blocker is one footer-styled line; nits post nothing.
             AgentEvent::AdvisoryAdded { advisory, .. } => {
@@ -812,6 +823,7 @@ mod tests {
     const ALL: RenderConfig = RenderConfig {
         tools: ToolsMode::All,
         reasoning: true,
+        pictures: true,
     };
 
     impl Rig {
@@ -1024,6 +1036,7 @@ mod tests {
         let cfg = RenderConfig {
             tools: ToolsMode::Errors,
             reasoning: true,
+            pictures: true,
         };
         let mut r = rig(10, None, cfg, None);
         r.start().await;
@@ -1051,8 +1064,12 @@ mod tests {
         let s = sends(&r.api.calls());
         assert_eq!(s.len(), 1);
         assert!(s[0].len() <= BUBBLE_SOFT_MAX);
-        assert!(s[0].ends_with("\n\n"), "closed at a block boundary");
-        assert!(s[0].len().is_multiple_of(1001), "whole paragraphs only");
+        // The persisted text is painted (164): trailing whitespace trimmed.
+        assert!(s[0].ends_with('p'), "closed at a block boundary");
+        assert!(
+            (s[0].len() + 2).is_multiple_of(1001),
+            "whole paragraphs only"
+        );
         r.api.take_calls();
         r.delta("```rust\n").await;
         for _ in 0..3200 {
@@ -1060,7 +1077,7 @@ mod tests {
         }
         let s = sends(&r.api.calls());
         assert_eq!(s.len(), 2, "paragraph boundary, then the fence cut");
-        assert!(s[0].ends_with("\n\n") && !s[0].contains("```"));
+        assert!(s[0].ends_with('p') && !s[0].contains("```"));
         assert!(s[1].starts_with("```rust\n"));
         assert!(s[1].ends_with("\n```"), "fence closed at the cut");
         let d = drafts(&r.api.calls());
@@ -1170,6 +1187,7 @@ mod tests {
             RenderConfig {
                 tools: ToolsMode::All,
                 reasoning: false,
+                pictures: true,
             },
             None,
         );
@@ -1354,5 +1372,341 @@ mod tests {
         r.tick().await;
         let e = edits(&r.api.calls());
         assert_eq!(e.last().unwrap(), "**agents** · all idle");
+    }
+
+    // -- 164: pictures ---------------------------------------------------------
+
+    use crate::api::FileKind;
+    use crate::api::mock::png;
+    use artifact::snapshot;
+
+    const GRAPH: &str = "{\"root\":\"g\",\"elements\":{\"g\":{\"type\":\"Graph\",\"props\":{\"title\":\"Data flow\",\"nodes\":[{\"id\":\"a\",\"label\":\"Alpha node\"},{\"id\":\"b\",\"label\":\"Beta node\"}],\"edges\":[{\"from\":\"a\",\"to\":\"b\"}]}}}}";
+
+    /// Answers every snapshot request with one PNG and counts them.
+    #[derive(kameo::Actor)]
+    struct FakeRenderer {
+        png: Vec<u8>,
+        requests: Arc<Mutex<usize>>,
+    }
+
+    impl kameo::message::Message<snapshot::FenceSnapshotRequested> for FakeRenderer {
+        type Reply = ();
+        async fn handle(
+            &mut self,
+            m: snapshot::FenceSnapshotRequested,
+            _: &mut kameo::message::Context<Self, ()>,
+        ) {
+            *self.requests.lock() += 1;
+            snapshot::answer(
+                m.id,
+                snapshot::FenceSnapshotAnswer::done(
+                    &self.png,
+                    1120,
+                    600,
+                    artifact::preview::Client::Desktop,
+                ),
+            );
+        }
+    }
+
+    impl Rig {
+        /// A fake desktop renderer on this rig's bus; the count of requests it saw.
+        async fn renderer(&self, png: Vec<u8>) -> Arc<Mutex<usize>> {
+            // The feed is process-wide and set once; a forgotten receiver keeps it live.
+            let (tx, rx) = tokio::sync::broadcast::channel::<Arc<serde_json::Value>>(4);
+            artifact::preview::watch_feed(tx);
+            std::mem::forget(rx);
+            let requests = Arc::new(Mutex::new(0));
+            let actor = kameo::actor::Spawn::spawn_with_mailbox(
+                FakeRenderer {
+                    png,
+                    requests: Arc::clone(&requests),
+                },
+                runtime::subscriber_mailbox(),
+            );
+            self.w
+                .ctx
+                .rt
+                .subscribe::<FakeRenderer, snapshot::FenceSnapshotRequested>(&actor)
+                .await;
+            requests
+        }
+    }
+
+    /// Every text Telegram saw, in order: drafts, rich sends, edits, plain sends.
+    fn texts(calls: &[Call]) -> Vec<String> {
+        calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::Draft { md, .. } | Call::SendRich { md, .. } | Call::EditRich { md, .. } => {
+                    Some(md.clone())
+                }
+                Call::SendText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn files(calls: &[Call]) -> Vec<(String, String, Vec<u8>, Option<String>)> {
+        calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::SendFile {
+                    name,
+                    mime,
+                    bytes,
+                    caption,
+                    ..
+                } => Some((name.clone(), mime.clone(), bytes.clone(), caption.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// No byte of the fence body in any text that went out.
+    fn assert_no_body(calls: &[Call]) {
+        for t in texts(calls) {
+            assert!(
+                !t.contains("\"root\"") && !t.contains("\"label\"") && !t.contains("```json"),
+                "fence body leaked: {t}"
+            );
+        }
+    }
+
+    /// (a) 164 D6/D9: prose, a Graph fence, prose → rich text, the photo (the
+    /// renderer's PNG, caption = title), rich text, in order; no raw JSON.
+    #[tokio::test(start_paused = true)]
+    async fn picture_fence_is_a_block_boundary_with_the_photo_in_place() {
+        let mut r = rig(10, None, ALL, None);
+        let image = png(1120, 600);
+        let requests = r.renderer(image.clone()).await;
+        r.start().await;
+        r.delta("Before\n\n").await;
+        r.delta(&format!("```json-render\n{GRAPH}\n```\n\nAfter"))
+            .await;
+        let calls = r.api.take_calls();
+        assert_eq!(sends(&calls), vec!["Before".to_owned()]);
+        assert_eq!(
+            files(&calls),
+            vec![(
+                "data-flow.png".to_owned(),
+                "image/png".to_owned(),
+                image,
+                Some("Data flow".to_owned())
+            )]
+        );
+        let order: Vec<&str> = calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::SendRich { .. } => Some("text"),
+                Call::SendFile { .. } => Some("photo"),
+                Call::Draft { .. } => Some("draft"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(order, vec!["draft", "text", "photo", "draft"]);
+        assert_eq!(drafts(&calls).last().unwrap().1, "After");
+        assert_no_body(&calls);
+        r.finish("end_turn").await;
+        let calls = r.api.take_calls();
+        let s = sends(&calls);
+        assert_eq!(s.len(), 1);
+        assert!(s[0].starts_with("After\n\n<footer>m1 · "), "{}", s[0]);
+        assert_no_body(&calls);
+        assert_eq!(*requests.lock(), 1);
+    }
+
+    /// A turn ending on a picture: photo, then the footer as its own message.
+    #[tokio::test(start_paused = true)]
+    async fn turn_ending_on_a_picture_keeps_its_footer() {
+        let mut r = rig(10, None, ALL, None);
+        r.renderer(png(1120, 600)).await;
+        r.start().await;
+        r.delta(&format!("Look:\n\n```json-render\n{GRAPH}\n```\n"))
+            .await;
+        r.finish("end_turn").await;
+        let calls = r.api.calls();
+        let order: Vec<String> = calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::SendRich { md, .. } => Some(md.clone()),
+                Call::SendFile { name, .. } => Some(format!("photo {name}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(order.len(), 3, "{order:?}");
+        assert_eq!(order[0], "Look:");
+        assert_eq!(order[1], "photo data-flow.png");
+        assert!(order[2].starts_with("<footer>m1 · "), "{}", order[2]);
+        assert_no_body(&calls);
+    }
+
+    /// Edit mode (groups): the committed message is edited to the prose before
+    /// the fence, the photo follows, the prose after is a new message.
+    #[tokio::test(start_paused = true)]
+    async fn group_edit_mode_places_the_photo_between_messages() {
+        let mut r = rig(-100, None, ALL, Some("grep-logs"));
+        r.renderer(png(1120, 600)).await;
+        r.start().await;
+        r.delta("Before\n\nstill").await;
+        r.tick().await;
+        assert_eq!(
+            sends(&r.api.take_calls()),
+            vec!["**grep-logs** · Before\n\n".to_owned()]
+        );
+        r.delta(&format!("\n\n```json-render\n{GRAPH}\n```\n\nAfter"))
+            .await;
+        r.finish("end_turn").await;
+        let calls = r.api.calls();
+        assert_eq!(
+            edits(&calls),
+            vec!["**grep-logs** · Before\n\nstill".to_owned()]
+        );
+        assert_eq!(files(&calls).len(), 1);
+        let s = sends(&calls);
+        assert_eq!(s.len(), 1);
+        assert!(
+            s[0].starts_with("**grep-logs** · After\n\n<footer>"),
+            "{}",
+            s[0]
+        );
+        assert!(
+            calls
+                .iter()
+                .position(|c| matches!(c, Call::EditRich { .. }))
+                < calls
+                    .iter()
+                    .position(|c| matches!(c, Call::SendFile { .. })),
+            "edit before the photo"
+        );
+        assert_no_body(&calls);
+    }
+
+    /// (b) 164 D7: no renderer → the fence's text fallback, no file, no raw JSON.
+    #[tokio::test(start_paused = true)]
+    async fn no_renderer_sends_the_text_fallback() {
+        let mut r = rig(10, None, ALL, None);
+        r.start().await;
+        r.delta(&format!("Before\n\n```json-render\n{GRAPH}\n```\n\nAfter"))
+            .await;
+        r.finish("end_turn").await;
+        let calls = r.api.calls();
+        assert!(files(&calls).is_empty());
+        let s = sends(&calls);
+        assert_eq!(s.len(), 2, "{s:?}");
+        assert!(s[0].starts_with("Before\n"), "{}", s[0]);
+        assert!(s[0].len() > "Before\n\n".len(), "fallback text: {}", s[0]);
+        assert!(s[1].starts_with("After\n\n<footer>"), "{}", s[1]);
+        assert_no_body(&calls);
+    }
+
+    /// (c) 164 D10: `pictures: false` → fallback text and no request at all.
+    #[tokio::test(start_paused = true)]
+    async fn pictures_off_falls_back_without_a_request() {
+        let cfg = RenderConfig {
+            pictures: false,
+            ..ALL
+        };
+        let mut r = rig(10, None, cfg, None);
+        let requests = r.renderer(png(1120, 600)).await;
+        r.start().await;
+        r.delta(&format!("Before\n\n```json-render\n{GRAPH}\n```\n\nAfter"))
+            .await;
+        r.finish("end_turn").await;
+        let calls = r.api.calls();
+        assert!(files(&calls).is_empty());
+        assert_eq!(*requests.lock(), 0);
+        let s = sends(&calls);
+        assert_eq!(s.len(), 2, "{s:?}");
+        assert!(s[0].len() > "Before\n\n".len(), "fallback text: {}", s[0]);
+        assert_no_body(&calls);
+    }
+
+    /// (d) 164 D8: a fence streamed byte by byte never shows a byte of its
+    /// body in any draft; `_drawing…_` stands in while it streams.
+    #[tokio::test(start_paused = true)]
+    async fn streamed_fence_never_shows_its_body_in_a_draft() {
+        let mut r = rig(10, None, ALL, None);
+        r.renderer(png(1120, 600)).await;
+        r.start().await;
+        let reply = format!("Intro\n\n```json-render\n{GRAPH}\n```\n\nOutro");
+        let mut drawing = false;
+        let mut photos = 0;
+        for ch in reply.chars() {
+            r.delta(&ch.to_string()).await;
+            r.tick().await;
+            let calls = r.api.take_calls();
+            assert_no_body(&calls);
+            photos += files(&calls).len();
+            for (_, md, _) in drafts(&calls) {
+                assert!(
+                    !md.contains("```j") && !md.contains("Alpha") && !md.contains("Beta"),
+                    "fence content in a draft: {md}"
+                );
+                if md.contains(surface::DRAWING) {
+                    drawing = true;
+                    assert!(md.starts_with("Intro\n\n"), "{md}");
+                }
+            }
+        }
+        assert!(
+            drawing,
+            "the drawing line was shown while the fence streamed"
+        );
+        assert_eq!(photos, 1, "the photo went out when the fence closed");
+        r.finish("end_turn").await;
+        let calls = r.api.calls();
+        assert!(files(&calls).is_empty());
+        assert!(sends(&calls)[0].starts_with("Outro\n\n<footer>"));
+        assert_no_body(&calls);
+    }
+
+    /// (e) 164 D9: a PNG past Telegram's photo limits goes out as a document
+    /// (`file_kind` on the very bytes the mock recorded).
+    #[tokio::test(start_paused = true)]
+    async fn oversize_picture_goes_out_as_a_document() {
+        let mut r = rig(10, None, ALL, None);
+        let wide = png(12_000, 100);
+        r.renderer(wide.clone()).await;
+        r.start().await;
+        r.delta(&format!("```json-render\n{GRAPH}\n```\n")).await;
+        let f = files(&r.api.calls());
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].2, wide);
+        assert_eq!(crate::api::file_kind(&f[0].1, &f[0].2), FileKind::Document);
+        assert_eq!(
+            crate::api::file_kind("image/png", &png(1120, 600)),
+            FileKind::Photo
+        );
+    }
+
+    /// 164 D6: a peer's delivered text is painted too.
+    #[tokio::test(start_paused = true)]
+    async fn delivered_message_carries_its_picture() {
+        let mut r = rig(10, None, ALL, None);
+        let image = png(1120, 600);
+        r.renderer(image.clone()).await;
+        r.start().await;
+        r.ev(AgentEvent::MessageDelivered {
+            session: r.session(),
+            from: "grep-logs".into(),
+            text: format!("found it\n\n```json-render\n{GRAPH}\n```"),
+        })
+        .await;
+        let calls = r.api.calls();
+        assert_eq!(
+            sends(&calls),
+            vec!["⟵ **grep-logs**\n\nfound it".to_owned()]
+        );
+        assert_eq!(files(&calls)[0].2, image);
+        assert_no_body(&calls);
+    }
+
+    /// 164 D9: the voice clip never reads a fence body.
+    #[test]
+    fn spoken_text_drops_picture_fences() {
+        let t = format!("Intro\n\n```json-render\n{GRAPH}\n```\n\nOutro");
+        let spoken = surface::strip_pictures(&t);
+        assert!(!spoken.contains("root") && spoken.contains("Intro") && spoken.contains("Outro"));
     }
 }

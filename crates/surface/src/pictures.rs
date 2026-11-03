@@ -7,6 +7,7 @@
 //! callers that send no pictures. None of them ever returns a fence body verbatim.
 
 use std::borrow::Cow;
+use std::ops::Range;
 
 use crate::fences::fences;
 use crate::render::{plain_text, spec_lines_text};
@@ -69,7 +70,7 @@ impl PictureLang {
 }
 
 /// One picture fence of a text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PictureFence<'a> {
     /// The language.
     pub lang: PictureLang,
@@ -77,6 +78,9 @@ pub struct PictureFence<'a> {
     pub body: &'a str,
     /// Whether a closing line was found. An unclosed fence in a finished text is broken.
     pub closed: bool,
+    /// In the text split: the opening line's start to the closing line's end (its line break
+    /// excluded); to the end of the text when unclosed.
+    pub range: Range<usize>,
 }
 
 impl PictureFence<'_> {
@@ -124,7 +128,7 @@ impl PictureFence<'_> {
 }
 
 /// One piece of a text split by [`picture_parts`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PicturePart<'a> {
     /// Prose (and non-picture fences), verbatim; it keeps the newlines around a fence.
     Text(&'a str),
@@ -148,6 +152,7 @@ pub fn picture_parts(text: &str) -> Vec<PicturePart<'_>> {
             lang,
             body: f.body,
             closed: f.closed,
+            range: f.range.clone(),
         }));
         pos = f.range.end;
     }
@@ -357,20 +362,57 @@ mod tests {
             b = fence("jsonrender", BROKEN),
         );
         let parts = picture_parts(&text);
-        let pic = |lang, body, closed| PicturePart::Picture(PictureFence { lang, body, closed });
+        // The fence lines' span, found by their text.
+        let at = |s: &str| {
+            let i = text.find(s).unwrap();
+            i..i + s.len()
+        };
+        let pic = |lang, body, closed, range| {
+            PicturePart::Picture(PictureFence {
+                lang,
+                body,
+                closed,
+                range,
+            })
+        };
         assert_eq!(
             parts,
             vec![
                 PicturePart::Text("Intro.\n\n"),
-                pic(PictureLang::JsonRender, GRAPH, true),
+                pic(
+                    PictureLang::JsonRender,
+                    GRAPH,
+                    true,
+                    at(&fence("json-render", GRAPH))
+                ),
                 PicturePart::Text("\n\nMid.\n"),
-                pic(PictureLang::Mermaid, "graph LR\n  A --> B\n", true),
+                pic(
+                    PictureLang::Mermaid,
+                    "graph LR\n  A --> B\n",
+                    true,
+                    at(&fence("mermaid", "graph LR\n  A --> B\n"))
+                ),
                 PicturePart::Text("\n"),
-                pic(PictureLang::Openui, "<Card/>\n", true),
+                pic(
+                    PictureLang::Openui,
+                    "<Card/>\n",
+                    true,
+                    at(&fence("openui", "<Card/>\n"))
+                ),
                 PicturePart::Text("\n```rust\nfn x() {}\n```\n"),
-                pic(PictureLang::JsonRender, BROKEN, true),
+                pic(
+                    PictureLang::JsonRender,
+                    BROKEN,
+                    true,
+                    at(&fence("jsonrender", BROKEN))
+                ),
                 PicturePart::Text("\nTail.\n"),
-                pic(PictureLang::Mermaid, "graph LR\n  A", false),
+                pic(
+                    PictureLang::Mermaid,
+                    "graph LR\n  A",
+                    false,
+                    text.rfind("```mermaid").unwrap()..text.len()
+                ),
             ]
         );
         assert_eq!(picture_parts("plain\n"), vec![PicturePart::Text("plain\n")]);
@@ -391,11 +433,12 @@ mod tests {
         // json-render too wide for the box: the lowering.
         let wide = picture_fallback(PictureLang::JsonRender, READINESS, 8);
         assert!(
-            wide.starts_with("**Release readiness**") || !wide.starts_with("```"),
+            !wide.starts_with("```")
+                && !wide.starts_with('[')
+                && wide.contains("Release readiness"),
             "{wide}"
         );
-        assert!(!wide.starts_with('['), "{wide}");
-        // A lowering over the cap: the placeholder with the title.
+        // A lowering over the cap, no title: the plain placeholder.
         let rows: Vec<String> = (0..400)
             .map(|i| format!("[\"row {i}\",\"{}\"]", "x".repeat(20)))
             .collect();
@@ -432,6 +475,7 @@ mod tests {
             lang: PictureLang::JsonRender,
             body: SMALL,
             closed: false,
+            range: 0..0,
         };
         assert_eq!(open.fallback(60), "[diagram — open theuth to see it]");
         // A spec whose rendering would carry a fence opener: the placeholder, titled.
@@ -448,6 +492,7 @@ mod tests {
             lang: PictureLang::JsonRender,
             body,
             closed: true,
+            range: 0..0,
         };
         assert_eq!(f(READINESS).title().as_deref(), Some("Release readiness"));
         assert_eq!(f(GRAPH).title(), None);
@@ -457,6 +502,7 @@ mod tests {
             lang: PictureLang::Mermaid,
             body: "graph LR\n  A --> B\n",
             closed: true,
+            range: 0..0,
         };
         assert_eq!((m.title(), m.alt().as_str()), (None, "diagram"));
     }

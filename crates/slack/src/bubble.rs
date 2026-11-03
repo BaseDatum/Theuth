@@ -6,13 +6,17 @@
 //! about the text; a bubble that fails is rewritten from it.
 
 use std::fmt;
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
+use artifact::preview::Appearance;
+use artifact::snapshot::{FALLBACK_COLUMNS, SCALE, SLACK_WIDTH, SnapshotOutcome};
 use runtime::{Runtime, SessionId};
+use surface::{DRAWING, PictureFence, PictureLang, PicturePart};
 use tokio::time::Instant;
 
-use crate::api::{ApiError, Chunk, MARKDOWN_TEXT_MAX, SlackApi, Source, TaskStatus};
+use crate::api::{ApiError, Chunk, MARKDOWN_TEXT_MAX, SlackApi, Source, TaskStatus, UploadFile};
 use crate::{SlackEvent, ToolCards};
 
 /// Chars of text per bubble before rotating at a block boundary.
@@ -41,11 +45,11 @@ const SOURCES_MAX: usize = 3;
 /// Consecutive `startStream` failures (other than the known fallback codes)
 /// before the bubble gives up on streaming.
 const OPEN_ATTEMPTS: u8 = 3;
-/// Column width `json-render` fences are rendered at for Slack (30 §9).
-const FLATTEN_WIDTH: usize = 60;
 /// Block Kit blocks one message may carry (110 §8); past it every further
-/// fence of the bubble flattens, since Slack drops blocks over 50.
+/// fence of the bubble is a picture, since Slack drops blocks over 50.
 const BLOCKS_MAX: usize = 50;
+/// Picture fences settled per flush before the next tick takes over.
+const SETTLE_MAX: usize = 32;
 
 /// `startStream` errors that mean "this thread cannot stream": fall back to
 /// update mode for the rest of the turn (21 §8.1).
@@ -135,12 +139,49 @@ struct Bubble {
     blocks_sent: usize,
     /// Update mode: rendered fences already posted as their own message.
     blocks_posted: usize,
+    /// `slack.blocks`: `json-render` fences with a block form go as Block Kit.
+    blocks: bool,
+    /// Starts in `raw` of the picture fences settled as their D7 text.
+    fallbacks: Vec<usize>,
     opened: Instant,
     last_append: Instant,
 }
 
+/// One piece of a bubble's text ([`Bubble::parts`]), in order.
+enum Part<'a> {
+    /// Prose, other fences and the D7 text of picture fences nobody drew.
+    Text(String),
+    /// A `json-render` fence as Block Kit (110 §8), with the fence.
+    Blocks(Vec<serde_json::Value>, PictureFence<'a>),
+    /// A closed picture fence waiting to be drawn (164 D9); always last.
+    Picture(Range<usize>, PictureFence<'a>),
+    /// A picture fence still streaming in, or a half-typed opener, at this
+    /// offset (164 D8); always last.
+    Open(usize),
+}
+
+/// A closed picture fence of a bubble, owned, waiting for its picture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Pending {
+    /// Fence lines included, in the bubble's `raw`.
+    range: Range<usize>,
+    lang: PictureLang,
+    body: String,
+}
+
+impl Pending {
+    fn fence(&self) -> PictureFence<'_> {
+        PictureFence {
+            lang: self.lang,
+            body: &self.body,
+            closed: true,
+            range: self.range.clone(),
+        }
+    }
+}
+
 impl Bubble {
-    fn new() -> Self {
+    fn new(blocks: bool) -> Self {
         let now = Instant::now();
         Self {
             mode: Mode::Unsent,
@@ -148,6 +189,8 @@ impl Bubble {
             sent: 0,
             blocks_sent: 0,
             blocks_posted: 0,
+            blocks,
+            fallbacks: Vec::new(),
             opened: now,
             last_append: now,
         }
@@ -158,98 +201,346 @@ impl Bubble {
         self.text.raw()[..self.text.committed()].chars().count()
     }
 
-    /// `raw[range]` as plain markdown: every `json-render` fence rendered
-    /// inside a code block (30 §9), everything else verbatim. The repair
-    /// text, and the update-mode text when blocks are off.
-    fn out(&self, range: std::ops::Range<usize>) -> String {
-        surface::flatten(&self.text.raw()[range], FLATTEN_WIDTH)
-    }
-
-    /// `raw[range]` split at the closed `json-render` fences that render as
-    /// Block Kit (110 §8): `Chunk::Text` runs (other fences flattened as in
-    /// [`Self::out`]) around one `Chunk::Blocks` per such fence, in order.
-    /// `budget` is how many blocks this message may still take; a fence
-    /// that does not render, or would overshoot it, stays in the text as a
-    /// code block. With `blocks` off this is one `Chunk::Text` of `out`.
-    fn segments(&self, range: std::ops::Range<usize>, blocks: bool, budget: usize) -> Vec<Chunk> {
-        let raw = &self.text.raw()[range];
+    /// `raw[range]` in order: text runs, Block Kit fences and — ending the
+    /// list — the first picture fence not yet settled: `Picture` once it
+    /// can be drawn, `Open` while it still streams in; everything after it
+    /// is held (164 D8). `budget` is how many blocks this message may still
+    /// take; a `json-render` fence over it, or without a block form, is a
+    /// picture (D9). A fence settled as text, an unclosed one of a finished
+    /// text and every non-picture fence stay in the text. Never a body.
+    fn parts(&self, range: Range<usize>, budget: usize) -> Vec<Part<'_>> {
+        let raw = self.text.raw();
+        let done = self.text.is_done();
+        // Scan from the line start so a partial line is never read as an opener.
+        let from = raw[..range.start].rfind('\n').map_or(0, |i| i + 1);
+        let text = &raw[from..range.end];
+        let half = (!done && range.end == raw.len())
+            .then(|| half_opener(text))
+            .flatten();
+        let text = &text[..half.unwrap_or(text.len())];
         let mut out = Vec::new();
-        let mut pos = 0;
+        let mut buf = String::new();
+        let mut skip = range.start - from;
         let mut budget = budget;
-        if blocks {
-            for (r, body) in surface::json_render_fences(raw) {
-                if budget == 0 {
-                    break;
+        for part in surface::picture_parts(text) {
+            let f = match part {
+                PicturePart::Text(t) => {
+                    let n = skip.min(t.len());
+                    skip -= n;
+                    buf.push_str(&t[n..]);
+                    continue;
                 }
-                let rendered = match surface::slack_blocks(body) {
-                    Ok(b) if b.len() <= budget => b,
-                    Ok(b) => {
-                        tracing::debug!(
-                            blocks = b.len(),
-                            budget,
-                            "fence over the block cap; flattened"
-                        );
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::debug!(error = %e, "fence has no block form; flattened");
-                        continue;
-                    }
-                };
-                budget -= rendered.len();
-                if r.start > pos {
-                    out.push(Chunk::Text(surface::flatten(
-                        &raw[pos..r.start],
-                        FLATTEN_WIDTH,
-                    )));
+                PicturePart::Picture(f) => f,
+            };
+            skip = 0;
+            let r = f.range.clone();
+            let r = from + r.start..from + r.end;
+            if !f.closed {
+                if done {
+                    buf.push_str(&f.fallback(FALLBACK_COLUMNS));
+                    continue;
                 }
-                out.push(Chunk::Blocks(serde_json::Value::Array(rendered)));
-                pos = r.end;
+                push_text(&mut out, &mut buf);
+                out.push(Part::Open(r.start));
+                return out;
             }
+            if self.fallbacks.contains(&r.start) {
+                buf.push_str(&f.fallback(FALLBACK_COLUMNS));
+                continue;
+            }
+            if let Some(b) = block_form(&f, self.blocks, budget) {
+                budget -= b.len();
+                push_text(&mut out, &mut buf);
+                out.push(Part::Blocks(b, f));
+                continue;
+            }
+            push_text(&mut out, &mut buf);
+            // A closing line without its newline yet may still grow into content.
+            out.push(if done || r.end < raw.len() {
+                Part::Picture(r, f)
+            } else {
+                Part::Open(r.start)
+            });
+            return out;
         }
-        if pos < raw.len() {
-            out.push(Chunk::Text(surface::flatten(&raw[pos..], FLATTEN_WIDTH)));
+        push_text(&mut out, &mut buf);
+        if let Some(h) = half {
+            out.push(Part::Open(from + h));
         }
         out
     }
 
-    /// Update mode (110 §8): the bubble's markdown with the fences that
-    /// render as blocks left out (they are their own messages), and those
-    /// block payloads in order.
-    fn split(
-        &self,
-        range: std::ops::Range<usize>,
-        blocks: bool,
-    ) -> (String, Vec<serde_json::Value>) {
+    /// Where the unsettled part of the bubble starts for a scan: update mode
+    /// re-renders the whole message, stream mode continues after `sent`.
+    fn scan(&self) -> (usize, usize) {
+        match self.mode {
+            Mode::Update(_) => (0, BLOCKS_MAX),
+            Mode::Unsent | Mode::Stream(_) => {
+                (self.sent, BLOCKS_MAX.saturating_sub(self.blocks_sent))
+            }
+        }
+    }
+
+    /// Offset of the first picture fence not yet settled, open or closed:
+    /// nothing from here on goes out as text (164 D8).
+    fn hold(&self) -> Option<usize> {
+        let (from, budget) = self.scan();
+        match self.parts(from..self.text.raw().len(), budget).pop()? {
+            Part::Picture(r, _) => Some(r.start),
+            Part::Open(start) => Some(start),
+            Part::Text(_) | Part::Blocks(..) => None,
+        }
+    }
+
+    /// The first picture fence ready to be drawn, when it is what holds the text.
+    fn next_picture(&self) -> Option<Pending> {
+        let (from, budget) = self.scan();
+        match self.parts(from..self.text.raw().len(), budget).pop()? {
+            Part::Picture(range, f) => Some(Pending {
+                range,
+                lang: f.lang,
+                body: f.body.to_owned(),
+            }),
+            Part::Open(_) | Part::Text(_) | Part::Blocks(..) => None,
+        }
+    }
+
+    /// `cut` moved to the start of the picture fence it falls inside, if any,
+    /// so a rotation never splits a fence across bubbles.
+    fn outside_fence(&self, cut: usize) -> usize {
+        let raw = self.text.raw();
+        surface::picture_parts(raw)
+            .into_iter()
+            .filter_map(|p| match p {
+                PicturePart::Picture(f) => Some(f.range),
+                PicturePart::Text(_) => None,
+            })
+            .find(|r| r.start < cut && cut < r.end)
+            .map_or(cut, |r| r.start)
+    }
+
+    /// `raw[range]` as plain markdown: the repair text, with every fence as
+    /// text (Block Kit as its D7 text, a pending picture as [`DRAWING`]).
+    fn out(&self, range: Range<usize>) -> String {
+        let done = self.text.is_done();
+        let mut md = String::new();
+        for p in self.parts(range, BLOCKS_MAX) {
+            match p {
+                Part::Text(s) => md.push_str(&s),
+                Part::Blocks(_, f) => md.push_str(&f.fallback(FALLBACK_COLUMNS)),
+                Part::Picture(_, f) if done => md.push_str(&f.fallback(FALLBACK_COLUMNS)),
+                Part::Picture(..) | Part::Open(_) => md.push_str(DRAWING),
+            }
+        }
+        md
+    }
+
+    /// Stream mode: `raw[range]` as stream chunks, `Chunk::Text` runs around
+    /// one `Chunk::Blocks` per Block Kit fence (110 §8). `budget` is how
+    /// many blocks this message may still take. A pending picture (never
+    /// inside a range a caller streams) is [`DRAWING`].
+    fn segments(&self, range: Range<usize>, budget: usize) -> Vec<Chunk> {
+        let done = self.text.is_done();
+        self.parts(range, budget)
+            .into_iter()
+            .map(|p| match p {
+                Part::Text(s) => Chunk::Text(s),
+                Part::Blocks(b, _) => Chunk::Blocks(serde_json::Value::Array(b)),
+                Part::Picture(_, f) if done => Chunk::Text(f.fallback(FALLBACK_COLUMNS)),
+                Part::Picture(..) | Part::Open(_) => Chunk::Text(DRAWING.to_owned()),
+            })
+            .collect()
+    }
+
+    /// Update mode (110 §8, 164 D8): the bubble's markdown up to the held
+    /// fence (shown as [`DRAWING`]) with the Block Kit fences left out, and
+    /// those block payloads in order.
+    fn split(&self, range: Range<usize>) -> (String, Vec<serde_json::Value>) {
+        let done = self.text.is_done();
         let mut md = String::new();
         let mut posts = Vec::new();
-        for c in self.segments(range, blocks, BLOCKS_MAX) {
-            match c {
-                Chunk::Text(s) => md.push_str(&s),
-                Chunk::Blocks(b) => posts.push(b),
-                Chunk::Task { .. } => unreachable!("segments yields text and blocks"),
+        for p in self.parts(range, BLOCKS_MAX) {
+            match p {
+                Part::Text(s) => md.push_str(&s),
+                Part::Blocks(b, _) => posts.push(serde_json::Value::Array(b)),
+                Part::Picture(_, f) if done => md.push_str(&f.fallback(FALLBACK_COLUMNS)),
+                Part::Picture(..) | Part::Open(_) => md.push_str(DRAWING),
             }
         }
         (md, posts)
     }
 
-    /// Stream mode: bytes of `raw` that may be appended now. A `json-render`
-    /// fence still open in the pending tail is held back until it closes, so
-    /// `out` sees it whole instead of its source having already streamed.
+    /// Stream mode: bytes of `raw` that may be appended now — up to the
+    /// first picture fence not yet settled (164 D8).
     fn streamable(&self) -> usize {
-        let raw = self.text.raw();
-        let committed = self.text.committed();
-        let first = raw[committed..]
-            .trim_start()
-            .lines()
-            .next()
-            .unwrap_or_default();
-        if first.trim_start_matches(['`', '~']).trim() == "json-render" {
-            committed
-        } else {
-            raw.len()
+        self.hold().unwrap_or(self.text.raw().len())
+    }
+}
+
+/// `buf` as a `Part::Text` unless empty; `buf` cleared.
+fn push_text(out: &mut Vec<Part<'_>>, buf: &mut String) {
+    if !buf.is_empty() {
+        out.push(Part::Text(std::mem::take(buf)));
+    }
+}
+
+/// Offset of a trailing line that is so far a fence opener whose info string
+/// may still become a picture language (`` ```mer ``, or bare backticks):
+/// held back until its newline tells (164 D8).
+fn half_opener(text: &str) -> Option<usize> {
+    let start = text.rfind('\n').map_or(0, |i| i + 1);
+    let line = &text[start..];
+    let body = line.trim_start_matches(' ');
+    if line.len() - body.len() > 3 {
+        return None;
+    }
+    let marker = body.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let info = body.trim_start_matches(marker);
+    if body.len() - info.len() < 3 {
+        return info.is_empty().then_some(start);
+    }
+    let info = info.trim().to_ascii_lowercase();
+    ["json-render", "jsonrender", "mermaid", "openui"]
+        .iter()
+        .any(|l| l.starts_with(&info))
+        .then_some(start)
+}
+
+/// The Block Kit form of a closed picture fence (110 §8, 164 D9): a
+/// `json-render` fence `surface::slack_blocks` renders within `budget`
+/// blocks while `blocks` is on. Everything else is a picture.
+pub(crate) fn block_form(
+    f: &PictureFence<'_>,
+    blocks: bool,
+    budget: usize,
+) -> Option<Vec<serde_json::Value>> {
+    if !blocks || f.lang != PictureLang::JsonRender || !f.closed {
+        return None;
+    }
+    match surface::slack_blocks(f.body) {
+        Ok(b) if b.len() <= budget => Some(b),
+        Ok(b) => {
+            tracing::debug!(
+                blocks = b.len(),
+                budget,
+                "fence over the block cap; a picture"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "fence has no block form; a picture");
+            None
         }
     }
+}
+
+/// The PNG of a closed picture fence as a Slack file (164 D4, D6, D9), or
+/// `None` when nobody can draw it — `pictures` off, a `json-render` body
+/// that does not parse, no renderer, failed, timed out — so its D7 text
+/// goes instead. Title: the fence's title, else `diagram`; `alt_txt`: the
+/// fence's alt text.
+pub(crate) async fn picture_file(
+    rt: &Runtime,
+    pictures: bool,
+    f: &PictureFence<'_>,
+) -> Option<UploadFile> {
+    if !pictures
+        || !f.closed
+        || (f.lang == PictureLang::JsonRender && surface::parse(f.body).is_err())
+    {
+        return None;
+    }
+    let outcome = artifact::snapshot::render(
+        rt,
+        f.lang.into(),
+        f.body,
+        SLACK_WIDTH,
+        Appearance::Light,
+        SCALE,
+    )
+    .await;
+    let SnapshotOutcome::Done { png, .. } = outcome else {
+        tracing::info!(lang = f.lang.as_str(), ?outcome, "fence sent as text");
+        return None;
+    };
+    let title = f.title().unwrap_or_else(|| "diagram".to_owned());
+    Some(UploadFile {
+        name: if f.lang == PictureLang::Openui {
+            "panel.png".to_owned()
+        } else {
+            "diagram.png".to_owned()
+        },
+        mime: "image/png".to_owned(),
+        bytes: png,
+        alt: Some(f.alt()),
+        title: Some(title),
+    })
+}
+
+/// One unit of a reply posted in one go (`message_user`, 164 D9), in order.
+#[derive(Debug)]
+pub(crate) enum Piece {
+    /// Markdown: prose, other fences and the D7 text of pictures nobody drew.
+    Text(String),
+    /// A `json-render` fence as Block Kit (110 §8).
+    Blocks(serde_json::Value),
+    /// A picture fence drawn as a PNG.
+    Picture(UploadFile),
+}
+
+/// `text` split for Slack the way a bubble is (164 D9): Block Kit fences
+/// within the block cap while `blocks` is on, every other picture fence
+/// drawn (all at once) while `pictures` is on, the rest text — never a body.
+pub(crate) async fn pieces(rt: &Runtime, text: &str, blocks: bool, pictures: bool) -> Vec<Piece> {
+    let parts = surface::picture_parts(text);
+    let mut budget = BLOCKS_MAX;
+    let forms: Vec<Option<Vec<serde_json::Value>>> = parts
+        .iter()
+        .map(|p| match p {
+            PicturePart::Picture(f) => {
+                let b = block_form(f, blocks, budget);
+                budget -= b.as_ref().map_or(0, Vec::len);
+                b
+            }
+            PicturePart::Text(_) => None,
+        })
+        .collect();
+    let files = futures::future::join_all(parts.iter().zip(&forms).map(|(p, form)| async move {
+        match p {
+            PicturePart::Picture(f) if form.is_none() => picture_file(rt, pictures, f).await,
+            PicturePart::Picture(_) | PicturePart::Text(_) => None,
+        }
+    }))
+    .await;
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let push = |out: &mut Vec<Piece>, buf: &mut String| {
+        let t = buf.trim_start_matches(['\n', '\r']).trim_end();
+        if !t.trim().is_empty() {
+            out.push(Piece::Text(t.to_owned()));
+        }
+        buf.clear();
+    };
+    for ((part, form), file) in parts.into_iter().zip(forms).zip(files) {
+        let f = match part {
+            PicturePart::Text(t) => {
+                buf.push_str(t);
+                continue;
+            }
+            PicturePart::Picture(f) => f,
+        };
+        if let Some(b) = form {
+            push(&mut out, &mut buf);
+            out.push(Piece::Blocks(serde_json::Value::Array(b)));
+        } else if let Some(file) = file {
+            push(&mut out, &mut buf);
+            out.push(Piece::Picture(file));
+        } else {
+            buf.push_str(&f.fallback(FALLBACK_COLUMNS));
+        }
+    }
+    push(&mut out, &mut buf);
+    out
 }
 
 /// Blocks inside the `Chunk::Blocks` of `chunks`, for the bubble's budget.
@@ -650,14 +941,26 @@ impl ReasoningRun {
     }
 }
 
+/// How a turn's picture fences go out (110 §8, 164 D9–D10).
+#[derive(Clone, Copy, Debug)]
+pub struct Fences {
+    /// `slack.blocks`: `json-render` fences with a block form as Block Kit;
+    /// off makes every one a picture.
+    pub blocks: bool,
+    /// `slack.pictures`: picture fences as PNGs in the thread; off sends
+    /// their D7 text.
+    pub pictures: bool,
+}
+
 /// One turn's streamed output in a thread (21 §8.1–8.4).
 pub struct Turn {
     target: Target,
     tools_mode: ToolCards,
     reasoning: bool,
-    /// `slack.blocks` (110 §8–9): `json-render` fences as Block Kit; off
-    /// flattens them as 30 §9 did.
-    blocks: bool,
+    fences: Fences,
+    /// Pictures uploaded this turn; the footer still goes out after a reply
+    /// that ends in one.
+    pictures_posted: u32,
     api: Arc<dyn SlackApi>,
     rt: Runtime,
     session: SessionId,
@@ -688,7 +991,7 @@ impl Turn {
         target: Target,
         tools_mode: ToolCards,
         reasoning: bool,
-        blocks: bool,
+        fences: Fences,
         api: Arc<dyn SlackApi>,
         rt: Runtime,
         session: SessionId,
@@ -697,7 +1000,8 @@ impl Turn {
             target,
             tools_mode,
             reasoning,
-            blocks,
+            fences,
+            pictures_posted: 0,
             api,
             rt,
             session,
@@ -720,7 +1024,11 @@ impl Turn {
     pub async fn text(&mut self, delta: &str) {
         self.end_reasoning().await;
         self.close_batch();
-        self.bubble.get_or_insert_with(Bubble::new).text.push(delta);
+        let blocks = self.fences.blocks;
+        self.bubble
+            .get_or_insert_with(|| Bubble::new(blocks))
+            .text
+            .push(delta);
     }
 
     /// `ReasoningDelta` (21 §8.5, 110 §4.1). Inside an open batch: a `💭`
@@ -827,7 +1135,8 @@ impl Turn {
             return;
         }
         let id = b.id.clone();
-        self.bubble.get_or_insert_with(Bubble::new);
+        let blocks = self.fences.blocks;
+        self.bubble.get_or_insert_with(|| Bubble::new(blocks));
         if !self
             .queue
             .iter()
@@ -1054,7 +1363,8 @@ impl Turn {
     /// Queue a reasoning card; one already queued for the same id is
     /// replaced in place, so one flush carries one card per id.
     fn queue_chunk(&mut self, chunk: Chunk, card: String) {
-        self.bubble.get_or_insert_with(Bubble::new);
+        let blocks = self.fences.blocks;
+        self.bubble.get_or_insert_with(|| Bubble::new(blocks));
         let id = chunk_id(&chunk).map(str::to_owned);
         let slot = self.queue.iter_mut().find_map(|q| match q {
             Queued::Chunk { chunk: c, card: k } if chunk_id(c).map(str::to_owned) == id => {
@@ -1133,7 +1443,7 @@ impl Turn {
             return;
         }
         if let Some(cut) = self.rotation_cut() {
-            self.rotate(cut, false).await;
+            self.rotate(cut, cut, false).await;
         }
         self.flush().await;
     }
@@ -1148,12 +1458,28 @@ impl Turn {
             return false;
         };
         b.text.finish();
+        self.settle_pictures().await;
         if let Some(cut) = self.rotation_cut() {
-            self.rotate(cut, false).await;
+            self.rotate(cut, cut, false).await;
+        }
+        let mut footer = footer.to_string();
+        if let Some(epoch) = self.compacted {
+            footer.push_str(&format!(" · ⟲ epoch {epoch}"));
         }
         if matches!(self.bubble.as_ref().map(|b| &b.mode), Some(Mode::Unsent)) {
             if !self.has_work() {
                 self.bubble = None;
+                // The reply ended in a picture: its bubble closed before it.
+                if self.pictures_posted > 0 {
+                    let t = &self.target;
+                    if let Err(e) = self
+                        .api
+                        .post_markdown(&t.channel, Some(&t.thread_ts), &format!("_{footer}_"))
+                        .await
+                    {
+                        tracing::warn!(error = %e, "footer after a picture failed");
+                    }
+                }
                 return false;
             }
             self.open().await;
@@ -1161,10 +1487,6 @@ impl Turn {
         let Some(mut b) = self.bubble.take() else {
             return false;
         };
-        let mut footer = footer.to_string();
-        if let Some(epoch) = self.compacted {
-            footer.push_str(&format!(" · ⟲ epoch {epoch}"));
-        }
         let len = b.text.raw().len();
         match &b.mode {
             Mode::Unsent => {
@@ -1176,7 +1498,7 @@ impl Turn {
                 let (mut chunks, _) = self.collect(true);
                 self.queue.clear();
                 if b.sent < len {
-                    chunks.extend(b.segments(b.sent..len, self.blocks, BLOCKS_MAX - b.blocks_sent));
+                    chunks.extend(b.segments(b.sent..len, BLOCKS_MAX - b.blocks_sent));
                 }
                 let stopped = self
                     .api
@@ -1199,7 +1521,7 @@ impl Turn {
             }
             Mode::Update(ts) => {
                 self.flush_cards(true).await;
-                let (raw, posts) = b.split(0..len, self.blocks);
+                let (raw, posts) = b.split(0..len);
                 let md = format!("{raw}\n\n_{footer}_");
                 match self
                     .api
@@ -1230,14 +1552,15 @@ impl Turn {
         }
         let Some(b) = &self.bubble else { return false };
         match b.mode {
-            Mode::Unsent => b.streamable() > 0,
+            Mode::Unsent => !b.text.raw()[..b.streamable()].trim().is_empty(),
             Mode::Stream(_) => b.sent < b.streamable(),
             Mode::Update(_) => b.sent < b.text.committed(),
         }
     }
 
     /// Where to cut the open bubble if a rotation trigger fired (21 §8.4:
-    /// size at a block boundary; age for streams).
+    /// size at a block boundary; age for streams). Never past the held
+    /// picture fence, never inside one.
     fn rotation_cut(&self) -> Option<usize> {
         let b = self.bubble.as_ref()?;
         let aged = matches!(b.mode, Mode::Stream(_)) && b.opened.elapsed() >= BUBBLE_MAX_AGE;
@@ -1246,22 +1569,27 @@ impl Turn {
         }
         let raw = b.text.raw();
         let committed = b.text.committed();
-        if raw[..committed].chars().count() <= MARKDOWN_TEXT_MAX {
-            return Some(committed);
-        }
-        // ponytail: one block over the per-call cap (a giant fence): cut at
-        // its last newline under the cap; the rest renders raw next message.
-        let cap = raw
-            .char_indices()
-            .nth(MARKDOWN_TEXT_MAX)
-            .map_or(committed, |(i, _)| i);
-        Some(raw[..cap].rfind('\n').map_or(cap, |i| i + 1))
+        let cut = if raw[..committed].chars().count() <= MARKDOWN_TEXT_MAX {
+            committed
+        } else {
+            // ponytail: one block over the per-call cap (a giant fence): cut at
+            // its last newline under the cap; the rest renders raw next message.
+            let cap = raw
+                .char_indices()
+                .nth(MARKDOWN_TEXT_MAX)
+                .map_or(committed, |(i, _)| i);
+            raw[..cap].rfind('\n').map_or(cap, |i| i + 1)
+        };
+        let cut = b.outside_fence(cut.min(b.streamable()));
+        // Nothing before the held fence: a size rotation would spin.
+        (aged || cut > 0).then_some(cut)
     }
 
     /// Close the open bubble at `cut` (a block boundary, or `raw.len()` when
-    /// the stream is dead) and start a fresh one seeded with the remainder,
-    /// the live batch cards and the live reasoning card (21 §8.4, 110 §4.6).
-    async fn rotate(&mut self, cut: usize, mut dead: bool) {
+    /// the stream is dead) and start a fresh one seeded with `raw[resume..]`
+    /// (`cut`, or the end of a picture fence just uploaded), the live batch
+    /// cards and the live reasoning card (21 §8.4, 110 §4.6).
+    async fn rotate(&mut self, cut: usize, resume: usize, mut dead: bool) {
         let Some(mut b) = self.bubble.take() else {
             return;
         };
@@ -1270,7 +1598,7 @@ impl Turn {
             Mode::Unsent => {}
             Mode::Stream(ts) => {
                 if !dead && b.sent < cut {
-                    let chunks = b.segments(b.sent..cut, self.blocks, BLOCKS_MAX - b.blocks_sent);
+                    let chunks = b.segments(b.sent..cut, BLOCKS_MAX - b.blocks_sent);
                     match self.api.append_stream(&t.channel, ts, chunks).await {
                         Ok(()) => {}
                         Err(e) if is_dead(&e) => dead = true,
@@ -1302,15 +1630,23 @@ impl Turn {
                 }
             }
             Mode::Update(ts) => {
-                let (md, posts) = b.split(0..cut, self.blocks);
+                let (md, posts) = b.split(0..cut);
                 if b.sent != cut {
                     self.repair(ts, &md).await;
                 }
                 post_fence_blocks(&*self.api, t, &mut b, posts).await;
             }
         }
-        let mut next = Bubble::new();
-        next.text.push(&b.text.raw()[cut..]);
+        let mut next = Bubble::new(self.fences.blocks);
+        let rest = &b.text.raw()[resume..];
+        next.text.push(if resume > cut {
+            rest.trim_start_matches(['\n', '\r'])
+        } else {
+            rest
+        });
+        if b.text.is_done() {
+            next.text.finish();
+        }
         let mut reemit = Vec::new();
         for b in &mut self.batches {
             if b.open() && emits(self.tools_mode, b) {
@@ -1364,7 +1700,76 @@ impl Turn {
             .await;
     }
 
+    /// Text up to the held fence, then every picture fence ready to be
+    /// drawn (164 D9): each one closes the bubble before it, goes up as a
+    /// file and the text after it opens the next bubble — or, when nobody
+    /// draws it, becomes its D7 text in place.
     async fn flush(&mut self) {
+        self.flush_text().await;
+        for _ in 0..SETTLE_MAX {
+            if !self.settle_next().await {
+                break;
+            }
+        }
+    }
+
+    /// [`Self::flush`] when a picture is waiting; otherwise nothing, so the
+    /// final call of `finish` carries the pending text itself.
+    async fn settle_pictures(&mut self) {
+        if self
+            .bubble
+            .as_ref()
+            .is_some_and(|b| b.next_picture().is_some())
+        {
+            self.flush().await;
+        }
+    }
+
+    /// The first picture fence ready to be drawn, its text before it already
+    /// out: uploaded and the bubble rotated past it, or settled as text;
+    /// then the text flushed again. `false` when there is none, or its
+    /// bubble could not be opened.
+    async fn settle_next(&mut self) -> bool {
+        let Some(b) = self.bubble.as_ref() else {
+            return false;
+        };
+        let Some(p) = b.next_picture() else {
+            return false;
+        };
+        if matches!(b.mode, Mode::Unsent) && p.range.start > 0 {
+            return false;
+        }
+        let file = picture_file(&self.rt, self.fences.pictures, &p.fence()).await;
+        let uploaded = match file {
+            Some(file) => {
+                let t = &self.target;
+                match self
+                    .api
+                    .upload_file(&t.channel, Some(&t.thread_ts), &[file], None)
+                    .await
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "picture upload failed; sent as text");
+                        false
+                    }
+                }
+            }
+            None => false,
+        };
+        if uploaded {
+            self.pictures_posted += 1;
+            self.rotate(p.range.start, p.range.end, false).await;
+        } else if let Some(b) = self.bubble.as_mut() {
+            b.fallbacks.push(p.range.start);
+            b.sent = b.sent.min(p.range.start);
+        }
+        self.flush_text().await;
+        true
+    }
+
+    /// Opens the bubble, or sends what is due in its mode.
+    async fn flush_text(&mut self) {
         match self.bubble.as_ref().map(|b| &b.mode) {
             None => {}
             Some(Mode::Unsent) => {
@@ -1393,21 +1798,20 @@ impl Turn {
                 }
             }
         }
-        let blocks = self.blocks;
         let Some(b) = self.bubble.as_mut() else {
             return;
         };
         let committed = b.text.committed();
-        let (md, posts) = b.split(0..committed, blocks);
+        let (md, posts) = b.split(0..committed);
         let body = if md.trim().is_empty() {
-            "…".to_owned()
+            "…"
         } else {
-            md
+            md.trim_start_matches(['\n', '\r'])
         };
         let t = &self.target;
         match self
             .api
-            .post_markdown(&t.channel, Some(&t.thread_ts), &body)
+            .post_markdown(&t.channel, Some(&t.thread_ts), body)
             .await
         {
             Ok(ts) => {
@@ -1430,7 +1834,16 @@ impl Turn {
         let end = b.streamable();
         let (mut chunks, sent) = self.collect(false);
         if end > 0 {
-            chunks.extend(b.segments(0..end, self.blocks, BLOCKS_MAX));
+            // A bubble after a picture starts at the prose, not the fence's blank line.
+            let mut text = b.segments(0..end, BLOCKS_MAX);
+            if let Some(Chunk::Text(s)) = text.first_mut() {
+                let trimmed = s.trim_start_matches(['\n', '\r']).len();
+                s.drain(..s.len() - trimmed);
+            }
+            chunks.extend(
+                text.into_iter()
+                    .filter(|c| !matches!(c, Chunk::Text(s) if s.is_empty())),
+            );
         }
         let blocks_sent = blocks_in(&chunks);
         let t = &self.target;
@@ -1475,7 +1888,7 @@ impl Turn {
         let end = b.streamable();
         let (mut chunks, mut sent) = self.collect(false);
         if b.sent < end {
-            chunks.extend(b.segments(b.sent..end, self.blocks, BLOCKS_MAX - b.blocks_sent));
+            chunks.extend(b.segments(b.sent..end, BLOCKS_MAX - b.blocks_sent));
         }
         let blocks_sent = blocks_in(&chunks);
         if chunks.is_empty() {
@@ -1502,25 +1915,25 @@ impl Turn {
             }
             Err(e) if is_dead(&e) => {
                 tracing::warn!(error = %e, ts, "stream died; repairing");
-                let len = b.text.raw().len();
-                self.rotate(len, true).await;
+                // Up to the held fence: the fence itself moves on whole.
+                let cut = b.streamable();
+                self.rotate(cut, cut, true).await;
             }
             Err(e) => tracing::warn!(error = %e, ts, "appendStream failed; will retry"),
         }
     }
 
-    /// Update-mode flush (21 §8.2): committed text edited in place, the
-    /// rendered fences it contains as their own messages (110 §8), then
-    /// the cards.
+    /// Update-mode flush (21 §8.2): committed text edited in place, up to
+    /// the held fence (164 D8), the rendered fences it contains as their
+    /// own messages (110 §8), then the cards.
     async fn flush_update(&mut self) {
-        let blocks = self.blocks;
         let Some(b) = self.bubble.as_mut() else {
             return;
         };
         let Mode::Update(ts) = &b.mode else { return };
         let committed = b.text.committed();
         if b.sent < committed {
-            let (md, posts) = b.split(0..committed, blocks);
+            let (md, posts) = b.split(0..committed);
             match self
                 .api
                 .update_markdown(&self.target.channel, ts, &md)
@@ -1940,10 +2353,14 @@ fn thought_title(ms: u64) -> String {
     }
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Mutex, PoisonError};
+
+    use artifact::preview::Client;
+    use artifact::snapshot::{FenceSnapshotAnswer, FenceSnapshotRequested};
+    use kameo::actor::Spawn;
 
     use async_trait::async_trait;
 
@@ -1973,6 +2390,10 @@ mod tests {
             md: String,
         },
         Upload,
+        UploadFile {
+            files: Vec<UploadFile>,
+            comment: Option<String>,
+        },
         PostBlocks {
             blocks: serde_json::Value,
         },
@@ -2173,11 +2594,17 @@ mod tests {
         async fn upload_file(
             &self,
             _channel: &str,
-            _thread_ts: Option<&str>,
-            _files: &[crate::api::UploadFile],
-            _comment: Option<&str>,
+            thread_ts: Option<&str>,
+            files: &[crate::api::UploadFile],
+            comment: Option<&str>,
         ) -> Result<String, ApiError> {
-            unimplemented!()
+            self.check("upload_file")?;
+            assert_eq!(thread_ts, Some("1.0"), "pictures go into the thread");
+            self.record(Call::UploadFile {
+                files: files.to_vec(),
+                comment: comment.map(str::to_owned),
+            });
+            Ok("https://files.slack.com/f2".to_owned())
         }
         async fn upload_text(
             &self,
@@ -2204,6 +2631,17 @@ mod tests {
 
     fn turn_with(api: &Arc<FakeApi>, mode: ToolCards, reasoning: bool, blocks: bool) -> Turn {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        turn_in(rt, api, mode, reasoning, blocks, true)
+    }
+
+    fn turn_in(
+        rt: Runtime,
+        api: &Arc<FakeApi>,
+        mode: ToolCards,
+        reasoning: bool,
+        blocks: bool,
+        pictures: bool,
+    ) -> Turn {
         let target = Target {
             channel: "C1".into(),
             thread_ts: "1.0".into(),
@@ -2214,11 +2652,87 @@ mod tests {
             target,
             mode,
             reasoning,
-            blocks,
+            Fences { blocks, pictures },
             api.clone(),
             rt,
             SessionId::new(),
         )
+    }
+
+    /// A PNG the snapshot engine accepts: signature + IHDR with `w` × `h`.
+    pub(crate) fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut b = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        b.extend(b"IHDR");
+        b.extend(w.to_be_bytes());
+        b.extend(h.to_be_bytes());
+        b.extend([8, 6, 0, 0, 0]);
+        b
+    }
+
+    /// A client that answers every `FenceSnapshotRequested` with `png`.
+    #[derive(kameo::Actor)]
+    pub(crate) struct FakeRenderer {
+        png: Vec<u8>,
+    }
+
+    impl kameo::message::Message<FenceSnapshotRequested> for FakeRenderer {
+        type Reply = ();
+        async fn handle(
+            &mut self,
+            m: FenceSnapshotRequested,
+            _: &mut kameo::message::Context<Self, ()>,
+        ) {
+            assert_eq!(m.width, SLACK_WIDTH);
+            assert_eq!(m.scale, SCALE);
+            assert_eq!(m.appearance, Appearance::Light);
+            artifact::snapshot::answer(
+                m.id,
+                FenceSnapshotAnswer::done(&self.png, 1440, 600, Client::Desktop),
+            );
+        }
+    }
+
+    /// A [`FakeRenderer`] drawing `png` on `rt`'s bus; installs the
+    /// process-wide live feed once.
+    pub(crate) async fn install_renderer(rt: &Runtime, png: Vec<u8>) {
+        let (tx, rx) = tokio::sync::broadcast::channel::<Arc<serde_json::Value>>(4);
+        artifact::preview::watch_feed(tx);
+        std::mem::forget(rx);
+        let actor = FakeRenderer::spawn(FakeRenderer { png });
+        rt.subscribe::<FakeRenderer, FenceSnapshotRequested>(&actor)
+            .await;
+        std::mem::forget(actor);
+    }
+
+    /// A fresh runtime with a [`FakeRenderer`] drawing `png`.
+    async fn runtime_with_renderer(png: Vec<u8>) -> Runtime {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        install_renderer(&rt, png).await;
+        rt
+    }
+
+    /// A `Graph` fence: no Block Kit form, so a picture (164 D9).
+    pub(crate) const GRAPH_SPEC: &str = r#"{"root":"g","elements":{"g":{"type":"Graph","props":{"title":"Data flow",
+  "nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}],"edges":[{"from":"a","to":"b"}]}}}}"#;
+
+    /// Every stream text chunk, markdown post and update, concatenated.
+    fn all_text(api: &FakeApi) -> String {
+        api.calls()
+            .into_iter()
+            .flat_map(|c| match c {
+                Call::Start { chunks, .. }
+                | Call::Append { chunks, .. }
+                | Call::Stop { chunks, .. } => chunks
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        Chunk::Text(s) => Some(s),
+                        Chunk::Task { .. } | Chunk::Blocks(_) => None,
+                    })
+                    .collect(),
+                Call::Post { md } | Call::Update { md, .. } => vec![md],
+                Call::Upload | Call::UploadFile { .. } | Call::PostBlocks { .. } => Vec::new(),
+            })
+            .collect()
     }
 
     fn footer() -> Footer {
@@ -2269,13 +2783,13 @@ mod tests {
             .collect()
     }
 
-    /// 30 §9 with `slack.blocks: false`: a `json-render` fence reaches Slack
-    /// as a code block of its rendering, not its JSON; while open it is held
-    /// back, not streamed raw.
+    /// 164 D9 with `slack.blocks: false`: every `json-render` fence is a
+    /// picture; while open it is held back, not streamed raw.
     #[tokio::test(start_paused = true)]
-    async fn json_render_fence_streams_flattened_when_blocks_are_off() {
+    async fn json_render_fence_is_a_picture_when_blocks_are_off() {
         let api = FakeApi::new();
-        let mut t = turn_with(&api, ToolCards::All, true, false);
+        let rt = runtime_with_renderer(png(7, 7)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, false, true);
         t.text("Status:\n\n```json-render\n").await;
         t.text(CARD_SPEC).await;
         t.tick().await;
@@ -2288,21 +2802,29 @@ mod tests {
         );
         t.text("\n```\n\nDone.").await;
         t.finish(footer()).await;
+        let calls = api.calls();
         assert!(
-            !api.calls()
-                .iter()
-                .any(|c| matches!(c, Call::PostBlocks { .. })),
+            !calls.iter().any(|c| matches!(c, Call::PostBlocks { .. })),
+            "{calls:?}"
         );
+        let [
+            Call::Start { .. },
+            Call::UploadFile { files, .. },
+            Call::Stop { .. },
+            Call::Start { chunks, .. },
+            Call::Stop { .. },
+        ] = &calls[..]
+        else {
+            panic!("{calls:?}")
+        };
+        assert_eq!(files[0].title.as_deref(), Some("Rollout"));
+        assert_eq!(files[0].bytes, png(7, 7));
+        assert_eq!(chunks, &vec![Chunk::Text("Done.".into())]);
         let sent = streamed_text(&api);
         assert!(
-            sent.trim_start_matches("Status:")
-                .trim_start()
-                .starts_with("```\n╭"),
+            !sent.contains("\"type\"") && !sent.contains("```"),
             "{sent}"
         );
-        assert!(sent.contains("[x] schema migration"), "{sent}");
-        assert!(!sent.contains("\"type\""), "{sent}");
-        assert!(sent.ends_with("```\n\nDone."), "{sent}");
     }
 
     /// 110 §8: a fence that renders goes out as one `blocks` chunk between
@@ -2335,14 +2857,13 @@ mod tests {
         assert!(!streamed_text(&api).contains("```"), "fence source leaked");
     }
 
-    /// 110 §8: a fence with no block form (Graph) flattens as before.
+    /// 164 D9: a fence with no block form (Graph) is a picture; with no
+    /// renderer it is its text fallback, never its JSON.
     #[tokio::test(start_paused = true)]
-    async fn unsupported_fence_streams_flattened() {
-        let spec = r#"{"root":"g","elements":{"g":{"type":"Graph","props":{
-  "nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}],"edges":[{"from":"a","to":"b"}]}}}}"#;
+    async fn unsupported_fence_streams_as_its_fallback_without_a_renderer() {
         let api = FakeApi::new();
         let mut t = turn(&api, ToolCards::All);
-        t.text(&format!("See:\n\n```json-render\n{spec}\n```\n"))
+        t.text(&format!("See:\n\n```json-render\n{GRAPH_SPEC}\n```\n"))
             .await;
         t.finish(footer()).await;
         let chunks: Vec<Chunk> = api
@@ -2358,7 +2879,8 @@ mod tests {
             "{chunks:?}"
         );
         let sent = streamed_text(&api);
-        assert!(sent.contains("```\n"), "{sent}");
+        let fallback = surface::picture_fallback(PictureLang::JsonRender, GRAPH_SPEC, 60);
+        assert_eq!(sent, format!("See:\n\n{fallback}\n"));
         assert!(!sent.contains("\"nodes\""), "{sent}");
     }
 
@@ -2400,9 +2922,10 @@ mod tests {
         assert!(!md.contains("Rollout"), "{md}");
     }
 
-    /// 110 §8: once a bubble carries 50 blocks, further fences flatten.
+    /// 110 §8, 164 D9: once a bubble carries 50 blocks, a further fence over
+    /// the cap is a picture, not blocks.
     #[tokio::test(start_paused = true)]
-    async fn fence_blocks_cap_at_fifty_per_bubble() {
+    async fn fence_over_the_fifty_block_cap_is_a_picture() {
         // A Stack of 30 Separators: 30 `divider` blocks.
         let ids: Vec<String> = (0..30).map(|i| format!("\"d{i}\"")).collect();
         let elements: Vec<String> = (0..30)
@@ -2415,7 +2938,8 @@ mod tests {
         );
         let fence = format!("```json-render\n{spec}\n```\n\n");
         let api = FakeApi::new();
-        let mut t = turn(&api, ToolCards::All);
+        let rt = runtime_with_renderer(png(2, 2)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, true, true);
         t.text(&format!("A\n\n{fence}")).await;
         t.tick().await;
         t.text(&format!("B\n\n{fence}C\n\n")).await;
@@ -2424,6 +2948,9 @@ mod tests {
         let [
             Call::Start { chunks: first, .. },
             Call::Append { chunks: second, .. },
+            Call::UploadFile { files, .. },
+            Call::Stop { status, .. },
+            Call::Start { chunks: third, .. },
         ] = &calls[..]
         else {
             panic!("{calls:?}")
@@ -2432,11 +2959,309 @@ mod tests {
             matches!(&first[..], [Chunk::Text(_), Chunk::Blocks(b), Chunk::Text(_)] if b.as_array().unwrap().len() == 30),
             "{first:?}"
         );
-        // 30 + 30 > 50: the second fence stays text.
-        assert!(
-            matches!(&second[..], [Chunk::Text(s)] if s.contains("```")),
-            "{second:?}"
+        // 30 + 30 > 50: the second fence is a picture between B and C.
+        assert_eq!(second, &vec![Chunk::Text("B\n\n".into())]);
+        assert_eq!(files[0].bytes, png(2, 2));
+        assert_eq!(status.as_deref(), Some("processing"));
+        assert_eq!(third, &vec![Chunk::Text("C\n\n".into())]);
+        assert!(!all_text(&api).contains("Separator"), "{calls:?}");
+    }
+
+    /// 164 D9 (a), stream mode: prose, a Graph fence and prose go out as
+    /// text, a PNG in the thread (the renderer's bytes, title, alt) and
+    /// text, in that order; the JSON never.
+    #[tokio::test(start_paused = true)]
+    async fn graph_fence_streams_as_a_picture_between_its_text() {
+        let api = FakeApi::new();
+        let rt = runtime_with_renderer(png(1440, 600)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, true, true);
+        t.text(&format!(
+            "Status:\n\n```json-render\n{GRAPH_SPEC}\n```\n\nDone."
+        ))
+        .await;
+        t.tick().await;
+        t.finish(footer()).await;
+        let calls = api.calls();
+        let [
+            Call::Start {
+                ts: first,
+                chunks: before,
+                ..
+            },
+            Call::UploadFile { files, comment },
+            Call::Stop {
+                ts: stopped,
+                chunks: none,
+                status,
+                ..
+            },
+            Call::Start { chunks: after, .. },
+            Call::Stop { footer: foot, .. },
+        ] = &calls[..]
+        else {
+            panic!("{calls:?}")
+        };
+        assert_eq!(before, &vec![Chunk::Text("Status:\n\n".into())]);
+        let [file] = &files[..] else {
+            panic!("{files:?}")
+        };
+        assert_eq!(file.bytes, png(1440, 600));
+        assert_eq!(file.mime, "image/png");
+        assert_eq!(file.name, "diagram.png");
+        assert_eq!(file.title.as_deref(), Some("Data flow"));
+        let alt = file.alt.as_deref().expect("alt_txt");
+        assert!(!alt.is_empty() && !alt.contains('{'), "{alt}");
+        assert_eq!(comment, &None);
+        assert_eq!(
+            (stopped, none.len(), status.as_deref()),
+            (first, 0, Some("processing"))
         );
+        assert_eq!(after, &vec![Chunk::Text("Done.".into())]);
+        assert!(foot.is_some());
+        let text = all_text(&api);
+        assert!(!text.contains("nodes") && !text.contains("```"), "{text}");
+    }
+
+    /// 164 D9 (a), update mode: the live edit shows `_drawing…_` in place
+    /// of the fence, the picture goes up, the bubble closes before it and
+    /// the text after it is its own message; the JSON never.
+    #[tokio::test(start_paused = true)]
+    async fn graph_fence_in_update_mode_is_a_picture_between_its_text() {
+        let api = FakeApi::new();
+        let rt = runtime_with_renderer(png(8, 8)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, true, true);
+        api.fail("start", "channel_type_not_supported");
+        t.text(&format!(
+            "Status:\n\n```json-render\n{GRAPH_SPEC}\n```\n\nDone."
+        ))
+        .await;
+        t.tick().await;
+        t.finish(footer()).await;
+        let calls = api.calls();
+        let [
+            Call::Post { md: live },
+            Call::UploadFile { files, .. },
+            Call::Update {
+                ts: first,
+                md: closed,
+            },
+            Call::Post { .. },
+            Call::Update {
+                ts: second,
+                md: last,
+            },
+        ] = &calls[..]
+        else {
+            panic!("{calls:?}")
+        };
+        assert_eq!(live, &format!("Status:\n\n{DRAWING}"));
+        assert_eq!(files[0].bytes, png(8, 8));
+        assert_eq!((first.as_str(), closed.as_str()), ("ts0", "Status:\n\n"));
+        assert_ne!(first, second);
+        assert!(last.starts_with("Done.\n\n_m ·"), "{last}");
+        let text = all_text(&api);
+        assert!(!text.contains("nodes") && !text.contains("```"), "{text}");
+    }
+
+    /// 164 D7 (b): with nobody drawing, the fence is its text fallback in
+    /// place; no upload, no JSON.
+    #[tokio::test(start_paused = true)]
+    async fn graph_fence_without_a_renderer_is_its_fallback_text() {
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        t.text(&format!(
+            "Status:\n\n```json-render\n{GRAPH_SPEC}\n```\n\nDone."
+        ))
+        .await;
+        t.tick().await;
+        t.finish(footer()).await;
+        let calls = api.calls();
+        assert!(
+            !calls.iter().any(|c| matches!(c, Call::UploadFile { .. })),
+            "{calls:?}"
+        );
+        assert_eq!(api.starts().len(), 1, "{calls:?}");
+        let text = all_text(&api);
+        let fallback = surface::picture_fallback(PictureLang::JsonRender, GRAPH_SPEC, 60);
+        assert_eq!(text, format!("Status:\n\n{fallback}\n\nDone."));
+        assert!(!text.contains("nodes"), "{text}");
+    }
+
+    /// 164 D10 (c): `pictures: false` sends the fallback and asks no client.
+    #[tokio::test(start_paused = true)]
+    async fn pictures_off_sends_the_fallback_and_requests_nothing() {
+        let api = FakeApi::new();
+        let rt = runtime_with_renderer(png(8, 8)).await;
+        let hits = Arc::new(AtomicU32::new(0));
+        let counter = Counter::spawn(Counter(Arc::clone(&hits)));
+        rt.subscribe::<Counter, FenceSnapshotRequested>(&counter)
+            .await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, true, false);
+        t.text(&format!(
+            "Status:\n\n```json-render\n{GRAPH_SPEC}\n```\n\nDone."
+        ))
+        .await;
+        t.tick().await;
+        t.finish(footer()).await;
+        let calls = api.calls();
+        assert!(
+            !calls.iter().any(|c| matches!(c, Call::UploadFile { .. })),
+            "{calls:?}"
+        );
+        assert_eq!(hits.load(Ordering::Relaxed), 0, "a snapshot was requested");
+        let text = all_text(&api);
+        let fallback = surface::picture_fallback(PictureLang::JsonRender, GRAPH_SPEC, 60);
+        assert_eq!(text, format!("Status:\n\n{fallback}\n\nDone."));
+    }
+
+    /// Counts `FenceSnapshotRequested` on a runtime's bus.
+    #[derive(kameo::Actor)]
+    struct Counter(Arc<AtomicU32>);
+
+    impl kameo::message::Message<FenceSnapshotRequested> for Counter {
+        type Reply = ();
+        async fn handle(
+            &mut self,
+            _: FenceSnapshotRequested,
+            _: &mut kameo::message::Context<Self, ()>,
+        ) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// 164 D8 (d): a reply streamed byte by byte never puts a byte of the
+    /// fence — opener line included — into any stream call; the picture
+    /// still lands between the prose.
+    #[tokio::test(start_paused = true)]
+    async fn fence_streamed_byte_by_byte_never_leaks() {
+        let api = FakeApi::new();
+        let rt = runtime_with_renderer(png(3, 3)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, true, true);
+        let reply = "Here:\n\n```mermaid\ngraph LR\n  A --> B\n```\n\nDone.";
+        for (i, ch) in reply.char_indices() {
+            t.text(&reply[i..i + ch.len_utf8()]).await;
+            t.tick().await;
+            let text = all_text(&api);
+            assert!(
+                !text.contains('`') && !text.contains("graph") && !text.contains("-->"),
+                "after {:?}: {text}",
+                &reply[..=i]
+            );
+        }
+        t.finish(footer()).await;
+        let calls = api.calls();
+        let upload = calls
+            .iter()
+            .position(|c| matches!(c, Call::UploadFile { .. }))
+            .unwrap_or_else(|| panic!("{calls:?}"));
+        let before = all_text_of(&calls[..upload]);
+        let after = all_text_of(&calls[upload..]);
+        assert_eq!(before, "Here:\n\n");
+        assert_eq!(after, "Done.");
+    }
+
+    /// 164 D9 (f): a Checklist fence still streams as Block Kit while a
+    /// Graph fence in the same reply is a picture; with `blocks: false` the
+    /// Checklist is a picture too.
+    #[tokio::test(start_paused = true)]
+    async fn block_capable_fence_stays_blocks_while_graph_is_a_picture() {
+        let reply = format!(
+            "Status:\n\n```json-render\n{CARD_SPEC}\n```\n\nThen:\n\n```json-render\n{GRAPH_SPEC}\n```\n\nDone."
+        );
+        let api = FakeApi::new();
+        let rt = runtime_with_renderer(png(4, 4)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, true, true);
+        t.text(&reply).await;
+        t.tick().await;
+        t.finish(footer()).await;
+        let calls = api.calls();
+        let [
+            Call::Start { chunks: first, .. },
+            Call::UploadFile { files, .. },
+            Call::Stop { .. },
+            Call::Start { chunks: second, .. },
+            Call::Stop { .. },
+        ] = &calls[..]
+        else {
+            panic!("{calls:?}")
+        };
+        let [Chunk::Text(a), Chunk::Blocks(b), Chunk::Text(c)] = &first[..] else {
+            panic!("{first:?}")
+        };
+        assert_eq!((a.as_str(), c.as_str()), ("Status:\n\n", "\n\nThen:\n\n"));
+        assert_eq!(b[0]["title"]["text"], "Rollout");
+        assert_eq!(files[0].title.as_deref(), Some("Data flow"));
+        assert_eq!(second, &vec![Chunk::Text("Done.".into())]);
+
+        let api = FakeApi::new();
+        let rt = runtime_with_renderer(png(5, 5)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, false, true);
+        t.text(&reply).await;
+        t.tick().await;
+        t.finish(footer()).await;
+        let calls = api.calls();
+        let uploads: Vec<&str> = calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::UploadFile { files, .. } => files[0].title.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(uploads, ["Rollout", "Data flow"], "{calls:?}");
+        assert!(
+            !calls.iter().any(|c| matches!(c, Call::PostBlocks { .. })),
+            "{calls:?}"
+        );
+        let text = all_text(&api);
+        assert!(
+            !text.contains("```") && !text.contains("\"type\""),
+            "{text}"
+        );
+        assert_eq!(text, "Status:\n\nThen:\n\nDone.");
+    }
+
+    /// A reply that ends in a picture still gets its footer, as its own line.
+    #[tokio::test(start_paused = true)]
+    async fn footer_follows_a_reply_that_ends_in_a_picture() {
+        let api = FakeApi::new();
+        let rt = runtime_with_renderer(png(6, 6)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, true, true);
+        t.text("See:\n\n```mermaid\ngraph LR\n  A --> B\n```\n")
+            .await;
+        t.finish(footer()).await;
+        let calls = api.calls();
+        let [
+            Call::Start { .. },
+            Call::UploadFile { files, .. },
+            Call::Stop { status, .. },
+            Call::Post { md },
+        ] = &calls[..]
+        else {
+            panic!("{calls:?}")
+        };
+        assert_eq!(files[0].title.as_deref(), Some("diagram"));
+        assert_eq!(status.as_deref(), Some("processing"));
+        assert_eq!(md, "_m · 12.3k in / 800 out · 42 s · 3 tools_");
+    }
+
+    /// The text chunks, posts and updates of `calls`, concatenated.
+    fn all_text_of(calls: &[Call]) -> String {
+        calls
+            .iter()
+            .flat_map(|c| match c {
+                Call::Start { chunks, .. }
+                | Call::Append { chunks, .. }
+                | Call::Stop { chunks, .. } => chunks
+                    .iter()
+                    .filter_map(|c| match c {
+                        Chunk::Text(s) => Some(s.clone()),
+                        Chunk::Task { .. } | Chunk::Blocks(_) => None,
+                    })
+                    .collect(),
+                Call::Post { md } | Call::Update { md, .. } => vec![md.clone()],
+                Call::Upload | Call::UploadFile { .. } | Call::PostBlocks { .. } => Vec::new(),
+            })
+            .collect()
     }
 
     #[tokio::test(start_paused = true)]
@@ -2560,7 +3385,7 @@ mod tests {
                     texts.insert(ts, md);
                 }
                 Call::Post { .. } => panic!("no fallback expected"),
-                Call::Upload | Call::PostBlocks { .. } => panic!(),
+                Call::Upload | Call::UploadFile { .. } | Call::PostBlocks { .. } => panic!(),
             }
         }
         assert!(order.len() >= 3, "{} bubbles", order.len());

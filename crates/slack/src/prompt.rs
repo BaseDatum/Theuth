@@ -1,6 +1,7 @@
 //! The `## Slack` prompt section (design doc 110 §7.2), registered by
 //! `SlackPlugin::start` as `RegisterPrompt { plugin: "slack" }`. Wave 2 (§8)
-//! swapped the monospace-box clause for "which Slack shows as native blocks".
+//! swapped the monospace-box clause for "which Slack shows as native blocks";
+//! 164 D11 made diagrams pictures.
 
 /// One paragraph after its heading, like `## Voice notes`.
 pub const PROMPT: &str = "## Slack\n\
@@ -10,9 +11,9 @@ text as a `[forwarded message from …]` line naming its author, channel, time a
 original quoted with `> ` and `(channel …, ts …)`; pass that channel and ts (the `thread_ts` when given) \
 to `slack_read_thread` when you need the rest of its thread. Lead with the answer. One screen — about twelve \
 lines — unless the user asks for more. Write the markdown Slack renders: bold, bullets, numbered lists, \
-tables of up to six columns, fenced code, links. Draw nothing Slack cannot show: no mermaid, no openui, \
-and no json-render except Alert, Callout, Table, Bars, Sparkline, Metric, MetricGrid, KeyValueList and \
-Checklist — which Slack shows as native blocks. Anything longer or richer than one screen goes through `show`; it arrives as a file the user \
+tables of up to six columns, fenced code, links. Diagrams (json-render, mermaid) arrive as pictures; \
+Alert, Callout, Table, Bars, Sparkline, Metric, MetricGrid, KeyValueList and Checklist arrive as native \
+blocks; no openui. Anything longer or richer than one screen goes through `show`; it arrives as a file the user \
 can preview. Your tool activity is one collapsed card the user can expand, so the sentence before a \
 batch of tool calls says what you are doing and why in one line, and you never list what each call \
 did. Subagents appear to the user as their own threads and a live board; do not narrate their \
@@ -43,8 +44,10 @@ mod tests {
             assert!(body.contains(c), "{c} missing");
         }
         assert!(body.contains("`[slack dm]`") && body.contains("`[slack channel]`"));
-        // 110 §7.2 wave 2: the clause names native blocks, not a monospace box.
-        assert!(body.contains("Checklist — which Slack shows as native blocks. Anything longer"));
+        // 164 D11: diagrams are pictures, the 110 §8 subset native blocks, openui nothing.
+        assert!(body.contains("Diagrams (json-render, mermaid) arrive as pictures;"));
+        assert!(body.contains("Checklist arrive as native blocks; no openui. Anything longer"));
+        assert!(!body.contains("no mermaid") && !body.contains("Draw nothing"));
         assert!(!body.contains("monospace box"));
     }
 }
