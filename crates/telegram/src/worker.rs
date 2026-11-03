@@ -258,6 +258,7 @@ impl Turn {
     /// after the previous one (45 §4.5.4). Picture fences are never read (164 D9).
     fn speak(&mut self, ctx: &WorkerCtx) {
         let text = surface::strip_pictures(&std::mem::take(&mut self.unspoken)).into_owned();
+        let text = surface::cell_link::strip_run_links(&text).into_owned(); // 171:A1
         if !self.voice || text.trim().is_empty() {
             return;
         }
@@ -405,6 +406,8 @@ impl Worker {
                 t.close_card(ctx, None).await;
                 // Fresh = no prose shown yet: the first draft goes out at once.
                 let mut fresh = t.bubble.as_ref().is_none_or(|b| b.text.raw().is_empty());
+                let text =
+                    surface::cell_link::run_links(&t.unspoken, &text, &ctx.session.to_string()); // 171:A1
                 let b = t.bubble(ctx);
                 b.push(&text);
                 t.unspoken.push_str(&text);

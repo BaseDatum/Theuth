@@ -39,7 +39,7 @@ in the reply, merged with the prose; an `openui` fence is not an app card.
 | an aside: a tip, a note, a question, a must-know | `json-render` `Callout` (variant) or `openui` `Callout` | a parenthesis |
 | facts about one thing (a config, a host, a PR) | `json-render` `KeyValueList` | a colon-separated list |
 | terms and their meanings | `Glossary` | "X means…; Y means…" |
-| a snippet to read, not run | `Code` (copy button); commands to run stay a plain code block | inline backticks for six lines |
+| a snippet to read, not run | `Code` (copy button); commands the user runs in their own terminal stay a plain code block; commands the user asked to run here are user cells (`cells` skill) | inline backticks for six lines |
 | a passage of real code with its location | `Excerpt` (`path`, 1-based `start`, `mark` the rows that carry the claim, `symbol`); text from `read_file`, never retyped | a `Code` block with the path in `title` |
 | files, directories, a repository layout | `FileList` (flat) or `Tree` (nested by `depth`) | a bullet list of paths |
 | labels, categories, states | `Tags` | comma-separated words |

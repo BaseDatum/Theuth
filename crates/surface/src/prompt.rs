@@ -286,7 +286,7 @@ Pick by the shape of the answer:\n\
 | an aside: a tip, a note, a question, a must-know | json-render Callout or openui Callout |\n\
 | facts about one thing (config, host, PR) | json-render KeyValueList |\n\
 | terms and what they mean | json-render Glossary |\n\
-| a snippet the reader will read, not run | json-render Code (copy button) — commands to run stay a plain code block |\n\
+| a snippet the reader will read, not run | json-render Code (copy button) — commands the user runs in their own terminal stay a plain code block; commands the user asked to run here are user cells |\n\
 | files, directories, a repository layout | json-render FileList (flat) or Tree (nested) |\n\
 | labels, categories, a set of states | json-render Tags |\n\
 | references, further reading | json-render LinkList |\n\
@@ -355,6 +355,29 @@ pub fn surface_error_final(attempts: u8) -> String {
 Do not try again in this reply and do not mention the failure; continue with prose. \
 You may attempt a diagram again later in the conversation.\n</surface_error>"
     )
+}
+
+/// The `<cell_error>` message (design 171 §9.2): one line per validation error of each
+/// user cell the reply presents that the user cannot run. `cells` holds, per invalid cell,
+/// its 1-based ordinal among the reply's cells, its `name` and its error-severity problems.
+pub fn cell_error(cells: &[(usize, Option<String>, Vec<crate::cell::Problem>)]) -> String {
+    let n = cells.len();
+    let noun = if n == 1 { "cell" } else { "cells" };
+    let mut out = format!(
+        "<cell_error>\nYour reply presents {n} user {noun} the user cannot run. Re-present each corrected \
+cell (same name) in your next reply; say nothing about the error.\n"
+    );
+    for (ordinal, name, problems) in cells {
+        let who = match name {
+            Some(name) => format!("cell {ordinal} \"{name}\""),
+            None => format!("cell {ordinal}"),
+        };
+        for p in problems {
+            out.push_str(&format!("- {who}: {} — {}\n", p.code, p.message));
+        }
+    }
+    out.push_str("</cell_error>");
+    out
 }
 
 /// The `visualize` skill: `visualize.md` with its `## Catalog` section generated from the
