@@ -98,7 +98,8 @@ mod tests {
 
     #[test]
     fn carriage_return_progress_collapses() {
-        assert_eq!(text(b"10%\r55%\r100%\ndone\n"), "100%\ndone");
+        // A PTY writes `\r\n` for a newline (onlcr).
+        assert_eq!(text(b"10%\r55%\r100%\r\ndone\r\n"), "100%\ndone");
     }
 
     #[test]
@@ -110,14 +111,14 @@ mod tests {
             );
         }
         let table = concat!(
-            "\r\x1b[KPreviewing update (ir-prod1):\n",
-            "     Type                              Name                          Plan       Info\n",
-            "     pulumi:pulumi:Stack               sa-frp-integration-ir-prod1\n",
-            "\x1b[33m ~ \x1b[0m  ├─ aws:secretsmanager:Secret      frp-api-credentials           \x1b[33mupdate\x1b[0m     [diff: ~tags]\n",
-            "\x1b[33m ~ \x1b[0m  └─ aws:iam:Role                   frp-integration-role          \x1b[33mupdate\x1b[0m     [diff: ~managedPolicyArns]\n",
-            "Resources:\n",
-            "    \x1b[33m~ 3 to update\x1b[0m\n",
-            "    4 unchanged\n",
+            "\r\x1b[KPreviewing update (ir-prod1):\r\n",
+            "     Type                              Name                          Plan       Info\r\n",
+            "     pulumi:pulumi:Stack               sa-frp-integration-ir-prod1\r\n",
+            "\x1b[33m ~ \x1b[0m  ├─ aws:secretsmanager:Secret      frp-api-credentials           \x1b[33mupdate\x1b[0m     [diff: ~tags]\r\n",
+            "\x1b[33m ~ \x1b[0m  └─ aws:iam:Role                   frp-integration-role          \x1b[33mupdate\x1b[0m     [diff: ~managedPolicyArns]\r\n",
+            "Resources:\r\n",
+            "    \x1b[33m~ 3 to update\x1b[0m\r\n",
+            "    4 unchanged\r\n",
         );
         bytes.extend_from_slice(table.as_bytes());
         let want = concat!(
@@ -146,7 +147,7 @@ mod tests {
     #[test]
     fn wide_line_stays_one_line() {
         let line = "x".repeat(250);
-        let out = render(format!("{line}\nnext\n").as_bytes(), 100, 30, 10_000);
+        let out = render(format!("{line}\r\nnext\r\n").as_bytes(), 100, 30, 10_000);
         assert_eq!(out.text, format!("{line}\nnext"));
     }
 
@@ -154,7 +155,7 @@ mod tests {
     fn overflow_says_first_lines_are_in_the_log() {
         let mut bytes = String::new();
         for i in 1..=10_100 {
-            bytes.push_str(&format!("line {i}\n"));
+            bytes.push_str(&format!("line {i}\r\n"));
         }
         let out = render(bytes.as_bytes(), 100, 30, 10_000);
         assert!(out.dropped_lines > 0);
@@ -166,7 +167,7 @@ mod tests {
 
     #[test]
     fn ansi_keeps_colour() {
-        let out = render(b"\x1b[31mred\x1b[0m\n", 80, 24, 100);
+        let out = render(b"\x1b[31mred\x1b[0m\r\n", 80, 24, 100);
         assert!(out.ansi.contains("\x1b[31m"));
         assert_eq!(out.text, "red");
     }

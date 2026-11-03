@@ -235,7 +235,7 @@ fn grouped(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(' ');
         }
         out.push(c);
@@ -385,7 +385,7 @@ mod tests {
         let head = t.lines().next().unwrap();
         assert!(head.starts_with("<cell_result run=\"r_01JC7Q2M8V\" name=\"preview-ir-prod1\" exit=\"0\" secs=\"41\" cwd=\"~/dr\" interpreter=\"bash 5.2 (Homebrew)\" expect=\"met 1/1\" edited=\"false\" pressed=\"desktop · Sky's MacBook\" at=\""), "{head}");
         assert!(head.ends_with("pass=\"p1\" pass_end=\"true\">"), "{head}");
-        assert!(t.contains("\nexpect ✓ 3 to update\nsummary ~3 update · 0 replace · 0 delete\noutput 30 B, complete:\nResources:\n"));
+        assert!(t.contains("\nexpect ✓ 3 to update\nsummary ~3 update · 0 replace · 0 delete\noutput 29 B, complete:\nResources:\n"), "{t}");
         assert!(t.ends_with("</cell_result>"));
         // Unnamed: cell + message.
         let t = build(&run(), "x", &cfg, &Extra::default());

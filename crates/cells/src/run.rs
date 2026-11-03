@@ -172,7 +172,7 @@ pub fn disarmed_reason(
         return format!("after: {after_name} was edited since it ran — run it again");
     }
     if !fresh(ended, now_ms, max_age_mins) {
-        let age = if max_age_mins > 0 && max_age_mins % 60 == 0 {
+        let age = if max_age_mins > 0 && max_age_mins.is_multiple_of(60) {
             format!("{} h", max_age_mins / 60)
         } else {
             format!("{max_age_mins} min")

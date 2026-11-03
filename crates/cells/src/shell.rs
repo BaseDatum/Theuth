@@ -686,9 +686,19 @@ impl LiveCut {
             self.carry = data[data.len() - keep..].to_vec();
             return None;
         }
-        if let Some(at) = find(&data, D_SEQ) {
-            self.on = false;
-            data.truncate(at);
+        match find(&data, D_SEQ) {
+            Some(at) => {
+                self.on = false;
+                data.truncate(at);
+            }
+            // Hold back a tail that may be the start of the D sequence.
+            None => {
+                let keep = (1..D_SEQ.len())
+                    .rev()
+                    .find(|&k| data.ends_with(&D_SEQ[..k]))
+                    .unwrap_or(0);
+                self.carry = data.split_off(data.len() - keep);
+            }
         }
         (!data.is_empty()).then_some(data)
     }
@@ -933,13 +943,8 @@ mod tests {
                     got.extend(b);
                 }
             }
-            // A split inside the D sequence leaks at most its first bytes.
             let got = String::from_utf8_lossy(&got).into_owned();
-            assert!(got.starts_with("hello\n"), "split {split}: {got:?}");
-            assert!(
-                got.len() <= "hello\n".len() + D_SEQ.len(),
-                "split {split}: {got:?}"
-            );
+            assert_eq!(got, "hello\n", "split {split}");
         }
     }
 

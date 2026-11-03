@@ -95,7 +95,7 @@ fn press_refusals() {
             "echo apply",
         ),
         fence("bash", &["cwd: /definitely/not/here"], "ls"),
-        fence("bash", &[], "ls"),
+        fence("bash", &["name: nocwd"], "ls"),
     ]
     .concat();
     let t = Transcript {
@@ -196,7 +196,7 @@ fn wake_follows_the_section_9_3_table() {
     // The pass end wakes when the pass contained a review cell.
     assert_eq!(wake_rule(false, false, Some(true)), (true, "woke"));
     // Ask theuth wakes.
-    assert_eq!(wake_rule(false, false, Some(true)).0, true);
+    assert!(wake_rule(false, false, Some(true)).0);
 }
 
 fn finished(id: &str, cell: CellRef, code_sha: &str, ended_ms: i64, state: RunState) -> CellRun {
