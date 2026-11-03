@@ -217,11 +217,14 @@ function badge(d: Degradation): string | null {
   if (d === 'NoNote') return 'no note'
   if (d === 'DiarizationDown') return 'speaker labels down'
   if (typeof d === 'object' && 'SttDown' in d) return 'transcription down'
+  // 173: only while it lasts; a return probe sets `until_ms`.
+  if (typeof d === 'object' && 'SystemAudioFallback' in d) return d.SystemAudioFallback.until_ms === null ? 'system audio fallback' : null
   return null
 }
 
-/** The strip's degradation badges, in order; the capture badge ({@link captureBadge}) is drawn apart from these. */
-export const liveBadges = (degraded: Degradation[]): string[] => degraded.map(badge).filter((b): b is string => b !== null)
+/** The strip's degradation badges, in order, minus one that says what the capture badge (`alert`, {@link captureBadge}) already says. */
+export const liveBadges = (degraded: Degradation[], alert: string | null = null): string[] =>
+  degraded.map(badge).filter((b): b is string => b !== null && b !== alert)
 
 /** Pure transition; exported for the tests. */
 export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {

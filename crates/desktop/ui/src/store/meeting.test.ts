@@ -269,3 +269,12 @@ test('173 R3-6: a PermissionDenied degradation is never a strip badge; the captu
   expect(captureBadge({ mic: OK, system: OK })).toBeNull()
   expect(liveBadges([...degraded, 'MicNoAec', { SttDown: 'Mic' }, { PermissionDenied: 'Microphone' }])).toEqual(['headphones recommended', 'transcription down'])
 })
+
+test('173: a live fallback is one badge; an ended one none', () => {
+  const open = { SystemAudioFallback: { reason: 'Silent', at_ms: 1n, until_ms: null } } as const
+  const ended = { SystemAudioFallback: { reason: 'Silent', at_ms: 1n, until_ms: 2n } } as const
+  expect(liveBadges([open])).toEqual(['system audio fallback'])
+  const alert = captureBadge({ mic: OK, system: { state: 'Degraded', reason: 'Silent' } })
+  expect(liveBadges([open], alert)).toEqual([])
+  expect(liveBadges([ended])).toEqual([])
+})

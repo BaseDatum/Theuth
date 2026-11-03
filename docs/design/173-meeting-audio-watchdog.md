@@ -72,12 +72,11 @@ back. The fallback then records that app plus Zoom, until a return probe hears t
 ## What is recorded and shown
 - Each episode becomes a manifest `gaps` entry with `track`, `reason` (`Stalled | Silent |
   PermissionDenied | Failed`) and `retarget` (the new pid). An entry without `track` is still a
-  pause. The fallback adds a `fallbacks` entry `{ reason, at_ms, until_ms }` (`until_ms` set when a
-  return probe brings the app's tap back); a denied permission adds `degraded:
-  PermissionDenied(AudioCapture)`. **Forward compatibility:** everything this writes into
-  `manifest.json` is main's enum variants or optional fields pre-173 binaries ignore, so the installed
-  app and dev builds share `~/.theuth` safely (pinned by a test that loads it with a copy of main's
-  types).
+  pause. The fallback adds `degraded: SystemAudioFallback { reason, at_ms, until_ms }` (`until_ms` set
+  when a return probe brings the app's tap back); a denied permission adds `degraded:
+  PermissionDenied(AudioCapture)`. Clean break (Sky, 2026-11-03): manifests written by this build
+  need not load in older builds; this build loads main-era manifests (pinned by a test on the
+  incident's manifest).
 - `MeetingEvent::Capture` and `meeting_status.capture` carry `{mic, system}` health:
   `Ok | Recovering | Lost | Degraded`. A track stays `Ok` until the first reopen failed (about 29 s
   of zeros: 15 s + probe 4 s + 5 s + probe 4 s; 7 s for a stall); a denied permission or terminal error shows at once. The control center

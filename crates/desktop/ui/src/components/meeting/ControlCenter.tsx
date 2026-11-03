@@ -37,7 +37,6 @@ import { cn } from '@/lib/utils'
 import { LiveSession } from '@/routes/c.$session'
 import type { CaptureFault } from '@/rpc/bindings/CaptureFault'
 import type { Degradation } from '@/rpc/bindings/Degradation'
-import type { Fallback } from '@/rpc/bindings/Fallback'
 import type { Gap } from '@/rpc/bindings/Gap'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import type { PostStage } from '@/rpc/bindings/PostStage'
@@ -99,17 +98,16 @@ export const degradationText = (d: Degradation): string =>
         ? d
         : 'SttDown' in d
           ? `STT down (${d.SttDown})`
-          : d.PermissionDenied === 'Microphone'
-            ? 'Microphone permission denied'
-            : 'System Audio Recording permission denied'
+          : 'SystemAudioFallback' in d
+            ? (({ reason, at_ms, until_ms }) =>
+                `app audio tap ${FAULT[reason]}: all system audio recorded from ${hhmmss(Number(at_ms))}${until_ms === null ? '' : ` to ${hhmmss(Number(until_ms))}`}`)(d.SystemAudioFallback)
+            : d.PermissionDenied === 'Microphone'
+              ? 'Microphone permission denied'
+              : 'System Audio Recording permission denied'
 
 /** 173: `system 00:06:10 for 38 s (silent)` — the track was silence-padded while the clock ran. */
 export const gapText = (g: Gap): string =>
   `${g.track} ${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s (${g.reason ? FAULT[g.reason] : 'silent'}${g.retarget === undefined ? '' : `, tap moved to pid ${g.retarget}`})`
-
-/** 173: `00:06:10–00:07:30 (silent)`, or `from 00:06:10 (silent)` while the app's tap never came back. */
-export const fallbackText = (f: Fallback): string =>
-  `${f.until_ms === null ? `from ${hhmmss(Number(f.at_ms))}` : `${hhmmss(Number(f.at_ms))}–${hhmmss(Number(f.until_ms))}`} (${FAULT[f.reason]})`
 
 export function ControlCenter({ id }: { id: string }) {
   const api = useApi()
@@ -260,7 +258,6 @@ export function ControlCenter({ id }: { id: string }) {
                               {manifest.data.gaps.filter((g) => g.track === undefined).map((g) => `${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s`).join(', ') || 'none'}
                             </Row>
                             <Row label="Audio gaps">{manifest.data.gaps.filter((g) => g.track !== undefined).map(gapText).join(', ') || 'none'}</Row>
-                            <Row label="System audio fallback">{(manifest.data.fallbacks ?? []).map(fallbackText).join(', ') || 'none'}</Row>
                             <Row label="Session model">{manifest.data.session_model ?? 'default'}</Row>
                             <Row label="Tracks">{manifest.data.tracks.map((t) => t.file).join(', ')}</Row>
                             {manifest.data.failure && !cycle?.failure && <Row label="Failure">{manifest.data.failure}</Row>}

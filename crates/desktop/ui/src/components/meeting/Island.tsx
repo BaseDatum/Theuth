@@ -161,7 +161,7 @@ export function Island() {
 
   const warning = captureWarning(capture, app)
   const alert = captureBadge(capture)
-  const badges = [...liveBadges(degraded), ...(approval ? ['approval waiting'] : []), ...(listening ? ['listening…'] : [])]
+  const badges = [...liveBadges(degraded, alert), ...(approval ? ['approval waiting'] : []), ...(listening ? ['listening…'] : [])]
   const action = (p: Promise<unknown>) => {
     setMenu(false)
     void p.then(() => qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })).catch(() => undefined)

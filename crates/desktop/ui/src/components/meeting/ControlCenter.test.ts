@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest'
 vi.hoisted(() => {
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined })
 })
-import { STEPS, degradationText, fallbackText, gapText, lifecycle } from './ControlCenter'
+import { STEPS, degradationText, gapText, lifecycle } from './ControlCenter'
 
 test('no strip while live, before the recording ended, or for an unfinished start', () => {
   expect(lifecycle(undefined, null, null, true)).toBeNull()
@@ -45,7 +45,11 @@ test('173: gapText reads track, clock, length, reason and the retarget', () => {
   expect(gapText({ at_ms: 370_000n, dur_ms: 38_400n, track: 'system', reason: 'Stalled', retarget: 4242 })).toBe('system 00:06:10 for 38 s (stalled, tap moved to pid 4242)')
 })
 
-test('173 R3: fallbackText spans the clock, open-ended until a return probe', () => {
-  expect(fallbackText({ reason: 'Silent', at_ms: 370_000n, until_ms: 450_000n })).toBe('00:06:10–00:07:30 (silent)')
-  expect(fallbackText({ reason: 'Silent', at_ms: 370_000n, until_ms: null })).toBe('from 00:06:10 (silent)')
+test('173: degradationText spans a system-audio fallback, open-ended until a return probe', () => {
+  expect(degradationText({ SystemAudioFallback: { reason: 'Silent', at_ms: 370_000n, until_ms: 450_000n } })).toBe(
+    'app audio tap silent: all system audio recorded from 00:06:10 to 00:07:30',
+  )
+  expect(degradationText({ SystemAudioFallback: { reason: 'Silent', at_ms: 370_000n, until_ms: null } })).toBe(
+    'app audio tap silent: all system audio recorded from 00:06:10',
+  )
 })

@@ -679,7 +679,6 @@ async fn export_bindings() {
         meeting::MeetingSummary,
         meeting::Manifest,
         meeting::Gap,
-        meeting::Fallback,
         meeting::Stem,
         meeting::TrackFile,
         meeting::Permissions,

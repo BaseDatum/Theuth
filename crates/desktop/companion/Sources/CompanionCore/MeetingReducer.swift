@@ -348,7 +348,8 @@ public enum MeetingReducer {
     }
 
     /// `Island.tsx` `badge`: a degradation's strip word. A denied permission is `nil` — the capture badge carries the live
-    /// permission state and clears itself; the degradation list keeps it until the next `State`.
+    /// permission state and clears itself; the degradation list keeps it until the next `State`. A `SystemAudioFallback`
+    /// that ended is history, not a badge.
     public static func badge(_ d: Degradation) -> String? {
         switch d {
         case .micNoAec: return "headphones recommended"
@@ -357,15 +358,18 @@ public enum MeetingReducer {
         case .nearMaxLength: return "10 min left"
         case .sttDown: return "transcription down"
         case .permissionDenied: return nil
+        case .systemAudioFallback(_, let ended): return ended ? nil : "system audio fallback"
         case .other("NoNote"): return "no note"
         case .other("DiarizationDown"): return "speaker labels down"
         case .other: return nil
         }
     }
 
-    /// The live strip's badges: the degradations, the capture word, then the cues.
+    /// The live strip's badges: the degradations (minus one that says what the capture word says), the capture word, then
+    /// the cues.
     public static func stripBadges(_ s: MeetingSlice) -> [String] {
-        s.degraded.compactMap(badge) + (captureBadge(s.capture).map { [$0] } ?? [])
+        let alert = captureBadge(s.capture)
+        return s.degraded.compactMap(badge).filter { $0 != alert } + (alert.map { [$0] } ?? [])
             + (s.approvalWaiting ? ["approval waiting"] : []) + (s.listening ? ["listening…"] : [])
     }
 }

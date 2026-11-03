@@ -410,7 +410,12 @@ struct MeetingReducerTests {
         #expect(!MeetingReducer.stripBadges(s).contains { $0.contains("permission") })
         s.listening = true; s.approvalWaiting = true
         #expect(MeetingReducer.stripBadges(s) == ["headphones recommended", "approval waiting", "listening…"])
-        #expect(MeetingReducer.badge(.other("SystemAudioFallback")) == nil)
+        #expect(MeetingReducer.badge(.systemAudioFallback(reason: "Silent", ended: false)) == "system audio fallback")
+        #expect(MeetingReducer.badge(.systemAudioFallback(reason: "Silent", ended: true)) == nil)
+        // The live fallback is said once: by the capture badge.
+        s = MeetingReducer.reduce(s, .capture(meeting: "m1", capture: CaptureStatus(mic: .ok, system: .degraded(reason: .silent))), now: t0)
+        s = MeetingReducer.reduce(s, .state(meeting: "m1", state: .recording, degraded: [.systemAudioFallback(reason: "Silent", ended: false)]), now: t0)
+        #expect(MeetingReducer.stripBadges(s).filter { $0 == "system audio fallback" }.count == 1)
     }
 
     @Test func capturePillNamesTheUnheardTrack() {
