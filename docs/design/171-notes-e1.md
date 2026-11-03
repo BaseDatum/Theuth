@@ -44,6 +44,12 @@ Decisions taken where the design or the brief was silent, deviations, tests. Des
 - `cells::actor::tests::{press_refusals (digest guard, superseded, danger line/selection, missing cwd, invalid, lint never refuses), run_all_stops_before_danger_and_blocking_lint, wake_follows_the_section_9_3_table, after_gate_with_edited_and_old_previews, idempotent_run_ids, restart_settles_lost_without_replay, e2e_real_shells}` — the e2e runs real `/bin/bash` and `/bin/zsh` kernels (HOME = a scratch dir, no user rc) through the jobs actor: §5.6 CWD table, PIPESTATUS + trailing comment, unclosed `if`, exit 42, `read -p` via `input`, FIFO order, second press attaches, cancel of a queued run, Stop under `yes` < 500 ms, credential masks + private refusal, run file gone + `code` file, `RunFinished` only after the final row.
 - `rpc::cells::tests::{internal_peer_is_refused_for_every_press_method, guest_peer_is_refused_for_every_press_method, forwarded_internal_peer_passes_the_guard, every_read_method_refuses_guests, no_peer_is_unauthorized, pressed_by_names_kind_and_device, refusals_carry_a_stable_reason}`.
 
+## R1 (lead, 20:06): E2's FK finding
+
+- **HANDOFF-Z-2** was already closed in `9e7844ec`: `Run` carries `cell: bool` and `run()` computes `inline = claimable || origin == Tool || j.cell`, so a kernel's exit, Close or kill ships `Finished{result: None}` to the guard — never `Settle::FinishedWithResult`, never `inject`. `CancelJob{origin: Ui}` is refused for kernels (L1), so the kill that remains is `Shutdown` (`CellKill{close}`, session close). Proof: `tools::pty::tests::{cell_kernel_exit_never_reaches_the_model, cell_kernel_kill_never_reaches_the_model}` assert on the activity ledger: a bare `Finished`, no `Result`, no `Idle`.
+- **HANDOFF-Z-3** was already closed: `Launch` forces `idle_after = None` for every `cell` job, whatever the caller passes (`shell::launch` passes `None` too). Proof: `cell_kernel_exit_never_reaches_the_model` starts the kernel with `idle_after = 1 s`, keeps it quiet for 3 s and sees no `JobEvent::Idle` and no `Notice::JobIdle`.
+- E2's `note::member_guard`/`member_edit`, `note::defaults` + `note::cell_cwd`, `interp::chip`, `monty::sufficient` are not in this tree; the actor's `// 171:E2` arms call only the frozen `note.rs`/`interp.rs` signatures. Z wires them after the merge.
+
 ## Known gaps
 
 - Run-all passes over forwarded (desk) sessions route the pass but not later Stop/attach of its runs (see Forwarded runs).

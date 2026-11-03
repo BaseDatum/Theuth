@@ -5239,4 +5239,79 @@ mod tests {
             ]
         );
     }
+
+    /// Waits until the ledger saw the job's settle, then checks the supervisor got neither a
+    /// result to inject nor an idle nudge (171 HANDOFF-Z-2/Z-3: a note kernel's session id
+    /// has no session row, so either would open a fresh root chat and start a turn).
+    async fn assert_settled_bare(
+        ledger: &ActorRef<crate::activity::test_sink::Ledger>,
+        seen: &Mutex<Vec<crate::activity::test_sink::Seen>>,
+    ) {
+        use crate::activity::test_sink::Seen;
+        let v = crate::jobs::tests::ledger_until(ledger, seen, Duration::from_secs(8), |v| {
+            v.iter()
+                .any(|s| matches!(s, Seen::Finished(_) | Seen::Result(_)))
+        })
+        .await;
+        assert!(
+            v.iter().any(|s| matches!(s, Seen::Finished(_))),
+            "kernel settles bare: {v:?}"
+        );
+        assert!(
+            !v.iter()
+                .any(|s| matches!(s, Seen::Result(_) | Seen::Idle(_))),
+            "no FinishedWithResult / JobIdle for a kernel: {v:?}"
+        );
+    }
+
+    /// A kernel whose process exits by itself (crash, `exit` in a cell) after sitting quiet
+    /// past a 1 s idle interval: no `<job_idle>` while it ran, no `<job_result>` after.
+    #[tokio::test]
+    async fn cell_kernel_exit_never_reaches_the_model() {
+        let (fx, ledger, seen) =
+            crate::jobs::tests::certified(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, _rx) = mpsc::channel(8);
+        let mut m = cell_start(&fx, &["-c", "printf hi; sleep 3; exit 3"], None, tx);
+        m.idle_after = Some(IDLE);
+        fx.jobs.ask(m).await.unwrap();
+        assert_settled_bare(&ledger, &seen).await;
+        let (exit, _, inline) = finished(&fx).await;
+        assert_eq!(exit, JobExit::Exited(3));
+        assert!(inline);
+        assert!(idles(&fx).is_empty(), "{:?}", idles(&fx));
+    }
+
+    /// A kernel killed from outside (session close / `CellKill{close}`): `cancel_job`'s and a
+    /// UI's `Ui` origin are refused for kernels, so `Shutdown` is the kill that remains.
+    #[tokio::test]
+    async fn cell_kernel_kill_never_reaches_the_model() {
+        let (fx, ledger, seen) =
+            crate::jobs::tests::certified(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, _rx) = mpsc::channel(8);
+        fx.jobs
+            .ask(cell_start(&fx, &["-c", "sleep 30"], None, tx))
+            .await
+            .unwrap();
+        let ui = fx
+            .jobs
+            .ask(CancelJob {
+                session: fx.session,
+                id: JobId("j1".into()),
+                origin: CancelOrigin::Ui,
+            })
+            .await;
+        assert_eq!(refused(ui), jobs::CELL_REFUSED);
+        fx.jobs
+            .ask(CancelJob {
+                session: fx.session,
+                id: JobId("j1".into()),
+                origin: CancelOrigin::Shutdown,
+            })
+            .await
+            .unwrap();
+        assert_settled_bare(&ledger, &seen).await;
+        let (exit, _, inline) = finished(&fx).await;
+        assert_eq!(exit, JobExit::Killed);
+        assert!(inline);
+    }
 }
