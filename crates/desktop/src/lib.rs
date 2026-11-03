@@ -539,9 +539,9 @@ mod desktop {
         app.deep_link().on_open_url(move |event| open(event.urls()));
     }
 
-    /// `theuth://quit`: the companion's tray › Quit theuth — the whole app, one quit (130 W7). The Swift
-    /// companion `terminate()`s the shell, which lands in the same handshake; on Windows the companion
-    /// opens this link instead (the single-instance plugin hands it to the running shell) → [`quit::request`].
+    /// `theuth://quit`: the companion's tray › Quit theuth — the whole app, one quit (130 W7) → [`quit::request`].
+    /// Both companions open this link (163: the Swift one aims it at the running shell; on Windows the
+    /// single-instance plugin hands it over). A plain `terminate()` would skip the handshake and its overlay.
     fn is_quit_link(url: &tauri::Url) -> bool {
         url.scheme() == "theuth"
             && url.host_str() == Some("quit")

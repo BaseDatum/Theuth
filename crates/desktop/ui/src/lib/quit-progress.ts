@@ -106,6 +106,24 @@ export function reduce(s: QuitState | null, e: QuitEvent): QuitState | null {
 
 export const quitTitle = (s: QuitState): string => (s.restart ? 'Restarting to update' : 'Shutting down theuth')
 
+/** What `isolate` needs of a DOM element. */
+export type Inertable = { inert: boolean }
+
+/**
+ * The overlay's siblings under `<body>` made inert: the app root and every portal layer (Radix dialogs, menus,
+ * popovers, the toaster), so nothing behind the overlay takes focus or input. Already-inert ones are left alone.
+ * Returns the ones it changed, for the undo.
+ */
+export function isolate<T extends Inertable>(siblings: Iterable<T>, keep: T): T[] {
+  const changed: T[] = []
+  for (const el of siblings) {
+    if (el === keep || el.inert) continue
+    el.inert = true
+    changed.push(el)
+  }
+  return changed
+}
+
 const RANK: Record<QuitProgress['step'], number> = { companion: 1, engine: 2, closing: 3 }
 
 /** The overlay's rows, in D5 order: saving, the companion (only when it runs), the engine (only when ours), closing. */

@@ -176,15 +176,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(DeepLink.new)
     }
 
-    /// W7: quit the main app (its quit handshake terminates this companion and the sidecar — W1S); when it is
-    /// not running, quit the companion itself.
+    /// W7: quit the main app through its own quit handshake (163): `theuth://quit` to the running copy, as on
+    /// Windows — the shell shows its shutdown overlay, drains the engine off its main thread and terminates this
+    /// companion on the way. `terminate()` instead lands straight in the shell's exit path (no overlay, a blocked
+    /// main thread); it stays only as the fallback for a shell still running after `quitFallback`. When no main
+    /// app runs, quit the companion itself.
     @objc private func quitTheuth() {
-        if let app = MainApp.running() {
-            Log.write("quit theuth requested → terminate \(app.processIdentifier)")
-            if !app.terminate() { Log.write("terminate refused; forcing"); _ = app.forceTerminate() }
+        guard let app = MainApp.running() else {
+            NSApp.terminate(nil)
             return
         }
-        NSApp.terminate(nil)
+        guard let bundle = app.bundleURL else {
+            Log.write("quit theuth: no bundle URL for \(app.processIdentifier); terminating")
+            Self.terminate(app)
+            return
+        }
+        Log.write("quit theuth requested → theuth://quit to \(app.processIdentifier)")
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = false
+        cfg.addsToRecentItems = false
+        NSWorkspace.shared.open([DeepLink.quit], withApplicationAt: bundle, configuration: cfg) { _, err in
+            if let err { Log.write("quit theuth: open theuth://quit failed: \(err.localizedDescription)") }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.quitFallback) {
+            guard !app.isTerminated else { return }
+            Log.write("quit theuth: \(app.processIdentifier) still running after \(Self.quitFallback) s; terminating")
+            Self.terminate(app)
+        }
+    }
+
+    /// Longer than the shell's own quit cap (163 D2: 25 s from its worker's start), so the handshake always wins.
+    private static let quitFallback: TimeInterval = 30
+
+    private static func terminate(_ app: NSRunningApplication) {
+        if !app.terminate() { Log.write("terminate refused; forcing"); _ = app.forceTerminate() }
     }
 
     /// W6: the legend under the status item; from the panel/Ask bar (⌘/) it replaces that surface.

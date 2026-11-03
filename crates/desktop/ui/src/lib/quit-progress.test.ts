@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { type QuitEvent, type QuitSlice, type QuitState, type QuitSummary, quitSteps, quitTitle, reduce } from './quit-progress'
+import { type QuitEvent, type QuitSlice, type QuitState, type QuitSummary, isolate, quitSteps, quitTitle, reduce } from './quit-progress'
 
 const AT = 1_000
 const row = (id: string, over: Partial<QuitSummary> = {}): QuitSummary => ({
@@ -98,4 +98,15 @@ test('restart: the title, also when the shell request follows the webview own on
 test('nothing happens before a request', () => {
   expect(reduce(null, { type: 'progress', step: 'closing' })).toBeNull()
   expect(reduce(null, { type: 'slices', slices: {} })).toBeNull()
+})
+
+test('isolate: every sibling but the overlay goes inert; already-inert ones are not taken over for the undo', () => {
+  const el = (name: string, inert = false) => ({ name, inert })
+  const [overlay, app, dialog, hidden] = [el('overlay'), el('app'), el('dialog'), el('hidden', true)]
+  const names = (xs: { name: string }[]) => xs.map((x) => x.name)
+  expect(names(isolate([app, overlay, dialog, hidden], overlay))).toEqual(['app', 'dialog'])
+  expect([app.inert, dialog.inert, hidden.inert, overlay.inert]).toEqual([true, true, true, false])
+  // A portal that opens later: only the newcomer changes.
+  const popover = el('popover')
+  expect(names(isolate([app, overlay, dialog, popover], overlay))).toEqual(['popover'])
 })

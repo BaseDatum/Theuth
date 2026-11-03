@@ -474,8 +474,10 @@ function useEventSideEffects(st: Stores): void {
     // `attention_list` cache the sidebar keeps live; approvals are one kind among its items.
     let companion = false
     // 134 W6: Windows shows no tray title, so the count also goes into the tooltip, worded like the companion's.
+    // 163 D6: once a quit is under way the shell owns the tray ("theuth — shutting down…"); nothing is written.
     const badge = (n: number) =>
       void TrayIcon.getById('main').then((t) => {
+        if (useQuit.getState().state) return
         void t?.setTitle(n ? `●${n}` : null)
         void t?.setTooltip(n === 0 ? 'theuth · nothing needs you' : n === 1 ? 'theuth · 1 needs you' : `theuth · ${n} need you`)
       })
@@ -706,7 +708,6 @@ function Main() {
     void switcher.activate(active, { pathname, href })
   }, [hydrated, active])
   const engine = switcher.visible(active)
-  const quitting = useQuit((s) => s.state !== null)
 
   useTauri()
   useMeetingHotkeys()
@@ -715,17 +716,15 @@ function Main() {
 
   return (
     <>
-      {/* 163 D5: while the quit overlay is up nothing behind it takes focus or input. */}
-      <div className="contents" inert={quitting}>
-        {needsPairing ? (
-          <PairScreen />
-        ) : engine === null ? null : (
-          <EngineProvider key={engine} engine={engine}>
-            <Shell engine={engine} onRelaunch={() => setAttempt((n) => n + 1)} />
-          </EngineProvider>
-        )}
-        <Toaster />
-      </div>
+      {needsPairing ? (
+        <PairScreen />
+      ) : engine === null ? null : (
+        <EngineProvider key={engine} engine={engine}>
+          <Shell engine={engine} onRelaunch={() => setAttempt((n) => n + 1)} />
+        </EngineProvider>
+      )}
+      <Toaster />
+      {/* 163 D5: portalled to <body>; it makes everything else there inert while it is up. */}
       {!AUX && <QuitOverlay />}
     </>
   )

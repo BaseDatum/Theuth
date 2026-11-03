@@ -137,17 +137,30 @@ pub fn on_exit(app: &AppHandle) {
     for win in app.webview_windows().values() {
         log_err(win.hide(), "hide window at exit");
     }
+    flush_window_server();
     companion::terminate();
     app.state::<Launch>().shutdown();
     update::install_pending(app);
 }
 
-/// D6: the tooltip and a one-item, disabled tray menu until the process is gone.
+/// macOS: commit the pending Core Animation transaction now, so the `orderOut:`s above reach the window server
+/// before the main thread blocks instead of at the next run-loop turn, which never comes. Elsewhere a no-op.
+fn flush_window_server() {
+    #[cfg(target_os = "macos")]
+    if let Some(cls) = objc2::runtime::AnyClass::get(c"CATransaction") {
+        // SAFETY: `+[CATransaction flush]` takes no arguments and returns void; main thread (`RunEvent::Exit`).
+        let () = unsafe { objc2::msg_send![cls, flush] };
+    }
+}
+
+/// D6: the tooltip and a one-item, disabled tray menu until the process is gone; the attention count leaves the
+/// title. The webview's badge writes nothing once its quit overlay is up (`App.tsx`).
 fn tray_shutting_down(app: &AppHandle) -> tauri::Result<()> {
     let Some(tray) = app.tray_by_id("main") else {
         return Ok(());
     };
     tray.set_tooltip(Some("theuth \u{2014} shutting down\u{2026}"))?;
+    tray.set_title(None::<&str>)?;
     let item = MenuItem::with_id(
         app,
         "shutting-down",
