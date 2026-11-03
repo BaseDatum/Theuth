@@ -2900,7 +2900,9 @@ impl Agents {
         }
         match self.store_for(session).session(session).await {
             Ok(Some(row)) => self.ledger.register(session, row.parent, true),
-            Ok(None) => tracing::warn!(session = %session, "activity for a session with no row"),
+            // 171 HANDOFF-Z-1: an owner with no row (a note cell kernel's UUIDv5 session)
+            // is its own root; left unresolved it would block every session's activity.
+            Ok(None) => self.ledger.register(session, None, false),
             Err(e) => tracing::error!(session = %session, "activity owner lookup: {e:#}"),
         }
     }
@@ -15506,6 +15508,32 @@ pub(crate) mod tests {
         let at = |run: &str| text.find(&format!("run=\"{run}\"")).unwrap();
         assert!(at("r_1") < at("r_2") && at("r_2") < at("r_3"), "{text}");
         assert!(no_turn_within(&mut rx, p, 300).await, "one turn only");
+    }
+
+    /// 171 HANDOFF-Z-1: work admitted under an owner with no `sessions` row (a note cell
+    /// kernel's session id) blocks only that owner, never an unrelated session.
+    #[tokio::test]
+    async fn rowless_owner_blocks_no_other_session() {
+        let (_scratch, mut a) = agents().await;
+        a.ledger.certify();
+        let (p, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let agents = Agents::spawn(a);
+        let ghost = SessionId::new();
+        let kind = tools::Kind::Pty(JobId("k1".into()));
+        let op = tools::Operation {
+            id: tools::Activity::untracked(ghost, kind.clone()).id(),
+            owner: ghost,
+            kind,
+        };
+        agents.ask(Admit(op)).await.unwrap();
+        let (other, own) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.ledger.activity(p), a.ledger.activity(ghost))
+            }))
+            .await
+            .unwrap();
+        assert_eq!(other, None, "an unrelated session is not blocked");
+        assert!(own.is_some(), "the owner's own work still counts");
     }
 
     /// L1 (171 inv. 3): a job announced with a `cell:` name, or idling under one, becomes
