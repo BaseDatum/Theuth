@@ -1,8 +1,10 @@
 //! `message_user` outbound (design doc 24 §6): the channel as an
-//! [`agent::UserSink`]. Text goes through the 09 §8 plain-text chunker, then
-//! one attachment message per file with its file name.
+//! [`agent::UserSink`]. Text goes through the 09 §8 plain-text chunker with
+//! picture fences as PNGs in place (164 D9), then one attachment message per
+//! file with its file name.
 
 use agent::{Outbound, UserSink};
+use artifact::snapshot::{self, Piece};
 
 use crate::channel::Handle;
 use crate::text;
@@ -41,9 +43,26 @@ impl UserSink for Handle {
             };
             (to, m.text.clone())
         };
-        let plain = text::markdown_to_plain(&text);
-        if !plain.is_empty() && chan.send_chunks(&to, &plain).await.is_none() {
-            return Err("signal: send failed".into());
+        for piece in snapshot::paint(&chan.rt, &text, snapshot::PHONE_WIDTH, chan.pictures).await {
+            let ok = match piece {
+                Piece::Text(t) => {
+                    let plain = text::markdown_to_plain(&t);
+                    plain.is_empty() || chan.send_chunks(&to, &plain).await.is_some()
+                }
+                Piece::Picture(p) => {
+                    chan.send_attachment(
+                        &to,
+                        &p.png,
+                        "image/png",
+                        Some(&p.name),
+                        p.title.as_deref(),
+                    )
+                    .await
+                }
+            };
+            if !ok {
+                return Err("signal: send failed".into());
+            }
         }
         for f in &m.files {
             let bytes = tokio::fs::read(&f.path)
@@ -170,5 +189,90 @@ mod tests {
             "{r:?}"
         );
         assert_eq!(transport.sent().len(), 1);
+    }
+
+    /// A client that draws every requested fence as `png` (164 D3).
+    #[derive(kameo::Actor)]
+    struct FakeRenderer(Vec<u8>);
+
+    impl kameo::message::Message<snapshot::FenceSnapshotRequested> for FakeRenderer {
+        type Reply = ();
+        async fn handle(
+            &mut self,
+            m: snapshot::FenceSnapshotRequested,
+            _: &mut kameo::message::Context<Self, ()>,
+        ) {
+            snapshot::answer(
+                m.id,
+                snapshot::FenceSnapshotAnswer::done(
+                    &self.0,
+                    1120,
+                    600,
+                    artifact::preview::Client::Desktop,
+                ),
+            );
+        }
+    }
+
+    /// 164 D9: a raw picture fence in `message_user` text (a schedule or
+    /// autoresearch delivery) goes out as a PNG in its place, then the files.
+    #[tokio::test]
+    async fn raw_fence_is_delivered_as_a_picture_in_place() {
+        let (dir, transport, handle) = fixture();
+        let (tx, rx) = tokio::sync::broadcast::channel::<Arc<serde_json::Value>>(4);
+        artifact::preview::watch_feed(tx);
+        std::mem::forget(rx);
+        let mut image = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        image.extend(b"IHDR");
+        image.extend(1120u32.to_be_bytes());
+        image.extend(600u32.to_be_bytes());
+        image.extend([8, 6, 0, 0, 0]);
+        let actor = kameo::actor::Spawn::spawn_with_mailbox(
+            FakeRenderer(image.clone()),
+            runtime::subscriber_mailbox(),
+        );
+        handle
+            .chan
+            .rt
+            .subscribe::<FakeRenderer, snapshot::FenceSnapshotRequested>(&actor)
+            .await;
+        let root = SessionId::new();
+        handle
+            .chan
+            .lock()
+            .threads
+            .bind(&Recipient::new(FRIEND), root);
+        let path = dir.path().join("report.pdf");
+        std::fs::write(&path, b"%PDF").unwrap();
+        let m = outbound(
+            vec![root],
+            "Nightly:\n\n```mermaid\ngraph LR\n  A --> B\n```\n\n**done**",
+            vec![OutboundFile {
+                path,
+                name: "report.pdf".into(),
+                mime: "application/pdf".into(),
+                bytes: 4,
+            }],
+        );
+        assert_eq!(
+            handle.deliver(&m, false).await,
+            Ok(Some(format!("signal: {FRIEND}")))
+        );
+        let sent = transport.sent();
+        assert_eq!(sent.len(), 4, "{sent:?}");
+        assert!(matches!(&sent[0], SentItem::Text { text, .. } if text == "Nightly:"));
+        assert_eq!(
+            sent[1],
+            SentItem::Attachment {
+                to: FRIEND.into(),
+                mime: "image/png".into(),
+                bytes: image,
+                file_name: Some("diagram.png".into()),
+                caption: None,
+            }
+        );
+        assert!(matches!(&sent[2], SentItem::Text { text, .. } if text == "done"));
+        assert!(matches!(&sent[3], SentItem::Attachment { file_name, .. }
+            if file_name.as_deref() == Some("report.pdf")));
     }
 }

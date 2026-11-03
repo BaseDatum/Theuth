@@ -20,6 +20,8 @@ import type { PeerDelivered } from '@/rpc/bindings/PeerDelivered'
 import type { PendingPrompts } from '@/rpc/bindings/PendingPrompts'
 import type { PagePreviewRequested } from '@/rpc/bindings/PagePreviewRequested'
 import type { PagePreviewResolved } from '@/rpc/bindings/PagePreviewResolved'
+import type { FenceSnapshotRequested } from '@/rpc/bindings/FenceSnapshotRequested'
+import type { FenceSnapshotResolved } from '@/rpc/bindings/FenceSnapshotResolved'
 import type { PeerMessageChanged } from '@/rpc/bindings/PeerMessageChanged'
 import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
 import type { ActivityAppended } from '@/rpc/bindings/ActivityAppended'
@@ -97,6 +99,9 @@ export type WireEvent =
   /** 120 §11: a `page_preview` call wants the main window to render a page hidden; `Resolved` tears a late frame down. */
   | PagePreviewRequested
   | PagePreviewResolved
+  /** 164 D3: a channel reply wants a fence drawn as a PNG by the main window; `Resolved` drops a late render. */
+  | FenceSnapshotRequested
+  | FenceSnapshotResolved
   | ScrapeProgress
   | VoiceEvent
   /** 76 §4.9: the live talk — state, subtitles, the remote sink's `Flush`. */

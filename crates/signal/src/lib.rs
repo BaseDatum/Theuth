@@ -51,6 +51,10 @@ pub struct SignalConfig {
     pub owner: String,
     /// More E.164s allowed to talk; each gets its own thread.
     pub allowed: Vec<String>,
+    /// Diagrams (`json-render`, `mermaid`, `openui` fences) go out as PNG
+    /// attachments drawn by a connected desktop/web client (164 D9); `false`
+    /// sends their text fallback instead (164 D7, D10).
+    pub pictures: bool,
 }
 
 impl Default for SignalConfig {
@@ -60,6 +64,7 @@ impl Default for SignalConfig {
             device_name: "theuth".into(),
             owner: String::new(),
             allowed: Vec::new(),
+            pictures: true,
         }
     }
 }

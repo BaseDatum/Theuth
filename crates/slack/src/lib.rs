@@ -69,6 +69,10 @@ pub struct SlackConfig {
     /// `json-render` fences in the reply as Block Kit (110 §8); `false`
     /// flattens them into code blocks as 30 §9 did.
     pub blocks: bool,
+    /// Picture fences (`json-render` without a block form, `mermaid`,
+    /// `openui`) as PNGs uploaded into the thread (164 D9–D10); `false`
+    /// sends their text fallback only.
+    pub pictures: bool,
     /// Deferred (110 §8 optional, §16): a canvas beside a board create.
     /// Parsed and unused — needs the `canvases:write` scope in
     /// `manifest.yaml` and a reinstall of the app.
@@ -88,6 +92,7 @@ impl Default for SlackConfig {
             plan: true,
             deliveries: Deliveries::Hidden,
             blocks: true,
+            pictures: true,
             canvases: false,
         }
     }
@@ -597,12 +602,13 @@ mod tests {
     #[test]
     fn config_defaults_and_the_110_keys_parse() {
         let d = SlackConfig::default();
-        assert!(d.plan && d.blocks && !d.canvases);
+        assert!(d.plan && d.blocks && d.pictures && !d.canvases);
         assert_eq!(d.deliveries, Deliveries::Hidden);
-        let c: SlackConfig =
-            serde_yaml::from_str("plan: false\ndeliveries: hidden\nblocks: false\ncanvases: true")
-                .unwrap();
-        assert!(!c.plan && !c.blocks && c.canvases);
+        let c: SlackConfig = serde_yaml::from_str(
+            "plan: false\ndeliveries: hidden\nblocks: false\npictures: false\ncanvases: true",
+        )
+        .unwrap();
+        assert!(!c.plan && !c.blocks && !c.pictures && c.canvases);
         assert!(serde_yaml::from_str::<SlackConfig>("deliveries: collapsed").is_err());
     }
 }

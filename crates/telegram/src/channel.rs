@@ -1091,6 +1091,7 @@ impl Channel {
             cfg: RenderConfig {
                 tools: self.cfg.tools,
                 reasoning: self.cfg.reasoning,
+                pictures: self.cfg.pictures,
             },
             voice: VoiceHandles {
                 voice: ActorRef::<voice::Voice>::lookup(voice::VOICE_ACTOR)
@@ -2599,11 +2600,10 @@ impl Channel {
             return;
         }
         let Some(b) = self.bound(session) else { return };
-        self.note(
-            &b.to,
-            &format!("▸ **task**\n{}", clip(text.trim(), TASK_MAX)),
-        )
-        .await;
+        // 164 D2: a note carries no pictures, so a fence in the task becomes its D7 text.
+        let text = surface::flatten(text.trim(), artifact::snapshot::FALLBACK_COLUMNS);
+        self.note(&b.to, &format!("▸ **task**\n{}", clip(&text, TASK_MAX)))
+            .await;
     }
 
     /// Applies `f` to `session`'s row and, when it changed, fans the row out
@@ -3046,7 +3046,7 @@ pub(crate) mod tests {
         fixture_with(TelegramConfig::default(), topics)
     }
 
-    fn fixture_with(cfg: TelegramConfig, topics: bool) -> Fixture {
+    pub(crate) fn fixture_with(cfg: TelegramConfig, topics: bool) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let api = MockSender::new();
@@ -3091,7 +3091,7 @@ pub(crate) mod tests {
 
     impl Fixture {
         /// Binds `key` to the stub's session for `user`.
-        fn bind(&self, key: &str, user: u64) -> SessionId {
+        pub(crate) fn bind(&self, key: &str, user: u64) -> SessionId {
             let topic = threads::target(key).and_then(|t| t.thread).map(|id| Topic {
                 id,
                 named_by_user: false,

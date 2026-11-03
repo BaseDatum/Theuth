@@ -158,14 +158,18 @@ fn chunks(v: Vec<Chunk>) -> Result<Option<Vec<SlackStreamChunk>>, ApiError> {
 }
 
 /// One file for [`SlackApi::upload_file`] (24 §5).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadFile {
-    /// File name shown in Slack (also the `title`).
+    /// File name shown in Slack (the `title` too, unless one is given).
     pub name: String,
     /// Content type sent with the upload PUT.
     pub mime: String,
     /// The file's contents.
     pub bytes: Vec<u8>,
+    /// `files.completeUploadExternal` title; `name` when `None`.
+    pub title: Option<String>,
+    /// `files.getUploadURLExternal` `alt_txt` (164 D6).
+    pub alt: Option<String>,
 }
 
 /// What `bubble.rs` and `channel.rs` need from Slack. [`Api`] implements it
@@ -271,6 +275,8 @@ pub trait SlackApi: Send + Sync {
             name: format!("{title}.txt"),
             mime: "text/plain; charset=utf-8".into(),
             bytes: text.as_bytes().to_vec(),
+            title: None,
+            alt: None,
         };
         self.upload_file(channel, Some(thread_ts), std::slice::from_ref(&file), None)
             .await
@@ -784,7 +790,11 @@ impl SlackApi for Api {
     ) -> Result<String, ApiError> {
         let mut done = Vec::with_capacity(files.len());
         for f in files {
-            let get = SlackApiFilesGetUploadUrlExternalRequest::new(f.name.clone(), f.bytes.len());
+            let mut get =
+                SlackApiFilesGetUploadUrlExternalRequest::new(f.name.clone(), f.bytes.len());
+            if let Some(alt) = &f.alt {
+                get = get.with_alt_txt(alt.clone());
+            }
             let slot = self
                 .run("files.getUploadURLExternal", async {
                     self.client
@@ -805,7 +815,10 @@ impl SlackApi for Api {
                     .await
             })
             .await?;
-            done.push(SlackApiFilesComplete::new(slot.file_id).with_title(f.name.clone()));
+            done.push(
+                SlackApiFilesComplete::new(slot.file_id)
+                    .with_title(f.title.clone().unwrap_or_else(|| f.name.clone())),
+            );
         }
         let mut req =
             SlackApiFilesCompleteUploadExternalRequest::new(done).with_channel_id(channel.into());

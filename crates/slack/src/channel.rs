@@ -461,14 +461,16 @@ pub struct Channel {
     /// The live façade, for call counters; `None` under a fake.
     live: Option<Arc<Api>>,
     port: Arc<dyn Port>,
-    rt: Runtime,
+    pub(crate) rt: Runtime,
     owner: String,
     tools: ToolCards,
     reasoning: bool,
     /// 110 §5: the plan message is on.
     plan: bool,
     /// 110 §8: `json-render` fences as Block Kit in the bubble.
-    blocks: bool,
+    pub(crate) blocks: bool,
+    /// 164 D10: picture fences as PNGs in the thread.
+    pub(crate) pictures: bool,
     approvals: ApprovalsScope,
     pub(crate) identity: OnceLock<Identity>,
     // ponytail: one std mutex for all state, never held across an await; split if it ever contends.
@@ -695,6 +697,7 @@ impl Channel {
             reasoning: cfg.reasoning,
             plan: cfg.plan,
             blocks: cfg.blocks,
+            pictures: cfg.pictures,
             approvals: cfg.approvals,
             identity: OnceLock::new(),
             state: Mutex::new(State {
@@ -2377,8 +2380,11 @@ impl Worker {
             ),
             None => format!("↳ {} · delivered", p.origin.from),
         };
-        let body = clip(&p.text, MARKDOWN_TEXT_MAX);
-        let md = clip(&format!("{title}\n\n{}", p.text), MARKDOWN_TEXT_MAX);
+        // ponytail: a collapsed card has no slot for a file; picture fences
+        // go as their D7 text (164 D7), never raw.
+        let text = surface::flatten(&p.text, artifact::snapshot::FALLBACK_COLUMNS);
+        let body = clip(&text, MARKDOWN_TEXT_MAX);
+        let md = clip(&format!("{title}\n\n{text}"), MARKDOWN_TEXT_MAX);
         self.post_blocks_or_markdown(ui::collapsed(&title, &body), &md)
             .await;
     }
@@ -2452,6 +2458,8 @@ impl Worker {
             name: a.name,
             mime: a.mime,
             bytes,
+            title: None,
+            alt: None,
         };
         let comment = (!title.is_empty()).then_some(title);
         if let Err(e) = self
@@ -2633,9 +2641,13 @@ impl Worker {
                 if self.name.is_some() && !self.task_posted {
                     // 21 §9.1: the child's task, before its first bubble.
                     self.task_posted = true;
+                    // A parent's task text is markdown it wrote (164 D7): no fence body.
                     self.post_markdown_in_thread(&format!(
                         "▸ **task**\n\n{}",
-                        clip(&text, TASK_MAX)
+                        clip(
+                            &surface::flatten(&text, artifact::snapshot::FALLBACK_COLUMNS),
+                            TASK_MAX
+                        )
                     ))
                     .await;
                 }
@@ -2648,7 +2660,10 @@ impl Worker {
                     },
                     self.chan.tools,
                     self.chan.reasoning,
-                    self.chan.blocks,
+                    bubble::Fences {
+                        blocks: self.chan.blocks,
+                        pictures: self.chan.pictures,
+                    },
                     Arc::clone(&self.chan.api),
                     self.chan.rt.clone(),
                     session,
@@ -2849,7 +2864,8 @@ impl Worker {
     /// on a voice turn the block is synthesized now and uploaded as `reply.mp3`
     /// after the previous block's clip.
     fn speak(&mut self) {
-        let text = std::mem::take(&mut self.unspoken);
+        // 164 D9: the clip never reads a fence body; the picture is in the thread.
+        let text = surface::strip_pictures(&std::mem::take(&mut self.unspoken)).into_owned();
         if !self.voice || text.trim().is_empty() {
             return;
         }
@@ -2877,6 +2893,8 @@ impl Worker {
                 name: "reply.mp3".to_owned(),
                 mime: c.mime.to_owned(),
                 bytes: c.bytes,
+                title: None,
+                alt: None,
             };
             if let Err(e) = api
                 .upload_file(&channel, Some(&thread_ts), &[file], None)
@@ -3118,6 +3136,8 @@ pub(crate) mod tests {
         blocks: Mutex<Vec<serde_json::Value>>,
         /// What every `set_session_status` answers `Ok` with.
         status_warnings: Mutex<Vec<String>>,
+        /// Every file of every `upload_file`, in call order.
+        uploads: Mutex<Vec<crate::api::UploadFile>>,
     }
 
     impl FakeApi {
@@ -3144,6 +3164,13 @@ pub(crate) mod tests {
         /// The block payloads sent so far.
         fn blocks(&self) -> Vec<serde_json::Value> {
             self.blocks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+        /// The files uploaded so far.
+        pub(crate) fn uploads(&self) -> Vec<crate::api::UploadFile> {
+            self.uploads
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone()
@@ -3292,6 +3319,10 @@ pub(crate) mod tests {
                 names.join(","),
                 comment.unwrap_or("-")
             ));
+            self.uploads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend(files.iter().cloned());
             Ok("https://files.example/1".into())
         }
         async fn upload_text(
@@ -3658,9 +3689,7 @@ pub(crate) mod tests {
     }
 
     fn header() -> String {
-        format!(
-            "[forwarded message from Jane Doe · #general · 2026-10-30 14:02 UTC · {PERMALINK}]"
-        )
+        format!("[forwarded message from Jane Doe · #general · 2026-10-30 14:02 UTC · {PERMALINK}]")
     }
 
     const SOURCE: &str = "(channel C0SRE, ts 1793368920.123456, thread_ts 1793368000.000100)";

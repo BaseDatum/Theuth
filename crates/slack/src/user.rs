@@ -5,6 +5,7 @@
 use agent::{Outbound, UserSink};
 
 use crate::api::{MARKDOWN_TEXT_MAX, UploadFile};
+use crate::bubble::{Piece, pieces};
 use crate::channel::{Handle, clip, split_key};
 
 /// Where one delivery goes: a channel and, in a thread, its root `ts`.
@@ -24,9 +25,11 @@ impl UserSink for Handle {
 
     /// Bound pass: the first session of `m.sessions` with a thread (24 §2
     /// step 1); `Ok(None)` when none has one. Fallback: the owner DM with
-    /// `_<origin>_` as the first line (24 §2 step 2). Files go up in one
-    /// `upload_file` with the text as `initial_comment`; without files the
-    /// text is one `post_markdown` (24 §5).
+    /// `_<origin>_` as the first line (24 §2 step 2). The text goes out as
+    /// a bubble would (164 D9): markdown runs, Block Kit fences and
+    /// pictures in order, never a fence body; attached files go up last in
+    /// one `upload_file`, with the text they follow as `initial_comment`
+    /// (24 §5).
     async fn deliver(&self, m: &Outbound, fallback: bool) -> Result<Option<String>, String> {
         let chan = &self.chan;
         let (target, text) = if fallback {
@@ -55,32 +58,50 @@ impl UserSink for Handle {
         };
         let text = clip(&text, MARKDOWN_TEXT_MAX);
         let thread_ts = target.thread_ts.as_deref();
-        let sent = if m.files.is_empty() {
-            chan.api
-                .post_markdown(&target.channel, thread_ts, &text)
+        let mut files = Vec::with_capacity(m.files.len());
+        for f in &m.files {
+            let bytes = tokio::fs::read(&f.path)
                 .await
-                .map(|_| ())
-        } else {
-            let mut files = Vec::with_capacity(m.files.len());
-            for f in &m.files {
-                let bytes = tokio::fs::read(&f.path)
-                    .await
-                    .map_err(|e| format!("cannot read {}: {e}", f.path.display()))?;
-                files.push(UploadFile {
-                    name: f.name.clone(),
-                    mime: f.mime.clone(),
-                    bytes,
-                });
+                .map_err(|e| format!("cannot read {}: {e}", f.path.display()))?;
+            files.push(UploadFile {
+                name: f.name.clone(),
+                mime: f.mime.clone(),
+                bytes,
+                title: None,
+                alt: None,
+            });
+        }
+        let mut out = pieces(&chan.rt, &text, chan.blocks, chan.pictures).await;
+        if out.is_empty() && files.is_empty() {
+            out.push(Piece::Text(text));
+        }
+        // ponytail: `initial_comment` is mrkdwn, not `markdown_text`; the crate
+        // has no md->mrkdwn renderer (21 §1 dropped it), so the text goes as is.
+        let comment = match out.pop() {
+            Some(Piece::Text(t)) if !files.is_empty() => Some(t),
+            Some(last) => {
+                out.push(last);
+                None
             }
-            // ponytail: `initial_comment` is mrkdwn, not `markdown_text`; the crate
-            // has no md->mrkdwn renderer (21 §1 dropped it), so the text goes as is.
-            let comment = (!text.trim().is_empty()).then_some(text.as_str());
-            chan.api
-                .upload_file(&target.channel, thread_ts, &files, comment)
-                .await
-                .map(|_| ())
+            None => None,
         };
-        sent.map_err(|e| format!("slack: {e}"))?;
+        let api = &chan.api;
+        for piece in out {
+            let sent = match piece {
+                Piece::Text(t) => api.post_markdown(&target.channel, thread_ts, &t).await,
+                Piece::Blocks(b) => api.post_blocks(&target.channel, thread_ts, b).await,
+                Piece::Picture(f) => {
+                    api.upload_file(&target.channel, thread_ts, &[f], None)
+                        .await
+                }
+            };
+            sent.map_err(|e| format!("slack: {e}"))?;
+        }
+        if !files.is_empty() {
+            api.upload_file(&target.channel, thread_ts, &files, comment.as_deref())
+                .await
+                .map_err(|e| format!("slack: {e}"))?;
+        }
         Ok(Some(format!("slack: {}", target.label)))
     }
 }
@@ -93,6 +114,7 @@ mod tests {
     use runtime::SessionId;
 
     use super::*;
+    use crate::bubble::tests::{GRAPH_SPEC, install_renderer, png};
     use crate::channel::tests::{DM, OWNER, OWNER_DM, fixture};
 
     fn outbound(sessions: Vec<SessionId>, files: Vec<OutboundFile>) -> Outbound {
@@ -108,6 +130,33 @@ mod tests {
         Handle {
             chan: f.chan.clone(),
         }
+    }
+
+    /// 164 D9 (g): a raw picture fence in a delivery goes up as a PNG in
+    /// place — text, picture, text — never as JSON.
+    #[tokio::test]
+    async fn picture_fence_in_a_delivery_uploads_in_place() {
+        let f = fixture();
+        f.bind(OWNER);
+        install_renderer(&f.chan.rt, png(9, 9)).await;
+        let mut m = outbound(vec![f.stub.session], vec![]);
+        m.text = format!("Before\n\n```json-render\n{GRAPH_SPEC}\n```\n\nAfter");
+        let got = handle(&f).deliver(&m, false).await.unwrap();
+        assert_eq!(got.as_deref(), Some("slack: #D0001 thread"));
+        assert_eq!(
+            f.api.calls(),
+            vec![
+                format!("post_markdown {DM} 100.1 Before"),
+                format!("upload_file {DM} 100.1 [diagram.png] -"),
+                format!("post_markdown {DM} 100.1 After"),
+            ]
+        );
+        let [file] = &f.api.uploads()[..] else {
+            panic!("{:?}", f.api.uploads())
+        };
+        assert_eq!(file.bytes, png(9, 9));
+        assert_eq!(file.title.as_deref(), Some("Data flow"));
+        assert!(file.alt.as_deref().is_some_and(|a| !a.contains('{')));
     }
 
     #[tokio::test]

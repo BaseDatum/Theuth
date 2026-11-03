@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useSnapshot } from '@/lib/snapshot-mode'
 import { cn } from '@/lib/utils'
 import { catalog } from './catalog'
 import { Excerpt } from './Excerpt'
@@ -433,25 +434,31 @@ const components: Components<typeof catalog> = {
       </div>
     )
   },
-  Code: ({ props }) => (
-    <div className="flex flex-col rounded-lg bg-layer-2 text-sm">
-      <div className="flex items-center justify-between gap-2 pt-1 pr-1 pl-3 text-xs text-fg-tertiary">
-        <span className="truncate">{props.title}</span>
-        <span className="flex items-center gap-1">
-          {props.lang && <span className="font-mono">{props.lang}</span>}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Copy code"
-            onClick={() => navigator.clipboard.writeText(props.text).then(() => toast.message('Copied'), () => toast.error('Copy failed'))}
-          >
-            <Copy />
-          </Button>
-        </span>
+  Code: ({ props }) => {
+    // 164: no copy button in a channel picture (the registry wrapper renders this as a component, so the hook is legal).
+    const snap = useSnapshot()
+    return (
+      <div className="flex flex-col rounded-lg bg-layer-2 text-sm">
+        <div className="flex items-center justify-between gap-2 pt-1 pr-1 pl-3 text-xs text-fg-tertiary">
+          <span className="truncate">{props.title}</span>
+          <span className="flex items-center gap-1">
+            {props.lang && <span className="font-mono">{props.lang}</span>}
+            {!snap && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Copy code"
+                onClick={() => navigator.clipboard.writeText(props.text).then(() => toast.message('Copied'), () => toast.error('Copy failed'))}
+              >
+                <Copy />
+              </Button>
+            )}
+          </span>
+        </div>
+        <pre className="overflow-auto p-3 pt-0 font-mono text-xs leading-5">{props.text}</pre>
       </div>
-      <pre className="overflow-auto p-3 pt-0 font-mono text-xs leading-5">{props.text}</pre>
-    </div>
-  ),
+    )
+  },
   Diff: ({ props }) => {
     // ponytail: positional line compare, so one inserted line marks every line after it; a real diff (LCS) if that grates.
     const before = props.before.split('\n')

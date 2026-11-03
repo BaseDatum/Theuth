@@ -4,16 +4,14 @@
 // `useElkLayout` / `useDiagramTokens` hooks at the end are what every ELK-family `<NameView>` (Graph, StateMachine,
 // Entities, Swimlane, GraphDelta, Tree nodes|org) shares: the render queue, the last good layout, the time-out.
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api.js'
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { GraphEdge } from '@/rpc/bindings/GraphEdge'
 import type { GraphGroup } from '@/rpc/bindings/GraphGroup'
 import type { GraphNode } from '@/rpc/bindings/GraphNode'
 import type { GraphProps } from '@/rpc/bindings/GraphProps'
 import { ELK_OPTIONS, elkLayout, elkPeek, flattenElk, fnv, GROUP_OPTIONS, labelSize, type Layout, LayoutTimeout, nodeSize, norm } from './diagram/elk'
 import type { Loose } from './diagram/types'
-import { type DiagramTokens, diagramTokens } from './diagram-theme'
 import { createRenderQueue, type RenderQueue } from './render-queue'
-import { subscribeDark } from './theme'
 
 export { flattenElk, FONT_PX, LAYOUT_TIMEOUT_MS, type Layout, type LayoutEdge, type LayoutGroup, type LayoutNode, LayoutTimeout, LINE_PX, LruCache, nodeSize, WRAP, wrapLabel } from './diagram/elk'
 export type { Point, Size } from './diagram/types'
@@ -102,15 +100,8 @@ export function layout(props: GraphData, hash = structuralHash(props)): Promise<
   return elkLayout(hash, () => toElk(props), flattenElk)
 }
 
-/** The diagram tokens for the current theme (re-read when `dark` flips). */
-export function useDiagramTokens(): DiagramTokens {
-  const dark = useSyncExternalStore(
-    subscribeDark,
-    () => document.documentElement.classList.contains('dark'),
-    () => false,
-  )
-  return useMemo(diagramTokens, [dark])
-}
+/** The diagram tokens for the current theme (re-read when `dark` flips), or a snapshot frame's palette. */
+export { useThemeTokens as useDiagramTokens } from './snapshot-mode'
 
 /** What an ELK-family view shows: the layout for `hash`, or the time-out (the §4.4 text stands in). */
 export type Shown<T> = { hash: string; layout: T } | { hash: string; timeout: true }

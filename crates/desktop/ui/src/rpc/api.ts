@@ -157,6 +157,8 @@ import type { Pairing } from '@/rpc/bindings/Pairing'
 import type { PairingPayload } from '@/rpc/bindings/PairingPayload'
 import type { Packet } from '@/rpc/bindings/Packet'
 import type { PagePreviewAnswer } from '@/rpc/bindings/PagePreviewAnswer'
+import type { FenceSnapshotAnswer } from '@/rpc/bindings/FenceSnapshotAnswer'
+import type { FenceSnapshotId } from '@/rpc/bindings/FenceSnapshotId'
 import type { PreviewId } from '@/rpc/bindings/PreviewId'
 import type { DeviceInfo } from '@/rpc/bindings/DeviceInfo'
 import type { Put } from '@/rpc/bindings/Put'
@@ -1015,6 +1017,8 @@ export interface Api {
   resume_turn(session: SessionId): Promise<boolean>
   /** Answer a pending `ask_user`: one answer per question, or `null` to dismiss the set (which cancels the turn). */
   answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
+  /** 164 D3: answer a `FenceSnapshotRequested` — `started`, then the first `done` (base64 PNG) or `failed` resolves it. `false` when `id` was no longer pending. */
+  answer_fence_snapshot(id: FenceSnapshotId, answer: FenceSnapshotAnswer): Promise<boolean>
   /** 120 §11.2: answer a `PagePreviewRequested` — `started` extends the engine's wait, the first `done`/`failed` resolves it. `false` when `id` was no longer pending. */
   answer_page_preview(id: PreviewId, answer: PagePreviewAnswer): Promise<boolean>
   /** Answer a `SecretsEvent.SecretRequested` (37 §3.8) or a replicated `secret_requests` row (79 §6.6): `value` answers the (first) field, `values` answers a form by field name (H's positional params); both `null` declines. `false` when `id` was no longer pending. */
@@ -1251,6 +1255,7 @@ export const METHODS = [
   'agent_remove',
   'agents_list',
   'answer_ask',
+  'answer_fence_snapshot',
   'answer_page_preview',
   'answer_peer_request',
   'answer_secret',
