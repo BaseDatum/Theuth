@@ -41,3 +41,9 @@
 | `bunx tsc -b --noEmit` | 0 errors |
 | vitest (cells, lib, chat, editor, notes, notebooks, share, api.test) | 187 files, 1292 tests passed |
 | §17.5 diff registry.rs / approval.rs / crates/double vs origin/main | empty |
+
+## Phase II
+- Fold of main 7b9011aa (176): one conflict in `supervisor.rs` at the `Agents` spawn (`cell_jobs` vs `idle_stop`) → union. Bindings regenerated; gates re-run (see 171-as-built.md).
+- Monty tests with the folded `t` as the worker: all pass. The "4 known reds" were only the old protocol-5 worker on PATH.
+- **Safety incident (22:35):** `PATH=… pulumi … | tail; aws s3 ls` — the PATH prefix applied only to `pulumi`, so `aws s3 ls` ran the REAL AWS CLI (a read-only listing of real buckets). No write; no credentials read or printed. Every fake has since been called by absolute path.
+- Live proof not started: memory gate (free + speculative < 4 GB for 30 minutes, readings in the as-built). Fake world, config, driver and `t` left in /tmp/171-z for a re-run; no engine, vite or Chrome was started.
