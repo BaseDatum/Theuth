@@ -1983,6 +1983,36 @@ pub struct AppendAdvisory {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetFavoriteModels;
 
+/// `ask` → `Result<InfoDefaults, String>`: every live default the RPC `info`
+/// reads from the supervisor, in one ask (176 E3) instead of ten.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetInfoDefaults;
+
+/// [`GetInfoDefaults`]'s reply: what the per-field `Get*` asks answer.
+#[derive(Clone, Debug)]
+pub struct InfoDefaults {
+    /// [`GetDefaultModel`].
+    pub default_model: String,
+    /// [`GetDefaultEffort`].
+    pub default_effort: Option<String>,
+    /// [`GetFavoriteModels`].
+    pub favorite_models: Vec<String>,
+    /// [`GetCompactStyle`].
+    pub compact_style: CompactStyle,
+    /// [`GetSubagentTimeout`].
+    pub subagent_timeout_secs: u64,
+    /// [`GetMaxToolRounds`].
+    pub max_tool_rounds: u32,
+    /// [`GetStreamIdle`].
+    pub stream_idle_secs: u64,
+    /// [`GetMaxSalvages`].
+    pub max_salvages: u32,
+    /// [`GetCommunication`] with `session: None`.
+    pub communication: CommunicationState,
+    /// [`GetAdvisorDefaults`].
+    pub advisor: AdvisorDefaults,
+}
+
 /// `ask` → `Result<Vec<String>, String>`: star or unstar a model (127 §1).
 /// `model` is resolved through the catalog like [`SetModel`] (aliases
 /// normalised, unknown ids rejected with the same error). A no-op when the

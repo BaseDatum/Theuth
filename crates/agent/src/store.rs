@@ -93,6 +93,10 @@ pub struct Store {
     write: SqlitePool,
     /// Readers (four connections; the write pool itself on a private store).
     read: SqlitePool,
+    /// 176 E5: test-only stall (ms) before `session`, `list_sessions` and
+    /// `descendants`, so a test can hold a read in flight.
+    #[cfg(test)]
+    read_delay: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Why the store refused a write (68 §3: writes on a non-owner are refused
@@ -744,6 +748,8 @@ impl Store {
             harness_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
             write,
             read,
+            #[cfg(test)]
+            read_delay: Arc::default(),
         })
     }
 
@@ -781,6 +787,8 @@ impl Store {
             clock: Arc::new(replica::Clock::new(hlc_origin(""), (0, 0))),
             write: pool.clone(),
             read: pool,
+            #[cfg(test)]
+            read_delay: Arc::default(),
         })
     }
 
@@ -793,6 +801,25 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.read
+    }
+
+    /// 176 E5: make `session`, `list_sessions` and `descendants` take `d`
+    /// longer on every clone of this store (zero turns it off).
+    #[cfg(test)]
+    pub(crate) fn set_read_delay(&self, d: Duration) {
+        self.read_delay
+            .store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The [`Self::set_read_delay`] stall; nothing outside tests.
+    async fn stall(&self) {
+        #[cfg(test)]
+        {
+            let ms = self.read_delay.load(std::sync::atomic::Ordering::Relaxed);
+            if ms > 0 {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+        }
     }
 
     /// Close both pools. The capture session goes first: deleting it after
@@ -2819,6 +2846,7 @@ impl Store {
 
     /// One session, if it exists.
     pub async fn session(&self, id: SessionId) -> anyhow::Result<Option<SessionSummary>> {
+        self.stall().await;
         let row: Option<SessionRow> = sqlx::query_as(concat!(
             "SELECT ",
             session_cols!(),
@@ -2842,6 +2870,7 @@ impl Store {
         &self,
         include_advisors: bool,
     ) -> anyhow::Result<Vec<SessionSummary>> {
+        self.stall().await;
         let rows: Vec<SessionRow> = sqlx::query_as(concat!(
             "SELECT ",
             session_cols!(),
@@ -2875,6 +2904,7 @@ impl Store {
             row: SessionRow,
             depth: i64,
         }
+        self.stall().await;
         // `path` = the created_at||id of every ancestor down to the row, so
         // string order is pre-order with siblings by creation time.
         let rows: Vec<TreeRow> = sqlx::query_as(concat!(
@@ -2954,6 +2984,11 @@ impl Store {
                 .await?;
             // 144 §5.1 (E1 hand-off): the dial rows of a deleted thread go with it (no FK on the table).
             sqlx::query("DELETE FROM session_context WHERE session = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
+            // 176 E2: the roster's cached last reply.
+            sqlx::query("DELETE FROM last_texts WHERE session = ?")
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;
@@ -3043,8 +3078,41 @@ impl Store {
     /// Assistant text after the last user message, joined by newlines: the
     /// "final answer" of the most recent turn. Vision notes are not user
     /// messages here: a maintenance note after a reply does not erase it.
+    /// 176 E2: cached in `last_texts` while the session's `context_revision`
+    /// is unchanged, so an untouched session costs one indexed lookup; a
+    /// miss reads only the last exchange and writes the cache back.
     pub async fn last_turn_text(&self, id: SessionId) -> anyhow::Result<String> {
-        Ok(self.last_exchange(id).await?.1)
+        let sid = id.to_string();
+        let row: Option<(i64, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT s.context_revision, c.rev, c.text FROM sessions s \
+             LEFT JOIN last_texts c ON c.session = s.id WHERE s.id = ?",
+        )
+        .bind(&sid)
+        .fetch_optional(&self.read)
+        .await?;
+        let Some((rev, cached_rev, cached)) = row else {
+            return Ok(String::new());
+        };
+        if let Some(text) = cached.filter(|_| cached_rev == Some(rev)) {
+            return Ok(text);
+        }
+        let text = self.last_exchange(id).await?.1;
+        // Keyed to the revision read first: a write in between bumped it, so
+        // the guard drops this (possibly newer) text instead of mislabelling it.
+        if let Err(e) = sqlx::query(
+            "INSERT INTO last_texts (session, rev, text) \
+             SELECT ?1, ?2, ?3 FROM sessions WHERE id = ?1 AND context_revision = ?2 \
+             ON CONFLICT(session) DO UPDATE SET rev = excluded.rev, text = excluded.text",
+        )
+        .bind(&sid)
+        .bind(rev)
+        .bind(&text)
+        .execute(&self.write)
+        .await
+        {
+            tracing::warn!(session = %id, "last_texts: {e:#}");
+        }
+        Ok(text)
     }
 
     /// 149 E6: the session's last exchange — what the user last typed (the
@@ -3053,12 +3121,9 @@ impl Store {
     /// [`Self::last_turn_text`]. `(None, "")` for an empty session.
     pub async fn last_exchange(&self, id: SessionId) -> anyhow::Result<(Option<String>, String)> {
         let mut conn = self.read.acquire().await?;
-        let rows = rows_in(&mut conn, id, 0).await?;
-        let last_user = rows
-            .iter()
-            .rposition(|r| r.message.role == ChatRole::User && !r.is_note());
-        let request = last_user.and_then(|i| {
-            let text = text_of(&rows[i].message.content);
+        let (last_user, after) = last_exchange_in(&mut conn, id).await?;
+        let request = last_user.and_then(|r| {
+            let text = text_of(&r.message.content);
             let p = crate::attach::parse(crate::clock::strip(&text));
             let body = p.body.trim();
             if body.is_empty() {
@@ -3070,7 +3135,7 @@ impl Store {
                 Some(body.to_owned())
             }
         });
-        let reply = rows[last_user.map_or(0, |i| i + 1)..]
+        let reply = after
             .iter()
             .filter(|r| r.message.role == ChatRole::Assistant)
             .map(|r| text_of(&r.message.content))
@@ -3617,6 +3682,47 @@ async fn rows_in(
     .await?;
     decode_masked(id, rows)
 }
+
+/// 176 E2: `id`'s last exchange read from the tail — its last user row (a
+/// typed note is not one) and the visible rows after it, seq ascending; no
+/// user row: `None` and every row. Pages of [`TAIL_PAGE`] rows seq
+/// descending, so only the exchange (plus one page's slack) is decoded.
+async fn last_exchange_in(
+    conn: &mut SqliteConnection,
+    id: SessionId,
+) -> anyhow::Result<(Option<Row>, Vec<Row>)> {
+    let mut after = Vec::new();
+    let mut before = i64::MAX;
+    loop {
+        let raw: Vec<RawRow> = sqlx::query_as(
+            "SELECT seq, body, excluded, vision, at, thinking_ms, advisory FROM messages \
+             WHERE session_id = ?1 AND seq < ?2 \
+             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
+             ORDER BY seq DESC LIMIT ?3",
+        )
+        .bind(id.to_string())
+        .bind(before)
+        .bind(TAIL_PAGE)
+        .fetch_all(&mut *conn)
+        .await?;
+        let done = raw.len() < TAIL_PAGE as usize;
+        before = raw.last().map_or(before, |r| r.0);
+        for row in decode_masked(id, raw)? {
+            if row.message.role == ChatRole::User && !row.is_note() {
+                after.reverse();
+                return Ok((Some(row), after));
+            }
+            after.push(row);
+        }
+        if done {
+            after.reverse();
+            return Ok((None, after));
+        }
+    }
+}
+
+/// Rows per [`last_exchange_in`] page.
+const TAIL_PAGE: i64 = 64;
 
 /// Visible epochs with their head masks, by `n` ascending.
 async fn epochs_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<Vec<(Epoch, Mask)>> {
@@ -4518,6 +4624,91 @@ mod tests {
             (request.as_deref(), reply.as_str()),
             (Some("task"), "first\nsecond")
         );
+        drop(store);
+    }
+
+    /// The pre-176 `last_turn_text`: every visible row replayed. E2's tail
+    /// read and cache must answer exactly this.
+    async fn replayed_last_text(store: &Store, id: SessionId) -> String {
+        let mut conn = store.read.acquire().await.unwrap();
+        let rows = rows_in(&mut conn, id, 0).await.unwrap();
+        let last_user = rows
+            .iter()
+            .rposition(|r| r.message.role == ChatRole::User && !r.is_note());
+        rows[last_user.map_or(0, |i| i + 1)..]
+            .iter()
+            .filter(|r| r.message.role == ChatRole::Assistant)
+            .map(|r| text_of(&r.message.content))
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 176 E2: the tail read and its revision-keyed cache equal the full
+    /// replay across page boundaries, tool rounds, an empty final reply, a
+    /// user-less transcript, undo/redo and a committed cut that reuses seqs.
+    #[tokio::test]
+    async fn last_turn_text_tail_and_cache_equal_the_replay() {
+        let (store, id, _dir) = fresh().await;
+        let call = |c: &str| {
+            ChatMessage::from(vec![ToolCall {
+                call_id: c.into(),
+                fn_name: "shell".into(),
+                fn_arguments: serde_json::json!({}),
+                thought_signatures: None,
+            }])
+        };
+        let text = |t: &str| ChatMessage::assistant(MessageContent::from_text(t));
+        let check = |what: &'static str| {
+            let store = store.clone();
+            async move {
+                let want = replayed_last_text(&store, id).await;
+                assert_eq!(
+                    store.last_turn_text(id).await.unwrap(),
+                    want,
+                    "{what}: miss"
+                );
+                assert_eq!(store.last_turn_text(id).await.unwrap(), want, "{what}: hit");
+                want
+            }
+        };
+        assert_eq!(check("empty").await, "");
+        // No user row yet: every assistant text counts.
+        store.append(id, &text("hello")).await.unwrap();
+        assert_eq!(check("user-less").await, "hello");
+        // One exchange of 3 × 40 rows: spans pages of the tail read.
+        store.append(id, &ChatMessage::user("q1")).await.unwrap();
+        for i in 0..40 {
+            let c = format!("c{i}");
+            store.append(id, &text(&format!("step {i}"))).await.unwrap();
+            store.append(id, &call(&c)).await.unwrap();
+            let resp = ChatMessage::from(vec![ToolResponse::new(&c, "out")]);
+            store.append(id, &resp).await.unwrap();
+        }
+        store.append(id, &text("done")).await.unwrap();
+        let long = check("tool rounds").await;
+        assert!(long.starts_with("step 0\nstep 1\n") && long.ends_with("step 39\ndone"));
+        // An exchange whose reply is only a tool round: empty.
+        store.append(id, &ChatMessage::user("q2")).await.unwrap();
+        store.append(id, &call("z")).await.unwrap();
+        let resp = ChatMessage::from(vec![ToolResponse::new("z", "out")]);
+        store.append(id, &resp).await.unwrap();
+        assert_eq!(check("empty final reply").await, "");
+        // Undo hides q2 and redo restores it; each move bumps the revision.
+        store.undo(id).await.unwrap().unwrap();
+        assert_eq!(check("undo").await, long);
+        store.redo(id).await.unwrap().unwrap();
+        assert_eq!(check("redo").await, "");
+        // Undo + commit, then the same seqs (same MAX(seq) as the cached ""
+        // of "redo") carry another reply: only the revision tells them apart.
+        store.undo(id).await.unwrap().unwrap();
+        store.commit_cut(id).await.unwrap();
+        store.append(id, &ChatMessage::user("q3")).await.unwrap();
+        store.append(id, &text("other")).await.unwrap();
+        store.append(id, &resp).await.unwrap();
+        assert_eq!(check("reused seqs").await, "other");
+        // An unknown session answers "" and caches nothing.
+        assert_eq!(store.last_turn_text(SessionId::new()).await.unwrap(), "");
         drop(store);
     }
 
