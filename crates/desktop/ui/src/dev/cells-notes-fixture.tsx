@@ -72,6 +72,10 @@ function run(ref: CellRef, name: string, over: Partial<CellRun> = {}): CellRun {
     queued_ms: now - 12 * MIN,
     started_ms: now - 12 * MIN,
     ended_ms: now - 12 * MIN + 800,
+    masked: 0,
+    private: false,
+    name,
+    input: null,
     ...over,
   }
 }
@@ -99,7 +103,7 @@ function stateOf(ref: CellRef): Partial<CellState> {
   }
   return {}
 }
-const kernels: KernelState[] = [{ id: { scope: { type: 'doc', id: DOC }, spec: { type: 'python', path: python.path } }, phase: 'ready', label: '.venv 3.12', cwd: '/Users/sky/Develop/costs' }]
+const kernels: KernelState[] = [{ id: { scope: { type: 'doc', id: DOC }, spec: { type: 'python', path: python.path } }, phase: 'ready', label: '.venv 3.12', cwd: '/Users/sky/Develop/costs', env_warning: null }]
 
 const api = new Proxy({} as Api, {
   get: (_t, name: string) =>
@@ -109,7 +113,7 @@ const api = new Proxy({} as Api, {
           const [scope, refs] = args as [CellScope, CellRef[]]
           return {
             cells: refs.map(
-              (ref): CellState => ({ cell: ref, digest: 'x', problems: [], chips: [], armed: null, superseded_by: null, latest: null, stale: false, member_edit: null, interpreter: null, ...stateOf(ref) }),
+              (ref): CellState => ({ cell: ref, digest: 'x', problems: [], chips: [], armed: null, superseded_by: null, latest: null, stale: false, member_edit: null, interpreter: null, host: null, ...stateOf(ref) }),
             ),
             kernels: scope.id === DOC ? kernels : [],
           }

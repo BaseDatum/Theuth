@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tools::{DynTool, Risk, Tool, ToolCx, ToolOutput};
 
-use crate::{CellRef, CellRun, Cells, CellsError, DocId, ExitStatus, NoteKey, RunId, Scope};
+use crate::{CellRef, CellRun, Cells, CellsError, DocId, ExitStatus, RunId, Scope};
 
 /// Register the runtime functions and the `## User cells` prompt block once the tool
 /// registry runs (171 §10.6; the `app` plugin is the precedent).
@@ -93,7 +93,7 @@ impl Tool for CellRunsTool {
             .map_err(|e| refused(Self::NAME, e))?;
         let rows = Value::Array(
             runs.iter()
-                .filter(|r| a.name.is_none() || note_name(r) == a.name.as_deref())
+                .filter(|r| a.name.is_none() || r.name == a.name)
                 .map(run_row)
                 .collect(),
         );
@@ -102,18 +102,6 @@ impl Tool for CellRunsTool {
             structured: Some(rows),
             ..ToolOutput::ok(text)
         })
-    }
-}
-
-/// A note cell's `name` (chat runs carry no name in the record).
-// Z (L11): `r.name` once E1's `CellRun.name` lands.
-fn note_name(r: &CellRun) -> Option<&str> {
-    match &r.cell {
-        CellRef::Note {
-            key: NoteKey::Name(n),
-            ..
-        } => Some(n),
-        _ => None,
     }
 }
 
@@ -140,7 +128,7 @@ fn run_row(r: &CellRun) -> Value {
     });
     json!({
         "run": r.id.0,
-        "name": note_name(r),
+        "name": r.name,
         "cell": r.cell,
         "state": r.state,
         "exit": exit,
@@ -149,8 +137,7 @@ fn run_row(r: &CellRun) -> Value {
         "expect": expect,
         "summary": r.summary,
         "edited": r.edited,
-        // Z (L11): `r.private` once E1's `CellRun.private` lands.
-        "private": false,
+        "private": r.private,
         "pressed": r.pressed_by,
     })
 }
@@ -258,6 +245,7 @@ impl Tool for InterpretersTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NoteKey;
 
     /// §9.5 / invariant 2: the plugin registers exactly the three readers, each read-only
     /// and runtime-only (never a direct tool), each with an object schema; nothing that
@@ -279,8 +267,8 @@ mod tests {
         assert_eq!((props(0), props(1), props(2)), (3, 3, 1));
     }
 
-    /// §9.5: every key of a `cell_runs` row is present; `name` comes from a note key,
-    /// `private` is false until E1's `CellRun.private` (L11) is wired in by Z.
+    /// §9.5: every key of a `cell_runs` row is present; `name` and `private` come from the
+    /// record (L11).
     #[test]
     fn cell_runs_rows_carry_every_key() {
         let doc = DocId("d1".into());
@@ -312,6 +300,10 @@ mod tests {
             queued_ms: 0,
             started_ms: None,
             ended_ms: None,
+            masked: 0,
+            private: true,
+            name: Some("check-lag".into()),
+            input: None,
         };
         let row = run_row(&run);
         let keys: Vec<&str> = row
@@ -328,7 +320,7 @@ mod tests {
         }
         assert_eq!(
             (&row["name"], &row["private"], &row["exit"]),
-            (&json!("check-lag"), &json!(false), &json!(0))
+            (&json!("check-lag"), &json!(true), &json!(0))
         );
     }
 }

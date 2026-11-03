@@ -11,6 +11,7 @@ const kernel = (kind: 'bash' | 'zsh', phase: KernelState['phase'], cwd: string |
   phase,
   label: kind === 'bash' ? 'bash 5.2 (Homebrew)' : 'zsh 5.9',
   cwd,
+  env_warning: null,
 })
 const strip = (kernels: KernelState[]) => {
   cells.setState({ scopes: { [scopeKey(scope)]: { states: {}, kernels, error: null, notices: {} } } })

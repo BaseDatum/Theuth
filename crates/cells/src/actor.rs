@@ -35,9 +35,9 @@ use crate::note;
 use crate::store::Store;
 use crate::types::{
     Armed, Cell, CellEvent, CellLatest, CellOutput, CellRef, CellRun, CellState, Chip, DocId,
-    ExitStatus, Interpreter, KernelId, KernelPhase, KernelSpec, KernelState, Lang, OutputPage,
-    Problem, PtyChunk, RunAllRequest, RunGet, RunId, RunMode, RunRequest, RunState, Scope,
-    SessionId, Severity, ShellKind, StateReply, ValidateCtx,
+    ExitStatus, Interpreter, KernelId, KernelPhase, KernelSpec, KernelState, Lang, NoteDefaults,
+    NoteKey, OutputPage, Problem, PtyChunk, PythonChoice, RunAllRequest, RunGet, RunId, RunMode,
+    RunRequest, RunState, Scope, SessionId, Severity, ShellKind, StateReply, ValidateCtx,
 };
 
 /// Registry name of the [`CellsActor`].
@@ -295,6 +295,8 @@ struct Inspected {
     cwd: Option<PathBuf>,
     cwd_exists: bool,
     lineage: Option<String>,
+    /// A note's ```` ```cells ```` defaults (`shell:`, `python:`); `None` in chat.
+    defaults: Option<NoteDefaults>,
 }
 
 /// An `after` gate (§7.6).
@@ -502,7 +504,93 @@ impl Cells {
             cwd,
             cwd_exists,
             lineage,
+            defaults: None,
         })
+    }
+
+    /// Inspect one note cell (§3.3, §4.4) against the live block, the note's other cells
+    /// and its ```` ```cells ```` defaults; also the block itself (its author, invariant 6).
+    async fn inspect_note(
+        &self,
+        cell: &CellRef,
+        doc: &DocId,
+        key: &NoteKey,
+        env: &Env,
+    ) -> Result<(Inspected, note::NoteSource)> {
+        let source = note::source(doc, key).await?;
+        let parsed =
+            surface::cell::parse(&source.language, &source.text).ok_or(CellsError::Changed)?;
+        let presented = Presented {
+            digest: surface::cell::digest(&source.text),
+            cell: parsed,
+        };
+        let md = note::markdown(doc).await.unwrap_or_default();
+        let (defaults, second_defaults) = note::defaults_of(&md);
+        let others = chat::cells_of(&md);
+        let opts = &presented.cell.options;
+        let mut names: Vec<String> = others
+            .iter()
+            .filter_map(|p| p.cell.options.name.clone())
+            .collect();
+        if let Some(n) = &opts.name
+            && !names.contains(n)
+        {
+            names.push(n.clone());
+        }
+        let after_edges = others
+            .iter()
+            .filter(|p| p.cell.options.name != opts.name)
+            .filter_map(|p| Some((p.cell.options.name.clone()?, p.cell.options.after.clone()?)))
+            .collect();
+        let home = env.vars.get("HOME").map(PathBuf::from);
+        let cwd = note::cell_cwd(opts.cwd.as_deref(), &defaults, home.as_deref());
+        let cwd_exists = cwd.as_deref().is_some_and(Path::is_dir);
+        let python = opts.python.as_ref().or(defaults.python.as_ref());
+        let monty_ok = match (presented.cell.lang, python) {
+            (Lang::Python, Some(PythonChoice::Monty)) => {
+                crate::monty::sufficient(&presented.cell.code)
+                    .await
+                    .map(|r| r.is_ok())
+            }
+            _ => None,
+        };
+        let ctx = ValidateCtx {
+            chat: false,
+            names,
+            after_edges,
+            secrets: None,
+            defaults: Some(defaults.clone()),
+            monty_ok,
+            cwd_exists: cwd.as_ref().map(|_| cwd_exists),
+            second_defaults,
+        };
+        // The gate's current digest is its block's text as the engine reads it (§7.6).
+        let after = match &opts.after {
+            Some(a) => Some(Gate::Pending {
+                name: a.clone(),
+                current: note::source(doc, &NoteKey::Name(a.clone()))
+                    .await
+                    .map(|s| surface::cell::digest(&s.text))
+                    .unwrap_or_default(),
+            }),
+            None => None,
+        };
+        let lineage = opts
+            .name
+            .as_ref()
+            .map(|n| format!("{}/{n}", cell.scope().key()));
+        let inspected = Inspected {
+            problems: surface::cell::validate(&presented.cell, &ctx),
+            chips: surface::cell::lint(&presented.cell),
+            superseded_by: None,
+            after,
+            cwd,
+            cwd_exists,
+            lineage,
+            defaults: Some(defaults),
+            presented,
+        };
+        Ok((inspected, source))
     }
 
     /// Resolve a pending `after` gate of `i` against the store (§7.6).
@@ -542,6 +630,7 @@ impl Cells {
         seen: &str,
         mode: &RunMode,
         edited: Option<&str>,
+        member_ack: Option<&str>,
     ) -> Result<Prepared> {
         let env = self.login_env().await;
         let inspected = match cell {
@@ -551,33 +640,11 @@ impl Cells {
                 Self::inspect(&t, cell, home).ok_or(CellsError::Changed)?
             }
             CellRef::Note { doc, key } => {
-                let source = note::source(doc, key).await?; // 171:E2
-                let presented =
-                    chat::cells_of(&format!("```{}\n{}\n```\n", source.language, source.text))
-                        .into_iter()
-                        .next()
-                        .ok_or(CellsError::Changed)?;
-                let _ = doc;
-                Inspected {
-                    problems: surface::cell::validate(&presented.cell, &ValidateCtx::default()),
-                    chips: surface::cell::lint(&presented.cell),
-                    superseded_by: None,
-                    after: None,
-                    cwd: presented.cell.options.cwd.as_deref().map(PathBuf::from),
-                    cwd_exists: presented
-                        .cell
-                        .options
-                        .cwd
-                        .as_deref()
-                        .is_some_and(|c| Path::new(c).is_dir()),
-                    lineage: presented
-                        .cell
-                        .options
-                        .name
-                        .as_ref()
-                        .map(|n| format!("{}/{n}", cell.scope().key())),
-                    presented,
-                }
+                let (inspected, source) = self.inspect_note(cell, doc, key, &env).await?;
+                // Invariant 6: a member's text the owner has not run needs its `member_ack`.
+                let latest = self.store()?.latest_of_cell(&json(cell)).await?;
+                note::member_guard(&source, latest.map(|r| r.run).as_ref(), member_ack)?;
+                inspected
             }
         };
         self.prepare_from(inspected, &cell.scope(), seen, mode, edited, &env)
@@ -615,7 +682,9 @@ impl Cells {
         } else {
             surface::cell::digest(&code)
         };
-        let (spec, interpreter) = self.resolve(&c, &cwd, env).await?;
+        let (spec, interpreter) = self
+            .resolve(&c, &cwd, env, inspected.defaults.as_ref())
+            .await?;
         Ok(Prepared {
             inspected,
             spec,
@@ -625,15 +694,36 @@ impl Cells {
         })
     }
 
-    /// Which program runs `c` (§6, §6.5).
-    async fn resolve(&self, c: &Cell, cwd: &Path, env: &Env) -> Result<(KernelSpec, Interpreter)> {
+    /// Which program runs `c` (§6, §6.5); a note's `shell:` / `python:` defaults apply.
+    async fn resolve(
+        &self,
+        c: &Cell,
+        cwd: &Path,
+        env: &Env,
+        defaults: Option<&NoteDefaults>,
+    ) -> Result<(KernelSpec, Interpreter)> {
         match shell_kind(c.lang) {
             Some(kind) => {
-                let (path, i) = crate::shell::resolve(kind, None, &env.vars).await?;
+                let note_shell = defaults.and_then(|d| d.shell.as_deref());
+                let (path, i) = crate::shell::resolve(kind, note_shell, &env.vars).await?;
                 Ok((KernelSpec::Shell { kind, path }, i))
             }
             None if c.lang == Lang::Python => {
-                crate::interp::resolve(c.options.python.as_ref(), cwd, &env.vars, false).await // 171:E2
+                let choice = c
+                    .options
+                    .python
+                    .as_ref()
+                    .or(defaults.and_then(|d| d.python.as_ref()));
+                let r = crate::interp::resolve(choice, cwd, &env.vars, false).await;
+                // §6.1 `auto → Monty`: no Python for this folder and Monty can run the cell.
+                // ponytail: this cell's sufficiency only, not every auto cell of the scope.
+                if matches!(choice, None | Some(PythonChoice::Auto))
+                    && matches!(r, Err(CellsError::NoInterpreter(_)))
+                    && matches!(crate::monty::sufficient(&c.code).await, Some(Ok(())))
+                {
+                    return crate::interp::resolve(choice, cwd, &env.vars, true).await;
+                }
+                r
             }
             None => Err(CellsError::NoInterpreter(
                 "JavaScript cells come in a later wave".into(),
@@ -660,7 +750,13 @@ impl Cells {
             return Ok(existing);
         }
         let p = self
-            .prepare(&req.cell, &req.seen, &req.mode, req.edited.as_deref())
+            .prepare(
+                &req.cell,
+                &req.seen,
+                &req.mode,
+                req.edited.as_deref(),
+                req.member_ack.as_deref(),
+            )
             .await?;
         let _ = store;
         self.enqueue(
@@ -710,10 +806,10 @@ impl Cells {
         let key = json(&kid);
         let c = &p.inspected.presented.cell;
         let env = self.login_env().await;
-        let label = crate::shell::chip(&p.interpreter);
+        let label = crate::interp::chip(&p.interpreter, &env.vars);
         let interpreter = match &p.interpreter.path {
-            Some(path) => format!("{} {}", crate::shell::chip(&p.interpreter), path.display()),
-            None => crate::shell::chip(&p.interpreter),
+            Some(path) => format!("{label} {}", path.display()),
+            None => label.clone(),
         };
         let cwd = p.inspected.cwd.clone().unwrap_or_default();
         let record = CellRun {
@@ -1485,7 +1581,7 @@ impl Cells {
                     continue;
                 }
             }
-            let p = match self.prepare(cell, seen, &RunMode::Cell, None).await {
+            let p = match self.prepare(cell, seen, &RunMode::Cell, None, None).await {
                 Ok(p) => p,
                 Err(e) => {
                     tracing::info!(pass = %req.pass, error = %e, "run all stops before a cell");
@@ -1649,52 +1745,61 @@ impl Cells {
 
     /// `cell_state`: problems, chips, armed/superseded/stale per cell, and the scope's kernels.
     pub async fn state(&self, scope: Scope, cells: Vec<CellRef>) -> Result<StateReply, CellsError> {
+        let env = self.login_env().await;
+        let home = env.vars.get("HOME").map(String::as_str);
+        let transcript = match &scope {
+            Scope::Session(session) => Some(chat::transcript(*session).await?),
+            Scope::Doc(_) => None,
+        };
         let mut out = Vec::new();
-        match &scope {
-            Scope::Doc(_doc) => {
-                // 171:E2 note scope: resolve note sources with note::source here.
-                for c in &cells {
-                    if let CellRef::Note { doc, key } = c {
-                        let _source = note::source(doc, key).await?;
+        for c in &cells {
+            let (mut i, source) = match (c, &transcript) {
+                (CellRef::Chat { .. }, Some(t)) => match Self::inspect(t, c, home) {
+                    Some(i) => (i, None),
+                    None => continue,
+                },
+                (CellRef::Note { doc, key }, None) => {
+                    match self.inspect_note(c, doc, key, &env).await {
+                        Ok((i, s)) => (i, Some(s)),
+                        Err(_) => continue,
                     }
                 }
-            }
-            Scope::Session(session) => {
-                let t = chat::transcript(*session).await?;
-                let env = self.login_env().await;
-                for c in &cells {
-                    let home = env.vars.get("HOME").map(String::as_str);
-                    let Some(mut i) = Self::inspect(&t, c, home) else {
-                        continue;
-                    };
-                    self.arm(&scope, &mut i).await?;
-                    let latest = self.store()?.latest_of_cell(&json(c)).await?.map(|r| r.run);
-                    let interpreter = match i.cwd.as_deref() {
-                        Some(cwd) => self
-                            .resolve(&i.presented.cell, cwd, &env)
-                            .await
-                            .ok()
-                            .map(|(_, i)| i),
-                        None => None,
-                    };
-                    out.push(CellState {
-                        cell: c.clone(),
-                        digest: i.presented.digest.clone(),
-                        problems: i.problems,
-                        chips: i.chips,
-                        armed: match i.after {
-                            Some(Gate::Armed(a)) => Some(a),
-                            _ => None,
-                        },
-                        superseded_by: i.superseded_by,
-                        latest,
-                        stale: false,
-                        member_edit: None,
-                        interpreter,
-                        host: None, // the RPC layer names another engine (§14.2)
-                    });
-                }
-            }
+                _ => continue,
+            };
+            self.arm(&scope, &mut i).await?;
+            let latest = self.store()?.latest_of_cell(&json(c)).await?.map(|r| r.run);
+            let interpreter = match i.cwd.as_deref() {
+                Some(cwd) => self
+                    .resolve(&i.presented.cell, cwd, &env, i.defaults.as_ref())
+                    .await
+                    .ok()
+                    .map(|(_, i)| i),
+                None => None,
+            };
+            // A note's text can change under its runs; a chat reply cannot.
+            let stale = source.is_some()
+                && latest
+                    .as_ref()
+                    .is_some_and(|r| r.presented_sha != i.presented.digest);
+            let member_edit = source
+                .as_ref()
+                .and_then(|s| note::member_edit(s, latest.as_ref()));
+            out.push(CellState {
+                cell: c.clone(),
+                digest: i.presented.digest.clone(),
+                problems: i.problems,
+                chips: i.chips,
+                armed: match i.after {
+                    Some(Gate::Armed(a)) => Some(a),
+                    _ => None,
+                },
+                superseded_by: i.superseded_by,
+                latest,
+                stale,
+                member_edit,
+                interpreter,
+                host: None, // the RPC layer names another engine (§14.2)
+            });
         }
         Ok(StateReply {
             cells: out,
@@ -1775,12 +1880,14 @@ impl Cells {
         Ok(page(&text, offset, limit))
     }
 
-    /// `cell_output_file`: one file of `runs/<run>/` (images).
+    /// `cell_output_file`: one file of `runs/<run>/`: an image, or `code` (the code that ran,
+    /// placeholders kept — the stale/member-diff views).
     pub async fn output_file(&self, run: RunId, name: String) -> Result<Vec<u8>, CellsError> {
-        let ok = name.starts_with("img-")
-            && name.ends_with(".png")
-            && !name.contains('/')
-            && !name.contains("..");
+        let ok = name == "code"
+            || (name.starts_with("img-")
+                && name.ends_with(".png")
+                && !name.contains('/')
+                && !name.contains(".."));
         if !ok {
             return Err(CellsError::NotFound(name));
         }

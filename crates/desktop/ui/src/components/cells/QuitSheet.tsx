@@ -8,7 +8,6 @@ import type { Api } from '@/rpc/api'
 import type { CellRun } from '@/rpc/bindings/CellRun'
 import { KILL_AFTER_MS } from './Cell'
 import { duration, labelFor } from './store'
-import type { CellRunWire } from './wire'
 
 export type QuitSheetProps = {
   /** `cell_live()`: the runs quitting would end. */
@@ -67,7 +66,7 @@ export function QuitSheet({ live: initial, onQuit, onCancel, api }: QuitSheetPro
     }
   }, [mode, api, onQuit])
   const first = live[0] ?? initial[0]
-  const label = first ? labelFor(first.cell, (first as CellRunWire).name) : 'the cell'
+  const label = first ? labelFor(first.cell, first.name) : 'the cell'
   const what = live.length > 1 ? `${live.length} cells` : label
   return (
     <AlertDialog open onOpenChange={(o) => !o && onCancel()}>
@@ -78,7 +77,7 @@ export function QuitSheet({ live: initial, onQuit, onCancel, api }: QuitSheetPro
             <ul className="flex flex-col gap-1 text-sm">
               {live.map((r) => (
                 <li key={r.id} className="tabular-nums">
-                  {labelFor(r.cell, (r as CellRunWire).name)} is running ({duration(Math.max(0, (now - (r.started_ms ?? r.queued_ms)) / 1000))}) · {tail(r.cwd)}
+                  {labelFor(r.cell, r.name)} is running ({duration(Math.max(0, (now - (r.started_ms ?? r.queued_ms)) / 1000))}) · {tail(r.cwd)}
                 </li>
               ))}
               {mode === 'waiting' && <li className="text-fg-tertiary">theuth quits by itself when the last run ends.</li>}

@@ -146,18 +146,7 @@ pub fn chip(i: &Interpreter, login_env: &BTreeMap<String, String>) -> String {
             }
         }
         InterpreterKind::Python => format!("Python {ver} · {}", i.source),
-        kind => {
-            let name = format!("{kind:?}").to_lowercase();
-            let source = match i.source.as_str() {
-                "homebrew" => "Homebrew",
-                s => s,
-            };
-            match (ver.is_empty(), source.is_empty()) {
-                (true, _) => name,
-                (false, true) => format!("{name} {ver}"),
-                (false, false) => format!("{name} {ver} ({source})"),
-            }
-        }
+        _ => crate::shell::chip(i),
     }
 }
 

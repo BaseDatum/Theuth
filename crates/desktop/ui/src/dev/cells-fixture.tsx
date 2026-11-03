@@ -47,6 +47,7 @@ const kernelOf = (session: string, phase: KernelState['phase']): KernelState => 
   phase,
   label: 'bash 5.2 (Homebrew)',
   cwd: '/Users/sky/dr-t6/frp-integration/stacks/sa-frp-integration',
+  env_warning: null,
 })
 const runs = new Map<string, { run: CellRun; text: string }>()
 function run(ref: CellRef, over: Partial<CellRun>, text = ''): CellRun {
@@ -72,6 +73,10 @@ function run(ref: CellRef, over: Partial<CellRun>, text = ''): CellRun {
     queued_ms: now - 20 * MIN,
     started_ms: now - 20 * MIN,
     ended_ms: now - 19 * MIN,
+    masked: 0,
+    private: false,
+    name: null,
+    input: null,
     ...over,
   }
   runs.set(r.id, { run: r, text })
@@ -169,6 +174,7 @@ const api = new Proxy({} as Api, {
               stale: false,
               member_edit: null,
               interpreter: { kind: 'bash', source: 'Homebrew', path: '/opt/homebrew/bin/bash', version: '5.2', why: '', auto: true },
+              host: null,
               ...s?.states(ref, ref.type === 'chat' ? ref.ordinal - 1 : i),
             })),
             kernels: s?.kernels ? [kernelOf(s.session, s.kernels)] : [],

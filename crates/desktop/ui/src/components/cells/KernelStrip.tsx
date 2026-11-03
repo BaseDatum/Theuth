@@ -12,7 +12,6 @@ import type { Api } from '@/rpc/api'
 import type { KernelState } from '@/rpc/bindings/KernelState'
 import { useConnection } from '@/store/connection'
 import { errorText, refresh, register, useScope } from './store'
-import type { KernelStateWire } from './wire'
 
 export type KernelStripProps = {
   session: string
@@ -91,8 +90,8 @@ export function KernelStrip({ session }: KernelStripProps) {
   const [envError, setEnvError] = useState<string | null>(null)
   if (kernels.length === 0) return null
   const [first] = kernels
-  // §5.4: the engine's `env_warning` (L11), else a failed Refresh environment.
-  const warning = kernels.map((k) => (k as KernelStateWire).env_warning).find(Boolean) ?? envError
+  // §5.4: the engine's `env_warning`, else a failed Refresh environment.
+  const warning = kernels.map((k) => k.env_warning).find(Boolean) ?? envError
   return (
     <div className="mx-auto w-full shrink-0 px-4 md:max-w-[768px]" role="region" aria-label="Kernels">
       <div className="flex flex-col gap-1 rounded-t-xl border border-b-0 border-border bg-layer-1 px-3 py-1.5">

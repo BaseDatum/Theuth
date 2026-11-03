@@ -21,9 +21,6 @@ export type NoteKernelPillProps = {
   doc: DocId
 }
 
-/** L11 (`// 171:Z-ADD` at integration): §5.4's capture warning on a kernel. */
-type KernelStateX = KernelState & { env_warning?: string | null }
-
 /** `python · .venv 3.12 · idle`: the kernel's family, the engine's label and the phase in the strip's words. */
 export function pillText(k: KernelState): string {
   const family = k.id.spec.type === 'shell' ? k.id.spec.kind : k.id.spec.type
@@ -73,8 +70,7 @@ export function NoteKernelPill({ doc }: NoteKernelPillProps) {
         <span className="flex items-center gap-1 rounded-full border border-border-subtle py-px pr-0.5 pl-2 text-[11px] text-fg-tertiary">cells{runAllButton}</span>
       ) : (
         kernels.map((k) => {
-          const kx: KernelStateX = k
-          const warning = kx.env_warning
+          const warning = k.env_warning
           return (
             <span key={JSON.stringify(k.id.spec)} className="flex min-w-0 items-center gap-1 rounded-full border border-border-subtle py-px pr-0.5 pl-2 text-[11px] text-fg-secondary">
               <span className={cn('size-1.5 shrink-0 rounded-full', k.phase === 'busy' ? 'bg-fg-accent' : 'bg-success')} aria-hidden />

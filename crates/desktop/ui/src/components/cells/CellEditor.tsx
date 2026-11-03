@@ -1,6 +1,6 @@
 // Owner: U1
 // 171 §11.1 editor + gutter, §7.1 modes, §11.7 keys: the chat cell's CodeMirror. Read-only until the user edits
-// (Enter or a double-click; Esc leaves while unedited); ▶ on the hovered line runs it; a selection shows the
+// (Enter or a double-click; Esc leaves while unedited); ► on the hovered line runs it; a selection shows the
 // "Run selection" pill. Danger cells run from their button only: the keys show a hint instead.
 import { type Extension, StateEffect, StateField } from '@codemirror/state'
 import { langs } from '@uiw/codemirror-extensions-langs'
@@ -29,7 +29,7 @@ const hovered = StateField.define<number | null>({
 class RunMarker extends GutterMarker {
   override toDOM() {
     const el = document.createElement('span')
-    el.textContent = '▶'
+    el.textContent = '►'
     el.title = 'Run this line'
     return el
   }

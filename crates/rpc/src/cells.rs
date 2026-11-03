@@ -329,10 +329,10 @@ pub(crate) async fn state(
     }
 }
 
-/// The engine a forwarded scope's cells run on (§14.2): the chat session's owner, or the
-/// note's hub (their link peer id). `None` when it cannot be told.
+/// The engine a forwarded scope's cells run on (§14.2), by its mesh name: the chat session's
+/// owner, or the note's hub. `None` when it cannot be told.
 async fn host_of(scope: &Scope) -> Option<String> {
-    match scope {
+    let id = match scope {
         Scope::Session(s) => {
             let store =
                 crate::api::ask::<agent::Agents, _>(agent::AGENT_ACTOR, agent::DurableStore)
@@ -344,13 +344,21 @@ async fn host_of(scope: &Scope) -> Option<String> {
                 .ok()
                 .flatten()
                 .map(|(owner, _)| owner)
-                .filter(|o| !o.is_empty())
+                .filter(|o| !o.is_empty())?
         }
         Scope::Doc(doc) => match ::cells::note::route(doc).await.ok()? {
-            ::cells::note::Route::Hub(hub) => Some(hub),
-            ::cells::note::Route::Local => None,
+            ::cells::note::Route::Hub(hub) => hub,
+            ::cells::note::Route::Local => return None,
         },
-    }
+    };
+    // The chip shows the peer's name ("Sky's Mac mini"), its id prefix when it has none.
+    let name = crate::api::ask::<mesh::Mesh, _>(mesh::MESH_ACTOR, mesh::Status)
+        .await
+        .ok()
+        .and_then(|s| s.peers.into_iter().find(|p| p.id.0 == id))
+        .map(|p| p.name.trim().to_owned())
+        .filter(|n| !n.is_empty());
+    Some(name.unwrap_or_else(|| id.chars().take(8).collect()))
 }
 
 /// A per-run read: local first; a `NotFound` for a run this engine forwarded is routed to the

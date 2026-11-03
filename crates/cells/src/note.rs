@@ -190,6 +190,10 @@ pub fn set_docs(d: Arc<dyn Docs>) {
     *DOCS.write() = d;
 }
 
+/// Tests that [`set_docs`] hold this: the fake is process-global.
+#[cfg(test)]
+pub(crate) static DOCS_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn config() -> Arc<crate::CellsConfig> {
     match &*CELLS.read() {
         Some(c) => Arc::new(c.config().clone()),
@@ -296,12 +300,10 @@ pub fn defaults_of(markdown: &str) -> (NoteDefaults, bool) {
     (d, second)
 }
 
-/// The note's defaults (§3.3); empty when the note has no `cells` block or cannot be read.
-pub async fn defaults(doc: &DocId) -> NoteDefaults {
-    match docs().markdown(doc).await {
-        Some(md) => defaults_of(&md).0,
-        None => NoteDefaults::default(),
-    }
+/// The note's markdown (its ```` ```cells ```` defaults block, its other cells); `None` when it
+/// cannot be read.
+pub async fn markdown(doc: &DocId) -> Option<String> {
+    docs().markdown(doc).await
 }
 
 /// §3.3: a note cell's cwd — absolute (`/…`, `~/…`) as is, relative against the default `cwd`;
@@ -713,6 +715,10 @@ mod tests {
             queued_ms: 0,
             started_ms: Some(1),
             ended_ms: Some(1_700_000_000_000),
+            masked: 0,
+            private: false,
+            name: None,
+            input: None,
         }
     }
 
@@ -868,6 +874,7 @@ mod tests {
     /// One test owns the process-global fake (the hooks are free functions).
     #[tokio::test]
     async fn hooks_against_a_fake_document_side() {
+        let _one = DOCS_TEST.lock().await;
         let agent = uuid::Uuid::from_u128(7);
         let text = "#| name: preview\n#| private\necho AKIA";
         let fake = Arc::new(Fake {
@@ -885,7 +892,8 @@ mod tests {
             text
         );
         assert_eq!(origin(&doc, "b1").await, Some(SessionId(agent)));
-        assert_eq!(defaults(&doc).await.cwd.as_deref(), Some("/srv"));
+        let md = markdown(&doc).await.unwrap();
+        assert_eq!(defaults_of(&md).0.cwd.as_deref(), Some("/srv"));
 
         // A private cell replicates no text; the row id is "<doc>:<name>".
         let r = run("d-fake", NoteKey::Name("preview".into()), text);

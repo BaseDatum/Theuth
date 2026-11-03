@@ -12,7 +12,6 @@ import type { Api } from '@/rpc/api'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
 import type { CellSpec } from '@/rpc/bindings/CellSpec'
-import type { CellState } from '@/rpc/bindings/CellState'
 import type { DocId } from '@/rpc/bindings/DocId'
 import type { NoteKey } from '@/rpc/bindings/NoteKey'
 import { Cell, CellExtras, Chip, Notice } from './Cell'
@@ -37,9 +36,6 @@ export type NoteCellProps = {
   block: string
   blocknote: BlockNoteEditor<any, any, any>
 }
-
-/** L11 (`// 171:Z-ADD` at integration): the engine's name when the cell runs on another engine (§14.2). */
-type CellStateX = CellState & { host?: string | null }
 
 /** Every mounted note cell's ref and text on screen (by `refKey`), for the header's Run all (§11.5). */
 const mounted = new Map<string, { ref: CellRef; text: string }>()
@@ -152,7 +148,7 @@ function PythonChip({ text, cwd, onPick }: { text: string; cwd: string; onPick(v
 /**
  * 171 §4.2, §11.1, §11.5: a note code block with a `#|` header, mounted from `editor/CodeBlock.tsx`. U1's `Cell`
  * chrome around BlockNote's own code content; the run state is the engine's record for `Scope::Doc` (never the
- * Y.Doc). Note-only: run-line ▶ and the selection pill read the BlockNote selection; stale shows the code that ran;
+ * Y.Doc). Note-only: run-line ► and the selection pill read the BlockNote selection; stale shows the code that ran;
  * a member's edit must be acknowledged ("Run Alice's edit" sends `member_ack`); "ran 14:02" in the footer.
  */
 export function NoteCell({ doc, key_, cell, code, editor, editable, block, blocknote }: NoteCellProps) {
@@ -169,7 +165,6 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   useEffect(() => () => void mounted.delete(key), [key])
 
   const { state: record, notice } = useCellRecord(ref)
-  const stateX: CellStateX | null = record
   const latest = record?.latest ?? null
   const pub8 = record?.member_edit ?? null
   const member = pub8 ? memberName(pub8, host?.provider.meta?.members) : null
@@ -245,7 +240,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     // The latest values ride `keys`; the listener is per block.
   }, [blocknote, block])
 
-  // The gutter ▶ (§11.1): a positioned overlay on the hovered code line, absent on danger cells.
+  // The gutter ► (§11.1): a positioned overlay on the hovered code line, absent on danger cells.
   const slot = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{ line: number; top: number } | null>(null)
   const onMove = (e: MouseEvent<HTMLDivElement>) => {
@@ -348,7 +343,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
           // The member line is the note's own row (names, not pub8s; "Written by" when never run).
           state={record && { ...record, member_edit: null }}
           latest={latest}
-          host={stateX?.host ? { engine: stateX.host, label: stateX.host } : null}
+          host={record?.host ? { engine: record.host, label: record.host } : null}
           callbacks={callbacks}
           editor={slotted}
         />

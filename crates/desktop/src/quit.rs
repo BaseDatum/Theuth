@@ -190,7 +190,10 @@ fn listen_hold(app: &AppHandle) {
         app.listen(CANCEL, move |_| {
             if handle.state::<Quit>().cancel() {
                 tracing::info!("quit cancelled from the pre-quit sheet");
-                log_err(tray_restore(&handle), "tray: restore after a cancelled quit");
+                log_err(
+                    tray_restore(&handle),
+                    "tray: restore after a cancelled quit",
+                );
             }
         });
     });

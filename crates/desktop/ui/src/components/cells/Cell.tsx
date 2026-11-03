@@ -16,7 +16,6 @@ import { useConnection } from '@/store/connection'
 import { AnsiText, CellContainer, CellOutputs, ExecutionCount } from './Outputs'
 import { clock, duration, ended, errorText, exitText, refKey, scopeOf } from './store'
 import type { CellProps, CellViewState } from './types'
-import type { CellRunWire } from './wire'
 import { labelOf, titleOf } from './view'
 // xterm loads with the first live run.
 const Terminal = lazy(() => import('@/components/chat/TerminalViewer').then((m) => ({ default: m.Terminal })))
@@ -287,9 +286,8 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
   const title = titleOf(cell, cellRef.type === 'chat' ? cellRef.ordinal : undefined)
   const o = cell.options
   const [picked, setPicked] = useState<CellRun | null>(null)
-  // L11 fields (`wire.ts`): optional until the bindings carry them.
-  const run: CellRunWire | null = picked ?? latest
-  const waiting = (latest as CellRunWire | null)?.input
+  const run = picked ?? latest
+  const waiting = latest?.input
   const live = latest?.state === 'running' || latest?.state === 'queued'
   const [showOutput, setShowOutput] = useState<boolean | null>(null)
   const [folded, setFolded] = useState<boolean | null>(null)
@@ -468,9 +466,9 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       {run.expect.length > 0 && <Chip tone={run.expect.every((e) => e.met) ? 'success' : 'danger'}>{expectText(run)}</Chip>}
       {run.edited && <i>edited</i>}
       {picked && <span>run of {clock(picked.queued_ms)}</span>}
-      {(run.masked ?? 0) > 0 && <span>{run.masked} masked for theuth</span>}
+      {run.masked > 0 && <span>{run.masked} masked for theuth</span>}
       {extras.footer /* 171:U2-ADD */}
-      {(run.private ?? o.private) && <span>theuth got exit and expect only</span>}
+      {run.private && <span>theuth got exit and expect only</span>}
       <span className="ml-auto flex items-center gap-0.5">
         {!readOnly && view !== 'guest' && (
           <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs pointer-coarse:h-12" onClick={callbacks.onAsk}>

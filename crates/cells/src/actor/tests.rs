@@ -892,3 +892,111 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+/// The document side of note scope: one block, any key, no markdown.
+struct OneBlock(note::NoteSource);
+
+#[async_trait::async_trait]
+impl note::Docs for OneBlock {
+    async fn code_block(&self, _: &DocId, _: &NoteKey) -> Result<note::NoteSource, String> {
+        Ok(self.0.clone())
+    }
+    async fn hub(&self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    async fn markdown(&self, _: &DocId) -> Option<String> {
+        None
+    }
+    async fn title(&self, _: &DocId) -> Option<String> {
+        None
+    }
+    async fn bound_sessions(&self, _: &DocId) -> Vec<SessionId> {
+        Vec::new()
+    }
+    async fn put_latest(&self, _: CellLatest) -> Result<(), String> {
+        Ok(())
+    }
+    async fn latest(&self, _: &DocId) -> Result<Vec<CellLatest>, String> {
+        Ok(Vec::new())
+    }
+}
+
+/// Invariant 6 (§13.1) at press: a note block a member wrote is refused without the member's
+/// ack, or with another member's; the right ack runs it; once the owner ran that text, no ack.
+#[tokio::test]
+async fn member_edit_needs_the_members_ack() {
+    let _one = note::DOCS_TEST.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cells = cells_in(dir.path()).await;
+    let text = format!("#| name: up\n#| cwd: {}\necho hi", dir.path().display());
+    note::set_docs(Arc::new(OneBlock(note::NoteSource {
+        block: "b1".into(),
+        language: "bash".into(),
+        text: text.clone(),
+        last_author: crate::types::Principal::Member {
+            pub_: "QUxJQ0VLRVlBTElDRQ".into(),
+            device: None,
+        },
+    })));
+    let seen = surface::cell::digest(&text);
+    let note = |block: &str| CellRef::Note {
+        doc: DocId("d-member".into()),
+        key: NoteKey::Block(block.into()),
+    };
+    let req = |cell: CellRef, id: &str, ack: Option<&str>| RunRequest {
+        cell,
+        seen: seen.clone(),
+        mode: RunMode::Cell,
+        run: RunId(id.into()),
+        edited: None,
+        member_ack: ack.map(Into::into),
+        pressed_by: "desktop · t".into(),
+    };
+    let alice = CellsError::MemberAck("QUxJQ0VL".into());
+    assert_eq!(
+        cells.run(req(note("b1"), "r_1", None)).await.unwrap_err(),
+        alice
+    );
+    assert_eq!(
+        cells
+            .run(req(note("b1"), "r_2", Some("Qk9CQk9C")))
+            .await
+            .unwrap_err(),
+        alice
+    );
+    let r = cells
+        .run(req(note("b1"), "r_3", Some("QUxJQ0VL")))
+        .await
+        .unwrap();
+    assert_eq!(r.id, RunId("r_3".into()));
+
+    // Another block with the same text the owner already ran: no ack needed.
+    let ran = finished("r_owner", note("b2"), &seen, now_ms(), RunState::Done);
+    let store = cells.store().unwrap().clone();
+    store
+        .insert(&ran, &ran.cell.scope().key(), None)
+        .await
+        .unwrap();
+    store.finish(&ran, None, None).await.unwrap();
+    let r = cells.run(req(note("b2"), "r_4", None)).await.unwrap();
+    assert_eq!(r.id, RunId("r_4".into()));
+}
+
+/// `cell_output_file` serves a run's images and its `code`, nothing else of the run dir.
+#[tokio::test]
+async fn output_file_serves_images_and_code_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let cells = cells_in(dir.path()).await;
+    let run = RunId("r_files".into());
+    let d = cells.paths().run_dir(&run);
+    std::fs::create_dir_all(&d).unwrap();
+    for f in ["code", "img-1.png", "meta.json", "out.ansi"] {
+        std::fs::write(d.join(f), f).unwrap();
+    }
+    let file = |name: &str| cells.output_file(run.clone(), name.into());
+    assert_eq!(file("code").await.unwrap(), b"code");
+    assert_eq!(file("img-1.png").await.unwrap(), b"img-1.png");
+    for refused in ["meta.json", "out.ansi", "img-../../code.png"] {
+        assert!(file(refused).await.is_err(), "{refused}");
+    }
+}

@@ -440,6 +440,7 @@ async fn export_bindings() {
         cells::ExitStatus,
         cells::ExpectResult,
         cells::CellRun,
+        cells::InputPrompt,
         cells::CellOutput,
         cells::Armed,
         cells::CellState,

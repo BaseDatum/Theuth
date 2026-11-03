@@ -27,9 +27,15 @@ pub(crate) struct Extra<'a> {
     pub home: Option<&'a str>,
 }
 
-/// The `<cell_result …>` text for `run` (`cleaned` = redacted output; head+tail capped).
+/// The `<cell_result …>` text for `run` (`cleaned` = redacted output; head+tail capped); the
+/// record's `name` and `private` (L11) apply — a private run's output never reaches theuth.
 pub fn cell_result(run: &CellRun, cleaned: &str, cfg: &CellsConfig) -> String {
-    build(run, cleaned, cfg, &Extra::default())
+    let x = Extra {
+        name: run.name.as_deref(),
+        private: run.private,
+        ..Extra::default()
+    };
+    build(run, cleaned, cfg, &x)
 }
 
 /// [`cell_result`] with everything the row does not carry.
@@ -409,6 +415,20 @@ mod tests {
         assert!(!t.contains("SECRET"));
         assert!(t.contains("expect ✓ 3 to update\noutput kept from theuth (private)\n"));
         assert!(!t.contains("summary"));
+    }
+
+    /// The note path (`cell_result`, no `Extra`): the record's name and `private` apply.
+    #[test]
+    fn cell_result_takes_name_and_private_from_the_record() {
+        let cfg = CellsConfig::default();
+        let mut r = run();
+        r.private = true;
+        let t = cell_result(&r, "SECRET OUTPUT", &cfg);
+        assert!(
+            t.starts_with("<cell_result run=\"r_01JC7Q2M8V\" name=\"preview-ir-prod1\" "),
+            "{t}"
+        );
+        assert!(!t.contains("SECRET"), "{t}");
     }
 
     #[test]

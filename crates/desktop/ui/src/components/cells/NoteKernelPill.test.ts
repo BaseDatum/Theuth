@@ -9,7 +9,7 @@ import { fakeApi, render } from './test-fixtures'
 
 const DOC = 'bbbbbbbbbbbbbbbbbbbbbbbbbb'
 const scope = { type: 'doc', id: DOC } as const
-const kernel = (spec: KernelState['id']['spec'], label: string, phase: KernelState['phase']): KernelState => ({ id: { scope, spec }, phase, label, cwd: null })
+const kernel = (spec: KernelState['id']['spec'], label: string, phase: KernelState['phase']): KernelState => ({ id: { scope, spec }, phase, label, cwd: null, env_warning: null })
 const python = kernel({ type: 'python', path: '/Users/sky/Develop/costs/.venv/bin/python' }, '.venv 3.12', 'ready')
 const bash = kernel({ type: 'shell', kind: 'bash', path: '/opt/homebrew/bin/bash' }, 'bash 5.2 (Homebrew)', 'busy')
 

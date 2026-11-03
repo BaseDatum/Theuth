@@ -6,7 +6,6 @@ import { keyRun } from './CellEditor'
 import { chatRef, render, run, spec, state } from './test-fixtures'
 import type { CellViewState } from './types'
 import { viewOf } from './view'
-import type { CellRunWire } from './wire'
 
 const noop = () => undefined
 const callbacks = { onRun: noop, onStop: noop, onInput: noop, onAsk: noop, onEdit: noop, onAttach: () => noop }
@@ -125,12 +124,12 @@ test('L11 fields render when present and nothing when absent', () => {
   const plain = cell(1, state(ref, { latest: run() }), { extras: { open: true } }).html
   expect(plain).not.toMatch(/masked for theuth|theuth got exit and expect only|type="password"/)
 
-  const masked = cell(1, state(ref, { latest: { ...run(), masked: 2, private: true } as CellRunWire }), { extras: { open: true } }).html
+  const masked = cell(1, state(ref, { latest: { ...run(), masked: 2, private: true } }), { extras: { open: true } }).html
   expect(masked).toContain('2 masked for theuth')
   expect(masked).toContain('theuth got exit and expect only')
 
   const asking = (password: boolean) =>
-    cell(1, state(ref, { latest: { ...run({ state: 'running', exit: null, secs: null, ended_ms: null }), kernel: { ...run().kernel, spec: { type: 'python', path: '/usr/bin/python3' } }, input: { prompt: 'Token: ', password } } as CellRunWire })).html
+    cell(1, state(ref, { latest: { ...run({ state: 'running', exit: null, secs: null, ended_ms: null }), kernel: { ...run().kernel, spec: { type: 'python', path: '/usr/bin/python3' } }, input: { prompt: 'Token: ', password } } })).html
   expect(asking(true)).toMatch(/Token: [\s\S]*type="password"/)
   expect(asking(false)).toContain('type="text"')
 })

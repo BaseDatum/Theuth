@@ -108,7 +108,7 @@ export const noteRef = (doc: string, spec: CellSpec, block: string): Extract<Cel
 })
 
 /**
- * §7.1 Mod+Enter / the gutter ▶: the mode for a selection `[from, to)` in the block's text (UTF-16 offsets, header
+ * §7.1 Mod+Enter / the gutter ►: the mode for a selection `[from, to)` in the block's text (UTF-16 offsets, header
  * included, as ProseMirror counts inside a code block). A selection → `selection` in UTF-8 byte offsets of the code
  * (header excluded, clipped to it); a caret → `line`, 1-based code line. `null` when it touches only the header.
  */
