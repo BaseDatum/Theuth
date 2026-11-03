@@ -59,14 +59,14 @@ extension PanelController {
                                        accessibility: true)
             Task { @MainActor [self] in
                 do {
-                    w1.attached = try await store.client.screenContext(req)
+                    self.w1.attached = try await self.store.client.screenContext(req)
                 } catch {
-                    store.setReceipt(.failed("screen: \(error)"))
-                    store.expireReceipt(after: 6)
+                    self.store.setReceipt(.failed("screen: \(error)"))
+                    self.store.expireReceipt(after: 6)
                 }
-                w1.attaching = false
-                open(anchor: .mouse)
-                store.ask.replyFor = c.item.id
+                self.w1.attaching = false
+                self.open(anchor: .mouse)
+                self.store.ask.replyFor = c.item.id
             }
         }
     }

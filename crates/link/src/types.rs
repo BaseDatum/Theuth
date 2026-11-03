@@ -320,7 +320,7 @@ impl Guest {
         use std::sync::atomic::Ordering::Relaxed;
         let _ = self
             .refusals
-            .fetch_update(Relaxed, Relaxed, |n| Some(n.saturating_add(1)));
+            .try_update(Relaxed, Relaxed, |n| Some(n.saturating_add(1)));
         self.refusals()
     }
 

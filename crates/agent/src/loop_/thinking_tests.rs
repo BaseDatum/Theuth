@@ -49,7 +49,7 @@ impl Respond for Fake {
             .push(serde_json::from_slice(&req.body).unwrap());
         if self
             .reject
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
             return ResponseTemplate::new(400).set_body_raw(REJECTED, "application/json");

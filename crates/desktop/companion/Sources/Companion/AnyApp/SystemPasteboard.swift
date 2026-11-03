@@ -11,7 +11,7 @@ final class SystemPasteboard: CompanionCore.Pasteboard {
     var changeCount: Int { pb.changeCount }
 
     func snapshot() throws -> [PasteboardItem] {
-        try (pb.pasteboardItems ?? []).map { item in
+        (pb.pasteboardItems ?? []).map { item in
             var types: [String: Data] = [:]
             for t in item.types {
                 // Promised / lazily provided types with no bytes are skipped, not an error (the restore writes what was there).
