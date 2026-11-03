@@ -103,7 +103,8 @@ mod tests {
             "parse",
             r#"printf 'A=1\0B=two words\0C=x=y\0novalue\0=empty\0'"#,
         );
-        let env = login_env(sh.path().as_os_str(), Duration::from_secs(5))
+        // A cap, not a wait: generous so a loaded machine (shared builders) cannot trip it.
+        let env = login_env(sh.path().as_os_str(), Duration::from_secs(30))
             .await
             .unwrap();
         let want: BTreeMap<String, String> = [("A", "1"), ("B", "two words"), ("C", "x=y")]

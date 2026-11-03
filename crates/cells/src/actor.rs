@@ -60,22 +60,42 @@ impl Message<Handle> for CellsActor {
     }
 }
 
-/// §9.3: a turn opened — the session's parked results joined it (`consumed_ms`).
+/// §9.3: a turn opened — the parked results it carries (`run="<id>"` in its text) joined it
+/// (`consumed_ms`). Scoped and peer-opened turns do not take parked results (A1), so a
+/// `TurnStarted` that names none consumes none.
 impl Message<agent::AgentEvent> for CellsActor {
     type Reply = ();
 
     async fn handle(&mut self, e: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
-        if let agent::AgentEvent::TurnStarted { session, .. } = e
+        if let agent::AgentEvent::TurnStarted { session, text, .. } = e
             && let Ok(store) = self.cells.store()
         {
+            let ids = runs_named(&text);
+            if ids.is_empty() {
+                return;
+            }
             let store = store.clone();
             tokio::spawn(async move {
                 let _ = store
-                    .consumed(&Scope::Session(session).key(), now_ms())
+                    .consumed(&Scope::Session(session).key(), &ids, now_ms())
                     .await;
             });
         }
     }
+}
+
+/// Every `run="<id>"` in a turn's text (the `<cell_result run=…>` tags it carries, L2).
+fn runs_named(text: &str) -> Vec<RunId> {
+    let mut out: Vec<RunId> = Vec::new();
+    for part in text.split("run=\"").skip(1) {
+        if let Some((id, _)) = part.split_once('"')
+            && !id.is_empty()
+            && !out.iter().any(|r| r.0 == id)
+        {
+            out.push(RunId(id.to_owned()));
+        }
+    }
+    out
 }
 
 /// The captured login environment (§5.4) and why it fell back, if it did.
@@ -132,6 +152,8 @@ struct Slot {
     prev_cell: Option<CellRef>,
     last_used: Instant,
     busy: bool,
+    /// §5.4 capture failure, shown on the strip.
+    env_warning: Option<String>,
 }
 
 #[derive(Default)]
@@ -235,29 +257,10 @@ fn expand_home(p: &str, home: Option<&str>) -> PathBuf {
     }
 }
 
-/// `[from, to)` in UTF-16 code units (the editor's offsets) of `s`.
-fn utf16_slice(s: &str, from: u32, to: u32) -> Option<&str> {
-    let (mut a, mut b) = (None, None);
-    let mut units = 0u32;
-    for (i, c) in s.char_indices() {
-        if units == from {
-            a = Some(i);
-        }
-        if units == to {
-            b = Some(i);
-        }
-        units += c.len_utf16() as u32;
-    }
-    if units == from {
-        a = Some(s.len());
-    }
-    if units == to {
-        b = Some(s.len());
-    }
-    match (a, b) {
-        (Some(a), Some(b)) if a <= b => Some(&s[a..b]),
-        _ => None,
-    }
+/// `[from, to)` in UTF-8 bytes of the code (U1's selection offsets, header excluded); `None`
+/// out of range or off a char boundary.
+fn byte_slice(s: &str, from: u32, to: u32) -> Option<&str> {
+    s.get(from as usize..to as usize)
 }
 
 /// `{{secret:NAME}}` → value, in memory only (invariant 9: shells write it only into the
@@ -603,7 +606,7 @@ impl Cells {
                 .filter(|_| *line >= 1)
                 .ok_or_else(|| CellsError::Invalid(format!("no line {line}")))?
                 .to_owned(),
-            RunMode::Selection { from, to } => utf16_slice(base, *from, *to)
+            RunMode::Selection { from, to } => byte_slice(base, *from, *to)
                 .ok_or_else(|| CellsError::Invalid("the selection is outside the code".into()))?
                 .to_owned(),
         };
@@ -707,10 +710,7 @@ impl Cells {
         let key = json(&kid);
         let c = &p.inspected.presented.cell;
         let env = self.login_env().await;
-        let label = match &env.warning {
-            Some(w) => format!("{} · {w}", crate::shell::chip(&p.interpreter)),
-            None => crate::shell::chip(&p.interpreter),
-        };
+        let label = crate::shell::chip(&p.interpreter);
         let interpreter = match &p.interpreter.path {
             Some(path) => format!("{} {}", crate::shell::chip(&p.interpreter), path.display()),
             None => crate::shell::chip(&p.interpreter),
@@ -738,6 +738,10 @@ impl Cells {
             queued_ms: now_ms(),
             started_ms: None,
             ended_ms: None,
+            masked: 0,
+            private: c.options.private,
+            name: c.options.name.clone(),
+            input: None,
         };
         let meta = Meta {
             name: c.options.name.clone(),
@@ -772,9 +776,11 @@ impl Cells {
                     prev_cell: None,
                     last_used: Instant::now(),
                     busy: false,
+                    env_warning: env.warning.clone(),
                 }
             });
             slot.label = label;
+            slot.env_warning = env.warning.clone();
             let tx = slot.tx.clone();
             s.runs.insert(
                 id.clone(),
@@ -941,7 +947,11 @@ impl Cells {
                 }
                 Some(KernelEvent::Bytes(b)) => self.live_bytes(&id, &b),
                 Some(KernelEvent::Output(o)) => outputs.push(o),
-                Some(KernelEvent::Mark(_) | KernelEvent::InputRequest { .. }) => {}
+                Some(KernelEvent::InputRequest { prompt, password }) => {
+                    self.waiting_input(&id, crate::types::InputPrompt { prompt, password })
+                        .await;
+                }
+                Some(KernelEvent::Mark(_)) => {}
                 Some(KernelEvent::Finished {
                     exit,
                     log_to,
@@ -1066,6 +1076,20 @@ impl Cells {
             scope,
         })
         .await;
+    }
+
+    /// L11 / §7.4: the kernel waits on `input()`; the run shows the prompt until answered.
+    async fn waiting_input(&self, id: &RunId, prompt: crate::types::InputPrompt) {
+        let scope = {
+            let mut s = self.inner.state.lock();
+            s.runs.get_mut(id).map(|l| {
+                l.record.input = Some(prompt);
+                l.record.cell.scope()
+            })
+        };
+        if let Some(scope) = scope {
+            self.publish(CellEvent::CellsChanged { scope }).await;
+        }
     }
 
     fn live_bytes(&self, id: &RunId, b: &[u8]) {
@@ -1199,6 +1223,7 @@ impl Cells {
             .started_ms
             .map(|s| (rec.ended_ms.unwrap_or(s) - s).max(0) as f64 / 1000.0);
         rec.output_bytes = Some(text.len() as u64);
+        rec.masked = crate::redact::mask(&text, &[]).1;
         let ok = matches!(rec.exit, Some(ExitStatus::Code(0))) && rec.expect.iter().all(|e| e.met);
         rec.state = match l.stop {
             Some(Stop::Timeout) => RunState::Timeout,
@@ -1255,7 +1280,7 @@ impl Cells {
                 let env = self.login_env().await;
                 let x = crate::deliver::Extra {
                     name: meta.name.as_deref(),
-                    private: meta.private,
+                    private: rec.private || meta.private,
                     edited_code: meta.edited_code.as_deref(),
                     outputs: &outputs,
                     pass_end,
@@ -1358,6 +1383,7 @@ impl Cells {
                 .started_ms
                 .map(|s| (rec.ended_ms.unwrap_or(s) - s).max(0) as f64 / 1000.0);
             rec.output_bytes = Some(text.len() as u64);
+            rec.masked = crate::redact::mask(&text, &[]).1;
             let _ = store.finish(&rec, Some(&sha(&text)), None).await;
             self.publish(CellEvent::RunFinished {
                 run: rec.id.clone(),
@@ -1590,6 +1616,16 @@ impl Cells {
             .ok_or_else(|| CellsError::NotFound(run.0.clone()))?;
         let keys = data.len() as u64;
         kernel.input(&run, data).await?;
+        // L11: an `input()` answered — the prompt is gone (python: one answer per request).
+        let answered = {
+            let mut s = self.inner.state.lock();
+            s.runs
+                .get_mut(&run)
+                .and_then(|l| l.record.input.take().map(|_| l.record.cell.scope()))
+        };
+        if let Some(scope) = answered {
+            self.publish(CellEvent::CellsChanged { scope }).await;
+        }
         // Inv. 13: counts per device, never contents.
         if let Ok(s) = self.store() {
             let _ = s.typed(&run, "owner", keys).await;
@@ -1655,6 +1691,7 @@ impl Cells {
                         stale: false,
                         member_edit: None,
                         interpreter,
+                        host: None, // the RPC layer names another engine (§14.2)
                     });
                 }
             }
@@ -1681,6 +1718,7 @@ impl Cells {
                 },
                 label: k.label.clone(),
                 cwd: k.kernel.as_ref().and_then(|kernel| kernel.live_cwd()),
+                env_warning: k.env_warning.clone(),
             })
             .collect()
     }
@@ -1721,14 +1759,14 @@ impl Cells {
         limit: u32,
         ansi: bool,
     ) -> Result<OutputPage, CellsError> {
-        if self.find_run(&run).await?.is_none() {
+        let Some(rec) = self.find_run(&run).await? else {
             return Err(CellsError::NotFound(run.0));
-        }
+        };
         let dir = self.inner.paths.run_dir(&run);
         let text = if ansi {
             std::fs::read_to_string(dir.join("out.ansi")).unwrap_or_default()
         } else {
-            if self.meta(&run).private {
+            if rec.private || self.meta(&run).private {
                 return Err(CellsError::Private);
             }
             let t = std::fs::read_to_string(dir.join("out.txt")).unwrap_or_default();

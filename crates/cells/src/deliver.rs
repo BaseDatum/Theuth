@@ -368,6 +368,10 @@ mod tests {
             queued_ms: 0,
             started_ms: Some(0),
             ended_ms: Some(1_700_000_000_000),
+            masked: 0,
+            private: false,
+            name: Some("preview-ir-prod1".into()),
+            input: None,
         }
     }
 

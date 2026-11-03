@@ -220,6 +220,10 @@ mod tests {
             queued_ms: ended_ms - 2_000,
             started_ms: Some(ended_ms - 1_000),
             ended_ms: Some(ended_ms),
+            masked: 0,
+            private: false,
+            name: None,
+            input: None,
         }
     }
 

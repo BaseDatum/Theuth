@@ -65,7 +65,7 @@ macro_rules! select {
             "SELECT id, scope, cell, lineage, mode, pass, kernel, interpreter, cwd, env_names, \
              presented_sha, code_sha, edited, pressed_by, state, exit, signal, secs, expect, \
              summary, output_sha, output_bytes, log, log_from, log_to, queued_ms, started_ms, \
-             ended_ms, delivery, consumed_ms, typed FROM cell_runs ",
+             ended_ms, delivery, consumed_ms, typed, masked, private, name FROM cell_runs ",
             $rest
         )
     };
@@ -113,6 +113,10 @@ fn decode(r: &SqliteRow) -> std::result::Result<Row, sqlx::Error> {
         queued_ms: r.try_get("queued_ms")?,
         started_ms: r.try_get("started_ms")?,
         ended_ms: r.try_get("ended_ms")?,
+        masked: u32::try_from(r.try_get::<i64, _>("masked")?).unwrap_or(0),
+        private: r.try_get::<i64, _>("private")? != 0,
+        name: r.try_get("name")?,
+        input: None,
     };
     Ok(Row {
         run,
@@ -156,8 +160,8 @@ impl Store {
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO cell_runs (id, scope, cell, lineage, mode, pass, kernel, interpreter, cwd, \
-             env_names, presented_sha, code_sha, edited, pressed_by, state, queued_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             env_names, presented_sha, code_sha, edited, pressed_by, state, queued_ms, private, \
+             name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(run.id.as_str())
         .bind(scope)
@@ -175,6 +179,8 @@ impl Store {
         .bind(&run.pressed_by)
         .bind(state_word(run.state))
         .bind(run.queued_ms)
+        .bind(i64::from(run.private))
+        .bind(run.name.as_deref())
         .execute(&self.pool)
         .await
         .map_err(db)?;
@@ -297,7 +303,7 @@ impl Store {
         sqlx::query(
             "UPDATE cell_runs SET state = ?, exit = ?, signal = ?, secs = ?, expect = ?, summary = ?, \
              output_sha = ?, output_bytes = ?, log_to = ?, started_ms = COALESCE(started_ms, ?), \
-             ended_ms = ? WHERE id = ?",
+             ended_ms = ?, masked = ? WHERE id = ?",
         )
         .bind(state_word(run.state))
         .bind(exit)
@@ -310,6 +316,7 @@ impl Store {
         .bind(log_to.map(|n| n as i64))
         .bind(run.started_ms)
         .bind(run.ended_ms)
+        .bind(i64::from(run.masked))
         .bind(run.id.as_str())
         .execute(&self.pool)
         .await
@@ -328,18 +335,25 @@ impl Store {
         Ok(())
     }
 
-    /// A turn opened in `scope`: its parked results joined it (§9.3).
-    pub(crate) async fn consumed(&self, scope: &str, at_ms: i64) -> Result<u64> {
-        let r = sqlx::query(
-            "UPDATE cell_runs SET consumed_ms = ? WHERE scope = ? AND delivery = 'parked' \
-             AND consumed_ms IS NULL",
-        )
-        .bind(at_ms)
-        .bind(scope)
-        .execute(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(r.rows_affected())
+    /// A turn opened in `scope` whose text carries `run="<id>"` for these ids: those parked
+    /// results joined it (§9.3). Scoped / peer-opened turns carry none, so nothing is
+    /// consumed by them.
+    pub(crate) async fn consumed(&self, scope: &str, ids: &[RunId], at_ms: i64) -> Result<u64> {
+        let mut n = 0;
+        for id in ids {
+            n += sqlx::query(
+                "UPDATE cell_runs SET consumed_ms = ? WHERE id = ? AND scope = ? \
+                 AND delivery = 'parked' AND consumed_ms IS NULL",
+            )
+            .bind(at_ms)
+            .bind(id.as_str())
+            .bind(scope)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?
+            .rows_affected();
+        }
+        Ok(n)
     }
 
     /// One parked run consumed (Ask theuth woke it).
@@ -480,6 +494,10 @@ mod tests {
             queued_ms,
             started_ms: None,
             ended_ms: None,
+            masked: 0,
+            private: false,
+            name: None,
+            input: None,
         }
     }
 
@@ -537,6 +555,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("c.sqlite")).await.unwrap();
         let mut r = run("r_1", 1, 10);
+        r.private = true;
+        r.name = Some("preview".into());
         s.insert(&r, "session:x", Some("session:x/preview"))
             .await
             .unwrap();
@@ -548,6 +568,7 @@ mod tests {
         r.output_bytes = Some(42);
         r.started_ms = Some(11);
         r.ended_ms = Some(12);
+        r.masked = 2;
         s.finish(&r, Some("sha"), Some(99)).await.unwrap();
         s.typed(&r.id, "desktop", 3).await.unwrap();
         s.typed(&r.id, "desktop", 2).await.unwrap();
@@ -561,6 +582,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(typed.0.as_deref(), Some(r#"{"desktop":5}"#));
+    }
+
+    /// §9.3 (A1): a turn consumes exactly the parked runs its text carries, in its own scope.
+    #[tokio::test]
+    async fn parked_runs_are_consumed_only_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("c.sqlite")).await.unwrap();
+        for id in ["r_a", "r_b"] {
+            let mut r = run(id, 1, 1);
+            s.insert(&r, "session:x", None).await.unwrap();
+            r.state = RunState::Done;
+            r.ended_ms = Some(2);
+            s.finish(&r, None, None).await.unwrap();
+            s.delivery(&r.id, "parked").await.unwrap();
+        }
+        let a = [RunId("r_a".into())];
+        assert_eq!(s.consumed("session:other", &a, 5).await.unwrap(), 0);
+        assert_eq!(s.consumed("session:x", &a, 5).await.unwrap(), 1);
+        assert_eq!(s.consumed("session:x", &a, 6).await.unwrap(), 0);
+        let left: Vec<RunId> = s
+            .parked(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.run.id)
+            .collect();
+        assert_eq!(left, [RunId("r_b".into())]);
     }
 
     #[tokio::test]

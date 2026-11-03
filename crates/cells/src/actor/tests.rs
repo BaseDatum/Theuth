@@ -69,10 +69,21 @@ fn env_rules_drop_and_set() {
 }
 
 #[test]
-fn selections_are_utf16_offsets() {
-    assert_eq!(utf16_slice("aé😀b", 1, 4), Some("é😀"));
-    assert_eq!(utf16_slice("abc", 0, 3), Some("abc"));
-    assert_eq!(utf16_slice("abc", 2, 9), None);
+fn selections_are_utf8_byte_offsets() {
+    assert_eq!(byte_slice("aé😀b", 1, 7), Some("é😀"));
+    assert_eq!(byte_slice("abc", 0, 3), Some("abc"));
+    assert_eq!(byte_slice("abc", 2, 9), None);
+    // Inside `é` is not a boundary.
+    assert_eq!(byte_slice("aé", 0, 2), None);
+}
+
+/// §9.3 (A1): only the runs a turn's text carries are consumed by it.
+#[test]
+fn turns_consume_only_the_runs_they_carry() {
+    let text = "Sky's message\n<cell_result run=\"r_1\" name=\"a\" exit=\"0\">x</cell_result>\n\
+                <cell_result run=\"r_2\" cell=\"1\" message=\"4\">y</cell_result> run=\"r_1\"";
+    assert_eq!(runs_named(text), [RunId("r_1".into()), RunId("r_2".into())]);
+    assert!(runs_named("a scoped turn with no results").is_empty());
 }
 
 /// Invariant 5 (digest guard + superseded), 7 (danger), §5.6 (missing cwd), §3.6 (invalid),
@@ -228,6 +239,10 @@ fn finished(id: &str, cell: CellRef, code_sha: &str, ended_ms: i64, state: RunSt
         queued_ms: ended_ms - 1000,
         started_ms: Some(ended_ms - 1000),
         ended_ms: Some(ended_ms),
+        masked: 0,
+        private: false,
+        name: None,
+        input: None,
     }
 }
 
@@ -329,6 +344,144 @@ async fn after_gate_with_edited_and_old_previews() {
     let mut i = Cells::inspect(&t, &chat(s2, 3, 2), home).unwrap();
     cells.arm(&scope2, &mut i).await.unwrap();
     assert!(matches!(check(&i), Err(CellsError::Disarmed(why)) if why.contains("old")));
+}
+
+/// A kernel that only records what is typed into it.
+struct Typed(KernelSpec, Mutex<Vec<Vec<u8>>>);
+
+#[async_trait::async_trait]
+impl Kernel for Typed {
+    fn spec(&self) -> &KernelSpec {
+        &self.0
+    }
+    fn phase(&self) -> KernelPhase {
+        KernelPhase::Busy
+    }
+    async fn execute(&self, _: ExecuteRequest, _: crate::kernel::KernelSink) -> Result<()> {
+        Ok(())
+    }
+    async fn input(&self, _: &RunId, bytes: Vec<u8>) -> Result<()> {
+        self.1.lock().push(bytes);
+        Ok(())
+    }
+    async fn interrupt(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn kill(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn shutdown(&self) -> Result<()> {
+        Ok(())
+    }
+    fn live_cwd(&self) -> Option<String> {
+        None
+    }
+}
+
+/// L11: a kernel's `input()` request shows on the run until `cell_input` answers it; the
+/// answer reaches the kernel as typed (python: raw text, no newline added).
+#[tokio::test]
+async fn input_prompt_is_shown_until_answered() {
+    let dir = tempfile::tempdir().unwrap();
+    let cells = cells_in(dir.path()).await;
+    let s = SessionId(uuid::Uuid::new_v4());
+    let mut rec = finished("r_in", chat(s, 1, 1), "d", now_ms(), RunState::Running);
+    rec.ended_ms = None;
+    let key = json(&rec.kernel);
+    let kernel = Arc::new(Typed(KernelSpec::Monty, Mutex::new(Vec::new())));
+    {
+        let mut st = cells.inner.state.lock();
+        st.kernels.insert(
+            key.clone(),
+            Slot {
+                id: rec.kernel.clone(),
+                label: "Monty".into(),
+                kernel: Some(kernel.clone() as Arc<dyn Kernel>),
+                log: None,
+                tx: mpsc::unbounded_channel().0,
+                prev_cell: None,
+                last_used: Instant::now(),
+                busy: true,
+                env_warning: None,
+            },
+        );
+        st.runs.insert(
+            rec.id.clone(),
+            Live {
+                record: rec.clone(),
+                key,
+                code: String::new(),
+                cwd: dir.path().to_path_buf(),
+                env: Vec::new(),
+                timeout: None,
+                meta: Meta::default(),
+                executing: true,
+                stop: None,
+                buf: Vec::new(),
+                tx: broadcast::channel(4).0,
+                done: Vec::new(),
+            },
+        );
+    }
+    let prompt = crate::types::InputPrompt {
+        prompt: "password: ".into(),
+        password: true,
+    };
+    cells.waiting_input(&rec.id, prompt.clone()).await;
+    let live = cells.find_run(&rec.id).await.unwrap().unwrap();
+    assert_eq!(live.input, Some(prompt));
+    cells
+        .input(rec.id.clone(), b"hunter2".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(cells.find_run(&rec.id).await.unwrap().unwrap().input, None);
+    assert_eq!(*kernel.1.lock(), vec![b"hunter2".to_vec()]);
+}
+
+/// §9.1 / inv. 10 (A1's `cell_output`): the agent-safe page of a private run is refused
+/// `Private`; the owner's own ANSI view still reads it.
+#[tokio::test]
+async fn output_refuses_private_runs_for_the_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let cells = cells_in(dir.path()).await;
+    let s = SessionId(uuid::Uuid::new_v4());
+    let store = cells.store().unwrap().clone();
+    for (id, private) in [("r_priv", true), ("r_pub", false)] {
+        let mut r = finished(id, chat(s, 1, 1), "d", now_ms(), RunState::Done);
+        r.private = private;
+        store
+            .insert(&r, &Scope::Session(s).key(), None)
+            .await
+            .unwrap();
+        store.finish(&r, None, None).await.unwrap();
+        let d = cells.paths().run_dir(&r.id);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("out.txt"), "key AKIAABCDEFGHIJKLMNOP").unwrap();
+        std::fs::write(d.join("out.ansi"), "key AKIAABCDEFGHIJKLMNOP").unwrap();
+    }
+    let page = |id: &str, ansi| cells.output(RunId(id.into()), 0, 100, ansi);
+    assert_eq!(
+        page("r_priv", false).await.unwrap_err(),
+        CellsError::Private
+    );
+    assert!(page("r_priv", true).await.unwrap().text.contains("AKIA"));
+    assert_eq!(
+        page("r_pub", false).await.unwrap().text,
+        "key [masked aws-key-id]"
+    );
+    assert_eq!(
+        page("r_missing", false).await.unwrap_err(),
+        CellsError::NotFound("r_missing".into())
+    );
+    assert!(
+        store
+            .get(&RunId("r_priv".into()))
+            .await
+            .unwrap()
+            .unwrap()
+            .run
+            .private
+    );
 }
 
 /// §5.10: the same client-minted id twice is one run; a reused id elsewhere is refused.
@@ -589,6 +742,8 @@ async fn e2e_real_shells() {
     assert_eq!(r.exit, Some(ExitStatus::Code(0)), "{out}");
     assert!(out.contains("inner.txt"), "{out:?}");
     assert_eq!(r.state, RunState::Done);
+    assert_eq!(r.name.as_deref(), Some("a"));
+    assert!(!r.private);
     // then line 2 of A: no prologue, the cd holds.
     let (_, out) = b.run(1, RunMode::Line { line: 2 }, "r_a_l2").await;
     assert!(
@@ -672,6 +827,8 @@ async fn e2e_real_shells() {
         "{out:?}"
     );
     assert_eq!(r.env_names, vec!["P".to_owned()]);
+    // L11: the agent's copy masked one value; the run carries it.
+    assert_eq!(r.masked, 1);
     let page = cells
         .output(RunId("r_cred".into()), 0, 8000, false)
         .await
@@ -689,7 +846,8 @@ async fn e2e_real_shells() {
         "echo AKIAABCDEFGHIJKLMNOP; echo \"P=$P\""
     );
     // Private: nothing leaves the store for the agent.
-    b.run(12, RunMode::Cell, "r_priv").await;
+    let (r, _) = b.run(12, RunMode::Cell, "r_priv").await;
+    assert!(r.private && r.name.is_none());
     assert_eq!(
         cells
             .output(RunId("r_priv".into()), 0, 100, false)

@@ -308,7 +308,16 @@ pub(crate) async fn state(
     cells: Vec<CellRef>,
 ) -> RpcResult<StateReply> {
     cells_guard::read(ext)?;
-    if let Some(r) = route_scope(server, ext, &scope, "cell_state", (&scope, &cells)).await? {
+    if let Some(mut r) =
+        route_scope::<StateReply>(server, ext, &scope, "cell_state", (&scope, &cells)).await?
+    {
+        // §14.2 (L11): another engine runs these cells — the host chip names it.
+        let host = host_of(&scope).await;
+        for c in &mut r.cells {
+            if c.host.is_none() {
+                c.host.clone_from(&host);
+            }
+        }
         return Ok(r);
     }
     match ::cells::Cells::lookup().await {
@@ -317,6 +326,30 @@ pub(crate) async fn state(
             cells: Vec::new(),
             kernels: Vec::new(),
         }),
+    }
+}
+
+/// The engine a forwarded scope's cells run on (§14.2): the chat session's owner, or the
+/// note's hub (their link peer id). `None` when it cannot be told.
+async fn host_of(scope: &Scope) -> Option<String> {
+    match scope {
+        Scope::Session(s) => {
+            let store =
+                crate::api::ask::<agent::Agents, _>(agent::AGENT_ACTOR, agent::DurableStore)
+                    .await
+                    .ok()?;
+            store
+                .owner(*s)
+                .await
+                .ok()
+                .flatten()
+                .map(|(owner, _)| owner)
+                .filter(|o| !o.is_empty())
+        }
+        Scope::Doc(doc) => match ::cells::note::route(doc).await.ok()? {
+            ::cells::note::Route::Hub(hub) => Some(hub),
+            ::cells::note::Route::Local => None,
+        },
     }
 }
 

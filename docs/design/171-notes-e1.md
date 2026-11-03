@@ -18,12 +18,12 @@ Decisions taken where the design or the brief was silent, deviations, tests. Des
 - **Live bytes for `cell_attach`**: the shell kernel forwards the PTY broadcast between the `133;C` and `133;D` byte sequences (its own cut, `LiveCut`); the actor keeps a 512 KiB tail per run for late attachers. The record is always rendered from the log range `[C, D)`.
 - **`code_sha`** = the presented digest for an unedited whole-cell run, else `surface::cell::digest(code that ran)`. So only an unedited whole-cell run of the gate's current text arms an `after` (§7.6).
 - **`mode` column** stores the `RunMode` JSON (keeps line/selection offsets), not the bare word.
-- **Selections** are UTF-16 code-unit offsets (CodeMirror's positions) into the code (header excluded).
+- **Selections** are UTF-8 byte offsets into the code (header excluded), per U1; a range off a char boundary or past the end is refused `invalid`.
 - **`runs/<run>/meta.json`** (beyond §8.4's list): name, label, private, review, edited code, expect items — what a re-built `<cell_result>` (Ask theuth, restart re-park) needs and the row does not hold.
 - **Cancelled runs** are not delivered (`delivery = none`); a run that failed before reaching its kernel (kernel start failure) is delivered as `failed` with the reason as its summary.
 - **Engine shutdown**: once `rt.shutdown` fires, finishing runs are left `running`; the next start settles them `lost` (109 R1) and delivers quietly (or waking for `review`).
 - **Kernel root for job logs**: `rt.data_dir` (`SessionResources::durable`); private sessions' kernel logs also go there (no peer is available to `agent::Authorize`).
-- **Login environment**: captured from `$SHELL` (fallback `/bin/zsh` on macOS, `/bin/sh`). On failure: engine env + login PATH, and the kernel strip label gains `· your shell's environment could not be read — Refresh` (`KernelState` has no warning field).
+- **Login environment**: captured from `$SHELL` (fallback `/bin/zsh` on macOS, `/bin/sh`). On failure: engine env + login PATH, and `KernelState.env_warning` = "your shell's environment could not be read — Refresh" (L11).
 - **bash 3.2 hint**: in `Interpreter.why` (`… · bash 3.2 — no associative arrays, no ${x,,}`); `Chip` has no hint kind.
 - **rc files** also `unset HISTFILE` (run lines never reach the user's history) and zsh's `.zshenv` remembers where the user's `.zshenv` points `ZDOTDIR` so the user's `.zshrc` is still found.
 - **Mark carry**: 32 bytes for OSC 133 (design), 1024 for an OSC 7 prefix (paths are long).
@@ -31,11 +31,16 @@ Decisions taken where the design or the brief was silent, deviations, tests. Des
 - **`pressed_by`** = `<desktop|web|phone> · <device>`: `phone` for an `ios` client, `web` for a relay peer, device = engine hostname for local peers, `relay` for remote ones, the forwarding engine's peer id when forwarded. `typed` counts keystrokes under `owner` (the frozen `input` has no device).
 - **Forwarded runs**: the RPC remembers `run → scope` for `cell_run` replies it forwarded (process-local, 4096 cap) so Stop/input/Ask/reads route back to the owner. Gap: runs minted by a forwarded Run-all pass and `cell_attach` across engines are not routed (local runs only).
 - **Note scope** (L6): the actor calls `note::source` / `note::deliver` / `note::latest` / `interp::*` at `// 171:E2` lines and returns their errors untouched; member acknowledgement (inv. 6) is E2's.
-- **Python input requests** (`KernelEvent::InputRequest`) have no wire carrier yet; ignored by the actor (E2/U2).
+- **Input requests** (`KernelEvent::InputRequest`, python): `CellRun.input = Some(InputPrompt)` while waiting, cleared by the next `cell_input` (one answer per request; bytes reach the kernel as sent — python's answer is raw text without a newline, the kernel's business). Both edges publish `CellsChanged{scope}` as the hint.
+- **Parked consumption** (A1): a parked run gets `consumed_ms` only when a `TurnStarted`'s text carries its `run="<id>"` (scoped and peer-opened turns take no parked results); the old "every TurnStarted of the session" rule is gone.
+- **`cell:` prefix**: `tools::jobs::CELL_PREFIX` stays (tools cannot depend on agent); A1's `agent::supervisor::CELL_JOB_PREFIX` is the same `"cell:"`.
 
 ## STUB-DEVIATION / ADD
 
-- No frozen file changed. Local adapters: `shell::launch` (log path), `actor/chat.rs` (a copy of `surface`'s crate-private CommonMark fence scanner — `surface::fences` is not public).
+- No frozen signature changed. Local adapters: `shell::launch` (log path), `actor/chat.rs` (a copy of `surface`'s crate-private CommonMark fence scanner — `surface::fences` is not public).
+- **L11 `// 171:E1-ADD` in `crates/cells/src/types.rs`** (all `#[serde(default)]`): `CellRun.{masked: u32, private: bool, name: Option<String>, input: Option<InputPrompt>}`, new wire struct `InputPrompt{prompt, password}`, `KernelState.env_warning: Option<String>`, `CellState.host: Option<String>`. Z: add `cells::InputPrompt` to the `// 171:C` block of `crates/rpc/src/export.rs` if the regenerated bindings lack it.
+- **Migration `0002_cells_e1.sql`** now adds `cell_runs.{masked, private, name}` (0001 lacks them; the stored run carries them).
+- **`CellState.host`**: filled by `rpc::cells::state` only for a forwarded reply — the chat session's `owner` engine id from the agent store, or the note's hub peer id (an id, not a display name; the desktop maps it). Local replies keep `None`.
 
 ## Tests (names)
 
