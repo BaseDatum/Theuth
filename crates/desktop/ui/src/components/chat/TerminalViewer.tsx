@@ -3,13 +3,14 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as Xterm } from '@xterm/xterm'
 import { useQuery } from '@tanstack/react-query'
 import { AppWindow, Keyboard } from 'lucide-react'
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { PtyIcon } from './Indicators'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isApple } from '@/lib/chord'
+import { touch } from '@/lib/platform'
 import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { macKeyBytes } from '@/lib/terminal-keys'
@@ -20,6 +21,7 @@ import type { JobExit } from '@/rpc/bindings/JobExit'
 import type { Key } from '@/rpc/bindings/Key'
 import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
 import type { CellRunId } from '@/rpc/bindings/CellRunId'
+import type { RpcClient } from '@/rpc/client'
 import type { TerminalSummary } from '@/rpc/bindings/TerminalSummary'
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
@@ -36,6 +38,9 @@ const FG = '#e8dcc8'
  */
 const DEFAULT_ROWS = 40
 const DEFAULT_COLS = 120
+/** A kernel PTY's fixed grid (171 §7.4): the cell viewer starts there and never resizes it. */
+const CELL_ROWS = 30
+const CELL_COLS = 100
 
 /** Mobile toolbar keys (55 §4.5): what a soft keyboard lacks. The daemon encodes them for the program's modes. */
 const TOOLBAR: [string, Key][] = [
@@ -47,10 +52,87 @@ const TOOLBAR: [string, Key][] = [
   ['→', 'right'],
   ['^C', 'ctrl_c'],
 ]
+/** The cell key row (171 §11.6): raw bytes through `cell_input`, arrows per the program's cursor-key mode. */
+export const CELL_KEYS: [string, (app: boolean) => string][] = [
+  ['↑', (app) => (app ? '\x1bOA' : '\x1b[A')],
+  ['↓', (app) => (app ? '\x1bOB' : '\x1b[B')],
+  ['⏎', () => '\r'],
+  ['Esc', () => '\x1b'],
+  ['Tab', () => '\t'],
+  ['^C', () => '\x03'],
+]
 
 type JobRef = { session: string; job: string }
 
+/** Where a `Terminal`'s bytes come from: an agent PTY job, or a cell run's kernel PTY (171 §11.1 output). */
+export type TerminalSource = { kind: 'pty'; session: string; job: string } | { kind: 'cell'; run: CellRunId }
+
 const bytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+/** Base64 of a string's UTF-8 bytes (`cell_input` takes base64). */
+const utf8b64 = (s: string) => btoa(Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join(''))
+
+/**
+ * The wire between one source and an xterm (171 §7.4): bytes stream in (`subscribe_pty` / `cell_attach`), keystrokes
+ * go out one call at a time in typing order (`pty_input` / `cell_input`), nothing is sent after `exit`. Hook-free so
+ * the test drives it with fakes.
+ */
+export function attachSource(
+  src: TerminalSource,
+  term: Pick<Xterm, 'rows' | 'cols' | 'reset' | 'resize' | 'write' | 'onData' | 'attachCustomKeyEventHandler' | 'parser'>,
+  api: Pick<Api, 'pty_input' | 'cell_input'>,
+  client: Pick<RpcClient, 'stream'>,
+  onExit: (e: JobExit) => void,
+) {
+  let ended = false
+  let lane: Promise<unknown> = Promise.resolve()
+  const call = src.kind === 'pty' ? (d: string) => api.pty_input(src.session, src.job, d, null) : (d: string) => api.cell_input(src.run, utf8b64(d))
+  const send = (d: string) => {
+    if (ended) return
+    lane = lane.then(() => call(d).catch(() => undefined))
+  }
+  const input = term.onData(send)
+  // 167 D1: macOS editing keys as Terminal.app sends them, through the same lane.
+  const mac = isApple()
+  term.attachCustomKeyEventHandler((e) => {
+    const d = macKeyBytes(e, mac)
+    if (d === null) return true
+    e.preventDefault()
+    send(d)
+    return false
+  })
+  // 167 D2: the engine is the one responder for the queries it answers; this xterm keeps the rest.
+  swallowEngineQueries(term.parser)
+  const chunk = (c: PtyChunk) => {
+    switch (c.type) {
+      case 'reset':
+        term.reset()
+        if (term.rows !== c.rows || term.cols !== c.cols) term.resize(c.cols, c.rows)
+        term.write(bytes(c.data))
+        break
+      case 'data':
+        term.write(bytes(c.data))
+        break
+      case 'exit':
+        // Once: a reconnect replays the stream, exit included.
+        if (ended) break
+        ended = true
+        onExit(c.exit)
+        break
+    }
+  }
+  const off =
+    src.kind === 'pty'
+      ? client.stream<PtyChunk>('subscribe_pty', [src.session, src.job, term.rows, term.cols], 'unsubscribe_pty', chunk)
+      : client.stream<PtyChunk>('cell_attach', [src.run], 'cell_detach', chunk)
+  return {
+    send,
+    ended: () => ended,
+    dispose() {
+      void off.then((f) => f())
+      input.dispose()
+    },
+  }
+}
 
 const exitText = (e: JobExit) => (typeof e === 'string' ? e : `exit ${e.exited}`)
 
@@ -90,37 +172,49 @@ export function PopoutTerminalButton({ session, job, className }: JobRef & { cla
   )
 }
 
+export type TerminalProps = {
+  label: string
+  popped?: boolean
+  /** Once, when the stream's `exit` chunk arrives. */
+  onExit?: () => void
+  className?: string
+} & ((JobRef & { source?: undefined }) | { source: TerminalSource; session?: undefined; job?: undefined })
+
 /**
- * One PTY job in an xterm: the daemon streams the program's bytes (`subscribe_pty`), xterm emulates, keystrokes go
- * back as bytes (`pty_input`), and the grid follows the container (`pty_resize` → SIGWINCH). Below it the mobile key
+ * One PTY in an xterm: the source streams the program's bytes (`subscribe_pty` / `cell_attach`), xterm emulates,
+ * keystrokes go back as bytes (`pty_input` / `cell_input`). A pty source's grid follows the container (`pty_resize` →
+ * SIGWINCH); a cell source's kernel PTY is fixed 100×30 (171 §7.4) and is never resized. Below it the mobile key
  * strip and the status line (`label` · size · exit). `popped`: this is the window's whole content — it owns the
  * PTY's size (leaves the `mark`, restores the default grid on close) and titles the window.
  */
-export function Terminal({
-  session,
-  job,
-  label,
-  popped = false,
-}: JobRef & {
-  label: string
-  popped?: boolean
-  // 171:U1 a cell run's bytes come from `cell_attach` instead of `subscribe_pty` (171 §11.1 output); unused until U1.
-  source?: { kind: 'cell'; run: CellRunId }
-}) {
+export function Terminal({ session, job, label, popped = false, source, onExit, className }: TerminalProps) {
   const api = useApi()
   const client = useConnection((s) => s.client)
   const mobile = useIsMobile()
   const host = useRef<HTMLDivElement>(null)
   const termRef = useRef<Xterm>(null)
+  const sendRef = useRef<(d: string) => void>(null)
+  const onExitRef = useRef(onExit)
   const [exit, setExit] = useState<JobExit | null>(null)
   const [size, setSize] = useState('')
   // The soft keyboard is up while xterm's textarea has focus (mobile toggle).
   const [keyboard, setKeyboard] = useState(false)
+  // Stable by value, so an inline `source={{…}}` does not restart the stream every render.
+  const run = source?.kind === 'cell' ? source.run : null
+  const ptySession = source?.kind === 'pty' ? source.session : session
+  const ptyJob = source?.kind === 'pty' ? source.job : job
+  const src = useMemo<TerminalSource>(
+    () => (run !== null ? { kind: 'cell', run } : { kind: 'pty', session: ptySession!, job: ptyJob! }),
+    [run, ptySession, ptyJob],
+  )
+  useEffect(() => {
+    onExitRef.current = onExit
+  }, [onExit])
 
   useEffect(() => {
     const el = host.current
     if (!el || !client) return
-    const ref = { session, job }
+    const ref = src.kind === 'pty' ? src : null
     setExit(null)
     const term = new Xterm({
       theme: { background: BG, foreground: FG, cursor: FG, selectionBackground: '#e8dcc855' },
@@ -128,12 +222,14 @@ export function Terminal({
       fontSize: 12,
       scrollback: 5000,
       cursorBlink: true,
+      ...(ref ? {} : { rows: CELL_ROWS, cols: CELL_COLS }),
     })
-    const fit = new FitAddon()
-    term.loadAddon(fit)
+    // Only a pty source's grid follows the box; a cell's is the kernel's fixed grid (the box scrolls or clips).
+    const fit = ref ? new FitAddon() : null
+    if (fit) term.loadAddon(fit)
     term.open(el)
     termRef.current = term
-    fit.fit()
+    fit?.fit()
     // A phone's keyboard covers half the terminal: tap (or the keyboard button) asks for it.
     if (!mobile) term.focus()
     const ta = term.textarea!
@@ -143,7 +239,7 @@ export function Terminal({
     ta.addEventListener('blur', blurred)
     // ponytail: xterm 6.0 lost touch scrolling (xtermjs/xterm.js#5489, fixed in 7); drag → scrollLines until then.
     let touchY: number | null = null
-    const touch = (e: TouchEvent) => {
+    const drag = (e: TouchEvent) => {
       const t = e.touches[0]
       if (!t || e.touches.length !== 1) return
       const y = t.clientY
@@ -158,90 +254,65 @@ export function Terminal({
         e.preventDefault()
       }
     }
-    el.addEventListener('touchstart', touch, { passive: true })
-    el.addEventListener('touchmove', touch, { passive: false })
-    let ended = false
-    // One call in flight at a time: keystrokes reach the process in typing order.
-    let lane: Promise<unknown> = Promise.resolve()
-    const send = (d: string) => {
-      if (ended) return
-      lane = lane.then(() => api.pty_input(session, job, d, null).catch(() => undefined))
-    }
-    const input = term.onData(send)
-    // 167 D1: macOS editing keys as Terminal.app sends them, through the same lane.
-    const mac = isApple()
-    term.attachCustomKeyEventHandler((e) => {
-      const d = macKeyBytes(e, mac)
-      if (d === null) return true
-      e.preventDefault()
-      send(d)
-      return false
+    el.addEventListener('touchstart', drag, { passive: true })
+    el.addEventListener('touchmove', drag, { passive: false })
+    const wire = attachSource(src, term, api, client, (e) => {
+      setExit(e)
+      onExitRef.current?.()
     })
-    // 167 D2: the engine is the one responder for the queries it answers; this xterm keeps the rest.
-    swallowEngineQueries(term.parser)
-    const resized = term.onResize(({ rows, cols }) => {
-      setSize(`${cols}×${rows}`)
-      if (!ended) void api.pty_resize(session, job, rows, cols).catch(() => undefined)
-    })
-    setSize(`${term.cols}×${term.rows}`)
-    const ro = new ResizeObserver(() => fit.fit())
-    ro.observe(el)
-    if (popped) localStorage.setItem(mark(ref), '1')
+    sendRef.current = wire.send
+    // pty source only: size the PTY to the box, and give the default grid back on leaving.
+    const resized = ref
+      ? term.onResize(({ rows, cols }) => {
+          setSize(`${cols}×${rows}`)
+          if (!wire.ended()) void api.pty_resize(ref.session, ref.job, rows, cols).catch(() => undefined)
+        })
+      : null
+    if (ref) setSize(`${term.cols}×${term.rows}`)
+    const ro = fit ? new ResizeObserver(() => fit.fit()) : null
+    ro?.observe(el)
+    if (ref && popped) localStorage.setItem(mark(ref), '1')
     // Leaving: the popped window gives the grid back; the panel only when no popped window owns it.
     const leave = () => {
+      if (!ref) return
       if (popped) localStorage.removeItem(mark(ref))
-      if (!ended && (popped || !marked(ref))) void api.pty_resize(session, job, DEFAULT_ROWS, DEFAULT_COLS).catch(() => undefined)
+      if (!wire.ended() && (popped || !marked(ref))) void api.pty_resize(ref.session, ref.job, DEFAULT_ROWS, DEFAULT_COLS).catch(() => undefined)
     }
     window.addEventListener('pagehide', leave)
-    const off = client.stream<PtyChunk>('subscribe_pty', [session, job, term.rows, term.cols], 'unsubscribe_pty', (c) => {
-      switch (c.type) {
-        case 'reset':
-          term.reset()
-          if (term.rows !== c.rows || term.cols !== c.cols) term.resize(c.cols, c.rows)
-          term.write(bytes(c.data))
-          break
-        case 'data':
-          term.write(bytes(c.data))
-          break
-        case 'exit':
-          ended = true
-          setExit(c.exit)
-          break
-      }
-    })
     return () => {
-      void off.then((f) => f())
-      ro.disconnect()
-      input.dispose()
-      resized.dispose()
+      wire.dispose()
+      ro?.disconnect()
+      resized?.dispose()
       ta.removeEventListener('focus', focused)
       ta.removeEventListener('blur', blurred)
-      el.removeEventListener('touchstart', touch)
-      el.removeEventListener('touchmove', touch)
+      el.removeEventListener('touchstart', drag)
+      el.removeEventListener('touchmove', drag)
       window.removeEventListener('pagehide', leave)
       leave()
       termRef.current = null
+      sendRef.current = null
       term.dispose()
       setKeyboard(false)
     }
-  }, [session, job, client, api, mobile, popped])
+  }, [src, client, api, mobile, popped])
 
   const status = [label, size, exit && exitText(exit)].filter(Boolean).join(' · ')
   useEffect(() => {
     if (popped) document.title = status
   }, [popped, status])
 
+  const keys = src.kind === 'pty' ? mobile : touch()
   return (
     <>
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-md p-1" style={{ backgroundColor: BG }}>
-        <div ref={host} className="size-full" />
+      <div className={cn('relative min-h-0 flex-1 overflow-hidden rounded-md p-1', className)} style={{ backgroundColor: BG }}>
+        <div ref={host} className={cn('size-full', src.kind === 'cell' && 'overflow-auto')} />
       </div>
-      {mobile && !exit && (
+      {keys && !exit && (
         <div className="flex gap-1 overflow-x-auto" role="group" aria-label="Terminal keys">
           <Button
             variant={keyboard ? 'secondary' : 'outline'}
             size="sm"
-            className="h-11 min-w-11"
+            className={src.kind === 'pty' ? 'h-11 min-w-11' : 'h-12 min-w-12'}
             aria-pressed={keyboard}
             aria-label={keyboard ? 'Hide keyboard' : 'Show keyboard'}
             onMouseDown={(e) => e.preventDefault()}
@@ -249,18 +320,31 @@ export function Terminal({
           >
             <Keyboard />
           </Button>
-          {TOOLBAR.map(([text, k]) => (
-            <Button
-              key={text}
-              variant="outline"
-              size="sm"
-              className="h-11 min-w-11 font-mono"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => void api.pty_input(session, job, null, [k]).catch(() => undefined)}
-            >
-              {text}
-            </Button>
-          ))}
+          {src.kind === 'pty'
+            ? TOOLBAR.map(([text, k]) => (
+                <Button
+                  key={text}
+                  variant="outline"
+                  size="sm"
+                  className="h-11 min-w-11 font-mono"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => void api.pty_input(src.session, src.job, null, [k]).catch(() => undefined)}
+                >
+                  {text}
+                </Button>
+              ))
+            : CELL_KEYS.map(([text, seq]) => (
+                <Button
+                  key={text}
+                  variant="outline"
+                  size="sm"
+                  className="h-12 min-w-12 font-mono"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => sendRef.current?.(seq(termRef.current?.modes.applicationCursorKeysMode ?? false))}
+                >
+                  {text}
+                </Button>
+              ))}
         </div>
       )}
       <p aria-live="polite" className={cn('truncate text-xs text-fg-secondary', exit && 'text-warning')} title={status}>
