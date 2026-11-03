@@ -177,3 +177,53 @@ struct FetchGateTests {
         #expect(idle, "idle again")
     }
 }
+
+/// 176 K1/K2 with an injected clock: `t(s)` is `s` seconds after an arbitrary origin.
+struct RefetchPacerTests {
+    private static let origin = Date(timeIntervalSince1970: 1_791_448_800)
+    private func t(_ s: TimeInterval) -> Date { Self.origin.addingTimeInterval(s) }
+
+    @Test func aBurstCoalescesIntoOneTrailingStartTwoSecondsAfterTheLast() {
+        var p = RefetchPacer()
+        let first = p.request(now: t(0))
+        #expect(first == t(0.25), "debounced")
+        _ = p.start(now: t(0.25))
+        let burst = [0.3, 0.5, 1.0, 2.0].map { p.request(now: t($0)) }
+        #expect(burst.allSatisfy { $0 == t(2.25) }, "every event in the window shares one start, 2 s after the last")
+        _ = p.start(now: t(2.25))
+        let late = p.request(now: t(10))
+        #expect(late == t(10.25), "outside the window: only the debounce")
+    }
+
+    @Test func immediateStartsAtOnceOnlyOutsideTheWindow() {
+        var p = RefetchPacer()
+        let cold = p.request(now: t(0), immediate: true)
+        #expect(cold == t(0))
+        _ = p.start(now: t(0))
+        let debounced = p.request(now: t(0.5))
+        let joined = p.request(now: t(1), immediate: true)
+        #expect(debounced == t(2) && joined == t(2), "inside 2 s it joins the trailing start")
+        _ = p.start(now: t(2))
+        let free = p.request(now: t(4.5), immediate: true)
+        #expect(free == t(4.5))
+    }
+
+    @Test func aSpentTrailingStartIsNotReused() {
+        var p = RefetchPacer()
+        _ = p.start(now: t(0))
+        let due = p.request(now: t(0.5))
+        // The timer fired at 2 s but the gate folded it into a fetch still in flight: no `start`.
+        let next = p.request(now: t(3))
+        #expect(due == t(2) && next == t(3.25))
+    }
+
+    @Test func listSessionsRidesAlongEveryThirtySecondsAndOnConnect() {
+        var p = RefetchPacer()
+        let reads = [0, 2, 10, 29.9, 30, 32].map { p.start(now: t($0)) }
+        #expect(reads == [true, false, false, false, true, false])
+        p.connected()
+        let onConnect = p.start(now: t(34))
+        let after = p.start(now: t(36))
+        #expect(onConnect && !after)
+    }
+}
