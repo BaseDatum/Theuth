@@ -147,6 +147,10 @@ wire! {
         pub label: String,
         /// Live cwd from OSC 7 (shells) or the shim.
         pub cwd: Option<String>,
+        /// §5.4: "your shell's environment could not be read — Refresh" when the login
+        /// environment capture failed.
+        #[serde(default)]
+        pub env_warning: Option<String>, // 171:E1-ADD (L11)
     }
 }
 
@@ -275,6 +279,28 @@ wire! {
         /// Ended.
         #[cfg_attr(feature = "ts", ts(type = "number | null"))]
         pub ended_ms: Option<i64>,
+        /// How many values the agent's copy masked (§9.4: vault values + credential patterns).
+        #[serde(default)]
+        pub masked: u32, // 171:E1-ADD (L11)
+        /// The cell's `#| private` at press (§9.1).
+        #[serde(default)]
+        pub private: bool, // 171:E1-ADD (L11)
+        /// The cell's `#| name` at press (chat cells too).
+        #[serde(default)]
+        pub name: Option<String>, // 171:E1-ADD (L11)
+        /// Set while the run's kernel waits on `input()`; cleared once `cell_input` answers.
+        #[serde(default)]
+        pub input: Option<InputPrompt>, // 171:E1-ADD (L11)
+    }
+}
+
+wire! {
+    /// A run waiting on `input()` / `getpass()` (§7.4); answered through `cell_input`.
+    pub struct InputPrompt { // 171:E1-ADD (L11)
+        /// Prompt text.
+        pub prompt: String,
+        /// Mask the answer; it is never stored.
+        pub password: bool,
     }
 }
 
@@ -355,6 +381,10 @@ wire! {
         pub member_edit: Option<String>,
         /// What the next press would use.
         pub interpreter: Option<Interpreter>,
+        /// §14.2: the engine that runs this cell when it is not this one (the host chip);
+        /// `None` = this engine. Filled by the RPC layer.
+        #[serde(default)]
+        pub host: Option<String>, // 171:E1-ADD (L11)
     }
 }
 

@@ -1041,6 +1041,31 @@ pub enum MarkKind {
     Cwd,
 }
 
+/// `ask` → `Result<(), String>`: the user's Stop / Kill on a kernel (171
+/// §7.3). `close: false` SIGKILLs the pty's foreground process group when it
+/// is not the shell's own (the kernel survives; nothing to kill is `Ok`);
+/// `close: true` ends the job as a shutdown would. Err `no such job` |
+/// `not a cell job` | `j3 already finished`.
+pub struct CellKill {
+    /// Owning session.
+    pub session: SessionId,
+    /// The kernel job.
+    pub id: JobId,
+    /// Kill the whole kernel, not just what it is running.
+    pub close: bool,
+}
+
+/// `ask` → `Result<bool, String>`: is the kernel shell itself the pty's
+/// foreground process group (at its prompt or running builtins)? `false`
+/// while an external command runs. Err as [`CellKill`]. Always `true` on an
+/// OS without the notion.
+pub struct CellForeground {
+    /// Owning session.
+    pub session: SessionId,
+    /// The kernel job.
+    pub id: JobId,
+}
+
 /// `ask` → `Result<ToolOutput, String>`: type into a PTY job, reply with the
 /// settled screen (22 §4.5).
 pub struct SendInput {
@@ -1313,6 +1338,20 @@ impl Message<StartPty> for Jobs {
             Some(Ok(re)) => Some(re),
             None => None,
         };
+        // 171 §12.1 inv. 3: the `cell:` namespace belongs to kernel jobs, and
+        // a kernel job is always in it.
+        let cell = m.cell.is_some();
+        if jobs::is_cell(m.args.name.as_deref()) != cell {
+            tx.send(ToolOutput::err(if cell {
+                "a user-cell job must be named `cell:<label>`".to_owned()
+            } else {
+                format!(
+                    "names starting with \"{}\" are reserved for user cells",
+                    jobs::CELL_PREFIX
+                )
+            }));
+            return reply;
+        }
         let sj = self.sessions.entry(m.session).or_default();
         sj.next += 1;
         let id = JobId(format!("j{}", sj.next));
@@ -1353,8 +1392,10 @@ impl Message<StartPty> for Jobs {
                 Err(e) => return tx.send(fail(e.to_string())),
             };
             // `Some`: the task finished; `None`: grace / readiness ended first.
+            // A kernel (171 §5.3) answers at once: the cells actor waits on
+            // the ready mark, not on the screen.
             let (note, within) = match ready {
-                None if grace.is_zero() => (String::new(), None),
+                None if cell || grace.is_zero() => (String::new(), None),
                 None => (
                     String::new(),
                     tokio::time::timeout(grace, &mut done).await.ok(),
@@ -1462,8 +1503,17 @@ impl Message<Launch<StartPty>> for Jobs {
                 jobs::PTY_BUDGET >> 20
             ));
         }
-        let s = spawn(&dir, &log_path, &m.args, &m.cwd, m.pty_shell.as_deref())
-            .map_err(|e| format!("{e:#}"))?;
+        let cell = m.cell.is_some();
+        let s = spawn(
+            &dir,
+            &log_path,
+            &m.args,
+            &m.cwd,
+            m.pty_shell.as_deref(),
+            m.program.as_ref(),
+            cell,
+        )
+        .map_err(|e| format!("{e:#}"))?;
         self.pty_bytes += RESERVE;
         let pty = Arc::new(PtyHandle {
             writer: Mutex::new(Some(s.writer)),
@@ -1484,7 +1534,11 @@ impl Message<Launch<StartPty>> for Jobs {
             snapshotted: AtomicU64::new(u64::MAX),
             sent_at: Mutex::new(None),
         });
-        let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
+        let mut log = Log::new(Some(s.file));
+        if let Some(tx) = m.cell {
+            log.scan_marks_to(tx);
+        }
+        let log = Arc::new(Mutex::new(log));
         let cancel = Arc::new(Cancel::default());
         let (done_tx, done) = oneshot::channel();
         // Same claim protocol as the pipes path (14): first swap owns the result.
@@ -1516,7 +1570,9 @@ impl Message<Launch<StartPty>> for Jobs {
             claimable: claimable.clone(),
             started,
             started_ms,
-            idle_after: m.idle_after,
+            // 171 §12.1 inv. 3: never `<job_idle>` for a kernel.
+            idle_after: m.idle_after.filter(|_| !cell),
+            cell,
             done: done_tx,
             activity,
             journal: Arc::clone(&self.journal),
@@ -1583,7 +1639,12 @@ impl Message<SendInput> for Jobs {
             tx.send(Ok(out));
             return reply;
         }
+        // 171 §9.7: the model never types into a kernel. `pty` resolves names
+        // too, so `cell:<label>` is caught either way.
         match self.pty(m.session, &m.args.id) {
+            Ok(live) if jobs::is_cell(live.name.as_deref()) => {
+                tx.send(Err(jobs::CELL_REFUSED.to_owned()));
+            }
             Ok(live) => {
                 // Under the caller's guard: the settle wait is its work until
                 // it ends, whether or not the asker is still there (47 §3.2).
@@ -1676,11 +1737,15 @@ impl Message<ListTerminals> for Jobs {
         m: ListTerminals,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        // 171: kernels are not inline terminals (a viewer must not resize one).
         m.sessions
             .iter()
             .filter_map(|s| self.sessions.get(s).map(|sj| (*s, sj)))
             .flat_map(|(session, sj)| {
                 sj.jobs.iter().filter_map(move |j| {
+                    if jobs::is_cell(j.name.as_deref()) {
+                        return None;
+                    }
                     j.pty.as_ref().map(|p| {
                         let (rows, cols) = p.size();
                         TerminalSummary {
@@ -1892,15 +1957,19 @@ struct Spawned {
     tree: ProcessTree,
 }
 
-/// 22 §4.1: [`platform::pty_command`] (`$SHELL -lc <command>` on Unix) on a
-/// fresh 120×40 pty (`setsid` + `TIOCSCTTY` in the child; ConPTY on
-/// Windows), log file created, the child's tree adopted.
+/// 22 §4.1: [`platform::pty_command`] (`$SHELL -lc <command>` on Unix) — or
+/// `program` verbatim (171 §5.2) — on a fresh 120×40 pty (`setsid` +
+/// `TIOCSCTTY` in the child; ConPTY on Windows), log file created, the
+/// child's tree adopted. A `cell` job inherits nothing: `args.env` is the
+/// whole kernel environment (171 §5.4).
 fn spawn(
     dir: &Path,
     log_path: &Path,
     args: &StartArgs,
     cwd: &Path,
     pty_shell: Option<&Path>,
+    program: Option<&(PathBuf, Vec<String>)>,
+    cell: bool,
 ) -> anyhow::Result<Spawned> {
     std::fs::create_dir_all(dir)?;
     let file = std::fs::File::create(log_path)?;
@@ -1910,10 +1979,23 @@ fn spawn(
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let (program, argv) = platform::pty_command(&args.command, pty_shell);
-    let mut cmd = CommandBuilder::new(program);
-    cmd.args(argv);
+    let mut cmd = match program {
+        Some((path, argv)) => {
+            let mut cmd = CommandBuilder::new(path);
+            cmd.args(argv);
+            cmd
+        }
+        None => {
+            let (program, argv) = platform::pty_command(&args.command, pty_shell);
+            let mut cmd = CommandBuilder::new(program);
+            cmd.args(argv);
+            cmd
+        }
+    };
     cmd.cwd(cwd);
+    if cell {
+        cmd.env_clear();
+    }
     cmd.env("TERM", "xterm-256color");
     for (k, v) in args.env.iter().flatten() {
         cmd.env(k, v);
@@ -1981,6 +2063,9 @@ struct Run {
     started_ms: i64,
     /// Screen-quiet interval before `<job_idle>` (61 §3.4); `None` = off.
     idle_after: Option<Duration>,
+    /// 171 §12.1 inv. 3: a user-cell kernel; its `Finished` is never a
+    /// `<job_result>`.
+    cell: bool,
     done: oneshot::Sender<ToolOutput>,
     /// The job's admitted lifetime (`Kind::Pty`); the actor holds the other
     /// clone in [`Jobs::live`]. Dropped when this task returns.
@@ -2185,23 +2270,107 @@ fn reaction_due(
     ))
 }
 
+/// The pty's foreground process group; `None` when it cannot be read (no
+/// master, no fd, `tcgetpgrp` failed).
+#[cfg(unix)]
+fn foreground_pgrp(pty: &PtyHandle) -> Option<libc::pid_t> {
+    let fd = lock(&pty.master).as_ref().and_then(|m| m.as_raw_fd())?;
+    // SAFETY: `tcgetpgrp` reads one int from the kernel for a live fd.
+    let fg = unsafe { libc::tcgetpgrp(fd) };
+    (fg > 0).then_some(fg)
+}
+
 /// 155 §6.2: is the program theuth started still the terminal's foreground
 /// process group? `true` when that cannot be read (no master, no fd, or an
 /// OS without the notion), so the 61 behaviour stands.
 fn foreground_is_leader(pty: &PtyHandle) -> bool {
     #[cfg(unix)]
     {
-        let Some(fd) = lock(&pty.master).as_ref().and_then(|m| m.as_raw_fd()) else {
-            return true;
-        };
-        // SAFETY: `tcgetpgrp` reads one int from the kernel for a live fd.
-        let fg = unsafe { libc::tcgetpgrp(fd) };
-        fg < 0 || fg as u32 == pty.pid
+        foreground_pgrp(pty).is_none_or(|fg| fg as u32 == pty.pid)
     }
     #[cfg(not(unix))]
     {
         let _ = pty;
         true
+    }
+}
+
+impl Jobs {
+    /// The running kernel job `id` (171): Err `no such job` | `not a cell
+    /// job` | `j3 already finished`.
+    fn cell_job(&self, session: SessionId, id: &JobId) -> Result<&Job, String> {
+        let job = self
+            .sessions
+            .get(&session)
+            .and_then(|s| s.jobs.iter().find(|j| j.id == *id))
+            .ok_or_else(|| "no such job".to_owned())?;
+        if !jobs::is_cell(job.name.as_deref()) {
+            return Err("not a cell job".into());
+        }
+        if job.exit.is_some() {
+            return Err(format!("{id} already finished"));
+        }
+        Ok(job)
+    }
+}
+
+impl Message<CellKill> for Jobs {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: CellKill, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let job = self.cell_job(m.session, &m.id)?;
+        if m.close {
+            // As `CloseSessions`: the task kills the tree and settles `Killed`.
+            job.cancel.fire(CancelOrigin::Shutdown);
+            return Ok(());
+        }
+        let Some(pty) = &job.pty else {
+            return Err(format!("{} has no terminal", m.id));
+        };
+        #[cfg(unix)]
+        {
+            // 171 §7.3: Kill reaches what the kernel is running, never the
+            // kernel shell itself (its own group is the prompt / a builtin).
+            if let Some(fg) = foreground_pgrp(pty)
+                && fg as u32 != pty.pid
+            {
+                // SAFETY: `killpg` on a positive group id read from our own
+                // pty; a stale id at worst fails with ESRCH.
+                unsafe { libc::killpg(fg, libc::SIGKILL) };
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            // No foreground group to read: the whole kernel goes.
+            let _ = pty;
+            job.cancel.fire(CancelOrigin::Shutdown);
+            Ok(())
+        }
+    }
+}
+
+impl Message<CellForeground> for Jobs {
+    type Reply = Result<bool, String>;
+
+    async fn handle(
+        &mut self,
+        m: CellForeground,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let job = self.cell_job(m.session, &m.id)?;
+        let Some(pty) = &job.pty else {
+            return Err(format!("{} has no terminal", m.id));
+        };
+        #[cfg(unix)]
+        {
+            Ok(foreground_pgrp(pty).is_some_and(|fg| fg as u32 == pty.pid))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pty;
+            Ok(true)
+        }
     }
 }
 
@@ -2413,7 +2582,8 @@ async fn run(mut j: Run) {
     // the job (61) and got the tool reply: its kill is inline, and a kill
     // from anywhere else carries the one-line notice, never the screen
     // (14 §1.2 as-built). The `Screen` event above still has the last frame.
-    let inline = j.claimable.swap(false, SeqCst) || origin == Some(CancelOrigin::Tool);
+    // A kernel's exit is the cells actor's business (171 §12.1 inv. 3).
+    let inline = j.claimable.swap(false, SeqCst) || origin == Some(CancelOrigin::Tool) || j.cell;
     let event = JobEvent::Finished {
         session: j.session,
         id: j.id.clone(),
@@ -4780,5 +4950,368 @@ mod tests {
             ["lost", "lost"]
         );
         nothing_held(&fx, Duration::from_secs(5)).await;
+    }
+
+    // ---- 171 user cells ----
+
+    /// A kernel-shaped `StartPty` (171 §5.2): `/bin/sh argv…` named `cell:test`.
+    fn cell_start(
+        fx: &Fx,
+        argv: &[&str],
+        env: Option<BTreeMap<String, String>>,
+        tx: mpsc::Sender<Mark>,
+    ) -> StartPty {
+        let mut args = start_args("");
+        args.name = Some("cell:test".into());
+        args.env = env;
+        StartPty {
+            session: fx.session,
+            call_id: String::new(),
+            args,
+            cwd: fx.dir.clone(),
+            ready_timeout: Duration::from_secs(30),
+            idle_after: Some(Duration::from_secs(10)),
+            root: fx.dir.clone(),
+            activity: None,
+            pty_shell: None,
+            program: Some((
+                "/bin/sh".into(),
+                argv.iter().map(|s| (*s).to_owned()).collect(),
+            )),
+            cell: Some(tx),
+        }
+    }
+
+    /// The handler's `Err` text of an `ask` whose reply is a `Result<_, String>`.
+    fn refused<T: std::fmt::Debug, M>(r: Result<T, kameo::error::SendError<M, String>>) -> String {
+        match r {
+            Err(kameo::error::SendError::HandlerError(e)) => e,
+            Ok(v) => panic!("expected a refusal, got {v:?}"),
+            Err(e) => panic!("jobs actor: {e}"),
+        }
+    }
+
+    async fn cell_close(fx: &Fx) {
+        fx.jobs
+            .ask(CellKill {
+                session: fx.session,
+                id: JobId("j1".into()),
+                close: true,
+            })
+            .await
+            .unwrap();
+        let (exit, _, inline) = finished(fx).await;
+        assert_eq!(exit, JobExit::Killed);
+        assert!(inline, "a kernel's Finished never rides the guard");
+    }
+
+    #[tokio::test]
+    async fn cell_start_rejects_reserved_name() {
+        let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (start, ..) = tools(&fx);
+        let mut args = start_args("sleep 30");
+        args.name = Some("cell:x".into());
+        let out = Tool::call(&start, args, cx(&fx)).await.unwrap();
+        assert!(out.is_error);
+        assert_eq!(
+            out.content,
+            "names starting with \"cell:\" are reserved for user cells"
+        );
+        // The converse: a kernel outside the namespace is a programming error.
+        let (tx, _rx) = mpsc::channel(4);
+        let mut m = cell_start(&fx, &["-c", "sleep 30"], None, tx);
+        m.args.name = Some("plain".into());
+        let out = fx.jobs.ask(m).await.unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(list(&fx).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cell_jobs_omitted_from_jobs_list() {
+        let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, _rx) = mpsc::channel(4);
+        let out = fx
+            .jobs
+            .ask(cell_start(&fx, &["-c", "sleep 30"], None, tx))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let s = out.structured.as_ref().unwrap();
+        assert_eq!(s["job"], "j1");
+        assert!(s["pid"].is_number() && s["log"].is_string(), "{s}");
+        assert!(list(&fx).await.is_empty(), "jobs() must omit kernels");
+        let terminals = fx
+            .jobs
+            .ask(ListTerminals {
+                sessions: vec![fx.session],
+            })
+            .await
+            .unwrap();
+        assert!(terminals.is_empty(), "{terminals:?}");
+        // A non-cell job still lists.
+        let (start, ..) = tools(&fx);
+        let out = Tool::call(&start, start_args("sleep 30"), cx(&fx))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let ids: Vec<String> = list(&fx).await.into_iter().map(|v| v.id.0).collect();
+        assert_eq!(ids, ["j2"]);
+        // The kernel first: `finished` reads the first `Finished` on the bus.
+        cell_close(&fx).await;
+        cancel_from(&fx, "j2", CancelOrigin::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn cell_send_and_cancel_refused() {
+        let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, _rx) = mpsc::channel(4);
+        let out = fx
+            .jobs
+            .ask(cell_start(&fx, &["-c", "sleep 30"], None, tx))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        const TEXT: &str = "this terminal belongs to a user cell — ask the user to press Run";
+        for id in ["j1", "cell:test"] {
+            let mut args = send_args(id);
+            args.text = Some("echo hi".into());
+            let r = fx
+                .jobs
+                .ask(SendInput {
+                    session: fx.session,
+                    args,
+                    activity: None,
+                })
+                .await;
+            assert_eq!(refused(r), TEXT);
+        }
+        for origin in [CancelOrigin::Tool, CancelOrigin::Ui] {
+            let r = fx
+                .jobs
+                .ask(CancelJob {
+                    session: fx.session,
+                    id: JobId("j1".into()),
+                    origin,
+                })
+                .await;
+            assert_eq!(refused(r), TEXT);
+        }
+        // The `cancel_job` tool answers the same text.
+        let out = Tool::call(
+            &crate::jobs::CancelJobTool(fx.jobs.clone()),
+            crate::jobs::CancelJobArgs { id: "j1".into() },
+            cx(&fx),
+        )
+        .await
+        .unwrap();
+        assert!(out.is_error);
+        assert_eq!(out.content, TEXT);
+        assert!(
+            lock(&fx.events)
+                .iter()
+                .all(|e| !matches!(e, JobEvent::Finished { .. }))
+        );
+        // Shutdown still kills.
+        cancel_from(&fx, "j1", CancelOrigin::Shutdown).await;
+        let (exit, _, inline) = finished(&fx).await;
+        assert_eq!(exit, JobExit::Killed);
+        assert!(inline);
+    }
+
+    #[tokio::test]
+    async fn cell_kill_spares_shell_group() {
+        let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, _rx) = mpsc::channel(4);
+        fx.jobs
+            .ask(cell_start(&fx, &["-c", "sleep 30"], None, tx))
+            .await
+            .unwrap();
+        let id = JobId("j1".into());
+        // `sh -c sleep` is one process group: the leader's own.
+        let fg = fx
+            .jobs
+            .ask(CellForeground {
+                session: fx.session,
+                id: id.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(fg);
+        fx.jobs
+            .ask(CellKill {
+                session: fx.session,
+                id: id.clone(),
+                close: false,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            lock(&fx.events)
+                .iter()
+                .all(|e| !matches!(e, JobEvent::Finished { .. })),
+            "the kernel shell must survive Kill"
+        );
+        // A plain PTY job is not a kernel.
+        let (start, ..) = tools(&fx);
+        Tool::call(&start, start_args("sleep 30"), cx(&fx))
+            .await
+            .unwrap();
+        let r = fx
+            .jobs
+            .ask(CellKill {
+                session: fx.session,
+                id: JobId("j2".into()),
+                close: false,
+            })
+            .await;
+        assert_eq!(refused(r), "not a cell job");
+        cell_close(&fx).await;
+        cancel_from(&fx, "j2", CancelOrigin::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn cell_program_honoured_and_env_cleared() {
+        let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, _rx) = mpsc::channel(4);
+        let env: BTreeMap<String, String> = [("FOO".to_owned(), "bar".to_owned())].into();
+        let out = fx
+            .jobs
+            .ask(cell_start(
+                &fx,
+                &["-c", r#"printf "%s" "$FOO-$HOME""#],
+                Some(env),
+                tx,
+            ))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let (exit, _, inline) = finished(&fx).await;
+        assert_eq!(exit, JobExit::Exited(0));
+        assert!(inline);
+        let log = fx
+            .dir
+            .join("jobs")
+            .join(fx.session.to_string())
+            .join("j1.log");
+        let log = std::fs::read_to_string(&log).unwrap();
+        assert!(log.contains("bar-"), "{log:?}");
+        assert!(
+            !log.contains("bar-/"),
+            "HOME must not be inherited: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cell_marks_reach_channel() {
+        let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, mut rx) = mpsc::channel(8);
+        fx.jobs
+            .ask(cell_start(
+                &fx,
+                &["-c", r#"printf '\033]133;C\007hi\033]133;D;3\007'"#],
+                None,
+                tx,
+            ))
+            .await
+            .unwrap();
+        let (exit, ..) = finished(&fx).await;
+        assert_eq!(exit, JobExit::Exited(0));
+        let mut marks = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            marks.push(m);
+        }
+        assert_eq!(
+            marks,
+            [
+                Mark {
+                    kind: MarkKind::Start,
+                    exit: None,
+                    cwd: None,
+                    offset: 0
+                },
+                Mark {
+                    kind: MarkKind::End,
+                    exit: Some(3),
+                    cwd: None,
+                    offset: 10
+                },
+            ]
+        );
+    }
+
+    /// Waits until the ledger saw the job's settle, then checks the supervisor got neither a
+    /// result to inject nor an idle nudge (171 HANDOFF-Z-2/Z-3: a note kernel's session id
+    /// has no session row, so either would open a fresh root chat and start a turn).
+    async fn assert_settled_bare(
+        ledger: &ActorRef<crate::activity::test_sink::Ledger>,
+        seen: &Mutex<Vec<crate::activity::test_sink::Seen>>,
+    ) {
+        use crate::activity::test_sink::Seen;
+        let v = crate::jobs::tests::ledger_until(ledger, seen, Duration::from_secs(8), |v| {
+            v.iter()
+                .any(|s| matches!(s, Seen::Finished(_) | Seen::Result(_)))
+        })
+        .await;
+        assert!(
+            v.iter().any(|s| matches!(s, Seen::Finished(_))),
+            "kernel settles bare: {v:?}"
+        );
+        assert!(
+            !v.iter()
+                .any(|s| matches!(s, Seen::Result(_) | Seen::Idle(_))),
+            "no FinishedWithResult / JobIdle for a kernel: {v:?}"
+        );
+    }
+
+    /// A kernel whose process exits by itself (crash, `exit` in a cell) after sitting quiet
+    /// past a 1 s idle interval: no `<job_idle>` while it ran, no `<job_result>` after.
+    #[tokio::test]
+    async fn cell_kernel_exit_never_reaches_the_model() {
+        let (fx, ledger, seen) =
+            crate::jobs::tests::certified(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, _rx) = mpsc::channel(8);
+        let mut m = cell_start(&fx, &["-c", "printf hi; sleep 3; exit 3"], None, tx);
+        m.idle_after = Some(IDLE);
+        fx.jobs.ask(m).await.unwrap();
+        assert_settled_bare(&ledger, &seen).await;
+        let (exit, _, inline) = finished(&fx).await;
+        assert_eq!(exit, JobExit::Exited(3));
+        assert!(inline);
+        assert!(idles(&fx).is_empty(), "{:?}", idles(&fx));
+    }
+
+    /// A kernel killed from outside (session close / `CellKill{close}`): `cancel_job`'s and a
+    /// UI's `Ui` origin are refused for kernels, so `Shutdown` is the kill that remains.
+    #[tokio::test]
+    async fn cell_kernel_kill_never_reaches_the_model() {
+        let (fx, ledger, seen) =
+            crate::jobs::tests::certified(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, _rx) = mpsc::channel(8);
+        fx.jobs
+            .ask(cell_start(&fx, &["-c", "sleep 30"], None, tx))
+            .await
+            .unwrap();
+        let ui = fx
+            .jobs
+            .ask(CancelJob {
+                session: fx.session,
+                id: JobId("j1".into()),
+                origin: CancelOrigin::Ui,
+            })
+            .await;
+        assert_eq!(refused(ui), jobs::CELL_REFUSED);
+        fx.jobs
+            .ask(CancelJob {
+                session: fx.session,
+                id: JobId("j1".into()),
+                origin: CancelOrigin::Shutdown,
+            })
+            .await
+            .unwrap();
+        assert_settled_bare(&ledger, &seen).await;
+        let (exit, _, inline) = finished(&fx).await;
+        assert_eq!(exit, JobExit::Killed);
+        assert!(inline);
     }
 }
