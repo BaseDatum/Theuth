@@ -2,15 +2,20 @@
 //! `session/new.mcpServers` (design doc 75 §9). Three tools, each one RPC
 //! call on the running engine with the child's theuth session id:
 //! `list_skills`, `load_skill(name)`, `send_message(text)` → the parent's
-//! `<message from=…>` input. Exits when stdin closes (the harness is gone)
-//! or the engine's RPC socket drops, so nothing outlives either side.
+//! `<message from=…>` input. Nothing outlives either side (176 A3): it exits
+//! when stdin closes (the harness is gone), within [`PARENT_POLL`] of its
+//! parent process going away, when the engine says the session does not
+//! exist, or after the engine was unreachable for [`ENGINE_DOWN`] — it
+//! redials with backoff until then.
 //!
 //! `t mcp` without `--session` (158 §12.3, W-h) bridges stdio to the same
 //! catalogue the engine's HTTP MCP server exposes (`mcp_server::Catalog`),
-//! over the same engine connection; audit lines go to the same file.
+//! over the same engine connection; audit lines go to the same file. It
+//! exits on stdin EOF, parent death, or the engine connection dropping.
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::rpc_params;
@@ -23,12 +28,20 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler, ServiceExt};
 use serde::Deserialize;
+use tokio::sync::watch;
 
-/// The proxy: one engine connection, one child session.
+/// 176 A3 (b): how often the parent pid is checked.
+const PARENT_POLL: Duration = Duration::from_secs(2);
+/// 176 A3 (d): the engine unreachable this long, continuously → exit.
+const ENGINE_DOWN: Duration = Duration::from_secs(60);
+/// Longest pause between redials.
+const REDIAL_MAX: Duration = Duration::from_secs(10);
+
+/// The proxy: one engine connection (replaced on redial), one child session.
 #[derive(Clone)]
 pub struct Shim {
     session: String,
-    client: Arc<WsClient>,
+    client: watch::Receiver<Arc<WsClient>>,
 }
 
 /// `load_skill` arguments.
@@ -55,13 +68,11 @@ impl Shim {
         method: &str,
         params: jsonrpsee::core::params::ArrayParams,
     ) -> Result<T, String> {
-        self.client
-            .request(method, params)
-            .await
-            .map_err(|e| match e {
-                jsonrpsee::core::ClientError::Call(e) => e.message().to_owned(),
-                e => format!("engine unreachable: {e}"),
-            })
+        let client = self.client.borrow().clone();
+        client.request(method, params).await.map_err(|e| match e {
+            jsonrpsee::core::ClientError::Call(e) => e.message().to_owned(),
+            e => format!("engine unreachable: {e}"),
+        })
     }
 
     async fn list_skills(&self) -> Result<String, String> {
@@ -166,32 +177,163 @@ impl ServerHandler for Shim {
     }
 }
 
-/// Serve on stdio until the harness closes stdin or the engine drops: the
-/// child shim with `session`; without, the catalogue bridge — every tool call
-/// is `mcp_server_call` on the engine, which redacts and audits (158 §12.5).
+/// Serve on stdio until the harness closes stdin, the parent goes or the
+/// engine is gone for good: the child shim with `session`; without, the
+/// catalogue bridge — every tool call is `mcp_server_call` on the engine,
+/// which redacts and audits (158 §12.5).
 pub async fn run(data_dir: &Path, listen: &str, session: Option<String>) -> anyhow::Result<()> {
-    let client = crate::link_cli::connect(data_dir, listen)
-        .await
-        .map_err(|e| anyhow::anyhow!("no engine on {listen}: {e}"))?;
-    let client = Arc::new(client);
-    let watch = client.clone();
+    let client = Arc::new(dial(data_dir, listen).await?);
+    let parent = parent_gone(ppid, PARENT_POLL);
+    let stdio = rmcp::transport::stdio();
     match session {
-        Some(session) => serve_until_gone(Shim { session, client }, watch).await,
-        None => serve_until_gone(mcp_server::Bridge::new(client), watch).await,
+        Some(session) => {
+            if no_such_session(&client, &session).await {
+                anyhow::bail!("session {session} does not exist");
+            }
+            let (tx, rx) = watch::channel(client);
+            let engine = keep_engine(data_dir, listen, session.clone(), tx, ENGINE_DOWN);
+            let gone = async move {
+                tokio::select! {
+                    why = parent => why,
+                    why = engine => why,
+                }
+            };
+            serve_until_gone(
+                Shim {
+                    session,
+                    client: rx,
+                },
+                stdio,
+                gone,
+            )
+            .await
+        }
+        None => {
+            let watch = client.clone();
+            let gone = async move {
+                tokio::select! {
+                    why = parent => why,
+                    _ = watch.on_disconnect() => "engine connection dropped".to_owned(),
+                }
+            };
+            serve_until_gone(mcp_server::Bridge::new(client), stdio, gone).await
+        }
     }
 }
 
-async fn serve_until_gone<H: ServerHandler>(
+/// The engine connection, tagged `client=mcp-bridge` (176 C3); `listen` is
+/// re-read from the engine record so a restarted engine is found.
+async fn dial(data_dir: &Path, listen: &str) -> anyhow::Result<WsClient> {
+    let listen = rpc::engine::discover(data_dir)
+        .and_then(|r| r.record.listen)
+        .unwrap_or_else(|| listen.to_owned());
+    crate::link_cli::connect(data_dir, &format!("{listen}/?client=mcp-bridge"))
+        .await
+        .map_err(|e| anyhow::anyhow!("no engine on {listen}: {e}"))
+}
+
+/// 176 A3 (c): the engine answers that `session` has no row. Any other
+/// failure (an old engine, a refusal) is not proof and keeps the bridge.
+async fn no_such_session(client: &WsClient, session: &str) -> bool {
+    match client
+        .request::<serde_json::Value, _>("session_owner", rpc_params![session])
+        .await
+    {
+        Err(jsonrpsee::core::ClientError::Call(e)) => e.message().ends_with("no such session"),
+        _ => false,
+    }
+}
+
+/// 176 A3 (d): redial with backoff whenever the connection drops, handing
+/// each new client to the shim; resolves with why once the engine stayed
+/// unreachable for `limit` or says the session is gone.
+async fn keep_engine(
+    data_dir: &Path,
+    listen: &str,
+    session: String,
+    tx: watch::Sender<Arc<WsClient>>,
+    limit: Duration,
+) -> String {
+    loop {
+        let client = tx.borrow().clone();
+        client.on_disconnect().await;
+        let down = Instant::now();
+        let mut pause = Duration::from_millis(500);
+        loop {
+            let left = limit.saturating_sub(down.elapsed());
+            if left.is_zero() {
+                return format!("engine unreachable for {}s", limit.as_secs());
+            }
+            tokio::time::sleep(pause.min(left)).await;
+            pause = (pause * 2).min(REDIAL_MAX);
+            if let Ok(c) = dial(data_dir, listen).await {
+                if no_such_session(&c, &session).await {
+                    return format!("session {session} does not exist");
+                }
+                tx.send_replace(Arc::new(c));
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn ppid() -> u32 {
+    std::os::unix::process::parent_id()
+}
+
+#[cfg(not(unix))]
+fn ppid() -> u32 {
+    0
+}
+
+/// 176 A3 (b): resolves once `ppid` differs from its first value or is 1
+/// (re-parented to init/launchd: the harness died without closing stdin).
+async fn parent_gone(ppid: impl Fn() -> u32, every: Duration) -> String {
+    let first = ppid();
+    loop {
+        let now = ppid();
+        if now == 1 || now != first {
+            return format!("parent process {first} gone");
+        }
+        tokio::time::sleep(every).await;
+    }
+}
+
+/// Serve `handler` on `transport` until the peer closes it (stdin EOF) or
+/// `gone` resolves — during the handshake too; the reason goes to stderr,
+/// which the harness logs.
+async fn serve_until_gone<H, T, E, A>(
     handler: H,
-    watch: Arc<WsClient>,
-) -> anyhow::Result<()> {
-    let running = handler.serve(rmcp::transport::stdio()).await?;
+    transport: T,
+    gone: impl Future<Output = String>,
+) -> anyhow::Result<()>
+where
+    H: ServerHandler,
+    T: rmcp::transport::IntoTransport<RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    tokio::pin!(gone);
+    let running = tokio::select! {
+        r = handler.serve(transport) => r?,
+        why = &mut gone => {
+            eprintln!("t mcp: {why}; exiting");
+            return Ok(());
+        }
+    };
     let ct = running.cancellation_token();
-    tokio::spawn(async move {
-        watch.on_disconnect().await;
-        ct.cancel();
-    });
-    running.waiting().await?;
+    let waiting = running.waiting();
+    tokio::pin!(waiting);
+    tokio::select! {
+        r = &mut waiting => {
+            r?;
+        }
+        why = gone => {
+            eprintln!("t mcp: {why}; exiting");
+            ct.cancel();
+            (&mut waiting).await?;
+        }
+    }
     Ok(())
 }
 
@@ -238,7 +380,7 @@ mod tests {
         let (server, mcp) = tokio::join!(
             Shim {
                 session: "s1".into(),
-                client: Arc::new(client)
+                client: watch::channel(Arc::new(client)).1
             }
             .serve(tokio::io::split(a)),
             ().serve(tokio::io::split(b)),
@@ -300,5 +442,78 @@ mod tests {
         );
         mcp.cancel().await.unwrap();
         server.waiting().await.unwrap();
+    }
+
+    /// A shim on an engine with no methods (the lifecycle tests call none).
+    async fn idle_shim() -> (Shim, jsonrpsee::server::ServerHandle) {
+        let server = Server::builder().build("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = server.start(RpcModule::new(()));
+        let client = WsClientBuilder::default()
+            .build(format!("ws://{addr}"))
+            .await
+            .unwrap();
+        let shim = Shim {
+            session: "s1".into(),
+            client: watch::channel(Arc::new(client)).1,
+        };
+        (shim, handle)
+    }
+
+    /// 176 A3 (a): the harness closing its end (stdin EOF) ends the bridge.
+    #[tokio::test]
+    async fn bridge_exits_on_stdin_eof() {
+        let (shim, _engine) = idle_shim().await;
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (served, ()) = tokio::join!(
+            serve_until_gone(shim, tokio::io::split(a), std::future::pending()),
+            async {
+                let mcp = ().serve(tokio::io::split(b)).await.unwrap();
+                mcp.cancel().await.unwrap();
+            },
+        );
+        served.unwrap();
+    }
+
+    /// 176 A3 (b): the parent re-parenting the bridge to init ends it, and
+    /// the harness side sees its server close.
+    #[tokio::test]
+    async fn bridge_exits_when_its_parent_dies() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let (shim, _engine) = idle_shim().await;
+        let parent = Arc::new(AtomicU32::new(4242));
+        let p = parent.clone();
+        let gone = parent_gone(move || p.load(Ordering::SeqCst), Duration::from_millis(10));
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (served, ()) = tokio::join!(serve_until_gone(shim, tokio::io::split(a), gone), async {
+            let mcp = ().serve(tokio::io::split(b)).await.unwrap();
+            parent.store(1, Ordering::SeqCst);
+            tokio::time::timeout(Duration::from_secs(5), mcp.waiting())
+                .await
+                .expect("the bridge closed its end")
+                .unwrap();
+        },);
+        served.unwrap();
+    }
+
+    /// 176 A3 (b): a changed parent pid counts as gone, not only pid 1.
+    #[tokio::test]
+    async fn parent_gone_on_any_change() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = AtomicU32::new(0);
+        let ppid = || {
+            if calls.fetch_add(1, Ordering::SeqCst) < 2 {
+                7
+            } else {
+                8
+            }
+        };
+        let why = tokio::time::timeout(
+            Duration::from_secs(1),
+            parent_gone(ppid, Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(why, "parent process 7 gone");
     }
 }

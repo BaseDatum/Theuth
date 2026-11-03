@@ -264,6 +264,9 @@ pub struct Agents {
     talk: HashMap<SessionId, Talk>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
     approvals: HashMap<SessionId, (ApprovalId, String, u64)>,
+    /// 176 A1: ACP children this process parked idle → when; taken by the
+    /// resume (`acp_session`) for its log line.
+    parked: HashMap<SessionId, Instant>,
     /// Session search index (design doc 26), rebuilt after the rows change.
     search: Arc<search::Cache>,
     /// Registered nodes (32 §6.5); shared with the `spawn_subagent` tool's description.
@@ -1240,6 +1243,21 @@ impl Agents {
         self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
             .await;
         self.mirror(id).await;
+        // 176 A2: a child parked idle is back. Like `relaunch_acp_child`,
+        // a cancelled last turn is not to be picked up from the replay.
+        if let Some(at) = self.parked.remove(&id) {
+            tracing::info!(
+                "acp: resumed parked child session={id} after={}s",
+                at.elapsed().as_secs()
+            );
+            if self
+                .last_stop
+                .get(&id)
+                .is_some_and(|(r, _)| r == "cancelled")
+            {
+                notes.push(crate::acp_child::CANCELLED_NOTE.to_owned());
+            }
+        }
         // Unbounded (R2.6): the supervisor `tell`s into this mailbox from
         // its own handlers and must never block on a chatty harness.
         let child = AcpChild::new(
@@ -8510,6 +8528,67 @@ impl Message<ResumeChild> for Agents {
     }
 }
 
+/// 176 A1: how often idle ACP children are looked for.
+const PARK_EVERY: Duration = Duration::from_secs(60);
+/// 176 A1: longest one child's park probe may take; a busy child mailbox
+/// is skipped this round rather than holding this one.
+const PARK_PROBE: Duration = Duration::from_secs(2);
+
+/// `tell` (176 A1): park every external ACP child idle at least `.0` — its
+/// harness process stopped, its row kept; the next input resumes it
+/// through `session()` → `acp_session` (`session/load`), the path a
+/// restart's lazy resume takes.
+#[derive(Clone, Copy, Debug)]
+pub struct ParkIdle(pub Duration);
+
+impl Message<ParkIdle> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, ParkIdle(after): ParkIdle, _: &mut Context<Self, ()>) {
+        let children: Vec<(SessionId, ActorRef<AcpChild>)> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, l)| match &l.actor {
+                LiveActor::Acp(a) if a.is_alive() => Some((*id, a.clone())),
+                _ => None,
+            })
+            .collect();
+        if children.is_empty() {
+            return;
+        }
+        let ids: Vec<SessionId> = children.iter().map(|(id, _)| *id).collect();
+        // No Jobs actor, or a stopped one, runs no jobs (`activity_for` reads
+        // it the same way); one that does not answer in time skips the round.
+        let counts = match ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR) {
+            Ok(Some(jobs)) => {
+                match tokio::time::timeout(PARK_PROBE, jobs.ask(tools::JobCounts(ids))).await {
+                    Ok(r) => r.unwrap_or_default(),
+                    Err(_) => return,
+                }
+            }
+            _ => HashMap::new(),
+        };
+        for (id, actor) in children {
+            let (jobs, ptys) = counts.get(&id).copied().unwrap_or_default();
+            let pending = self.running.contains(&id)
+                || self.approvals.contains_key(&id)
+                || self.waits.values().any(|w| w.session == id)
+                || self.child_turns.contains_key(&id)
+                || self.queued.contains_key(&id);
+            let probe = crate::acp_child::ParkIfIdle {
+                after,
+                pending,
+                jobs: u32::from(jobs) + u32::from(ptys),
+                until: Instant::now() + PARK_PROBE,
+            };
+            if let Ok(Ok(true)) = tokio::time::timeout(PARK_PROBE, actor.ask(probe)).await {
+                self.sessions.remove(&id);
+                self.parked.insert(id, Instant::now());
+            }
+        }
+    }
+}
+
 impl Message<ListLogins> for Agents {
     type Reply = Vec<LoginInfo>;
 
@@ -9524,6 +9603,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     if rt.config.contains("advisor") {
         cfg.advisor = rt.section("advisor")?;
     }
+    // 176 A1: the top-level `acp:` section (the `surface:` pattern).
+    if rt.config.contains("acp") {
+        cfg.acp = rt.section("acp")?;
+    }
     let cfg = Arc::new(cfg);
     // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
     // starts after us, so read (or create) the identity file directly.
@@ -9755,6 +9838,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         });
         costs.install();
     }
+    let idle_stop = Duration::from_secs(cfg.acp.idle_stop_secs);
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -9804,6 +9888,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             seen: HashMap::new(),
             talk: HashMap::new(),
             approvals: HashMap::new(),
+            parked: HashMap::new(),
             search: Arc::default(),
             nodes: nodes.clone(),
             ledger: Ledger::default(),
@@ -9822,6 +9907,22 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         runtime::subscriber_mailbox(),
     );
     agents.register(AGENT_ACTOR)?;
+    // 176 A1: idle ACP children are parked, checked once a minute.
+    if !idle_stop.is_zero() {
+        let agents = agents.clone();
+        let shutdown = rt.shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    () = tokio::time::sleep(PARK_EVERY) => {}
+                }
+                if agents.tell(ParkIdle(idle_stop)).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
     // 137 §8.7: pumps for every endless session with unbuilt nodes.
     match endless.resume_all().await {
         Ok(0) => {}
@@ -10864,6 +10965,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         seen: HashMap::new(),
         talk: HashMap::new(),
         approvals: HashMap::new(),
+        parked: HashMap::new(),
         search: Arc::default(),
         nodes: Nodes::default(),
         ledger: Ledger::default(),
@@ -15701,6 +15803,146 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(state(&agents).await, (AgentState::Idle, false));
+    }
+
+    /// 176: a local harness — the `Fake` dials and runs no process — as a
+    /// shell loop: one session, every prompt answered `pong`; each process
+    /// appends its pid to `pids` and every method it reads to `methods`.
+    const FAKE_ACP: &str = r#"echo $$ >> "$DIR/pids"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | grep -o '"id":[^,}]*' | head -n1 | cut -d: -f2-)
+  method=$(printf '%s' "$line" | grep -o '"method":"[^"]*"' | head -n1 | cut -d'"' -f4)
+  [ -n "$method" ] && echo "$method" >> "$DIR/methods"
+  case "$method" in
+    initialize) echo '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}' ;;
+    session/new) echo '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"fake-1"}}' ;;
+    session/load) echo '{"jsonrpc":"2.0","id":'"$id"',"result":{}}' ;;
+    session/prompt)
+      echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pong"}}}}'
+      echo '{"jsonrpc":"2.0","id":'"$id"',"result":{"stopReason":"end_turn"}}' ;;
+  esac
+done
+"#;
+
+    /// 176 A1/A2: an idle local harness child past the threshold is parked
+    /// — its process gone, the parent still sees it idle — and the next
+    /// input resumes it with `session/load` and is answered.
+    #[tokio::test]
+    async fn idle_acp_child_parks_and_resumes() {
+        let (scratch, a) = agents().await;
+        let dir = scratch.0.clone();
+        let script = dir.join("fake-acp.sh");
+        std::fs::write(
+            &script,
+            FAKE_ACP.replace("$DIR", &dir.display().to_string()),
+        )
+        .unwrap();
+        let yaml = format!(
+            "fake:\n  command: /bin/sh\n  args: [\"{}\"]\n  mcp: false\n  skills: false\n",
+            script.display()
+        );
+        acp::save(&a.rt.data_dir, &serde_yaml::from_str(&yaml).unwrap()).unwrap();
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let answered = |c: SessionId| {
+            move |e: &AgentEvent| {
+                matches!(e, AgentEvent::TurnFinished { session, stop_reason, .. }
+                    if *session == c && stop_reason == "end_turn")
+            }
+        };
+        let (_, c, _) = agents
+            .ask(SpawnChild {
+                agent: Some("fake".into()),
+                cwd: Some(dir.clone()),
+                ..spawn(p, "c", "ping")
+            })
+            .await
+            .unwrap();
+        next_event(&mut rx, answered(c)).await;
+        let pids = || {
+            std::fs::read_to_string(dir.join("pids"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let first = pids();
+        assert_eq!(first.len(), 1, "{first:?}");
+
+        // Swept until parked: a probe may time out under a loaded suite (the
+        // live sweep simply retries a minute later).
+        let parked = |agents: &ActorRef<Agents>| {
+            let agents = agents.clone();
+            async move {
+                agents
+                    .ask(With(move |a: &mut Agents| {
+                        (a.live(c).is_some(), a.parked.contains_key(&c))
+                    }))
+                    .await
+                    .unwrap()
+            }
+        };
+        let t0 = Instant::now();
+        loop {
+            agents.ask(ParkIdle(Duration::ZERO)).await.unwrap();
+            if parked(&agents).await == (false, true) {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(30), "never parked");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let alive = |pid: &str| {
+            std::process::Command::new("kill")
+                .args(["-0", pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let t0 = Instant::now();
+        while alive(&first[0]) {
+            assert!(
+                t0.elapsed() < Duration::from_secs(30),
+                "harness still running"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let rows = agents.ask(ListAgents { session: p }).await.unwrap();
+        let row = rows.into_iter().find(|r| r.id == c).unwrap();
+        assert_eq!(row.state, AgentState::Idle, "parked reads idle, not failed");
+
+        agents
+            .ask(SendInput {
+                channel: None,
+                session: Some(c),
+                text: "again".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+        next_event(&mut rx, answered(c)).await;
+        assert_eq!(pids().len(), 2, "a second harness process");
+        let methods = std::fs::read_to_string(dir.join("methods")).unwrap();
+        assert_eq!(
+            methods.lines().collect::<Vec<_>>(),
+            [
+                "initialize",
+                "session/new",
+                "session/prompt",
+                "initialize",
+                "session/load",
+                "session/prompt"
+            ]
+        );
+        let parked = agents
+            .ask(With(move |a: &mut Agents| a.parked.contains_key(&c)))
+            .await
+            .unwrap();
+        assert!(!parked, "the resume took the park");
     }
 
     /// R2.7: a child result the parent's intake refuses (its pending quota

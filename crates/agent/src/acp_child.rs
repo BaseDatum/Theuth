@@ -50,6 +50,7 @@ use crate::supervisor::Deliver;
 use crate::todo::{Status, Todo, TodoSource};
 use crate::{AGENT_ACTOR, AgentEvent, Agents, HarnessCommand, Usage, attach};
 
+mod idle;
 mod observed;
 pub use observed::CancelObserved;
 use observed::Observed;
@@ -160,6 +161,9 @@ pub struct AcpChild {
     activity: ChildActivity,
     /// 155 §3.3: the one armed `StallCheck` timer.
     stall: Option<AbortHandle>,
+    /// 176 A1: the last ACP traffic in either direction (connect, an
+    /// update, a turn's end, an option change) — the idle clock.
+    quiet_since: Instant,
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -395,6 +399,22 @@ pub struct Shutdown;
 #[derive(Clone, Debug)]
 pub struct Note(pub String);
 
+/// `ask` → `bool` (176 A1): stop the harness and this actor when the child
+/// is idle (`idle::parkable`) for at least `after`. A probe handled after
+/// `until` does nothing, so an ask the supervisor gave up on never stops a
+/// child it still counts live. `true` = parked (the actor is stopping).
+#[derive(Clone, Copy, Debug)]
+pub struct ParkIfIdle {
+    /// The idle threshold (`acp.idle_stop_secs`).
+    pub after: Duration,
+    /// Supervisor side: a turn, approval, ask, peer wait or queued spawn.
+    pub pending: bool,
+    /// Supervisor side: the session's running jobs and PTYs.
+    pub jobs: u32,
+    /// The asker's deadline.
+    pub until: Instant,
+}
+
 /// The [`Note`] after a resume of a cancelled turn: `session/load` replays
 /// the unfinished work and the harness would otherwise pick it up.
 pub const CANCELLED_NOTE: &str = "your previous turn was cancelled by the user before it finished; do not continue it — answer only the message below";
@@ -493,6 +513,7 @@ impl AcpChild {
             omp_home: std::env::home_dir().unwrap_or_default(),
             activity: ChildActivity::new(ActivityConfig::default()),
             stall: None,
+            quiet_since: Instant::now(),
         }
     }
 
@@ -1080,6 +1101,7 @@ impl AcpChild {
     /// same way but always stops as [`HARNESS_CONTINUED`] and reports no
     /// result: nothing reaches the parent.
     async fn finish(&mut self, stop_reason: &str, error: Option<String>) {
+        self.quiet_since = Instant::now();
         let Some(mut turn) = self.turn.take() else {
             return;
         };
@@ -1677,6 +1699,7 @@ impl Message<Connected> for AcpChild {
     type Reply = ();
 
     async fn handle(&mut self, Connected(r): Connected, ctx: &mut Context<Self, Self::Reply>) {
+        self.quiet_since = Instant::now();
         match r {
             Ok(h) => {
                 // A stored id that was not restored means the harness starts
@@ -1689,6 +1712,7 @@ impl Message<Connected> for AcpChild {
                         "{}: previous harness session not restored; starting fresh",
                         self.name
                     );
+                    tracing::warn!(session = %self.id, harness = %self.name, "acp: {message}");
                     if let Err(e) = self.store.record_error(self.id, &message).await {
                         tracing::warn!(session = %self.id, "record_error: {e:#}");
                     }
@@ -1882,6 +1906,7 @@ impl Message<Update> for AcpChild {
     type Reply = ();
 
     async fn handle(&mut self, u: Update, ctx: &mut Context<Self, Self::Reply>) {
+        self.quiet_since = Instant::now();
         let me = ctx.actor_ref().clone();
         match u {
             // 141 §7.2 item 1: a subagent announce from any source upserts the
@@ -2093,6 +2118,40 @@ impl Message<Note> for AcpChild {
     }
 }
 
+impl Message<ParkIfIdle> for AcpChild {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: ParkIfIdle, ctx: &mut Context<Self, Self::Reply>) -> bool {
+        let quiet = self.quiet_since.elapsed();
+        let facts = idle::IdleFacts {
+            process: !self.remote,
+            connected: self.harness.is_some(),
+            busy: self.turn.is_some()
+                || !self.queue.is_empty()
+                || self.respawn.is_some()
+                || !self.pending_options.is_empty(),
+            pending: m.pending,
+            jobs: m.jobs,
+            observed: self.observed.any_running(),
+            quiet,
+        };
+        if Instant::now() > m.until || !idle::parkable(&facts, m.after) {
+            return false;
+        }
+        tracing::info!(
+            "acp: parked idle child session={} harness={} idle={}s",
+            self.id,
+            self.name,
+            quiet.as_secs()
+        );
+        // `close` ends the connection: stdin closes, the SDK gives the
+        // process group its grace, then SIGKILLs it (bridges included).
+        self.close_harness();
+        ctx.stop();
+        true
+    }
+}
+
 /// 109 §7.3: remembered until the connection is up; acted on at once when
 /// it already is (or already failed).
 impl Message<Respawn> for AcpChild {
@@ -2214,6 +2273,7 @@ impl Message<SetOption> for AcpChild {
             });
         }
         let options = self.apply_option(&m.config_id, &m.value).await?;
+        self.quiet_since = Instant::now();
         Ok(acp::SetOptionResult {
             options,
             pending: false,
