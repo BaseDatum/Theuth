@@ -42,7 +42,7 @@ test('runnable only with a session, a finished stored reply and an idle turn (§
   const button = /<button[^>]*>(?:<svg[\s\S]*?<\/svg>)?Preview<\/button>/
   const live = render(assistant(md(REPLY, withCells)))
   expect(live).toMatch(button)
-  expect(live.match(button)?.[0]).not.toContain('aria-disabled')
+  expect(live.match(button)?.[0]).not.toContain('aria-disabled="true"')
   expect(live).toContain('Run all · stops before Apply to ir-prod1')
 
   for (const o of [{ running: true }, { entry: null }]) {

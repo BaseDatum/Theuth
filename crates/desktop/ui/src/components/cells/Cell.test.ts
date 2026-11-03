@@ -24,7 +24,7 @@ const button = (html: string, text: string) => html.match(new RegExp(`<button[^>
 
 test('every §11.2 state renders its look and button', () => {
   const cases: [CellViewState, { view: CellViewState; html: string }, (html: string) => void][] = [
-    ['ready', cell(1, state(ref)), (x) => expect(button(x, 'Preview')).not.toContain('aria-disabled')],
+    ['ready', cell(1, state(ref)), (x) => expect(button(x, 'Preview')).not.toContain('aria-disabled="true"')],
     [
       'queued',
       cell(1, state(ref, { latest: run({ state: 'queued', exit: null, secs: null, ended_ms: null, started_ms: null }) }), { extras: { queuePos: 2 } }),
@@ -84,7 +84,7 @@ test('every §11.2 state renders its look and button', () => {
       cell(2, state(ref, { armed: { by: 'r_x', at_ms: Date.UTC(2026, 10, 3, 14, 31), summary: '~3 update · 0 replace · 0 delete' } })),
       (x) => {
         expect(x).toMatch(/armed by preview-ir-prod1 ✓ \d\d:\d\d · ~3 update/)
-        expect(button(x, 'Apply to ir-prod1')).not.toContain('aria-disabled')
+        expect(button(x, 'Apply to ir-prod1')).not.toContain('aria-disabled="true"')
       },
     ],
     ['disarmed', cell(2, state(ref), { extras: { afterLabel: 'Preview' } }), (x) => expect(button(x, 'after: Preview')).toContain('aria-disabled="true"')],

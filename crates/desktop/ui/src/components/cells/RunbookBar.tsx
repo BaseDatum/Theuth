@@ -85,7 +85,7 @@ export function RunbookBar({ cells, kernel, onRunAll, onOpenAsNote, runnable = t
     >
       <Button
         size="sm"
-        className="h-8 gap-1 pointer-coarse:h-12"
+        className="h-8 gap-1 pointer-coarse:h-12 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
         aria-disabled={disabled || undefined}
         aria-description={!runnable ? 'ready when the reply ends' : busy ? 'a run is in progress' : undefined}
         title={`${label} (${mod}⇧↵)`}

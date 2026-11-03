@@ -136,6 +136,7 @@ export function CellEditor({ lang, code, runnable, danger, locked, onChange, onR
       <CodeMirror
         value={code}
         basicSetup={false}
+        theme="none"
         editable
         readOnly={locked || !editing}
         extensions={extensions}

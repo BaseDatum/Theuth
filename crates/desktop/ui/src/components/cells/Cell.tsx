@@ -140,7 +140,7 @@ function StaticText({ run, text }: { run: CellRun; text: string }) {
           show all {lines.length.toLocaleString()} lines
         </Button>
       )}
-      <AnsiText text={shown} className="max-h-[28rem] overflow-auto text-xs" />
+      <AnsiText text={shown} className="max-h-[28rem] overflow-auto whitespace-pre pl-2 text-xs" />
     </>
   )
 }
@@ -230,7 +230,7 @@ function HistoryMenu({ cellRef, onPick }: { cellRef: CellRef; onPick(run: CellRu
 }
 
 /** 171 §11.1: the one cell component for chat, notes and notebooks. */
-export function Cell({ cellRef, cell, code, runnable, view, state, latest, host, callbacks, editor, readOnly }: CellProps) {
+export function Cell({ cellRef, cell, runnable, view, state, latest, host, callbacks, editor, readOnly }: CellProps) {
   const extras = useContext(CellExtras)
   const dataDir = useConnection((s) => s.info?.data_dir)
   const label = labelOf(cell)
@@ -312,7 +312,7 @@ export function Cell({ cellRef, cell, code, runnable, view, state, latest, host,
       <Button
         size="sm"
         variant={o.danger ? 'destructive' : 'default'}
-        className={cn('h-7 gap-1 pointer-coarse:h-12', phoneDanger && 'w-full')}
+        className={cn('h-7 gap-1 pointer-coarse:h-12 aria-disabled:cursor-not-allowed aria-disabled:opacity-50', phoneDanger && 'w-full')}
         aria-disabled={disabled || undefined}
         aria-description={reason}
         title={reason}
@@ -441,7 +441,7 @@ export function Cell({ cellRef, cell, code, runnable, view, state, latest, host,
 
   const output = live && latest ? (
     latest.state === 'running' && latest.kernel.spec.type === 'shell' ? (
-      <LiveTerminal run={latest} code={code} label={label} />
+      <LiveTerminal run={latest} code={cell.code} label={label} />
     ) : (
       <p className="text-xs text-fg-tertiary">{latest.state === 'queued' ? 'waiting for the kernel…' : 'running…'}</p>
     )
