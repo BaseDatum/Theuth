@@ -67,7 +67,7 @@ The companion's surfaces (Swift: menu bar icon, Attention / agents panels, palet
 - Dock badge with the attention count (`set_badge_label` exists in tao `platform/macos.rs:406`; the tray title already carries the count).
 - Dock right-click menu (New chat, Start meeting) — `applicationDockMenu:` on the same delegate.
 - A Settings toggle back to menu-bar-only (`set_activation_policy` at runtime, tao `set_activation_policy_at_runtime`).
-- Showing the window when the user starts theuth from the Dock / Finder while it is not running: the hidden start is kept as asked, so that launch shows nothing but the Dock icon and the menu bar icon (a launch is `oapp`, not a reopen).
+- ~~Showing the window when the user starts theuth from the Dock / Finder while it is not running~~ — done in R1 below.
 - Windows / Linux: unchanged. Windows' `main` has no `skipTaskbar` (`tauri.conf.json`; `tauri.windows.conf.json` overrides only `trayIcon` and `bundle`), so it is already in the taskbar and Alt+Tab; only the island has `skipTaskbar: true`.
 - The companion's `quitTheuth` doc comment still says `terminate()` "lands straight in the shell's exit path"; since 166 it lands in the graceful quit. Not touched here (companion gate).
 
@@ -90,7 +90,7 @@ Not run: the app itself (Sky's theuth is running on this Mac). Windows / Linux n
 
 ## Sky's live check (after landing)
 
-1. Start theuth. A theuth icon is in the Dock; the main window stays hidden (hidden start); the menu bar icon (tray or companion) is as before.
+1. Start theuth. A theuth icon is in the Dock; the menu bar icon (tray or companion) is as before. (Before R1 the main window stayed hidden here; since R1 a user launch shows it — item 12.)
 2. ⌘Tab lists theuth. With main hidden, ⌘Tab to theuth → the main window appears, focused, centred on a fresh profile (else where it was).
 3. Close main with the red button and with ⌘W → it hides; theuth stays in the Dock and in ⌘Tab. ⌘Tab away and back → main shows again.
 4. With main hidden, click the Dock icon → main shows. With main visible, click the Dock icon → nothing besides coming forward.
@@ -101,3 +101,30 @@ Not run: the app itself (Sky's theuth is running on this Mac). Windows / Linux n
 9. Dock › Quit → the shutdown overlay / tray "shutting down" as for ⌘Q, no beach ball; the log has `applicationShouldTerminate … now=false`. During the quit, ⌘Tab or a Dock click does not show a hidden main window.
 10. Log out (or restart) with theuth running → the logout is not interrupted by theuth; the log has `applicationShouldTerminate reason=Some("…") now=true`.
 11. Companion › Quit theuth → graceful as in 163, main stays hidden.
+12. (R1) Quit theuth, start it from the Dock, from Spotlight, and with the companion's "Open theuth" → the main window shows each time, once, focused. Turn on Settings › General › Open at login, log out and in → theuth starts with no window. `~/Library/LaunchAgents/theuth.plist` lists `--autostart` after the binary.
+13. (R1) With a login item from before R1: the first start after the update logs `login item rewritten with --autostart`; the first login after the update may still show the window once, later logins do not.
+
+## R1 (2026-11-03, after main 246d19aa)
+
+### Merge
+- `git merge --no-ff main` (165 PASTE-LINKS): clean, no conflicts. 165's `PASTE_PLAIN` Edit-menu item, its `on_menu` arm, `paste_plain()` and `paste_plain_accelerator_parses` (uses `tauri_plugin_global_shortcut::Shortcut`, unaffected by the positioner removal) are kept and pass.
+
+### A user launch shows the window; a login launch stays hidden
+- Why: as a Dock app, a launch from the Dock, Finder, Spotlight or the companion's "Open theuth" (`AppDelegate.swift`, `activates = true` when the main app is not running) showed no window — the brief's kept hidden start. This replaces the D3 "do not show at launch" decision for user launches; the login launch keeps it.
+- `lib.rs`: `tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![AUTOSTART_ARG]))`, `AUTOSTART_ARG = "--autostart"`. The plugin writes it into the LaunchAgent's `ProgramArguments` (macOS), and into the `Run` value (Windows) and the `.desktop` entry (Linux) on the next enable there. Only macOS reads it; Windows and Linux behave as before (hidden start).
+- `dock::launch`, last step of setup on macOS: `rewrite_login_item`, then `show` when `show_at_launch(argv[1..])`, i.e. `--autostart` is not among the arguments (exact match; `-psn_…` and anything else count as a user launch). Tests `only_the_login_item_launch_stays_hidden`.
+- No double show: the launch activation that follows is still skipped by `LAUNCH_ACTIVATION` (5 s), and if it were not, main is visible by then so `show_on_activate` says no; `show` itself is idempotent (the first-show centring is a `swap`).
+- Old login items: a LaunchAgent plist written before R1 lacks the arg. At macOS startup, when the plugin reports autostart enabled (`is_enabled` = the plist exists in LaunchAgent mode, auto-launch 0.6 `macos.rs:209-213`) and `~/Library/LaunchAgents/<product>.plist` (`get_file`, `macos.rs:240-251`) does not contain `<string>--autostart</string>`, `enable()` rewrites it (a plain file write, `enable_launch_agent`, `macos.rs:115-130`) and logs `login item rewritten with --autostart`; a failure logs a warning. Test `old_login_items_are_told_apart`.
+  - "Once" = only while the arg is missing, so a later start does not rewrite it again.
+  - Only when the running binary is inside an `.app` (`…/.app/Contents/MacOS/`): `enable()` writes the *current* executable's path, and a dev build must not repoint Sky's login item at `target/`.
+  - Accepted: the first login after the update ran from the old plist (no arg) and shows the window once; the rewrite happens during that start, so the next login is hidden.
+- A cold start by a `theuth://` link (companion card while theuth is not running) is a user launch: it shows the window and `navigate` routes it — same window, one show.
+
+### Files (R1)
+- `crates/desktop/src/lib.rs`: `AUTOSTART_ARG`, the autostart plugin's args, `dock::launch` at the end of setup.
+- `crates/desktop/src/dock.rs`: `launch`, `show_at_launch`, `rewrite_login_item`, `plist_has_autostart_arg`, 2 tests; module doc.
+
+### Gates (R1, after the merge)
+1. `cargo fmt -p desktop` → clean (`--check` exit 0).
+2. `BUILD_LABEL=166 ~/.theuth/bin/build-lock mbx clippy -p desktop --all-targets --no-deps -- -D warnings` → exit 0; only the pre-existing `block v0.1.6` future-incompat note. Log `/tmp/166/r1-clippy.log`.
+3. `BUILD_LABEL=166 ~/.theuth/bin/build-lock mbx test -p desktop --lib --no-run` → exit 0; `mbx test -p desktop --lib` → 61 passed, 0 failed (6 in `dock::tests`, 165's `paste_plain_accelerator_parses` included). Logs `/tmp/166/r1-test-build.log`, `/tmp/166/r1-test.log`.
