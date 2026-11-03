@@ -516,4 +516,97 @@ mod tests {
         .unwrap();
         assert_eq!(why, "parent process 7 gone");
     }
+
+    /// A scratch data dir with the bearer token `connect` reads.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir =
+                std::env::temp_dir().join(format!("176-{tag}-{}-{nanos}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("token"), "t").unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A fake engine on `addr` whose `session_owner` knows `s1` or not.
+    async fn engine(addr: &str, known: bool) -> (String, jsonrpsee::server::ServerHandle) {
+        let server = Server::builder().build(addr).await.unwrap();
+        let addr = server.local_addr().unwrap().to_string();
+        let mut m = RpcModule::new(());
+        m.register_method("session_owner", move |_, _, _| {
+            if known {
+                Ok(json!({"owner": "me", "here": true}))
+            } else {
+                Err(jsonrpsee::types::ErrorObjectOwned::owned(
+                    -32000,
+                    "s1: no such session",
+                    None::<()>,
+                ))
+            }
+        })
+        .unwrap();
+        (addr, server.start(m))
+    }
+
+    /// 176 A3 (c)/(d): a dropped engine is redialed and the new connection
+    /// handed to the shim; an engine that comes back without the session
+    /// ends the bridge.
+    #[tokio::test]
+    async fn bridge_redials_then_exits_on_unknown_session() {
+        let scratch = Scratch::new("redial");
+        let (listen, first) = engine("127.0.0.1:0", true).await;
+        let client = dial(&scratch.0, &listen).await.unwrap();
+        assert!(!no_such_session(&client, "s1").await);
+        let (tx, mut rx) = watch::channel(Arc::new(client));
+        let (dir, at) = (scratch.0.clone(), listen.clone());
+        let keep = tokio::spawn(async move {
+            keep_engine(&dir, &at, "s1".into(), tx, Duration::from_secs(30)).await
+        });
+        first.stop().unwrap();
+        first.stopped().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let (_, second) = engine(&listen, true).await;
+        tokio::time::timeout(Duration::from_secs(10), rx.changed())
+            .await
+            .expect("redialed")
+            .unwrap();
+        second.stop().unwrap();
+        second.stopped().await;
+        let (_, _third) = engine(&listen, false).await;
+        let why = tokio::time::timeout(Duration::from_secs(15), keep)
+            .await
+            .expect("the bridge gave up")
+            .unwrap();
+        assert_eq!(why, "session s1 does not exist");
+    }
+
+    /// 176 A3 (d): an engine that stays away past the limit ends the bridge.
+    #[tokio::test]
+    async fn bridge_exits_after_engine_down_limit() {
+        let scratch = Scratch::new("down");
+        let (listen, engine) = engine("127.0.0.1:0", true).await;
+        let client = dial(&scratch.0, &listen).await.unwrap();
+        let (tx, _rx) = watch::channel(Arc::new(client));
+        engine.stop().unwrap();
+        engine.stopped().await;
+        let why = tokio::time::timeout(
+            Duration::from_secs(10),
+            keep_engine(&scratch.0, &listen, "s1".into(), tx, Duration::from_secs(1)),
+        )
+        .await
+        .expect("the bridge gave up");
+        assert_eq!(why, "engine unreachable for 1s");
+    }
 }

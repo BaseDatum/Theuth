@@ -2893,7 +2893,7 @@ pub(crate) mod tests {
                 .expect("client connected")
         }
 
-        fn respond(&self, id: &serde_json::Value, result: impl serde::Serialize) {
+        pub(crate) fn respond(&self, id: &serde_json::Value, result: impl serde::Serialize) {
             self.send(json!({"jsonrpc": "2.0", "id": id, "result": result}));
         }
 
@@ -2926,7 +2926,7 @@ pub(crate) mod tests {
         }
 
         /// The next `session/set_config_option`: `(id, configId, value)`.
-        async fn set_option(&mut self) -> (serde_json::Value, String, String) {
+        pub(crate) async fn set_option(&mut self) -> (serde_json::Value, String, String) {
             let m = self.next().await;
             assert_eq!(m["method"], "session/set_config_option", "{m}");
             let p = &m["params"];
@@ -4075,7 +4075,7 @@ pub(crate) mod tests {
     }
 
     /// omp 18.3.1's `configOptions`: mode, model, thinking (75 §8).
-    fn omp_options(model: &str) -> Vec<SessionConfigOption> {
+    pub(crate) fn omp_options(model: &str) -> Vec<SessionConfigOption> {
         serde_json::from_value(json!([
             {"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"default",
              "options":[{"value":"default","name":"Default"}]},
