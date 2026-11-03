@@ -9,8 +9,11 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { PtyIcon } from './Indicators'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { isApple } from '@/lib/chord'
 import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { macKeyBytes } from '@/lib/terminal-keys'
+import { swallowEngineQueries } from '@/lib/terminal-replies'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/api'
 import type { JobExit } from '@/rpc/bindings/JobExit'
@@ -149,10 +152,22 @@ export function Terminal({ session, job, label, popped = false }: JobRef & { lab
     let ended = false
     // One call in flight at a time: keystrokes reach the process in typing order.
     let lane: Promise<unknown> = Promise.resolve()
-    const input = term.onData((d) => {
+    const send = (d: string) => {
       if (ended) return
       lane = lane.then(() => api.pty_input(session, job, d, null).catch(() => undefined))
+    }
+    const input = term.onData(send)
+    // 167 D1: macOS editing keys as Terminal.app sends them, through the same lane.
+    const mac = isApple()
+    term.attachCustomKeyEventHandler((e) => {
+      const d = macKeyBytes(e, mac)
+      if (d === null) return true
+      e.preventDefault()
+      send(d)
+      return false
     })
+    // 167 D2: the engine is the one responder for the queries it answers; this xterm keeps the rest.
+    swallowEngineQueries(term.parser)
     const resized = term.onResize(({ rows, cols }) => {
       setSize(`${cols}×${rows}`)
       if (!ended) void api.pty_resize(session, job, rows, cols).catch(() => undefined)
