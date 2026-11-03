@@ -19,6 +19,7 @@ import type { Api } from '@/rpc/api'
 import type { JobExit } from '@/rpc/bindings/JobExit'
 import type { Key } from '@/rpc/bindings/Key'
 import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
+import type { CellRunId } from '@/rpc/bindings/CellRunId'
 import type { TerminalSummary } from '@/rpc/bindings/TerminalSummary'
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
@@ -95,7 +96,17 @@ export function PopoutTerminalButton({ session, job, className }: JobRef & { cla
  * strip and the status line (`label` · size · exit). `popped`: this is the window's whole content — it owns the
  * PTY's size (leaves the `mark`, restores the default grid on close) and titles the window.
  */
-export function Terminal({ session, job, label, popped = false }: JobRef & { label: string; popped?: boolean }) {
+export function Terminal({
+  session,
+  job,
+  label,
+  popped = false,
+}: JobRef & {
+  label: string
+  popped?: boolean
+  // 171:U1 a cell run's bytes come from `cell_attach` instead of `subscribe_pty` (171 §11.1 output); unused until U1.
+  source?: { kind: 'cell'; run: CellRunId }
+}) {
   const api = useApi()
   const client = useConnection((s) => s.client)
   const mobile = useIsMobile()

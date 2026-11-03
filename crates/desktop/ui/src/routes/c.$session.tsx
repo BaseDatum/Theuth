@@ -148,6 +148,7 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
       <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <TodoCard key={`d:${session}`} session={session} />
       {aboveComposer}
+      {/* 171:U1 KernelStrip (171 §11.4: transcript · dots · to-do · kernel strip · composer) */}
       {watching ? <ObservedBar session={session} /> : <Composer key={`c:${session}`} session={session} />}
     </>
   )

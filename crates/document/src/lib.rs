@@ -21,6 +21,7 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
 pub mod actor;
+pub mod cells;
 pub mod cite_check;
 pub mod helper;
 pub mod hub;
@@ -43,6 +44,10 @@ pub use actor::{
     ImportOutcome, ListDocs, Lookup, Markdown, MetaOf, OpenDoc, Outline, Rename, Restore,
     SetDerived, Snapshot, Snapshots, Stats, Subscribe, Tick, UndoLastAgentEdit, board_frontmatter,
     with_heading,
+};
+pub use cells::{
+    CellAnnotation, CellLatest, CodeBlockText, CodeBlockTextReply, NoteKey, RunAnnotations,
+    run_annotations, set_run_annotations,
 };
 pub use helper::{
     Edit as BlockEdit, EditError, HelperProcess, HelperStatus, ImportMode, helper_path,

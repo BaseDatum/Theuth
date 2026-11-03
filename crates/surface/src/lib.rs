@@ -13,6 +13,8 @@
 
 pub mod anchor;
 mod catalog;
+/// 171 §3: the cell grammar — `parse`, `validate`, `lint`, `digest` for runnable fences.
+pub mod cell;
 mod elk_family;
 pub mod export;
 mod fences;

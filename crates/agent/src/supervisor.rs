@@ -2740,6 +2740,7 @@ impl Message<RearmReminders> for Agents {
 /// the body goes through `inject` like a local one — and on to the next
 /// owner if the session moved again meanwhile. The sender's request scope
 /// is its ledger's, not ours: delivered unscoped.
+#[derive(Debug, serde::Deserialize)]
 pub struct HarnessDeliver {
     /// The session.
     pub session: SessionId,
@@ -2749,6 +2750,14 @@ pub struct HarnessDeliver {
     pub text: String,
     /// The body as the model reads it.
     pub wrapped: String,
+    /// 171 §9.3: false = park until the session's next turn; A1 implements
+    /// parking; ignored for now.
+    #[serde(default = "wake_default")]
+    pub wake: bool,
+}
+
+fn wake_default() -> bool {
+    true
 }
 
 impl Message<HarnessDeliver> for Agents {
@@ -2757,6 +2766,20 @@ impl Message<HarnessDeliver> for Agents {
     async fn handle(&mut self, m: HarnessDeliver, _: &mut Context<Self, Self::Reply>) {
         self.inject(m.session, &m.kind, m.text, m.wrapped, None)
             .await;
+    }
+}
+
+#[cfg(test)]
+mod harness_deliver_tests {
+    use super::HarnessDeliver;
+
+    #[test]
+    fn wake_defaults_to_true() {
+        let m: HarnessDeliver = serde_json::from_str(
+            r#"{"session":"00000000-0000-0000-0000-000000000000","kind":"job j3","text":"t","wrapped":"w"}"#,
+        )
+        .unwrap();
+        assert!(m.wake);
     }
 }
 

@@ -1005,6 +1005,40 @@ pub struct StartPty {
     pub activity: Option<Activity>,
     /// `tools.pty_shell`: the program instead of the platform default (58 §0.3).
     pub pty_shell: Option<PathBuf>,
+    /// 171: explicit program instead of the user shell; E1 honours it.
+    pub program: Option<(PathBuf, Vec<String>)>,
+    /// 171: a user-cell kernel; marks are sent here; E1.
+    pub cell: Option<mpsc::Sender<Mark>>,
+}
+
+/// 171 §5.5: a shell-integration mark scanned from a `cell` PTY job's log
+/// (E1 implements the scan).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Mark {
+    /// Which sequence was seen.
+    pub kind: MarkKind,
+    /// The exit code carried by `OSC 133;D;n`.
+    pub exit: Option<i32>,
+    /// The directory carried by `OSC 7`.
+    pub cwd: Option<String>,
+    /// Byte offset of the sequence in the log file as written.
+    pub offset: u64,
+}
+
+/// The shell-integration sequences a [`Mark`] reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum MarkKind {
+    /// `OSC 133;A`: the kernel's rc finished.
+    Ready,
+    /// `OSC 133;C`: a run's output starts.
+    Start,
+    /// `OSC 133;D[;n]`: a run ended with exit `n`.
+    End,
+    /// `OSC 7 ;file://…`: the live working directory.
+    Cwd,
 }
 
 /// `ask` → `Result<ToolOutput, String>`: type into a PTY job, reply with the
@@ -2916,6 +2950,8 @@ impl Tool for StartTool {
                 root: cx.resources.root.clone(),
                 activity: activity::current(),
                 pty_shell: self.pty_shell.clone(),
+                program: None,
+                cell: None,
             })
             .await
             .map_err(|e| anyhow::anyhow!("jobs actor: {e}"))

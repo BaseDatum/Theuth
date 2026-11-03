@@ -92,6 +92,7 @@ let owned = false
  */
 async function quit(restart = false): Promise<void> {
   const local = scope(LOCAL)
+  // 171:U1 pre-quit sheet (cell_live): a live cell run shows components/cells/QuitSheet.tsx before `requested` (171 §5.3)
   useQuit.getState().send({
     type: 'requested',
     restart,

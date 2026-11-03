@@ -312,7 +312,7 @@ async fn run(
                     Msg::Harness { session, kind, id, text, wrapped, .. } => {
                         let error = match session.parse::<SessionId>() {
                             Ok(session) => {
-                                let m = agent::supervisor::HarnessDeliver { session, kind, text, wrapped };
+                                let m = agent::supervisor::HarnessDeliver { session, kind, text, wrapped, wake: true };
                                 receive_harness(node, &remote, &id, m).await.err()
                             }
                             Err(_) => Some("malformed session id".to_owned()),
@@ -433,6 +433,7 @@ async fn flush_harness(
                             kind: row.kind,
                             text: row.text,
                             wrapped: row.wrapped,
+                            wake: true,
                         })
                         .await
                         .is_ok()

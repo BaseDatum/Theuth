@@ -446,6 +446,8 @@ mod tests {
                             root: dir,
                             activity: None,
                             pty_shell: None,
+                            program: None,
+                            cell: None,
                         })
                         .await
                         .unwrap();

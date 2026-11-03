@@ -123,6 +123,7 @@ function CodeBlock({ block, editor, contentRef }: Props) {
     },
   })
   const parses = useParses(kind, source)
+  // 171:U2 cellOf branch → NoteCell / CellDefaults (171 §4.2: `cellOf(block.props.language, source)` before the diagram branch; `language` first word `cells` → CellDefaults)
   const diagram = kind !== null && !selected && parses !== false
   const open = () => {
     editor.setTextCursorPosition(block.id, 'end')

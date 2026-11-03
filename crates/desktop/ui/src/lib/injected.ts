@@ -51,11 +51,13 @@ export type ResumeSection = { title: string; text: string; count?: number }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
 const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="', advisory: 'severity="', child_lost: 'name="', autoresearch: 'slug="' }
+// 171:U1 CARD.cell_result = 'name="' (171 §9.1: one quiet line "theuth read · Preview · exit 0 · 41 s"; unnamed cells carry `cell="<ordinal>"`)
 // `surface_error` (30 §8): the correction round is quiet on the desktop — the fence shows its own failure state — so the
 // `<surface_error>` / `<surface_error final="true">` notes render nothing; the notice entry above stays for other clients.
 // 144 §5.3: `<notebook id title>` is the bound chat's volatile context block — a harness note the context line already
 // summarises (`in context: N sources · M notes`), so it renders nothing, like `<runtime>`.
 const HIDDEN: Record<string, true> = { context_summary: true, runtime: true, surface_error: true, notebook: true }
+// 171:U1 HIDDEN.cell_error = true (171 §9: the correction round is quiet on the desktop, like `surface_error`)
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]

@@ -1333,6 +1333,7 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
         ("decide.md", decision::tool::DECIDE_SKILL.to_owned()),
         ("double.md", double::tool::DOUBLE_SKILL.to_owned()),
         ("native-apps.md", computer::NATIVE_APPS_SKILL.to_owned()),
+        // 171:A1 ("cells.md", cells::prompt::SKILL) — only once SKILL is non-empty (installed text unchanged until then).
     ] {
         let path = skills.join(name);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
@@ -1813,6 +1814,8 @@ async fn run() -> anyhow::Result<()> {
             Box::new(dreaming::DreamingPlugin),
             // 140: autoresearch studies (store, `Studies` actor, tools, prompt block, skill); after agent.
             Box::new(autoresearch::AutoresearchPlugin),
+            // 171: user cells (`Cells` actor, kernels, run store); after agent and tools.
+            Box::new(cells::CellsPlugin), // 171:E1
             // The `search` tool (49 §4.4): registration only.
             Box::new(rpc::SearchToolsPlugin),
             // 63 §6.4: attachable, on a loopback port; stdout untouched.
@@ -1937,6 +1940,8 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(dreaming::DreamingPlugin),
         // 140: autoresearch studies (store, `Studies` actor, tools, prompt block, skill); after agent.
         Box::new(autoresearch::AutoresearchPlugin),
+        // 171: user cells (`Cells` actor, kernels, run store); after agent and tools.
+        Box::new(cells::CellsPlugin), // 171:E1
         Box::new(rpc::SearchToolsPlugin),
         Box::new(signal::SignalPlugin {
             channel: headless,

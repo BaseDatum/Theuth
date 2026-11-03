@@ -45,6 +45,7 @@ decision = { workspace = true }
 double = { workspace = true }
 dreaming = { workspace = true }
 autoresearch = { workspace = true }
+cells = { workspace = true }  # 171 user cells plugin
 models = { workspace = true }  # `models.accelerator` + `--bench-models` (58 step 12)
 chrono = { workspace = true }  # --decision-export --since
 secrets = { workspace = true }

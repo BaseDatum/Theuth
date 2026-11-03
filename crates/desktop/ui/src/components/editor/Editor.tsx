@@ -102,6 +102,7 @@ function DocSideMenu(props: SideMenuProps) {
   return type === 'frontmatter' ? null : (
     <SideMenu {...props}>
       <AddBlockButton />
+      {/* 171:U2 "Make it a cell" / "Make it plain code" on runnable-language code blocks (171 §4.2) */}
       <DragHandle />
     </SideMenu>
   )
@@ -182,6 +183,7 @@ export function Editor({
         icon: <Workflow className="size-4" />,
         onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, { type: 'codeBlock', props: { language: 'mermaid' }, content: DIAGRAM_STARTER }),
       },
+      // 171:U2 slash item "Cell": { type: 'codeBlock', props: { language: 'bash' }, content: '#| name: step-1' } (171 §4.2)
       ...(onAsk
         ? [
             {

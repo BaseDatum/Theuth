@@ -3171,6 +3171,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "cells"
+version = "2.16.2"
+dependencies = [
+ "agent",
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
+ "document",
+ "figment",
+ "globset",
+ "hex",
+ "kameo",
+ "link",
+ "monty-pool",
+ "monty-types",
+ "parking_lot",
+ "platform",
+ "regex",
+ "runtime",
+ "schemars 1.2.3",
+ "secrets",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.11.1",
+ "sqlx",
+ "surface",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tools",
+ "tracing",
+ "ts-rs",
+ "uuid",
+ "vt100",
+]
+
+[[package]]
 name = "cesu8"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17455,6 +17495,7 @@ dependencies = [
  "autoresearch",
  "base64 0.23.1",
  "browser",
+ "cells",
  "chrono",
  "codeindex",
  "computer",
@@ -20607,12 +20648,15 @@ checksum = "e396b6523b11ccb83120b115a0b7366de372751aa6edf19844dfb13a6af97e91"
 name = "surface"
 version = "2.16.2"
 dependencies = [
+ "hex",
  "jsonrepair-rs",
  "markdown",
  "merman",
+ "regex",
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tracing",
  "ts-rs",
  "unicode-width 0.2.3",
@@ -21835,6 +21879,7 @@ dependencies = [
  "async-trait",
  "autoresearch",
  "browser",
+ "cells",
  "chrono",
  "clap",
  "codeindex",

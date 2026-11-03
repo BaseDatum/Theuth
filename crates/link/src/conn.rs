@@ -535,7 +535,7 @@ async fn run_api(
 /// Methods a mode-2 conn may call (59 §8.3): `doc_join` to become a member, then the member
 /// subset of `doc_*`. `document` checks membership and role on every one of them; this list only
 /// keeps a stranger off the rest of the API.
-pub const GUEST_METHODS: [&str; 11] = [
+pub const GUEST_METHODS: [&str; 12] = [
     "doc_join",
     "doc_open",
     "doc_subscribe",
@@ -548,6 +548,7 @@ pub const GUEST_METHODS: [&str; 11] = [
     "notebook_items_list",
     "source_get",
     "cite_resolve",
+    "cell_latest", // 171:E2
 ];
 
 /// A guest conn has this long after `IK` to be admitted to some document (59 §8.3).

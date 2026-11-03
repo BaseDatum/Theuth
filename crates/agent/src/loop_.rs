@@ -3238,7 +3238,7 @@ pub(crate) fn prompt_blocks(
         .filter_map(|(plugin, block)| match plugin {
             _ if attended => Some(block),
             "surface" => Some(frame::UNATTENDED_LINE.to_owned()),
-            "app" => None,
+            "app" | "cells" => None, // 171:A1
             _ => Some(block),
         })
         .collect::<Vec<_>>()
@@ -5926,6 +5926,7 @@ impl Turn {
                 // rounds per turn while a fence would not render, then one final
                 // move-on note; the frontends already saw the text.
                 let failing = if correction_wanted(&self.shared.cfg.surface, &self.state) {
+                    // 171:A1 check_fences cell pass (surface::cell::validate) goes here
                     check_fences(
                         Some(registry),
                         &text_of(&content),

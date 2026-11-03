@@ -1572,6 +1572,8 @@ impl Message<Terminal> for SandboxActor {
                 root: m.root,
                 activity: None,
                 pty_shell: None,
+                program: None,
+                cell: None,
             })
             .await
             .map_err(|e| format!("jobs actor: {e}"))?;

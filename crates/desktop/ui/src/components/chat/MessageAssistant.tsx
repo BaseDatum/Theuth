@@ -37,6 +37,7 @@ export const plugins: PluginConfig = {
     { language: 'json-render', component: JsonRenderFence },
     { language: 'mermaid', component: MermaidFence },
     { language: 'openui', component: OpenUIFence },
+    // 171:U1 CellFence plugin: { language: CELL_LANGUAGES, component: CellFence } (components/cells/CellFence.tsx)
   ],
 }
 /** 135 §2: a markdown image has no intrinsic size until it loads; `Reserve` holds its last height meanwhile. */
@@ -319,6 +320,7 @@ export const MessageAssistant = memo(function MessageAssistant({
     <div className="group py-2" onClick={stamp.onClick}>
       <CitationsProvider text={text}>
         <FenceContext value={fence}>
+          {/* 171:U1 CellFence plugin + CellOrdinals provider (per-message fence counter, resets per render) */}
           <Streamdown
             mode={open ? undefined : 'static'}
             isAnimating={open}

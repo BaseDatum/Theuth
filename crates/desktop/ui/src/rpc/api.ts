@@ -295,6 +295,18 @@ import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import type { MemoryMode } from '@/rpc/bindings/MemoryMode'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
 import type { ViewLine } from '@/rpc/bindings/ViewLine'
+// 171:C
+import type { CellLatest } from '@/rpc/bindings/CellLatest'
+import type { CellRef } from '@/rpc/bindings/CellRef'
+import type { CellRun } from '@/rpc/bindings/CellRun'
+import type { CellRunId } from '@/rpc/bindings/CellRunId'
+import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
+import type { CellScope } from '@/rpc/bindings/CellScope'
+import type { Interpreter } from '@/rpc/bindings/Interpreter'
+import type { KernelId } from '@/rpc/bindings/KernelId'
+import type { OutputPage } from '@/rpc/bindings/OutputPage'
+import type { RunGet } from '@/rpc/bindings/RunGet'
+import type { StateReply } from '@/rpc/bindings/StateReply'
 
 /** `computer::PermissionStatus` (27 §6); hand-written until the bindings are regenerated. */
 export type PermissionStatus = {
@@ -1236,6 +1248,38 @@ export interface Api {
   'autoresearch.launch'(slug: string, n: number, token: string, approve: boolean): Promise<StudyInfo>
   /** List, show or adopt a mechanism version (W7). */
   'autoresearch.mechanism'(op: MechanismOp): Promise<MechanismInfo>
+  // 171:C — 171 §15.2; the `cell_attach` / `cell_detach` subscription (items `PtyChunk` from mark C) is
+  // `client.stream<PtyChunk>('cell_attach', [run], 'cell_detach', onChunk)`, like `subscribe_pty`.
+  /** Run one cell: `seen` is the digest the press was made on, `edited` the F4 text, `member_ack` a member's consent. */
+  cell_run(cell: CellRef, seen: string, mode: CellRunMode, run: CellRunId, edited: string | null, member_ack: string | null): Promise<CellRun>
+  /** Run `cells` top to bottom under one pass id (`pass`); answers the pass id. */
+  cell_run_all(scope: CellScope, cells: [CellRef, string][], pass: string): Promise<string>
+  /** Ctrl-C the run; `kill: true` after 5 s is SIGKILL. */
+  cell_stop(run: CellRunId, kill: boolean): Promise<null>
+  /** Bytes (base64) typed into a live run. */
+  cell_input(run: CellRunId, data: string): Promise<null>
+  /** Wake the session with this run's result. */
+  cell_ask(run: CellRunId): Promise<null>
+  /** State of `cells` and the scope's kernels. */
+  cell_state(scope: CellScope, cells: CellRef[]): Promise<StateReply>
+  /** One run with its outputs (text capped). */
+  cell_run_get(run: CellRunId): Promise<RunGet>
+  /** A page of a run's text; `ansi: false` strips escapes. */
+  cell_output(run: CellRunId, offset: number, limit: number, ansi: boolean): Promise<OutputPage>
+  /** A run's output file, base64. */
+  cell_output_file(run: CellRunId, name: string): Promise<string>
+  /** The scope's runs, newest first. */
+  cell_runs(scope: CellScope, limit: number): Promise<CellRun[]>
+  /** Python interpreters visible from `cwd` on this engine or `engine`. */
+  cell_interpreters(cwd: string, engine: string | null): Promise<Interpreter[]>
+  cell_kernel_restart(kernel: KernelId): Promise<null>
+  cell_kernel_close(kernel: KernelId): Promise<null>
+  /** Re-read the environment the next kernel starts with. */
+  cell_env_refresh(): Promise<null>
+  /** Running cells on this engine (the pre-quit sheet). */
+  cell_live(): Promise<CellRun[]>
+  /** 171 §13.2: the latest run per cell of `doc`, as replicated to members. */
+  cell_latest(doc: DocId): Promise<CellLatest[]>
 }
 
 /** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
@@ -1309,6 +1353,23 @@ export const METHODS = [
   'calendar_sources',
   'cancel',
   'cancel_job',
+  // 171:C
+  'cell_ask',
+  'cell_env_refresh',
+  'cell_input',
+  'cell_interpreters',
+  'cell_kernel_close',
+  'cell_kernel_restart',
+  'cell_latest',
+  'cell_live',
+  'cell_output',
+  'cell_output_file',
+  'cell_run',
+  'cell_run_all',
+  'cell_run_get',
+  'cell_runs',
+  'cell_state',
+  'cell_stop',
   'cite_resolve',
   'code_locate',
   'codeindex_stats',

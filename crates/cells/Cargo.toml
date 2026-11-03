@@ -1,0 +1,52 @@
+[package]
+name = "cells"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "User cells: code the user runs with one press in chat, notes and notebooks — kernels, run store, delivery, RPC (design doc 171)"
+
+# Ownership: docs/design/171-ownership.md. A worker needing one more dependency adds ONE line
+# marked `# 171:<TAG>` and says so in DONE.
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }  # 171 §5.5 `StartPty{program, cell}`, `Mark`, `PtyChunk`, `RegisterPrompt`, `secrets::redact`
+agent = { workspace = true }  # 171 §9.3 `HarnessDeliver{wake}`, `AgentEvent` (parked runs consumed)
+surface = { workspace = true }  # 171 §3 the grammar: `surface::cell`
+document = { workspace = true }  # 171 §15.2 `CodeBlockText`, `RunAnnotations`, `CellLatest`, `NoteKey`
+platform = { workspace = true }  # 171 §5.4 `env::login_env`, process groups
+secrets = { workspace = true }  # 171 §3.6 vault names (`secret_unknown`), §12.1 inv. 9 placeholder expansion
+link = { workspace = true }  # 171 §12.1 `RpcPeer::is_internal`, hub routing for notes
+monty-pool = { workspace = true }  # 171 §5.9 the cells-owned Monty pool (E2 `monty.rs`)
+monty-types = { workspace = true }  # 171 §5.9 `ReplConfig`, limits (E2 `monty.rs`)
+kameo = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }  # cancellation for runs / the lifecycle lane (§7.3)
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+schemars = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }  # §3.4 digests, §8.4 output_sha
+hex = { workspace = true }
+base64 = { workspace = true }  # `cell_input` / `cell_output_file` payloads
+regex = { workspace = true }  # §7.5 expect, §9.4 credential masks
+vt100 = { workspace = true }  # §8.3 the render-only parser
+uuid = { workspace = true }  # §5.1 UUIDv5 kernel session ids for notes
+parking_lot = { workspace = true }
+globset = { workspace = true }
+sqlx = { workspace = true }  # §8.4 `cells.sqlite`
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+figment = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts", "surface/ts", "document/ts"]
+
+[lints]
+workspace = true

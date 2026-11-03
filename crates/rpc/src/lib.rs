@@ -24,8 +24,12 @@ use tokio::net::TcpListener;
 use tower::Service;
 
 pub mod acp;
+// 171:C jsonrpsee drops method attributes: `cell_run` has §15.2's six params + the extensions.
+#[allow(clippy::too_many_arguments)]
 pub mod api;
 pub mod bridge;
+mod cells; // 171:C (E1 owns the file)
+mod cells_latest; // 171:C (E2 owns the file)
 pub mod client;
 pub mod engine;
 pub mod forward;
