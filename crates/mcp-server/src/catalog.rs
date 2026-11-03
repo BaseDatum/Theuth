@@ -10,7 +10,8 @@ use std::time::Instant;
 use rmcp::handler::server::common::schema_for_type;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
@@ -26,7 +27,7 @@ pub const DEFAULT_LIMIT: u32 = 50;
 /// 158 §12.4: no list returns more than this per call.
 pub const MAX_LIMIT: u32 = 200;
 
-/// What `ServerInfo.instructions` says (158 §12.4: route to the smallest tool).
+/// What `ServerConfig.instructions` says (158 §12.4: route to the smallest tool).
 pub const INSTRUCTIONS: &str = "theuth's data on this machine: meetings (transcripts, summaries, briefs), \
 briefs, knowledge, documents, notebooks, sessions, tasks, artifacts, calendar. \
 Search first (`meeting_search`, `knowledge_search`, `brief_search`, `notebook_search`), then read one item \
@@ -1038,9 +1039,9 @@ impl From<McpCallResult> for CallToolResult {
     }
 }
 
-/// The `ServerInfo` both transports announce.
-pub fn server_info() -> ServerInfo {
-    ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+/// The `ServerConfig` both transports announce.
+pub fn server_info() -> ServerConfig {
+    ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         .with_server_info(Implementation::new("theuth", env!("CARGO_PKG_VERSION")))
         .with_instructions(INSTRUCTIONS)
 }
@@ -1089,7 +1090,7 @@ impl Catalog {
 }
 
 impl ServerHandler for Catalog {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         server_info()
     }
 
@@ -1130,7 +1131,7 @@ impl Bridge {
 }
 
 impl ServerHandler for Bridge {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         server_info()
     }
 

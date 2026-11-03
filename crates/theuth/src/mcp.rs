@@ -18,7 +18,7 @@ use jsonrpsee::ws_client::WsClient;
 use rmcp::handler::server::common::schema_for_type;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler, ServiceExt};
@@ -112,8 +112,8 @@ fn args<T: serde::de::DeserializeOwned>(req: &CallToolRequestParams) -> Result<T
 }
 
 impl ServerHandler for Shim {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Tools of the theuth session that spawned you. `send_message` reaches your parent.",
         )
     }
