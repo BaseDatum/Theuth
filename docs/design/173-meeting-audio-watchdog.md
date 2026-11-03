@@ -30,37 +30,49 @@ the call went on. No log line, no recovery, `gaps: []`, `degraded: []`, nothing 
 | Rule | Threshold | Action |
 |---|---|---|
 | STALL | no chunk 3 s | reopen now; if flexaudio said `StreamStalled`, wait until 5 s after it for `StreamRecovered` |
-| ZEROS | every sample 0.0 for 15 s, source playing | reopen |
-| ZEROS, activity unknown | 30 s of zeros | reopen, at most every 2 min |
-| ZEROS, source not playing | — | genuine silence, nothing |
-| Reopen judged failed | no chunk 3 s after it, or a fresh 15 s zero window | next reopen after 1, 2, 5, 10, then every 30 s; reset after 30 s clean |
-| RETARGET | every reopen | pid not playing and another same-bundle pid is → tap that pid |
-| FALLBACK | 3 consecutive failed reopens, source playing | `SystemLoopback` + `exclude_self` for the rest of the meeting |
+| ZEROS (app tap) | every sample 0.0 for 15 s, *no* activity precondition | PROBE: a concurrent `SystemLoopback` (`exclude_self`) for 4 s |
+| PROBE audible | ≥ 1 s of 100 ms blocks peaking ≥ −70 dBFS | episode `Silent` from the first zero chunk, reopen + retarget |
+| PROBE silent | — | genuine silence: no episode, no gap, no warning; re-probe after 30 s, 60 s, then every 120 s while the zeros last |
+| PROBE failed to open | — | warn once; this zero run uses the activity-gated rule below |
+| Reopen judged (app tap) | 5 s of zeros after it, then a second probe | audible → failed (warning from the first); silent → episode ends as genuine silence |
+| Reopen judged (stall) | no chunk 3 s after it | failed |
+| Backoff | after a failed reopen | 1, 2, 5, 10, then every 30 s; reset after 30 s clean |
+| RETARGET | every reopen | tapped pid not running output and a family member is → tap it |
+| FALLBACK | 3 consecutive failed reopens, each confirmed by an audible probe (stalls: family running output) | `SystemLoopback` + `exclude_self` |
+| RETURN | every 60 s in the fallback | 4 s probe of the app's tap (target pid while it lives, else a family member running output); ≥ 0.5 s non-zero → back on it, health `Ok` |
+| Global tap (pid 0, the fallback) | 15 s of zeros and anything running output (30 s / every 2 min if unknown) | reopen (nothing to probe against) |
 | `PermissionDenied` / `TerminalError` | at once | stream dropped, retried with backoff (no fallback on permission) |
 
-"Playing" = `kAudioProcessPropertyIsRunningOutput` of the pid or any same-bundle process. For
-the global tap (pid 0) it is any process. The process list is read at most once a second. The
-mic gets STALL and device-error reopening only: a muted mic is legitimately zero. Every flexaudio
-event is logged at warn (`ChunkDropped` / `Clipped` summed into one warn line a minute). Each track
-also gets an info line a minute: `meeting capture health: system chunks= frames= zero=% peak=dBFS
-target= reopens= episode=`.
+Family (`in_family`): the target itself, the same bundle id or one under it (`us.zoom.xos.*`, not
+`com.google.drivefs` for `com.google.Chrome`), or an executable inside the target's outermost `.app`
+(`libc::proc_pidpath`; `…/zoom.us.app/Contents/Frameworks/aomhost.app/…` is zoom.us's); never our own
+pid. `IsRunningOutput` now only picks retarget/return candidates, gates the global tap's rule, and
+appears in the health line. The probe floor is `AUDIBLE_DBFS` (Zoom's natural-pause floor in the
+incident recording: −88…−95 dB RMS; speech −25…−45 dB); `THEUTH_MEETING_PROBE_DBFS` overrides it as a
+calibration knob. The mic gets STALL and device-error reopening only: a muted mic is legitimately
+zero. Every flexaudio event is logged at warn (`ChunkDropped` / `Clipped` summed into one line a
+minute); each track gets one info line a minute: `meeting capture health: system chunks= frames=
+zero=% peak=dBFS target= active= reopens= episode=`.
+
+**Accepted false positive:** a muted call while *another* app plays sound at ≥ −70 dBFS is
+"audible elsewhere": the app tap reopens, warns after the first judged failure, and after three falls
+back. The fallback then records that app plus Zoom, until a return probe hears the app's own tap.
 
 ## What is recorded and shown
 - Each episode becomes a manifest `gaps` entry with `track`, `reason` (`Stalled | Silent |
   PermissionDenied | Failed`) and `retarget` (the new pid). An entry without `track` is still a
-  pause. The fallback adds `degraded: SystemAudioFallback(reason)`; a denied permission adds
+  pause. The fallback adds `degraded: SystemAudioFallback { reason, at_ms, until_ms }` (`until_ms` set
+  when a return probe brings the app's tap back); a denied permission adds
   `PermissionDenied(AudioCapture)`.
 - `MeetingEvent::Capture` and `meeting_status.capture` carry `{mic, system}` health:
-  `Ok | Recovering | Lost | Degraded`. A track stays `Ok` until the first reopen failed (about 30 s
-  for zeros, 7 s for a stall); a denied permission or terminal error shows at once. The control
-  center shows "Not hearing zoom.us since 21:08 — reconnecting…", then "Still silent — check the
-  output device or System Audio Recording permission". The web island gets a badge with that text
-  as its tooltip. The warning clears by itself when audio returns.
+  `Ok | Recovering | Lost | Degraded`. A track stays `Ok` until the first reopen failed (about 29 s
+  of zeros: 15 s + probe 4 s + 5 s + probe 4 s; 7 s for a stall); a denied permission or terminal error shows at once. The control center
+  shows "Not hearing zoom.us since 21:08 — reconnecting…", then "Still silent — check the output device
+  or System Audio Recording permission". The web island and the native companion island show a badge
+  and the same line. The warning clears by itself when audio returns.
 
 ## Follow-ups
-- Native (Swift companion) island: show `capture` health there too.
-- If Zoom's playback moves to a pid with a *different* bundle id, activity reads "not playing" and
-  the zero rule stands down, so the incident's silence would only show in the health line. A
-  bundle-prefix match (`us.zoom.xos.*`) or a device-level activity check would close that hole.
-- flexaudio upstream: zero-filled buffers count as healthy, and the silence detector is one-shot
-  and per-object.
+- A playing source on a non-default output device is not in the probe's global tap (it follows
+  the default device); such zeros read as genuine silence.
+- flexaudio upstream: zero-filled buffers count as healthy; the silence detector is one-shot and
+  per-object; no property listeners (process list, default device, nominal sample rate).
