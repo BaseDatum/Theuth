@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { IDLE, MAX_PNG_BYTES, QUIET_MS, SETTLE_MS, admit, base64, fitPng, pngSize, release, scales, settleAt } from './fence-snapshot'
+import { IDLE, MAX_FRAME, MAX_PNG_BYTES, QUIET_MS, SETTLE_MS, admit, base64, fitPng, frameFor, pngSize, release, scales, settleAt } from './fence-snapshot'
 
 test('two render at a time, the rest wait in arrival order and move up as slots free', () => {
   let r = admit(IDLE, 'a')
@@ -28,6 +28,18 @@ test('draws 300 ms after the last change once ready, never past 8 s after mount;
   expect(settleAt(1000, 1000 + SETTLE_MS, true)).toBe(1000 + SETTLE_MS)
   // Changes while pending do not move the deadline.
   expect(settleAt(1000, 5000, false)).toBe(1000 + SETTLE_MS)
+})
+
+test('content that fits keeps the requested width; wider content widens to its scroll width, clipping only past 1600 px', () => {
+  expect(frameFor(560, 480)).toEqual({ width: 560, clipped: false })
+  expect(frameFor(560, 560)).toEqual({ width: 560, clipped: false })
+  // A Kanban whose third column scrolls: the whole scroll width, rounded up to whole px.
+  expect(frameFor(560, 812.4)).toEqual({ width: 813, clipped: false })
+  expect(frameFor(560, MAX_FRAME)).toEqual({ width: MAX_FRAME, clipped: false })
+  expect(frameFor(560, MAX_FRAME + 1)).toEqual({ width: MAX_FRAME, clipped: true })
+  // A request already wider than the cap is never narrowed.
+  expect(frameFor(2000, 2400)).toEqual({ width: 2000, clipped: true })
+  expect(frameFor(2000, 1900)).toEqual({ width: 2000, clipped: false })
 })
 
 test('the scale ladder starts at the requested scale (clamped 1–3) and steps down through 1.5 and 1', () => {

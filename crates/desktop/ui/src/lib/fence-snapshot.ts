@@ -23,6 +23,17 @@ export const SETTLE_MS = 8_000
 /** D4 caps. */
 export const MAX_PNG_BYTES = 4 * 1024 * 1024
 export const MAX_SIDE = 8000
+/** Widest frame a picture re-lays to so nothing the chat scrolls to is lost; wider content clips there. */
+export const MAX_FRAME = 1600
+
+/**
+ * The frame width to capture at: the requested `width` when the content fits, else the content's full scroll width
+ * capped at `MAX_FRAME` (`clipped` when even that is too narrow).
+ */
+export function frameFor(width: number, needed: number): { width: number; clipped: boolean } {
+  const want = Math.ceil(Math.max(width, needed))
+  return { width: Math.min(want, Math.max(width, MAX_FRAME)), clipped: want > Math.max(width, MAX_FRAME) }
+}
 
 /** Request ids rendering now and waiting, in arrival order. */
 export type Queue = { running: readonly string[]; waiting: readonly string[] }

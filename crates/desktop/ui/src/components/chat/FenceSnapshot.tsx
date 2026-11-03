@@ -8,7 +8,7 @@
 
 import { createRoot } from 'react-dom/client'
 import { rasterize, standalone } from '@/lib/diagram-export'
-import { fitPng, type Outcome, settleAt } from '@/lib/fence-snapshot'
+import { fitPng, frameFor, type Outcome, settleAt } from '@/lib/fence-snapshot'
 import type { Appearance } from '@/lib/page-theme'
 import { SnapshotContext, type SnapshotMode } from '@/lib/snapshot-mode'
 import type { FenceSnapshotRequested } from '@/rpc/bindings/FenceSnapshotRequested'
@@ -180,17 +180,34 @@ async function htmlPicture(content: HTMLElement, background: string): Promise<{ 
   }
 }
 
-/** The settled fence as a PNG within D4's caps. */
-async function capture(content: HTMLElement, frameWidth: number, background: string, scale: number): Promise<Outcome> {
+/** How much wider than its box the content wants to be: the largest horizontal overflow of it or any descendant. */
+function overflowX(content: HTMLElement): number {
+  let extra = content.scrollWidth - content.clientWidth
+  for (const el of content.querySelectorAll('*')) if (el.clientWidth > 0) extra = Math.max(extra, el.scrollWidth - el.clientWidth)
+  return Math.max(0, extra)
+}
+
+/**
+ * The settled fence as a PNG within D4's caps. A picture cannot scroll: content wider than `requested` (a scrolling
+ * Kanban or Table, an svg wider than the column) is drawn at its full width, up to `MAX_FRAME`.
+ */
+async function capture(frame: HTMLElement, content: HTMLElement, requested: number, background: string, scale: number): Promise<Outcome> {
   const svg = soleDiagram(content)
   let picture: { svg: string; width: number; height: number }
   if (svg) {
-    // The chat shows the svg at most as wide as its column: here, at most the frame's width.
     const s = standalone(svg.outerHTML, background)
-    const width = Math.min(s.width, frameWidth)
+    const width = Math.min(s.width, frameFor(requested, s.width).width)
     picture = { svg: s.svg, width, height: Math.round((s.height * width) / s.width) }
   } else {
     if (!content.textContent?.trim() && !content.querySelector('svg,img,canvas')) return { reason: 'the fence rendered nothing' }
+    // Re-lay wider until nothing overflows (layout is synchronous; a nested scroller may need a second pass).
+    let width = requested
+    for (let pass = 0; pass < 3; pass++) {
+      const next = frameFor(requested, width + overflowX(content)).width
+      if (next <= width) break
+      width = next
+      frame.style.width = `${width}px`
+    }
     picture = await htmlPicture(content, background)
   }
   return fitPng(picture.width, picture.height, scale, async (s) => new Uint8Array(await (await rasterize(picture, s)).arrayBuffer()))
@@ -255,7 +272,7 @@ export function snapshotFence(e: FenceSnapshotRequested, finish: (o: Outcome) =>
     if (Date.now() < settleAt(mounted, lastChange, true)) return
     observer.disconnect()
     fontsReady()
-      .then(() => capture(content, e.width, getComputedStyle(frame).getPropertyValue('--background').trim() || '#fff', e.scale))
+      .then(() => capture(frame, content, e.width, getComputedStyle(frame).getPropertyValue('--background').trim() || '#fff', e.scale))
       .then(end, (err: unknown) => end({ reason: err instanceof Error ? err.message : String(err) }))
   }
   observer.observe(content, { subtree: true, childList: true, attributes: true, characterData: true })
