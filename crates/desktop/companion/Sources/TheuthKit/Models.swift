@@ -666,24 +666,42 @@ public enum MeetingState: Codable, Equatable, Sendable {
     public var isLive: Bool { self == .recording || self == .paused }
 }
 
-/// `Degradation`: a bare word, or `{"SttDown": "<track>"}` / `{"PermissionDenied": "<permission>"}`.
+/// `Degradation`: a bare word, `{"SttDown": "<track>"}` / `{"PermissionDenied": "<permission>"}`, or 173's
+/// `{"SystemAudioFallback": {"reason": F, "at_ms": n, "until_ms": n|null}}` (`ended` = `until_ms` set). Any other object
+/// reads as `.other(key)` — one unknown shape never fails a whole `State` or `meeting_status`.
 public enum Degradation: Codable, Equatable, Sendable {
     case micNoAec, modelDown, diskLow, nearMaxLength
     case sttDown(Track)
     case permissionDenied(String)
+    case systemAudioFallback(reason: String, ended: Bool)
     case other(String)
 
     static let words: [String: Degradation] = [
         "MicNoAec": .micNoAec, "ModelDown": .modelDown, "DiskLow": .diskLow, "NearMaxLength": .nearMaxLength,
     ]
 
+    private struct Key: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+    private struct Fallback: Codable { let reason: String; let untilMs: UInt64? }
+
     public init(from decoder: Decoder) throws {
-        let c = try decoder.singleValueContainer()
-        if let s = try? c.decode(String.self) { self = Self.words[s] ?? .other(s); return }
-        let o = try c.decode([String: String].self)
-        if let t = o["SttDown"], let track = Track(rawValue: t) { self = .sttDown(track) }
-        else if let p = o["PermissionDenied"] { self = .permissionDenied(p) }
-        else { self = .other(o.keys.first ?? "") }
+        if let s = try? decoder.singleValueContainer().decode(String.self) { self = Self.words[s] ?? .other(s); return }
+        let c = try decoder.container(keyedBy: Key.self)
+        guard let k = c.allKeys.first else { self = .other(""); return }
+        switch k.stringValue {
+        case "SttDown":
+            self = (try? c.decode(Track.self, forKey: k)).map(Degradation.sttDown) ?? .other(k.stringValue)
+        case "PermissionDenied":
+            self = (try? c.decode(String.self, forKey: k)).map(Degradation.permissionDenied) ?? .other(k.stringValue)
+        case "SystemAudioFallback":
+            self = (try? c.decode(Fallback.self, forKey: k)).map { .systemAudioFallback(reason: $0.reason, ended: $0.untilMs != nil) } ?? .other(k.stringValue)
+        default:
+            self = .other(k.stringValue)
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -691,9 +709,64 @@ public enum Degradation: Codable, Equatable, Sendable {
         switch self {
         case .sttDown(let t): try c.encode(["SttDown": t.rawValue])
         case .permissionDenied(let p): try c.encode(["PermissionDenied": p])
+        case .systemAudioFallback(let reason, let ended): try c.encode(["SystemAudioFallback": Fallback(reason: reason, untilMs: ended ? 0 : nil)])
         case .other(let s): try c.encode(s)
         default: try c.encode(Self.words.first { $0.value == self }!.key)
         }
+    }
+}
+
+/// 173 `CaptureFault`; `.unknown` is a reason this build has no word for.
+public enum CaptureFault: String, Codable, Equatable, Sendable {
+    case stalled = "Stalled", silent = "Silent", permissionDenied = "PermissionDenied", failed = "Failed", unknown
+}
+
+/// 173 `CaptureHealth` (`#[serde(tag = "state")]`). An unknown `state` reads as `.ok`, an unknown `reason` as
+/// `.unknown`: a new word never drops the event.
+public enum CaptureHealth: Codable, Equatable, Sendable {
+    case ok
+    case recovering(reason: CaptureFault, since: String)
+    case lost(reason: CaptureFault, since: String)
+    case degraded(reason: CaptureFault)
+
+    private enum K: String, CodingKey { case state, reason, since }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        let reason = (try? c.decode(CaptureFault.self, forKey: .reason)) ?? .unknown
+        let since = (try? c.decode(String.self, forKey: .since)) ?? ""
+        switch try? c.decode(String.self, forKey: .state) {
+        case "Recovering": self = .recovering(reason: reason, since: since)
+        case "Lost": self = .lost(reason: reason, since: since)
+        case "Degraded": self = .degraded(reason: reason)
+        default: self = .ok
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: K.self)
+        switch self {
+        case .ok: try c.encode("Ok", forKey: .state)
+        case .recovering(let r, let s): try c.encode("Recovering", forKey: .state); try c.encode(r, forKey: .reason); try c.encode(s, forKey: .since)
+        case .lost(let r, let s): try c.encode("Lost", forKey: .state); try c.encode(r, forKey: .reason); try c.encode(s, forKey: .since)
+        case .degraded(let r): try c.encode("Degraded", forKey: .state); try c.encode(r, forKey: .reason)
+        }
+    }
+}
+
+/// 173 `CaptureStatus`: both tracks' health (`Capture` events, `meeting_status.capture`). A missing track is `.ok`.
+public struct CaptureStatus: Codable, Equatable, Sendable {
+    public var mic: CaptureHealth
+    public var system: CaptureHealth
+
+    public static let ok = CaptureStatus(mic: .ok, system: .ok)
+
+    public init(mic: CaptureHealth, system: CaptureHealth) { self.mic = mic; self.system = system }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        mic = (try? c.decode(CaptureHealth.self, forKey: .mic)) ?? .ok
+        system = (try? c.decode(CaptureHealth.self, forKey: .system)) ?? .ok
     }
 }
 
@@ -1004,13 +1077,15 @@ public struct MeetingStatus: Codable, Equatable, Sendable {
     public var accelerator: String
     /// 158 §4.5: the current detection prompt, for a companion connecting mid-prompt.
     public var detection: Detection?
+    /// 173: both tracks' capture health; all `.ok` when idle and from engines that predate it.
+    public var capture: CaptureStatus
 
     public init(state: MeetingState = .idle, meeting: String? = nil, session: String? = nil, elapsedMs: UInt64 = 0,
                 degraded: [Degradation] = [], cursor: String? = nil, topics: [Topic] = [], approvalWaiting: Bool = false,
-                supported: MeetingSupport? = nil, accelerator: String = "", detection: Detection? = nil) {
+                supported: MeetingSupport? = nil, accelerator: String = "", detection: Detection? = nil, capture: CaptureStatus = .ok) {
         self.state = state; self.meeting = meeting; self.session = session; self.elapsedMs = elapsedMs
         self.degraded = degraded; self.cursor = cursor; self.topics = topics; self.approvalWaiting = approvalWaiting
-        self.supported = supported; self.accelerator = accelerator; self.detection = detection
+        self.supported = supported; self.accelerator = accelerator; self.detection = detection; self.capture = capture
     }
 
     public init(from decoder: Decoder) throws {
@@ -1026,6 +1101,7 @@ public struct MeetingStatus: Codable, Equatable, Sendable {
         supported = try c.decodeIfPresent(MeetingSupport.self, forKey: .supported)
         accelerator = try c.decodeIfPresent(String.self, forKey: .accelerator) ?? ""
         detection = try c.decodeIfPresent(Detection.self, forKey: .detection)
+        capture = try c.decodeIfPresent(CaptureStatus.self, forKey: .capture) ?? .ok
     }
 }
 
@@ -1056,11 +1132,13 @@ public enum MeetingEvent: Equatable, Sendable {
     case appReleased(meeting: String, app: MeetingProcess, releasedForS: UInt32)
     /// 158 §9.4: a matched-or-remembered event within 5 minutes — island state (c). No `meeting`.
     case upcoming(event: EventRef, project: String?, brief: [String]?)
+    /// 173: a track's capture health changed; `meeting_status.capture` is the same shape at connect.
+    case capture(meeting: String, capture: CaptureStatus)
 
     public static let types: Set<String> = [
         "Started", "State", "Level", "Utterance", "TopicAdded", "TopicRemoved", "Brief", "Listening", "ApprovalWaiting",
         "PostProgress", "ReviewReady", "Summarized", "Deleted", "OracleDeciding", "OracleDecision",
-        "Detected", "DetectionCleared", "AppReleased", "Upcoming",
+        "Detected", "DetectionCleared", "AppReleased", "Upcoming", "Capture",
     ]
 
     /// Every field of every variant but the two topic ones, optional (`topic` is an object in `TopicAdded` and an
@@ -1077,6 +1155,7 @@ public enum MeetingEvent: Equatable, Sendable {
         let stage: PostStage?, pct: UInt8?
         let title: String?, batchId: String?, decision: OracleDecision?
         let app: MeetingProcess?, releasedForS: UInt32?
+        let capture: CaptureStatus?
     }
     private struct TopicAddedRaw: Decodable { let topic: Topic }
     private struct TopicRemovedRaw: Decodable { let topic: String; let why: TopicGone }
@@ -1141,6 +1220,8 @@ public enum MeetingEvent: Equatable, Sendable {
             return .oracleDeciding(meeting: meeting, batchId: try need(r.batchId, "batch_id"))
         case "AppReleased":
             return .appReleased(meeting: meeting, app: try need(r.app, "app"), releasedForS: try need(r.releasedForS, "released_for_s"))
+        case "Capture":
+            return .capture(meeting: meeting, capture: r.capture ?? .ok)
         default:
             return .oracleDecision(meeting: meeting, decision: try need(r.decision, "decision"))
         }

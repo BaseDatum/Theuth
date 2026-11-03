@@ -90,10 +90,13 @@ struct ClosedPill: View {
         let h = size.height
         let font: Font = h >= 34 ? .body : .subheadline
         let small: Font = h >= 34 ? .callout : .caption
+        // 173: the capture warning takes the speaker's place; paused, nothing is heard by design.
+        let warn = s.state == .paused ? nil : MeetingReducer.capturePill(s.capture, app: s.app)
         HStack(spacing: 10) {
             if s.isLive || s.state == .starting || s.state == .stopping {
                 Meters(level: s.level, height: h * 0.45)
-                Text(s.state == .paused ? "paused" : (speaker(s) ?? "Meeting")).font(font.weight(.semibold)).foregroundColor(s.state == .paused ? .paused : .primary).lineLimit(1).layoutPriority(1)
+                if warn != nil { Circle().fill(Color.paused).frame(width: 6, height: 6).accessibilityHidden(true) }
+                Text(s.state == .paused ? "paused" : (warn ?? speaker(s) ?? "Meeting")).font(font.weight(.semibold)).foregroundColor(s.state == .paused || warn != nil ? .paused : .primary).lineLimit(1).layoutPriority(1)
                 Spacer(minLength: notch ? size.width - 20 : 4)
                 RecClock(slice: s, now: ui.now, font: small)
                 if !s.topics.isEmpty {
@@ -121,7 +124,7 @@ struct ClosedPill: View {
             if s.isLive || s.state == .starting || s.state == .stopping { ui.onCollapseToggle?() }
             else { store.onOpenURL?(URL(string: "theuth://meetings")!) }
         }
-        .accessibilityLabel(s.isLive ? "Meeting island, \(s.topics.count) topics; click to open" : "theuth; click opens Meetings")
+        .accessibilityLabel(s.isLive ? "Meeting island, \(s.topics.count) topics\(warn.map { "; \($0)" } ?? ""); click to open" : "theuth; click opens Meetings")
     }
 
     private func speaker(_ s: MeetingSlice) -> String? {
@@ -155,6 +158,10 @@ struct OpenIsland: View {
             } else {
                 Strip(ui: ui, store: store, slice: s)
                     .background(DragGrip(ui: ui))
+                if let w = MeetingReducer.captureWarning(s.capture, app: s.app) {
+                    Divider()
+                    CaptureWarningRow(ui: ui, text: w)
+                }
                 if case .stop(let app, let secs)? = s.prompt {
                     Divider()
                     StopRow(ui: ui, store: store, app: app, releasedForS: secs)
@@ -325,6 +332,25 @@ struct StopRow: View {
     }
 }
 
+/// 173 — under the live strip while a capture track is not heard: `captureWarning`'s one line (the web island's tooltip
+/// wording), gone the moment both tracks are `Ok`.
+struct CaptureWarningRow: View {
+    @ObservedObject var ui: IslandUI
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.caption).foregroundColor(.paused).accessibilityHidden(true)
+            Text(text).font(.callout).foregroundColor(.secondary).lineLimit(2).truncationMode(.tail)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(text)
+        .accessibilityElement(children: .combine).accessibilityLabel(text)
+        .islandRect("capture-warning", ui)
+    }
+}
+
 /// The prompt's answers: the primary is an accent capsule (a non-key panel draws `.borderedProminent` grey), the rest the
 /// strip's capsule. The title is the accessibility label.
 struct PromptButton: View {
@@ -395,23 +421,7 @@ struct Strip: View {
         .frame(height: IslandLayout.stripHeight)
     }
 
-    private var badges: [String] {
-        slice.degraded.compactMap(badge) + (slice.approvalWaiting ? ["approval waiting"] : []) + (slice.listening ? ["listening…"] : [])
-    }
-
-    /// `Island.tsx:37-47`; `PermissionDenied` is a `Failed` start, never shown on a live strip.
-    private func badge(_ d: Degradation) -> String? {
-        switch d {
-        case .micNoAec: return "headphones recommended"
-        case .modelDown: return "model down"
-        case .diskLow: return "disk low"
-        case .nearMaxLength: return "10 min left"
-        case .sttDown: return "transcription down"
-        case .other("NoNote"): return "no note"
-        case .other("DiarizationDown"): return "speaker labels down"
-        case .permissionDenied, .other: return nil
-        }
-    }
+    private var badges: [String] { MeetingReducer.stripBadges(slice) }
 
     private func chord(_ a: KeyAction) -> String? { SettingsModel.shared.keys.chord(for: a)?.symbol }
 }

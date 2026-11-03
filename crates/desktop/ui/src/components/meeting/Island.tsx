@@ -23,10 +23,9 @@ import {
   setHiddenFromCapture,
 } from '@/lib/tauri'
 import { cn } from '@/lib/utils'
-import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
-import { current, elapsed, live, mmss, oracleSummary, useMeeting } from '@/store/meeting'
+import { captureBadge, captureWarning, current, elapsed, live, liveBadges, mmss, oracleSummary, useMeeting } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
 
@@ -35,18 +34,6 @@ const MOVE_SAVE_MS = 300
 const STRIP = 44
 const WIDTH = 440
 
-/** 03 §2 badges; `PermissionDenied` is a `Failed` start, never shown on a live strip. */
-function badge(d: Degradation): string | null {
-  if (d === 'MicNoAec') return 'headphones recommended'
-  if (d === 'ModelDown') return 'model down'
-  if (d === 'DiskLow') return 'disk low'
-  if (d === 'NearMaxLength') return '10 min left'
-  if (d === 'NoNote') return 'no note'
-  if (typeof d === 'object' && 'SttDown' in d) return 'transcription down'
-  if (d === 'DiarizationDown') return 'speaker labels down'
-  return null
-}
-
 export function Island() {
   const api = useApi()
   const qc = useQueryClient()
@@ -54,6 +41,8 @@ export function Island() {
   const topics = useMeeting((s) => s.topics)
   const tapped = useMeeting((s) => s.tapped)
   const degraded = useMeeting((s) => s.degraded)
+  const capture = useMeeting((s) => s.capture)
+  const app = useMeeting((s) => s.app)
   const listening = useMeeting((s) => s.listening)
   const approval = useMeeting((s) => s.approvalWaiting)
   const activity = useMeeting((s) => s.activity)
@@ -170,11 +159,9 @@ export function Island() {
     if (shown) void api.meeting_cursor(briefId).catch(() => undefined)
   }, [api, shown, briefId])
 
-  const badges = [
-    ...degraded.map(badge).filter((b): b is string => b !== null),
-    ...(approval ? ['approval waiting'] : []),
-    ...(listening ? ['listening…'] : []),
-  ]
+  const warning = captureWarning(capture, app)
+  const alert = captureBadge(capture)
+  const badges = [...liveBadges(degraded, alert), ...(approval ? ['approval waiting'] : []), ...(listening ? ['listening…'] : [])]
   const action = (p: Promise<unknown>) => {
     setMenu(false)
     void p.then(() => qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })).catch(() => undefined)
@@ -234,6 +221,11 @@ export function Island() {
                   />
                 </StripButton>
               ))}
+              {alert && warning && (
+                <span className="shrink-0 text-[10px] leading-4 font-medium text-warning" title={warning}>
+                  {alert}
+                </span>
+              )}
               {badges.map((b) => (
                 <span key={b} className="shrink-0 text-[10px] leading-4 text-fg-tertiary">
                   {b}

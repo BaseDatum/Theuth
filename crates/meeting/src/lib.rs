@@ -213,6 +213,74 @@ pub enum Degradation {
     /// Live speaker labels stopped (07 §6): the diariser's session failed or its task
     /// panicked; system lines are `them:` from here, the post pass still diarizes.
     DiarizationDown,
+    /// 173: the app's tap stayed silent through three reopens while sound played (a probe
+    /// heard it, or the app ran output); the system track recorded every app on the default
+    /// output (minus theuth) from `at_ms`, until a return probe found the app's tap live again
+    /// at `until_ms` (`None`: to the end).
+    SystemAudioFallback {
+        /// Why the app's tap was given up.
+        reason: CaptureFault,
+        /// Recording-clock start.
+        at_ms: u64,
+        /// Recording-clock end, once the app's tap came back.
+        until_ms: Option<u64>,
+    },
+}
+
+/// 173: why a capture track went quiet (the capture watchdog's episode reason).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum CaptureFault {
+    /// No chunk for 3 s.
+    Stalled,
+    /// Exact digital zeros for 15 s while sound played: a concurrent global-tap probe heard it
+    /// (per-app tap), or the source ran output (global tap, or a probe that could not open).
+    Silent,
+    /// The OS refused the capture (System Audio Recording / Microphone permission).
+    PermissionDenied,
+    /// The stream ended with an error (device lost, terminal error, reopen failed).
+    Failed,
+}
+
+/// 173: one capture track as the user should hear about it. A track is `Ok` until the first
+/// automatic reopen failed to bring audio back (or at once for a permission / terminal error),
+/// so genuine silence never raises it. `since`: RFC 3339, when the track went quiet.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "state")]
+pub enum CaptureHealth {
+    /// Hearing it (or genuine silence).
+    #[default]
+    Ok,
+    /// Reopening; the first reopen did not help.
+    Recovering {
+        /// Why.
+        reason: CaptureFault,
+        /// Quiet since.
+        since: String,
+    },
+    /// Three reopens did not help, or the OS refused: still retrying, the user should check.
+    Lost {
+        /// Why.
+        reason: CaptureFault,
+        /// Quiet since.
+        since: String,
+    },
+    /// Recording again, but through [`Degradation::SystemAudioFallback`].
+    Degraded {
+        /// Why the app's tap was given up.
+        reason: CaptureFault,
+    },
+}
+
+/// 173: both capture tracks' [`CaptureHealth`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct CaptureStatus {
+    /// The microphone.
+    pub mic: CaptureHealth,
+    /// The meeting app's audio.
+    pub system: CaptureHealth,
 }
 
 /// 58 §3.3: what this host can do for meetings, stated to the UI.
@@ -434,6 +502,13 @@ pub enum MeetingEvent {
         project: Option<String>,
         /// The pre-meeting brief bullets, when generated.
         brief: Option<Vec<String>>,
+    },
+    /// 173: a capture track's health changed (published on every change, both tracks).
+    Capture {
+        /// The meeting.
+        meeting: MeetingId,
+        /// Both tracks.
+        capture: CaptureStatus,
     },
 }
 
@@ -966,6 +1041,9 @@ pub struct Status {
     /// renders it. `None` until W1.
     #[serde(default)]
     pub detection: Option<Detection>,
+    /// 173: the capture tracks' health; all `Ok` when nothing records.
+    #[serde(default)]
+    pub capture: CaptureStatus,
 }
 
 /// `ask` → `Result<Vec<MeetingSummary>, String>`: from the index, newest first.
@@ -2366,13 +2444,15 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
     if manifest.note.is_none() && document::Handle::lookup().is_some() {
         manifest.degraded.push(Degradation::NoNote);
     }
-    let pid = manifest.process.pid;
+    let process = manifest.process.clone();
+    let id = manifest.id;
     let file_title = setup.title.clone();
-    let opened =
-        tokio::task::spawn_blocking(move || capture::Capture::start(pid, &dir, &file_title))
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|r| r.map_err(|e| format!("{e:#}")));
+    let opened = tokio::task::spawn_blocking(move || {
+        capture::Capture::start(&process, id, &dir, &file_title)
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r.map_err(|e| format!("{e:#}")));
     let capture = match opened {
         Ok((capture, degraded)) => {
             for d in degraded {
@@ -2618,6 +2698,102 @@ impl Message<Begun> for Meeting {
     }
 }
 
+/// 173: fold one watchdog report into `manifest` (capture gaps, degradations) and `status`;
+/// `(manifest changed, status changed)`.
+fn apply_report(
+    manifest: &mut Manifest,
+    clock: &RecordingClock,
+    status: &mut CaptureStatus,
+    r: capture::Report,
+) -> (bool, bool) {
+    use capture::watchdog::Health;
+    /// `at` on the wall clock, RFC 3339.
+    fn wall(at: Instant) -> String {
+        let ago = chrono::Duration::from_std(Instant::now().saturating_duration_since(at))
+            .unwrap_or_default();
+        (chrono::Local::now() - ago).to_rfc3339()
+    }
+    match r {
+        capture::Report::Gap {
+            track,
+            start,
+            end,
+            reason,
+            retarget,
+        } => {
+            let at_ms = clock.elapsed_at(start).as_millis() as u64;
+            let dur_ms = (clock.elapsed_at(end).as_millis() as u64).saturating_sub(at_ms);
+            tracing::warn!(meeting = %manifest.id, ?track, at_ms, dur_ms, ?reason, ?retarget, "meeting capture gap");
+            manifest.gaps.push(Gap {
+                at_ms,
+                dur_ms,
+                track: Some(match track {
+                    Track::Mic => Stem::Mic,
+                    Track::System => Stem::System,
+                }),
+                reason: Some(reason),
+                retarget,
+            });
+            (true, false)
+        }
+        capture::Report::Degraded(d) => {
+            if manifest.degraded.contains(&d) {
+                return (false, false);
+            }
+            manifest.degraded.push(d);
+            (true, false)
+        }
+        capture::Report::Fallback { start, reason } => {
+            let at_ms = clock.elapsed_at(start).as_millis() as u64;
+            tracing::warn!(meeting = %manifest.id, at_ms, ?reason, "meeting capture: system track on the global tap");
+            manifest.degraded.push(Degradation::SystemAudioFallback {
+                reason,
+                at_ms,
+                until_ms: None,
+            });
+            (true, false)
+        }
+        capture::Report::Returned { end, pid } => {
+            let end_ms = clock.elapsed_at(end).as_millis() as u64;
+            tracing::warn!(meeting = %manifest.id, end_ms, pid, "meeting capture: system track back on the app's tap");
+            // The open fallback entry gets its end.
+            let open = manifest.degraded.iter_mut().rev().find_map(|d| match d {
+                Degradation::SystemAudioFallback { until_ms, .. } if until_ms.is_none() => {
+                    Some(until_ms)
+                }
+                _ => None,
+            });
+            match open {
+                Some(until) => {
+                    *until = Some(end_ms);
+                    (true, false)
+                }
+                None => (false, false),
+            }
+        }
+        capture::Report::Health { track, health } => {
+            let h = match health {
+                Health::Ok => CaptureHealth::Ok,
+                Health::Recovering(reason, at) => CaptureHealth::Recovering {
+                    reason,
+                    since: wall(at),
+                },
+                Health::Lost(reason, at) => CaptureHealth::Lost {
+                    reason,
+                    since: wall(at),
+                },
+                Health::Degraded(reason) => CaptureHealth::Degraded { reason },
+            };
+            tracing::warn!(meeting = %manifest.id, ?track, health = ?h, "meeting capture health changed");
+            match track {
+                Track::Mic => status.mic = h,
+                Track::System => status.system = h,
+            }
+            (false, true)
+        }
+    }
+}
+
 impl Message<Degrade> for Meeting {
     type Reply = ();
 
@@ -2739,8 +2915,16 @@ impl Message<StopMeeting> for Meeting {
         }
         // Joins the three threads; the encoder writes the EOS page. The STT
         // tasks see the same stop flag and flush their open utterances.
-        if let Err(e) = tokio::task::spawn_blocking(move || capture.stop()).await {
-            tracing::warn!(meeting = %manifest.id, "capture stop: {e}");
+        let reports = match tokio::task::spawn_blocking(move || capture.stop()).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(meeting = %manifest.id, "capture stop: {e}");
+                Vec::new()
+            }
+        };
+        // 173: the episodes the stop closed (and any report the last tick missed).
+        for r in reports {
+            apply_report(&mut manifest, &clock, &mut live.capture, r);
         }
         // 07 §3: the diariser flushes its tail (no look-ahead) and returns its final
         // view; the held system lines and the STT flush are labelled against it.
@@ -2894,6 +3078,7 @@ impl Message<MeetingStatus> for Meeting {
             supported,
             accelerator: models::onnx::ep().to_owned(),
             detection: self.detect.engine.prompt().cloned(),
+            capture: live.map(|l| l.capture.clone()).unwrap_or_default(),
         }
     }
 }
@@ -3061,6 +3246,28 @@ impl Message<Tick> for Meeting {
             return;
         };
         let now = Instant::now();
+        // 173: the capture watchdogs' reports → manifest + `Capture` event.
+        let (mut saved, mut changed) = (false, false);
+        while let Some(r) = rec.capture.try_report() {
+            let (s, c) = apply_report(&mut rec.manifest, &rec.clock, &mut rec.live.capture, r);
+            saved |= s;
+            changed |= c;
+        }
+        if saved {
+            let manifest = rec.manifest.clone();
+            self.save(&manifest).await;
+        }
+        if changed && let Some(rec) = self.current.as_ref() {
+            self.rt
+                .publish(MeetingEvent::Capture {
+                    meeting: rec.manifest.id,
+                    capture: rec.live.capture.clone(),
+                })
+                .await;
+        }
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         let batch = rec.live.batcher.tick(now);
         let gone = rec.live.topics.expire(now);
         if let Some(batch) = batch {
@@ -5099,5 +5306,31 @@ mod tests {
         assert!(!resumable(&n));
         assert_eq!(store.manifest(done.id).unwrap().state, MeetingState::Done);
         assert_eq!(manifests.iter().filter(|m| resumable(m)).count(), 1);
+    }
+
+    /// 173 R3 #1: a capture gap reported after a user pause lands on the recording clock.
+    #[test]
+    fn apply_report_maps_gap_instants_across_a_pause() {
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        let mut clock = RecordingClock::start_at(t0);
+        clock.pause_at(s(120));
+        clock.resume_at(s(180));
+        let mut m = Manifest::new(MeetingId::new(), zoom(), "2026-11-02T21:02:13Z".into());
+        let mut status = CaptureStatus::default();
+        let changed = apply_report(
+            &mut m,
+            &clock,
+            &mut status,
+            capture::Report::Gap {
+                track: Track::System,
+                start: s(100),
+                end: s(200),
+                reason: CaptureFault::Silent,
+                retarget: None,
+            },
+        );
+        assert_eq!(changed, (true, false));
+        assert_eq!((m.gaps[0].at_ms, m.gaps[0].dur_ms), (100_000, 40_000));
     }
 }
