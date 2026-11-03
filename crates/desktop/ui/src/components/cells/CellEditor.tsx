@@ -1,0 +1,170 @@
+// Owner: U1
+// 171 §11.1 editor + gutter, §7.1 modes, §11.7 keys: the chat cell's CodeMirror. Read-only until the user edits
+// (Enter or a double-click; Esc leaves while unedited); ▶ on the hovered line runs it; a selection shows the
+// "Run selection" pill. Danger cells run from their button only: the keys show a hint instead.
+import { type Extension, StateEffect, StateField } from '@codemirror/state'
+import { langs } from '@uiw/codemirror-extensions-langs'
+import CodeMirror, { EditorView, GutterMarker, Prec, gutter, keymap, lineNumbers } from '@uiw/react-codemirror'
+import { Play } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { isApple } from '@/lib/chord'
+import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
+import type { Lang } from '@/rpc/bindings/Lang'
+import { cellTheme } from './theme'
+
+const LANGUAGE: Partial<Record<Lang, () => Extension>> = { bash: langs.bash, zsh: langs.sh, sh: langs.sh, pwsh: langs.ps1, python: langs.python }
+
+/** UTF-8 byte offset of a code position (RunMode offsets count the code's bytes, header excluded). */
+const bytesBefore = (doc: string, pos: number) => new TextEncoder().encode(doc.slice(0, pos)).length
+
+const hover = StateEffect.define<number | null>()
+const hovered = StateField.define<number | null>({
+  create: () => null,
+  update: (v, tr) => {
+    for (const e of tr.effects) if (e.is(hover)) return e.value
+    return v
+  },
+})
+class RunMarker extends GutterMarker {
+  override toDOM() {
+    const el = document.createElement('span')
+    el.textContent = '▶'
+    el.title = 'Run this line'
+    return el
+  }
+}
+const RUN = new RunMarker()
+
+export type CellEditorProps = {
+  lang: Lang
+  code: string
+  /** The press is possible at all (valid, not superseded, the reply has ended, not a read-only view). */
+  runnable: boolean
+  /** Keys and line/selection runs refuse; `onRefused` explains (§7.1). */
+  danger: boolean
+  /** No edits (a run is queued or live, superseded, read-only view). */
+  locked: boolean
+  onChange(code: string): void
+  onRun(mode: CellRunMode, next?: boolean): void
+  onRefused(): void
+}
+
+/** §7.1, §11.7: a keyboard or gutter run happens only on a runnable, non-danger cell; a danger cell explains instead ("press <label> to run this"). Always handled. */
+export function keyRun(cell: Pick<CellEditorProps, 'runnable' | 'danger' | 'onRun' | 'onRefused'>, mode: CellRunMode, next?: boolean): true {
+  if (!cell.runnable) return true
+  if (cell.danger) cell.onRefused()
+  else cell.onRun(mode, next)
+  return true
+}
+
+/** The chat cell's editor; extensions are memoised on `lang`/`danger`, callbacks read through a ref. */
+export function CellEditor({ lang, code, runnable, danger, locked, onChange, onRun, onRefused }: CellEditorProps) {
+  const [editing, setEditing] = useState(false)
+  const [selection, setSelection] = useState<{ from: number; to: number } | null>(null)
+  const view = useRef<EditorView | null>(null)
+  const live = useRef({ runnable, danger, locked, onRun, onRefused, editing, setEditing, code })
+  live.current = { runnable, danger, locked, onRun, onRefused, editing, setEditing, code }
+
+  const extensions = useMemo(() => {
+    const run = (mode: CellRunMode, next?: boolean) => keyRun(live.current, mode, next)
+    const caret = (v: EditorView) => {
+      const s = v.state.selection.main
+      const doc = v.state.doc.toString()
+      return s.empty
+        ? run({ type: 'line', line: v.state.doc.lineAt(s.head).number })
+        : run({ type: 'selection', from: bytesBefore(doc, s.from), to: bytesBefore(doc, s.to) })
+    }
+    const support = LANGUAGE[lang]?.()
+    return [
+      ...cellTheme,
+      ...(support ? [support] : []),
+      lineNumbers(),
+      hovered,
+      ...(danger
+        ? []
+        : [
+            gutter({
+              class: 'cm-run-gutter',
+              lineMarker: (v, line) => (live.current.runnable && v.state.field(hovered) === v.state.doc.lineAt(line.from).number ? RUN : null),
+              lineMarkerChange: (u) => u.transactions.some((tr) => tr.effects.some((e) => e.is(hover))),
+              domEventHandlers: {
+                mousedown: (v, line) => run({ type: 'line', line: v.state.doc.lineAt(line.from).number }),
+              },
+            }),
+            EditorView.domEventHandlers({
+              mousemove: (e, v) => {
+                const pos = v.posAtCoords({ x: e.clientX, y: e.clientY })
+                const n = pos === null ? null : v.state.doc.lineAt(pos).number
+                if (n !== v.state.field(hovered)) v.dispatch({ effects: hover.of(n) })
+              },
+              mouseleave: (_e, v) => {
+                if (v.state.field(hovered) !== null) v.dispatch({ effects: hover.of(null) })
+              },
+            }),
+          ]),
+      Prec.highest(
+        keymap.of([
+          { key: 'Shift-Enter', run: () => run({ type: 'cell' }, true) },
+          { key: 'Mod-Enter', run: caret },
+          {
+            key: 'Enter',
+            run: () => {
+              const l = live.current
+              if (l.editing || l.locked) return false
+              l.setEditing(true)
+              return true
+            },
+          },
+          {
+            key: 'Escape',
+            run: (v) => {
+              const l = live.current
+              if (v.state.doc.toString() === l.code) l.setEditing(false)
+              v.contentDOM.blur()
+              return true
+            },
+          },
+        ]),
+      ),
+    ]
+  }, [lang, danger])
+
+  const mod = isApple() ? '⌘' : 'Ctrl'
+  return (
+    <div className="relative" onDoubleClick={() => !locked && setEditing(true)}>
+      <CodeMirror
+        value={code}
+        basicSetup={false}
+        theme="none"
+        editable
+        readOnly={locked || !editing}
+        extensions={extensions}
+        onChange={onChange}
+        onCreateEditor={(v) => (view.current = v)}
+        onUpdate={(u) => {
+          if (!u.selectionSet) return
+          const s = u.state.selection.main
+          setSelection(s.empty ? null : { from: s.from, to: s.to })
+        }}
+        aria-label={editing ? 'Cell code, editing' : 'Cell code (Enter to edit)'}
+      />
+      {selection && runnable && !danger && (
+        <Button
+          size="sm"
+          variant="secondary"
+          className="absolute top-1 right-2 h-7 rounded-full px-3 text-xs pointer-coarse:h-12"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            const v = view.current
+            const doc = v?.state.doc.toString() ?? code
+            onRun({ type: 'selection', from: bytesBefore(doc, selection.from), to: bytesBefore(doc, selection.to) })
+          }}
+        >
+          <Play className="size-3" aria-hidden />
+          Run selection <kbd className="font-sans text-fg-tertiary">{mod}↵</kbd>
+        </Button>
+      )}
+    </div>
+  )
+}

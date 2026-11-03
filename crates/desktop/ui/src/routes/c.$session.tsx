@@ -29,13 +29,17 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { useScope } from '@/store/engine-scope'
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
+import { KernelStrip } from '@/components/cells/KernelStrip'
 
-/** `seq`: a search hit's stored message seq (49 §7); anything but a safe non-negative integer is dropped. */
-type Search = { seq?: number }
+/** `seq`: a search hit's stored message seq (49 §7); anything but a safe non-negative integer is dropped.
+ * `cell` (171 §14.3): `theuth://c/<session>?cell=<name|ordinal>` — the cell to scroll to and focus. */
+type Search = { seq?: number; cell?: string }
 
 export const Route = createFileRoute('/c/$session')({
-  validateSearch: (s: Record<string, unknown>): Search =>
-    typeof s.seq === 'number' && Number.isSafeInteger(s.seq) && s.seq >= 0 ? { seq: s.seq } : {},
+  validateSearch: (s: Record<string, unknown>): Search => ({
+    ...(typeof s.seq === 'number' && Number.isSafeInteger(s.seq) && s.seq >= 0 ? { seq: s.seq } : {}),
+    ...((typeof s.cell === 'string' || typeof s.cell === 'number') && /^[a-z0-9-]{1,48}$/.test(String(s.cell)) ? { cell: String(s.cell) } : {}),
+  }),
   component: SessionRoute,
 })
 
@@ -51,9 +55,10 @@ type ReloadDetail = { session?: string; settled?: boolean }
  * tree is not mounted under `seq`, so nothing loads or appends to the canonical tail behind the preview. */
 function SessionRoute() {
   const { session } = Route.useParams()
-  const { seq } = Route.useSearch()
+  const { seq, cell } = Route.useSearch()
   // The URL names the focused pane: a sidebar click lands in it, a pane press moves the URL to it.
   useEffect(() => usePanes.getState().show(session), [session])
+  useEffect(() => (cell === undefined ? undefined : scrollToCell(cell)), [session, cell])
   if (seq !== undefined) return <SearchSession key={`${session}:${seq}`} session={session} seq={seq} />
   // A draft leaf (a dropped New chat) has no session yet; it renders the `/` body until its first send.
   return (
@@ -70,6 +75,27 @@ function SessionRoute() {
       }
     />
   )
+}
+
+/** 171 §14.3: scroll to and focus the newest cell named `cell` (or with that ordinal) once the transcript has mounted it; gives up after 10 s. */
+function scrollToCell(cell: string): () => void {
+  const find = () => {
+    const all = [...document.querySelectorAll<HTMLElement>(/^\d+$/.test(cell) ? `[data-cell-ordinal="${cell}"]` : `[data-cell-name="${cell}"]`)]
+    const el = all.at(-1)
+    if (!el) return false
+    el.scrollIntoView({ block: 'center' })
+    ;(el.querySelector<HTMLElement>('.cm-content') ?? el).focus({ preventScroll: true })
+    return true
+  }
+  if (find()) return () => undefined
+  const watch = new MutationObserver(() => find() && stop())
+  const timer = setTimeout(() => stop(), 10_000)
+  const stop = () => {
+    watch.disconnect()
+    clearTimeout(timer)
+  }
+  watch.observe(document.body, { childList: true, subtree: true })
+  return stop
 }
 
 /** Header, transcript, todo card, composer. Loads the newest page and the agent subtree on first visit; events keep both live.
@@ -148,7 +174,7 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
       <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <TodoCard key={`d:${session}`} session={session} />
       {aboveComposer}
-      {/* 171:U1 KernelStrip (171 §11.4: transcript · dots · to-do · kernel strip · composer) */}
+      <KernelStrip session={session} />
       {watching ? <ObservedBar session={session} /> : <Composer key={`c:${session}`} session={session} />}
     </>
   )

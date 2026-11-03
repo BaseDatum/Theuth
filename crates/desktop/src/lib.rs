@@ -604,6 +604,8 @@ mod desktop {
     }
 
     /// The app route for a `theuth://` URL, or `None` for anything the companion does not send.
+    /// 171 §14.3: `theuth://c/<session>?cell=<name|ordinal>` keeps the `cell` query (a slug or an
+    /// ordinal, `[a-z0-9-]{1,48}`); every other query, and a `cell` value outside that set, is dropped.
     fn deep_link_route(url: &tauri::Url) -> Option<String> {
         if url.scheme() != "theuth" {
             return None;
@@ -611,7 +613,17 @@ mod desktop {
         let rest = url.path().trim_matches('/');
         match (url.host_str()?, rest.is_empty()) {
             ("attention", false) => Some(format!("/attention/{rest}")),
-            ("c", false) => Some(format!("/c/{rest}")),
+            ("c", false) => Some(match url.query_pairs().find(|(k, _)| k == "cell") {
+                Some((_, cell))
+                    if (1..=48).contains(&cell.len())
+                        && cell
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') =>
+                {
+                    format!("/c/{rest}?cell={cell}")
+                }
+                _ => format!("/c/{rest}"),
+            }),
             ("new", true) => Some("/new".into()),
             // 149 §5.2: the companion's idle island pill opens the meetings list.
             ("meetings", true) => Some("/meetings".into()),
@@ -656,6 +668,35 @@ mod desktop {
             assert_eq!(route("theuth://attention"), None);
             assert_eq!(route("theuth://settings/general"), None);
             assert_eq!(route("https://attention/x"), None);
+        }
+
+        #[test]
+        fn deep_link_keeps_the_cell_query() {
+            let route = |s: &str| deep_link_route(&tauri::Url::parse(s).unwrap());
+            assert_eq!(
+                route("theuth://c/s-42?cell=preview-ir-prod1").as_deref(),
+                Some("/c/s-42?cell=preview-ir-prod1")
+            );
+            assert_eq!(
+                route("theuth://c/s-42/?cell=2").as_deref(),
+                Some("/c/s-42?cell=2")
+            );
+            assert_eq!(
+                route("theuth://c/s-42?x=1&cell=apply").as_deref(),
+                Some("/c/s-42?cell=apply")
+            );
+            assert_eq!(route("theuth://c/s-42?x=1").as_deref(), Some("/c/s-42"));
+            assert_eq!(
+                route("theuth://c/s-42?cell=a%26b%3D1").as_deref(),
+                Some("/c/s-42")
+            );
+            assert_eq!(route("theuth://c/s-42?cell=").as_deref(), Some("/c/s-42"));
+            assert_eq!(route("theuth://c?cell=apply"), None);
+            assert_eq!(
+                route("theuth://attention/ask:abc:1?cell=x").as_deref(),
+                Some("/attention/ask:abc:1")
+            );
+            assert_eq!(route("theuth://new?cell=x").as_deref(), Some("/new"));
         }
 
         #[test]

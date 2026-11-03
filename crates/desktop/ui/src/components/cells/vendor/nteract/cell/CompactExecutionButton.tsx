@@ -1,0 +1,190 @@
+// Vendored from nteract nteract/nteract:src/components/cell/CompactExecutionButton.tsx (adapted for theuth 171 §16)
+// Dropped: the notebook actor projection (`submittedByActorLabel` stays a plain label), nteract's `animate-exec-squish`
+// / `animate-queue-breathe` keyframes (→ `animate-pulse`), the sky palette on `queued` (→ `text-info`).
+import { Play, Square } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+interface CompactExecutionButtonProps {
+  /** Execution count - null means never executed */
+  count: number | null;
+  /** Whether the cell is currently executing */
+  isExecuting?: boolean;
+  /** Whether the cell is queued for execution */
+  isQueued?: boolean;
+  /** Whether the latest execution finished with an error */
+  isErrored?: boolean;
+  /** Whether the latest execution was cancelled without running */
+  isCancelled?: boolean;
+  /** Authenticated actor label for the client that submitted the active execution */
+  submittedByActorLabel?: string | null;
+  /** Whether the owning cell currently has notebook focus */
+  isCellFocused?: boolean;
+  /** Whether execution controls are available in this shell */
+  canExecute?: boolean;
+  /** Called when user clicks to execute */
+  onExecute?: () => void;
+  /** Called when user clicks to interrupt */
+  onInterrupt?: () => void;
+  /** Additional classes */
+  className?: string;
+}
+
+function formatExecutionCount(count: number): string {
+  return count > 999 ? "999" : String(count);
+}
+
+
+/**
+ * Compact execution button for the cell state lane.
+ *
+ * The button keeps execution state visible without reserving the old
+ * bracket-counter width in every cell state lane.
+ */
+export function CompactExecutionButton({
+  count,
+  isExecuting = false,
+  isQueued = false,
+  isErrored = false,
+  isCancelled = false,
+  submittedByActorLabel = null,
+  isCellFocused = false,
+  canExecute = true,
+  onExecute,
+  onInterrupt,
+  className,
+}: CompactExecutionButtonProps) {
+  const state = isExecuting
+    ? "running"
+    : isQueued
+      ? "queued"
+      : isErrored
+        ? "error"
+        : isCancelled
+          ? "cancelled"
+          : count !== null
+            ? "ran"
+            : "idle";
+  const displayCount = count === null ? null : formatExecutionCount(count);
+  const submittedByLabel = submittedByActorLabel || null;
+  const handleClick = () => {
+    if (!canExecute) return;
+    if (isQueued) return; // already in queue — no-op
+    if (isExecuting) {
+      onInterrupt?.();
+    } else {
+      onExecute?.();
+    }
+  };
+
+  const readoutTitle = isExecuting
+    ? submittedByLabel
+      ? `Execution running; submitted by ${submittedByLabel}`
+      : "Execution running"
+    : isQueued
+      ? submittedByLabel
+        ? `Queued for execution by ${submittedByLabel}`
+        : "Queued for execution"
+      : state === "cancelled"
+        ? "Last execution was cancelled before it ran"
+        : count !== null
+          ? isErrored
+            ? `Last execution ${count} failed`
+            : `Last execution ${count}`
+          : "Execution unavailable";
+  const title = canExecute
+    ? isExecuting
+      ? submittedByLabel
+        ? `Stop execution submitted by ${submittedByLabel}`
+        : "Stop execution"
+      : isQueued
+        ? submittedByLabel
+          ? `Queued for execution by ${submittedByLabel}`
+          : "Queued for execution"
+        : state === "cancelled"
+          ? "Run cell; last execution was cancelled before it ran"
+          : count !== null
+            ? isErrored
+              ? `Run cell again; last execution ${count} failed`
+              : `Run cell again; last execution ${count}`
+            : "Run cell"
+    : readoutTitle;
+  const classNameValue = cn(
+    "group/exec inline-flex size-5 shrink-0 items-center justify-center rounded-full max-sm:size-6 [@media(hover:none)]:size-6",
+    "transition-colors duration-150",
+    canExecute && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+    state === "idle" &&
+      "text-muted-foreground/35 opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100",
+    // A first Run also starts hosted compute. Keep touch controls discoverable
+    // without focus or hover, including when the caller hides cell content.
+    canExecute && "max-sm:opacity-100 [@media(hover:none)]:opacity-100",
+    canExecute &&
+      state === "idle" &&
+      "max-sm:text-muted-foreground [@media(hover:none)]:text-muted-foreground",
+    state === "idle" && isCellFocused && "opacity-70",
+    state === "ran" && "text-muted-foreground/45 hover:bg-primary/5 hover:text-primary",
+    state === "queued" && "text-info",
+    state === "running" && "text-destructive hover:bg-destructive/10",
+    state === "error" && "text-destructive/70 hover:bg-destructive/10 hover:text-destructive",
+    state === "cancelled" && "text-muted-foreground/45 hover:bg-muted hover:text-foreground",
+    isQueued || !canExecute ? "cursor-default" : "cursor-pointer",
+    !canExecute && "opacity-65 hover:bg-transparent hover:text-muted-foreground/45",
+    className,
+  );
+  const disabledHistoricalState =
+    !canExecute && (state === "ran" || state === "error" || state === "cancelled");
+  const content =
+    state === "running" ? (
+      <Square className="size-2.5 fill-current animate-pulse" aria-hidden="true" />
+    ) : state === "queued" ? (
+      <span
+        className="block size-1.5 rounded-full bg-current animate-pulse"
+        aria-hidden="true"
+      />
+    ) : (
+      <Play className="size-2.5 fill-current" aria-hidden="true" />
+    );
+
+  if (!canExecute) {
+    if (disabledHistoricalState) {
+      return null;
+    }
+
+    return (
+      <span
+        className={classNameValue}
+        title={title}
+        aria-label={title}
+        aria-busy={isExecuting || undefined}
+        data-execution-state={state}
+        data-execution-count={count ?? undefined}
+        data-testid="execution-readout"
+        role="status"
+      >
+        {content}
+        {state === "ran" && displayCount !== null ? (
+          <span className="sr-only">Last run {displayCount}</span>
+        ) : null}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className={classNameValue}
+      title={title}
+      aria-label={title}
+      aria-disabled={isQueued || undefined}
+      aria-busy={isExecuting || undefined}
+      data-execution-state={state}
+      data-execution-count={count ?? undefined}
+      data-testid="execute-button"
+    >
+      {content}
+      {state === "ran" && displayCount !== null ? (
+        <span className="sr-only">Last run {displayCount}</span>
+      ) : null}
+    </button>
+  );
+}
