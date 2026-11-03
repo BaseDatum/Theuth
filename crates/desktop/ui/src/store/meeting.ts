@@ -7,6 +7,8 @@
 import { create } from 'zustand'
 import type { Api } from '@/rpc/api'
 import type { Brief } from '@/rpc/bindings/Brief'
+import type { CaptureHealth } from '@/rpc/bindings/CaptureHealth'
+import type { CaptureStatus } from '@/rpc/bindings/CaptureStatus'
 import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
@@ -77,6 +79,10 @@ export type MeetingSlice = {
   deciding: string | null
   /** The last `LINES_KEEP` live transcript rows, oldest first; at most one `open` row per track. */
   lines: Line[]
+  /** 173: both capture tracks' health (`Capture` events / `meeting_status.capture`); all `Ok` outside a recording. */
+  capture: CaptureStatus
+  /** The tapped app's name (`Started.process`); `null` after a reload — `meeting_status` has none. */
+  app: string | null
 }
 
 type MeetingStore = MeetingSlice & {
@@ -106,6 +112,8 @@ const EMPTY: MeetingSlice = {
   oracle: [],
   deciding: null,
   lines: [],
+  capture: { mic: { state: 'Ok' }, system: { state: 'Ok' } },
+  app: null,
 }
 
 /** 57 §3.4 / §3.5 counters: `14 skipped · 3 briefs · 2 escalated · 5 tier 2 calls · agreed 92 %` (the UI draws a Zap icon before it). */
@@ -152,11 +160,45 @@ export const mmss = (ms: number): string => {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
+/** Local `HH:MM` of an RFC 3339 stamp. */
+export const hhmm = (iso: string): string => {
+  const d = new Date(iso)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/** One track's line of {@link captureWarning}; `null` while it is heard. */
+function trackWarning(h: CaptureHealth, source: string, device: string, permission: string): string | null {
+  switch (h.state) {
+    case 'Ok':
+      return null
+    case 'Recovering':
+      return `Not hearing ${source} since ${hhmm(h.since)} — reconnecting…`
+    case 'Lost':
+      return h.reason === 'PermissionDenied'
+        ? `Not hearing ${source} since ${hhmm(h.since)} — ${permission} permission is off (System Settings → Privacy & Security). Retrying…`
+        : `Not hearing ${source} since ${hhmm(h.since)}. Still silent — check the ${device} device or ${permission} permission. Retrying…`
+    case 'Degraded':
+      return `${source}'s audio tap failed; recording all system audio instead`
+  }
+}
+
+/**
+ * 173: what the user should read about the capture — the system track first, then the mic; `null` when both
+ * are heard. `app`: the tapped app's name, `null` when unknown.
+ */
+export function captureWarning(capture: CaptureStatus, app: string | null): string | null {
+  const parts = [
+    trackWarning(capture.system, app ?? 'the meeting app', 'output', 'System Audio Recording'),
+    trackWarning(capture.mic, 'your microphone', 'input', 'Microphone'),
+  ].filter((p): p is string => p !== null)
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
 /** Pure transition; exported for the tests. */
 export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
   switch (e.type) {
     case 'Started':
-      return { ...EMPTY, meeting: e.meeting, session: e.session, state: 'Recording', clockAt: Date.now() }
+      return { ...EMPTY, meeting: e.meeting, session: e.session, app: e.process.name, state: 'Recording', clockAt: Date.now() }
     case 'State': {
       if (s.meeting !== null && s.meeting !== e.meeting) return s
       const now = Date.now()
@@ -172,6 +214,7 @@ export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
         approvalWaiting: live(e.state) && s.approvalWaiting,
         activity: live(e.state) ? s.activity : null,
         progress: typeof e.state === 'object' ? s.progress : null,
+        capture: live(e.state) ? s.capture : EMPTY.capture,
       }
     }
     case 'TopicAdded':
@@ -199,6 +242,8 @@ export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
       return s.meeting === e.meeting ? { ...s, state: 'Review', progress: null } : s
     case 'Deleted':
       return s.meeting === e.meeting ? EMPTY : s
+    case 'Capture':
+      return s.meeting === e.meeting ? { ...s, capture: e.capture } : s
     case 'OracleDeciding':
       return s.meeting === e.meeting ? { ...s, deciding: e.batch_id } : s
     case 'OracleDecision': {
@@ -246,6 +291,7 @@ export const useMeeting = create<MeetingStore>()((set, get) => ({
       briefs,
       cursor: at >= 0 ? at : briefs.length - 1,
       approvalWaiting: status.approval_waiting,
+      capture: status.capture,
       lines,
     })
   },
@@ -286,6 +332,7 @@ export function installMeetingListeners(): () => void {
         'Deleted',
         'OracleDeciding',
         'OracleDecision',
+        'Capture',
       ] as const
     ).map((t) =>
       on(t, apply),

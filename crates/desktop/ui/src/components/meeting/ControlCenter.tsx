@@ -35,10 +35,12 @@ import { PX_STEP, RATIO_MAX, RATIO_MIN, RATIO_STEP } from '@/lib/resize-drag'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LiveSession } from '@/routes/c.$session'
+import type { CaptureFault } from '@/rpc/bindings/CaptureFault'
 import type { Degradation } from '@/rpc/bindings/Degradation'
+import type { Gap } from '@/rpc/bindings/Gap'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import type { PostStage } from '@/rpc/bindings/PostStage'
-import { type Line, current, live, oracleSummary, toLine, useMeeting, who } from '@/store/meeting'
+import { type Line, captureWarning, current, live, oracleSummary, toLine, useMeeting, who } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
 /** The post-meeting lifecycle, in order; `Done` is the last step. */
@@ -82,6 +84,8 @@ export function lifecycle(state: MeetingState | undefined, post: PostStage | nul
 /** Whether the transcript of record exists: `Review` and after. */
 const hasTranscript = (l: Lifecycle | null): boolean => l !== null && l.current !== null && l.current >= STEPS.indexOf('Review')
 
+const FAULT: Record<CaptureFault, string> = { Stalled: 'stalled', Silent: 'silent', PermissionDenied: 'permission denied', Failed: 'failed' }
+
 const degradationText = (d: Degradation): string =>
   d === 'NoNote'
     ? 'no meeting note: the documents helper is missing (Settings › Node › Documents)'
@@ -91,7 +95,15 @@ const degradationText = (d: Degradation): string =>
         ? d
         : 'SttDown' in d
           ? `STT down (${d.SttDown})`
-          : `${d.PermissionDenied} denied`
+          : 'SystemAudioFallback' in d
+            ? `app audio tap ${FAULT[d.SystemAudioFallback]}: recording all system audio instead`
+            : d.PermissionDenied === 'Microphone'
+              ? 'Microphone permission denied'
+              : 'System Audio Recording permission denied'
+
+/** 173: `system 00:06:10 for 38 s (silent)` — the track was silence-padded while the clock ran. */
+const gapText = (g: Gap): string =>
+  `${g.track} ${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s (${g.reason ? FAULT[g.reason] : 'silent'}${g.retarget === undefined ? '' : `, tap moved to pid ${g.retarget}`})`
 
 export function ControlCenter({ id }: { id: string }) {
   const api = useApi()
@@ -103,6 +115,8 @@ export function ControlCenter({ id }: { id: string }) {
   const session = isLive ? store.session : manifest.data?.session
   const title = manifest.data?.title ?? (manifest.data ? `Meeting with ${manifest.data.process.name}` : 'Meeting')
   const degraded = isLive ? store.degraded : (manifest.data?.degraded ?? [])
+  // 173: the watchdog's verdict while live; the app's name from `Started`, else the manifest's.
+  const warning = isLive ? captureWarning(store.capture, store.app ?? manifest.data?.process.name ?? null) : null
   // The store is ahead of the manifest while the pipeline runs (`PostProgress` never touches the manifest).
   const progress = store.meeting === id ? store.progress : null
   const cycle = lifecycle(state, progress?.stage ?? null, manifest.data?.failure ?? null, manifest.data?.ended_at != null)
@@ -169,6 +183,11 @@ export function ControlCenter({ id }: { id: string }) {
         </MeetingActions>
       </MeetingHeader>
       {manifest.isError && <Empty>{errorText(manifest.error)}</Empty>}
+      {warning && (
+        <div role="alert" className="mx-6 mb-2 rounded-md border border-warning-border/50 bg-warning-bg px-3 py-2 text-[13px] text-warning">
+          {warning}
+        </div>
+      )}
       {degraded.length > 0 && (
         <div className="px-6 pb-2 text-[12px] text-fg-tertiary">{degraded.map(degradationText).join(' · ')}</div>
       )}
@@ -232,10 +251,9 @@ export function ControlCenter({ id }: { id: string }) {
                             </Row>
                             <Row label="Consent">{new Date(manifest.data.consent_at).toLocaleString()}</Row>
                             <Row label="Pauses">
-                              {manifest.data.gaps.length === 0
-                                ? 'none'
-                                : manifest.data.gaps.map((g) => `${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s`).join(', ')}
+                              {manifest.data.gaps.filter((g) => g.track === undefined).map((g) => `${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s`).join(', ') || 'none'}
                             </Row>
+                            <Row label="Audio gaps">{manifest.data.gaps.filter((g) => g.track !== undefined).map(gapText).join(', ') || 'none'}</Row>
                             <Row label="Session model">{manifest.data.session_model ?? 'default'}</Row>
                             <Row label="Tracks">{manifest.data.tracks.map((t) => t.file).join(', ')}</Row>
                             {manifest.data.failure && !cycle?.failure && <Row label="Failure">{manifest.data.failure}</Row>}

@@ -129,7 +129,7 @@ export function seed(mode: Mode): Seed {
     duration_ms: ended ? 15n * 60_000n : null,
     process: { pid: 4242, name: 'zoom.us', bundle_id: 'us.zoom.xos', active: mode === 'live' },
     consent_at: started.toISOString(),
-    gaps: mode === 'live' ? [] : [{ at_ms: 410_000n, dur_ms: 32_000n }],
+    gaps: mode === 'live' ? [] : [{ at_ms: 370_000n, dur_ms: 38_000n, track: 'system', reason: 'Silent' }, { at_ms: 410_000n, dur_ms: 32_000n }],
     degraded: mode === 'live' ? ['MicNoAec'] : [],
     state: mode === 'live' ? 'Recording' : mode === 'review' ? 'Review' : 'Done',
     failure: null,
