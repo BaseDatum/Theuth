@@ -142,3 +142,42 @@ impl Store {
         Ok(()) // 171:D2
     }
 }
+
+// 171:E2-ADD — `Store` is actor-private, so the cells plugin reaches the `cell_latest` rows
+// through these two messages (171 §13.2; the bodies call D2's `Store` accessors).
+
+/// `ask` → `Result<Vec<CellLatest>, String>`: the replicated latest-output rows of a document.
+/// Any engine (replica); membership is the caller's check.
+#[derive(Clone, Debug)]
+pub struct CellLatestOf(pub DocId);
+
+impl Message<CellLatestOf> for DocumentActor {
+    type Reply = Result<Vec<CellLatest>, String>;
+
+    async fn handle(&mut self, m: CellLatestOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store
+            .cell_latest(&m.0)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// `ask` → `Result<(), String>`: upsert one latest-output row; refused (`NotHub:<id>`) off the hub.
+#[derive(Clone, Debug)]
+pub struct PutCellLatest(pub CellLatest);
+
+impl Message<PutCellLatest> for DocumentActor {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: PutCellLatest,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.hub.gate_str()?;
+        self.store
+            .put_cell_latest(&m.0)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}

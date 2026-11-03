@@ -1071,6 +1071,38 @@ mod tests {
         assert!(guest_gate(b"not json").is_none());
     }
 
+    /// 171 §13.2: guests read a note's replicated latest outputs, and nothing else of cells —
+    /// every press, kernel and full-output method stays off the guest list.
+    #[test]
+    fn guest_gate_admits_cell_latest_only_of_the_cell_methods() {
+        assert!(GUEST_METHODS.contains(&"cell_latest"));
+        let req = br#"{"jsonrpc":"2.0","id":1,"method":"cell_latest","params":["d1"]}"#;
+        assert!(guest_gate(req).is_none());
+        for m in [
+            "cell_run",
+            "cell_run_all",
+            "cell_stop",
+            "cell_input",
+            "cell_ask",
+            "cell_attach",
+            "cell_state",
+            "cell_run_get",
+            "cell_output",
+            "cell_output_file",
+            "cell_runs",
+            "cell_interpreters",
+            "cell_kernel_restart",
+            "cell_kernel_close",
+            "cell_env_refresh",
+            "cell_live",
+        ] {
+            let req = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{m}","params":[]}}"#);
+            let refused = guest_gate(req.as_bytes()).expect(m);
+            let v: serde_json::Value = serde_json::from_str(refused.get()).unwrap();
+            assert_eq!(v["error"]["code"], -32601, "{m}");
+        }
+    }
+
     #[test]
     fn guest_bucket_admits_ten_per_minute() {
         let mut b = crate::state::Bucket::default();
