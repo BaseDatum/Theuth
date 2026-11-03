@@ -41,9 +41,14 @@ repo-root `bindings/methods.json`.
   computed style copied into the HTML picture would be hidden. Inside, the rasterized box is
   `display:flow-root; padding: 0 16px` (the fences' own `my-4` margins become the top/bottom breathing room).
 - Appearance: the frame carries the requested palette's theme variables, read at runtime from the stylesheet's own
-  `:root` rules (plus `.dark` on top for `dark`) — every custom property, `color-scheme` too — and sets
-  `color`/`background`/`font` from them. No second colour table, no `.dark` class-lift on `<html>` (that would fire every
-  `subscribeDark` observer and re-initialise mermaid for the whole chat).
+  rules whose selector list names `:root` (the token block, the shadcn aliases and Tailwind's `:root, :host` theme layer,
+  whose `--color-*` aliases such as `--color-fg-accent` resolve at the root) plus `.dark` on top for `dark` — every custom
+  property, `color-scheme` too — and sets `color`/`background`/`font` from them. No second colour table, no `.dark`
+  class-lift on `<html>` (that would fire every `subscribeDark` observer and re-initialise mermaid for the whole chat).
+- `dark:` utilities (R1): `styles.css:7` is now
+  `@custom-variant dark (&:is(.dark *):not(:where([data-snapshot-light], [data-snapshot-light] *)));`. A light frame
+  carries `data-snapshot-light`, a dark frame the `.dark` class. `:where()` keeps the added specificity at zero, so every
+  existing `dark:` utility cascades exactly as before, and nothing outside a snapshot frame carries the attribute.
 - JS-side tokens: `diagramTokens(el = document.documentElement)` now takes the element to resolve on.
   `useThemeTokens()` resolves on the snapshot frame when a snapshot is mounted, else exactly as before (memoised on the
   `.dark` flip). `graph-layout`'s exported `useDiagramTokens` (six ELK Views import it) is now that hook re-exported under
@@ -63,7 +68,8 @@ repo-root `bindings/methods.json`.
 
 ## Settle (no rAF, no ResizeObserver)
 
-- Mount after `document.fonts.ready`. Ready = content mounted and no `[data-snapshot-pending]` element — DiagramFrame's
+- Mount after `document.fonts.ready` (bounded to 1 s, and each embedded font fetch to 3 s: a font load that never
+  finishes must not hold both render slots). Ready = content mounted and no `[data-snapshot-pending]` element — DiagramFrame's
   "Rendering diagram…" placeholder carries that attribute in snapshot mode only (ELK layout pending, mermaid promise
   pending). A MutationObserver (subtree/childList/attributes/characterData) re-arms the timer: draw `QUIET_MS` (300 ms)
   after the last change once ready, never later than `SETTLE_MS` (8 s) after mount; still pending then → `failed`.
@@ -94,17 +100,26 @@ repo-root `bindings/methods.json`.
 Harness: `/tmp/163-164/ui-proof/harness.{html,tsx}` served by this worktree's own vite config through a wrapper
 (`vite.config.ts` there, port 5199); it installs the real runner with a fake `answer_fence_snapshot` sink and feeds
 `FenceSnapshotRequested` events through the real `dispatch`. Driver `run.mjs`. Cases: Graph (`valid-graph-extended`),
-Sequence, StateMachine, Gantt, Kanban (fixtures), a Stack of MetricGrid + Checklist + Table, a mermaid flowchart, an
-openui card, a truncated json-render fence; widths 560 and 720; light; scale 2.
+Sequence, StateMachine, Gantt, Kanban, Excerpt, Code (fixtures), a Stack of MetricGrid + Checklist + Table, a mermaid
+flowchart, an openui card, a truncated json-render fence; widths 560 and 720; scale 2; light unless stated.
 
-| Run | Result (18 requests) |
+| Run | Result (22 requests) |
 |---|---|
-| Chrome (CfT 1226, headless) visible | 16 `done`, both broken → `failed` (`Interactive view unavailable: …`), all in ≈ 4 s |
-| Chrome hidden | same, ≈ 5.8 s |
-| WebKit (Playwright 2370, headless) visible | same, ≈ 3.9 s; foreignObject pictures draw (no taint, fonts right) |
-| WebKit hidden | same, ≈ 3.9 s |
-| Chrome, app in `.dark`, light requested | every PNG byte-identical to the light-app run (tokens, CSS and mermaid palette forced) |
-| Chrome, dark requested | dark pictures |
+| Chrome (CfT 1226, headless) visible | 20 `done`, both broken → `failed` (`Interactive view unavailable: …`), all in ≈ 5 s |
+| Chrome hidden | same, ≈ 7 s (see the one stall below) |
+| WebKit (Playwright 2370, headless) visible | same, ≈ 5 s; foreignObject pictures draw (no taint, fonts right) |
+| WebKit hidden | same, ≈ 5 s |
+| Chrome and WebKit, app in `.dark`, light requested | all 20 pictures per engine **byte-identical** (`cmp`) to the light-app run's, Stack, Excerpt and Code included |
+| Chrome, dark requested | dark pictures (Excerpt with the shiki dark tokens through the frame's `.dark`) |
+
+Before the R1 fixes the Chrome dark-app Excerpt differed from the light-app one in 160 pixels (max channel delta 39): the
+marked row's `shadow-[inset_2px_0_0_0_var(--color-fg-accent)]` bar, whose `--color-fg-accent` came from Tailwind's
+`:root, :host` theme layer that the frame did not yet re-declare. Fixed by the selector-list match above.
+
+One Chrome hidden run (the first one with the Excerpt/Code cases) stalled: after 14 answers both render slots stopped
+progressing and the 8 remaining requests answered `failed` (`not drawn within 15 s`) — the runner's own deadline, so
+the engine still got an answer. Not reproduced in the six Chrome hidden runs since. Unbounded `document.fonts.ready`
+waits are the one shared wait both slots had, so they are now bounded (above); cause not proven.
 
 "Hidden": both headless engines keep `document.visibilityState === 'visible'` after a second tab is opened and
 activated (also tried a CDP background target and a minimised window), so the hidden runs open and activate the second
@@ -112,11 +127,13 @@ tab **and** emulate what a hidden Mac window does to the page through an init sc
 fires, `ResizeObserver` never delivers, `visibilityState` is `hidden`. All answers still arrive, which is the property
 that matters (the runner uses neither). Timer throttling of a really hidden page is not emulated (see risks).
 
-Chat unchanged: `chat-before.png` (taken on the untouched tree) and `chat-after.png` of the chat's own Streamdown
-rendering of the Graph fixture are byte-identical.
+Chat unchanged: the chat's own Streamdown rendering of Graph + Release-readiness (MetricGrid + Table) + Excerpt + Code,
+screenshotted from an untouched copy of the tree (`git archive e9eebf92` under `/tmp/163-164/ui-base`, own vite server)
+and from this branch, app light and app dark: `chat-before-light.png` = `chat-after-light.png` and
+`chat-before-dark.png` = `chat-after-dark.png`, byte for byte.
 
-Artifacts: `/tmp/163-164/ui-proof/png/` (96 PNGs: `<engine>-<mode>-<case>-<width>.png`),
-`/tmp/163-164/ui-proof/contact-sheet.html`, `/tmp/163-164/ui-proof/result-*.json`, `chat-before.png`, `chat-after.png`.
+Artifacts: `/tmp/163-164/ui-proof/png/` (140 PNGs: `<engine>-<mode>-<case>-<width>.png`),
+`/tmp/163-164/ui-proof/contact-sheet.html`, `/tmp/163-164/ui-proof/result-*.json`, `chat-{before,after}-{light,dark}.png`.
 
 ## Deviations from the brief
 
@@ -126,6 +143,7 @@ Artifacts: `/tmp/163-164/ui-proof/png/` (96 PNGs: `<engine>-<mode>-<case>-<width
   `lib/diagram-theme.ts` (`diagramTokens(el)` parameter), `lib/graph-layout.ts` (`useDiagramTokens` is now the shared
   hook), `lib/diagram/chart/frame.tsx` (private `useTokens` removed in favour of it).
 - Frame hidden with `opacity:0` off-screen instead of page-preview's `visibility:hidden` (reason above).
+- `styles.css:7` (R1 decision): the `dark` custom variant skips `[data-snapshot-light]` subtrees.
 - Svg-path pictures are the diagram alone (no card label/border), scaled to fit `width`; HTML pictures are the full
   `width` with 16 px side padding.
 
@@ -145,9 +163,8 @@ Artifacts: `/tmp/163-164/ui-proof/png/` (96 PNGs: `<engine>-<mode>-<case>-<width
   chained timers to once a minute; WebKit throttles hidden windows. The runner's timers start from event and
   MutationObserver tasks, not timer chains, so it should stay inside the engine's 20 s, but this was not observable in
   headless engines.
-- `dark:` Tailwind variants follow `<html class="dark">`, not the frame: in a light picture taken while the app is dark,
-  the few `dark:` utilities in surface components (badge/button/input shades, Excerpt code colours) use their dark form.
-  Theme variables, which carry nearly all colour, are forced.
+- Excerpt and Code blocks keep their own copy button in the picture (their chrome is not behind the snapshot context;
+  only DiagramFrame's and OpenUI's toolbars are).
 - OpenUI `BarChart`/`LineChart`/`ScatterChart`/`RadarChart` are upstream recharts (`ResponsiveContainer`, a
   ResizeObserver): in a hidden window they may lay out at 0 size. json-render charts are unaffected.
 - External images inside a surface (cross-origin `<img>`) cannot be read back and stay blank in HTML pictures.
