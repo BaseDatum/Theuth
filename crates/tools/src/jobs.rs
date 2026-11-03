@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId, Rejected};
 use crate::journal::{JobKind, JobRow, JobState, PtyScreenRow};
+use crate::pty::{Mark, MarkKind};
 use crate::resources::CloseAck;
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
@@ -60,6 +61,20 @@ pub(crate) const GROUP_POLL: Duration = Duration::from_millis(50);
 /// charged [`crate::pty::RESERVE`] at `start` until its handle is evicted.
 /// 512 MiB ≈ 80 live PTYs engine-wide (the estimate, not measured RSS).
 pub(crate) const PTY_BUDGET: usize = 512 << 20;
+/// 171 §12.1 inv. 3: the `name` prefix of a user-cell kernel job. Reserved:
+/// `start` refuses it without `StartPty.cell`.
+pub const CELL_PREFIX: &str = "cell:";
+/// 171 §9.7: what `send` / `cancel_job` answer on a kernel job.
+pub const CELL_REFUSED: &str = "this terminal belongs to a user cell — ask the user to press Run";
+/// 171 §5.5: a mark sequence split across chunks is completed from this
+/// much carried tail; OSC 7 carries a path, so it gets [`OSC7_CARRY`].
+const MARK_CARRY: usize = 32;
+const OSC7_CARRY: usize = 1024;
+
+/// Is `name` a user-cell kernel job's (`cell:<label>`)?
+pub(crate) fn is_cell(name: Option<&str>) -> bool {
+    name.is_some_and(|n| n.starts_with(CELL_PREFIX))
+}
 
 /// `j{n}`, `n` per session starting at 1.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, kameo::Reply)]
@@ -367,7 +382,8 @@ pub enum StartReply {
     },
 }
 
-/// `ask` → `Vec<JobView>` for the session, oldest first.
+/// `ask` → `Vec<JobView>` for the session, oldest first; user-cell kernel
+/// jobs (`cell:` names) are omitted (171 §12.1 inv. 3).
 #[derive(Clone, Copy, Debug)]
 pub struct ListJobs(pub SessionId);
 
@@ -397,7 +413,8 @@ pub struct LiveCountsRow {
 }
 
 /// `ask` → `Result<(), String>`: SIGKILL a running job's process groups.
-/// Err `no such job` | `j3 already finished`.
+/// Err `no such job` | `j3 already finished` | [`CELL_REFUSED`] for a kernel
+/// job unless `origin` is `Shutdown` (171 §9.7).
 #[derive(Clone, Debug)]
 pub struct CancelJob {
     /// Owning session.
@@ -551,6 +568,18 @@ pub(crate) struct Log {
     /// Readers still feeding `push` (one per pipe drain); the file goes
     /// with the last one.
     writers: usize,
+    /// Bytes appended so far, after redaction: the file offset of the next
+    /// chunk (171 §5.5 `Mark::offset`).
+    written: u64,
+    /// 171 §5.5: set for a user-cell PTY job; `None` for every other log.
+    marks: Option<MarkScan>,
+}
+
+/// 171 §5.5: where a cell job's shell-integration marks go, and the tail
+/// of the last chunk that may begin one.
+struct MarkScan {
+    tx: tokio::sync::mpsc::Sender<Mark>,
+    carry: Vec<u8>,
 }
 
 impl Log {
@@ -560,7 +589,17 @@ impl Log {
             tail: VecDeque::with_capacity(TAIL),
             pending: VecDeque::new(),
             writers: 0,
+            written: 0,
+            marks: None,
         }
+    }
+
+    /// 171 §5.5: scan every chunk from now on for marks and send them to `tx`.
+    pub(crate) fn scan_marks_to(&mut self, tx: tokio::sync::mpsc::Sender<Mark>) {
+        self.marks = Some(MarkScan {
+            tx,
+            carry: Vec::new(),
+        });
     }
 
     /// Drop the file: the output is drained, or nobody will read on.
@@ -603,6 +642,14 @@ impl Log {
         if let Some(file) = &mut self.file {
             let _ = file.write_all(chunk);
         }
+        if let Some(scan) = &mut self.marks {
+            for mark in scan_marks(&mut scan.carry, self.written, chunk) {
+                if let Err(e) = scan.tx.try_send(mark) {
+                    tracing::debug!("cell mark dropped: {e}");
+                }
+            }
+        }
+        self.written += chunk.len() as u64;
         keep_last(&mut self.tail, chunk);
         keep_last(&mut self.pending, chunk);
     }
@@ -655,6 +702,129 @@ fn keep_last(buf: &mut VecDeque<u8>, chunk: &[u8]) {
     let over = (buf.len() + chunk.len()).saturating_sub(TAIL);
     buf.drain(..over.min(buf.len()));
     buf.extend(&chunk[chunk.len().saturating_sub(TAIL)..]);
+}
+
+/// 171 §5.5: the marks in `carry ++ chunk`, where `chunk` begins at log
+/// offset `base` and `carry` is the unfinished tail of the previous chunk
+/// (already in the file, just before `base`). Recognised: `OSC 133 ; A|C|D[;n]`
+/// and `OSC 7 ; file://<host><path>`, each ended by BEL or ST; any other OSC
+/// is skipped. On return `carry` holds the strict prefix of a mark that ended
+/// the chunk, up to [`MARK_CARRY`] bytes ([`OSC7_CARRY`] for an OSC 7 path),
+/// or nothing.
+pub(crate) fn scan_marks(carry: &mut Vec<u8>, base: u64, chunk: &[u8]) -> Vec<Mark> {
+    let start = base - carry.len() as u64;
+    let mut buf = std::mem::take(carry);
+    buf.extend_from_slice(chunk);
+    let mut marks = Vec::new();
+    let mut i = 0;
+    while let Some(esc) = buf[i..].iter().position(|b| *b == 0x1b) {
+        let at = i + esc;
+        match parse_mark(&buf[at..]) {
+            Parsed::Done(mark, len) => {
+                if let Some((kind, exit, cwd)) = mark {
+                    marks.push(Mark {
+                        kind,
+                        exit,
+                        cwd,
+                        offset: start + at as u64,
+                    });
+                }
+                i = at + len;
+            }
+            Parsed::Not => i = at + 1,
+            Parsed::Incomplete => {
+                let tail = &buf[at..];
+                let cap = if tail.get(2) == Some(&b'7') {
+                    OSC7_CARRY
+                } else {
+                    MARK_CARRY
+                };
+                if tail.len() <= cap {
+                    carry.extend_from_slice(tail);
+                }
+                break;
+            }
+        }
+    }
+    marks
+}
+
+/// [`parse_mark`]'s verdict on bytes starting at an ESC.
+enum Parsed {
+    /// A complete OSC of `len` bytes; `Some` when it is a mark.
+    Done(Option<(MarkKind, Option<i32>, Option<String>)>, usize),
+    /// A strict prefix of a mark: wait for more bytes.
+    Incomplete,
+    /// Not a mark (or an OSC that is not one and has no terminator yet).
+    Not,
+}
+
+/// Parse one mark at `s[0] == ESC`.
+fn parse_mark(s: &[u8]) -> Parsed {
+    const P133: &[u8] = b"\x1b]133;";
+    const P7: &[u8] = b"\x1b]7;file://";
+    let Some(pat) = [P133, P7].into_iter().find(|p| s.starts_with(p)) else {
+        // Shorter than a pattern it begins: wait; otherwise not a mark.
+        return if [P133, P7].iter().any(|p| p.starts_with(s)) {
+            Parsed::Incomplete
+        } else {
+            Parsed::Not
+        };
+    };
+    // The payload ends at BEL or ST; a bare ESC inside aborts the OSC.
+    let mut end = pat.len();
+    let term = loop {
+        match s.get(end) {
+            None => return Parsed::Incomplete,
+            Some(0x07) => break 1,
+            Some(0x1b) => match s.get(end + 1) {
+                None => return Parsed::Incomplete,
+                Some(b'\\') => break 2,
+                Some(_) => return Parsed::Not,
+            },
+            Some(_) => end += 1,
+        }
+    };
+    let payload = &s[pat.len()..end];
+    let len = end + term;
+    let mark = if pat == P133 {
+        let kind = match payload.first() {
+            Some(b'A') => MarkKind::Ready,
+            Some(b'C') => MarkKind::Start,
+            Some(b'D') => MarkKind::End,
+            _ => return Parsed::Done(None, len),
+        };
+        let exit = payload[1..]
+            .strip_prefix(b";")
+            .and_then(|n| std::str::from_utf8(n).ok()?.parse().ok());
+        (kind, exit, None)
+    } else {
+        // `file://<host><path>`: the path starts at the first `/` after the host.
+        let Some(slash) = payload.iter().position(|b| *b == b'/') else {
+            return Parsed::Done(None, len);
+        };
+        (MarkKind::Cwd, None, Some(percent_decode(&payload[slash..])))
+    };
+    Parsed::Done(Some(mark), len)
+}
+
+/// `%XX` → the byte; anything else verbatim; lossy UTF-8.
+fn percent_decode(s: &[u8]) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        let hex = |at: usize| s.get(at).and_then(|b| (*b as char).to_digit(16));
+        if s[i] == b'%'
+            && let (Some(hi), Some(lo)) = (hex(i + 1), hex(i + 2))
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(s[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// 109 §5.4: what a job that died with a previous engine keeps in memory
@@ -1318,9 +1488,16 @@ impl Message<ListJobs> for Jobs {
     type Reply = Vec<JobView>;
 
     async fn handle(&mut self, m: ListJobs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // 171 §12.1 inv. 3: kernel jobs are the user's, not the model's.
         self.sessions
             .get(&m.0)
-            .map(|s| s.jobs.iter().map(|j| j.view(m.0)).collect::<Vec<_>>())
+            .map(|s| {
+                s.jobs
+                    .iter()
+                    .filter(|j| !is_cell(j.name.as_deref()))
+                    .map(|j| j.view(m.0))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default()
     }
 }
@@ -1390,6 +1567,10 @@ impl Message<CancelJob> for Jobs {
         };
         if job.exit.is_some() {
             return Err(format!("{} already finished", m.id));
+        }
+        // 171 §9.7: only the session's closing may kill a kernel.
+        if m.origin != CancelOrigin::Shutdown && is_cell(job.name.as_deref()) {
+            return Err(CELL_REFUSED.into());
         }
         // The task kills the groups and finishes as `Killed`; killing here
         // would race its normal-exit arm into `Exited(137)`.
@@ -3374,5 +3555,86 @@ pub(crate) mod tests {
             panic!("expected Running");
         };
         assert_eq!(id.0, "j8");
+    }
+
+    // ---- 171 §5.5 mark scan ----
+
+    fn mark(kind: MarkKind, exit: Option<i32>, cwd: Option<&str>, offset: u64) -> Mark {
+        Mark {
+            kind,
+            exit,
+            cwd: cwd.map(str::to_owned),
+            offset,
+        }
+    }
+
+    #[test]
+    fn cell_mark_scan_every_split() {
+        let bytes = b"out\x1b]133;C\x07hello\x1b]133;D;3\x07\x1b]7;file://host/tmp/a%20b\x07";
+        let want = [
+            mark(MarkKind::Start, None, None, 3),
+            mark(MarkKind::End, Some(3), None, 16),
+            mark(MarkKind::Cwd, None, Some("/tmp/a b"), 26),
+        ];
+        for split in 0..=bytes.len() {
+            let mut carry = Vec::new();
+            let mut got = scan_marks(&mut carry, 0, &bytes[..split]);
+            got.extend(scan_marks(&mut carry, split as u64, &bytes[split..]));
+            assert_eq!(got, want, "split at {split}");
+            assert!(carry.is_empty(), "split at {split}: {carry:?}");
+        }
+    }
+
+    #[test]
+    fn cell_mark_scan_bel_and_st() {
+        let mut carry = Vec::new();
+        let got = scan_marks(
+            &mut carry,
+            100,
+            b"\x1b]133;A\x1b\\\x1b]133;D;-1\x1b\\\x1b]7;file://h/x\x1b\\\x1b]0;title\x07\x1b]133;B\x07\x1b[31m",
+        );
+        assert_eq!(
+            got,
+            [
+                mark(MarkKind::Ready, None, None, 100),
+                mark(MarkKind::End, Some(-1), None, 109),
+                mark(MarkKind::Cwd, None, Some("/x"), 121),
+            ]
+        );
+        assert!(carry.is_empty());
+        // A strict prefix at the end waits; an over-long one is dropped.
+        assert!(scan_marks(&mut carry, 0, b"x\x1b]133;D;").is_empty());
+        assert_eq!(carry, b"\x1b]133;D;");
+        let long = [b"\x1b]7;file://h/".as_slice(), &[b'p'; 2000]].concat();
+        assert!(scan_marks(&mut carry, 8, &long).is_empty());
+        assert!(carry.is_empty());
+    }
+
+    /// Offsets index the log as written: the scan runs over the redacted
+    /// bytes, so the placeholder's length, not the value's, precedes the mark.
+    /// The vault hook is a process-wide `OnceLock` no test may install, so the
+    /// already-redacted chunk stands in for `secrets::redact`'s output here and
+    /// `Log::push`'s `written` counter is checked through a real file.
+    #[test]
+    fn cell_mark_inside_redacted_region() {
+        let redacted = b"token={{secret:GH}}\x1b]133;D;0\x07";
+        let mut carry = Vec::new();
+        let got = scan_marks(&mut carry, 0, redacted);
+        assert_eq!(got, [mark(MarkKind::End, Some(0), None, 19)]);
+
+        let guard = crate::TestDir::new("cell-log");
+        let path = guard.0.join("j1.log");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut log = Log::new(Some(std::fs::File::create(&path).unwrap()));
+        log.scan_marks_to(tx);
+        log.push(b"first line\r\n");
+        log.push(b"\x1b]133;");
+        log.push(b"C\x07rest");
+        drop(log);
+        let on_disk = std::fs::read(&path).unwrap();
+        let m = rx.try_recv().unwrap();
+        assert_eq!(m.kind, MarkKind::Start);
+        assert_eq!(&on_disk[m.offset as usize..][..8], b"\x1b]133;C\x07");
+        assert!(rx.try_recv().is_err());
     }
 }
