@@ -965,6 +965,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.remove_provider(name.clone()).await)?;
             UiEvent::Info(format!("removed provider {name}"))
         }
+        Command::RefreshProvider(name) => {
+            UiEvent::Info(msg(api.refresh_provider_models(name).await)?.line())
+        }
         Command::LinkStatus => UiEvent::Link(msg(api.link_status().await)?),
         Command::LinkEnable(enabled) => {
             msg(api.link_enable(enabled, None).await)?;

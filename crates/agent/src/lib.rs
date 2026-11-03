@@ -8,7 +8,7 @@
 //!   [`ListModels`], [`SetModel`], [`GetDefaultModel`], [`SetEffort`], [`GetDefaultEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
-//!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`NewSession`],
+//!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`RefreshProviderModels`], [`NewSession`],
 //!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`], [`Ancestors`],
 //!   [`ContextItems`], [`RemoveContext`], [`GetTodos`]; continuation/activity transitions in [`continuation`]
 //! - communication policy and peer contracts (design doc 50) in [`communication`]:
@@ -2140,11 +2140,11 @@ pub struct LoginFinished {
 }
 
 /// `ask` → `Vec<ProviderInfo>`: the built-in key providers (`opencode`, `openrouter`;
-/// 85 §0.9) first, then the named OpenAI-compatible gateways.
+/// 85 §0.9) first, then the custom providers by name.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListProviders;
 
-/// One provider row of the Connections view: a built-in or a named gateway.
+/// One provider row of the Connections view: a built-in or a custom provider.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProviderInfo {
@@ -2152,32 +2152,73 @@ pub struct ProviderInfo {
     pub name: String,
     /// OpenAI-compatible base URL (the fixed upstream URL for a built-in).
     pub base_url: String,
-    /// Models last fetched from `GET {base}models` (catalog count for a built-in).
+    /// Models in the catalog under this prefix.
     pub models: u32,
     /// `opencode` / `openrouter`: keyed by a secret, not removable (85 §0.9).
     #[serde(default)]
     pub builtin: bool,
-    /// A key exists (vault or env); gateways always carry one.
+    /// A key exists (vault or env); custom providers always carry one.
     #[serde(default)]
     pub configured: bool,
+    /// Refresh models is available (custom providers; opencode/openrouter with a key) (162 D6).
+    #[serde(default)]
+    pub refreshable: bool,
 }
 
-/// `ask` → `Result<ProviderInfo, String>`: persist a gateway, fetch its models.
+/// `ask` → `Result<ProviderInfo, String>`: persist a custom provider, fetch its models.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddProvider {
     /// `[a-z][a-z0-9_-]*`, not a built-in adapter.
     pub name: String,
     /// `https://host/v1`.
     pub base_url: String,
-    /// Bearer key; stored in the secrets vault (37) under the gateway's name.
+    /// Bearer key; stored in the secrets vault (37) under the provider's name.
     pub key: String,
 }
 
-/// `ask` → `Result<(), String>`: delete a gateway's url, key, and catalog models.
+/// `ask` → `Result<(), String>`: delete a custom provider's url, key, and catalog models.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemoveProvider {
-    /// Gateway name.
+    /// Custom provider name.
     pub name: String,
+}
+
+/// `ask` → `Result<RefreshedModels, String>`: list the provider's models again (162 D3/D4).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RefreshProviderModels {
+    /// A custom provider, `opencode`, or `openrouter`.
+    pub name: String,
+}
+
+/// Reply of [`RefreshProviderModels`]: the row after the refresh and the ids it added or removed.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct RefreshedModels {
+    /// The row after the refresh (`models` is the new catalog count).
+    pub provider: ProviderInfo,
+    /// Ids the listing added, sorted.
+    pub added: Vec<String>,
+    /// Ids no longer listed and removed (custom providers only), sorted.
+    pub removed: Vec<String>,
+}
+
+impl RefreshedModels {
+    /// The one-line notice frontends print (162 D7):
+    /// `rwx: 14 models (+2, -1)`, or `rwx: 14 models, no change`.
+    pub fn line(&self) -> String {
+        let p = &self.provider;
+        if self.added.is_empty() && self.removed.is_empty() {
+            format!("{}: {} models, no change", p.name, p.models)
+        } else {
+            format!(
+                "{}: {} models (+{}, -{})",
+                p.name,
+                p.models,
+                self.added.len(),
+                self.removed.len()
+            )
+        }
+    }
 }
 
 /// `ask` → `Result<SessionId, String>`: create an empty root session, for

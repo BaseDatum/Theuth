@@ -1,5 +1,6 @@
 import type { UseNavigateResult } from '@tanstack/react-router'
 import { toast } from 'sonner'
+import { refreshedText } from '@/components/settings/providers'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys } from '@/lib/rpc'
 import { openSearch } from '@/lib/search'
@@ -149,8 +150,8 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   { name: '/quit', hint: '', desc: 'exit' },
   {
     name: '/provider',
-    hint: '[add|rm <name>]',
-    desc: 'OpenAI-compatible providers',
+    hint: '[add|refresh|rm <name>]',
+    desc: 'providers (built-in and custom)',
   },
   {
     name: '/aws',
@@ -600,12 +601,17 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         toast(`added provider ${name}`)
         return
       }
+      if (sub === 'refresh') {
+        if (!rest) return settings(navigate, 'connections', session)
+        toast(refreshedText(await api.refresh_provider_models(rest)))
+        return
+      }
       if (sub === 'rm' && rest) {
         await api.remove_provider(rest)
         toast(`removed provider ${rest}`)
         return
       }
-      throw new Error('usage: /provider [add [name [url [key]]] | rm <name>]')
+      throw new Error('usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]')
     case '/aws': {
       if (!arg) return settings(navigate, 'connections', session)
       const r = await api.set_aws_profile(arg === 'clear' ? null : arg)

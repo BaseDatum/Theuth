@@ -134,7 +134,7 @@ function ProviderCard({ p, now }: { p: ProviderLimits; now: number }) {
   return (
     <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border bg-background p-3">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span className="text-[13px] font-semibold">{p.label}</span>
+        <span className="text-[13px] font-semibold">{shownLabel(p)}</span>
         <Tag>{p.plan ? `${authLabel(p.auth)} · ${p.plan}` : authLabel(p.auth)}</Tag>
         {p.account && <span className="min-w-0 truncate text-[11px] text-fg-tertiary">{p.account}</span>}
         <div className="flex-1" />
@@ -157,7 +157,9 @@ function ProviderCard({ p, now }: { p: ProviderLimits; now: number }) {
   )
 }
 
-const authLabel = (auth: string): string => (auth === 'api_key' ? 'key' : auth)
+// The engine's custom-provider auth value stays `gateway` (persisted row ids and labels, 162 D1); users read `custom`.
+const authLabel = (auth: string): string => (auth === 'api_key' ? 'key' : auth === 'gateway' ? 'custom' : auth)
+const shownLabel = (p: ProviderLimits): string => p.label.replace(/ · gateway$/, ' · custom')
 
 function BudgetsCard({ budgets, now }: { budgets: BudgetLimit[]; now: number }) {
   const soonest = budgets.reduce<number | null>((m, b) => (b.resets_at_ms != null && (m == null || b.resets_at_ms < m) ? b.resets_at_ms : m), null)
@@ -222,7 +224,7 @@ export const LimitsPanel = memo(function LimitsPanel({ now: pageNow, visible = t
             <ul className={cards.length > 0 || budgets.length > 0 ? 'mt-2.5 flex flex-col gap-1 text-[11.5px] text-fg-tertiary' : 'flex flex-col gap-1 text-[11.5px] text-fg-tertiary'}>
               {lines.map((p) => (
                 <li key={p.id}>
-                  <span className="text-fg-secondary">{p.label}</span> — {STATUS[p.status][1]}
+                  <span className="text-fg-secondary">{shownLabel(p)}</span> — {STATUS[p.status][1]}
                   {p.message && ` · ${p.message}`}
                 </li>
               ))}
