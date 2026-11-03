@@ -52,7 +52,7 @@ Status: committed FIRST by contract worker C (draft by the lead, 2026-11-03 18:3
 
 ## E2 — python + monty + interpreters + note scope
 - `crates/cells/src/{python.rs, monty.rs, interp.rs, note.rs}`, `crates/cells/shim.py`, `migrations/0003_cells_e2.sql`; `PythonConfig`/`MontyConfig` defined in their own files and flattened by C's config
-- `crates/rpc/src/cells_latest.rs` (the `cell_latest` handler), the `GUEST_METHODS` test in `crates/link/src/conn.rs`, `crates/theuth/src/main.rs` line marked `// 171:E2` (register the `RunAnnotations` impl)
+- `crates/rpc/src/cells_latest.rs` (the `cell_latest` handler), the `GUEST_METHODS` test in `crates/link/src/conn.rs`; the `RunAnnotations` impl is registered by `note::install(&cells)`, already called from `CellsPlugin::start` (`crates/cells/src/lib.rs`, `// 171:E2`) — *(C)* not a `crates/theuth/src/main.rs` line (the impl needs the `Cells` handle, which exists only in the plugin start); main.rs has no E2 line
 - the note-scope arms in E1's actor are the marked `// 171:E2` calls into `note.rs` (C places them)
 
 ## U2 — notes UI (cut from U1's DONE sha)
@@ -62,6 +62,32 @@ Status: committed FIRST by contract worker C (draft by the lead, 2026-11-03 18:3
 ## Z — closer (integrate/171)
 - Everything at integration: merges in owner order C → E1 → A1 → U1 → D2 → E2 → U2, the fold of origin/main, conflict resolution (union for adjacent lines), bindings regeneration, gate fixes, live-proof fixes with fail-before tests, `docs/design/171-as-built.md`, the "Status: BUILT" paragraph of `docs/design/171-cells.md`.
 
-## Frozen API (filled by C up to the SKELETON commit)
+## Frozen API (C, SKELETON)
 
-_Pending — filled in the SKELETON commit._
+Signatures below are frozen; bodies of files owned by a worker are theirs. `git grep -n NotBuilt crates/cells | wc -l` = 21: code sites E1 12 (actor.rs 9, shell.rs 2, deliver.rs 1), E2 5 (note.rs 2, interp.rs 1, python.rs 1, monty.rs 1); doc lines 2 (actor.rs, lib.rs); the `CellsError` variant + its `code()` arm 2 (error.rs).
+
+*(C)* files C also touched beyond the rows above: `crates/surface/Cargo.toml` (sha2, hex, regex), `crates/document/src/{cells.rs (new; D2 owns it after the skeleton), lib.rs}`, `crates/desktop/ui/src/rpc/api.test.ts` (STREAM list += `cell_attach`/`cell_detach`), `docs/design/171-notes-c.md`.
+
+| file | frozen public names | implementer |
+|---|---|---|
+| `crates/cells/src/types.rs` (C) | `CellRef{Chat{session,entry,ordinal},Note{doc,key}}`, `Scope{Session,Doc}` (TS `CellScope`), `ShellKind`, `KernelSpec{Shell{kind,path},Python{path},Monty}`, `KernelId{scope,spec}`, `KernelPhase`, `KernelState`, `RunMode{Cell,Line{line},Selection{from,to}}` (TS `CellRunMode`), `RunId(String)` (TS `CellRunId`), `RunState` (TS `CellRunState`), `ExitStatus{Code,Signal}`, `ExpectResult`, `CellRun`, `CellOutput` (nbformat, tag `output_type`), `Armed`, `CellState`, `InterpreterKind`, `Interpreter`, `StateReply`, `RunGet`, `OutputPage`, `CellEvent{RunQueued,RunStarted,RunFinished{run,scope},KernelChanged{kernel},CellsChanged{scope}}`, `RunRequest`, `RunAllRequest`, `Scope::key`, `CellRef::scope`; re-exports `surface::cell::*` grammar types, `document::{CellLatest,DocId,NoteKey,Principal}`, `tools::pty::{Mark,MarkKind,PtyChunk}` | — |
+| `crates/cells/src/error.rs` (C) | `CellsError{NotBuilt,NotRunning,NotOwner,Changed,Superseded,Disarmed,Danger,MemberAck,Invalid,FolderNotFound,KernelBusy,RunIdConflict,NotFound,Private,NoInterpreter,Failed}`, `CellsError::code()`, `Result` | all |
+| `crates/cells/src/config.rs` (C) | `CellsConfig` (§15.4 keys + flattened `shell`/`prompt`/`python`/`monty`), `CellsConfig::from_runtime` | — |
+| `crates/cells/src/kernel.rs` (C) | `trait Kernel{spec,phase,execute,input,interrupt,kill,shutdown,live_cwd}`, `ExecuteRequest{run,code,mode,cwd,env,timeout}`, `KernelEvent{Started{log_from},Bytes,Mark,Output,InputRequest{prompt,password},Finished{exit,log_to,kernel_died}}`, `KernelSink`, `KernelCtx{id,owner,login_env,paths,config,jobs,root}`, `CellsPaths{root}` (+`db,shim,rc_dir,kernel_dir,run_dir`), `start_kernel` (arms `// 171:E1` Shell, `// 171:E2` Python, `// 171:E2` Monty), `needs_prologue(mode,this,prev)` | E1 shell, E2 python/monty |
+| `crates/cells/src/lib.rs` (C) | `PLUGIN`, `DIR`, `SKILL_PATH`, `CellsPlugin` (start: `actor::start` `// 171:E1`, `note::install` `// 171:E2`, `tools::register` `// 171:A1`) | — |
+| `crates/cells/src/actor.rs` (E1) | `CELLS_ACTOR`, `CellsActor`, `Handle`, `start(rt,cfg)->Cells`, `Cells::{lookup,config,paths,publish,run,run_all,stop,input,ask,state,run_get,output,output_file,runs,interpreters,kernel_restart,kernel_close,env_refresh,live,latest,attach,detach}`; `// 171:E2` calls into `note::source`/`note::latest`/`interp::interpreters` | E1 |
+| `crates/cells/src/{shell,run,render,redact,store,deliver}.rs` (E1) | `shell::{ShellConfig,start,resolve}`, `run::{check_expect,summary,armed}`, `render::{Rendered,render(bytes,cols,rows,scrollback)}`, `redact::mask(text,vault)->(String,u32)`, `store::{MIGRATOR,Store{pool},Store::open}`, `deliver::{cell_result,deliver}` | E1 |
+| `crates/cells/src/{prompt,tools}.rs`, `cells.md` (A1) | `prompt::{PROMPT,SKILL,PromptConfig}`, `tools::register(rt,cells)` | A1 |
+| `crates/cells/src/{python,monty,interp,note}.rs`, `shim.py` (E2) | `python::{SHIM,PythonConfig,start}`, `monty::{MontyConfig,start,sufficient}`, `interp::{interpreters(cwd,env),resolve(choice,cwd,env,monty_ok)}`, `note::{Route,NoteSource,kernel_session (implemented),install,route,source,origin,deliver,latest}` | E2 |
+| `crates/cells/migrations/` | `0001_cells.sql` (C, frozen: `cell_runs` + 2 indexes, every §8.4 column), `0002_cells_e1.sql` (E1), `0003_cells_e2.sql` (E2) | — |
+| `crates/surface/src/cell.rs` (C, implemented) | `Lang`, `lang_of`, `is_runnable`, `HeaderLine`, `Cell` (TS `CellSpec`), `CellOptions`, `Expect`, `PythonChoice`, `NoteDefaults`, `Severity`, `Problem{code,severity,message,key}`, `ValidateCtx`, `ChipKind`, `Chip`, `parse`, `parse_defaults`, `digest`, `validate`, `lint`, `lint_scripts`, `monty_scan`, `parse_duration`; fixtures `crates/surface/tests/cells.json` | U1 mirrors in `grammar.ts` |
+| `crates/tools/src/pty.rs` (C fields) | `Mark{kind,exit,cwd,offset}`, `MarkKind{Ready,Start,End,Cwd}`, `StartPty.program`, `StartPty.cell` | E1 |
+| `crates/link/src/types.rs` / `conn.rs` (C) | `RpcPeer::is_internal()` (implemented); `GUEST_METHODS` += `cell_latest` | — |
+| `crates/agent/src/supervisor.rs` (C field) | `HarnessDeliver.wake` (serde default true), `HarnessDeliver: Deserialize` | A1 |
+| `crates/document/src/cells.rs` (C stubs → D2) | `NoteKey{Name,Block}`, `CodeBlockText{doc,key}` → `Result<CodeBlockTextReply{block,language,text,last_author},String>` (`// 171:D2`), `trait RunAnnotations::note_cell(doc,block,language,text)->Option<CellAnnotation{outline,output,run_line}>`, `set_run_annotations`, `run_annotations`, `CellLatest`, `Store::{cell_latest,put_cell_latest}` (`// 171:D2`) | D2 (E2 implements `RunAnnotations`) |
+| `crates/rpc/src/api.rs` (C) | the 16 methods + `cell_attach`/`cell_detach` (names/params of §15.2), one delegating line each; `authorize`/`authorize_opt`/`peer`/`ASK_FAILED`/`NOT_RUNNING`/`UNAUTHORIZED` are `pub(crate)` | — |
+| `crates/rpc/src/cells.rs` (E1) | `CELL_REFUSED = -32020`, `cells_err`, `handle`, one `pub(crate) async fn` per method (`run, run_all, stop, input, ask, attach, state, run_get, output, output_file, runs, interpreters, kernel_restart, kernel_close, env_refresh, live`), `Latest` | E1 |
+| `crates/rpc/src/cells_latest.rs` (E2) | `latest(server, ext, doc)` | E2 |
+| `crates/desktop/ui/src/components/cells/types.ts` (C) | `CellViewState` (14 states of §11.2), `HostChip`, `CellCallbacks`, `CellProps`, `OutputViewProps` | U1, U2 |
+| `crates/desktop/ui/src/components/cells/*.tsx` stubs | U1: `Cell`, `CellFence` + `CELL_LANGUAGES`, `RunbookBar`, `KernelStrip`, `ResultCard`, `QuitSheet`, `grammar.ts` `cellOf`, `theme.ts` `cellTheme`; U2: `NoteCell`, `CellDefaults`, `NoteKernelPill`, `GuestCell` (+ `<Name>Props`) | U1, U2 |
+| `crates/desktop/ui/src/rpc/api.ts` (C) | `Api.cell_*` (16, positional), `METHODS` += 16 names; `cell_attach` via `client.stream<PtyChunk>('cell_attach', [run], 'cell_detach', …)` | — |

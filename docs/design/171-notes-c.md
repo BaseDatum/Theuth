@@ -12,10 +12,10 @@ Decisions taken where the design or the brief was silent or contradictory (simpl
 6. **`render::render(bytes, cols, rows, scrollback) -> Rendered {ansi, text, dropped_lines}`** instead of `-> String`: §8.3 needs both `out.ansi` and `out.txt` from one parse.
 7. **E2's `RunAnnotations` registration** is `note::install(&cells)` called from `CellsPlugin::start` (`crates/cells/src/lib.rs`, marked `// 171:E2`), not a `crates/theuth/src/main.rs` line: the impl needs the `Cells` handle, which only exists inside the plugin start. main.rs carries no E2 line.
 8. **Shell resolution** (`§6.5`, which bash) is `shell::resolve` in E1's `shell.rs`; `interp::resolve` (E2) is python-only and `interp::interpreters` lists shells through `shell::resolve`. W1 needs shells before E2 lands.
-9. **`RunRequest` / `RunAllRequest`** wrap the RPC params plus `pressed_by` (filled by E1's RPC layer from the peer).
+9. **`RunRequest` / `RunAllRequest`** wrap the RPC params plus `pressed_by` (filled by E1's RPC layer from the peer); internal RPC → actor types, not ts-exported (`dreaming` already owns the `RunRequest` binding name).
 10. **`Cells::interpreters(cwd)`** has no `engine` param: routing to another engine is the RPC layer's (E1, `crate::cells::interpreters`).
 11. **Error mapping**: `CellsError::NotRunning` → `-32001`, `NotOwner` → `-32002`, every other refusal → `CELL_REFUSED = -32020` with `data: {"reason": CellsError::code()}`; the message is the text the cell shows.
-12. **`crates/rpc/src/api.rs`**: `authorize`, `authorize_opt`, `peer` and the `ASK_FAILED`/`NOT_RUNNING`/`UNAUTHORIZED` consts widened to `pub(crate)` so E1's `rpc::cells` can admit peers without editing `api.rs`.
+12. **`crates/rpc/src/api.rs`**: `authorize`, `authorize_opt`, `peer` and the `ASK_FAILED`/`NOT_RUNNING`/`UNAUTHORIZED` consts widened to `pub(crate)` so E1's `rpc::cells` can admit peers without editing `api.rs`. `pub mod api;` in `crates/rpc/src/lib.rs` carries `#[allow(clippy::too_many_arguments)]`: jsonrpsee drops method attributes and `cell_run` has §15.2's six params plus the extensions.
 13. **A1's `first_run` line is a marker comment**, not live code: `if !cells::prompt::SKILL.is_empty()` on a const trips `clippy::const_is_empty`.
 14. **Reserved migrations** `0002_cells_e1.sql` / `0003_cells_e2.sql` hold a comment and `SELECT 1;` (sqlx runs every file in `./migrations`; a worker replaces the `SELECT 1;`).
 15. **StartPty construction sites** include `crates/sandbox/src/actor.rs`, so the check gate adds `-p sandbox`.

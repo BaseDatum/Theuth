@@ -477,38 +477,36 @@ wire! {
     }
 }
 
-wire! {
-    /// `cell_run` parameters plus what the RPC layer knows about the press.
-    pub struct RunRequest {
-        /// Which cell.
-        pub cell: CellRef,
-        /// Digest the client presented (invariant 5).
-        pub seen: String,
-        /// What part.
-        pub mode: RunMode,
-        /// Client-minted id.
-        pub run: RunId,
-        /// The user's edited code (F4).
-        pub edited: Option<String>,
-        /// Member pub8 acknowledged (invariant 6).
-        pub member_ack: Option<String>,
-        /// Device id + client kind, filled by the RPC layer.
-        pub pressed_by: String,
-    }
+/// `cell_run` parameters plus what the RPC layer knows about the press (internal: RPC → actor).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunRequest {
+    /// Which cell.
+    pub cell: CellRef,
+    /// Digest the client presented (invariant 5).
+    pub seen: String,
+    /// What part.
+    pub mode: RunMode,
+    /// Client-minted id.
+    pub run: RunId,
+    /// The user's edited code (F4).
+    pub edited: Option<String>,
+    /// Member pub8 acknowledged (invariant 6).
+    pub member_ack: Option<String>,
+    /// Device id + client kind, filled by the RPC layer.
+    pub pressed_by: String,
 }
 
-wire! {
-    /// `cell_run_all` parameters plus the pressing device.
-    pub struct RunAllRequest {
-        /// Session or doc.
-        pub scope: Scope,
-        /// Cells in order with the digest the client saw.
-        pub cells: Vec<(CellRef, String)>,
-        /// Client-minted pass id.
-        pub pass: String,
-        /// Device id + client kind, filled by the RPC layer.
-        pub pressed_by: String,
-    }
+/// `cell_run_all` parameters plus the pressing device (internal: RPC → actor).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunAllRequest {
+    /// Session or doc.
+    pub scope: Scope,
+    /// Cells in order with the digest the client saw.
+    pub cells: Vec<(CellRef, String)>,
+    /// Client-minted pass id.
+    pub pass: String,
+    /// Device id + client kind, filled by the RPC layer.
+    pub pressed_by: String,
 }
 
 impl RunId {
