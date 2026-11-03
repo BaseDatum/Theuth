@@ -38,21 +38,32 @@ the call went on. No log line, no recovery, `gaps: []`, `degraded: []`, nothing 
 | Reopen judged (stall) | no chunk 3 s after it | failed |
 | Backoff | after a failed reopen | 1, 2, 5, 10, then every 30 s; reset after 30 s clean |
 | RETARGET | every reopen | tapped pid not running output and a family member is → tap it |
-| FALLBACK | 3 consecutive failed reopens, each confirmed by an audible probe (stalls: family running output) | `SystemLoopback` + `exclude_self` |
-| RETURN | every 60 s in the fallback | 4 s probe of the app's tap (target pid while it lives, else a family member running output); ≥ 0.5 s non-zero → back on it, health `Ok` |
+| FALLBACK | the 3rd consecutive failed reopen, each confirmed by an audible probe, decides it at once (stalls: family running output, at the next reopen) | `SystemLoopback` + `exclude_self` |
+| RETURN | every 60 s in the fallback | 4 s probe of the app's tap (a family member running output, else the target pid while it lives); ≥ 0.5 s non-zero → buffered global-tap chunks are recorded, then back on it, health `Ok` |
 | Global tap (pid 0, the fallback) | 15 s of zeros and anything running output (30 s / every 2 min if unknown) | reopen (nothing to probe against) |
 | `PermissionDenied` / `TerminalError` | at once | stream dropped, retried with backoff (no fallback on permission) |
+| Probe gives no answer / < 1 s of frames | 14 s / — | `Failed` (never "genuine silence") |
 
-Family (`in_family`): the target itself, the same bundle id or one under it (`us.zoom.xos.*`, not
+Family (`in_family`): the target itself (same pid AND same bundle id, or the same executable when
+both resolve — a reused pid is a stranger), the same bundle id or one under it (`us.zoom.xos.*`, not
 `com.google.drivefs` for `com.google.Chrome`), or an executable inside the target's outermost `.app`
 (`libc::proc_pidpath`; `…/zoom.us.app/Contents/Frameworks/aomhost.app/…` is zoom.us's); never our own
 pid. `IsRunningOutput` now only picks retarget/return candidates, gates the global tap's rule, and
-appears in the health line. The probe floor is `AUDIBLE_DBFS` (Zoom's natural-pause floor in the
-incident recording: −88…−95 dB RMS; speech −25…−45 dB); `THEUTH_MEETING_PROBE_DBFS` overrides it as a
-calibration knob. The mic gets STALL and device-error reopening only: a muted mic is legitimately
-zero. Every flexaudio event is logged at warn (`ChunkDropped` / `Clipped` summed into one line a
+appears in the health line; it is re-read at most every second, every 5 s while nothing plays. The
+probe floor is `AUDIBLE_DBFS` (Zoom's natural-pause floor in the incident recording: −88…−95 dB RMS;
+speech −25…−45 dB); `THEUTH_MEETING_PROBE_DBFS` overrides it as a calibration knob (read once per
+meeting, clamped to −140…0; NaN/inf/unparsable → warned and ignored). A probe verdict applies only to
+the state that asked for it (no episode for Confirm, the same live episode for Judge); a stream that
+died in the meantime keeps its reopen schedule. Gaps never overlap. The mic gets STALL and
+device-error reopening only: a muted mic is legitimately zero. Every flexaudio event is logged at warn
+(`ChunkDropped` — a per-stream running total, counted as deltas — and `Clipped` summed into one line a
 minute); each track gets one info line a minute: `meeting capture health: system chunks= frames=
 zero=% peak=dBFS target= active= reopens= episode=`.
+
+**Pauses:** the taps stay open while the meeting is paused; the watchdog sees every chunk (the
+rings drop them), so a pause is never a stall, and zero runs, probes, reopens and warnings keep
+running. Gap times map onto the recording clock with every completed pause subtracted only where it
+precedes the instant (`RecordingClock` keeps the pause intervals).
 
 **Accepted false positive:** a muted call while *another* app plays sound at ≥ −70 dBFS is
 "audible elsewhere": the app tap reopens, warns after the first judged failure, and after three falls
@@ -61,15 +72,20 @@ back. The fallback then records that app plus Zoom, until a return probe hears t
 ## What is recorded and shown
 - Each episode becomes a manifest `gaps` entry with `track`, `reason` (`Stalled | Silent |
   PermissionDenied | Failed`) and `retarget` (the new pid). An entry without `track` is still a
-  pause. The fallback adds `degraded: SystemAudioFallback { reason, at_ms, until_ms }` (`until_ms` set
-  when a return probe brings the app's tap back); a denied permission adds
-  `PermissionDenied(AudioCapture)`.
+  pause. The fallback adds a `fallbacks` entry `{ reason, at_ms, until_ms }` (`until_ms` set when a
+  return probe brings the app's tap back); a denied permission adds `degraded:
+  PermissionDenied(AudioCapture)`. **Forward compatibility:** everything this writes into
+  `manifest.json` is main's enum variants or optional fields pre-173 binaries ignore, so the installed
+  app and dev builds share `~/.theuth` safely (pinned by a test that loads it with a copy of main's
+  types).
 - `MeetingEvent::Capture` and `meeting_status.capture` carry `{mic, system}` health:
   `Ok | Recovering | Lost | Degraded`. A track stays `Ok` until the first reopen failed (about 29 s
   of zeros: 15 s + probe 4 s + 5 s + probe 4 s; 7 s for a stall); a denied permission or terminal error shows at once. The control center
   shows "Not hearing zoom.us since 21:08 — reconnecting…", then "Still silent — check the output device
   or System Audio Recording permission". The web island and the native companion island show a badge
-  and the same line. The warning clears by itself when audio returns.
+  and the same line (the companion's collapsed pill: an amber dot and "Not hearing zoom.us"). The
+  warning clears by itself when audio returns; a stored `PermissionDenied` degradation is not shown
+  live (the capture health carries the live state).
 
 ## Follow-ups
 - A playing source on a non-default output device is not in the probe's global tap (it follows
