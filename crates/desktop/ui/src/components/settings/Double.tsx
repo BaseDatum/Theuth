@@ -394,8 +394,8 @@ function Training({ s, settings }: { s: DoubleStatus | undefined; settings: Doub
           Save
         </Button>
       </Row>
-      <Row label="Capture" description="Which cards the double predicts and learns from. Secret requests and hand-offs are never captured.">
-        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+      <Row stack label="Capture" description="Which cards the double predicts and learns from. Secret requests and hand-offs are never captured.">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           {(['approvals', 'asks', 'attention', 'packets', 'drafts'] as const).map((k) => (
             <label key={k} className="flex items-center gap-1.5 text-xs">
               <Switch checked={settings?.capture[k] ?? false} disabled={!settings || busy} onCheckedChange={(v) => patch((c) => ({ ...c, capture: { ...c.capture, [k]: v } }))} aria-label={`capture ${k}`} />

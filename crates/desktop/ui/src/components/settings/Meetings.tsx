@@ -181,7 +181,7 @@ export function Meetings() {
       </Section>
       {!local && (
         <Section title="Echo">
-          <Row label="Echo in your microphone" description="Without echo cancellation the other side can leak back in through your microphone and be transcribed twice. This counts it; nothing is removed. Review asks per meeting whether you used speakers.">
+          <Row stack label="Echo in your microphone" description="Without echo cancellation the other side can leak back in through your microphone and be transcribed twice. This counts it; nothing is removed. Review asks per meeting whether you used speakers.">
             <span className="text-[13px] text-fg-secondary">{echo.isError ? errorText(echo.error) : echo.data ? echoSummary(echo.data) : null}</span>
           </Row>
         </Section>
