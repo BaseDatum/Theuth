@@ -3,7 +3,22 @@ import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefSource } from '@/rpc/bindings/BriefSource'
 import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
-import { type MeetingSlice, LINES_KEEP, ORACLE_KEEP, captureWarning, current, hhmm, oracleCounters, oracleSummary, reduce, useMeeting, who } from './meeting'
+import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
+import {
+  type MeetingSlice,
+  LINES_KEEP,
+  ORACLE_KEEP,
+  captureBadge,
+  captureWarning,
+  current,
+  hhmm,
+  liveBadges,
+  oracleCounters,
+  oracleSummary,
+  reduce,
+  useMeeting,
+  who,
+} from './meeting'
 
 const M = 'm1'
 const brief = (id: string, source: BriefSource, topic: string | null = null): Brief => ({
@@ -215,4 +230,42 @@ test('173: captureWarning names the app and the time, says what to check, and cl
     `Not hearing your microphone since ${at}. Still silent — check the input device or Microphone permission. Retrying…`,
   )
   expect(captureWarning({ mic: OK, system: OK }, 'zoom')).toBeNull()
+})
+
+test('173 R3-7: hydrate from an engine without `capture` leaves both tracks Ok; no warning', () => {
+  const status = {
+    state: 'Recording',
+    meeting: M,
+    session: 's1',
+    elapsed_ms: 0n,
+    degraded: [],
+    cursor: null,
+    topics: [],
+    approval_waiting: false,
+    supported: 'Yes',
+    accelerator: '',
+    detection: null,
+  } as unknown as MeetingStatus
+  useMeeting.getState().hydrate(status, [], [])
+  const s = useMeeting.getState()
+  expect(s.capture).toEqual({ mic: OK, system: OK })
+  expect(captureWarning(s.capture, s.app)).toBeNull()
+})
+
+test('173: captureBadge is the strip word per state, system track first', () => {
+  expect(captureBadge({ mic: OK, system: OK })).toBeNull()
+  expect(captureBadge({ mic: OK, system: { state: 'Recovering', reason: 'Silent', since: SINCE } })).toBe('reconnecting audio')
+  expect(captureBadge({ mic: OK, system: { state: 'Lost', reason: 'Failed', since: SINCE } })).toBe('system audio lost')
+  expect(captureBadge({ mic: OK, system: { state: 'Lost', reason: 'PermissionDenied', since: SINCE } })).toBe('no system audio permission')
+  expect(captureBadge({ mic: OK, system: { state: 'Degraded', reason: 'Silent' } })).toBe('system audio fallback')
+  expect(captureBadge({ mic: { state: 'Lost', reason: 'PermissionDenied', since: SINCE }, system: OK })).toBe('no mic permission')
+  expect(captureBadge({ mic: { state: 'Recovering', reason: 'Stalled', since: SINCE }, system: { state: 'Degraded', reason: 'Silent' } })).toBe('system audio fallback')
+})
+
+test('173 R3-6: a PermissionDenied degradation is never a strip badge; the capture badge carries it and clears', () => {
+  const degraded = [{ PermissionDenied: 'AudioCapture' } as const]
+  expect(captureBadge({ mic: OK, system: { state: 'Lost', reason: 'PermissionDenied', since: SINCE } })).toBe('no system audio permission')
+  expect(liveBadges(degraded)).toEqual([])
+  expect(captureBadge({ mic: OK, system: OK })).toBeNull()
+  expect(liveBadges([...degraded, 'MicNoAec', { SttDown: 'Mic' }, { PermissionDenied: 'Microphone' }])).toEqual(['headphones recommended', 'transcription down'])
 })

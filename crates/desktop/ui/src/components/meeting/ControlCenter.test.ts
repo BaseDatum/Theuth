@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest'
 vi.hoisted(() => {
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined })
 })
-import { STEPS, lifecycle } from './ControlCenter'
+import { STEPS, degradationText, fallbackText, gapText, lifecycle } from './ControlCenter'
 
 test('no strip while live, before the recording ended, or for an unfinished start', () => {
   expect(lifecycle(undefined, null, null, true)).toBeNull()
@@ -31,4 +31,21 @@ test('summarizing spins, done is the last step, failed offers the pipeline', () 
   expect(lifecycle('Summarizing', null, null, true)).toEqual({ current: STEPS.indexOf('Summarizing'), busy: true, failure: null, action: null })
   expect(lifecycle('Done', null, null, true)).toEqual({ current: STEPS.length - 1, busy: false, failure: null, action: null })
   expect(lifecycle('Failed', null, 'align: no words', true)).toEqual({ current: null, busy: false, failure: 'align: no words', action: 'post_retry' })
+})
+
+test('173: degradationText names the track or permission', () => {
+  expect(degradationText('MicNoAec')).toBe('MicNoAec')
+  expect(degradationText({ SttDown: 'System' })).toBe('STT down (System)')
+  expect(degradationText({ PermissionDenied: 'Microphone' })).toBe('Microphone permission denied')
+  expect(degradationText({ PermissionDenied: 'AudioCapture' })).toBe('System Audio Recording permission denied')
+})
+
+test('173: gapText reads track, clock, length, reason and the retarget', () => {
+  expect(gapText({ at_ms: 370_000n, dur_ms: 38_400n, track: 'system', reason: 'Silent' })).toBe('system 00:06:10 for 38 s (silent)')
+  expect(gapText({ at_ms: 370_000n, dur_ms: 38_400n, track: 'system', reason: 'Stalled', retarget: 4242 })).toBe('system 00:06:10 for 38 s (stalled, tap moved to pid 4242)')
+})
+
+test('173 R3: fallbackText spans the clock, open-ended until a return probe', () => {
+  expect(fallbackText({ reason: 'Silent', at_ms: 370_000n, until_ms: 450_000n })).toBe('00:06:10–00:07:30 (silent)')
+  expect(fallbackText({ reason: 'Silent', at_ms: 370_000n, until_ms: null })).toBe('from 00:06:10 (silent)')
 })

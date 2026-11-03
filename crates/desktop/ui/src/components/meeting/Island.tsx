@@ -23,11 +23,9 @@ import {
   setHiddenFromCapture,
 } from '@/lib/tauri'
 import { cn } from '@/lib/utils'
-import type { CaptureStatus } from '@/rpc/bindings/CaptureStatus'
-import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
-import { captureWarning, current, elapsed, live, mmss, oracleSummary, useMeeting } from '@/store/meeting'
+import { captureBadge, captureWarning, current, elapsed, live, liveBadges, mmss, oracleSummary, useMeeting } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
 
@@ -35,33 +33,6 @@ const MOVE_SAVE_MS = 300
 /** Strip height and default width, logical px (03 §2). */
 const STRIP = 44
 const WIDTH = 440
-
-/** 03 §2 badges; a live `PermissionDenied` (173) is a track the OS refused mid-meeting. */
-function badge(d: Degradation): string | null {
-  if (d === 'MicNoAec') return 'headphones recommended'
-  if (d === 'ModelDown') return 'model down'
-  if (d === 'DiskLow') return 'disk low'
-  if (d === 'NearMaxLength') return '10 min left'
-  if (d === 'NoNote') return 'no note'
-  if (typeof d === 'object' && 'SttDown' in d) return 'transcription down'
-  // 173 R2-3: only while it lasts; a return probe sets `until_ms`.
-  if (typeof d === 'object' && 'SystemAudioFallback' in d) return d.SystemAudioFallback.until_ms === null ? 'system audio fallback' : null
-  if (typeof d === 'object' && 'PermissionDenied' in d) return d.PermissionDenied === 'Microphone' ? 'no mic permission' : 'no system audio permission'
-  if (d === 'DiarizationDown') return 'speaker labels down'
-  return null
-}
-
-/** 173: the strip's word for the capture health (the system track first); `null` when both tracks are heard. */
-function captureBadge(c: CaptureStatus): string | null {
-  const sys = c.system
-  if (sys.state === 'Lost') return sys.reason === 'PermissionDenied' ? 'no system audio permission' : 'system audio lost'
-  if (sys.state === 'Recovering') return 'reconnecting audio'
-  if (sys.state === 'Degraded') return 'system audio fallback'
-  const mic = c.mic
-  if (mic.state === 'Lost') return mic.reason === 'PermissionDenied' ? 'no mic permission' : 'mic lost'
-  if (mic.state === 'Recovering') return 'reconnecting mic'
-  return null
-}
 
 export function Island() {
   const api = useApi()
@@ -190,12 +161,7 @@ export function Island() {
 
   const warning = captureWarning(capture, app)
   const alert = captureBadge(capture)
-  // The capture badge is the live word; a degradation that says the same (the fallback, a denied permission) is not repeated.
-  const badges = [
-    ...degraded.map(badge).filter((b): b is string => b !== null && b !== alert),
-    ...(approval ? ['approval waiting'] : []),
-    ...(listening ? ['listening…'] : []),
-  ]
+  const badges = [...liveBadges(degraded), ...(approval ? ['approval waiting'] : []), ...(listening ? ['listening…'] : [])]
   const action = (p: Promise<unknown>) => {
     setMenu(false)
     void p.then(() => qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })).catch(() => undefined)

@@ -179,6 +179,8 @@ function trackWarning(h: CaptureHealth, source: string, device: string, permissi
         : `Not hearing ${source} since ${hhmm(h.since)}. Still silent — check the ${device} device or ${permission} permission. Retrying…`
     case 'Degraded':
       return `${source}'s audio tap failed; recording all system audio instead`
+    default:
+      return null
   }
 }
 
@@ -193,6 +195,33 @@ export function captureWarning(capture: CaptureStatus, app: string | null): stri
   ].filter((p): p is string => p !== null)
   return parts.length > 0 ? parts.join(' · ') : null
 }
+
+/** 173: the strip's word for the capture health (the system track first); `null` when both tracks are heard. */
+export function captureBadge(c: CaptureStatus): string | null {
+  const sys = c.system
+  if (sys.state === 'Lost') return sys.reason === 'PermissionDenied' ? 'no system audio permission' : 'system audio lost'
+  if (sys.state === 'Recovering') return 'reconnecting audio'
+  if (sys.state === 'Degraded') return 'system audio fallback'
+  const mic = c.mic
+  if (mic.state === 'Lost') return mic.reason === 'PermissionDenied' ? 'no mic permission' : 'mic lost'
+  if (mic.state === 'Recovering') return 'reconnecting mic'
+  return null
+}
+
+/** 03 §2 badges; `PermissionDenied` is the capture badge's (173 R3-6) — it says so live and clears itself. */
+function badge(d: Degradation): string | null {
+  if (d === 'MicNoAec') return 'headphones recommended'
+  if (d === 'ModelDown') return 'model down'
+  if (d === 'DiskLow') return 'disk low'
+  if (d === 'NearMaxLength') return '10 min left'
+  if (d === 'NoNote') return 'no note'
+  if (d === 'DiarizationDown') return 'speaker labels down'
+  if (typeof d === 'object' && 'SttDown' in d) return 'transcription down'
+  return null
+}
+
+/** The strip's degradation badges, in order; the capture badge ({@link captureBadge}) is drawn apart from these. */
+export const liveBadges = (degraded: Degradation[]): string[] => degraded.map(badge).filter((b): b is string => b !== null)
 
 /** Pure transition; exported for the tests. */
 export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
@@ -291,7 +320,8 @@ export const useMeeting = create<MeetingStore>()((set, get) => ({
       briefs,
       cursor: at >= 0 ? at : briefs.length - 1,
       approvalWaiting: status.approval_waiting,
-      capture: status.capture,
+      // Older/remote engines send no `capture`.
+      capture: status.capture ?? EMPTY.capture,
       lines,
     })
   },
