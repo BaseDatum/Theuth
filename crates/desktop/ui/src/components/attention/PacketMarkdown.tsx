@@ -2,7 +2,7 @@ import type { MouseEvent } from 'react'
 import { Streamdown } from 'streamdown'
 import { markdownComponents, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
 import { FenceContext } from '@/components/chat/surface/JsonRenderFence'
-import { openExternal } from './Pointers'
+import { openExternal } from '@/lib/platform'
 
 /** The settled, non-streaming case: a broken fence shows its one dim line, never a skeleton. */
 const SETTLED: FenceContext = { running: false, hasLaterAssistant: false }

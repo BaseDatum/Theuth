@@ -1,14 +1,18 @@
-import { AudioLines, GitFork, Mic, Pencil, X } from 'lucide-react'
+import { AudioLines, ExternalLink, Forward, GitFork, Link2, Mic, Paperclip, Pencil, X } from 'lucide-react'
 import { memo } from 'react'
+import { ChannelIcon } from '@/components/icons/channels'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { type AttachRef, compose, parse } from '@/lib/attach'
+import { type Segment, type SharedMessage, originLabel, originOf, parseShared, stripMarker } from '@/lib/channel-origin'
 import { parseAsk } from '@/lib/board-ask'
 import { type Edit, useDrafts } from '@/lib/drafts'
 import { parseSpoken } from '@/lib/injected'
 import { useApi } from '@/lib/rpc'
 import { parseScreenLines } from '@/lib/screen-context'
+import { openExternal } from '@/lib/platform'
 import { parseNote } from '@/lib/voice-note'
+import type { ChannelOrigin } from '@/rpc/bindings/ChannelOrigin'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
@@ -42,6 +46,66 @@ function ChipRow({ refs, session, onDrop }: { refs: AttachRef[]; session?: strin
       ))}
     </div>
   )
+}
+
+/** The user's words. */
+const BUBBLE = 'max-w-[85%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words md:max-w-[70%]'
+
+/** 172 D4: the channel a message came in on, as a muted tag above the bubble. */
+function OriginChip({ origin }: { origin: ChannelOrigin }) {
+  return (
+    <span className="inline-flex max-w-[85%] items-center gap-1.5 rounded-full bg-layer-2 px-2 text-xs leading-5 text-fg-secondary md:max-w-[70%]" data-channel={origin.via}>
+      <ChannelIcon via={origin.via} className="size-3.5 shrink-0" />
+      <span className="truncate">{originLabel(origin)}</span>
+    </span>
+  )
+}
+
+/** 172 D5: a forwarded or linked Slack message as a quote card; its `(channel …, ts …)` line is not shown. */
+function SharedCard({ message: m }: { message: SharedMessage }) {
+  const Icon = m.kind === 'forwarded' ? Forward : Link2
+  return (
+    <div className="my-1 w-full max-w-[85%] min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm md:max-w-[70%]" data-slack-shared={m.kind}>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-secondary">
+        <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+        <span>{m.kind === 'forwarded' ? 'Forwarded message' : 'Linked message'}</span>
+        <span className="font-medium text-foreground wrap-anywhere">{m.author}</span>
+        {m.channel && <span className="wrap-anywhere">#{m.channel}</span>}
+        {m.time && <span>{m.time}</span>}
+        {m.permalink && (
+          <a
+            href={m.permalink}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              openExternal(m.permalink!)
+            }}
+            className="inline-flex items-center gap-1 underline-offset-4 hover:text-foreground hover:underline"
+          >
+            Open in Slack <ExternalLink className="size-3" aria-hidden="true" />
+          </a>
+        )}
+      </div>
+      {m.body && <div className="mt-2 border-l-2 border-fg-accent pl-3 leading-6 whitespace-pre-wrap wrap-anywhere">{m.body}</div>}
+      {m.files && <div className="mt-1.5 text-xs text-fg-secondary wrap-anywhere">files: {m.files}</div>}
+    </div>
+  )
+}
+
+/** One segment of a Slack message body: the user's words as a bubble, a shared message as a card, an attachment as one muted line. */
+function SlackSegment({ segment: s }: { segment: Segment }) {
+  if (s.kind === 'shared') return <SharedCard message={s.message} />
+  if (s.kind === 'attachment')
+    return (
+      <span className="flex max-w-[85%] min-w-0 items-center gap-1 text-xs text-fg-secondary md:max-w-[70%]" title={s.text}>
+        <Paperclip className="size-3 shrink-0" aria-hidden="true" />
+        <span className="truncate">
+          {s.from ? `${s.from} · ` : ''}
+          {s.text || 'attachment'}
+        </span>
+      </span>
+    )
+  return s.text.trim() ? <div className={BUBBLE}>{s.text}</div> : null
 }
 
 /** The bubble as a textarea: Enter sends, Shift+Enter breaks the line, Escape cancels. Its state is the store's `edit`
@@ -105,6 +169,8 @@ export function imagesFor<T>(xs: T[] | undefined, i: number, n: number): T[] | u
  * `context` is the stored row's membership (48 §3.3): its attachments are the authoritative occurrences (`files` is our optimistic list until then), and a removed row renders as archive.
  * `readOnly` (an inspection page) shows text and attachments only: no edit, fork or removal controls.
  * Leading `[attached …]`/`[doc …]` lines (66 §7.9) render as chips; the bubble shows the body only.
+ * `channel` (172 D4) — or, for a row stored before 172, a leading `[slack dm]`/`[slack channel]` line — shows as an origin chip
+ * and the marker line comes off; a Slack body's forwarded/linked/attachment blocks render as cards (172 D5).
  * `[screen …]` lines (96 §6.6) render as one `ScreenContextCard` per display under the words, carrying the message's images;
  * `[image: …]`/`[document: …]` tokens (a send from another webview, or history before `context` lands) resolve under `<data_dir>/attachments/`. */
 export const MessageUser = memo(function MessageUser({
@@ -114,6 +180,7 @@ export const MessageUser = memo(function MessageUser({
   session,
   turn,
   context,
+  channel,
   at,
   readOnly,
 }: {
@@ -123,6 +190,7 @@ export const MessageUser = memo(function MessageUser({
   session: string
   turn?: number
   context?: ContextEntry
+  channel?: ChannelOrigin
   at?: number
   readOnly?: boolean
 }) {
@@ -131,8 +199,9 @@ export const MessageUser = memo(function MessageUser({
   const fork = useFork(session)
   const edit = useDrafts((s) => s.edits[session])
   const editing = !readOnly && turn != null && edit?.turn === turn
-  // 45 §7.4 / 66 §7.9: the markers are the text, so own sends and history render alike.
-  const { refs, body } = parse(text)
+  // 45 §7.4 / 66 §7.9: the markers are the text, so own sends and history render alike. 172: the Slack marker is for the model.
+  const origin = originOf({ text, channel })
+  const { refs, body } = parse(stripMarker(text))
   const note = parseNote(body)
   // 76 talk: `[spoken, N s(, interrupted)]` is the user's utterance from the live talk — the same bubble under a caption.
   const spoken = note ? null : parseSpoken(body)
@@ -140,6 +209,7 @@ export const MessageUser = memo(function MessageUser({
   const ask = note || spoken ? null : parseAsk(body)
   // 96 §0.11: the `[screen …]` lines and binary tokens come off the words; the lines are cards, the tokens thumbnails.
   const { body: words, screens, images } = parseScreenLines(note?.body ?? spoken?.text ?? body)
+  const segments = origin?.via === 'slack' && words ? parseShared(words) : null
   const dataDir = useConnection((s) => s.info?.data_dir)
   const occurrences = context?.attachments
   // A token naming a MIME type (`[image: image/png]`, a part stored without a name) has no file to show.
@@ -148,6 +218,7 @@ export const MessageUser = memo(function MessageUser({
   const actions = !readOnly && !editing && !context?.removed && (context || (turn != null && !running))
   return (
     <div className="group flex flex-col items-end gap-2 py-2" onClick={stamp.onClick}>
+      {origin && <OriginChip origin={origin} />}
       {skill && <SkillCard name={skill} />}
       {screens.length === 0 && <Attachments files={paths} occurrences={occurrences} session={readOnly ? undefined : session} active={context?.active} className="justify-end" />}
       {!editing && <ChipRow refs={refs} session={readOnly ? undefined : session} />}
@@ -173,8 +244,10 @@ export const MessageUser = memo(function MessageUser({
         />
       ) : ask ? (
         <BoardQuoteCard ask={ask} />
+      ) : segments ? (
+        segments.map((s, i) => <SlackSegment key={i} segment={s} />)
       ) : (
-        words && <div className="max-w-[85%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words md:max-w-[70%]">{words}</div>
+        words && <div className={BUBBLE}>{words}</div>
       )}
       {!editing &&
         screens.map((s, i) => (

@@ -7,6 +7,7 @@ import { splitTime } from "@/lib/time";
 import { live, observedState } from "@/lib/session-tree";
 import type { Advisory as AdvisoryRow } from "@/rpc/bindings/Advisory";
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
+import type { ChannelOrigin } from "@/rpc/bindings/ChannelOrigin";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
@@ -232,15 +233,16 @@ function hhmm(iso: string): string {
 }
 
 /** Transcript entries for one user input: the skill chip plus words, one card per engine wrapper, or `you`. `turn` stamps
- * the `you` row (29 §5.1); every card of one stored row shares its `context` (48 §3.2). */
+ * the `you` row (29 §5.1); every card of one stored row shares its `context` (48 §3.2); `channel` (172 D3) rides on the `you` row. */
 function userEntries(
   text: string,
   cls: Injected[] | null,
   injected?: true,
   turn?: number,
   context?: ContextEntry,
+  channel?: ChannelOrigin,
 ): Entry[] {
-  const flag = injected ? { injected } : {};
+  const flag = { ...(injected ? { injected } : {}), ...(channel ? { channel } : {}) };
   if (cls === null)
     return [{ id: nextId(), kind: "user", text, turn, context, ...flag }];
   // 125 §8.3: every `<advisory>` element of one row is one card; its seq is the row's when the row is stored.
@@ -426,6 +428,7 @@ function historyEntries(h: HistoryEntry): Entry[] {
         undefined,
         h.turn ?? undefined,
         context,
+        h.channel,
       );
       return (view ? [{ ...view, context }, ...rows] : rows).map((e) => (at === undefined ? e : { ...e, at }));
     }
@@ -670,7 +673,7 @@ export function apply(
     case "InputQueued":
       return slice.queued.some((q) => q.id === e.id)
         ? slice
-        : { ...slice, queued: [...slice.queued, { id: e.id, text: e.text, defer: e.defer }] };
+        : { ...slice, queued: [...slice.queued, { id: e.id, text: e.text, defer: e.defer, ...(e.channel ? { channel: e.channel } : {}) }] };
     case "InputWithdrawn": {
       const queued = slice.queued.filter((q) => q.id !== e.id);
       return queued.length === slice.queued.length
@@ -910,7 +913,7 @@ function turn(
         ? stampUser(s.entries, e.turn_seq)
         : wrapped
           ? s.entries
-          : [...s.entries, ...(view ? [view] : []), ...userEntries(text, cls, undefined, e.turn_seq).map((x) => ({ ...x, at: Date.now() }))];
+          : [...s.entries, ...(view ? [view] : []), ...userEntries(text, cls, undefined, e.turn_seq, undefined, e.channel).map((x) => ({ ...x, at: Date.now() }))];
       return {
         ...s,
         entries,
@@ -936,7 +939,7 @@ function turn(
       return {
         ...s,
         queued: s.queued.toSpliced(at, 1),
-        entries: [...s.entries, ...(view ? [view] : []), ...userEntries(text, classify(text), true).map((x) => ({ ...x, at: Date.now() }))],
+        entries: [...s.entries, ...(view ? [view] : []), ...userEntries(text, classify(text), true, undefined, undefined, q.channel).map((x) => ({ ...x, at: Date.now() }))],
         lastInjected: e.turn,
       };
     }

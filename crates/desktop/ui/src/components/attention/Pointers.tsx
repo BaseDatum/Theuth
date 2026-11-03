@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { openUrl } from '@tauri-apps/plugin-opener'
 import { BookOpen, ExternalLink, FolderOpen, ListChecks, type LucideIcon, MessageSquare, Mic, StickyNote } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { ArtifactView } from '@/components/artifacts/Viewer'
@@ -8,13 +7,11 @@ import { Excerpt } from '@/components/chat/surface/Excerpt'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { extOf } from '@/lib/files'
+import { openExternal } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { Pointer } from '@/rpc/bindings/Pointer'
 import { parseCodeRef, pointerRoute, urlHost } from './model'
 import { UnifiedDiff } from './UnifiedDiff'
-
-/** Opens a link the way chat links open: the OS browser under Tauri, a new tab where `openUrl` is unavailable (BoardReader's fallback). */
-export const openExternal = (href: string) => void openUrl(href).catch(() => window.open(href, '_blank', 'noopener'))
 
 const ICON: Partial<Record<Pointer['kind'], LucideIcon>> = { artifact: FolderOpen, note: StickyNote, knowledge: BookOpen, session: MessageSquare, meeting: Mic, task: ListChecks, url: ExternalLink }
 
