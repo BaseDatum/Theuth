@@ -126,7 +126,7 @@ Then, after the licence finding: *"why do we care if there's no license. the foc
 | 8 | Markdown import keeps the fence info string verbatim in `language` | `crates/desktop/ui/src/components/editor/codeLanguages.ts:10` | §3.1 |
 | 9 | Only knowledge documents carry a frontmatter block | `docs/design/59-documents.md:485`; `packages/documents/src/schema.ts:4` | §3.3 |
 | 10 | One Yjs update ≤ 48 KiB; a document ≤ 8 MiB | `crates/document/src/actor.rs:947`, `:357` | §4.2, §13 |
-| 11 | `doc_read` outlines a code block as `[code:<language>] …` | `packages/documents/src/convert.ts:425` | §9.5 |
+| 11 | `doc_read` outlines a code block as `[code:<language>] …` | `packages/documents/src/convert.ts:425` | §9.6 |
 | 12 | Member blocks are labelled `doc-member:<pub8>` | `crates/document/src/tools.rs:34`; `crates/document/src/share.rs:262` | §13.1 |
 | 13 | Guests (mode 2) may call 11 methods only | `crates/link/src/conn.rs:538` | §12, §13 |
 | 14 | Replicated tables beside `docs`: `["docs","notebooks","notebook_items","sources"]`, attached by `replica::attach` | `crates/document/src/store.rs:65`; `crates/document/src/lib.rs:238` | §13.2 |
@@ -329,7 +329,7 @@ A notebook is a container over notes; its notes open in `NotePane`, the same edi
 
 ### 4.4 Exported markdown
 
-Every markdown rendering the engine produces for a reader of a note — `doc_read` (§9.5) and a user's `.md` export — writes each cell as its fence, then, when the cell has a run, an ```` ```output ```` fence with the latest run's cleaned text (capped at `cells.export_output_bytes`, 8 KiB, head+tail) and one line `ran 14:38 · exit 0 · 33 s · expect ✓`. The derived `note.md` mirror (59 §4.3) stays source-only, because it is a sync artifact that is re-imported. `.ipynb` import/export is wave 3 (runtimed's `nbformat` crate, 171-recon-theirs.md §4.3).
+Every markdown rendering the engine produces for a reader of a note — `doc_read` (§9.6) and a user's `.md` export — writes each cell as its fence, then, when the cell has a run, an ```` ```output ```` fence with the latest run's cleaned text (capped at `cells.export_output_bytes`, 8 KiB, head+tail) and one line `ran 14:38 · exit 0 · 33 s · expect ✓`. The derived `note.md` mirror (59 §4.3) stays source-only, because it is a sync artifact that is re-imported. `.ipynb` import/export is wave 3 (runtimed's `nbformat` crate, 171-recon-theirs.md §4.3).
 
 ### 4.5 Conversions
 
@@ -343,7 +343,7 @@ Every markdown rendering the engine produces for a reader of a note — `doc_rea
 ### 4.6 Placement rule (chat vs note)
 
 - **Chat** for up to about five one-off steps tied to the conversation (the preview → apply example).
-- **Note** for longer or repeatable procedures, a "run sheet", anything Sky will come back to, or when the session is a notebook chat (then a note in that notebook). The agent writes the note with `doc_insert`/`doc_create` and posts one line in chat with the link; the note's runs report back to the session that wrote the cells (§9.5).
+- **Note** for longer or repeatable procedures, a "run sheet", anything Sky will come back to, or when the session is a notebook chat (then a note in that notebook). The agent writes the note with `doc_insert`/`doc_create` and posts one line in chat with the link; the note's runs report back to the session that wrote the cells (§9.6).
 - Never both: the agent does not paste the same cells into chat and a note.
 
 ## 5. Kernels
@@ -487,13 +487,13 @@ No discovery runs anything but `uv python find`/`pyenv which` and each candidate
 
 ### 6.2 Monty sufficiency (checked at presentation)
 
-A cell is Monty-sufficient when (a) a static scan finds only imports from Monty's stdlib list (the list the runtime block teaches, `crates/agent/src/repl.rs:82-84`) and no `open(`, `subprocess`, `socket`, `urllib`, `requests`, `os.system`, `os.popen`, `exec(`, `eval(`; and (b) Monty's type check passes (§5.9). The check runs in the engine when the cell is first seen (a finished reply, an opened note), cached by digest, and its result rides `cell_state` (§15.3). A failing check on an explicit `python: monty` shows "Monty can't run this: no module named pandas — use Python 3.12 (.venv)" with one press that rewrites the header to `#| python: .venv` (a chat edit, F4, or a note text edit).
+A cell is Monty-sufficient when (a) a static scan finds only imports from Monty's stdlib list (the list the runtime block teaches, `crates/agent/src/repl.rs:82-84`) and no `open(`, `subprocess`, `socket`, `urllib`, `requests`, `os.system`, `os.popen`, `exec(`, `eval(`; and (b) Monty's type check passes (§5.9). The check runs in the engine when the cell is first seen (a finished reply, an opened note), cached by digest, and its result rides `cell_state` (§15.2). A failing check on an explicit `python: monty` shows "Monty can't run this: no module named pandas — use Python 3.12 (.venv)" with one press that rewrites the header to `#| python: .venv` (a chat edit, F4, or a note text edit).
 
 ### 6.3 The chip and its menu
 
 - Python chip text: `Python 3.12 · .venv (~/Develop/costs)`, `Python 3.13 · uv:costs`, `Python 3.11 · conda:base`, `Python 3.12.4 · pyenv:3.12.4`, `Python 3.9 · system`, `Monty · sandboxed` — nteract's env-source vocabulary (`nteract:crates/notebook-protocol/src/connection.rs:995-1041` per 171-recon-theirs.md §3.5). `auto` shows as `auto → .venv`.
 - Shell chip text: `bash 5.2 (Homebrew)`, `bash 3.2 (macOS)`, `zsh 5.9`, `sh (dash)`, `pwsh 7.4`.
-- The chip is a menu of `interpreters(cwd)` with each entry's `why`; choosing one writes the `#| python:` header (python) or the note default `shell:` (shells). The agent reads the same list (§9.4).
+- The chip is a menu of `interpreters(cwd)` with each entry's `why`; choosing one writes the `#| python:` header (python) or the note default `shell:` (shells). The agent reads the same list (§9.5).
 
 ### 6.4 `interpreters(cwd)` shape
 
@@ -559,7 +559,7 @@ sequenceDiagram
 
 ### 7.2 Run all and its stop rules
 
-The engine pass (`cell_run_all{scope, from, through}`, §5.10) runs the scope's cells in order and **stops before** a `danger` cell, a cell with a blocking lint chip (§3.7), an invalid cell, a cell whose cwd is missing, or an unarmed `after` cell; it **stops at** a non-zero exit, a missed expect, Stop, a timeout or a lost kernel. Superseded cells are skipped. The bar's label names the first boundary it can see in advance: "Run all · stops before Apply to ir-prod1"; afterwards it reads "Run all · stopped at a failed step (2/3)" with the reason one click away. A pass that contains a `review: true` cell wakes the agent once, when the pass ends (F1).
+The engine pass (`cell_run_all{scope, cells, pass}`, §5.10) runs the scope's cells in order and **stops before** a `danger` cell, a cell with a blocking lint chip (§3.7), an invalid cell, a cell whose cwd is missing, or an unarmed `after` cell; it **stops at** a non-zero exit, a missed expect, Stop, a timeout or a lost kernel. Superseded cells are skipped. The bar's label names the first boundary it can see in advance: "Run all · stops before Apply to ir-prod1"; afterwards it reads "Run all · stopped at a failed step (2/3)" with the reason one click away. A pass that contains a `review: true` cell wakes the agent once, when the pass ends (F1).
 
 ### 7.3 Stop and Kill (writer's call W-p)
 
@@ -621,7 +621,7 @@ Priority: `text/html`, `image/svg+xml`, `image/png`, `image/jpeg`, `text/markdow
 
 At the D mark the cells actor copies the log range `[C, D)` to `runs/<run>/term.log` and feeds it to a fresh render-only `vt100::Parser` sized like the kernel PTY with **10 000 scrollback rows** (nteract's figure, fact 44; the live parser keeps 512, fact 25). Paging the scrollback with `set_scrollback`, as the PTY layer's history pages do, it writes:
 
-- `out.ansi` — rows with SGR attributes (`rows_formatted`) for the static view (`ansi-output`, colours as theuth tokens, §11.7);
+- `out.ansi` — rows with SGR attributes (`rows_formatted`) for the static view (`ansi-output`, colours as theuth tokens, §11.8);
 - `out.txt` — plain text (`contents`), trailing blanks trimmed: carriage returns resolved, spinner frames collapsed to their last state, every escape gone. This is the record's text, the input to `expect`, the agent's copy (after §9.4) and the replicated text (F2).
 
 Output past 10 000 rows keeps its last 10 000 in the render and says "first N lines are in the log". The agent never strips escapes again (§1).
@@ -1242,7 +1242,7 @@ Tools, MCP, `tools.policy` and approvals untouched (diff shows no change in `reg
 Genuinely open, found while writing:
 1. **`auto` per scope** (§6.1) can flip a note's python kernel when one cell gains a pandas import; the chip shows it, but Sky may prefer `auto` to mean "the local interpreter, Monty only when there is none".
 2. **Plan-summary extraction** (§7.5) recognises pulumi and terraform shapes only; other tools fall back to expect lines.
-3. **Kubernetes/SSO prompts in a browser** (`aws sso login`) open a browser on the engine's machine, not the phone; a phone press of such a cell needs the engine's desktop. No mitigation in v1 beyond the cell's own output.
+3. **SSO logins that open a browser** (`aws sso login`) open it on the engine's machine, not the phone; a phone press of such a cell needs the engine's desktop. No mitigation in v1 beyond the cell's own output.
 
 ## 19. Amendments to other docs
 
