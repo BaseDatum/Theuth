@@ -81,11 +81,17 @@ repo-root `bindings/methods.json`.
 
 | Content | Path |
 |---|---|
-| The content is one DiagramFrame whose `<svg>` holds all its text (Graph, Sequence, StateMachine, Gantt, charts, ELK family, mermaid) | `standalone(svg.outerHTML, page background)` + `rasterize()` from `lib/diagram-export.ts` — the frame's own Copy PNG path. The picture is the diagram alone (no card chrome), width `min(natural, width)` with the aspect kept, i.e. the chat's `max-width:100%` against the full frame width. |
+| The content is one DiagramFrame whose `<svg>` holds all its text (Graph, Sequence, StateMachine, Gantt, charts, ELK family, mermaid) | `standalone(svg.outerHTML, page background)` + `rasterize()` from `lib/diagram-export.ts` — the frame's own Copy PNG path. The picture is the diagram alone (no card chrome) at its natural width, i.e. `frameFor(width, natural)`: never narrower than its viewBox while that fits 1600 CSS px (R1 addendum: the chat lets you pan/zoom to every part; a picture cannot), scaled down to 1600 beyond. |
 | Anything else: Kanban/Heatmap (HTML diagrams), Table, Card, MetricGrid, Checklist, mixed Stacks, a diagram next to other content, openui | In-house DOM → SVG `<foreignObject>` (`data:` URL) → `rasterize()` → PNG. Deep clone with every standard computed property inline (custom properties on the root, subtree-set custom properties kept), `::before`/`::after` with content as generated rules, input/textarea state, canvases as data-URL images, same-origin `<img>` bitmaps inlined, `@font-face` rules of the families actually used embedded as data URLs. Root background = the appearance's page background (opaque). |
 
 - "Sole diagram" test: exactly one `[role=application]` surface, and the content's text equals the card label plus the
   svg's text, and no svg outside the card. Anything that fails it takes the HTML path, so nothing visible is dropped.
+- Widening (R1 addendum): a picture cannot scroll, so after settle the HTML path measures the largest horizontal
+  overflow of the content or any descendant (`scrollWidth − clientWidth`), and re-lays the frame at `frameFor(width,
+  width + overflow)` — the requested width when it fits, else the full scroll width capped at `MAX_FRAME` = 1600 CSS px
+  (up to three passes for nested scrollers; layout is synchronous). Only content wider than 1600 px still clips, at
+  1600, as the chat clips it. The decision is the pure `frameFor` in `lib/fence-snapshot.ts`, tested. D4's PNG caps
+  then apply as before by lowering the scale.
 - Caps: the ladder is the requested scale (clamped 1–3), then 1.5, then 1; a scale is skipped without drawing when a
   side would exceed 8000 px, and dropped after drawing when the PNG exceeds 4 MB; nothing fits → `failed`. `width`/`height`
   in the answer come from the PNG's IHDR, `png` is standard base64 without prefix.
@@ -100,17 +106,22 @@ repo-root `bindings/methods.json`.
 Harness: `/tmp/163-164/ui-proof/harness.{html,tsx}` served by this worktree's own vite config through a wrapper
 (`vite.config.ts` there, port 5199); it installs the real runner with a fake `answer_fence_snapshot` sink and feeds
 `FenceSnapshotRequested` events through the real `dispatch`. Driver `run.mjs`. Cases: Graph (`valid-graph-extended`),
-Sequence, StateMachine, Gantt, Kanban, Excerpt, Code (fixtures), a Stack of MetricGrid + Checklist + Table, a mermaid
-flowchart, an openui card, a truncated json-render fence; widths 560 and 720; scale 2; light unless stated.
+Sequence, StateMachine, Gantt, Kanban, Excerpt, Code (fixtures), a Stack of MetricGrid + Checklist + Table, a 6-column
+Table, a mermaid flowchart, an openui card, a truncated json-render fence; widths 560 and 720; scale 2; light unless stated.
 
-| Run | Result (22 requests) |
+| Run | Result (24 requests) |
 |---|---|
-| Chrome (CfT 1226, headless) visible | 20 `done`, both broken → `failed` (`Interactive view unavailable: …`), all in ≈ 5 s |
-| Chrome hidden | same, ≈ 7 s (see the one stall below) |
-| WebKit (Playwright 2370, headless) visible | same, ≈ 5 s; foreignObject pictures draw (no taint, fonts right) |
-| WebKit hidden | same, ≈ 5 s |
-| Chrome and WebKit, app in `.dark`, light requested | all 20 pictures per engine **byte-identical** (`cmp`) to the light-app run's, Stack, Excerpt and Code included |
+| Chrome (CfT 1226, headless) visible | 22 `done`, both broken → `failed` (`Interactive view unavailable: …`), all in ≈ 5.5 s |
+| Chrome hidden | same, ≈ 7.4 s (see the one stall below) |
+| WebKit (Playwright 2370, headless) visible | same, ≈ 5.2 s; foreignObject pictures draw (no taint, fonts right) |
+| WebKit hidden | same, ≈ 5.2 s |
+| Chrome and WebKit, app in `.dark`, light requested | all 22 pictures per engine **byte-identical** (`cmp`) to the light-app run's, Stack, Excerpt and Code included |
 | Chrome, dark requested | dark pictures (Excerpt with the shiki dark tokens through the frame's `.dark`) |
+
+Widening, both engines: `kanban-560` is 1264×412 px (632 CSS px: all three columns, "Done" included, where it used to
+clip at 560); `table6-560` is 1580/1582×326 px (790/791 CSS px, all six columns, no wrapping into a scroller); at 720
+the Kanban fits and stays 720, the Table widens to the same 790 px. Svg pictures now keep their natural width
+(Graph 728, StateMachine 879, mermaid 1082 CSS px at either request width).
 
 Before the R1 fixes the Chrome dark-app Excerpt differed from the light-app one in 160 pixels (max channel delta 39): the
 marked row's `shadow-[inset_2px_0_0_0_var(--color-fg-accent)]` bar, whose `--color-fg-accent` came from Tailwind's
@@ -132,7 +143,7 @@ screenshotted from an untouched copy of the tree (`git archive e9eebf92` under `
 and from this branch, app light and app dark: `chat-before-light.png` = `chat-after-light.png` and
 `chat-before-dark.png` = `chat-after-dark.png`, byte for byte.
 
-Artifacts: `/tmp/163-164/ui-proof/png/` (140 PNGs: `<engine>-<mode>-<case>-<width>.png`),
+Artifacts: `/tmp/163-164/ui-proof/png/` (154 PNGs: `<engine>-<mode>-<case>-<width>.png`),
 `/tmp/163-164/ui-proof/contact-sheet.html`, `/tmp/163-164/ui-proof/result-*.json`, `chat-{before,after}-{light,dark}.png`.
 
 ## Deviations from the brief
@@ -144,8 +155,8 @@ Artifacts: `/tmp/163-164/ui-proof/png/` (140 PNGs: `<engine>-<mode>-<case>-<widt
   hook), `lib/diagram/chart/frame.tsx` (private `useTokens` removed in favour of it).
 - Frame hidden with `opacity:0` off-screen instead of page-preview's `visibility:hidden` (reason above).
 - `styles.css:7` (R1 decision): the `dark` custom variant skips `[data-snapshot-light]` subtrees.
-- Svg-path pictures are the diagram alone (no card label/border), scaled to fit `width`; HTML pictures are the full
-  `width` with 16 px side padding.
+- Svg-path pictures are the diagram alone (no card label/border) at natural width up to 1600 CSS px; HTML pictures are
+  `width` wide with 16 px side padding, wider when the content scrolls horizontally (widening above).
 
 ## Contract deviation: `FenceSnapshotId`
 
@@ -168,6 +179,6 @@ Artifacts: `/tmp/163-164/ui-proof/png/` (140 PNGs: `<engine>-<mode>-<case>-<widt
 - OpenUI `BarChart`/`LineChart`/`ScatterChart`/`RadarChart` are upstream recharts (`ResponsiveContainer`, a
   ResizeObserver): in a hidden window they may lay out at 0 size. json-render charts are unaffected.
 - External images inside a surface (cross-origin `<img>`) cannot be read back and stay blank in HTML pictures.
-- Horizontally scrolling content (wide Kanban, wide tables) is clipped at the frame width, as the chat clips it at that
-  width; the picture just drops the scrollbars.
+- Content wider than 1600 CSS px (a very wide Kanban/Table/openui, a huge diagram) is clipped at 1600 (HTML) or scaled
+  down to 1600 (svg); the picture drops scrollbars.
 - Headless WebKit (Playwright) is close to but not the same as WKWebView; the Mac app itself was not driven (forbidden).
