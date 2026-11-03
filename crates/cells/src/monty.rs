@@ -305,7 +305,8 @@ async fn run(inner: Arc<Inner>, req: ExecuteRequest, sink: KernelSink, token: Ca
     };
     drop(on_print);
     // §5.9 "Monty shows output when the run ends".
-    for (name, text) in std::mem::take(&mut *printed.lock()) {
+    let printed = std::mem::take(&mut *printed.lock());
+    for (name, text) in printed {
         let _ = sink
             .send(KernelEvent::Output(CellOutput::Stream {
                 name: name.into(),

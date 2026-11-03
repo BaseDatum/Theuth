@@ -31,10 +31,10 @@ const VENV_PYTHON: &[&str] = &["Scripts", "python.exe"];
 const VENV_PYTHON: &[&str] = &["bin", "python"];
 
 type ListKey = (PathBuf, u64);
-static LISTS: LazyLock<Mutex<HashMap<ListKey, (Instant, Vec<Interpreter>)>>> =
-    LazyLock::new(Default::default);
-static VERSIONS: LazyLock<Mutex<HashMap<PathBuf, (Option<SystemTime>, Option<String>)>>> =
-    LazyLock::new(Default::default);
+type Listed = (Instant, Vec<Interpreter>);
+type Versioned = (Option<SystemTime>, Option<String>);
+static LISTS: LazyLock<Mutex<HashMap<ListKey, Listed>>> = LazyLock::new(Default::default);
+static VERSIONS: LazyLock<Mutex<HashMap<PathBuf, Versioned>>> = LazyLock::new(Default::default);
 
 /// Every candidate for `cwd` with its `why`, `auto` marking what `auto`/the default picks
 /// (§6.4); cached 60 s per (cwd, login-env generation).
