@@ -72,7 +72,29 @@ Run 1 (`evidence/run1/`): Z2 and Z4 FAILED on leaks. Haiku's thinking repeated t
 
 ## Residual risks and open items
 - **Signal and Slack are proven by unit tests only** (ENG's tests a–g); no live run here.
-- **Slack reasoning may have the same leak class as the Telegram bug fixed above** [INFERENCE, not run]: `crates/slack/src/bubble.rs` `ReasoningRun::chunk` puts `self.text.raw()` unfiltered into the stream-mode card's `output`; the update-mode quoted segment (`Turn::segment`, `> ` prefix) was not inspected. Not changed here (outside the failing step; no live Slack proof). Signal sends no reasoning text.
+- Slack reasoning leak: confirmed and fixed in R1 (below); proven by unit tests only, not live. Signal sends no reasoning text.
 - **Real WKWebView hidden-window throttling**: the renderer was headless Chromium in a visible tab; Sky's app renders in a WKWebView that may be hidden/occluded (timer throttling; 164-UI notes one unreproduced Chrome-hidden stall).
 - **Sky's real-bot test** on Telegram (and Slack/Signal) is still owed before calling 164 done for users.
 - D3: a working renderer that connects during a 60 s back-off is not asked until the window ends (by design; seen in run 2).
+
+## R1 — Slack reasoning never shows a picture fence body (`2804f8d7`)
+
+Orchestrator R1: Slack showed model reasoning raw, the same class as the Telegram bug above. Every place in `crates/slack/src/bubble.rs` that shows reasoning now applies the rule of Telegram's `Reasoning::shown()`:
+
+| where | before | now |
+|---|---|---|
+| stream-mode live card `ReasoningRun::chunk` (`reasoning-<n>` `output`; also re-emitted on rotation) | `self.text.raw()` | `reasoning_settled(raw)`: settled picture fences (closed, closing line broken) as their D7 text; nothing from the first unsettled one on (open, closing line unbroken, or a half-typed opener via the existing `half_opener`) |
+| stream-mode ended card (`end_reasoning`) and popped trailing thought (`pop_thought`): `output` and the update-mode card text `Queued::Chunk { card }` (`Segment::quote`) | raw | `reasoning_text(text, false)` = `surface::flatten(text, FALLBACK_COLUMNS)` (D7) |
+| their `details`, and the `💭` thought line inside a batch card (`Thought::line`, both modes) | `first_line(raw)` | `reasoning_line(text, live)`: first line of `picture_preview` while live (`_drawing…_`), first line of `strip_pictures` once ended |
+| update-mode quoted reasoning message (`Segment::body`, also the stream→update demotion) | raw committed prefix | `picture_preview` while live, `flatten` once `text.is_done()`; `Segment::finish` forces the final `chat.update` when the last one showed a `_drawing…_` stand-in, even if no new bytes were committed (otherwise the placeholder would stay) |
+
+Decisions:
+1. **Stream card stays append-safe either way.** Design 110 records that a re-sent `task_update` id *replaces* the card in place (the code already relied on it: the card is retitled `thinking` → `Thought N s`). The brief's R1 asks for append-only behaviour; `reasoning_settled` is prefix-monotone — every live output is a prefix of the next and of the ended D7 output (`flatten` keeps prose byte-identical, a settled fence's D7 text never changes, raw only grows) — so nothing is retracted or resent under either semantics, and no byte of a fence body ever goes out.
+2. **One-line summaries skip the D7 box.** `details` and the thought line are one line; the first line of a D7 box is its bare ```` ``` ```` opener, so once ended they take the first prose line (`strip_pictures`), else none. Still never a body. Small deviation from "D7 text once ended", made only for these one-line fields.
+3. **Signal shows no reasoning:** `crates/signal/src` never handles `AgentEvent::ReasoningDelta`/`ReasoningDone`; the only hits are the `/reasoning` effort command strings in `commands.rs`. Nothing to change.
+
+Tests (`bubble::tests`, `FENCED_THINKING` = prose + a json-render Graph fence + prose, streamed in 3-byte deltas with a tick after each):
+- `stream_reasoning_never_shows_a_picture_fence_body`: every `reasoning-1` output extends the previous one; none contains `"root"`, `"elements"`, ```` ```j ````/```` ```m ````/```` ```o ```` or the body; one live output is exactly the prose before the fence; the last is `Complete`, holds the D7 box (`Alpha`) and ends with ```` ```\n\nDone. ````. The batch `💭` line: `_drawing…_` live, no leak ended.
+- `update_reasoning_never_shows_a_picture_fence_body`: every `chat.update` of the quoted reasoning message has no leak, one shows `_drawing…_`, the last carries the D7 box and ends with `> Done.`.
+
+Gates: `cargo fmt -p slack`; `BUILD_LABEL=164-Z build-lock mbx clippy -p slack --all-targets --no-deps -- -D warnings` → exit 0, 0 warnings; `BUILD_LABEL=164-Z build-lock mbx test -p slack --lib --no-run`, then `mbx test -p slack --lib` bare → **164 passed**, 0 failed (the listed flake did not fire). No live Slack run (no mock exists for Slack in this repo); logs `evidence/slack-test.log`, `evidence/slack-clippy.log`.
