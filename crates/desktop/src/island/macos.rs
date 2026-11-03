@@ -2,6 +2,7 @@
 //! `island` window swizzled into a non-activating `NSPanel` at status level on
 //! every Space, capture exclusion for both windows, and placement on the notch.
 //! OS integration only — what shows in the panel is the webview's (`/island`).
+//! [`PanelSpec`] is the panel setup both this and the point overlays (`point/macos.rs`) use (174).
 
 use std::ptr::NonNull;
 
@@ -10,9 +11,8 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplicationDidChangeScreenParametersNotification, NSScreen};
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSRect};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewWindow};
-#[allow(deprecated)]
-use tauri_nspanel::cocoa::appkit::NSWindowCollectionBehavior;
-use tauri_nspanel::{ManagerExt, WebviewWindowExt};
+use tauri_nspanel::panel::{NSTrackingAreaOptions, NSWindowCollectionBehavior, NSWindowStyleMask};
+use tauri_nspanel::{ManagerExt, Panel, PanelHandle, WebviewWindowExt};
 
 const LABEL: &str = "island";
 /// Default width (03 §2); the user may drag the edges.
@@ -22,31 +22,82 @@ const MAX_WIDTH: f64 = 1200.0;
 /// Strip only (03 §2); the brief pane grows the window to its content, capped, until the user sizes it.
 const MIN_HEIGHT: f64 = 44.0;
 const MAX_HEIGHT: f64 = 800.0;
-/// `NSWindowStyleMaskNonactivatingPanel | NSWindowStyleMaskResizable` (borderless otherwise): a click never
-/// activates the app; the edges resize.
-const STYLE_MASK: i32 = (1 << 7) | (1 << 3);
-/// `NSStatusWindowLevel`: above the menu bar and full-screen apps' auxiliary layer.
-const STATUS_LEVEL: i32 = 25;
+
+/// What a panel is told once, when its window is swizzled (174): the class's `canBecomeKeyWindow`
+/// answer, then the setters [`PanelSpec::apply`] sends, in the pre-2.1 order. Every other selector
+/// keeps its `NSPanel` default. The tests pin the raw AppKit numbers the 2.0 port sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PanelSpec {
+    pub can_become_key_window: bool,
+    pub style_mask: NSWindowStyleMask,
+    pub level: i64,
+    pub collection_behavior: NSWindowCollectionBehavior,
+    pub hides_on_deactivate: bool,
+    pub becomes_key_only_if_needed: bool,
+}
+
+impl PanelSpec {
+    /// Style mask, level, Spaces, deactivation, key — the order 2.0's `init`/`panelize` used.
+    /// Main thread (AppKit).
+    pub(crate) fn apply(&self, panel: &dyn Panel) -> anyhow::Result<()> {
+        panel
+            .set_style_mask(self.style_mask)
+            .context("set_style_mask")?;
+        panel.set_level(self.level);
+        panel.set_collection_behavior(self.collection_behavior);
+        panel.set_hides_on_deactivate(self.hides_on_deactivate);
+        panel.set_becomes_key_only_if_needed(self.becomes_key_only_if_needed);
+        Ok(())
+    }
+}
+
+/// The tracking area tauri-nspanel 2.0 put on every panel's content view (fixed rect, no
+/// `InVisibleRect`, hence `auto_resize: false`); kept for parity.
+pub(crate) const TRACKING: NSTrackingAreaOptions = NSTrackingAreaOptions::ActiveAlways
+    .union(NSTrackingAreaOptions::MouseEnteredAndExited)
+    .union(NSTrackingAreaOptions::MouseMoved)
+    .union(NSTrackingAreaOptions::CursorUpdate);
+
+const SPEC: PanelSpec = PanelSpec {
+    // The request box takes typing; a borderless window answers NO otherwise.
+    can_become_key_window: true,
+    // Borderless otherwise: a click never activates the app; the edges resize.
+    style_mask: NSWindowStyleMask::NonactivatingPanel.union(NSWindowStyleMask::Resizable),
+    // `NSStatusWindowLevel`: above the menu bar and full-screen apps' auxiliary layer.
+    level: 25,
+    collection_behavior: NSWindowCollectionBehavior::CanJoinAllSpaces
+        .union(NSWindowCollectionBehavior::FullScreenAuxiliary)
+        .union(NSWindowCollectionBehavior::Stationary),
+    // Panels hide when the app deactivates by default; the island stays up while the meeting app is active.
+    hides_on_deactivate: false,
+    // Buttons never take key, so typing keeps going to the meeting app (check 4); only the request box
+    // does, and `island_resign_key` hands it back.
+    becomes_key_only_if_needed: true,
+};
+
+/// The island's `NSPanel` subclass; its own module because `tauri_panel!` expands `use`s.
+mod class {
+    tauri_nspanel::tauri_panel!(TheuthIslandPanel {
+        config: {
+            can_become_key_window: super::SPEC.can_become_key_window
+        }
+        with: {
+            tracking_area: {
+                options: super::TRACKING,
+                auto_resize: false
+            }
+        }
+    });
+}
 
 /// Swizzle the island into a panel and hide both windows from capture (decision 9's default);
 /// the webview re-applies its stored eye setting on boot. Runs in `setup`, on the main thread.
-// `tauri-nspanel` speaks the old `cocoa` types; its `set_collection_behaviour` takes nothing else.
-#[allow(deprecated)]
 pub fn init(app: &AppHandle) -> anyhow::Result<()> {
     let win = app.get_webview_window(LABEL).context("window `island`")?;
-    let panel = win.to_panel().context("island to_panel")?;
-    panel.set_style_mask(STYLE_MASK);
-    panel.set_level(STATUS_LEVEL);
-    panel.set_collection_behaviour(
-        NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary,
-    );
-    // Panels hide when the app deactivates by default; the island stays up while the meeting app is active.
-    panel.set_hides_on_deactivate(false);
-    // Buttons never take key, so typing keeps going to the meeting app (check 4); only the request box
-    // does, and `island_resign_key` hands it back.
-    panel.set_becomes_key_only_if_needed(true);
+    let panel = win
+        .to_panel::<class::TheuthIslandPanel>()
+        .context("island to_panel")?;
+    SPEC.apply(&*panel)?;
     set_hidden(app, true)?;
     // The window is never ordered out: WebKit throttles a webview whose window is not on screen until
     // its RPC client never connects (03 §9). "Hidden" is alpha 0 + mouse-transparent, ordered in.
@@ -56,9 +107,9 @@ pub fn init(app: &AppHandle) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn conceal(panel: &tauri_nspanel::Panel) {
+fn conceal(panel: &PanelHandle<tauri::Wry>) {
     panel.set_alpha_value(0.0);
-    panel.set_ignore_mouse_events(true);
+    panel.set_ignores_mouse_events(true);
 }
 
 /// Both windows `set_content_protected(hidden)` (`NSWindow.sharingType = .none`); every webview
@@ -84,7 +135,7 @@ pub fn island_show(app: AppHandle, width: f64, height: f64) -> Result<(), String
     win.set_position(top_left).map_err(|e| e.to_string())?;
     let panel = app.get_webview_panel(LABEL).map_err(|e| format!("{e:?}"))?;
     panel.set_alpha_value(1.0);
-    panel.set_ignore_mouse_events(false);
+    panel.set_ignores_mouse_events(false);
     panel.order_front_regardless();
     Ok(())
 }
@@ -190,4 +241,34 @@ fn watch_screens(app: &AppHandle) {
         )
     };
     std::mem::forget(token);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The numbers tauri-nspanel 2.0 sent for the island (`STYLE_MASK`, `STATUS_LEVEL` and the
+    /// `cocoa` behaviour bits before 174).
+    #[test]
+    fn island_spec_is_the_pre_port_panel() {
+        let pre_port = PanelSpec {
+            can_become_key_window: true, // RawNSPanel's canBecomeKeyWindow: YES
+            // NSWindowStyleMaskNonactivatingPanel (1 << 7) | NSWindowStyleMaskResizable (1 << 3)
+            style_mask: NSWindowStyleMask(128 | 8),
+            level: 25, // NSStatusWindowLevel
+            // NSWindowCollectionBehaviorCanJoinAllSpaces (1 << 0) | …Stationary (1 << 4)
+            // | …FullScreenAuxiliary (1 << 8)
+            collection_behavior: NSWindowCollectionBehavior(1 | 16 | 256),
+            hides_on_deactivate: false,
+            becomes_key_only_if_needed: true,
+        };
+        assert_eq!(SPEC, pre_port);
+    }
+
+    #[test]
+    fn tracking_area_is_the_pre_port_one() {
+        // NSTrackingActiveAlways (0x80) | NSTrackingMouseEnteredAndExited (0x01)
+        // | NSTrackingMouseMoved (0x02) | NSTrackingCursorUpdate (0x04); no NSTrackingInVisibleRect
+        assert_eq!(TRACKING.0, 0x87);
+    }
 }
