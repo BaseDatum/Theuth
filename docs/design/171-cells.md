@@ -933,3 +933,99 @@ The Run button's accessible name is its label ("Apply to ir-prod1"); disabled bu
 - **C Note** — paper look, header pill, a `.venv` cell with a DataFrame and an SVG chart, a Monty cell (`[1]`, 4 ms, "no tools, no network"), and a "Monty can't run this" cell. Deliberate difference: the mock labels that cell `auto → Monty`; in this design `auto` would pick the `.venv` silently (§6.1), and the warning belongs to an explicit `python: monty`.
 - **D Variants** — superseded, "Run Alice's edit", lint chips, cwd missing, failed with Run all stopped, guest view, edited in chat, private. Matches §11.2 and §13.
 - **E Phone** — 390 px, danger cell, stacked bar, 48 px targets. Addition not in the mock: the key row of §11.6.
+
+## 12. Safety and trust boundary
+
+### 12.1 Invariants (each has a test in §17)
+
+1. **Human press only.** `cell_run`, `cell_run_all`, `cell_stop`, `cell_input`, `cell_ask`, `cell_kernel_restart`, `cell_kernel_close` require an authenticated `RpcPeer` (fact 18) that is **not a guest** (`guest()`, fact 19) and **not `RpcPeer::internal()`** unless the request carries the `Forwarded` marker (`crates/rpc/src/forward.rs:99`) — the forwarding engine already applied this check. The internal peer is the owner console that `rpc::client::Local` hands to the MCP server (158), the ACP agent half (`t --acp`, driven by an editor or a parent harness, `crates/rpc/src/acp.rs:1-6`) and the TUI; none of them is a press (W-n). The TUI's wave-3 run key gets its own explicit marker.
+2. **Not a tool.** The cells plugin registers three read-only runtime functions and nothing else (§9.5); no tool, runtime function, MCP catalogue entry or ACP method starts, stops, types into or restarts a kernel.
+3. **Agent PTY tools do not reach kernels.** `send` and `cancel_job` refuse jobs started with `cell`; `jobs()` omits them; the supervisor never builds `<job_result>`/`<job_idle>` for them.
+4. **Not the double, routines, subagents, ACP children, guests or channels.** A run raises no `ApprovalRequested`/`AskRequested`, the two events the double can answer (`docs/design/126-double.md:112-113`); routines, subagents and ACP children have no RPC peer; guests fail invariant 1; channel adapters have no cell methods (a link only, §14.3).
+5. **What you saw runs.** The engine reads the source from its own record (the stored message, the live Y.Doc) and compares its digest with the press's `seen`; a mismatch, a superseded cell or a non-final message is refused "this cell changed — look again". The button payload carries no code except the user's own edit (F4), which is recorded as `edited` with both digests.
+6. **Member text is acknowledged.** A note cell whose block was last written by a member since the owner's last run requires `member_ack = <pub8>` on the press (the "Run Alice's edit" button sends it).
+7. **Danger is enforced in the engine.** A `danger` cell refuses `mode != cell` and is never enqueued by `cell_run_all`, whatever the client sends.
+8. **`after` is enforced in the engine.** An unarmed `after` cell is refused `disarmed` (§7.6).
+9. **Secrets at the boundary.** Placeholders are allowed only in `env` (§3.6) and expanded only into the run file's prologue (mode 0600, deleted at mark D); the editor, the record, events, outputs, the agent's copy and replication only ever hold the placeholder; vault values are scrubbed on the log path and exactly at finish (§9.4); audit stores env **names**.
+10. **Redaction for the agent.** Every agent-bound and replicated text passes the credential patterns (§9.4); a `private` cell's output never leaves the run store except to the owner's own clients.
+11. **No automatic re-run.** Only `cell_run`/`cell_run_all` create runs; a lost run is never retried or resumed; Run all never continues after a restart; "Run again" is a new press.
+12. **Lint is visible.** Lint chips never block a single press and always stop Run all (§3.7).
+13. **Audit before announce.** The run row (D17 fields, §8.4) is committed before `RunFinished` and before delivery; keystrokes are counted per device, never stored.
+14. **The owner's engine runs it.** Chat runs happen on the session owner, note runs on the document's hub (§5.1); no cell runs on a member's or guest's machine.
+15. **No approval bypass, in either direction.** Cells never read or write `tools.policy`, `approvals`, `SetApprovals` or session approval opt-outs; no "trust this session" switch exists for Run all.
+
+### 12.2 Threats
+
+| threat | mitigation | enforced in | test |
+|---|---|---|---|
+| injected text (a web page, a peer, a member) becomes a one-click command | only assistant markdown and notes mount cells, and only with the agent-written header; label, chips and lint on screen | `CellFence` mount rule; `surface::cell` | UI: a fence in a `<subagent_result>` card renders as code |
+| the agent, MCP client or ACP parent starts a run | no tool; internal peer refused | rpc guard (invariant 1) | rpc: `RpcPeer::internal()` → refused; registry lists no cell tool |
+| the double answers for Sky | no approval or ask event exists | by construction | run publishes neither event |
+| the agent rewrites the cell after Sky looked | digest guard | cells actor | changed text → `changed` |
+| a member edits a shared cell to exfiltrate | "Run Alice's edit" + diff; `member_ack` | cells actor + UI | member-written block without ack → refused |
+| a guest presses Run | not on `GUEST_METHODS`; guest peer refused | link + rpc | guest call → refused |
+| credentials reach the model | vault redaction, patterns, `private` | `crates/cells/src/redact.rs` | fake vault value and `AKIA…`, `eyJ…` in output → masked in `<cell_result>` and `cell_output` |
+| a secret value persists on disk | prologue-only expansion; 0600; deleted at D; record keeps the placeholder | cells actor | run file gone after the run; `code` file holds the placeholder |
+| a familiar script name hides a payload (64.7 % approved, `https://scalex.dev/blog/ai-agent-permissions-stats/`) | "calls a script theuth edited" chip with the diff | lint + `tool_calls` journal | agent edits `deploy.sh`, cell runs it → chip |
+| `curl … \| sh`, invisible characters | chips; Run all stops | lint | fixtures |
+| apply on a stale or different preview (the 2026 `terraform destroy`) | `after` with digest, age and summary on the button | cells actor | edited preview → disarmed; 61-min-old preview → disarmed |
+| double press, replayed RPC | client-minted run id | cells actor | same id twice → one run |
+| engine restart mid-apply leaves a locked stack | quit/update wait (F6 a); `lost` with last screen; no replay | desktop + cells | live proof §17 |
+| an output flood starves Stop | separate lifecycle lane | cells actor | `yes` flood, Stop < 500 ms |
+| HTML output reaches the network or the app | 120 frame only | UI | 120's exposure probe |
+| runaway kernels exhaust PTYs | `max_kernels`, PTY budget | cells actor | 17th kernel closes the oldest idle |
+
+## 13. Sharing, replication, export
+
+### 13.1 Who may do what (D15)
+
+| role | sees cells | edits cell text | runs | sees outputs |
+|---|---|---|---|---|
+| owner (any of Sky's devices) | yes | yes | yes, on the owner's engine | full, local store |
+| editor member | yes | yes (Y.Doc, as today) | no | latest replicated text (F2) |
+| viewer member / link guest | yes | no | no | latest replicated text (F2) |
+
+A member's text is untrusted input (59 §11, `docs/design/59-documents.md:1020`): the block's last author comes from the member-label map (`crates/document/src/share.rs:262`); when it is a member and the owner has not run that text, the cell shows "Changed by Alice since your last run · Review diff" (the diff against the code of the owner's last run, or "Written by Alice · Review" if never run) and the button reads **Run Alice's edit** (invariant 6). Sharing a note never shares compute: editor ≠ runner (nteract's hosted rule, 171-recon-theirs.md §3.11).
+
+### 13.2 Latest-output replication (F2 a; writer's call W-g)
+
+144 put small replicated records beside `docs` in `documents/index.sqlite` (`docs/design/144-notebooks.md:188-190`); this adds a fifth table, created where `sources` is and appended to `TABLES` (`crates/document/src/store.rs:65`), attached by the same `replica::attach` (`crates/document/src/lib.rs:238`) — per-column LWW under an HLC:
+
+```sql
+CREATE TABLE IF NOT EXISTS cell_latest (
+  id TEXT PRIMARY KEY,                 -- "<doc>:<name or block id>"
+  doc TEXT NOT NULL, cell TEXT NOT NULL,
+  run TEXT NOT NULL, state TEXT NOT NULL, exit INTEGER, secs REAL,
+  expect TEXT, summary TEXT, code_sha TEXT NOT NULL, ended_ms INTEGER NOT NULL,
+  text TEXT NOT NULL,                  -- cleaned, vault-redacted, credential-masked, head+tail ≤ cells.replicate_bytes (16 KiB); "" for private
+  hlc TEXT);
+CREATE INDEX IF NOT EXISTS cell_latest_doc ON cell_latest(doc);
+```
+
+The hub upserts one row after each note-cell run. Members' and guests' clients read it with a new read-only method `cell_latest(doc)`, membership-checked per call like `notebook_get`, added to `GUEST_METHODS` (`crates/link/src/conn.rs:538`, 11 → 12). Not the Y.Doc: outputs would count against 48 KiB per update and 8 MiB per document (fact 10), would sit in every collaborator's undo history, and multi-writer output state is the Jupyter AI v3.1 data-loss race (`https://jupyter-ai.readthedocs.io/en/stable/releases/v3.1.0.html`).
+
+### 13.3 Export and search
+
+- `.md`: cells plus latest outputs (§4.4). `.ipynb`: wave 3 — a python note exports as a notebook whose cells keep the `#|` header in their source (Quarto-compatible); shell cells export as `%%bash` cells.
+- Search: cell source is block text and is indexed like every block (144 §7.1); outputs are not indexed in v1 (not in the document); the agent finds runs with `cell_runs`.
+
+## 14. Surfaces and channels
+
+### 14.1 Surfaces (D16)
+
+| surface | shows | runs | notes |
+|---|---|---|---|
+| desktop (Tauri, macOS/Windows/Linux) | the `Cell` | yes | same bundle everywhere |
+| web (relay) | the `Cell` | yes, on the engine | a relay peer is `remote()`, still an owner device |
+| phone (iOS app, relay) | the `Cell`, phone layout (§11.6) | yes, danger included (F3 a) | key row for prompts |
+| share-link guest (`/d`) | note cells read-only with latest outputs | no | §13 |
+| TUI | code box with a dim `run in the app` line | no (wave 3 run key) | the box header already prints the info string (171-recon-ours.md §11.2) |
+| Slack / Telegram / Signal | the fence as code plus a "Run in theuth" link | no | §14.3 |
+
+### 14.2 Which machine runs it — the host chip
+
+The cell's engine is the chat session's owner or the note's hub (§5.1). When that is not the engine this client is attached to, the header shows a host chip ("on Sky's Mac mini") and the press is forwarded there (`forward::route`; document hub forwarding). `on:` (a sandbox VM or another mesh engine) is wave 3; v1 warns.
+
+### 14.3 Channels
+
+The Slack, Telegram and Signal adapters send a cell fence as ordinary code — the header lines stay, they are the cell's text — followed by one line `Run in theuth: theuth://c/<session>?cell=<name or ordinal>`. The desktop route keeps the query and scrolls to the cell (`crates/desktop/src/lib.rs:607-619` today drops it); the phone app handles the same link. 164's picture fences are untouched (`docs/design/164-channel-pictures.md:19-20`): a cell fence is never a picture. No run is ever started from a channel message.
