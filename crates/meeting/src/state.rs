@@ -36,7 +36,9 @@ pub struct LiveLabels {
 #[derive(Clone, Debug)]
 pub struct RecordingClock {
     started: Instant,
-    paused: Duration,
+    /// 173 R3 #1: every completed pause, oldest first, so an instant from the past maps
+    /// onto the clock it was on (the capture watchdog reports gaps after the fact).
+    pauses: Vec<(Instant, Instant)>,
     paused_at: Option<Instant>,
 }
 
@@ -45,7 +47,7 @@ impl RecordingClock {
     pub fn start_at(now: Instant) -> Self {
         Self {
             started: now,
-            paused: Duration::ZERO,
+            pauses: Vec::new(),
             paused_at: None,
         }
     }
@@ -55,11 +57,17 @@ impl RecordingClock {
         Self::start_at(Instant::now())
     }
 
-    /// Recording time elapsed at `now`, pauses excluded; frozen while paused.
-    pub fn elapsed_at(&self, now: Instant) -> Duration {
-        let end = self.paused_at.unwrap_or(now);
+    /// Recording time elapsed at `t` (past instants included), pauses excluded; frozen while
+    /// paused.
+    pub fn elapsed_at(&self, t: Instant) -> Duration {
+        let end = self.paused_at.map_or(t, |p| p.min(t));
+        let paused: Duration = self
+            .pauses
+            .iter()
+            .map(|&(a, b)| b.min(end).saturating_duration_since(a.max(self.started)))
+            .sum();
         end.saturating_duration_since(self.started)
-            .saturating_sub(self.paused)
+            .saturating_sub(paused)
     }
 
     /// Recording time in milliseconds.
@@ -89,7 +97,7 @@ impl RecordingClock {
         let at = self.paused_at.take()?;
         let at_ms = self.elapsed_at(at).as_millis() as u64;
         let dur = now.saturating_duration_since(at);
-        self.paused += dur;
+        self.pauses.push((at, now.max(at)));
         Some(Gap {
             at_ms,
             dur_ms: dur.as_millis() as u64,
@@ -409,5 +417,38 @@ mod tests {
         let gap = c.resume_at(ms(7500)).unwrap();
         assert_eq!((gap.at_ms, gap.dur_ms), (2000, 500));
         assert_eq!(c.elapsed_at(ms(8000)).as_millis(), 2500);
+    }
+
+    /// 173 R3 #1: instants from before or inside a pause map onto the recording clock,
+    /// not onto "now minus every pause so far".
+    #[test]
+    fn elapsed_at_past_instants_subtracts_only_earlier_pauses() {
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        let mut c = RecordingClock::start_at(t0);
+        c.pause_at(s(120));
+        c.resume_at(s(180));
+        assert_eq!(
+            c.elapsed_at(s(100)),
+            Duration::from_secs(100),
+            "before the pause"
+        );
+        assert_eq!(
+            c.elapsed_at(s(150)),
+            Duration::from_secs(120),
+            "inside it: frozen"
+        );
+        assert_eq!(c.elapsed_at(s(200)), Duration::from_secs(140), "after it");
+        c.pause_at(s(300));
+        assert_eq!(
+            c.elapsed_at(s(250)),
+            Duration::from_secs(190),
+            "while paused, a past instant"
+        );
+        assert_eq!(
+            c.elapsed_at(s(400)),
+            Duration::from_secs(240),
+            "while paused, now"
+        );
     }
 }

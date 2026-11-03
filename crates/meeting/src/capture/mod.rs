@@ -62,6 +62,22 @@ pub enum Report {
     Degraded(Degradation),
 }
 
+/// One chunk from a capture stream: health meter, then the watchdog, then the rings. The
+/// watchdog sees every chunk even while the meeting is paused (`Feed::push` drops them then),
+/// so a pause is never a stall; zero runs, probes and reopens keep running while paused — the
+/// taps stay open.
+fn deliver(
+    now: Instant,
+    pcm: Vec<f32>,
+    meter: &mut watchdog::Meter,
+    wd: &mut watchdog::Watchdog,
+    feed: &mut Feed,
+) {
+    let silent = meter.add(&pcm);
+    wd.chunk(now, silent);
+    feed.push(pcm);
+}
+
 /// The capture threads' end of the report channel.
 pub type Reports = mpsc::UnboundedSender<Report>;
 
@@ -291,5 +307,44 @@ impl Capture {
             let _ = t.join();
         }
         std::iter::from_fn(|| d.reports.try_recv().ok()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// 173 R3 #1: a paused meeting still feeds the watchdog (the rings get nothing), so a pause
+    /// is never a stall and never a gap.
+    #[test]
+    fn a_pause_never_opens_a_stall_episode() {
+        let paused = Arc::new(AtomicBool::new(true));
+        let (mut feed, mut enc, _stt) = rings(&paused);
+        let t0 = Instant::now();
+        let rules = watchdog::Rules {
+            zeros: true,
+            fallback: true,
+            probe: true,
+        };
+        let mut wd = watchdog::Watchdog::new(t0, rules);
+        let mut meter = watchdog::Meter::default();
+        for i in 1..=3_000u64 {
+            let now = t0 + Duration::from_millis(20 * i);
+            deliver(now, vec![0.1; 960], &mut meter, &mut wd, &mut feed);
+            if i.is_multiple_of(12) {
+                assert_eq!(wd.tick(now, &mut || watchdog::Activity::Active), None);
+            }
+        }
+        assert!(
+            wd.take_notes().is_empty(),
+            "60 s paused: no episode, no gap"
+        );
+        assert!(
+            enc.pop().is_err(),
+            "nothing reached the encoder while paused"
+        );
+        assert_eq!(meter.chunks, 3_000);
     }
 }

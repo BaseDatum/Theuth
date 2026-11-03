@@ -50,6 +50,20 @@ pub struct Gap {
     pub retarget: Option<u32>,
 }
 
+/// 173: a span during which the system track recorded all system audio (minus theuth): the
+/// app's tap was given up after three failed reopens; `until_ms` once a return probe brought it
+/// back. Persisted in its own optional field so pre-173 binaries load the manifest (R3 #19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Fallback {
+    /// Why the app's tap was given up.
+    pub reason: crate::CaptureFault,
+    /// Recording-clock start.
+    pub at_ms: u64,
+    /// Recording-clock end; `None` while it lasts (or when the meeting ended in it).
+    pub until_ms: Option<u64>,
+}
+
 /// Which file a [`TrackFile`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -143,6 +157,10 @@ pub struct Manifest {
     /// 158 §13 (W6): the echo counter from the post pass.
     #[serde(default)]
     pub stats: Option<Stats>,
+    /// 173: system-audio fallback spans (absent from older manifests and when none happened).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Fallback>>", optional))]
+    pub fallbacks: Vec<Fallback>,
 }
 
 fn default_template() -> String {
@@ -195,6 +213,7 @@ impl Manifest {
             project: None,
             template: default_template(),
             stats: None,
+            fallbacks: Vec::new(),
         }
     }
 
@@ -612,6 +631,163 @@ mod tests {
         m.state = MeetingState::Done;
         m.duration_ms = Some(35_000);
         m
+    }
+
+    /// The 2026-11-02 incident's `manifest.json`, verbatim (written by main 1f921ce4's types).
+    const INCIDENT: &str = r#"{
+  "id": "01a19e11-dc39-7912-9f9f-0ed0169b1ccf",
+  "session": "01a19e11-dc39-7912-9f9f-0eeda3254f9d",
+  "title": "SRE technical interview: troubleshooting questions, recommended moving forward",
+  "context": null,
+  "started_at": "2026-11-02T21:02:13.049500+00:00",
+  "ended_at": "2026-11-02T21:46:35.401392+00:00",
+  "duration_ms": 2657938,
+  "process": { "pid": 51437, "name": "zoom.us", "bundle_id": "us.zoom.xos", "active": true },
+  "consent_at": "2026-11-02T21:02:13.049500+00:00",
+  "gaps": [],
+  "degraded": [],
+  "state": "Done",
+  "failure": null,
+  "session_model": null,
+  "memory": "endless",
+  "tracks": [
+    { "track": "mic", "file": "mic.opus", "sample_rate": 24000 },
+    { "track": "system", "file": "system.opus", "sample_rate": 24000 },
+    { "track": "mix", "file": "mix.opus", "sample_rate": 24000 }
+  ],
+  "note": "rvtckcmvi5kw3g5fhw5jc5anqq",
+  "event": null,
+  "project": null,
+  "template": "meeting",
+  "stats": { "echo_dupes": 0, "mic_segments": 178, "speakers": null }
+}"#;
+
+    /// main 1f921ce4's `Manifest`, with its own `Gap` and `Degradation` (the types this branch
+    /// touched); every other field type is unchanged since. What a pre-173 binary loads.
+    mod main {
+        use serde::Deserialize;
+
+        use crate::{MeetingId, MeetingState, Permission, ProcessInfo, Track};
+
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        pub struct Gap {
+            pub at_ms: u64,
+            pub dur_ms: u64,
+        }
+
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[allow(dead_code)]
+        pub enum Degradation {
+            MicNoAec,
+            SttDown(Track),
+            ModelDown,
+            DiskLow,
+            NearMaxLength,
+            PermissionDenied(Permission),
+            NoNote,
+            DiarizationDown,
+        }
+
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        pub struct Manifest {
+            pub id: MeetingId,
+            pub session: runtime::SessionId,
+            pub title: Option<String>,
+            pub context: Option<String>,
+            pub started_at: String,
+            pub ended_at: Option<String>,
+            pub duration_ms: Option<u64>,
+            pub process: ProcessInfo,
+            pub consent_at: String,
+            #[serde(default)]
+            pub gaps: Vec<Gap>,
+            #[serde(default)]
+            pub degraded: Vec<Degradation>,
+            pub state: MeetingState,
+            #[serde(default)]
+            pub failure: Option<String>,
+            #[serde(default)]
+            pub session_model: Option<String>,
+            #[serde(default)]
+            pub memory: agent::MemoryMode,
+            #[serde(default)]
+            pub tracks: Vec<super::super::TrackFile>,
+            #[serde(default)]
+            pub note: Option<document::DocId>,
+            #[serde(default)]
+            pub event: Option<crate::EventRef>,
+            #[serde(default)]
+            pub project: Option<String>,
+            #[serde(default)]
+            pub template: String,
+            #[serde(default)]
+            pub stats: Option<super::super::Stats>,
+        }
+    }
+
+    /// 173 R3 #19: the incident's manifest loads with this branch's types.
+    #[test]
+    fn the_incident_manifest_loads() {
+        let m: Manifest = serde_json::from_str(INCIDENT).unwrap();
+        assert_eq!(m.process.bundle_id.as_deref(), Some("us.zoom.xos"));
+        assert!(m.gaps.is_empty() && m.fallbacks.is_empty());
+        // Re-written by this branch with nothing new to say, it is exactly main's shape.
+        let again: serde_json::Value = serde_json::to_value(&m).unwrap();
+        let orig: serde_json::Value = serde_json::from_str(INCIDENT).unwrap();
+        assert_eq!(again, orig);
+    }
+
+    /// 173 R3 #19: a manifest this branch writes with capture gaps, a retarget, fallback spans
+    /// and a permission problem still loads in a pre-173 binary (new data only in fields it
+    /// ignores; only main's `Degradation` variants).
+    #[test]
+    fn a_manifest_with_watchdog_records_loads_in_main() {
+        let mut m: Manifest = serde_json::from_str(INCIDENT).unwrap();
+        m.gaps.push(Gap {
+            at_ms: 370_100,
+            dur_ms: 2_287_000,
+            track: Some(Stem::System),
+            reason: Some(crate::CaptureFault::Silent),
+            retarget: Some(61_000),
+        });
+        m.gaps.push(Gap {
+            at_ms: 900_000,
+            dur_ms: 30_000,
+            track: None,
+            reason: None,
+            retarget: None,
+        });
+        m.fallbacks.push(Fallback {
+            reason: crate::CaptureFault::Silent,
+            at_ms: 420_000,
+            until_ms: Some(480_000),
+        });
+        m.fallbacks.push(Fallback {
+            reason: crate::CaptureFault::Stalled,
+            at_ms: 1_000_000,
+            until_ms: None,
+        });
+        m.degraded.push(Degradation::PermissionDenied(
+            crate::Permission::AudioCapture,
+        ));
+        let json = serde_json::to_string(&m).unwrap();
+        let old: main::Manifest = serde_json::from_str(&json).expect("a pre-173 binary loads it");
+        assert_eq!(
+            (old.gaps[0].at_ms, old.gaps[0].dur_ms),
+            (370_100, 2_287_000)
+        );
+        assert_eq!(old.gaps.len(), 2);
+        assert_eq!(
+            old.degraded,
+            vec![main::Degradation::PermissionDenied(
+                crate::Permission::AudioCapture
+            )]
+        );
+        // And it round-trips here.
+        let back: Manifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
     }
 
     /// 158 §13 (W6): a manifest written before `stats` (and a `stats` written before

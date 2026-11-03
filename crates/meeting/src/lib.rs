@@ -71,7 +71,9 @@ pub use post::suggest::{Suggestion, SuggestionSource};
 pub use speakers::{Profile, Profiles};
 use state::Prompted;
 pub use state::{Recording, RecordingClock};
-pub use store::{Gap, Manifest, MeetingSummary, SearchHit, Stats, Stem, Store, TrackFile};
+pub use store::{
+    Fallback, Gap, Manifest, MeetingSummary, SearchHit, Stats, Stem, Store, TrackFile,
+};
 use stt::Piece;
 pub use templates::{Section, Template};
 use topics::{Gone, Record};
@@ -213,18 +215,8 @@ pub enum Degradation {
     /// Live speaker labels stopped (07 §6): the diariser's session failed or its task
     /// panicked; system lines are `them:` from here, the post pass still diarizes.
     DiarizationDown,
-    /// 173: the app's tap stayed silent through three reopens while sound played (a probe
-    /// heard it, or the app ran output); the system track recorded every app on the default
-    /// output (minus theuth) from `at_ms`, until a return probe found the app's tap live again
-    /// at `until_ms` (`None`: to the end).
-    SystemAudioFallback {
-        /// Why the app's tap was given up.
-        reason: CaptureFault,
-        /// Recording-clock start.
-        at_ms: u64,
-        /// Recording-clock end, once the app's tap came back.
-        until_ms: Option<u64>,
-    },
+    // 173 R3 #19: no variant may be added here — `manifest.degraded` must stay loadable by
+    // pre-173 binaries. A system-audio fallback is recorded in `Manifest::fallbacks`.
 }
 
 /// 173: why a capture track went quiet (the capture watchdog's episode reason).
@@ -233,7 +225,8 @@ pub enum Degradation {
 pub enum CaptureFault {
     /// No chunk for 3 s.
     Stalled,
-    /// Exact digital zeros for 15 s while the source was playing.
+    /// Exact digital zeros for 15 s while sound played: a concurrent global-tap probe heard it
+    /// (per-app tap), or the source ran output (global tap, or a probe that could not open).
     Silent,
     /// The OS refused the capture (System Audio Recording / Microphone permission).
     PermissionDenied,
@@ -265,7 +258,7 @@ pub enum CaptureHealth {
         /// Quiet since.
         since: String,
     },
-    /// Recording again, but through [`Degradation::SystemAudioFallback`].
+    /// Recording again, but through the global tap (a [`Fallback`] span in the manifest).
     Degraded {
         /// Why the app's tap was given up.
         reason: CaptureFault,
@@ -2745,7 +2738,7 @@ fn apply_report(
         capture::Report::Fallback { start, reason } => {
             let at_ms = clock.elapsed_at(start).as_millis() as u64;
             tracing::warn!(meeting = %manifest.id, at_ms, ?reason, "meeting capture: system track on the global tap");
-            manifest.degraded.push(Degradation::SystemAudioFallback {
+            manifest.fallbacks.push(Fallback {
                 reason,
                 at_ms,
                 until_ms: None,
@@ -2755,16 +2748,15 @@ fn apply_report(
         capture::Report::Returned { end, pid } => {
             let end_ms = clock.elapsed_at(end).as_millis() as u64;
             tracing::warn!(meeting = %manifest.id, end_ms, pid, "meeting capture: system track back on the app's tap");
-            // The open fallback entry gets its end.
-            let open = manifest.degraded.iter_mut().rev().find_map(|d| match d {
-                Degradation::SystemAudioFallback { until_ms, .. } if until_ms.is_none() => {
-                    Some(until_ms)
-                }
-                _ => None,
-            });
-            match open {
-                Some(until) => {
-                    *until = Some(end_ms);
+            // The open fallback span gets its end.
+            match manifest
+                .fallbacks
+                .iter_mut()
+                .rev()
+                .find(|f| f.until_ms.is_none())
+            {
+                Some(f) => {
+                    f.until_ms = Some(end_ms);
                     (true, false)
                 }
                 None => (false, false),
@@ -5304,5 +5296,31 @@ mod tests {
         assert!(!resumable(&n));
         assert_eq!(store.manifest(done.id).unwrap().state, MeetingState::Done);
         assert_eq!(manifests.iter().filter(|m| resumable(m)).count(), 1);
+    }
+
+    /// 173 R3 #1: a capture gap reported after a user pause lands on the recording clock.
+    #[test]
+    fn apply_report_maps_gap_instants_across_a_pause() {
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        let mut clock = RecordingClock::start_at(t0);
+        clock.pause_at(s(120));
+        clock.resume_at(s(180));
+        let mut m = Manifest::new(MeetingId::new(), zoom(), "2026-11-02T21:02:13Z".into());
+        let mut status = CaptureStatus::default();
+        let changed = apply_report(
+            &mut m,
+            &clock,
+            &mut status,
+            capture::Report::Gap {
+                track: Track::System,
+                start: s(100),
+                end: s(200),
+                reason: CaptureFault::Silent,
+                retarget: None,
+            },
+        );
+        assert_eq!(changed, (true, false));
+        assert_eq!((m.gaps[0].at_ms, m.gaps[0].dur_ms), (100_000, 40_000));
     }
 }

@@ -19,14 +19,17 @@ use voice::mic::Aec;
 use super::{Feed, Report, Reports, watchdog};
 use crate::{Degradation, PermissionState, Track};
 
-/// The open microphone: its pump thread, which owns the device. Dropping it
-/// (after the meeting's stop flag is set) joins the pump, which closes the device.
+/// The open microphone: its pump thread, which owns the device. Dropping it sets the
+/// meeting's stop flag (R3 #5: a `Capture` dropped without `stop()` must not hang here — the
+/// other capture threads end on the same flag) and joins the pump, which closes the device.
 pub struct Mic {
     pump: Option<JoinHandle<()>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl Drop for Mic {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
         if let Some(t) = self.pump.take() {
             let _ = t.join();
         }
@@ -49,11 +52,20 @@ pub fn open(
     };
     let pump = std::thread::Builder::new()
         .name("meeting-mic".into())
-        .spawn(move || {
-            let _span = span.entered();
-            pump((cap, rx), aec, feed, &stop, &reports);
+        .spawn({
+            let stop = stop.clone();
+            move || {
+                let _span = span.entered();
+                pump((cap, rx), aec, feed, &stop, &reports);
+            }
         })?;
-    Ok((Mic { pump: Some(pump) }, degraded))
+    Ok((
+        Mic {
+            pump: Some(pump),
+            stop,
+        },
+        degraded,
+    ))
 }
 
 /// Chunks over the mpsc → rings until stopped; the device is reopened whenever
@@ -91,9 +103,7 @@ fn pump(
         let now = Instant::now();
         match got {
             Ok(Ok(pcm)) => {
-                meter.add(&pcm);
-                wd.chunk(now, false);
-                feed.push(pcm);
+                super::deliver(now, pcm, &mut meter, &mut wd, &mut feed);
             }
             Ok(Err(e)) => {
                 tracing::warn!("meeting capture: microphone stopped: {e}");
@@ -139,7 +149,7 @@ fn pump(
             last_line = now;
             let target = format!("{aec:?}");
             super::system::health_line("mic", &target, "-", &meter, wd.reopens, wd.troubled());
-            meter = watchdog::Meter::default();
+            meter.next_minute();
         }
     }
     drop(device);
@@ -171,4 +181,35 @@ pub fn permission() -> PermissionState {
 #[cfg(not(target_os = "macos"))]
 pub fn permission() -> PermissionState {
     PermissionState::Granted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 173 R3 #5: a `Mic` dropped without the meeting's stop flag (an actor dropped
+    /// mid-meeting) still returns; round 2's pump only watched the flag and hung the drop.
+    #[test]
+    fn dropping_a_mic_without_stop_returns() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let parked = stop.clone();
+        let pump = std::thread::spawn(move || {
+            while !parked.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let mic = Mic {
+            pump: Some(pump),
+            stop,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(mic);
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(1)).is_ok(),
+            "Mic::drop hung"
+        );
+    }
 }

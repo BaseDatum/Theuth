@@ -171,6 +171,8 @@ enum Pending {
 }
 
 struct Episode {
+    /// Distinguishes episodes, so a probe's verdict reaches only the episode that asked.
+    id: u64,
     start: Instant,
     reason: CaptureFault,
     /// Reopens in this episode that did not bring audio back.
@@ -211,8 +213,12 @@ pub struct Watchdog {
     last_unknown: Option<Instant>,
     /// Why the fallback happened, while it lasts.
     fell_back: Option<CaptureFault>,
-    /// A probe is running.
-    probing: Option<Pending>,
+    /// A probe is running: what for, and the episode it judges (0: none).
+    probing: Option<(Pending, u64)>,
+    /// Episodes opened so far (the next [`Episode::id`]).
+    episodes: u64,
+    /// The last gap's end: a new episode never starts before it (R3 #16).
+    last_gap_end: Option<Instant>,
     /// Genuine silence: the next confirmation probe is due at.
     next_probe: Option<Instant>,
     /// Index into [`REPROBE`].
@@ -244,6 +250,8 @@ impl Watchdog {
             last_unknown: None,
             fell_back: None,
             probing: None,
+            episodes: 0,
+            last_gap_end: None,
             next_probe: None,
             probe_step: 0,
             probe_broken: false,
@@ -328,11 +336,23 @@ impl Watchdog {
         self.update_health();
     }
 
-    /// The [`Action::Probe`] finished.
+    /// The [`Action::Probe`] finished. A verdict applies only if the state it was asked in
+    /// still holds (R3 #2): Confirm needs no episode and a live stream; Judge needs the same
+    /// live episode that asked. Stale verdicts are dropped — a dead stream's episode is the
+    /// reopen schedule's, not the probe's.
     pub fn probed(&mut self, now: Instant, p: Probe) {
-        let Some(kind) = self.probing.take_if(|k| *k != Pending::Return) else {
+        let Some((kind, asked)) = self.probing.take_if(|(k, _)| *k != Pending::Return) else {
             return;
         };
+        let live = !self.dead;
+        let current = match (kind, &self.episode) {
+            (Pending::Confirm, None) => live,
+            (Pending::Judge, Some(ep)) => live && ep.id == asked,
+            _ => false,
+        };
+        if !current {
+            return;
+        }
         match (kind, p) {
             (_, Probe::Failed) => {
                 self.probe_broken = true;
@@ -342,7 +362,7 @@ impl Watchdog {
                 }
             }
             (Pending::Confirm, Probe::Audible) => {
-                if let (Some(z), None) = (self.zeros_since, &self.episode) {
+                if let Some(z) = self.zeros_since {
                     self.open(z, CaptureFault::Silent, now);
                     if let Some(ep) = self.episode.as_mut() {
                         ep.confirmed = true;
@@ -350,12 +370,10 @@ impl Watchdog {
                 }
             }
             (Pending::Judge, Probe::Audible) => {
-                if self.episode.is_some() {
-                    self.fail_reopen(now);
-                    if let Some(ep) = self.episode.as_mut() {
-                        ep.confirmed = true;
-                    }
+                if let Some(ep) = self.episode.as_mut() {
+                    ep.confirmed = true;
                 }
+                self.fail_reopen(now);
             }
             (_, Probe::Silent) => {
                 self.close(now);
@@ -370,7 +388,7 @@ impl Watchdog {
     /// The [`Action::Return`] probe finished; `back` = the capture thread is on the app tap
     /// again (it heard ≥ [`RETURN_FOR`] and the tap reopened).
     pub fn returned(&mut self, now: Instant, back: bool) {
-        if self.probing != Some(Pending::Return) {
+        if !matches!(self.probing, Some((Pending::Return, _))) {
             return;
         }
         self.probing = None;
@@ -393,8 +411,9 @@ impl Watchdog {
         self.update_health();
     }
 
-    /// The meeting stops: an open episode ends here.
+    /// The meeting stops: an open episode ends here (dead or not).
     pub fn finish(&mut self, now: Instant) {
+        self.dead = false;
         self.close(now);
     }
 
@@ -423,7 +442,7 @@ impl Watchdog {
             && self.probing.is_none()
             && self.next_return.is_some_and(|t| now >= t)
         {
-            self.probing = Some(Pending::Return);
+            self.probing = Some((Pending::Return, 0));
             return Some(Action::Return);
         }
         if self.episode.is_none() {
@@ -460,7 +479,7 @@ impl Watchdog {
         }
         if self.probe_ok() {
             if self.probing.is_none() && self.next_probe.is_none_or(|t| now >= t) {
-                self.probing = Some(Pending::Confirm);
+                self.probing = Some((Pending::Confirm, 0));
                 return Some(Action::Probe);
             }
             return None;
@@ -494,8 +513,9 @@ impl Watchdog {
                     if now.saturating_duration_since(z) < ZERO_JUDGE {
                         self.episode.as_mut()?.judge = Some(z + ZERO_JUDGE);
                     } else if self.probing.is_none() {
-                        self.episode.as_mut()?.judge = None;
-                        self.probing = Some(Pending::Judge);
+                        let ep = self.episode.as_mut()?;
+                        ep.judge = None;
+                        self.probing = Some((Pending::Judge, ep.id));
                         return Some(Action::Probe);
                     }
                 }
@@ -542,9 +562,21 @@ impl Watchdog {
         Some(Action::Reopen)
     }
 
-    /// The last reopen did not bring audio back: count it, warn, schedule the next one.
+    /// The last reopen did not bring audio back: count it, warn, schedule the next one —
+    /// at once when this failure decides the fallback (R3 #11: no extra backoff step).
     fn fail_reopen(&mut self, now: Instant) {
-        let delay = self.next_delay();
+        let falls_back = self.rules.fallback
+            && self.fell_back.is_none()
+            && self.streak + 1 >= FALLBACK_AFTER
+            && self
+                .episode
+                .as_ref()
+                .is_some_and(|ep| ep.confirmed && ep.reason != CaptureFault::PermissionDenied);
+        let delay = if falls_back {
+            Duration::ZERO
+        } else {
+            self.next_delay()
+        };
         if let Some(ep) = self.episode.as_mut() {
             ep.judge = None;
             ep.failed += 1;
@@ -575,8 +607,11 @@ impl Watchdog {
     }
 
     fn open(&mut self, start: Instant, reason: CaptureFault, due: Instant) {
+        self.episodes += 1;
         self.episode = Some(Episode {
-            start,
+            id: self.episodes,
+            // R3 #16: gaps never overlap.
+            start: self.last_gap_end.map_or(start, |end| start.max(end)),
             reason,
             failed: 0,
             due: Some(due),
@@ -602,7 +637,9 @@ impl Watchdog {
         } else {
             None
         };
-        let ep = self.episode.as_mut().expect("opened above");
+        let Some(ep) = self.episode.as_mut() else {
+            return;
+        };
         ep.judge = None;
         if urgent {
             ep.reason = reason;
@@ -614,15 +651,22 @@ impl Watchdog {
         }
     }
 
+    /// End the episode: one gap. A no-op while the stream is dead (R3 #2: a dead stream always
+    /// has an episode, so its reopen schedule cannot be lost); [`Watchdog::finish`] clears it.
     fn close(&mut self, now: Instant) {
+        if self.dead {
+            return;
+        }
         if let Some(ep) = self.episode.take() {
+            let end = now.max(ep.start);
             self.notes.push(Note::Gap {
                 start: ep.start,
-                end: now.max(ep.start),
+                end,
                 reason: ep.reason,
                 retarget: ep.retarget,
             });
             self.closed_at = Some(now);
+            self.last_gap_end = Some(end);
         }
     }
 
@@ -648,8 +692,23 @@ pub struct Target {
     pub pid: u32,
     /// Its `kAudioProcessPropertyBundleID`.
     pub bundle: Option<String>,
+    /// Its executable (`proc_pidpath`), for pid-reuse checks (R3 #15).
+    pub exe: Option<String>,
     /// The outermost `.app` directory of its executable ([`outer_app`]).
     pub app: Option<String>,
+}
+
+impl Target {
+    /// The target from its pid, bundle id and executable path.
+    pub fn new(pid: u32, bundle: Option<String>, exe: Option<String>) -> Self {
+        let app = exe.as_deref().and_then(outer_app).map(str::to_owned);
+        Self {
+            pid,
+            bundle,
+            exe,
+            app,
+        }
+    }
 }
 
 /// The outermost `.app` bundle directory of an executable path:
@@ -659,9 +718,11 @@ pub fn outer_app(path: &str) -> Option<&str> {
     path.find(".app/").map(|i| &path[..i + ".app".len()])
 }
 
-/// Whether `p` belongs to the target's app: the target itself; the same bundle id or one under
-/// it (`us.zoom.xos.*`, not `com.google.drivefs` for `com.google.Chrome`); or an executable inside
-/// the target's outermost `.app`. Never our own pid. `path` resolves a pid's executable.
+/// Whether `p` belongs to the target's app: the target itself (same pid AND, R3 #15, the same
+/// bundle id, or the same executable when both resolve — a reused pid is a stranger); the same
+/// bundle id or one under it (`us.zoom.xos.*`, not `com.google.drivefs` for
+/// `com.google.Chrome`); or an executable inside the target's outermost `.app`. Never our own
+/// pid. `path` resolves a pid's executable.
 pub fn in_family(
     t: &Target,
     p: &ProcessInfo,
@@ -672,7 +733,17 @@ pub fn in_family(
         return false;
     }
     if p.pid == t.pid {
-        return true;
+        let same = match (&t.bundle, &p.bundle_id) {
+            (Some(a), Some(b)) => a == b,
+            _ => match (&t.exe, path(p.pid)) {
+                (Some(a), Some(b)) => *a == b,
+                // Nothing to compare: trust the pid.
+                _ => true,
+            },
+        };
+        if same {
+            return true;
+        }
     }
     if let (Some(tb), Some(pb)) = (&t.bundle, &p.bundle_id)
         && pb
@@ -708,8 +779,8 @@ pub fn activity(
     }
 }
 
-/// The pid to tap on a reopen: `current` while it runs output, else a family member that does,
-/// else `current`.
+/// The pid to tap on a reopen or return: `current` while it runs output (and is still of the
+/// family), else a family member that does, else `current`.
 pub fn retarget(
     t: &Target,
     current: u32,
@@ -717,13 +788,29 @@ pub fn retarget(
     path: &dyn Fn(u32) -> Option<String>,
     me: u32,
 ) -> u32 {
-    if procs.iter().any(|p| p.pid == current && p.active) {
+    let playing = |p: &&ProcessInfo| p.active && in_family(t, p, path, me);
+    if procs.iter().filter(playing).any(|p| p.pid == current) {
         return current;
     }
-    procs
-        .iter()
-        .find(|p| p.active && in_family(t, p, path, me))
-        .map_or(current, |p| p.pid)
+    procs.iter().find(playing).map_or(current, |p| p.pid)
+}
+
+/// The probe floor from `THEUTH_MEETING_PROBE_DBFS`'s value: `(floor, complaint)`. Unset →
+/// [`AUDIBLE_DBFS`]; a finite number → clamped to −140…0 dBFS; anything else (unparsable, NaN,
+/// ±inf — NaN would make every probe silent) → [`AUDIBLE_DBFS`] and a complaint to log (R3 #10).
+pub fn probe_floor(raw: Option<&str>) -> (f32, Option<String>) {
+    let Some(raw) = raw else {
+        return (AUDIBLE_DBFS, None);
+    };
+    match raw.trim().parse::<f32>() {
+        Ok(v) if v.is_finite() => (v.clamp(-140.0, 0.0), None),
+        _ => (
+            AUDIBLE_DBFS,
+            Some(format!(
+                "THEUTH_MEETING_PROBE_DBFS={raw:?} is not a finite number; using {AUDIBLE_DBFS} dBFS"
+            )),
+        ),
+    }
 }
 
 /// One track's counters for the once-a-minute health line.
@@ -737,10 +824,12 @@ pub struct Meter {
     pub zero_frames: u64,
     /// Largest |sample|.
     pub peak: f32,
-    /// flexaudio `ChunkDropped` counts.
+    /// flexaudio `ChunkDropped` chunks, as deltas of its per-stream running total.
     pub dropped: u64,
     /// flexaudio `Clipped` events.
     pub clipped: u64,
+    /// The current stream's last `ChunkDropped` total (kept across minutes).
+    dropped_total: u64,
 }
 
 impl Meter {
@@ -763,14 +852,35 @@ impl Meter {
     pub fn peak_dbfs(&self) -> f64 {
         20.0 * f64::from(self.peak.max(1e-10)).log10()
     }
+
+    /// flexaudio's `ChunkDropped { count }`: `count` is the stream's running total (R3 #3).
+    pub fn chunk_dropped(&mut self, total: u64) {
+        self.dropped += total.saturating_sub(self.dropped_total);
+        self.dropped_total = total;
+    }
+
+    /// Start the next minute's counters (the stream's drop total carries over).
+    pub fn next_minute(&mut self) {
+        *self = Self {
+            dropped_total: self.dropped_total,
+            ..Self::default()
+        };
+    }
+
+    /// The stream was replaced: its drop total starts at 0.
+    pub fn new_stream(&mut self) {
+        self.dropped_total = 0;
+    }
 }
 
-/// A probe's measurement at 48 kHz mono: 100 ms blocks at or above the floor, non-zero frames.
+/// A probe's measurement at 48 kHz mono: frames seen, 100 ms blocks at or above the floor,
+/// non-zero frames.
 #[derive(Debug)]
 pub struct ProbeMeter {
     floor: f32,
     block_peak: f32,
     block_len: usize,
+    frames: usize,
     loud: usize,
     nonzero: usize,
 }
@@ -785,6 +895,7 @@ impl ProbeMeter {
             floor: 10f32.powf(floor_dbfs / 20.0),
             block_peak: 0.0,
             block_len: 0,
+            frames: 0,
             loud: 0,
             nonzero: 0,
         }
@@ -793,6 +904,7 @@ impl ProbeMeter {
     /// Count samples.
     pub fn add(&mut self, pcm: &[f32]) {
         for &s in pcm {
+            self.frames += 1;
             self.nonzero += usize::from(s != 0.0);
             self.block_peak = self.block_peak.max(s.abs());
             self.block_len += 1;
@@ -803,6 +915,18 @@ impl ProbeMeter {
                 self.block_peak = 0.0;
                 self.block_len = 0;
             }
+        }
+    }
+
+    /// The confirmation verdict: under 1 s of frames is no evidence (R3 #4: `Failed`, not
+    /// "genuine silence"); else audible at ≥ [`AUDIBLE_FOR`] of loud blocks.
+    pub fn verdict(&self) -> Probe {
+        if Self::secs(self.frames) < Duration::from_secs(1) {
+            Probe::Failed
+        } else if self.loud() >= AUDIBLE_FOR {
+            Probe::Audible
+        } else {
+            Probe::Silent
         }
     }
 
@@ -852,6 +976,8 @@ mod tests {
         activity: Activity,
         probe: Probe,
         back: bool,
+        /// What reopens report as the new pid.
+        retarget: Option<u32>,
         pending: Option<(u64, Action)>,
         actions: Vec<(u64, Action)>,
         notes: Vec<Note>,
@@ -867,6 +993,7 @@ mod tests {
                 activity: Activity::Active,
                 probe: Probe::Audible,
                 back: false,
+                retarget: None,
                 pending: None,
                 actions: Vec::new(),
                 notes: Vec::new(),
@@ -906,7 +1033,7 @@ mod tests {
                         self.actions.push((t, action));
                         match action {
                             Action::Reopen | Action::Fallback => {
-                                self.wd.reopened(now, reopen_ok, None)
+                                self.wd.reopened(now, reopen_ok, self.retarget)
                             }
                             Action::Probe | Action::Return => {
                                 self.pending = Some((t + PROBE_WINDOW.as_millis() as u64, action));
@@ -1071,7 +1198,7 @@ mod tests {
         let mut r = Rig::new(APP);
         r.activity = Activity::Inactive;
         r.run(1_000, true, false, true);
-        r.run(56_010, true, true, true);
+        r.run(51_010, true, true, true);
         assert_eq!(
             r.at_kinds(),
             vec![
@@ -1082,26 +1209,27 @@ mod tests {
                 (35_750, P),
                 (41_750, Reopen),
                 (47_000, P),
-                (56_000, Fallback),
+                // R3 #11: decided by the third confirmed failure itself, no extra backoff.
+                (51_000, Fallback),
             ]
         );
         // Warned when the first judge probe was audible (29.5 s), Lost after the third (51 s).
         let h = r.healths();
         assert_eq!(h[0], Health::Recovering(CaptureFault::Silent, r.at(1_020)));
         assert_eq!(h[1], Health::Lost(CaptureFault::Silent, r.at(1_020)));
-        // The fallback hears audio: degraded, gap closed.
+        // The global tap hears the sound the probes heard: degraded, gap closed.
         r.run(60_000, true, false, true);
         assert_eq!(
             r.healths().last(),
             Some(&Health::Degraded(CaptureFault::Silent))
         );
-        assert_eq!(r.gaps(), vec![(1_020, 56_020, CaptureFault::Silent)]);
-        // Return probes every 60 s; the app tap is still silent at 116 s, back at 180 s.
+        assert_eq!(r.gaps(), vec![(1_020, 51_020, CaptureFault::Silent)]);
+        // Return probes every 60 s; the app tap is still silent at 111 s, back at 175 s.
         r.run(121_000, true, false, true);
-        assert_eq!(r.actions[8], (116_000, Return));
+        assert_eq!(r.actions[8], (111_000, Return));
         r.back = true;
         r.run(185_000, true, false, true);
-        assert_eq!(r.actions[9], (180_000, Return));
+        assert_eq!(r.actions[9], (175_000, Return));
         assert_eq!(r.healths().last(), Some(&Health::Ok));
         assert_eq!(r.wd.fell_back(), None);
         assert_eq!(r.actions.len(), 10);
@@ -1251,11 +1379,11 @@ mod tests {
 
     #[test]
     fn family_is_bundle_prefix_or_inside_the_outer_app() {
-        let zoom = Target {
-            pid: 100,
-            bundle: Some("us.zoom.xos".into()),
-            app: outer_app("/Applications/zoom.us.app/Contents/MacOS/zoom.us").map(str::to_owned),
-        };
+        let zoom = Target::new(
+            100,
+            Some("us.zoom.xos".into()),
+            Some("/Applications/zoom.us.app/Contents/MacOS/zoom.us".into()),
+        );
         assert_eq!(zoom.app.as_deref(), Some("/Applications/zoom.us.app"));
         let paths = |pid: u32| -> Option<String> {
             match pid {
@@ -1287,11 +1415,7 @@ mod tests {
             !fam(&proc(me, Some("us.zoom.xos"), true)),
             "never our own pid"
         );
-        let chrome = Target {
-            pid: 1,
-            bundle: Some("com.google.Chrome".into()),
-            app: None,
-        };
+        let chrome = Target::new(1, Some("com.google.Chrome".into()), None);
         assert!(!in_family(
             &chrome,
             &proc(2, Some("com.google.drivefs"), true),
@@ -1307,11 +1431,52 @@ mod tests {
         assert_eq!(outer_app("/usr/bin/afplay"), None);
     }
 
+    /// 173 R3 #15: the target's pid is the target only while it is the same program.
+    #[test]
+    fn a_reused_target_pid_is_not_the_family() {
+        let zoom = Target::new(
+            100,
+            Some("us.zoom.xos".into()),
+            Some("/Applications/zoom.us.app/Contents/MacOS/zoom.us".into()),
+        );
+        let paths = |pid: u32| match pid {
+            100 => Some("/usr/bin/afplay".to_owned()),
+            _ => None,
+        };
+        let none = |_: u32| None;
+        let me = 999;
+        assert!(
+            !in_family(&zoom, &proc(100, Some("com.apple.afplay"), true), &none, me),
+            "another bundle on the pid"
+        );
+        assert!(
+            !in_family(&zoom, &proc(100, None, true), &paths, me),
+            "another executable on the pid"
+        );
+        assert!(
+            in_family(&zoom, &proc(100, None, true), &none, me),
+            "nothing to compare: trust the pid"
+        );
+        assert!(in_family(
+            &zoom,
+            &proc(100, Some("us.zoom.xos"), false),
+            &paths,
+            me
+        ));
+        // retarget does not keep a reused pid that happens to run output.
+        let procs = [
+            proc(100, Some("com.apple.afplay"), true),
+            proc(200, Some("us.zoom.xos"), true),
+        ];
+        assert_eq!(retarget(&zoom, 100, &procs, &none, me), 200);
+    }
+
     #[test]
     fn retarget_and_activity_follow_the_family() {
         let zoom = Target {
             pid: 51437,
             bundle: Some("us.zoom.xos".into()),
+            exe: None,
             app: Some("/Applications/zoom.us.app".into()),
         };
         let paths = |pid: u32| {
@@ -1362,5 +1527,170 @@ mod tests {
         pcm[17] = 0.5;
         m.add(&pcm);
         assert_eq!(m.loud(), Duration::from_millis(100));
+    }
+
+    /// 173 R3 #4: a probe that heard (almost) nothing is no evidence of silence.
+    #[test]
+    fn probe_verdict_needs_a_second_of_frames() {
+        let block = ProbeMeter::BLOCK;
+        assert_eq!(
+            ProbeMeter::new(AUDIBLE_DBFS).verdict(),
+            Probe::Failed,
+            "no frames"
+        );
+        let mut m = ProbeMeter::new(AUDIBLE_DBFS);
+        m.add(&vec![1e-2; 9 * block]);
+        assert_eq!(m.verdict(), Probe::Failed, "0.9 s of frames, loud or not");
+        let mut m = ProbeMeter::new(AUDIBLE_DBFS);
+        m.add(&vec![0.0; 40 * block]);
+        assert_eq!(m.verdict(), Probe::Silent);
+        m.add(&vec![1e-3; 10 * block]);
+        assert_eq!(m.verdict(), Probe::Audible);
+    }
+
+    /// 173 R3 #10: the env knob rejects what would switch the zero rule off.
+    #[test]
+    fn probe_floor_parses_finite_numbers_only() {
+        assert_eq!(probe_floor(None), (AUDIBLE_DBFS, None));
+        assert_eq!(probe_floor(Some("-90")), (-90.0, None));
+        assert_eq!(probe_floor(Some(" -200 ")), (-140.0, None), "clamped");
+        assert_eq!(probe_floor(Some("5")), (0.0, None), "clamped");
+        for bad in ["nan", "inf", "-inf", "loud", ""] {
+            let (floor, complaint) = probe_floor(Some(bad));
+            assert_eq!(floor, AUDIBLE_DBFS, "{bad:?}");
+            assert!(complaint.is_some(), "{bad:?} is reported");
+        }
+    }
+
+    /// 173 R3: flexaudio's `SilenceWhileSourceActive` counts as playing on the gated rule.
+    #[test]
+    fn silence_while_source_active_arms_the_gated_rule() {
+        let mut r = Rig::new(GLOBAL);
+        r.activity = Activity::Inactive;
+        r.run(1_000, true, false, true);
+        r.run(10_000, true, true, true);
+        r.wd.signal(r.at(10_000), Signal::SilentWhileActive);
+        r.run(17_000, true, true, true);
+        assert_eq!(
+            r.at_kinds(),
+            vec![(16_250, Reopen)],
+            "15 s of zeros, flexaudio vouched"
+        );
+    }
+
+    /// 173 R3: the pid a reopen retargeted to reaches the gap.
+    #[test]
+    fn retarget_reaches_the_gap_note() {
+        let mut r = Rig::new(APP);
+        r.retarget = Some(61_000);
+        r.run(10_000, true, false, true);
+        r.run(30_000, true, true, true);
+        r.run(31_000, true, false, true);
+        assert!(matches!(
+            r.notes.iter().find(|n| matches!(n, Note::Gap { .. })),
+            Some(Note::Gap {
+                retarget: Some(61_000),
+                ..
+            })
+        ));
+    }
+
+    /// 173 R3 #16: an episode after a Judge-silent end never starts inside the closed gap.
+    #[test]
+    fn gaps_never_overlap() {
+        let mut r = Rig::new(APP);
+        r.run(10_000, true, false, true);
+        r.run(34_000, true, true, true);
+        r.probe = Probe::Silent;
+        r.run(39_000, true, true, true);
+        // Judge silent at 38.5 s closed the first gap; then sound plays again elsewhere.
+        r.probe = Probe::Audible;
+        r.run(73_000, true, true, true);
+        r.run(74_000, true, false, true);
+        let g = r.gaps();
+        assert_eq!(g.len(), 2, "{g:?}");
+        assert_eq!(g[0], (10_020, 38_500, CaptureFault::Silent));
+        assert!(
+            g[1].0 >= g[0].1,
+            "second gap starts at or after the first's end: {g:?}"
+        );
+    }
+
+    /// 173 R3 #2: a Confirm verdict that arrives after the stream died must not close the
+    /// dead stream's episode (round 2: no reopen ever again, health `Ok`).
+    #[test]
+    fn stale_confirm_verdict_after_the_stream_died_does_not_wedge() {
+        let mut r = Rig::new(APP);
+        r.probe = Probe::Silent;
+        r.run(10_000, true, false, true);
+        r.run(26_000, true, true, true);
+        assert_eq!(r.at_kinds(), vec![(25_250, P)]);
+        r.wd.signal(r.at(26_000), Signal::Lost);
+        r.run(120_000, false, false, false);
+        assert!(
+            r.actions.iter().any(|a| a.0 > 60_000 && a.1 == Reopen),
+            "still reopening: {:?}",
+            r.actions
+        );
+        assert_ne!(r.healths().last(), Some(&Health::Ok));
+        assert!(
+            r.gaps().is_empty(),
+            "no audio came back: the gap is still open"
+        );
+    }
+
+    /// 173 R3 #2: a Judge probe that fails after the stream died is not a second failure.
+    #[test]
+    fn failed_judge_verdict_on_a_dead_episode_is_ignored() {
+        let mut r = Rig::new(APP);
+        r.run(10_000, true, false, true);
+        r.run(34_000, true, true, true);
+        assert_eq!(r.at_kinds(), vec![(25_250, P), (29_250, Reopen)]);
+        r.probe = Probe::Failed;
+        r.run(35_000, true, true, true);
+        assert_eq!(r.actions[2], (34_500, P), "the judge probe runs");
+        r.wd.signal(r.at(35_000), Signal::Lost);
+        r.run(60_000, false, false, false);
+        let after: Vec<u64> = r.actions[3..].iter().map(|a| a.0).collect();
+        // Backoff 1, 2, 5, 10 s: the stale verdict at 38.5 s neither counts nor re-times.
+        assert_eq!(after, vec![35_250, 36_250, 38_250, 43_250, 53_250]);
+    }
+
+    /// 173 R3 #2: a Confirm verdict that arrives after a stall opened an episode is ignored.
+    #[test]
+    fn confirm_verdict_after_a_stall_is_ignored() {
+        let mut r = Rig::new(APP);
+        r.probe = Probe::Silent;
+        r.run(10_000, true, false, true);
+        r.run(25_500, true, true, true);
+        r.run(33_000, false, false, true);
+        assert_eq!(
+            r.at_kinds(),
+            vec![(25_250, P), (28_500, Reopen), (32_500, Reopen)]
+        );
+        assert!(
+            r.gaps().is_empty(),
+            "the stall episode was not closed by the verdict"
+        );
+        assert_eq!(
+            r.healths(),
+            vec![Health::Recovering(CaptureFault::Stalled, r.at(25_500))]
+        );
+    }
+
+    /// 173 R3 #3: `ChunkDropped { count }` is the stream's running total.
+    #[test]
+    fn chunk_dropped_counts_deltas_per_stream() {
+        let mut m = Meter::default();
+        for total in [1, 2, 3] {
+            m.chunk_dropped(total);
+        }
+        assert_eq!(m.dropped, 3);
+        m.next_minute();
+        m.chunk_dropped(5);
+        assert_eq!(m.dropped, 2, "the total carries over the minute");
+        m.new_stream();
+        m.chunk_dropped(1);
+        assert_eq!(m.dropped, 3, "a new stream counts from 0");
     }
 }
