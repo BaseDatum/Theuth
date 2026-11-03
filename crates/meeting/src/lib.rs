@@ -213,9 +213,18 @@ pub enum Degradation {
     /// Live speaker labels stopped (07 §6): the diariser's session failed or its task
     /// panicked; system lines are `them:` from here, the post pass still diarizes.
     DiarizationDown,
-    /// 173: the app's tap stayed silent through three reopens while the app was playing; the
-    /// system track records every app on the default output (minus theuth) from then on.
-    SystemAudioFallback(CaptureFault),
+    /// 173: the app's tap stayed silent through three reopens while sound played (a probe
+    /// heard it, or the app ran output); the system track recorded every app on the default
+    /// output (minus theuth) from `at_ms`, until a return probe found the app's tap live again
+    /// at `until_ms` (`None`: to the end).
+    SystemAudioFallback {
+        /// Why the app's tap was given up.
+        reason: CaptureFault,
+        /// Recording-clock start.
+        at_ms: u64,
+        /// Recording-clock end, once the app's tap came back.
+        until_ms: Option<u64>,
+    },
 }
 
 /// 173: why a capture track went quiet (the capture watchdog's episode reason).
@@ -2732,6 +2741,34 @@ fn apply_report(
             }
             manifest.degraded.push(d);
             (true, false)
+        }
+        capture::Report::Fallback { start, reason } => {
+            let at_ms = clock.elapsed_at(start).as_millis() as u64;
+            tracing::warn!(meeting = %manifest.id, at_ms, ?reason, "meeting capture: system track on the global tap");
+            manifest.degraded.push(Degradation::SystemAudioFallback {
+                reason,
+                at_ms,
+                until_ms: None,
+            });
+            (true, false)
+        }
+        capture::Report::Returned { end, pid } => {
+            let end_ms = clock.elapsed_at(end).as_millis() as u64;
+            tracing::warn!(meeting = %manifest.id, end_ms, pid, "meeting capture: system track back on the app's tap");
+            // The open fallback entry gets its end.
+            let open = manifest.degraded.iter_mut().rev().find_map(|d| match d {
+                Degradation::SystemAudioFallback { until_ms, .. } if until_ms.is_none() => {
+                    Some(until_ms)
+                }
+                _ => None,
+            });
+            match open {
+                Some(until) => {
+                    *until = Some(end_ms);
+                    (true, false)
+                }
+                None => (false, false),
+            }
         }
         capture::Report::Health { track, health } => {
             let h = match health {

@@ -9,11 +9,17 @@
 //! back to default. Never changes a device, rate or volume.
 //! `cargo run -p meeting --example tap_repro -- [virtual output name, e.g. ZoomAudioDevice]`.
 //!
-//! `tap_repro watchdog [secs]`: the 173 watchdog end to end — the real
-//! `capture::system::spawn` loop on a child that keeps its output running but
-//! renders exact zeros (`IsRunningOutput` true: the incident's signature), so
-//! it reopens, warns, falls back to the global tap; at `secs` − 15 s the child
-//! unmutes (−80 dBFS) and the episode closes. Prints every watchdog report.
+//! `tap_repro watchdog <scenario>`: the 173 watchdog end to end — the real
+//! `capture::system::spawn` loop on child A, printing every watchdog report:
+//! - `moved` (≈ 200 s): a second child B plays the −80 dBFS tone throughout; at
+//!   5 s A stops rendering (the incident: the tapped object idle, sound elsewhere).
+//!   Expect probe audible → reopens → fallback → B heard; A plays again at 130 s →
+//!   the next return probe goes back to A's tap. The probe floor is set to −90
+//!   dBFS (`THEUTH_MEETING_PROBE_DBFS`) unless given: −80 dBFS is below the
+//!   default −70 floor by design.
+//! - `silent` (≈ 80 s): A keeps its output running but renders exact zeros and
+//!   nothing else of ours plays; default floor. Expect probe silent → no episode,
+//!   no warning (anything else playing on the Mac at ≥ −70 dBFS counts as audible).
 
 use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};
@@ -31,7 +37,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("child") => child(),
-        Some("watchdog") => watchdog(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100)),
+        Some("watchdog") => watchdog(args.get(1).map_or("moved", String::as_str)),
         _ => parent(args.first().cloned()),
     }
 }
@@ -103,8 +109,25 @@ fn child() {
     }
 }
 
-/// See the module doc: the real system capture loop against a muted-but-running child.
-fn watchdog(secs: u64) {
+/// A child player: its handle and stdin.
+fn spawn_child() -> (std::process::Child, std::process::ChildStdin) {
+    let exe = std::env::current_exe().expect("current_exe");
+    let mut child = Command::new(exe)
+        .arg("child")
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn child");
+    let stdin = child.stdin.take().expect("child stdin");
+    (child, stdin)
+}
+
+/// See the module doc: the real system capture loop on child A in `scenario`.
+fn watchdog(scenario: &str) {
+    let moved = scenario == "moved";
+    if moved && std::env::var_os("THEUTH_MEETING_PROBE_DBFS").is_none() {
+        // SAFETY: single-threaded here; no thread reads the environment yet.
+        unsafe { std::env::set_var("THEUTH_MEETING_PROBE_DBFS", "-90") };
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -112,16 +135,13 @@ fn watchdog(secs: u64) {
         )
         .with_writer(std::io::stderr)
         .init();
-    let exe = std::env::current_exe().expect("current_exe");
-    let mut child = Command::new(exe)
-        .arg("child")
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("spawn child");
-    let pid = child.id();
-    let mut to_child = child.stdin.take().expect("child stdin");
-    let _ = writeln!(to_child, "mute");
+    let (a, mut to_a) = spawn_child();
+    let b = moved.then(spawn_child);
+    if !moved {
+        let _ = writeln!(to_a, "mute");
+    }
     std::thread::sleep(Duration::from_millis(1500));
+    let pid = a.id();
     let stop = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));
     let (feed, mut enc, _stt) = meeting::capture::rings(&paused);
@@ -137,24 +157,38 @@ fn watchdog(secs: u64) {
         Ok(t) => t,
         Err(e) => {
             println!("tap on child pid {pid}: {e:#}");
-            let _ = child.kill();
-            let _ = child.wait();
+            for (mut c, _) in [Some((a, to_a)), b].into_iter().flatten() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
             return;
         }
     };
-    println!("watchdog on muted child pid {pid} for {secs}s");
+    let (secs, script): (u64, &[(u64, &str)]) = if moved {
+        (200, &[(5, "stop"), (130, "start")])
+    } else {
+        (80, &[])
+    };
+    println!(
+        "watchdog `{scenario}` on child A pid {pid}{} for {secs}s",
+        b.as_ref().map_or(String::new(), |(c, _)| format!(
+            ", child B pid {} playing",
+            c.id()
+        ))
+    );
     let t0 = Instant::now();
-    let unmute = Duration::from_secs(secs.saturating_sub(15));
-    let mut unmuted = false;
+    let mut step = 0;
     while t0.elapsed() < Duration::from_secs(secs) {
         while enc.pop().is_ok() {}
         while let Ok(r) = rx.try_recv() {
             println!("{:6.2}s report {r:?}", t0.elapsed().as_secs_f32());
         }
-        if !unmuted && t0.elapsed() >= unmute {
-            unmuted = true;
-            println!("{:6.2}s >>> child: unmute", t0.elapsed().as_secs_f32());
-            let _ = writeln!(to_child, "unmute");
+        if let Some((at, cmd)) = script.get(step)
+            && t0.elapsed() >= Duration::from_secs(*at)
+        {
+            step += 1;
+            println!("{:6.2}s >>> child A: {cmd}", t0.elapsed().as_secs_f32());
+            let _ = writeln!(to_a, "{cmd}");
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -163,8 +197,10 @@ fn watchdog(secs: u64) {
     while let Ok(r) = rx.try_recv() {
         println!("{:6.2}s report {r:?}", t0.elapsed().as_secs_f32());
     }
-    let _ = writeln!(to_child, "quit");
-    let _ = child.wait();
+    for (mut c, mut to) in [Some((a, to_a)), b].into_iter().flatten() {
+        let _ = writeln!(to, "quit");
+        let _ = c.wait();
+    }
 }
 
 fn parent(virtual_out: Option<String>) {

@@ -8,7 +8,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use super::{Feed, Report, Reports, watchdog};
 use crate::{CaptureFault, Degradation, Permission, ProcessInfo, Track};
@@ -58,10 +60,12 @@ impl Mode {
 /// tap on the default output device minus our own process; returns once the
 /// stream runs (the TCC prompt fires here on first use) or with the open
 /// error. The thread pumps chunks into the rings until stopped, under the 173
-/// watchdog ([`watchdog`]): every flexaudio event is logged, a stall or exact
-/// zeros from a playing source reopen the tap (retargeted to a playing pid of
-/// `bundle`), three failed reopens fall back to the global tap, and every
-/// episode goes to `reports`. It never exits before `stop`.
+/// watchdog ([`watchdog`]): every flexaudio event is logged; a stall, or exact
+/// zeros while a concurrent global-tap probe hears sound, reopen the tap
+/// (retargeted within the app's family, [`watchdog::in_family`]); three failed
+/// reopens fall back to the global tap, and a return probe every minute goes
+/// back to the app's tap once it is live. Every episode goes to `reports`. It
+/// never exits before `stop`.
 // ponytail: the global tap follows the *default* output device; an app routed to a non-default
 // headset is silent to it. Per-app pick remains the escape hatch; `device_id` would be the upgrade.
 pub fn spawn(
@@ -72,17 +76,22 @@ pub fn spawn(
     reports: Reports,
     span: tracing::Span,
 ) -> anyhow::Result<JoinHandle<()>> {
-    use std::sync::mpsc;
-
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
     let thread = std::thread::Builder::new()
         .name("meeting-system".into())
         .spawn(move || {
             let _span = span.entered();
-            let mode = if pid == crate::SYSTEM_AUDIO {
-                Mode::System
+            let (mode, target) = if pid == crate::SYSTEM_AUDIO {
+                (Mode::System, None)
             } else {
-                Mode::Process(pid)
+                let app = exe_path(pid)
+                    .as_deref()
+                    .and_then(watchdog::outer_app)
+                    .map(str::to_owned);
+                (
+                    Mode::Process(pid),
+                    Some(watchdog::Target { pid, bundle, app }),
+                )
             };
             let stream = match mode.open() {
                 Ok(s) => s,
@@ -92,7 +101,7 @@ pub fn spawn(
                 }
             };
             let _ = ready_tx.send(Ok(()));
-            run(stream, mode, bundle, &mut feed, &stop, &reports);
+            run(stream, mode, target, &mut feed, &stop, &reports);
             // `stream` drops in `run`: flexaudio joins its threads and closes the tap.
         })?;
     match ready_rx.recv() {
@@ -108,39 +117,117 @@ pub fn spawn(
     }
 }
 
-/// The capture loop: events → log + watchdog, chunks → rings + watchdog, a watchdog tick
-/// every 250 ms, the health line every minute.
+/// Mono samples of a chunk (mono was asked for; downmix defensively if a frame is wider).
+fn mono(chunk: flexaudio::AudioChunk) -> Vec<f32> {
+    let ch = (chunk.data.len() / chunk.frames.max(1)).max(1);
+    if ch == 1 {
+        chunk.data
+    } else {
+        chunk
+            .data
+            .chunks_exact(ch)
+            .map(|f| f.iter().sum::<f32>() / ch as f32)
+            .collect()
+    }
+}
+
+/// The probe floor: [`watchdog::AUDIBLE_DBFS`], or `THEUTH_MEETING_PROBE_DBFS` — a calibration
+/// knob (an app whose idle output sits above −70 dBFS; `examples/tap_repro`'s −80 dBFS tone).
+fn probe_floor() -> f32 {
+    std::env::var("THEUTH_MEETING_PROBE_DBFS")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map_or(watchdog::AUDIBLE_DBFS, |v| v.clamp(-140.0, 0.0))
+}
+
+/// Listen on `mode` for [`watchdog::PROBE_WINDOW`] on a thread of its own (its flexaudio
+/// objects stay there); the answer arrives on the receiver (disconnected = the thread died).
+fn probe(mode: Mode, floor: f32) -> mpsc::Receiver<Result<watchdog::ProbeMeter, String>> {
+    let (tx, rx) = mpsc::channel();
+    let span = tracing::Span::current();
+    let _ = std::thread::Builder::new()
+        .name("meeting-probe".into())
+        .spawn(move || {
+            let _span = span.entered();
+            let r = mode.open().map_err(|e| e.to_string()).map(|mut s| {
+                let mut m = watchdog::ProbeMeter::new(floor);
+                let end = Instant::now() + watchdog::PROBE_WINDOW;
+                while Instant::now() < end {
+                    while let Some(ev) = s.poll_event() {
+                        tracing::debug!(?mode, "meeting capture: probe event: {ev:?}");
+                    }
+                    match s.poll_chunk() {
+                        Some(c) => m.add(&mono(c)),
+                        None => std::thread::sleep(Duration::from_millis(5)),
+                    }
+                }
+                m
+            });
+            let _ = tx.send(r);
+        });
+    rx
+}
+
+/// The activity the watchdog's activity-gated rules see: the app's family on a per-app tap,
+/// any process on the global tap (pid 0 and the fallback).
+fn activity_of(mode: Mode, target: Option<&watchdog::Target>) -> watchdog::Activity {
+    match processes() {
+        Err(_) => watchdog::Activity::Unknown,
+        Ok(ps) => watchdog::activity(
+            target.filter(|_| mode != Mode::System),
+            &ps,
+            &exe_path,
+            std::process::id(),
+        ),
+    }
+}
+
+/// The capture loop: events → log + watchdog, chunks → rings + watchdog, probe answers →
+/// watchdog, a watchdog tick every 250 ms, the health line every minute.
 fn run(
     stream: flexaudio::Stream,
     mut mode: Mode,
-    bundle: Option<String>,
+    target: Option<watchdog::Target>,
     feed: &mut Feed,
     stop: &AtomicBool,
     reports: &Reports,
 ) {
     use std::sync::atomic::Ordering;
-    use std::time::{Duration, Instant};
 
     use flexaudio::Event;
-    use watchdog::{Activity, Signal};
+    use watchdog::{Action, Activity, Signal};
 
     const TICK: Duration = Duration::from_millis(250);
     const LINE: Duration = Duration::from_secs(60);
     /// The process list is re-read at most this often.
     const ACTIVITY_TTL: Duration = Duration::from_secs(1);
 
+    let me = std::process::id();
+    let floor = probe_floor();
+    if floor != watchdog::AUDIBLE_DBFS {
+        tracing::warn!(
+            floor,
+            "meeting capture: probe floor overridden (THEUTH_MEETING_PROBE_DBFS)"
+        );
+    }
     let mut stream = Some(stream);
     let start = Instant::now();
+    let per_app = target.is_some();
     let mut wd = watchdog::Watchdog::new(
         start,
         watchdog::Rules {
             zeros: true,
-            fallback: mode != Mode::System,
+            fallback: per_app,
+            probe: per_app,
         },
     );
     let mut meter = watchdog::Meter::default();
     let (mut last_tick, mut last_line) = (start, start);
     let mut cached: Option<(Instant, Activity)> = None;
+    // A running probe: what for, the pid a return probe taps, its answer.
+    type Answer = mpsc::Receiver<Result<watchdog::ProbeMeter, String>>;
+    let mut probing: Option<(Action, u32, Answer)> = None;
+    let mut probe_failure_logged = false;
     while !stop.load(Ordering::SeqCst) {
         let now = Instant::now();
         let mut gone = false;
@@ -184,22 +271,83 @@ fn run(
         }
         match stream.as_mut().and_then(|s| s.poll_chunk()) {
             Some(chunk) => {
-                // Mono was asked for; downmix defensively if a frame is wider.
-                let ch = (chunk.data.len() / chunk.frames.max(1)).max(1);
-                let pcm = if ch == 1 {
-                    chunk.data
-                } else {
-                    chunk
-                        .data
-                        .chunks_exact(ch)
-                        .map(|f| f.iter().sum::<f32>() / ch as f32)
-                        .collect()
-                };
+                let pcm = mono(chunk);
                 let silent = meter.add(&pcm);
                 wd.chunk(now, silent);
                 feed.push(pcm);
             }
             None => std::thread::sleep(Duration::from_millis(5)),
+        }
+        if let Some((_, _, rx)) = &probing
+            && let Some(answer) = match rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err("probe thread gone".into())),
+            }
+        {
+            let (kind, pid, _) = probing.take().expect("checked above");
+            let now = Instant::now();
+            match (kind, answer) {
+                (Action::Return, Ok(m)) if m.nonzero() >= watchdog::RETURN_FOR => {
+                    match Mode::Process(pid).open() {
+                        Ok(s) => {
+                            tracing::warn!(
+                                pid,
+                                nonzero_ms = m.nonzero().as_millis() as u64,
+                                "meeting capture: the app's tap is live again; back from the fallback"
+                            );
+                            drop(stream.replace(s));
+                            mode = Mode::Process(pid);
+                            wd.returned(now, true);
+                            let _ = reports.send(Report::Returned { end: now, pid });
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                pid,
+                                "meeting capture: return to the app's tap failed: {e}"
+                            );
+                            wd.returned(now, false);
+                        }
+                    }
+                }
+                (Action::Return, r) => {
+                    tracing::info!(
+                        pid,
+                        nonzero_ms = r.as_ref().map_or(0, |m| m.nonzero().as_millis() as u64),
+                        error = r.as_ref().err().map(String::as_str),
+                        "meeting capture: return probe: the app's tap is still quiet"
+                    );
+                    wd.returned(now, false);
+                }
+                (_, Ok(m)) => {
+                    let audible = m.loud() >= watchdog::AUDIBLE_FOR;
+                    tracing::info!(
+                        loud_ms = m.loud().as_millis() as u64,
+                        nonzero_ms = m.nonzero().as_millis() as u64,
+                        floor,
+                        audible,
+                        "meeting capture: the app's tap is exact zeros; probe of all system audio"
+                    );
+                    wd.probed(
+                        now,
+                        if audible {
+                            watchdog::Probe::Audible
+                        } else {
+                            watchdog::Probe::Silent
+                        },
+                    );
+                }
+                (_, Err(e)) => {
+                    if !probe_failure_logged {
+                        probe_failure_logged = true;
+                        tracing::warn!(
+                            "meeting capture: probe of all system audio failed ({e}); \
+                             zeros are judged by IsRunningOutput instead"
+                        );
+                    }
+                    wd.probed(now, watchdog::Probe::Failed);
+                }
+            }
         }
         if now.duration_since(last_tick) < TICK {
             continue;
@@ -211,79 +359,96 @@ fn run(
             {
                 return a;
             }
-            let a = match (mode, processes()) {
-                (_, Err(_)) => Activity::Unknown,
-                (Mode::System, Ok(ps)) => watchdog::activity(None, None, &ps),
-                (Mode::Process(pid), Ok(ps)) => {
-                    watchdog::activity(Some(pid), bundle.as_deref(), &ps)
-                }
-            };
+            let a = activity_of(mode, target.as_ref());
             cached = Some((now, a));
             a
         };
-        let action = wd.tick(now, &mut activity);
-        if let Some(action) = action {
-            drop(stream.take());
-            let mut retarget = None;
-            match (action, mode) {
-                (watchdog::Action::Fallback, Mode::Process(pid)) => {
-                    let reason = wd.fell_back().unwrap_or(CaptureFault::Silent);
-                    tracing::warn!(
-                        pid,
-                        ?reason,
-                        "meeting capture: the app tap stayed quiet through {} reopens while the app \
-                         played; falling back to all system audio",
-                        watchdog::FALLBACK_AFTER
-                    );
-                    mode = Mode::System;
-                    let _ =
-                        reports.send(Report::Degraded(Degradation::SystemAudioFallback(reason)));
+        match wd.tick(now, &mut activity) {
+            None => {}
+            Some(Action::Probe) => probing = Some((Action::Probe, 0, probe(Mode::System, floor))),
+            Some(Action::Return) => {
+                // The target while it lives, else a family member running output.
+                let t = target.as_ref().expect("only the per-app tap falls back");
+                let pid = processes().ok().and_then(|ps| {
+                    if ps.iter().any(|p| p.pid == t.pid) {
+                        return Some(t.pid);
+                    }
+                    ps.iter()
+                        .find(|p| p.active && watchdog::in_family(t, p, &exe_path, me))
+                        .map(|p| p.pid)
+                });
+                match pid {
+                    Some(pid) => {
+                        probing = Some((Action::Return, pid, probe(Mode::Process(pid), floor)));
+                    }
+                    None => wd.returned(now, false),
                 }
-                (_, Mode::Process(pid)) => {
-                    let to = processes()
-                        .map(|ps| watchdog::retarget(pid, bundle.as_deref(), &ps))
-                        .unwrap_or(pid);
-                    if to != pid {
+            }
+            Some(action) => {
+                drop(stream.take());
+                let mut retarget = None;
+                match (action, mode, target.as_ref()) {
+                    (Action::Fallback, Mode::Process(pid), _) => {
+                        let reason = wd.fell_back().unwrap_or(CaptureFault::Silent);
                         tracing::warn!(
                             pid,
-                            to,
-                            ?bundle,
-                            "meeting capture: the app plays from another process; retargeting the tap"
+                            ?reason,
+                            "meeting capture: the app tap stayed quiet through {} reopens while sound \
+                             played; falling back to all system audio",
+                            watchdog::FALLBACK_AFTER
                         );
-                        mode = Mode::Process(to);
-                        retarget = Some(to);
+                        mode = Mode::System;
+                        let _ = reports.send(Report::Fallback { start: now, reason });
                     }
+                    (_, Mode::Process(pid), Some(t)) => {
+                        let to = processes()
+                            .map(|ps| watchdog::retarget(t, pid, &ps, &exe_path, me))
+                            .unwrap_or(pid);
+                        if to != pid {
+                            tracing::warn!(
+                                pid,
+                                to,
+                                bundle = ?t.bundle,
+                                app = ?t.app,
+                                "meeting capture: the app plays from another process; retargeting the tap"
+                            );
+                            mode = Mode::Process(to);
+                            retarget = Some(to);
+                        }
+                    }
+                    _ => {}
                 }
-                (_, Mode::System) => {}
-            }
-            cached = None;
-            match mode.open() {
-                Ok(s) => {
-                    tracing::warn!(
-                        pid = mode.pid(),
-                        ?mode,
-                        reopens = wd.reopens,
-                        "meeting capture: system audio reopened"
-                    );
-                    stream = Some(s);
-                    wd.reopened(Instant::now(), true, retarget);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        pid = mode.pid(),
-                        ?mode,
-                        "meeting capture: system audio reopen failed: {e}"
-                    );
-                    wd.reopened(Instant::now(), false, retarget);
+                cached = None;
+                match mode.open() {
+                    Ok(s) => {
+                        tracing::warn!(
+                            pid = mode.pid(),
+                            ?mode,
+                            reopens = wd.reopens,
+                            "meeting capture: system audio reopened"
+                        );
+                        stream = Some(s);
+                        wd.reopened(Instant::now(), true, retarget);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            pid = mode.pid(),
+                            ?mode,
+                            "meeting capture: system audio reopen failed: {e}"
+                        );
+                        wd.reopened(Instant::now(), false, retarget);
+                    }
                 }
             }
         }
         super::forward(Track::System, &mut wd, reports);
         if now.duration_since(last_line) >= LINE {
             last_line = now;
+            let active = format!("{:?}", activity_of(mode, target.as_ref()));
             health_line(
                 "system",
                 &mode_label(mode),
+                &active,
                 &meter,
                 wd.reopens,
                 wd.troubled(),
@@ -303,17 +468,19 @@ fn mode_label(mode: Mode) -> String {
     }
 }
 
-/// 173 §4: one line per capture track per minute, for forensics; a warn line too when
-/// flexaudio dropped or clipped chunks in that minute (its per-event noise aggregated).
+/// 173 §4: one line per capture track per minute, for forensics (`active`: the target family's
+/// `IsRunningOutput`); a warn line too when flexaudio dropped or clipped chunks in that minute
+/// (its per-event noise aggregated).
 pub(super) fn health_line(
     track: &str,
     target: &str,
+    active: &str,
     m: &watchdog::Meter,
     reopens: u32,
     troubled: bool,
 ) {
     tracing::info!(
-        "meeting capture health: {track} chunks={} frames={} zero={:.1}% peak={:.1}dBFS target={target} reopens={reopens} episode={troubled}",
+        "meeting capture health: {track} chunks={} frames={} zero={:.1}% peak={:.1}dBFS target={target} active={active} reopens={reopens} episode={troubled}",
         m.chunks,
         m.frames,
         m.zero_pct(),
@@ -703,4 +870,23 @@ fn proc_name(pid: u32) -> Option<String> {
         .trim_end_matches('\0')
         .to_owned();
     (!s.is_empty()).then_some(s)
+}
+
+/// 173 R2-2: the executable's path (`libc::proc_pidpath`), for [`watchdog::in_family`].
+#[cfg(target_os = "macos")]
+fn exe_path(pid: u32) -> Option<String> {
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: `buf` is a valid writable buffer of the stated size.
+    let n = unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    String::from_utf8(buf).ok()
+}
+
+/// Not macOS: no `.app` bundles; the family is the bundle-id rule alone.
+#[cfg(not(target_os = "macos"))]
+fn exe_path(_pid: u32) -> Option<String> {
+    None
 }

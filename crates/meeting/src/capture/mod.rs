@@ -24,6 +24,20 @@ pub mod watchdog;
 /// 173: what a capture thread's watchdog tells the actor (drained on its 1 s tick and at stop).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Report {
+    /// The system track switched to the global tap at `start` (R2-3: until [`Report::Returned`]).
+    Fallback {
+        /// When.
+        start: Instant,
+        /// The episode's reason.
+        reason: CaptureFault,
+    },
+    /// A return probe found the app's tap live: back on it at `end`, tapping `pid`.
+    Returned {
+        /// When.
+        end: Instant,
+        /// The pid now tapped.
+        pid: u32,
+    },
     /// `track` was silence-padded over `start..end` (a manifest capture gap).
     Gap {
         /// Which track.

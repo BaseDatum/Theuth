@@ -75,6 +75,7 @@ fn pump(
         watchdog::Rules {
             zeros: false,
             fallback: false,
+            probe: false,
         },
     );
     let mut meter = watchdog::Meter::default();
@@ -110,7 +111,8 @@ fn pump(
             continue;
         }
         last_tick = now;
-        if wd.tick(now, &mut || watchdog::Activity::Unknown).is_some() {
+        // Mic rules ask for reopens only (no zero rule, no probe, no fallback).
+        if wd.tick(now, &mut || watchdog::Activity::Unknown) == Some(watchdog::Action::Reopen) {
             drop(device.take());
             match voice::mic::Capture::open_with(Aec::Vpio) {
                 Ok((cap, rx, opened)) => {
@@ -136,7 +138,7 @@ fn pump(
         if now.duration_since(last_line) >= LINE {
             last_line = now;
             let target = format!("{aec:?}");
-            super::system::health_line("mic", &target, &meter, wd.reopens, wd.troubled());
+            super::system::health_line("mic", &target, "-", &meter, wd.reopens, wd.troubled());
             meter = watchdog::Meter::default();
         }
     }
