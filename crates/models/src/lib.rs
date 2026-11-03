@@ -18,9 +18,11 @@ use serde::{Deserialize, Serialize};
 /// One models.dev provider and its models, keyed by model id.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Provider {
-    /// models.dev provider id (`anthropic`, `openrouter`).
+    /// models.dev provider id (`anthropic`, `openrouter`); a user block may omit it (its key is used).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
-    /// Display name.
+    /// Display name; a user block may omit it to keep the bundled one (162 D4).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     /// Env vars models.dev lists for the key; informational.
     #[serde(default)]
@@ -489,13 +491,23 @@ impl Catalog {
     }
 }
 
-/// User file over base: provider metadata replaced, models inserted/overridden by id.
+/// User file over base: provider metadata the user block sets replaces the bundled one
+/// (an empty `id` / `name` / `env` keeps it, 162 D4), models inserted/overridden by id.
 fn merge(base: &mut BTreeMap<String, Provider>, user: BTreeMap<String, Provider>) {
     for (pid, mut p) in user {
         if let Some(existing) = base.remove(&pid) {
             let mut models = existing.models;
             models.append(&mut p.models);
             p.models = models;
+            if p.name.is_empty() {
+                p.name = existing.name;
+            }
+            if p.env.is_empty() {
+                p.env = existing.env;
+            }
+        }
+        if p.id.is_empty() {
+            p.id = pid.clone();
         }
         base.insert(pid, p);
     }
@@ -651,6 +663,39 @@ mod tests {
             "user-facing name kept"
         );
         assert_eq!(c.get("rwx/nonesuch-9").unwrap().1.limit.context, 0);
+    }
+
+    /// 162 D4: a user block for a built-in that holds only `models` (what a
+    /// built-in refresh writes) adds its ids and keeps the bundled provider
+    /// metadata, bundled models, and their protocol untouched.
+    #[test]
+    fn models_only_user_block_keeps_bundled_provider_metadata() {
+        let bundled = BUNDLED["opencode"].clone();
+        assert!(!bundled.name.is_empty() && !bundled.env.is_empty());
+        let (mid, m) = bundled
+            .models
+            .iter()
+            .find(|(_, m)| m.protocol.is_some())
+            .expect("a zen model with a protocol");
+        let dir = std::env::temp_dir().join(format!("models-bi-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("models.json"),
+            r#"{"opencode":{"models":{
+                "zz-new":{"id":"zz-new","name":"zz-new","limit":{"context":0,"output":0}}}}}"#,
+        )
+        .unwrap();
+        let c = Catalog::load(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let p = c.providers().find(|p| p.id == "opencode").unwrap();
+        assert_eq!((&p.name, &p.env), (&bundled.name, &bundled.env));
+        assert_eq!(p.models.len(), bundled.models.len() + 1);
+        assert!(c.get("opencode/zz-new").is_some());
+        let kept = c.get(&format!("opencode/{mid}")).unwrap().1;
+        assert_eq!(
+            (kept.protocol, kept.limit.context),
+            (m.protocol, m.limit.context)
+        );
     }
 
     #[test]

@@ -1,8 +1,9 @@
-//! Named OpenAI-compatible gateways (`<data_dir>/providers.yaml`) plus their
-//! keys in the secrets vault (37 §3.6), under the gateway's name. User-facing
+//! Custom providers: named OpenAI-compatible endpoints (`<data_dir>/providers.yaml`)
+//! plus their keys in the secrets vault (37 §3.6), under the provider's name. User-facing
 //! ids are `name/model`; genai sees the OpenAI adapter with a rewritten endpoint.
+//! Internally (and in the persisted ids) they are still called gateways (162 D1).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::path::Path;
 
@@ -11,12 +12,12 @@ use kameo::actor::ActorRef;
 use models::{Limit, Model, Provider};
 use serde::{Deserialize, Serialize};
 
-/// One named OpenAI-compatible gateway.
+/// One custom provider (named OpenAI-compatible endpoint).
 #[derive(Clone, Debug)]
 pub(crate) struct Gateway {
     /// Base URL, trailing slash (`https://api.example/v1/`).
     pub base_url: String,
-    /// API key from the secrets vault.
+    /// API key; [`crate::supervisor::Auth::gateway`] replaces it with the live vault value.
     pub key: String,
 }
 
@@ -148,48 +149,93 @@ fn write_file(data_dir: &Path, rows: &BTreeMap<String, String>) -> Result<(), St
     atomic_write(&path, text.as_bytes(), 0o644)
 }
 
-/// Merge `name`'s models into `<data_dir>/models.json` (user file; bundled is untouched).
-pub fn write_models(data_dir: &Path, name: &str, ids: &[String]) -> Result<(), String> {
+/// Which ids a listing may change in `models.json[name]` (162 D4).
+#[derive(Clone, Copy)]
+pub enum Listing<'a> {
+    /// A custom provider: the listing is the truth for which ids exist.
+    Custom,
+    /// A built-in: add only ids absent from `catalog` (bundled plus user file); never remove.
+    Builtin(&'a models::Catalog),
+}
+
+/// Merge a model listing into `<data_dir>/models.json` (the user file; bundled is
+/// untouched) and return the ids added and removed, each sorted (162 D4):
+/// - custom: a still-listed id keeps its entry as is (hand edits included), a new id
+///   gets a context-0 entry (it inherits from its models.dev sibling), an unlisted id goes;
+/// - built-in: only ids neither the catalog nor the user file has are added, under a
+///   block with no `name`/`env`, so the bundled provider metadata stays.
+///
+/// An empty listing is an error and the file is not touched; no change writes nothing.
+pub fn write_models(
+    data_dir: &Path,
+    name: &str,
+    ids: &[String],
+    listing: Listing<'_>,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    if ids.is_empty() {
+        return Err(format!("{name} listed no models"));
+    }
     let path = data_dir.join("models.json");
+    // A broken user file is an error, never overwritten with just this provider.
     let mut user: BTreeMap<String, Provider> = match std::fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("{}: {e}", path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
         Err(e) => return Err(e.to_string()),
     };
-    let models = ids
-        .iter()
-        .map(|id| {
-            (
-                id.clone(),
-                Model {
-                    id: id.clone(),
-                    name: id.clone(),
-                    limit: Limit {
-                        context: 0,
-                        output: 0,
-                    },
-                    cost: None,
-                    reasoning: false,
-                    tool_call: true,
-                    image: false,
-                    reasoning_options: Vec::new(),
-                    protocol: None,
-                    canonical: None,
-                },
-            )
-        })
-        .collect();
-    user.insert(
-        name.to_owned(),
-        Provider {
-            id: name.to_owned(),
-            name: name.to_owned(),
-            env: vec![],
-            models,
+    let entry = user.entry(name.to_owned()).or_insert_with(|| Provider {
+        id: name.to_owned(),
+        name: match listing {
+            Listing::Custom => name.to_owned(),
+            Listing::Builtin(_) => String::new(),
         },
-    );
+        env: vec![],
+        models: BTreeMap::new(),
+    });
+    let listed: BTreeSet<&str> = ids.iter().map(String::as_str).collect();
+    let mut removed = Vec::new();
+    if let Listing::Custom = listing {
+        entry.models.retain(|id, _| {
+            let keep = listed.contains(id.as_str());
+            if !keep {
+                removed.push(id.clone());
+            }
+            keep
+        });
+    }
+    let mut added = Vec::new();
+    for id in listed {
+        let known = entry.models.contains_key(id)
+            || matches!(listing, Listing::Builtin(c) if c.get(&format!("{name}/{id}")).is_some());
+        if !known {
+            entry.models.insert(id.to_owned(), listed_model(id));
+            added.push(id.to_owned());
+        }
+    }
+    if added.is_empty() && removed.is_empty() {
+        return Ok((added, removed));
+    }
     let text = serde_json::to_string_pretty(&user).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text + "\n").map_err(|e| e.to_string())
+    atomic_write(&path, (text + "\n").as_bytes(), 0o644)?;
+    Ok((added, removed))
+}
+
+/// A listed id with no metadata: context 0 so the catalog fills it from a sibling.
+fn listed_model(id: &str) -> Model {
+    Model {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        limit: Limit {
+            context: 0,
+            output: 0,
+        },
+        cost: None,
+        reasoning: false,
+        tool_call: true,
+        image: false,
+        reasoning_options: Vec::new(),
+        protocol: None,
+        canonical: None,
+    }
 }
 
 fn remove_models(data_dir: &Path, name: &str) -> Result<(), String> {
@@ -209,15 +255,14 @@ fn remove_models(data_dir: &Path, name: &str) -> Result<(), String> {
     std::fs::write(&path, text + "\n").map_err(|e| e.to_string())
 }
 
-/// Persist a gateway: key into the vault (source `provider add`), url into
-/// `providers.yaml`, optional catalog models. Overwrites the same name.
+/// Persist a custom provider: key into the vault (source `provider add`), url into
+/// `providers.yaml`. Overwrites the same name; its models are [`write_models`]'.
 pub async fn save(
     data_dir: &Path,
     actor: &ActorRef<secrets::SecretsActor>,
     name: &str,
     base_url: &str,
     key: &str,
-    models: &[String],
 ) -> Result<(), String> {
     validate_name(name)?;
     let base_url = normalize_url(base_url)?;
@@ -228,18 +273,17 @@ pub async fn save(
         .ask(secrets::Set {
             name: name.to_owned(),
             value: key.trim().to_owned(),
-            note: Some(format!("gateway {name} key")),
+            note: Some(format!("custom provider {name} key")),
             source: "provider add".into(),
         })
         .await
         .map_err(|e| e.to_string())?;
     let mut rows = read_file(data_dir);
     rows.insert(name.to_owned(), base_url);
-    write_file(data_dir, &rows)?;
-    write_models(data_dir, name, models)
+    write_file(data_dir, &rows)
 }
 
-/// Drop a gateway's url, key, and catalog models. A key already gone from
+/// Drop a custom provider's url, key, and catalog models. A key already gone from
 /// the vault (the user deleted it) is not an error.
 pub async fn remove(
     data_dir: &Path,
@@ -331,27 +375,142 @@ mod tests {
             rt,
             std::time::Duration::from_secs(1),
         ));
-        save(
-            &dir,
-            &actor,
-            "rwx",
-            "https://api.ai.rwx.dev/v1",
-            "sk-test",
-            &["m1".into()],
-        )
-        .await
-        .unwrap();
+        save(&dir, &actor, "rwx", "https://api.ai.rwx.dev/v1", "sk-test")
+            .await
+            .unwrap();
+        write_models(&dir, "rwx", &["m1".into()], Listing::Custom).unwrap();
         assert_eq!(vault.get("rwx", 0).unwrap().as_str(), "sk-test");
         let g = load(&dir, Some(&vault));
         assert_eq!(g["rwx"].base_url, "https://api.ai.rwx.dev/v1/");
         assert_eq!(g["rwx"].key, "sk-test");
-        let models: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("models.json")).unwrap())
-                .unwrap();
-        assert_eq!(models["rwx"]["models"]["m1"]["id"], "m1");
+        // A hand edit survives a re-add (save + the same listing): 162 D4.
+        hand_edit(&dir, "rwx", "m1");
+        save(&dir, &actor, "rwx", "https://api.ai.rwx.dev/v1", "sk-two")
+            .await
+            .unwrap();
+        let before = std::fs::read(dir.join("models.json")).unwrap();
+        assert_eq!(
+            write_models(&dir, "rwx", &["m1".into()], Listing::Custom).unwrap(),
+            (vec![], vec![])
+        );
+        assert_eq!(std::fs::read(dir.join("models.json")).unwrap(), before);
+        assert_eq!(vault.get("rwx", 0).unwrap().as_str(), "sk-two");
         remove(&dir, &actor, "rwx").await.unwrap();
         assert!(vault.get("rwx", 0).is_none());
         assert!(load(&dir, Some(&vault)).is_empty());
         assert!(load(&dir, None).is_empty());
+        assert!(!dir.join("models.json").exists());
+    }
+
+    fn user_file(dir: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join("models.json")).unwrap()).unwrap()
+    }
+
+    /// Give `provider/id` a hand-written protocol and context, as a user would.
+    fn hand_edit(dir: &Path, provider: &str, id: &str) {
+        let mut v = user_file(dir);
+        v[provider]["models"][id]["protocol"] = "anthropic".into();
+        v[provider]["models"][id]["limit"]["context"] = 1234.into();
+        std::fs::write(dir.join("models.json"), v.to_string()).unwrap();
+    }
+
+    /// 162 D4 custom: the listing is the truth; listed entries are kept as they
+    /// are (a hand-edited `protocol` included), new ids are context 0, gone ids go.
+    #[test]
+    fn custom_listing_keeps_adds_and_removes() {
+        let scratch = crate::TestDir::new("prov-custom");
+        let dir = scratch.0.clone();
+        let ids = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            write_models(&dir, "rwx", &ids(&["b", "a"]), Listing::Custom).unwrap(),
+            (ids(&["a", "b"]), vec![])
+        );
+        assert_eq!(user_file(&dir)["rwx"]["name"], "rwx");
+        hand_edit(&dir, "rwx", "a");
+        assert_eq!(
+            write_models(&dir, "rwx", &ids(&["c", "a"]), Listing::Custom).unwrap(),
+            (ids(&["c"]), ids(&["b"]))
+        );
+        let v = user_file(&dir);
+        let models = v["rwx"]["models"].as_object().unwrap();
+        assert_eq!(models.keys().collect::<Vec<_>>(), ["a", "c"]);
+        assert_eq!(models["a"]["protocol"], "anthropic");
+        assert_eq!(models["a"]["limit"]["context"], 1234);
+        assert_eq!(models["c"]["limit"]["context"], 0);
+        let cat = models::Catalog::load(&dir);
+        assert_eq!(
+            cat.get("rwx/a").unwrap().1.protocol,
+            Some(models::Protocol::Anthropic)
+        );
+    }
+
+    /// 162 D4 built-in: only ids neither bundled nor in the user file are added,
+    /// nothing is removed, and the bundled provider metadata stays.
+    #[test]
+    fn builtin_listing_only_adds_unknown_ids() {
+        let scratch = crate::TestDir::new("prov-builtin");
+        let dir = scratch.0.clone();
+        let cat = models::Catalog::load(&dir);
+        let zen = cat
+            .providers()
+            .find(|p| p.id == "opencode")
+            .unwrap()
+            .clone();
+        let bundled = zen.models.keys().next().unwrap().clone();
+        let listing = vec![bundled.clone(), "zz-new".to_owned()];
+        assert_eq!(
+            write_models(&dir, "opencode", &listing, Listing::Builtin(&cat)).unwrap(),
+            (vec!["zz-new".to_owned()], vec![])
+        );
+        let v = user_file(&dir);
+        assert_eq!(
+            v["opencode"]["models"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["zz-new"]
+        );
+        assert!(v["opencode"].get("name").is_none(), "{v}");
+        // The user-file id is known now; a listing without it removes nothing.
+        hand_edit(&dir, "opencode", "zz-new");
+        let cat2 = models::Catalog::load(&dir);
+        let before = std::fs::read(dir.join("models.json")).unwrap();
+        assert_eq!(
+            write_models(
+                &dir,
+                "opencode",
+                std::slice::from_ref(&bundled),
+                Listing::Builtin(&cat2)
+            )
+            .unwrap(),
+            (vec![], vec![])
+        );
+        assert_eq!(std::fs::read(dir.join("models.json")).unwrap(), before);
+        let p = cat2.providers().find(|p| p.id == "opencode").unwrap();
+        assert_eq!((&p.name, &p.env), (&zen.name, &zen.env));
+        assert_eq!(p.models.len(), zen.models.len() + 1);
+        assert_eq!(
+            cat2.get(&format!("opencode/{bundled}")).unwrap().1.protocol,
+            zen.models[&bundled].protocol
+        );
+    }
+
+    /// 162 D4: an empty listing or an unreadable user file changes nothing.
+    #[test]
+    fn empty_listing_or_broken_file_leaves_models_json_alone() {
+        let scratch = crate::TestDir::new("prov-empty");
+        let dir = scratch.0.clone();
+        write_models(&dir, "rwx", &["a".into()], Listing::Custom).unwrap();
+        let before = std::fs::read(dir.join("models.json")).unwrap();
+        let e = write_models(&dir, "rwx", &[], Listing::Custom).unwrap_err();
+        assert_eq!(e, "rwx listed no models");
+        assert_eq!(std::fs::read(dir.join("models.json")).unwrap(), before);
+        std::fs::write(dir.join("models.json"), "{ not json").unwrap();
+        assert!(write_models(&dir, "rwx", &["b".into()], Listing::Custom).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("models.json")).unwrap(),
+            "{ not json"
+        );
     }
 }
