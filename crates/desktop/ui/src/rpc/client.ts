@@ -1,5 +1,5 @@
 import type { WireEvent } from '@/rpc/events'
-import { type ConnState, LocalTransport, type Transport } from '@/rpc/transport'
+import { type ConnState, type DropReason, LocalTransport, type Transport } from '@/rpc/transport'
 
 export type { ConnState } from '@/rpc/transport'
 
@@ -20,7 +20,7 @@ const TRANSPORT = -32300
 export const isTransportError = (e: unknown): e is RpcError => e instanceof RpcError && e.code === TRANSPORT
 /** Redial delay after `attempt` failed sockets in a row: 500 ms doubling to 10 s. `link-status` shows it. */
 export const backoff = (attempt: number): number => Math.min(10_000, 500 * 2 ** attempt)
-/** A foreground probe unanswered for this long means the socket died while the phone slept. */
+/** A probe that saw no inbound frame for this long means the socket died while the phone slept. */
 const PROBE_MS = 5_000
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: RpcError) => void }
@@ -47,8 +47,10 @@ type Frame = {
  * re-issued; the gap between is lost by design (25 §2.1).
  *
  * Coming back to the foreground (31 §7.3) skips the backoff, and probes an
- * `open` socket with `info`: iOS suspends the process and its sockets without
- * telling the page, so a dead one otherwise looks open and every call hangs.
+ * `open` relay socket with `ping`: iOS suspends the process and its sockets without
+ * telling the page, so a dead one otherwise looks open and every call hangs. A
+ * loopback transport is not probed there: its sockets do not half-open (176 U2).
+ * With a `source` (the 176 C3 tag), every reconnect is reported once via `client_log`.
  */
 export class RpcClient {
   #t: Transport
@@ -62,16 +64,26 @@ export class RpcClient {
   #timer: ReturnType<typeof setTimeout> | undefined
   #probe: ReturnType<typeof setTimeout> | undefined
   #closed = false
+  #source: string | undefined
+  /** `Date.now()` of the last inbound frame: any reply or notification proves the socket. */
+  #heardAt = Number.NEGATIVE_INFINITY
+  /** The reason of the `reset()` in progress; the transport's own drop reason otherwise. */
+  #resetting: DropReason | undefined
+  #drop: { at: number; why: DropReason } | null = null
 
-  constructor(transport: Transport) {
+  constructor(transport: Transport, source?: string) {
     this.#t = transport
+    this.#source = source
     transport.onMessage((text) => this.#receive(JSON.parse(text) as Frame))
-    transport.onState((s) => {
+    transport.onState((s, why) => {
+      const was = this.#state
       this.#setState(s)
       if (s === 'open') {
         this.#attempt = 0
         for (const sub of this.#subs) void this.#issue(sub).catch(() => undefined)
+        this.#reportDrop()
       } else if (s === 'reconnecting') {
+        if (!this.#drop && (was === 'open' || this.#resetting)) this.#drop = { at: Date.now(), why: this.#resetting ?? why ?? 'onclose' }
         this.#failPending('connection closed')
         this.#schedule()
       }
@@ -83,9 +95,9 @@ export class RpcClient {
     }
   }
 
-  /** The daemon's own socket (25 §2.1). */
-  static local(url: string, token: string): RpcClient {
-    return new RpcClient(new LocalTransport(url, token))
+  /** The daemon's own socket (25 §2.1); `source` tags it (176 C3) and names it in `client_log`. */
+  static local(url: string, token: string, source?: string): RpcClient {
+    return new RpcClient(new LocalTransport(url, token, source), source)
   }
 
   /** Open the transport; resolves once open, rejects if the first attempt fails (retries continue). */
@@ -170,29 +182,41 @@ export class RpcClient {
     if (this.#state === 'reconnecting' || this.#state === 'connecting') {
       // A socket parked on the relay (engine offline), mid-connect or mid-handshake when iOS suspended may have
       // died in the sleep; replace it at once instead of after the transport's watchdog. A fresh one costs one upgrade.
-      this.#t.reset()
+      this.#reset('foreground-reset')
       clearTimeout(this.#timer)
       this.#timer = undefined
       this.#attempt = 0
       this.#t.connect().catch(() => this.#schedule())
-    } else this.probe()
+    } else if (!this.#t.loopback) this.probe()
   }
 
   /**
-   * Prove an `open` socket with `info`, or reset it after `PROBE_MS`: a dead socket the OS never closed (iOS suspend,
-   * a Wi-Fi drop) otherwise looks open and every call hangs. Also what a timed-out send calls (70 SEND-NEVER-LOSES).
+   * Prove an `open` socket with `ping`, or reset it when no frame at all arrived for `PROBE_MS`: a dead socket the OS
+   * never closed (iOS suspend, a Wi-Fi drop) otherwise looks open and every call hangs. Any reply (even an error from
+   * an engine without `ping`) or notification proves it, so a slow handler never drops a healthy socket. Also what a
+   * timed-out send calls (70 SEND-NEVER-LOSES), with `send-timeout`.
    */
-  probe(): void {
+  probe(why: DropReason = 'probe-timeout'): void {
     if (this.#state !== 'open' || this.#probe) return
+    const started = Date.now()
     this.#probe = setTimeout(() => {
       this.#probe = undefined
-      this.#t.reset()
+      if (this.#heardAt < started) this.#reset(why)
     }, PROBE_MS)
-    // Any reply, even an error, proves the socket; `reset()` fails the call and clears the timer.
-    void this.call('info', []).catch(() => undefined).finally(() => {
-      clearTimeout(this.#probe)
-      this.#probe = undefined
-    })
+    void this.call('ping', []).catch(() => undefined)
+  }
+
+  #reset(why: DropReason): void {
+    this.#resetting = why
+    this.#t.reset()
+    this.#resetting = undefined
+  }
+
+  #reportDrop(): void {
+    const drop = this.#drop
+    this.#drop = null
+    if (!drop || !this.#source) return
+    void this.call('client_log', ['warn', this.#source, `reconnected after ${Date.now() - drop.at} ms: ${drop.why}`]).catch(() => undefined)
   }
 
   #schedule(): void {
@@ -213,6 +237,7 @@ export class RpcClient {
   }
 
   #receive(f: Frame): void {
+    this.#heardAt = Date.now()
     if (f.params && 'subscription' in f.params) {
       this.#bySubId.get(f.params.subscription)?.onItem(f.params.result as never)
       return
