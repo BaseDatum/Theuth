@@ -7,6 +7,7 @@ import { useShortcuts } from '@/lib/shortcuts'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { ATTENTION_KEY } from '@/components/hud/queries'
+import { QuitOverlay, useQuit } from '@/components/launch/QuitOverlay'
 import { StartupScreen } from '@/components/launch/StartupScreen'
 import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
@@ -35,6 +36,7 @@ import {
   onModelsProgress,
   onNavigate,
   onPointRefused,
+  onQuitProgress,
   onQuitRequested,
   pointConfigure,
   quitAck,
@@ -82,9 +84,22 @@ const HIDDEN_DRAIN_MS = 250
 /** Set by the local boot: 18 §3 — quitting `shutdown`s a daemon we started, not one we reused. */
 let owned = false
 
-/** 25 §4.3 quit: RPC `shutdown` if owned (errors ignored: the socket may close first), then `quit_ack`. */
-async function quit(): Promise<void> {
-  const api = scope(LOCAL).connection.getState().api
+/**
+ * 25 §4.3 quit, 163: the overlay first (with the chats the engine is about to drain), then RPC `shutdown` if owned
+ * (errors ignored: the socket may close first), then `quit_ack` — the shell's quit worker does the rest. The shell's
+ * `quit-requested`, `/exit` and the startup screen's Quit all land here; a repeat only adds `restart` to the overlay.
+ */
+async function quit(restart = false): Promise<void> {
+  const local = scope(LOCAL)
+  useQuit.getState().send({
+    type: 'requested',
+    restart,
+    owned,
+    at: Date.now(),
+    slices: local.sessions.getState().sessions,
+    summaries: local.qc.getQueryData<SessionSummary[]>(queryKeys.sessions) ?? [],
+  })
+  const api = local.connection.getState().api
   if (owned && api) await api.shutdown().catch(() => undefined)
   await quitAck()
 }
@@ -324,7 +339,8 @@ function useTauri(): void {
     if (AUX) return
     const unlistens = [
       onNavigate((path) => router.history.push(path)),
-      onQuitRequested(() => void quit()),
+      onQuitRequested((p) => void quit(p.restart)),
+      onQuitProgress((p) => useQuit.getState().send({ type: 'progress', ...p })),
       // `crates/desktop/src/models.rs`: one toast, updated in place, for the whole batch.
       onModelsProgress((p) => {
         const id = 'models'
@@ -341,6 +357,8 @@ function useTauri(): void {
     ]
     const onQuit = () => void quit()
     window.addEventListener('theuth:quit', onQuit)
+    // 163: the drained turns tick off as the engine finishes or suspends them (`TurnFinished` / `TurnSuspended`).
+    const offSlices = scope(LOCAL).sessions.subscribe((s) => useQuit.getState().send({ type: 'slices', slices: s.sessions }))
     void primeNotifications()
     // The updater swaps a `.app` bundle (update.rs `bundle_dir`): macOS only.
     if (container() === 'macos') startUpdateListener()
@@ -350,6 +368,7 @@ function useTauri(): void {
     return () => {
       for (const u of unlistens) void u.then((f) => f())
       window.removeEventListener('theuth:quit', onQuit)
+      offSlices()
     }
   }, [])
   useGlobalShortcuts()
@@ -455,8 +474,10 @@ function useEventSideEffects(st: Stores): void {
     // `attention_list` cache the sidebar keeps live; approvals are one kind among its items.
     let companion = false
     // 134 W6: Windows shows no tray title, so the count also goes into the tooltip, worded like the companion's.
+    // 163 D6: once a quit is under way the shell owns the tray ("theuth — shutting down…"); nothing is written.
     const badge = (n: number) =>
       void TrayIcon.getById('main').then((t) => {
+        if (useQuit.getState().state) return
         void t?.setTitle(n ? `●${n}` : null)
         void t?.setTooltip(n === 0 ? 'theuth · nothing needs you' : n === 1 ? 'theuth · 1 needs you' : `theuth · ${n} need you`)
       })
@@ -703,6 +724,8 @@ function Main() {
         </EngineProvider>
       )}
       <Toaster />
+      {/* 163 D5: portalled to <body>; it makes everything else there inert while it is up. */}
+      {!AUX && <QuitOverlay />}
     </>
   )
 }

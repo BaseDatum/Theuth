@@ -32,7 +32,9 @@ const POLL: Duration = Duration::from_millis(200);
 /// (default 10 s) plus a second of slack before it exits; this covers that
 /// default so a quit never SIGKILLs a drain in progress. A daemon with
 /// nothing to drain exits in well under a second as before.
-const EXIT_GRACE: Duration = Duration::from_secs(12);
+pub const EXIT_GRACE: Duration = Duration::from_secs(12);
+/// How often [`Daemon::stop`] looks for the daemon's exit.
+const EXIT_POLL: Duration = Duration::from_millis(100);
 const LOG_CAP: usize = 64 * 1024;
 
 /// What the webview needs to open the WebSocket (18 §2 step 5).
@@ -50,7 +52,7 @@ pub struct Connection {
 
 /// The daemon we started: on Unix the pty master and the shell-turned-daemon
 /// child; on Windows the plain `t.exe` child and the Job Object it lives in.
-struct Daemon {
+pub struct Daemon {
     #[cfg(unix)]
     master: Box<dyn MasterPty + Send>,
     /// `KILL_ON_JOB_CLOSE`, no breakaway: when this handle closes — `stop()`,
@@ -123,10 +125,18 @@ impl Launch {
             .or_else(|| probe(&data_dir()))
     }
 
-    /// 18 §3: hang up the pty; kill the daemon if it is still alive after 2 s.
-    /// A reused daemon is left running.
+    /// 18 §3: hang up the pty; kill the daemon if it is still alive after [`EXIT_GRACE`].
+    /// A reused daemon is left running. `RunEvent::Exit`'s fallback: after the quit worker
+    /// (163) there is nothing left here and this returns at once.
     pub fn shutdown(&self) {
-        stop(lock(&self.inner).daemon.take());
+        if let Some(daemon) = self.take_daemon() {
+            daemon.stop(EXIT_GRACE);
+        }
+    }
+
+    /// The daemon we own, out of the managed state: the quit worker stops it off the main thread (163 D1).
+    pub fn take_daemon(&self) -> Option<Daemon> {
+        lock(&self.inner).daemon.take()
     }
 
     /// The pty transcript so far (lossy UTF-8).
@@ -135,7 +145,9 @@ impl Launch {
     }
 
     fn start(&self, inner: &mut Inner, app: &AppHandle) -> anyhow::Result<Connection> {
-        stop(inner.daemon.take());
+        if let Some(daemon) = inner.daemon.take() {
+            daemon.stop(EXIT_GRACE);
+        }
         lock(&self.log).clear();
         let data_dir = data_dir();
         std::fs::create_dir_all(&data_dir)
@@ -526,36 +538,94 @@ fn last_lines(text: &str, n: usize) -> String {
     lines.join("\n")
 }
 
-/// Hang up (Unix: drop the master, SIGHUP once every fd is closed; Windows has
-/// no line to hang up — stdin is already null), give the daemon [`EXIT_GRACE`]
-/// to exit on its own (the webview called RPC `shutdown` first), then kill. On Windows the
-/// kill is the whole Job Object, and dropping its handle afterwards kills
-/// whatever a clean daemon exit left behind.
-fn stop(daemon: Option<Daemon>) {
-    let Some(Daemon {
+impl Daemon {
+    /// Hang up (Unix: drop the master, SIGHUP once every fd is closed; Windows has
+    /// no line to hang up — stdin is already null), give the daemon `grace` to exit
+    /// on its own (the webview called RPC `shutdown` first), then kill. On Windows the
+    /// kill is the whole Job Object, and dropping its handle afterwards kills
+    /// whatever a clean daemon exit left behind. `true` when it had to kill.
+    pub fn stop(self, grace: Duration) -> bool {
+        let Daemon {
+            #[cfg(unix)]
+            master,
+            #[cfg(windows)]
+            tree,
+            mut child,
+        } = self;
         #[cfg(unix)]
-        master,
-        #[cfg(windows)]
-        tree,
-        mut child,
-    }) = daemon
-    else {
-        return;
-    };
-    #[cfg(unix)]
-    drop(master);
-    let deadline = Instant::now() + EXIT_GRACE;
-    while Instant::now() < deadline {
-        if !matches!(exited(&mut child), Ok(None)) {
-            return;
+        drop(master);
+        let deadline = Instant::now() + grace;
+        loop {
+            if !matches!(exited(&mut child), Ok(None)) {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            std::thread::sleep(EXIT_POLL.min(deadline - now));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        #[cfg(windows)]
+        tree.kill();
+        #[cfg(unix)]
+        if let Err(e) = child.kill() {
+            tracing::warn!(error = %e, "kill daemon");
+        }
+        true
     }
-    #[cfg(windows)]
-    tree.kill();
+
+    /// The daemon's process tree, so another thread can kill it while [`Daemon::stop`] waits
+    /// (the quit cap, 163 D2). Unix: the pty child's session (portable-pty `setsid`s it, so the
+    /// pgid is its pid); Windows: the Job Object.
+    pub fn tree(&self) -> Option<platform::process::ProcessTree> {
+        #[cfg(unix)]
+        return self
+            .child
+            .process_id()
+            .and_then(|pid| platform::process::ProcessTree::adopt(pid).ok());
+        #[cfg(windows)]
+        return Some(self.tree.clone());
+    }
+}
+
+/// Stand-in daemons for the quit tests: `program args` spawned the way [`spawn`] does it.
+#[cfg(test)]
+impl Daemon {
+    /// Returns once the child has written its first byte, so a hang-up never races its startup (a `trap`
+    /// not yet installed): the command must print something before it settles.
     #[cfg(unix)]
-    if let Err(e) = child.kill() {
-        tracing::warn!(error = %e, "kill daemon");
+    pub fn fake(program: &str, args: &[&str]) -> Daemon {
+        let pair = native_pty_system()
+            .openpty(PtySize::default())
+            .expect("openpty");
+        let mut cmd = CommandBuilder::new(program);
+        cmd.args(args);
+        let child = pair.slave.spawn_command(cmd).expect("spawn fake daemon");
+        drop(pair.slave);
+        let mut first = [0u8; 1];
+        pair.master
+            .try_clone_reader()
+            .expect("pty reader")
+            .read_exact(&mut first)
+            .expect("fake daemon's first output");
+        Daemon {
+            master: pair.master,
+            child,
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn fake(program: &str, args: &[&str]) -> Daemon {
+        use std::process::{Command, Stdio};
+        let child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn fake daemon");
+        let tree = platform::process::ProcessTree::adopt(child.id()).expect("job object");
+        Daemon { tree, child }
     }
 }
 

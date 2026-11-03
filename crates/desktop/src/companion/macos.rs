@@ -52,7 +52,9 @@ pub fn alive() -> bool {
 }
 
 /// Quit handshake, after the engine's `shutdown` and before the sidecar stops: `terminate()`, then
-/// `forceTerminate()` on whatever is still there after [`QUIT_GRACE`]. Blocks the exiting main thread.
+/// `forceTerminate()` on whatever is still there after [`QUIT_GRACE`]. Blocks the caller: the quit worker
+/// (163 D1), or `RunEvent::Exit` for an exit that bypassed it. Safe off the main thread: `NSRunningApplication`
+/// is documented thread-safe (objc2 does not mark it main-thread-only), and both calls only send an event.
 pub fn terminate() {
     let apps = running();
     if apps.is_empty() {
@@ -62,7 +64,7 @@ pub fn terminate() {
         app.terminate();
     }
     let deadline = Instant::now() + QUIT_GRACE;
-    // `isTerminated` only updates from the main run loop, which is not spinning here; ask the kernel.
+    // `isTerminated` only updates on the main run loop, which may be busy or stopped; ask the kernel.
     let gone = |app: &NSRunningApplication| {
         // SAFETY: signal 0 checks for existence only.
         unsafe { libc::kill(app.processIdentifier(), 0) != 0 }

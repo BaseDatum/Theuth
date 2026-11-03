@@ -103,8 +103,8 @@ pub async fn check_update(app: AppHandle) -> Result<Option<String>, String> {
     check(&app).await.map_err(|e| format!("{e:#}"))
 }
 
-/// Settings › General › Install and restart: run the quit handshake (RPC `shutdown`,
-/// `quit_ack`), swap the bundle in `RunEvent::Exit`, then relaunch.
+/// Settings › General › Install and restart: the same quit as the menu's (163 D7: overlay titled "Restarting to
+/// update", RPC `shutdown`, the quit worker), the bundle swap in `RunEvent::Exit`, then the relaunch.
 #[tauri::command]
 pub fn install_update(app: AppHandle) -> Result<(), String> {
     let pending = app.state::<Pending>();
@@ -112,11 +112,11 @@ pub fn install_update(app: AppHandle) -> Result<(), String> {
         return Err("no update downloaded".into());
     }
     pending.restart.store(true, SeqCst);
-    crate::desktop::request_quit(&app);
+    crate::quit::request(&app);
     Ok(())
 }
 
-/// `app.exit(0)`, or a relaunch when [`install_update`] asked for one.
+/// `app.exit(0)`, or a relaunch when [`install_update`] asked for one. Any thread: both only post to the event loop.
 pub fn exit(app: &AppHandle) {
     if app.state::<Pending>().restart.load(SeqCst) {
         app.request_restart();

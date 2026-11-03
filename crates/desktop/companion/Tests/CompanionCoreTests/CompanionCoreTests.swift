@@ -201,6 +201,8 @@ struct KeyGrammarTests {
     @Test func deepLinksAndStaleGuard() {
         #expect(DeepLink.attention("decision:task 7:d").absoluteString == "theuth://attention/decision:task%207:d")
         #expect(DeepLink.session("abc").absoluteString == "theuth://c/abc")
+        // The shell's `is_quit_link`: scheme `theuth`, host `quit`, empty path.
+        #expect(DeepLink.quit.scheme == "theuth" && DeepLink.quit.host == "quit" && DeepLink.quit.path.isEmpty)
         let latest = [item("ask:1", .ask)]
         #expect(StaleGuard.allows(id: "ask:1", latest: latest))
         #expect(!(StaleGuard.allows(id: "ask:2", latest: latest)))
