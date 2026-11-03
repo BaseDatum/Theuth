@@ -159,3 +159,146 @@ Then, after the licence finding: *"why do we care if there's no license. the foc
 | 43 | Jobs die with the engine; no adoption; keeper not chosen | `docs/design/109-durability.md:28`, `:42`, `:46` | §5.4, §18 F6 |
 | 44 | nteract daemon: guarded execute; record-then-read; server-side stream terminal; env redaction before storage | `nteract:crates/notebook-protocol/src/protocol.rs:738-745`; `nteract:docs/adr/execution-pipeline.md:30-44`; `nteract:crates/runtimed/src/stream_terminal.rs:1-7`; `nteract:crates/runtimed/src/output_redaction.rs:1-5` | §5, §8 |
 | 45 | Approvals miss 1 in 3 threats; consequence-named buttons | `https://scalex.dev/blog/ai-agent-permissions-stats/`; `https://developer.hashicorp.com/terraform/cloud-docs/run/manage` | §12 |
+
+## 3. The cell
+
+### 3.1 Grammar
+
+A cell is a closed fenced code block whose **language word** is runnable and whose **body starts with one or more header lines**:
+
+````text
+```<language>[ anything]          ← language = first word of the info string; the rest is ignored
+#| key: value                      ← header: consecutive lines from the first body line
+#| key                             ← bare key = true (booleans only)
+<code>                             ← everything after the first non-header line; this is what runs
+```
+````
+
+- **Runnable languages** (first word, case-insensitive): `bash`, `zsh`, `sh`, `pwsh` (alias `powershell`), `python` (alias `py`); wave 3: `javascript`/`js`, `typescript`/`ts` with the `//|` prefix. Every other language is never a cell.
+- **Header line**: `#|`, optional spaces, a key `[a-z]+`, then `: value` or nothing. Value = the rest of the line, trimmed, one pair of surrounding double quotes removed. Repeatable keys (`expect`, `env`) repeat the line. The header ends at the first line that does not start with `#|`; `#|` lines later in the code are ordinary comments (Quarto's rule, `https://quarto.org/docs/reference/cells/cells-jupyter.html`).
+- **What runs** is the code without the header; line numbers in the UI count code lines from 1. The header is shown as chips (§11.1), never sent to the kernel.
+- **Why the body**: the info string reaches streamdown as `meta` (fact 4) and the engine as part of `lang` (fact 5), but it is folded into a note's `language` prop (fact 8), shown verbatim in the TUI box header, and stripped by copy/paste into a terminal. The `#|` header survives all of them and stays a comment if pasted into a shell or a `.py` file.
+- **Not a cell**: a fence without a header (a snippet — copy only, D1); a fence in a user bubble, a harness input card, a tool result or a subagent's relayed text (only assistant markdown and notes render cells, §4.1); a fence still streaming (`isIncomplete`) or in a reply whose turn is still running (renders as code with a dim "ready when the reply ends"); a read-only rendering (archive, search pages: `session` undefined, fact 3).
+
+The parser is one pure Rust module, `surface::cell` (`parse(lang, body) -> Option<Cell>`, `lint(&Cell) -> Vec<Chip>`, `validate(&Cell, &Scope) -> Vec<Problem>`), mirrored by ~60 lines of TypeScript in `components/cells/grammar.ts`; one shared fixture file (`crates/surface/tests/cells.json`: input → parsed JSON) is read by both test suites so the two parsers cannot drift.
+
+### 3.2 Options (v1, closed set)
+
+| option | type | default | meaning | example |
+|---|---|---|---|---|
+| `cwd` | absolute path or `~/…`; relative only under a note default | note default; in chat **required** | folder the cell runs in; must exist at press (D6) | `#\| cwd: ~/dr-t6/frp-integration/stacks/sa-frp-integration` |
+| `name` | slug `[a-z0-9-]{1,48}` | none (identity falls back to position, §3.4) | stable id; the same name presented later supersedes | `#\| name: preview-ir-prod1` |
+| `label` | text ≤ 40 chars | `Run` | the Run button's text, naming the consequence | `#\| label: Apply to ir-prod1` |
+| `danger` | bool | `false` | red outline; never in Run all; no keyboard run; phone shows the label in full | `#\| danger` |
+| `after` | a `name` in the same scope | none | arms only when that cell's latest run succeeded (exit 0, every expect met) **and** ran its current code; the armed button shows that run's summary | `#\| after: preview-ir-prod1` |
+| `expect` | text, or `/regex/` (repeatable) | none | must appear in the cleaned output; met/missed per item | `#\| expect: 3 to update` |
+| `env` | `KEY=value` (repeatable) | none | exported before a whole-cell run; values may hold `{{secret:NAME}}` | `#\| env: AWS_PROFILE=ir-prod1` |
+| `python` | `monty` \| `auto` \| `.venv` \| `uv` \| absolute path | note default, else `auto` | which interpreter runs a python cell (§6) | `#\| python: .venv` |
+| `review` | bool | `false` | the agent wakes when this run, or the Run-all pass containing it, ends (F1) | `#\| review` |
+| `private` | bool | `false` | the agent gets exit and expect only, never output | `#\| private` |
+| `timeout` | duration `30s` \| `10m` \| `2h` | none (Monty: 60 s, §5.9) | Stop is sent when it elapses; Kill 5 s later | `#\| timeout: 20m` |
+| `on` | reserved (wave 3) | — | a sandbox VM or mesh engine; v1 warns "not yet" | `#\| on: sandbox:build` |
+
+### 3.3 Note-level defaults (writer's call W-c)
+
+The first ```` ```cells ```` block in a note (any position, conventionally right under the title) holds note defaults as header lines and nothing else:
+
+````markdown
+```cells
+#| cwd: ~/dr-t6/frp-integration
+#| shell: /opt/homebrew/bin/bash
+#| python: .venv
+```
+````
+
+- Keys: `cwd` (absolute; a cell's relative `cwd` resolves against it, Runme's combine rule `https://docs.runme.dev/configuration/document-level/`), `shell` (the program that runs `bash`/`zsh`/`sh` cells in this note — the answer to "which bash", §6.5), `python` (default for python cells). Unknown keys warn.
+- It renders as one line, "Cell defaults · ~/dr-t6/frp-integration · bash 5.2 (Homebrew) · .venv", editable in place. A second `cells` block is a lint warning and ignored.
+- Why not front matter: notes have no frontmatter block (fact 9) and an import without it turns a leading `---` into a code block (`docs/design/59-documents.md:485-486`). A `cells` code block needs no schema change and round-trips through markdown, BlockNote, export and channels.
+
+### 3.4 Identity (writer's call W-q)
+
+| where | identity (`CellRef`) | source of truth the engine reads at press |
+|---|---|---|
+| chat | `Chat{session, entry, ordinal}`; `ordinal` = 1-based position among the **cells** (not fences) of assistant message `entry` | the stored assistant message text (transcript row), parsed by `surface::cell` |
+| chat, with `name` | the same `CellRef`, plus the lineage key `(session, name)` used by superseding and `after` | as above |
+| note | `Note{doc, name}` when `#\| name:` is set — survives the agent's `doc_replace`, which mints new block ids | the live Y.Doc of `doc`, read by the document actor (§15.2 `CodeBlockText`) |
+| note, no name | `Note{doc, block}` (BlockNote block id) | as above |
+
+The **cell digest** is SHA-256 over the cell's full text (header + code) with LF line ends and the final newline trimmed; the run record keeps both the presented digest and the digest of the code that actually ran (after a user edit, §7.1).
+
+### 3.5 Versions and superseding
+
+- **Chat.** A later assistant message in the same session that presents the same `name` supersedes every earlier cell with that name: its Run is disabled with "Replaced by a newer version ↓" (a link scrolls to it), its outputs stay. `after` always refers to the newest version of a name. A cell re-presented after a `<cell_error>` in the same turn supersedes the broken one the same way. A regenerated reply has a new `entry`; runs of the old reply stay in the run store and show in the session's run list as "from an earlier version of this reply".
+- **Notes.** The block is the cell. Editing its text after a run turns the latest run **stale**: "ran an earlier version" with the old code one click away; nothing re-runs.
+- **`after` and edits.** An `after` gate checks that the gating run's code digest equals the gating cell's *current* code digest, so editing the preview disarms the apply until the edited preview has run.
+
+### 3.6 Validation
+
+**Errors** — the cell renders as invalid (reason on the cell, no Run button) and, in chat, the agent gets one `<cell_error>` for the reply (§9.2):
+
+| code | rule |
+|---|---|
+| `cwd_missing` | a chat cell without `cwd`; a note cell without `cwd` and without a note default |
+| `cwd_relative` | a relative `cwd` with no note default to resolve it against |
+| `bad_option` | wrong type: bad duration, bad `/regex/`, `env` not `KEY=value`, `name` not a slug, `label` over 40 chars |
+| `python_option` | `python:` on a non-python cell, or an unknown value |
+| `after_unknown` / `after_cycle` | `after` names no cell in scope, itself, or a cycle |
+| `name_duplicate` | two cells with one `name` in the same reply or note |
+| `secret_unknown` | a `{{secret:NAME}}` naming no vault entry (names checked, values never read) |
+| `monty_insufficient` | `python: monty` and Monty's type check fails (the cell offers the one-press switch, §6.2) |
+| `empty` | no code after the header |
+
+**Warnings** — a chip on the cell, never `<cell_error>`: unknown option key; `on:` (wave 3); `cwd` not found at presentation ("arms when the folder exists", D6); a second `cells` block; a likely-changing command (`pulumi up`, `terraform apply|destroy`, `kubectl apply|delete`, `helm upgrade|uninstall`, `aws … delete-*|put-*|create-*`) with neither `label` nor `danger`.
+
+### 3.7 Lint (D13 c — deterministic chips, never blocking)
+
+| chip | detection | Run all stops before it |
+|---|---|---|
+| "N invisible characters" | U+200B–200F, U+202A–202E, U+2066–2069, U+FEFF anywhere in the cell; the editor highlights each | yes |
+| "pipes a download into a shell" | `curl`/`wget`/`iwr` output piped or substituted into `sh`/`bash`/`zsh`/`python`/`iex` | yes |
+| "runs decoded base64" | `base64 -d`/`--decode`/`b64decode` feeding `sh`/`eval`/`exec`/`iex` | yes |
+| "calls a script theuth edited" | the code invokes a file (`./x.sh`, `bash x`, `python x.py`, `make t` → `Makefile`, `npm run t` → `package.json`) that this session's agent wrote or edited (the session's `tool_calls` journal); the chip opens the diff | yes |
+| "skips the tool's own prompt" | `--yes`, `-y`, `-auto-approve`, `--force`, `--skip-preview` on a `danger` cell | no (danger already stops Run all) |
+| "asks for your password" | `sudo` | no |
+| "uses secret NAME" | each `{{secret:NAME}}` (name only) | no |
+
+### 3.8 Worked example — the sa-frp-integration runbook, as the agent writes it
+
+Sky: "prep the preview and up for sa-frp-integration on ir-prod1 — don't apply, production". The reply:
+
+`````markdown
+Three steps. Run them in order; the apply arms after the preview matches.
+
+```bash
+#| name: export-ir-prod1
+#| label: Export state
+#| cwd: ~/dr-t6/frp-integration/stacks/sa-frp-integration
+#| env: AWS_PROFILE=ir-prod1
+#| expect: Exported to
+pulumi stack export -s ir-prod1 --file /tmp/sa-frp-integration-ir-prod1-pre.json
+echo "Exported to /tmp/sa-frp-integration-ir-prod1-pre.json"
+```
+
+```bash
+#| name: preview-ir-prod1
+#| label: Preview
+#| cwd: ~/dr-t6/frp-integration/stacks/sa-frp-integration
+#| env: AWS_PROFILE=ir-prod1
+#| expect: 3 to update
+pulumi preview -s ir-prod1 --refresh=false --diff
+```
+
+```bash
+#| name: apply-ir-prod1
+#| label: Apply to ir-prod1
+#| danger
+#| after: preview-ir-prod1
+#| review
+#| cwd: ~/dr-t6/frp-integration/stacks/sa-frp-integration
+#| env: AWS_PROFILE=ir-prod1
+#| expect: 3 updated
+pulumi up -s ir-prod1 --refresh=false --diff
+```
+`````
+
+What the engine and UI make of it: a runbook bar "Run all · stops before Apply to ir-prod1" (danger boundary, §7.2); one `bash` kernel for the session; the apply disarmed with "after: Preview" until the preview exits 0 with its expect met, then armed with "armed by preview ✓ 14:31 · ~3 update · 0 replace · 0 delete" (the counts come from the gating run's cleaned output, §7.5); no `--yes` on the danger cell, so pulumi's own arrow-key prompt appears in the live terminal and Sky answers it in place (mock panel B); `review` on the apply makes the agent read the result and report in one or two lines (§9.3).
