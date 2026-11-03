@@ -64,7 +64,7 @@ Every `path:line` below was re-opened in `~/Develop/theuth-171` (branch `docs/17
 6. D8 "reusing TerminalViewer's attach": `subscribe_pty`/`pty_input` authorize by chat session (`crates/rpc/src/api.rs:2847`); a note kernel has none → `cell_attach`/`cell_input`; `Terminal` gains a source prop and keeps 167's keys (W-b).
 7. D3 "authenticated owner client": `rpc::client::Local` gives the MCP server, the ACP bridge and the TUI the owner console's peer on every call (`crates/rpc/src/client.rs:24-31`, `crates/mcp-server/src/lib.rs:6-8`) → explicit refusal (W-n).
 8. D12 "delivered quietly": no quiet input exists; `inject` admits `Automatic`, which starts a turn on an idle session (`crates/agent/src/supervisor.rs:1496`, `:1540`) → W-m.
-9. D11 "notebook chats get a `<notebook_changes>` notice": the notice lists document changes (`crates/agent/src/notebook_context.rs:700`); a run changes no document → a `cell` line kind is added (§9.6).
+9. D11 "notebook chats get a `<notebook_changes>` notice": that notice is computed from document versions at turn start (`crates/agent/src/notebook_context.rs:700`, `:851`) and a run changes no document → bound notebook chats get a quiet, body-less `<cell_result>` (ids and exit only, 157's rule kept) and the notice builder is untouched (§9.6).
 10. D16 "Run in theuth deep link": `theuth://c/<session>` exists but the route drops everything after the path (`crates/desktop/src/lib.rs:607-619`) → the route keeps `?cell=` (§14.3).
 11. D19 `skills/cells.md`: skills are binary-owned constants written by `first_run` (`crates/theuth/src/main.rs:1324-1336`) → `crates/cells/cells.md` via `include_str!`, written to `~/.theuth/skills/cells.md`.
 12. D9 `@uiw/codemirror-extensions-langs`, `anser`, `escape-carriage` are not installed (`crates/desktop/ui/package.json:39-41` has only react-codemirror and xterm) → three new UI dependencies (§16).
@@ -674,3 +674,98 @@ While running: the xterm scrolls (its own scrollback). Finished: the static view
 ### 8.7 Ordering contract
 
 The record is written before anything is announced: (1) output files and the finished row are committed, (2) then `CellEvent::Finished` is published, (3) then the `<cell_result>` is delivered. Clients treat events as hints and read the record (`cell_run_get`); a reconnecting client calls `cell_state(scope)` and never replays events. This is nteract's rule — status written after the last output, broadcasts advisory — learnt from an agent reading three of five outputs (`nteract:docs/adr/execution-pipeline.md:30-54`).
+
+## 9. What the agent sees and does
+
+### 9.1 `<cell_result>` (D11)
+
+Built by `crates/cells/src/deliver.rs` from the committed row (§8.7), modelled on `job_result` (fact 31), handed to `Agents` as `HarnessDeliver{session, kind: "cell <name>", text, wrapped, wake}` (fact 33):
+
+```text
+<cell_result name="preview-ir-prod1" run="r_01JC7Q2M8V" exit="0" secs="41" cwd="~/dr-t6/frp-integration/stacks/sa-frp-integration" interpreter="bash 5.2 (Homebrew)" expect="met 1/1" edited="false" pressed="desktop · Sky's MacBook" at="14:31">
+expect ✓ 3 to update
+summary ~3 update · 0 replace · 0 delete
+output 1.9 KiB, complete:
+Previewing update (ir-prod1):
+     Type                              Name                          Plan       Info
+     pulumi:pulumi:Stack               sa-frp-integration-ir-prod1
+ ~   ├─ aws:secretsmanager:Secret      frp-api-credentials           update     [diff: ~tags]
+ ~   ├─ aws:iam:Policy                 replica-read                  update     [diff: ~policy]
+ ~   └─ aws:iam:Role                   frp-integration-role          update     [diff: ~managedPolicyArns]
+Resources:
+    ~ 3 to update
+    4 unchanged
+</cell_result>
+```
+
+- **Attributes**: `name` (or `cell="<ordinal>"` with `message="<entry>"` when unnamed), `run`, `exit` (code, signal name, `timeout`, `killed`, `lost`, `cancelled`), `secs`, `cwd`, `interpreter`, `expect="met n/m"` or `"missed k/m"`, `edited`, `pressed` (client kind and device name), `at`; `in="note <doc> \"<title>\""` for note cells; `pass="<id>" pass_end="true"` on the last result of a Run-all pass.
+- **Body**: expect lines (✓/✗ per item), the summary, then the cleaned text (§8.3) after redaction (§9.4), **head + tail capped** at `cells.agent_bytes` (8 KiB: 6 KiB head, 2 KiB tail) with the middle replaced by `… 14 212 bytes cut — cell_output("r_01JC7Q2M8V", offset=6144) reads them …`. An edited run adds `code that ran (edited):` with the code (capped 2 KiB) so the agent knows what actually ran (F4). Python/Monty runs list each output's `text/plain` and an `error`'s `ename: evalue` plus the last traceback frame.
+- **Private** cells: attributes plus the expect lines and `output kept from theuth (private)`; nothing else, ever (`cell_output` refuses too).
+- **Desktop card**: `injected.ts` gains `cell_result: 'name="'` in `CARD` (`crates/desktop/ui/src/lib/injected.ts:53`) rendered as one quiet line in the transcript ("theuth read · Preview · exit 0 · 41 s"), because the output is already on screen in the cell. 172 edits neighbours in this file: the cells W1 UI worker rebases on it (§17.4).
+
+### 9.2 `<cell_error>` (writer's call W-i)
+
+Produced where `<surface_error>` is (fact 35): `check_fences` gains a third pass that runs `surface::cell::validate` over every runnable-language fence with a header in the finished reply (scope for `after`/duplicate checks = the session's cells so far). Errors only (§3.6), never warnings:
+
+```text
+<cell_error>
+Your reply presents 1 user cell the user cannot run. Re-present each corrected cell (same name) in your next reply; say nothing about the error.
+- cell 3 "apply-ir-prod1": after_unknown — `after: preview` names no cell; cells here: export-ir-prod1, preview-ir-prod1
+</cell_error>
+```
+
+At most `cells.correct_rounds` (1) per turn, counted apart from the surface rounds; it continues the turn exactly like a surface correction (the reply is persisted, the correction is the next input, `crates/agent/src/loop_.rs:5917-5940`). The desktop renders it as nothing: `HIDDEN` gains `cell_error` beside `surface_error` (`crates/desktop/ui/src/lib/injected.ts:58`); the broken cell shows its own invalid state. Text lives in `surface::prompt` beside `surface_error` (`crates/surface/src/prompt.rs:330`).
+
+### 9.3 The wake rule and the delivery paths (D12, F1 a; writer's call W-m)
+
+| situation when the run ends | delivery | `HarnessDeliver.wake` |
+|---|---|---|
+| a turn is running in the session | joins it at its next round, like a `<job_result>` | `true` |
+| idle; neither the cell nor its pass has `review` | **parked**: joins the next turn, whoever starts it (Sky's next message, a waking input) | `false` |
+| idle; the cell has `review: true`, or it ends a pass containing one | starts one turn when the run (or the pass) ends; parked results of the same pass join it | `true` |
+| the user presses **Ask theuth** on a finished output | starts a turn with that run's result (un-parked if parked) | `true` |
+| engine restart found the run `running` | `<cell_result exit="lost">` with the last screen's text, parked (or waking if `review`) | per rule |
+
+- **Parking** generalises 145's talk park (`crates/agent/src/supervisor.rs:1550-1556`): `HarnessDeliver` gains `wake: bool` (default `true`, so existing senders are unchanged); a `wake: false` input is admitted and parked until the session's next turn opens for any reason, then joins it in arrival order. Parked items are in memory; the cells actor makes them survive a restart: it subscribes to `AgentEvent`, marks a session's parked runs `consumed_ms` at its next turn start, and at engine start re-parks runs with `delivery = parked` and no `consumed_ms`.
+- A session owned by another engine gets the result through `inject`'s existing `harness_outbox` path (`crates/agent/src/supervisor.rs:1504-1530`); the run itself always happens on the owner (§5.1), so this only matters after a takeover mid-run.
+
+### 9.4 Redaction for the agent
+
+1. **Vault values**, best effort on every chunk before the log (fact 23), then exactly over the whole cleaned text at finish with `tools::secrets::redact` (fact 42) — "`run`'s pass over the whole render is the exact one" (`crates/tools/src/jobs.rs:592-595`).
+2. **Credential patterns** (new, `crates/cells/src/redact.rs`), applied to the agent's copy, to `cell_output`, and to replicated text (F2); the user's own static view keeps them (it is his terminal) and its footer says "2 values masked for theuth":
+
+| pattern | mask |
+|---|---|
+| `\b(AKIA\|ASIA)[0-9A-Z]{16}\b` | `[masked aws-key-id]` |
+| `aws_secret_access_key` / `SecretAccessKey` followed by `=`/`:`/`"` and a 40-char value | `[masked aws-secret]` |
+| `aws_session_token` / `SessionToken` value (≥ 100 chars) | `[masked aws-session-token]` |
+| `\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}` (JWT) | `[masked jwt]` |
+| `\bgh[pousr]_[A-Za-z0-9]{36,}`, `\bxox[abposr]-[\w-]{10,}` | `[masked token]` |
+| `-----BEGIN [A-Z ]*PRIVATE KEY-----` … `-----END [A-Z ]*PRIVATE KEY-----` | `[masked private key]` |
+
+3. **Private cells** send no output at all (§9.1).
+
+### 9.5 Runtime functions (read-only)
+
+Registered by the cells plugin as `Risk::ReadOnly` runtime functions; they read, never run:
+
+```python
+cell_runs(scope="this", name=None, limit=20)      # scope: "this" (the session) or a note doc id
+# -> [{run, name, cell, state, exit, secs, at, expect, summary, edited, private, pressed}]
+cell_output(run, offset=0, limit=8000)            # cleaned, vault-redacted, credential-masked text
+# -> {text, offset, total_bytes, next}            # refused for private runs
+interpreters(cwd)                                 # -> [Interpreter] (§6.4)
+```
+
+Scope rule: a session reads its own chat runs and the runs of notes it may `doc_read`.
+
+### 9.6 Note cells, as the agent meets them
+
+- **`doc_read`** shows each cell with its latest run: in outline form `[cell:bash preview-ir-prod1 · ran 14:38 · exit 0 · 33 s · expect ✓] pulumi preview -s ir-prod1 … (1 line)`, in markdown form the fence, the `output` fence and the run line (§4.4). The outline line is the helper's `[code:<language>]` row (fact 11) rewritten by the Rust `doc_read` tool through a process-global `RunAnnotations` hook in `crates/document`, installed by the cells plugin — the `tools::secrets` hook pattern (`crates/tools/src/secrets.rs:44-48`) — because `cells` depends on `document`, not the reverse.
+- **`doc_insert`/`doc_create`** of a `#|` fence creates a cell (D14); validation errors come back in the tool result ("cell 2: after_unknown …"), not as `<cell_error>`.
+- **Origin session**: a note cell's `<cell_result>` goes to the session whose agent last wrote that block (`Principal::Agent{session}`, the attribution 59 §5.5 keeps; `DocEvent::Authored`, `crates/document/src/actor.rs:343`); a block the owner wrote reports to nobody.
+- **Notebook chats**: every session bound to a notebook containing the note (144 §8) that is not the origin session gets a body-less quiet `<cell_result … in="note …">` — ids and exit only, read with `cell_output` — 157's "never the content" rule (`crates/agent/src/notebook_context.rs:700`) without touching the `<notebook_changes>` builder.
+
+### 9.7 What the agent can never do
+
+Start, stop, restart or close a kernel; type into one; press Run, Run all or Ask theuth; tick a run sheet (cells replace ticking; the prompt forbids editing checkboxes to report progress). Concretely: no tool, runtime function or MCP method maps to `cell_run`, `cell_run_all`, `cell_stop`, `cell_input`, `cell_kernel_*`; `send` and `cancel_job` on a kernel job answer "this terminal belongs to a user cell — ask the user to press Run"; `jobs()` does not list kernel jobs (§12, invariants 2–4).
