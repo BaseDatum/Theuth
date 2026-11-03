@@ -1187,6 +1187,10 @@ export interface Api {
   /** Model state, voices, the utterance in flight (43 §6) and `input_devices` (153 §8.1); `-32001` when the voice plugin is disabled. */
   voice_status(): Promise<VoiceStatus>
   withdraw(session: SessionId, id: InputId): Promise<string>
+  /** 176 C1: liveness only — asks no actor; `null`. `RpcClient.probe` sends it. */
+  ping(): Promise<null>
+  /** 176 C2: one line into the engine's log (target `client`); `level` `info` | `warn`, `source` the C3 tag, `message` ≤ 2,000 chars. 20/min per connection. */
+  client_log(level: 'info' | 'warn', source: string, message: string): Promise<null>
   // 136 §2.7: the dreaming plugin's nine methods, dotted on the wire (`api['dreaming.status']()`). The actor absent
   // (`dreaming.enabled: false`) → `NOT_RUNNING` for every method but `status` / `settings`.
   /** Last night, next window, budget left, backlog, proposals pending. */
@@ -1371,6 +1375,7 @@ export const METHODS = [
   'cell_state',
   'cell_stop',
   'cite_resolve',
+  'client_log',
   'code_locate',
   'codeindex_stats',
   'codemap_cancel',
@@ -1618,6 +1623,7 @@ export const METHODS = [
   'peer_deliver',
   'peer_message',
   'pin_session',
+  'ping',
   'polish',
   'polish_model',
   'promote_answer',

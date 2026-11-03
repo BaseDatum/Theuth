@@ -93,3 +93,42 @@ public struct FetchGate: Equatable {
         return again
     }
 }
+
+/// 176 K1/K2: refetch starts at least `spacing` apart, so an event burst (many subagents) cannot run the engine's
+/// list handlers back to back; every request inside the window shares one trailing start. `list_sessions` (MBs per
+/// reply) rides along at most every `sessionsEvery`, and on the first refetch after a (re)connect. Pure — the caller
+/// owns the timer and the clock.
+public struct RefetchPacer: Equatable, Sendable {
+    public static let spacing: TimeInterval = 2
+    public static let debounce: TimeInterval = 0.25
+    public static let sessionsEvery: TimeInterval = 30
+
+    /// The trailing start every pending request shares; past it, the timer fired and it is spent.
+    public private(set) var due: Date?
+    private var lastStart: Date?
+    private var sessionsAt: Date?
+
+    public init() {}
+
+    /// An event wants a refetch: when to start it (`<= now`: at once). `immediate` (connect, `Lagged`) skips the
+    /// debounce, but never the spacing: inside the window it joins the trailing start.
+    public mutating func request(now: Date, immediate: Bool = false) -> Date {
+        let open = lastStart.map { max(now, $0.addingTimeInterval(Self.spacing)) } ?? now
+        let at = immediate ? open : max(open, now.addingTimeInterval(Self.debounce))
+        if let d = due, d >= now, d <= at { return d }
+        due = at
+        return at
+    }
+
+    /// A refetch starts (any caller): the trailing request is covered. `true` when it should read `list_sessions` too.
+    public mutating func start(now: Date) -> Bool {
+        due = nil
+        lastStart = now
+        if let s = sessionsAt, now.timeIntervalSince(s) < Self.sessionsEvery { return false }
+        sessionsAt = now
+        return true
+    }
+
+    /// The socket (re)opened: the next refetch reads `list_sessions` whatever its age.
+    public mutating func connected() { sessionsAt = nil }
+}

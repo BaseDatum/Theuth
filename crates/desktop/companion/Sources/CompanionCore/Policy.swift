@@ -74,6 +74,8 @@ public struct NotificationPolicy: Sendable {
     public static let rate: TimeInterval = 120
     /// More than this many needs-you items → flood mode.
     public static let floodThreshold = 10
+    /// 176 K3: a drop the client redials within this long posts no "engine unreachable" banner.
+    public static let engineGrace: TimeInterval = 5
 
     public var prefs: NotificationPrefs
     public private(set) var pausedUntil: Date?
@@ -87,7 +89,9 @@ public struct NotificationPolicy: Sendable {
     private var flood = false
     private var floodShown = 0
     private var waitingNow = 0
-    private var engineLost = false
+    /// The current outage began here; `engineDecided` once its banner was posted (or suppressed by a pause / prefs).
+    private var engineLostAt: Date?
+    private var engineDecided = false
     /// Posted banner id → item ids still waiting.
     private var live: [String: Set<String>] = [:]
     /// 155 §7.6: item id → the `alert.id` already bannered (or held); a new episode is a new id.
@@ -207,26 +211,38 @@ public struct NotificationPolicy: Sendable {
         return out
     }
 
-    /// The 1 Hz `.common` timer: the 2-minute cap, the rate window, the end of a pause.
+    /// The 1 Hz `.common` timer: the 2-minute cap, the rate window, the end of a pause, the engine banner's grace.
     public mutating func tick(now: Date) -> PolicyOutput {
         if let until = pausedUntil, now >= until { pausedUntil = nil }
-        if isPaused(now: now) { return PolicyOutput() }
-        return release(now: now, breakpoint: false)
+        var out = engineDue(now: now)
+        if isPaused(now: now) { return out }
+        out.merge(release(now: now, breakpoint: false))
+        return out
     }
 
     /// Menu: Pause 1 h / until tomorrow; `nil` resumes. Nothing is posted while paused; the rail is live.
     public mutating func pause(until: Date?) { pausedUntil = until }
 
-    /// The RPC connection dropped (error class) / came back (withdraw).
+    /// The RPC connection dropped (error class, after `engineGrace`; `tick` posts it) / came back (withdraw).
     public mutating func engine(connected: Bool, now: Date) -> PolicyOutput {
         var out = PolicyOutput()
         if connected {
-            engineLost = false
+            engineLostAt = nil
+            engineDecided = false
             if live[Banner.engineId] != nil { live[Banner.engineId] = nil; out.withdraw.append(Banner.engineId) }
             return out
         }
-        guard !engineLost else { return out }
-        engineLost = true
+        if engineLostAt == nil { engineLostAt = now }
+        return engineDue(now: now)
+    }
+
+    // MARK: internals
+
+    /// One banner per outage, once it has lasted `engineGrace`.
+    private mutating func engineDue(now: Date) -> PolicyOutput {
+        var out = PolicyOutput()
+        guard let since = engineLostAt, !engineDecided, now.timeIntervalSince(since) >= Self.engineGrace else { return out }
+        engineDecided = true
         guard !isPaused(now: now), prefs.error != .off else { return out }
         let b = Banner(id: Banner.engineId, category: .error, title: "theuth engine unreachable",
                        body: "The companion lost the engine; reconnecting.", thread: "theuth",
@@ -235,8 +251,6 @@ public struct NotificationPolicy: Sendable {
         out.post.append(b)
         return out
     }
-
-    // MARK: internals
 
     private var floodWaiting: Int? { flood ? waitingNow : nil }
 

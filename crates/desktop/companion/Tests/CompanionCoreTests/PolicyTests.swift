@@ -167,15 +167,30 @@ struct PolicyFloodPauseWithdrawTests {
         #expect(after.post.map(\.id) == ["ask:2"], "the item that arrived during the pause was seen")
     }
 
-    @Test func engineLostIsOneErrorBannerWithdrawnOnReconnect() {
+    @Test func engineLostIsOneErrorBannerAfterTheGraceWithdrawnOnReconnect() {
         var p = primed()
         let lost = p.engine(connected: false, now: t0)
-        #expect(lost.post.map(\.id) == [Banner.engineId] && lost.post.map(\.sound) == [true])
-        let again = p.engine(connected: false, now: at(1))
-        let refresh = p.update(items: [], now: at(2))
-        #expect(again.isEmpty && refresh.withdraw.isEmpty, "not repeated; an item refresh does not withdraw it")
-        let back = p.engine(connected: true, now: at(3))
+        let early = p.tick(now: at(4.9))
+        #expect(lost.isEmpty && early.isEmpty, "inside the grace")
+        let due = p.tick(now: at(5))
+        #expect(due.post.map(\.id) == [Banner.engineId] && due.post.map(\.sound) == [true])
+        let again = p.engine(connected: false, now: at(6))
+        let later = p.tick(now: at(20))
+        let refresh = p.update(items: [], now: at(21))
+        #expect(again.isEmpty && later.isEmpty && refresh.withdraw.isEmpty, "not repeated; an item refresh does not withdraw it")
+        let back = p.engine(connected: true, now: at(22))
         #expect(back.withdraw == [Banner.engineId])
+    }
+
+    @Test func aDropShorterThanTheGracePostsNothing() {
+        var p = primed()
+        _ = p.engine(connected: false, now: t0)
+        let back = p.engine(connected: true, now: at(3))
+        let after = p.tick(now: at(10))
+        #expect(back.isEmpty && after.isEmpty)
+        _ = p.engine(connected: false, now: at(11))
+        let second = p.tick(now: at(16))
+        #expect(second.post.map(\.id) == [Banner.engineId], "the next outage counts from its own start")
     }
 }
 

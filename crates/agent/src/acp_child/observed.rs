@@ -91,6 +91,16 @@ pub(crate) struct Observed {
     omp: Option<OmpFeeds>,
 }
 
+impl Observed {
+    /// 176 A1: a watch-only child still running inside the harness (what
+    /// `observed_lost` would mark lost).
+    pub(super) fn any_running(&self) -> bool {
+        self.by_external
+            .values()
+            .any(|c| !c.meta.state.is_terminal() && c.meta.state != ObservedState::Unknown)
+    }
+}
+
 /// One inter-session message as it accumulates: sender, recipient, text.
 #[derive(Clone, Default)]
 struct Directed {

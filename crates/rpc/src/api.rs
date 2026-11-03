@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use ::search::SearchCategory;
 use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
+use agent::SetModelFavorite;
 use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
 use agent::todo::TodoSnapshot;
 use agent::{
@@ -20,18 +21,17 @@ use agent::{
     BroadcastTargets, Cancel, CancelScope, CommunicationState, Compact, CompactStyle,
     ContextBreakdown, ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession,
     Delivery, EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle,
-    GetDefaultEffort, GetDefaultModel, GetEscalateModel, GetMaxSalvages, GetMaxToolRounds,
-    GetPeerMessage, GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos,
-    GetVisionModel, Harvest, ListAcp, ListActivity, ListAgents, ListLogins, ListModels,
-    ListPeerMessages, ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
-    LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession,
-    PeerMessagePage, PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo,
-    QueuedInput, Redo, RefreshProviderModels, RefreshedModels, Regenerate, RemoveAcp,
-    RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SendInput,
-    SessionContextBreakdown, SessionSummary, SetCommunication, SetCompactStyle, SetEffort,
-    SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle,
-    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody,
-    SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    GetEscalateModel, GetPeerMessage, GetSubagentModel, GetTitleModel, GetTodos, GetVisionModel,
+    Harvest, ListAcp, ListActivity, ListAgents, ListLogins, ListModels, ListPeerMessages,
+    ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
+    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage,
+    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
+    RefreshProviderModels, RefreshedModels, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
+    RemoveSkill, RemoveSkillRepo, RenameSession, SendInput, SessionContextBreakdown,
+    SessionSummary, SetCommunication, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages,
+    SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle, SetSubagentModel, SetSubagentTimeout,
+    SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
+    UseSkill, Withdraw,
 };
 use agent::{
     AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
@@ -44,7 +44,6 @@ use agent::{
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
-use agent::{GetFavoriteModels, SetModelFavorite};
 use agent::{GetPolishModel, Polish, PolishReply, Rewrite, SetPolishModel};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
@@ -2782,6 +2781,18 @@ pub trait Api {
         session: Option<SessionId>,
         descendants: Option<bool>,
     ) -> SubscriptionResult;
+    /// 176 C1: liveness only — answers `null` at once. Asks no actor and awaits nothing, so a
+    /// busy engine still answers; probe with this, not `info`, to tell a dead socket from a
+    /// slow handler.
+    #[method(name = "ping")]
+    fn ping(&self) -> RpcResult<()>;
+    /// 176 C2: one client diagnostic line into the engine log, target `client`, fields
+    /// `source` and `conn` (the `rpc: ws open conn=<n>` id; 0 off the local WebSocket).
+    /// `level` `"warn"` logs at WARN, anything else at INFO; `source` is ≤32 chars of
+    /// `[a-z0-9-]` (else logged as `-`); `message` is cut to 2,000 chars. 20 per minute per
+    /// connection; the rest of that minute is dropped with one WARN. Asks no actor.
+    #[method(name = "client_log", with_extensions)]
+    fn client_log(&self, level: String, source: String, message: String) -> RpcResult<()>;
 }
 
 /// The first item of every `subscribe_events` stream: every approval,
@@ -3610,17 +3621,21 @@ async fn attach_pty(
 impl ApiServer for Server {
     async fn info(&self) -> RpcResult<Info> {
         // 82 §3 / 83 §3: the supervisor's live defaults, not the config file read at startup.
-        let default_model = ask::<Agents, _>(agent::AGENT_ACTOR, GetDefaultModel).await?;
-        let default_effort = ask::<Agents, _>(agent::AGENT_ACTOR, GetDefaultEffort).await?;
-        let favorite_models = ask::<Agents, _>(agent::AGENT_ACTOR, GetFavoriteModels).await?;
+        // 176 E3: one ask, so `info` queues behind at most one supervisor message.
+        let agent::InfoDefaults {
+            default_model,
+            default_effort,
+            favorite_models,
+            compact_style,
+            subagent_timeout_secs,
+            max_tool_rounds,
+            stream_idle_secs,
+            max_salvages,
+            communication,
+            advisor,
+        } = ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetInfoDefaults).await?;
         let approvals =
             ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session: None }).await?;
-        let compact_style = ask::<Agents, _>(agent::AGENT_ACTOR, GetCompactStyle).await?;
-        let subagent_timeout_secs =
-            ask::<Agents, _>(agent::AGENT_ACTOR, GetSubagentTimeout).await?;
-        let max_tool_rounds = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxToolRounds).await?;
-        let stream_idle_secs = ask::<Agents, _>(agent::AGENT_ACTOR, GetStreamIdle).await?;
-        let max_salvages = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxSalvages).await?;
         let pty_idle_secs = ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetPtyIdle).await?;
         let name = match self.rt.section::<LinkConfig>("link") {
             Ok(c) if !c.name.is_empty() => c.name,
@@ -3635,8 +3650,6 @@ impl ApiServer for Server {
                 .map(|c| c.run_timeout_secs)
                 .unwrap_or(1800),
         };
-        let communication =
-            ask::<Agents, _>(agent::AGENT_ACTOR, GetCommunication { session: None }).await?;
         Ok(Info {
             version: env!("CARGO_PKG_VERSION").into(),
             platform: std::env::consts::OS.into(),
@@ -3656,7 +3669,7 @@ impl ApiServer for Server {
             communication,
             app_enabled: apps().is_ok(),
             // 125 §6.5: the supervisor's live advisor defaults (82 §3 rule).
-            advisor: ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetAdvisorDefaults).await?,
+            advisor,
         })
     }
 
@@ -9082,6 +9095,22 @@ impl ApiServer for Server {
                 self.forget_on_close(peer);
             }
         }
+        Ok(())
+    }
+
+    fn ping(&self) -> RpcResult<()> {
+        Ok(())
+    }
+
+    fn client_log(
+        &self,
+        ext: &Extensions,
+        level: String,
+        source: String,
+        message: String,
+    ) -> RpcResult<()> {
+        let conn = ext.get::<crate::ConnId>().map_or(0, |c| c.0);
+        crate::diag::client_log(&peer(ext)?, conn, &level, &source, &message);
         Ok(())
     }
 }

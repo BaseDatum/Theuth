@@ -72,6 +72,7 @@ app: {enabled: true}   # the `app` tool, `/apps`, `get_app`/`app_*` RPC and the 
 signal: {enabled: true, device_name: theuth, owner: "+1555…", allowed: []}
 a2a: {enabled: false, listen: 127.0.0.1:7780, public_url: null}   # remote agents over A2A (50 §6); off = no actor or listener; peers/exports in a2a/peers.yaml, `/a2a reload`
 sessions: {takeover_secs: 300, release_wait_secs: 10, orphan_keep_days: 7, harness_outbox_ttl_secs: 604800}   # transcript replication across engines (68 §9): owner unseen this long → another engine may take a session it needs to write; how long a taker waits for a reachable owner to flush; how long a demoted owner keeps undelivered turns for viewing; how long a job result / reminder for a session owned elsewhere waits to be forwarded (139 R2)
+acp: {idle_stop_secs: 1800}   # an external harness child (acp/agents.yaml) with no turn, approval, job or ACP traffic this long has its process stopped; the next message resumes it with session/load; 0 = never
 ```
 
 Only `agent.model` is required. Changing this file needs a restart, which

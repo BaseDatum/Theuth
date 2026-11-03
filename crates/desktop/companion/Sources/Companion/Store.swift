@@ -64,6 +64,7 @@ final class Store: ObservableObject {
     private var tickTimer: Timer?
     private var receiptTimer: Timer?
     private var fetchGate = FetchGate()
+    private var pacer = RefetchPacer()
 
     /// Hooks the panel controller sets.
     var onCloseRequest: (() -> Void)?
@@ -101,6 +102,8 @@ final class Store: ObservableObject {
         case .pendingPrompts(let p):
             approvals = Dictionary(p.approvals.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             onPendingPrompts?(p)
+            // The stream's first item on every (re)connect: `list_sessions` is re-read with this refetch.
+            pacer.connected()
             scheduleRefetch(now: true)
         case .approvalRequested(let a):
             approvals[a.id] = a
@@ -122,26 +125,30 @@ final class Store: ObservableObject {
         calendarObserve(data) // 158 W2: the `EventKit` bus item → EventKitSource
     }
 
-    /// Debounced 250 ms (130 §5.2); never on a timer.
+    /// Paced by `RefetchPacer` (176 K1): 250 ms debounce, ≥ 2 s between starts, a burst coalesced into one trailing run.
     private func scheduleRefetch(now immediate: Bool = false) {
+        let delay = pacer.request(now: Date(), immediate: immediate).timeIntervalSinceNow
         refetchTimer?.invalidate()
-        if immediate { return refetch() }
-        refetchTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+        if delay <= 0 { return refetch() }
+        refetchTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.refetch() }
         }
     }
 
     /// The three lists at once (+ 149's sessions/status/mesh, each tolerated missing on an older engine), then the packets;
-    /// one in flight, a request during it runs once after it.
+    /// one in flight, a request during it runs once after it (paced). `list_sessions` at most every 30 s and on connect
+    /// (176 K2); the other refetches keep the last value.
     func refetch() {
         guard !w1Frozen, fetchGate.begin() else { return } // 149 W1: a seeded probe never takes the engine's lists
+        refetchTimer?.invalidate()
+        let withSessions = pacer.start(now: Date())
         Task {
             do {
                 async let a = client.attentionList()
                 async let g = client.agentsList()
                 async let l = client.listActivity()
                 // 149: optional on an engine without these verbs — a failure leaves the last value.
-                async let s = try? client.listSessions()
+                async let s = withSessions ? (try? client.listSessions()) : nil
                 async let ss = try? client.sessionsStatus()
                 async let m = try? client.meshStatus()
                 let (items, agents, activity) = try await (a, g, l)
@@ -154,7 +161,7 @@ final class Store: ObservableObject {
             } catch {
                 Log.write("refetch failed: \(error)")
             }
-            if fetchGate.end() { refetch() }
+            if fetchGate.end() { scheduleRefetch() }
         }
     }
 

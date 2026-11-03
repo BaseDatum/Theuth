@@ -860,7 +860,7 @@ export function Composer({
         if (onCreated) onCreated(target)
         else await navigate({ to: '/c/$session', params: { session: target } })
       }
-      if (e instanceof SendTimeout) useConnection.getState().client?.probe()
+      if (e instanceof SendTimeout) useConnection.getState().client?.probe('send-timeout')
       const unreachable = ownerUnreachable(e)
       const draining = sessionDraining(e)
       if (draining && target && !retried.current) {

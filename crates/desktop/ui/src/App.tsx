@@ -58,7 +58,7 @@ import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { RpcClient, RpcError } from '@/rpc/client'
 import type { WireEvent } from '@/rpc/events'
 import { routeTree } from '@/routeTree.gen'
-import { useConnection } from '@/store/connection'
+import { routerMounted, useConnection, watchDrops } from '@/store/connection'
 import { EngineProvider, type Stores, dropScope, scope } from '@/store/engine-scope'
 import { hydrateMeeting, installMeetingListeners } from '@/store/meeting'
 import { dispatch, on, useSessions } from '@/store/sessions'
@@ -69,6 +69,10 @@ const ISLAND = isIsland()
 const OVERLAY = isOverlay()
 /** A popout (`lib/popout.ts`) is a second shell at the route in its URL: it connects like main but registers none of main's singletons. */
 const AUX = ISLAND || OVERLAY || POPOUT !== null
+/** 176 C3: names this window's local socket in the engine's ws log lines and in `client_log`. */
+const CLIENT_TAG = ISLAND ? 'island' : POPOUT ? 'popout' : 'desktop-main'
+/** 176 U4: a reconnect or a hidden spell shorter than this skips `info` and the liveness `list_sessions`. */
+const CHEAP_GAP_MS = 30_000
 
 const router = createRouter({
   routeTree,
@@ -156,11 +160,13 @@ function reseedLiveness(st: Stores): void {
   )
 }
 
-/** 142 F4: a foreground return with a socket that still looks `open` (iOS froze the page; the relay parked it) re-reads liveness — the gap's events are gone either way. */
+/** 142 F4: a foreground return with a socket that still looks `open` (iOS froze the page; the relay parked it) re-reads liveness — the gap's events are gone either way. Only after `CHEAP_GAP_MS` hidden (176 U4). */
 function useForegroundReseed(st: Stores): void {
   useEffect(() => {
+    let hiddenAt = Number.POSITIVE_INFINITY
     const onVisible = () => {
-      if (document.visibilityState === 'visible') reseedLiveness(st)
+      if (document.visibilityState === 'hidden') hiddenAt = Date.now()
+      else if (Date.now() - hiddenAt > CHEAP_GAP_MS) reseedLiveness(st)
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
@@ -187,9 +193,10 @@ function resync(st: Stores): void {
  * chats (the bare event; `running` may be wrong after a long gap and only a full page corrects it), the stale
  * mark for the rest (they settle on mount). Never `unload()` (129 D3). Communication state, peer directories
  * and request lists (50 §10) may have missed their change events too; a foreground return with a live
- * socket needs none of this (events kept flowing; stale queries refetch on focus).
+ * socket needs none of this (events kept flowing; stale queries refetch on focus). `cheap` (a gap under
+ * `CHEAP_GAP_MS`, 176 U4) skips `info` and the liveness `list_sessions`: the invalidated queries cover it.
  */
-function reload(st: Stores): void {
+function reload(st: Stores, cheap: boolean): void {
   const sessions = st.sessions.getState()
   sessions.resetLagged()
   sessions.markStale()
@@ -203,8 +210,11 @@ function reload(st: Stores): void {
   void st.qc.invalidateQueries({ queryKey: ['session-cost'] })
   void st.qc.invalidateQueries({ queryKey: ['terminals'] })
   const api = st.connection.getState().api
-  if (api) void loadInfo(st, api).catch(() => undefined)
-  reseedLiveness(st)
+  if (cheap) seedLive(st)
+  else {
+    if (api) void loadInfo(st, api).catch(() => undefined)
+    reseedLiveness(st)
+  }
   if (useEngines.getState().active === st.id)
     window.dispatchEvent(new Event('theuth:reload-session'))
 }
@@ -272,8 +282,18 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
   conn.setError(undefined)
   conn.setClient(null, null)
   conn.setInfo(null)
+  st.connection.setState({ outage: false })
   let client: RpcClient | undefined
+  // Toasts for the engine on screen; a mesh row's hub failover (69 decision 6) shows the switcher's
+  // "reconnecting…" chip instead — the new hub answers on the same id within seconds.
+  const drops = watchDrops(st.connection, (text) => {
+    const { active, engines } = useEngines.getState()
+    const shown = active === st.id && engines.find((h) => h.id === st.id)?.kind !== 'mesh'
+    if (shown) toast(text)
+    return shown
+  })
   signal.addEventListener('abort', () => {
+    drops.stop()
     detach(st)
     client?.close()
   })
@@ -296,24 +316,14 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
         return
       }
       const api = makeApi(client)
-      let lost = false
       client.onState((s) => {
         conn.setConnState(s)
-        // Toasts for the engine on screen; a mesh row's hub failover (69 decision 6) shows the switcher's
-        // "reconnecting…" chip instead — the new hub answers on the same id within seconds.
-        const { active, engines } = useEngines.getState()
-        const shown = active === st.id && engines.find((h) => h.id === st.id)?.kind !== 'mesh'
-        if (s === 'reconnecting' && !lost) {
-          lost = true
-          if (shown) toast('Connection lost, reconnecting…')
-        } else if (s === 'open') {
-          conn.setError(undefined)
-          if (lost) {
-            lost = false
-            if (shown) toast('Reconnected')
-            reload(st)
-          } else loadInfo(st, api).catch(fail)
-        }
+        const gap = drops.next(s)
+        if (s !== 'open') return
+        conn.setError(undefined)
+        // A first dial that failed is a "drop" too, but it never loaded `info`.
+        if (gap !== undefined) reload(st, gap < CHEAP_GAP_MS && st.connection.getState().info !== null)
+        else loadInfo(st, api).catch(fail)
       })
       conn.setClient(client, api)
       if (useEngines.getState().active === st.id) attach(st)
@@ -592,13 +602,12 @@ function useEventFocus(st: Stores): void {
  * Everything under the active engine's provider: the router once connected, the startup screen before.
  * A link engine stays on the router through a reconnect: iOS kills the socket on every background,
  * so a resume would otherwise swap in the startup screen and remount the router each time (31 §7.3).
- * `refused` needs the user (re-pair or forget), so that still gets the screen.
+ * `refused` needs the user (re-pair or forget), so that still gets the screen. The local engine stays
+ * for `ROUTER_GRACE_MS` (176 U3): a short drop shows only the chat's "Reconnecting…" strip.
  */
 function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(): void }) {
   const refused = useEngines((s) => s.presence[engine] === 'refused')
-  const ready = useConnection(
-    (s) => s.info !== null && (s.state === 'open' || (engine !== LOCAL && !refused)),
-  )
+  const ready = useConnection((s) => routerMounted(s, engine === LOCAL, refused))
   useInvalidateOn()
   useEventSideEffects(scope(engine))
   useEventFocus(scope(engine))
@@ -666,7 +675,7 @@ function Main() {
       async () => {
         const c = await get()
         owned = c.owned
-        return RpcClient.local(c.url, c.token)
+        return RpcClient.local(c.url, c.token, CLIENT_TAG)
       },
       ctl.signal,
     )
