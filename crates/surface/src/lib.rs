@@ -32,7 +32,7 @@ pub use fences::json_render_fences;
 pub use mermaid::mermaid_lines;
 pub use pictures::{
     DRAWING, PictureFence, PictureLang, PicturePart, flatten, picture_fallback, picture_parts,
-    picture_preview,
+    picture_preview, strip_pictures,
 };
 pub use prompt::*;
 pub use render::{fence, spec_lines};

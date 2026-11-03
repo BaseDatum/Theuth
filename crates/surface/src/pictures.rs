@@ -215,6 +215,24 @@ pub fn picture_preview(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// `text` without its picture fences, open or closed: what a voice clip reads (164 D9 — the
+/// picture is in the chat; nobody wants a diagram read aloud).
+pub fn strip_pictures(text: &str) -> Cow<'_, str> {
+    let parts = picture_parts(text);
+    if parts.iter().all(|p| matches!(p, PicturePart::Text(_))) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(
+        parts
+            .into_iter()
+            .filter_map(|p| match p {
+                PicturePart::Text(t) => Some(t),
+                PicturePart::Picture(_) => None,
+            })
+            .collect(),
+    )
+}
+
 /// `text` with every picture fence as its [`PictureFence::fallback`]: the text-only rendering
 /// for a channel that sends no pictures (30 §9, 164 D7). Everything else is byte-identical.
 pub fn flatten(text: &str, width: usize) -> String {
@@ -357,6 +375,11 @@ mod tests {
         );
         assert_eq!(picture_parts("plain\n"), vec![PicturePart::Text("plain\n")]);
         assert!(picture_parts("").is_empty());
+        assert_eq!(
+            strip_pictures(&text),
+            "Intro.\n\n\n\nMid.\n\n\n```rust\nfn x() {}\n```\n\nTail.\n"
+        );
+        assert!(matches!(strip_pictures("plain"), Cow::Borrowed("plain")));
     }
 
     #[test]

@@ -134,6 +134,19 @@ pub enum FenceSnapshotAnswer {
     },
 }
 
+impl FenceSnapshotAnswer {
+    /// A `Done` carrying `png`, base64-encoded here: what a Rust-side answerer (a test's
+    /// fake client) sends.
+    pub fn done(png: &[u8], width: u32, height: u32, client: Client) -> Self {
+        Self::Done {
+            png: base64::engine::general_purpose::STANDARD.encode(png),
+            width,
+            height,
+            client,
+        }
+    }
+}
+
 /// How one [`render`] ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SnapshotOutcome {
