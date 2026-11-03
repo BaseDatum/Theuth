@@ -6,7 +6,6 @@ import { useShallow } from 'zustand/react/shallow'
 import { notifyIfHidden } from '@/lib/notify'
 import type { Api } from '@/rpc/api'
 import { RpcError } from '@/rpc/client'
-import type { CellEvent } from '@/rpc/bindings/CellEvent'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRun } from '@/rpc/bindings/CellRun'
 import type { CellScope } from '@/rpc/bindings/CellScope'
@@ -139,18 +138,15 @@ function schedule(scope: CellScope) {
   })
 }
 
-// `CellEvent` reaches `subscribe_events` through the RPC bridge; `WireEvent` does not list it, so the bus is typed here.
-const onCell = on as unknown as <T extends CellEvent['type']>(type: T, cb: (e: Extract<CellEvent, { type: T }>) => void) => () => void
 let listening = false
 function listen() {
   if (listening) return
   listening = true
-  const hint = (scope: CellScope) => schedule(scope)
-  onCell('run_queued', (e) => hint(e.scope))
-  onCell('run_started', (e) => hint(e.scope))
-  onCell('run_finished', (e) => hint(e.scope))
-  onCell('cells_changed', (e) => hint(e.scope))
-  onCell('kernel_changed', (e) => hint(e.kernel.scope))
+  on('run_queued', (e) => schedule(e.scope))
+  on('run_started', (e) => schedule(e.scope))
+  on('run_finished', (e) => schedule(e.scope))
+  on('cells_changed', (e) => schedule(e.scope))
+  on('kernel_changed', (e) => schedule(e.kernel.scope))
 }
 
 /** Mount a cell (or, with `cell` null, only watch the scope's kernels): read now, re-read on hints. Returns the unmount. */
