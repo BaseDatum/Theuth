@@ -112,6 +112,66 @@
   --chart-8: #b07a55; /* umber */
 }
 
+/* 171 §11.8: the 16 ANSI colours for cell output (`components/cells/vendor/nteract/outputs/ansi-output.tsx`, anser's
+   `ansi-*` class names), derived from the status, chart and foreground tokens — no new hex. The `var()` chains flip with
+   `.dark` on their own; only black/white (the ink/paper ends) need their own dark values. */
+:root {
+  --ansi-black: var(--fg-primary);
+  --ansi-red: var(--status-danger-fg);
+  --ansi-green: var(--status-success-fg);
+  --ansi-yellow: var(--status-warning-fg);
+  --ansi-blue: var(--chart-3);
+  --ansi-magenta: var(--chart-5);
+  --ansi-cyan: var(--chart-1);
+  --ansi-white: var(--fg-tertiary);
+  --ansi-bright-black: var(--fg-tertiary);
+  --ansi-bright-red: var(--status-danger-border);
+  --ansi-bright-green: var(--chart-4);
+  --ansi-bright-yellow: var(--fg-accent);
+  --ansi-bright-blue: var(--chart-3);
+  --ansi-bright-magenta: var(--chart-5);
+  --ansi-bright-cyan: var(--chart-1);
+  --ansi-bright-white: var(--fg-secondary);
+}
+.dark {
+  --ansi-black: var(--border-strong);
+  --ansi-white: var(--fg-secondary);
+  --ansi-bright-black: var(--fg-tertiary);
+  --ansi-bright-white: var(--fg-primary);
+}
+.ansi-black-fg { color: var(--ansi-black); }
+.ansi-red-fg { color: var(--ansi-red); }
+.ansi-green-fg { color: var(--ansi-green); }
+.ansi-yellow-fg { color: var(--ansi-yellow); }
+.ansi-blue-fg { color: var(--ansi-blue); }
+.ansi-magenta-fg { color: var(--ansi-magenta); }
+.ansi-cyan-fg { color: var(--ansi-cyan); }
+.ansi-white-fg { color: var(--ansi-white); }
+.ansi-bright-black-fg { color: var(--ansi-bright-black); }
+.ansi-bright-red-fg { color: var(--ansi-bright-red); }
+.ansi-bright-green-fg { color: var(--ansi-bright-green); }
+.ansi-bright-yellow-fg { color: var(--ansi-bright-yellow); }
+.ansi-bright-blue-fg { color: var(--ansi-bright-blue); }
+.ansi-bright-magenta-fg { color: var(--ansi-bright-magenta); }
+.ansi-bright-cyan-fg { color: var(--ansi-bright-cyan); }
+.ansi-bright-white-fg { color: var(--ansi-bright-white); }
+.ansi-black-bg { background-color: var(--ansi-black); }
+.ansi-red-bg { background-color: var(--ansi-red); }
+.ansi-green-bg { background-color: var(--ansi-green); }
+.ansi-yellow-bg { background-color: var(--ansi-yellow); }
+.ansi-blue-bg { background-color: var(--ansi-blue); }
+.ansi-magenta-bg { background-color: var(--ansi-magenta); }
+.ansi-cyan-bg { background-color: var(--ansi-cyan); }
+.ansi-white-bg { background-color: var(--ansi-white); }
+.ansi-bright-black-bg { background-color: var(--ansi-bright-black); }
+.ansi-bright-red-bg { background-color: var(--ansi-bright-red); }
+.ansi-bright-green-bg { background-color: var(--ansi-bright-green); }
+.ansi-bright-yellow-bg { background-color: var(--ansi-bright-yellow); }
+.ansi-bright-blue-bg { background-color: var(--ansi-bright-blue); }
+.ansi-bright-magenta-bg { background-color: var(--ansi-bright-magenta); }
+.ansi-bright-cyan-bg { background-color: var(--ansi-bright-cyan); }
+.ansi-bright-white-bg { background-color: var(--ansi-bright-white); }
+
 /* shadcn variables, aliased onto the tokens; no component hard-codes a colour. */
 :root {
   --radius: 0.75rem;

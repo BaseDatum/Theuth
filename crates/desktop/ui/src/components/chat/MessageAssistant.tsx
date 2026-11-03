@@ -26,6 +26,7 @@ import { FenceContext, JsonRenderFence } from './surface/JsonRenderFence'
 import { OpenUIFence } from './surface/OpenUIFence'
 import { MarkdownTd } from './surface/registry'
 import { Stamp, useStampToggle } from './Stamp'
+import { CELL_LANGUAGES, CellFence, CellOrdinals, cellOrdinals } from '@/components/cells/CellFence'
 
 // Module scope: a new object per render would re-initialise the highlighter.
 // `json-render`, `mermaid` and `openui` fences use streamdown's `plugins.renderers` (matched by language before the
@@ -37,9 +38,10 @@ export const plugins: PluginConfig = {
     { language: 'json-render', component: JsonRenderFence },
     { language: 'mermaid', component: MermaidFence },
     { language: 'openui', component: OpenUIFence },
-    // 171:U1 CellFence plugin: { language: CELL_LANGUAGES, component: CellFence } (components/cells/CellFence.tsx)
   ],
 }
+/** 171 §4.1: assistant replies only add `CellFence` for shell and python fences; every other surface keeps `plugins`. */
+const assistantPlugins: PluginConfig = { ...plugins, renderers: [...(plugins.renderers ?? []), { language: CELL_LANGUAGES, component: CellFence }] }
 /** 135 §2: a markdown image has no intrinsic size until it loads; `Reserve` holds its last height meanwhile. */
 function Img({ node: _node, src, alt, ...rest }: ComponentProps<'img'> & { node?: unknown }) {
   const { entry } = useContext(FenceContext)
@@ -300,6 +302,11 @@ export const MessageAssistant = memo(function MessageAssistant({
     () => ({ running, hasLaterAssistant, session: readOnly ? undefined : session, entry: id }),
     [running, hasLaterAssistant, readOnly, session, id],
   )
+  // 171 §3.4: a chat cell is `(session, stored message seq, ordinal)`; `turnRunning` holds cells of the reply whose turn runs.
+  const turnSeq = useSessionField(session, 'turnSeq')
+  const stored = context?.target.kind === 'message' ? String(context.target.seq) : null
+  const turnRunning = running && (turn === undefined || turnSeq === undefined || turn === turnSeq)
+  const ordinals = useMemo(() => cellOrdinals(text, stored, open || turnRunning), [text, stored, open, turnRunning])
   const fork = useFork(session)
   const voice = speech.useVoice()
   const speaking = speech.useSpeaking()
@@ -320,18 +327,19 @@ export const MessageAssistant = memo(function MessageAssistant({
     <div className="group py-2" onClick={stamp.onClick}>
       <CitationsProvider text={text}>
         <FenceContext value={fence}>
-          {/* 171:U1 CellFence plugin + CellOrdinals provider (per-message fence counter, resets per render) */}
-          <Streamdown
-            mode={open ? undefined : 'static'}
-            isAnimating={open}
-            plugins={plugins}
-            rehypePlugins={rehypePlugins}
-            components={markdownComponents}
-            shikiTheme={shikiTheme}
-            className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
-          >
-            {text}
-          </Streamdown>
+          <CellOrdinals value={ordinals}>
+            <Streamdown
+              mode={open ? undefined : 'static'}
+              isAnimating={open}
+              plugins={assistantPlugins}
+              rehypePlugins={rehypePlugins}
+              components={markdownComponents}
+              shikiTheme={shikiTheme}
+              className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
+            >
+              {text}
+            </Streamdown>
+          </CellOrdinals>
         </FenceContext>
         <References />
       </CitationsProvider>
