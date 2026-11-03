@@ -68,7 +68,6 @@ tempfile = "3"
 tracing-subscriber = { workspace = true }  # examples/capture_probe: flexaudio's warnings on stderr
 figment = { workspace = true }
 parking_lot = { workspace = true }
-cpal = { workspace = true }  # examples/tap_repro (173): the inaudible child player
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "agent/ts", "tools/ts", "voice/ts", "decision/ts", "document/ts", "search/ts"]

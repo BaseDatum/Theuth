@@ -1,7 +1,7 @@
 //! 173 Part 1 repro: does a process tap keep delivering audio when the tapped
 //! process re-creates its output stream or renders to another device? A child
 //! (this binary, `child` arg) plays a 440 Hz tone at amplitude 1e-4 (−80 dBFS,
-//! inaudible) through cpal; the parent taps the child's pid with flexaudio
+//! inaudible) through `voice::out::Player` (cpal); the parent taps the child's pid with flexaudio
 //! `ProcessLoopback` exactly as `capture::system::spawn` does, prints every
 //! event and, per second, chunks / exact-zero chunk fraction / peak dBFS / the
 //! child's `IsRunningOutput`, while it scripts the child:
@@ -19,15 +19,13 @@ use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use flexaudio::{OutputFormat, SourceKind, StreamConfig};
 
 /// −80 dBFS: below any speaker or headset noise floor.
 const AMPLITUDE: f32 = 1e-4;
-/// The child renders exact zeros while set (stdin `mute` / `unmute`).
-static MUTED: AtomicBool = AtomicBool::new(false);
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,73 +37,69 @@ fn main() {
 }
 
 /// Play the tone on the default output; stdin lines `recreate`, `stop`,
-/// `start`, `device <name>` (`default` for the default output), `quit`.
+/// `start`, `device <name>` (`default` for the default output), `mute` /
+/// `unmute` (exact 0.0 samples, the output keeps running), `quit`.
 fn child() {
-    let host = cpal::default_host();
-    let open = |name: &str| -> Result<cpal::Stream, String> {
-        let dev = if name == "default" {
-            host.default_output_device()
-        } else {
-            host.output_devices()
-                .map_err(|e| e.to_string())?
-                .find(|d| d.name().is_ok_and(|n| n == name))
-        }
-        .ok_or_else(|| format!("no output device {name:?}"))?;
-        let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
-        if cfg.sample_format() != cpal::SampleFormat::F32 {
-            return Err(format!("{name}: {:?}, want f32", cfg.sample_format()));
-        }
-        let ch = usize::from(cfg.channels());
-        let step = 440.0 * std::f32::consts::TAU / cfg.sample_rate().0 as f32;
-        let mut phase = 0f32;
-        let stream = dev
-            .build_output_stream(
-                &cfg.config(),
-                move |data: &mut [f32], _| {
-                    for frame in data.chunks_mut(ch) {
-                        // Exact 0.0 (not `0.0 * sin`, which is −0.0 half the time).
-                        let s = if MUTED.load(Ordering::Relaxed) {
-                            0.0
-                        } else {
-                            AMPLITUDE * phase.sin()
-                        };
-                        frame.fill(s);
-                        phase = (phase + step) % std::f32::consts::TAU;
-                    }
-                },
-                |e| eprintln!("child: stream error: {e}"),
-                None,
-            )
-            .map_err(|e| e.to_string())?;
-        stream.play().map_err(|e| e.to_string())?;
+    let open = |name: &str| -> Option<voice::out::Player> {
+        let p = voice::out::Player::open((name != "default").then_some(name), 100)
+            .map_err(|e| eprintln!("child: {e:#}"))
+            .ok()?;
         eprintln!(
-            "child: playing on {:?} ({} Hz, {ch} ch)",
-            dev.name().unwrap_or_default(),
-            cfg.sample_rate().0
+            "child: playing on {:?} ({} Hz, {} ch)",
+            p.device, p.rate, p.channels
         );
-        Ok(stream)
+        Some(p)
     };
-    let mut device = "default".to_owned();
-    let mut stream = Some(open(&device).expect("child: open default output"));
-    for line in std::io::stdin().lock().lines() {
-        let line = line.unwrap_or_default();
-        let (cmd, arg) = line.split_once(' ').unwrap_or((line.as_str(), ""));
-        match cmd {
-            "recreate" => {
-                drop(stream.take());
-                stream = open(&device).map_err(|e| eprintln!("child: {e}")).ok();
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            if tx.send(line.unwrap_or_default()).is_err() {
+                return;
             }
-            "stop" => drop(stream.take()),
-            "start" => stream = open(&device).map_err(|e| eprintln!("child: {e}")).ok(),
-            "device" => {
-                drop(stream.take());
-                device = arg.to_owned();
-                stream = open(&device).map_err(|e| eprintln!("child: {e}")).ok();
-            }
-            "mute" => MUTED.store(true, Ordering::Relaxed),
-            "unmute" => MUTED.store(false, Ordering::Relaxed),
-            _ => return,
         }
+        // The parent is gone: stop playing.
+        let _ = tx.send("quit".into());
+    });
+    let id = voice::SpeechId::new();
+    let rate = voice::out::RATE as usize;
+    let step = 440.0 * std::f32::consts::TAU / rate as f32;
+    let (mut phase, mut muted) = (0f32, false);
+    let mut device = "default".to_owned();
+    let mut player = open(&device);
+    loop {
+        while let Ok(line) = rx.try_recv() {
+            let (cmd, arg) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+            match cmd {
+                "recreate" => {
+                    drop(player.take());
+                    player = open(&device);
+                }
+                "stop" => drop(player.take()),
+                "start" => player = open(&device),
+                "device" => {
+                    drop(player.take());
+                    device = arg.to_owned();
+                    player = open(&device);
+                }
+                "mute" => muted = true,
+                "unmute" => muted = false,
+                _ => return,
+            }
+        }
+        let Some(p) = &player else {
+            std::thread::sleep(Duration::from_millis(20));
+            continue;
+        };
+        // 20 ms per write; `write` blocks while the 100 ms ring is full, which paces the loop.
+        // Exact 0.0 when muted (not `0.0 * sin`, which is −0.0 half the time).
+        let pcm: Vec<f32> = (0..rate / 50)
+            .map(|_| {
+                let s = if muted { 0.0 } else { AMPLITUDE * phase.sin() };
+                phase = (phase + step) % std::f32::consts::TAU;
+                s
+            })
+            .collect();
+        p.write(id, &pcm);
     }
 }
 
