@@ -2,7 +2,8 @@
 //! (`RunEvent::Reopen`, [`reopen`]) or ⌘Tab (`NSApplicationDidBecomeActiveNotification`, [`init`]) with the
 //! main window hidden shows it. Dock › Quit and other user `terminate:`s take the 163 graceful quit through
 //! an `applicationShouldTerminate:` added to tao's app delegate, which has none; a logout, restart or
-//! shutdown still terminates at once (`RunEvent::Exit` → `quit::on_exit`).
+//! shutdown still terminates at once (`RunEvent::Exit` → `quit::on_exit`). R1: a user launch shows the
+//! window ([`launch`]); the login item's (`--autostart`) stays hidden.
 
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -85,6 +86,58 @@ pub fn reopen(app: &AppHandle) {
     if !main_visible && !quit::requested(app) {
         crate::desktop::show(app);
     }
+}
+
+/// R1: a user launch (Dock, Finder, Spotlight, the companion's "Open theuth") shows the window; the login
+/// item's launch (`--autostart`) stays hidden. Idempotent with the launch activation: [`LAUNCH_ACTIVATION`]
+/// skips it, and `show` twice is one show.
+pub fn launch(app: &AppHandle) {
+    rewrite_login_item(app);
+    if show_at_launch(std::env::args().skip(1)) {
+        crate::desktop::show(app);
+    }
+}
+
+fn show_at_launch(args: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
+    !args
+        .into_iter()
+        .any(|a| a.as_ref() == crate::desktop::AUTOSTART_ARG)
+}
+
+/// A LaunchAgent written before R1 has no `--autostart`, so its login would show the window: rewrite it once
+/// (the plist is `~/Library/LaunchAgents/<product>.plist`, auto-launch 0.6 `macos.rs` `get_file`). Only from
+/// an `.app`, so a dev build never repoints the login item at `target/`.
+fn rewrite_login_item(app: &AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    let autolaunch = app.autolaunch();
+    if !autolaunch.is_enabled().unwrap_or(false) {
+        return;
+    }
+    let plist = dirs::home_dir()
+        .map(|h| {
+            h.join("Library/LaunchAgents")
+                .join(format!("{}.plist", app.package_info().name))
+        })
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    let bundled =
+        std::env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"));
+    if plist.as_deref().is_some_and(plist_has_autostart_arg) || !bundled {
+        return;
+    }
+    match autolaunch.enable() {
+        Ok(()) => tracing::info!(
+            "login item rewritten with {}",
+            crate::desktop::AUTOSTART_ARG
+        ),
+        Err(e) => tracing::warn!(error = %e, "rewrite login item"),
+    }
+}
+
+fn plist_has_autostart_arg(plist: &str) -> bool {
+    plist.contains(&format!(
+        "<string>{}</string>",
+        crate::desktop::AUTOSTART_ARG
+    ))
 }
 
 fn watch_activation(app: &AppHandle) {
@@ -198,7 +251,10 @@ fn quit_reason() -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, install_should_terminate, kind, show_on_activate, terminate_reply};
+    use super::{
+        Kind, install_should_terminate, kind, plist_has_autostart_arg, show_at_launch,
+        show_on_activate, terminate_reply,
+    };
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, ClassBuilder, NSObject};
     use objc2::{ClassType, msg_send};
@@ -224,6 +280,28 @@ mod tests {
             msg_send![&*obj, applicationShouldTerminate: std::ptr::null_mut::<AnyObject>()]
         };
         assert_eq!(reply, NSApplicationTerminateReply::TerminateCancel);
+    }
+
+    #[test]
+    fn only_the_login_item_launch_stays_hidden() {
+        assert!(show_at_launch(Vec::<String>::new()));
+        // Finder / Dock may add a process serial number; anything but our flag is a user launch.
+        assert!(show_at_launch(["-psn_0_12345"]));
+        assert!(!show_at_launch(["--autostart"]));
+        assert!(!show_at_launch(["-psn_0_1", "--autostart"]));
+        assert!(show_at_launch(["--autostart=no", "autostart"]));
+    }
+
+    #[test]
+    fn old_login_items_are_told_apart() {
+        // auto-launch 0.6 `build_launch_agent_plist`: one `<string>` per ProgramArguments entry.
+        let exe = "<string>/Applications/theuth.app/Contents/MacOS/theuth-desktop</string>";
+        let old = format!("<key>ProgramArguments</key>\n  <array>{exe}</array>");
+        let new = format!(
+            "<key>ProgramArguments</key>\n  <array>{exe}<string>--autostart</string></array>"
+        );
+        assert!(!plist_has_autostart_arg(&old));
+        assert!(plist_has_autostart_arg(&new));
     }
 
     #[test]

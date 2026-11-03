@@ -212,6 +212,9 @@ mod desktop {
 
     use crate::{commands, companion, island, launch, models, point, quit, update};
 
+    /// 166 R1: argv of the login item's launch (all desktops write it; only macOS reads it, `dock::launch`).
+    pub(crate) const AUTOSTART_ARG: &str = "--autostart";
+
     /// Centre the window on the first show of a fresh profile (window-state restores it afterwards).
     #[derive(Default)]
     struct Flags {
@@ -253,7 +256,7 @@ mod desktop {
             .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-                None,
+                Some(vec![AUTOSTART_ARG]),
             ))
             // The island is placed by `island::island_place`, never by saved window state (03 §1); the
             // overlays by `point::overlay_ensure` (96 §4.6). The denylist is exact-match, hence the filter.
@@ -341,6 +344,9 @@ mod desktop {
                 crate::dock::init(app.handle());
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 deep_links(app.handle());
+                // 166 R1: last, so a user launch shows a window that is fully set up.
+                #[cfg(target_os = "macos")]
+                crate::dock::launch(app.handle());
                 Ok(())
             })
     }
