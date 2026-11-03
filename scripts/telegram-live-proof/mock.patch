@@ -166,14 +166,15 @@ index e792462..d01849b 100644
 +}
 diff --git a/internal/api/ledger.go b/internal/api/ledger.go
 new file mode 100644
-index 0000000..63df253
+index 0000000..2dfea64
 --- /dev/null
 +++ b/internal/api/ledger.go
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,160 @@
 +package api
 +
 +import (
 +	"bytes"
++	"encoding/base64"
 +	"encoding/json"
 +	"io"
 +	"net/http"
@@ -266,8 +267,9 @@ index 0000000..63df253
 +		return b
 +	}
 +	if strings.HasPrefix(ct, "multipart/form-data") {
-+		// Text fields only (files are named, not stored); the parsed form stays
-+		// on the request for the handler's FormValue calls.
++		// Text fields as values; files as {name, content_type, size, base64} so a
++		// proof can check what was uploaded. The parsed form stays on the request
++		// for the handler's FormValue calls.
 +		if err := r.ParseMultipartForm(32 << 20); err != nil {
 +			b, _ := json.Marshal(map[string]string{"multipart_error": err.Error()})
 +			return b
@@ -282,8 +284,18 @@ index 0000000..63df253
 +				}
 +			}
 +		}
-+		for k := range r.MultipartForm.File {
-+			m[k] = "<file>"
++		for k, fhs := range r.MultipartForm.File {
++			if len(fhs) == 0 {
++				continue
++			}
++			fh := fhs[0]
++			f := map[string]any{"name": fh.Filename, "content_type": fh.Header.Get("Content-Type"), "size": fh.Size}
++			if rd, err := fh.Open(); err == nil {
++				data, _ := io.ReadAll(rd)
++				rd.Close()
++				f["base64"] = base64.StdEncoding.EncodeToString(data)
++			}
++			m[k] = f
 +		}
 +		b, _ := json.Marshal(m)
 +		return b
