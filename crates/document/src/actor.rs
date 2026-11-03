@@ -369,8 +369,17 @@ impl DocumentActor {
             .transact_mut()
             .apply_update(u)
             .map_err(|e| format!("apply update: {e}"))?;
-        // §11: a member's blocks carry their author until someone else writes them; 171 §9.6: so do the agent's.
-        let written = std::mem::take(&mut *o.touched.lock().unwrap_or_else(|p| p.into_inner()));
+        // §11: a member's blocks carry their author until someone else writes them; 171 §9.6: so do the agent's,
+        // whose helper transaction also names what it wrote (a first import's blocks arrive inside one new
+        // `blockGroup`, which the observer cannot see into).
+        let mut written = std::mem::take(&mut *o.touched.lock().unwrap_or_else(|p| p.into_inner()));
+        if matches!(by, Principal::Agent { .. }) {
+            for id in &touched {
+                if !written.contains(id) {
+                    written.push(id.clone());
+                }
+            }
+        }
         for id in written {
             let changed = match &by {
                 Principal::Member { pub_, .. } => {
