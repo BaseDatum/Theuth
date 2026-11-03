@@ -93,9 +93,9 @@ function caretAt(x: number, y: number): { node: Node; offset: number } | null {
 function MemberReview({ run, code }: { run: string | null; code: string }) {
   const api = useApi()
   const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run as string, 'code')), enabled: run !== null, staleTime: Infinity })
-  if (q.error) return <p className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</p>
+  if (q.error) return <div className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</div>
   const rows = run === null ? code.split('\n').map((line) => ({ op: '+' as const, line })) : q.data === undefined ? null : lineDiff(q.data.replace(/\n$/, ''), code)
-  if (!rows) return <p className="px-3 py-1 text-xs text-fg-tertiary">loading the code of your last run…</p>
+  if (!rows) return <div className="px-3 py-1 text-xs text-fg-tertiary">loading the code of your last run…</div>
   return (
     <pre className="mx-3 mb-2 max-h-64 overflow-auto rounded-md border border-border-subtle font-mono text-xs">
       {rows.map((r, i) => (
@@ -111,7 +111,7 @@ function MemberReview({ run, code }: { run: string | null; code: string }) {
 function RanCode({ run }: { run: string }) {
   const api = useApi()
   const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run, 'code')), staleTime: Infinity })
-  if (q.error) return <p className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</p>
+  if (q.error) return <div className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</div>
   return <pre className="mx-3 mb-2 max-h-64 overflow-auto rounded-md border border-border-subtle px-2 py-1 font-mono text-xs text-fg-secondary">{q.data ?? 'loading…'}</pre>
 }
 

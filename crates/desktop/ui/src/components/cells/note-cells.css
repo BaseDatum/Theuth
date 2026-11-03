@@ -7,7 +7,7 @@ html .bn-block-content[data-content-type="codeBlock"]:has(> [data-note-cell]) {
 html [data-note-cell] [data-cell] {
   background: var(--card);
 }
-html [data-note-cell] pre {
+html [data-note-cell] pre[data-cell-code] {
   margin: 0;
   padding: 0.5rem 0.75rem 0.5rem 2rem;
   white-space: pre;
@@ -17,12 +17,9 @@ html [data-note-cell] pre {
   line-height: 20px;
   background: color-mix(in srgb, var(--muted) 45%, transparent);
 }
-html [data-note-cell][data-defaults] pre {
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.375rem;
-}
+
 @media (pointer: coarse) {
-  html [data-note-cell] pre {
+  html [data-note-cell] pre[data-cell-code] {
     font-size: 16px;
     line-height: 24px;
   }

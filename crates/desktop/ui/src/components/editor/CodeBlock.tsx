@@ -146,7 +146,7 @@ function CodeBlock({ block, editor, contentRef }: Props) {
   }
   if (host && (route.kind === 'cell' || route.kind === 'guest')) {
     const code = (
-      <pre>
+      <pre data-cell-code="" spellCheck={false}>
         <code ref={contentRef} />
       </pre>
     )

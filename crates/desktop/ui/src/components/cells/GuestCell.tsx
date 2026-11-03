@@ -84,15 +84,16 @@ export function GuestCell({ cell, code, latest: row, cellRef, editor }: GuestCel
   const ok = row !== null && (row.state === 'done' || (row.exit === 0 && row.state !== 'failed'))
   const below = row ? (
     <div className="flex flex-col gap-1 border-t border-border-subtle px-3 py-2">
-      {row.text ? <AnsiText text={row.text} className="max-h-[28rem] overflow-auto text-xs whitespace-pre" /> : <p className="text-xs text-fg-tertiary">output kept private</p>}
+      {row.text ? <AnsiText text={row.text} className="max-h-[28rem] overflow-auto text-xs whitespace-pre" /> : <div className="text-xs text-fg-tertiary">output kept private</div>}
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-fg-secondary">
         <Chip tone={ok ? 'success' : 'danger'}>{ok ? '✓' : '✗'}</Chip>
         <span className="tabular-nums">{latestLine(row)}</span>
       </div>
-      {row.summary && <p className="text-xs text-fg-tertiary">{row.summary}</p>}
+      {row.summary && <div className="text-xs text-fg-tertiary">{row.summary}</div>}
     </div>
   ) : (
-    <p className="border-t border-border-subtle px-3 py-2 text-xs text-fg-tertiary">no run yet</p>
+    // `div`, not `p`: BlockNote's paragraph styles reach every `p` inside a block.
+    <div className="border-t border-border-subtle px-3 py-2 text-xs text-fg-tertiary">no run yet</div>
   )
   return (
     <div data-note-cell="" data-guest="">
