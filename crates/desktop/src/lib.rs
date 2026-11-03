@@ -23,6 +23,8 @@ mod pages;
 #[cfg(desktop)]
 mod point;
 #[cfg(desktop)]
+mod quit;
+#[cfg(desktop)]
 mod update;
 
 /// Build and run the app. Desktop and mobile share the opener/notification
@@ -50,12 +52,7 @@ pub fn run() {
     #[cfg(desktop)]
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
-            use tauri::Manager;
-            // 39 §3.3: stop the sidecar first, then swap the bundle it ran from. 130 §5.8: the
-            // companion goes before the sidecar, after the webview's engine `shutdown`.
-            companion::terminate();
-            app.state::<launch::Launch>().shutdown();
-            update::install_pending(app);
+            quit::on_exit(app);
         }
     });
     #[cfg(mobile)]
@@ -200,7 +197,6 @@ mod mobile {
 #[cfg(desktop)]
 mod desktop {
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
-    use std::time::Duration;
 
     use anyhow::Context;
     #[cfg(target_os = "macos")]
@@ -210,18 +206,12 @@ mod desktop {
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
     use tauri_plugin_positioner::{Position, WindowExt};
 
-    use crate::{commands, companion, island, launch, models, point, update};
+    use crate::{commands, companion, island, launch, models, point, quit, update};
 
-    /// The webview acknowledges `quit-requested` with `quit_ack` (after RPC
-    /// `shutdown` when it owns the daemon); this is the fallback.
-    const QUIT_ACK_TIMEOUT: Duration = Duration::from_secs(3);
-
-    /// One-shot flags: position the window under the tray on the first show of a
-    /// fresh profile (window-state restores it afterwards); run the quit handshake once.
+    /// Position the window under the tray on the first show of a fresh profile (window-state restores it afterwards).
     #[derive(Default)]
     struct Flags {
         position_on_show: AtomicBool,
-        quitting: AtomicBool,
     }
 
     /// WebKitGTK's DMA-BUF renderer needs a DRM render node; without one (a VM with no GPU
@@ -274,6 +264,7 @@ mod desktop {
             .plugin(update::plugin())
             .manage(launch::Launch::default())
             .manage(update::Pending::default())
+            .manage(quit::Quit::default())
             .manage(Flags::default());
         // 58 §6.2: one island command set on every desktop OS; the `NSPanel` plugin is macOS's.
         #[cfg(target_os = "macos")]
@@ -474,7 +465,7 @@ mod desktop {
             "knowledge" => navigate(app, "/knowledge"),
             "meeting" => navigate(app, "/meetings/new"),
             "settings" => navigate(app, "/settings/general"),
-            "quit" => request_quit(app),
+            "quit" => quit::request(app),
             _ => {}
         }
     }
@@ -522,7 +513,7 @@ mod desktop {
     }
 
     /// 130 D10: `theuth://attention/<id>` · `theuth://c/<session>` · `theuth://new` · `theuth://meetings` (149) from the companion
-    /// (or anything else) → [`navigate`]; `theuth://quit` → [`request_quit`]; unknown shapes are logged and dropped. On Windows a cold start
+    /// (or anything else) → [`navigate`]; `theuth://quit` → [`quit::request`]; unknown shapes are logged and dropped. On Windows a cold start
     /// by a link has the URL in argv: the plugin parsed it in its own setup, before this listener existed,
     /// so `get_current()` replays it (macOS delivers `RunEvent::Opened` later and reads `None` here).
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -533,7 +524,7 @@ mod desktop {
             for url in urls {
                 if is_quit_link(&url) {
                     tracing::info!("deep link: quit requested ({url})");
-                    request_quit(&handle);
+                    quit::request(&handle);
                     continue;
                 }
                 match deep_link_route(&url) {
@@ -550,7 +541,7 @@ mod desktop {
 
     /// `theuth://quit`: the companion's tray › Quit theuth — the whole app, one quit (130 W7). The Swift
     /// companion `terminate()`s the shell, which lands in the same handshake; on Windows the companion
-    /// opens this link instead (the single-instance plugin hands it to the running shell) → [`request_quit`].
+    /// opens this link instead (the single-instance plugin hands it to the running shell) → [`quit::request`].
     fn is_quit_link(url: &tauri::Url) -> bool {
         url.scheme() == "theuth"
             && url.host_str() == Some("quit")
@@ -571,24 +562,6 @@ mod desktop {
             ("meetings", true) => Some("/meetings".into()),
             _ => None,
         }
-    }
-
-    /// 25 §3 `/quit`: ask the webview to run RPC `shutdown` (if it owns the daemon)
-    /// and `quit_ack`; exit anyway after [`QUIT_ACK_TIMEOUT`]. The pty hang-up runs
-    /// in `RunEvent::Exit` ([`crate::run`]).
-    pub(crate) fn request_quit(app: &AppHandle) {
-        if app.state::<Flags>().quitting.swap(true, SeqCst) {
-            return;
-        }
-        if app.emit("quit-requested", ()).is_err() {
-            update::exit(app);
-            return;
-        }
-        let app = app.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(QUIT_ACK_TIMEOUT);
-            update::exit(&app);
-        });
     }
 
     fn log_err<T, E: std::fmt::Display>(r: Result<T, E>, what: &str) {
