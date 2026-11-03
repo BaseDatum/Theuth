@@ -1159,3 +1159,101 @@ cells:
 | `crates/desktop/src/lib.rs` | deep link keeps `?cell=` |
 | `crates/desktop/ui` | §11; `injected.ts`; `MessageAssistant.tsx` renderer + `CellOrdinals`; `CodeBlock.tsx` branch; `Editor.tsx` menu items; `TerminalViewer.tsx` `source` prop; `App.tsx` quit sheet; `c.$session.tsx` kernel strip |
 | `crates/slack`, `crates/telegram`, `crates/signal` | the "Run in theuth" line after a cell fence |
+
+## 16. Adopt vs build
+
+R1 decides every row: take the highest-quality existing piece, write only what nothing provides.
+
+| piece | source | what we write | why |
+|---|---|---|---|
+| cell chrome | nteract/nteract `src/components/cell/CellContainer.tsx`, `ExecutionCount.tsx`, `CompactExecutionButton.tsx` (production); elements registry `CellHeader`, `CellControls`, `ExecutionStatus`, `RuntimeHealthIndicator` (production lacks them) | token re-colouring once; the labelled Run button | production is newer than the registry (171-recon-theirs.md §12) |
+| output list + MIME router | nteract `src/components/cell/OutputArea.tsx`, `outputs/media-router.tsx`, `mime-priority.ts`, `json-output.tsx`, `image-output.tsx`, `traceback-output.tsx` | an adapter from `CellOutput`; HTML/SVG/markdown routed to `HtmlPage` instead of nteract's iframe | wrap, don't fork; 120's frame is stricter (§8.2) |
+| ANSI text | nteract `src/components/outputs/ansi-output.tsx` (strips OSC, C0/C1) + `anser`, `escape-carriage` (npm, new) | stream colours → tokens | production version cleans what the agent hand-stripped |
+| editor | `@uiw/react-codemirror` (installed, `crates/desktop/ui/package.json:39`) + `@uiw/codemirror-extensions-langs` (npm, new: bash/python/js/powershell) | one theme extension, keymaps, gutter ▶, selection pill | run-line, run-selection and gutter run exist nowhere (171-recon-theirs.md §1.4, §5) |
+| live terminal | `@xterm/xterm` + theuth's `Terminal` (`TerminalViewer.tsx:98`), 167's keys, the engine responder | a `source` prop for `cell_attach`/`cell_input` | already ours, already right |
+| HTML outputs | theuth's 120 frame (`HtmlPage.tsx:81`) | — | stricter sandbox than nteract's `connect-src *` |
+| chat fence | streamdown renderers + `CodeBlock` fallback (installed) | `CellFence` | nothing renders a runnable chat fence |
+| note branch | BlockNote code block, `CodeBlock.tsx` render (ours) | `NoteCell` branch, side-menu items | no schema change (59 §9.2) |
+| shell kernels | theuth `Jobs`/PTY (`portable-pty`, `vt100`, log, redaction, responder) | `program` + `cell` fields, mark scan, run lines, rc files | the PTY layer is complete; nteract has no bash kernel |
+| terminal → text | `vt100` 0.18 (installed) | a render-only parser per finished run | same emulator as the live screen; no alacritty dependency |
+| python kernel | nothing fits (ipykernel is not in every venv; nteract has no stdin) | `shim.py` (≤ 250 lines) + `python.rs` | the only way to get stdin, display and interrupt in any venv |
+| Monty kernel | `monty-pool =1.4.0` (installed) + the sensor profile | `monty.rs` | precedent exists (fact 39) |
+| Jupyter backend (W3) | runtimed `jupyter-protocol` 2.0.3, `jupyter-zmq-client` 3.0.1, `nbformat` 3.0.0 (crates) | `jupyter.rs` | codec + sockets; we manage the process |
+| guarded execute, record-then-read, server-side stream terminal, storage-boundary redaction, two-audience results | nteract's mechanisms (fact 44) | our implementations | ideas, not code: different runtime |
+| engine actor, run store, delivery, prompt, skill | ours | `crates/cells` | nothing provides a human-only runner |
+
+The new code is therefore: run-line, run-selection and gutter run; bash/zsh/pwsh language wiring; `CellFence`; `NoteCell`; the runbook bar and kernel strip; and the engine (`crates/cells`, the grammar, the seams of §15.6).
+
+## 17. Build waves
+
+Every wave starts with its contract worker **C**: types, RPC stubs, no-op handlers, bindings — merged before the others start. File ownership never overlaps inside a wave.
+
+### 17.1 W1 CHAT-SHELL
+
+| worker | owns |
+|---|---|
+| C1 contract | `crates/cells/src/types.rs`, `crates/surface/src/cell.rs` (+ `tests/cells.json`), `crates/rpc` method stubs + exports, `api.ts` `Api`/`METHODS`, `StartPty`/`RpcPeer`/`HarnessDeliver` field additions |
+| E1 engine | `crates/cells` (actor, shell kernels, run files, marks, render, store, redact, deliver, runtime functions), `crates/tools/src/{pty,jobs}.rs` seams, `platform::env::login_env`, `crates/rpc` handlers + press guard, `crates/theuth/src/main.rs` |
+| A1 agent | `HarnessDeliver.wake` + parking, supervisor skip, `prompt_blocks` arm, `check_fences` pass + `<cell_error>`, `crates/cells/src/prompt.rs`, `crates/cells/cells.md`, the two sentence amendments |
+| U1 UI | `components/cells/*`, `CellFence`, `MessageAssistant.tsx`, `injected.ts`, `TerminalViewer.tsx` `source` prop, kernel strip in `c.$session.tsx`, quit sheet in `App.tsx`, vendored nteract pieces |
+
+### 17.2 W2 PYTHON-NOTES
+
+| worker | owns |
+|---|---|
+| C2 contract | `CodeBlockText`, `RunAnnotations`, `cell_latest` types and stubs |
+| E2 engine | `python.rs` + `shim.py`, `monty.rs`, `interp.rs`, note scope (hub routing, kernel session ids, origin delivery, notebook result lines), `cell_latest` table and `GUEST_METHODS` |
+| D2 documents | `crates/document` (`CodeBlockText`, `doc_read` annotations, `cell_latest`), `packages/documents` untouched |
+| U2 UI | `NoteCell`, `CellDefaults`, `CodeBlock.tsx` branch, `Editor.tsx` menu items, note header pill, guest view, rich outputs through `HtmlPage` |
+
+### 17.3 W3 REACH
+
+JS kernels (F5 a), the Jupyter backend, `.ipynb` import/export, the TUI run key (with its own press marker), `on:` sandbox/mesh targets, images for guests; the detached PTY keeper only if Sky picks F6 b.
+
+### 17.4 Proof list
+
+Unit tests (each invariant of §12.1 has one): grammar fixtures shared by Rust and TS; validation and lint tables; CWD rule table (§5.6); mark scan across chunk splits; render of `\r` progress and a pulumi spinner; credential masks; digest guard; `after` with edited and old previews; idempotent run ids; danger refused for `line`/Run all; internal and guest peers refused; `send`/`cancel_job` refusal and `jobs()` omission; parked delivery joining the next turn; `<cell_error>` once per turn.
+
+Live proof on a scratch engine (desktop and phone, recorded in the as-built):
+1. The DR-style runbook end to end: three cells in chat, Run all stops before the danger cell, the apply arms with the preview's summary, the arrow-key prompt answered in the live terminal, the agent's one-line report after `review`.
+2. The zsh trap gone: login shell zsh, a `bash` cell using `${PIPESTATUS[0]}` and a trailing `# comment` runs clean.
+3. Secrets scrubbed: a `#| env: TOKEN={{secret:NAME}}` cell that echoes it and prints a fake `AKIA…` key — the user's view shows the placeholder for the vault value, the agent's copy shows both masked.
+4. The agent cannot run: asked to "run the preview yourself", it refuses to touch the cell kernel; `send` to the kernel job fails; the MCP server and `t --acp` cannot call `cell_run`.
+5. The double never sees a run: double at L3, a danger run raises no card and no double event.
+6. Engine restart → lost: `kill -9` the engine mid-run; the cell reads "lost — engine restarted" with the last screen; the agent gets `exit="lost"`; nothing re-runs.
+7. Graceful quit waits: quit during a 60 s run → "Wait for …" → the app quits after the run ends; "Stop it and quit" → Ctrl-C, Kill, quit.
+8. A note in a notebook: a `.venv` DataFrame cell, a Monty cell, a member's edit showing "Run Alice's edit", the guest seeing the latest output without a Run button.
+
+### 17.5 Must not regress
+
+Tools, MCP, `tools.policy` and approvals untouched (diff shows no change in `registry.rs`, `approval.rs`, `crates/double`); agent PTY jobs and `TerminalViewer` in the header and pop-out; note collaboration, undo and attribution; diagrams in note code blocks; snippets in chat (a fence without a header renders exactly as today); channel pictures (164); 172's user-bubble and `injected.ts` work — U1 rebases on 172 and adds only the two map entries.
+
+## 18. Open
+
+| fork | mechanism | why it matters | choices | recommended |
+|---|---|---|---|---|
+| F1 wake rule | when a run ends and no turn is running, does the result start one? | Sky's own mode is "allow me to review the output, and then tell you what to do next" (2026-10-16) | (a) only `review: true` or Ask theuth; (b) after every Run-all pass; (c) also on any failure | **(a)** — the agent promises review with `review`; nothing talks over Sky |
+| F2 shared-note outputs | does the latest run's output replicate to members? | a shared run sheet without outputs is half a record; images would multiply size | (a) latest text, capped 16 KiB, scrubbed; (b) owner only; (c) everything incl. images | **(a)** |
+| F3 phone | may the phone press any cell? | the press is the consent; the label is identical on every device | (a) all, danger included; (b) non-danger only; (c) desktop only | **(a)** — DR happens away from the desk |
+| F4 editing in chat | may Sky edit an agent cell before running it? | "ran exactly what the agent wrote" vs fixing a flag in place | (a) yes, "edited" badge, the agent sees what ran; (b) read-only in chat | **(a)** |
+| F5 JavaScript | when do JS cells come? | Sky said "maybe even javascript"; same shim protocol | (a) wave 3; (b) wave 2; (c) never | **(a)** |
+| F6 engine restart | a cell killed mid-`pulumi up` leaves a locked stack; 109 R1 says jobs die with the engine (`docs/design/109-durability.md:42`, keeper not chosen `:28`) | the quit/update case is the common one and is avoidable | (a) keep R1; quit and `t update` offer "Wait for <label>" / "Stop it and quit"; crash = lost; (b) the `t jobd` keeper for cell kernels; (c) only "lost" | **(a)** — least code, ruling intact |
+
+Genuinely open, found while writing:
+1. **`auto` per scope** (§6.1) can flip a note's python kernel when one cell gains a pandas import; the chip shows it, but Sky may prefer `auto` to mean "the local interpreter, Monty only when there is none".
+2. **Plan-summary extraction** (§7.5) recognises pulumi and terraform shapes only; other tools fall back to expect lines.
+3. **Kubernetes/SSO prompts in a browser** (`aws sso login`) open a browser on the engine's machine, not the phone; a phone press of such a cell needs the engine's desktop. No mitigation in v1 beyond the cell's own output.
+
+## 19. Amendments to other docs
+
+- **59 Documents** §9.2: note code blocks whose body starts with `#|` render as cells; still no schema change. §8.1: roles gain "editors never run cells". §11: threat row "the owner runs a member's edited cell" → "Run <name>'s edit".
+- **109 Durability** R1/§5.6: cell kernels are jobs; a running cell ends `<cell_result exit="lost">`; §9.3 `t update` lists running cells first (F6 a).
+- **120 Inline pages** §2: cell HTML/SVG/markdown outputs use the same frame and `page_put`.
+- **126 Double** §4.4: cells raise no card; the double never answers a run.
+- **143 Note flow**: the note header carries the kernel pill and Run all.
+- **144/157 Notebooks**: §8 bound chats receive body-less `<cell_result>` lines; §11 `GUEST_METHODS` gains `cell_latest`; §3.3 `TABLES` gains `cell_latest`.
+- **155 Activity** §6: `tcgetpgrp` foreground group is reused for Kill; cell jobs never raise `<job_idle>`.
+- **163 Graceful quit** D5: a pre-quit sheet for running cells precedes the overlay.
+- **164 Channel pictures** D1: adapters append "Run in theuth" after a cell fence; cell fences are never pictures.
+- **167 PTY keys**: the cell's live terminal uses the same key mapping and the same single responder.
+- **`crates/surface/src/prompt.rs:289` and `crates/surface/visualize.md:42`**: the sentence of §10.4.
