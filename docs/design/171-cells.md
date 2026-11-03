@@ -68,6 +68,7 @@ Every `path:line` below was re-opened in `~/Develop/theuth-171` (branch `docs/17
 11. D19 `skills/cells.md`: skills are binary-owned constants written by `first_run` (`crates/theuth/src/main.rs:1324-1336`) → `crates/cells/cells.md` via `include_str!`, written to `~/.theuth/skills/cells.md`.
 12. D9 `@uiw/codemirror-extensions-langs`, `anser`, `escape-carriage` are not installed (`crates/desktop/ui/package.json:39-41` has only react-codemirror and xterm) → three new UI dependencies (§16).
 13. F6 (a) "the graceful quit screen names running cells": 163's overlay has no buttons by design (`docs/design/163-graceful-quit.md:56`) → the choice is a sheet shown before `requested` is dispatched (§5.4).
+14. D9 "one `Cell` component … editor @uiw/react-codemirror" for notes too: a note's code text is a Yjs fragment edited by BlockNote (fact 7); a CodeMirror over it would need a second Yjs binding → note cells keep BlockNote's code content inside the shared `Cell` chrome; CodeMirror serves chat cells and the raw view (§4.2).
 
 ## 1. Why
 
@@ -302,3 +303,43 @@ pulumi up -s ir-prod1 --refresh=false --diff
 `````
 
 What the engine and UI make of it: a runbook bar "Run all · stops before Apply to ir-prod1" (danger boundary, §7.2); one `bash` kernel for the session; the apply disarmed with "after: Preview" until the preview exits 0 with its expect met, then armed with "armed by preview ✓ 14:31 · ~3 update · 0 replace · 0 delete" (the counts come from the gating run's cleaned output, §7.5); no `--yes` on the danger cell, so pulumi's own arrow-key prompt appears in the live terminal and Sky answers it in place (mock panel B); `review` on the apply makes the agent read the result and report in one or two lines (§9.3).
+
+## 4. Where cells live
+
+### 4.1 Chat replies
+
+- One new streamdown renderer, `CellFence`, registered in `plugins` beside the three that exist (fact 1) for `['bash','zsh','sh','pwsh','powershell','python','py']` (`language: string | string[]`, fact 4). It parses the body with `grammar.ts`; **no header → it returns streamdown's own `CodeBlock`** (exported, `~/Develop/theuth/crates/desktop/ui/node_modules/streamdown/dist/index.d.ts:394`, `:630`) with the same props, so snippets look exactly as today.
+- With a header it mounts the shared `Cell` component (§11.1) with `ref = Chat{session, entry, ordinal}` from `FenceContext` (fact 2). The ordinal is counted by a per-message counter in a small `CellOrdinals` context that `MessageAssistant` provides next to `FenceContext` (streamdown renders fences in document order; the counter resets per message render).
+- Runnable only when: `session` is defined (not a read-only view, fact 3), `isIncomplete` is false, and `running` is false for the turn that wrote the message. Before that the cell shows its chips and code with a dim "ready when the reply ends".
+- Cells render only in assistant markdown. User bubbles, harness input cards (`<subagent_result>`, `<job_result>`, …), tool results and relayed peer text never mount `CellFence`, so injected text from another agent or a web page cannot become a Run button (the relayed body is "no more trusted than a web page", `crates/agent/src/frame.rs:63`).
+
+### 4.2 Notes (D14)
+
+- `CodeBlock.tsx`'s `render` gains one branch before the diagram branch (`crates/desktop/ui/src/components/editor/CodeBlock.tsx:126`): `cellOf(block.props.language, text)` → `<NoteCell block={…} editor={…}/>`; `language` first word `cells` → `<CellDefaults/>`. The ProseMirror node, the Yjs fragment and the helper are untouched (fact 7). Diagrams in note code blocks keep working (must-not-regress, §17.4).
+- The editor shown for a note cell is BlockNote's own code content (`contentRef`), not CodeMirror: the Y.Doc stays the only text and collaboration, undo and attribution keep working. CodeMirror is used where theuth owns the text: chat cells (F4 edits) and the raw toggle. Run-line and run-selection in a note read the BlockNote selection inside the code block (§7.1).
+- **Make it a cell / Make it plain code** — two items in the block's side menu (`DocSideMenu`, `crates/desktop/ui/src/components/editor/Editor.tsx:100`) on a runnable-language code block: the first inserts `#| name: <slug of the nearest heading>` as the first line, the second removes the header lines. Both are ordinary text edits (one Y.Doc transaction), undoable.
+- The slash menu gains "Cell" (a third `codeBlock` entry beside "Diagram", `crates/desktop/ui/src/components/editor/Editor.tsx:183`): `language: bash`, content `#| name: step-1`.
+- Run state, outputs and kernels live outside the Y.Doc (§8.4); the latest run per cell replicates to members as capped text (F2, §13.2).
+
+### 4.3 Notebooks (144, 157)
+
+A notebook is a container over notes; its notes open in `NotePane`, the same editor (171-recon-ours.md §4.1), so note cells work there unchanged. The notebook's chat column is an ordinary bound session: its cells are chat cells with the session's kernel. What a notebook adds is the notice to its chat when a note cell runs (§9.6) and the guest view of replicated outputs (§13).
+
+### 4.4 Exported markdown
+
+Every markdown rendering the engine produces for a reader of a note — `doc_read` (§9.5) and a user's `.md` export — writes each cell as its fence, then, when the cell has a run, an ```` ```output ```` fence with the latest run's cleaned text (capped at `cells.export_output_bytes`, 8 KiB, head+tail) and one line `ran 14:38 · exit 0 · 33 s · expect ✓`. The derived `note.md` mirror (59 §4.3) stays source-only, because it is a sync artifact that is re-imported. `.ipynb` import/export is wave 3 (runtimed's `nbformat` crate, 171-recon-theirs.md §4.3).
+
+### 4.5 Conversions
+
+| action | where | what happens |
+|---|---|---|
+| Make it a cell / Make it plain code | note side menu | toggles the header (§4.2) |
+| Open as note | chat runbook bar (≥ 1 cell) | the UI composes markdown — the reply's prose and cells, each followed by its latest run as an `output` block and run line (§4.4) — and creates a note with it (`doc_create`, owner); the chat gets a link card. Output blocks are plain history text; the note's cells start with no runs and their own note kernel: `cd`/exports do not move across |
+| Save answer as note / Promote into note | notebook sessions (144 §8) | unchanged; cells travel as text |
+| `doc_insert` / `doc_create` with `#\|` fences | agent | the blocks are cells (D14) |
+
+### 4.6 Placement rule (chat vs note)
+
+- **Chat** for up to about five one-off steps tied to the conversation (the preview → apply example).
+- **Note** for longer or repeatable procedures, a "run sheet", anything Sky will come back to, or when the session is a notebook chat (then a note in that notebook). The agent writes the note with `doc_insert`/`doc_create` and posts one line in chat with the link; the note's runs report back to the session that wrote the cells (§9.5).
+- Never both: the agent does not paste the same cells into chat and a note.
