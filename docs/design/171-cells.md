@@ -846,3 +846,90 @@ The runtime block's "a cell is type-checked before it runs" stays: it is about t
 - The cells plugin asks `RegisterPrompt{plugin: "cells", text: PROMPT}` at start (`crates/tools/src/registry.rs:386`; the `app` plugin is the precedent, `crates/app/src/lib.rs:376`).
 - `prompt_blocks` drops it exactly where it drops `app`: the unattended arm becomes `"app" | "cells" => None` (`crates/agent/src/loop_.rs:3218`). Unattended = a subagent or a scheduler-opened root (`crates/agent/src/loop_.rs:4240-4241`) — nobody there can press Run.
 - It stays in attended **channel** sessions (Slack/Telegram/Signal are attended, 171-recon-ours.md §11.1): Sky can say "prep it" from his phone's Slack; the channel shows the code and a "Run in theuth" link (§14.3) and he presses on the phone app. Toolsets whose `prompts` list omits `cells` drop it through the existing filter (`crates/agent/src/loop_.rs:3215`).
+
+## 11. UI
+
+### 11.1 Cell anatomy
+
+One `Cell` component (`crates/desktop/ui/src/components/cells/Cell.tsx`) serves chat, notes and notebooks; `CellFence` (chat) and `NoteCell` (notes) only supply the ref, the editor and the scope.
+
+| part | contents | built from |
+|---|---|---|
+| container | border, danger outline (1.5 px status-danger), focus ribbon | nteract `CellContainer` (`nteract:src/components/cell/CellContainer.tsx`), ribbons re-coloured to tokens |
+| header | state dot · **label** (or name) · chips: language, interpreter, cwd (mono, middle-ellipsis), host (only when not this device), name, `after:`, `expect:`, lint/danger chips · execution count `[3]` · the Run button (label text) | elements `CellHeader`, nteract `ExecutionCount`, our chips (shadcn `Badge`) |
+| armed line | "armed by preview ✓ 14:31 · ~3 update · 0 replace · 0 delete" (green) or a notice row: folder not found, replaced by a newer version, changed by Alice, Monty can't run this | ours (one row component) |
+| editor | chat: CodeMirror (`basicSetup: false`, line numbers, theuth theme, bash/python modes) read-only until edited; note: BlockNote's code content (§4.2) | `@uiw/react-codemirror` (`crates/desktop/ui/package.json:39`) + `@uiw/codemirror-extensions-langs` |
+| gutter | line numbers; a ▶ on the hovered line (run line); "Run selection ⌘↵" pill on a selection | ours (CM `gutter()`/`GutterMarker`; for notes a positioned overlay) |
+| output | live: xterm with an accent outline and "the terminal is live — type or use arrows"; finished: static ANSI text, rich outputs, the input line for `input()` | `Terminal` (`crates/desktop/ui/src/components/chat/TerminalViewer.tsx:98`, new `source` prop), nteract `OutputArea` + `ansi-output` + media router, `HtmlPage` for HTML |
+| footer | exit badge (✓ exit 0 / ✗ exit 1), duration, expect badge, "ran 14:02" (notes), "edited", "2 masked for theuth", private note, **Ask theuth**, show/hide output, history ▾ (this cell's runs) | elements `ExecutionStatus` (re-coloured), ours |
+| fold | finished cells fold to one line: state · label · `exit 0 · 41 s · expect ✓` · summary · "show output"; the latest cell in a reply stays open | ours |
+| raw toggle | shows the `#\|` header as text (chips hide it by default) | ours |
+
+### 11.2 States
+
+| state | looks | button | when |
+|---|---|---|---|
+| ready | hollow dot | label, enabled | valid, never run or last run done |
+| queued | "queued · 2nd" badge | Stop | waiting for the kernel (§5.10) |
+| running | accent spinner, live xterm, elapsed `0:41` | Stop (Ctrl-C); Kill after 5 s | between marks C and D |
+| done | ✓ green dot, folded | label ("Run again" when `after`-gated cells follow) | exit 0, every expect met |
+| failed | ✗ red dot, output open | label | non-zero exit or a missed expect |
+| stopped | ■ dot, "stopped by you" | label | Stop/Kill/timeout |
+| lost | ⚠ "lost — engine restarted" with last screen and log path | **Run again** | 109 R1 (§5.3) |
+| superseded | dimmed, "Replaced by a newer version ↓" | disabled | a later reply re-presented the name |
+| stale | "ran an earlier version" on the last run | label | note text changed since the run |
+| edited | italic "edited" chip, "theuth will see the code that actually ran" | label | F4 edit in chat |
+| invalid | red notice row with the reason (§3.6) | none | validation error |
+| armed | green armed line | label, enabled | `after` satisfied (§7.6) |
+| disarmed | "after: Preview" | disabled | `after` not satisfied |
+| guest | latest output, "latest run · owner · 14:31", "Only the owner can run cells" | none | a guest or member view (§13) |
+
+A read-only rendering (archive, search) shows code and chips with no button (fact 3).
+
+### 11.3 Runbook bar (chat, ≥ 2 cells)
+
+Above the first cell: **Run all · stops before Apply to ir-prod1** (primary button; label from §7.2), progress segments (green done, red failed, outlined danger next) with "2/3", the kernel state ("bash · idle"), and a ⋯ menu with **Open as note** (§4.5). It sticks to the top of the reply while it scrolls.
+
+### 11.4 Kernel strip (chat; writer's call W-j)
+
+A thin row attached to the top of the composer whenever the session has a live kernel: dot (green idle, accent busy), `bash 5.2 · idle`, live cwd from OSC 7 (mono, ellipsis), **Restart**, **Close**, and a ⋯ menu (Refresh environment, Open log folder). Two or more kernels collapse to "2 kernels ▾". The bottom stack becomes transcript · dots · to-do · **kernel strip** · composer (`crates/desktop/ui/src/routes/c.$session.tsx:148-151`, 112 §1 order kept): it sits with the composer because it is about what the next press will do, and the mock draws it that way.
+
+### 11.5 Notes: header strip and paper
+
+The note header carries the kernel as a pill beside the breadcrumb: `python · .venv 3.12 · idle · Run all` (one pill per live kernel; Run all runs the note top to bottom). Cells on the paper use the paper background (`--sheet`), a lighter code area, and the same chips; the `cells` defaults block renders as one muted line. Notebook note panes and popped-out notes get the same header (they mount the same editor).
+
+### 11.6 Phone
+
+The mock's 390 px panel: 48 px touch targets, the runbook bar stacked, the Run button full width under the code for danger cells, the label in full (F3 a: the same label is the whole consent). While a shell run is live a key row sits under the xterm — ↑ ↓ ⏎ Esc Tab ^C — because pulumi's arrow-key prompt cannot be answered from an iPhone keyboard otherwise; it sends through `cell_input`. xterm 6's touch scrolling uses the viewer's existing workaround (`crates/desktop/ui/src/components/chat/TerminalViewer.tsx:133`).
+
+### 11.7 Keyboard map
+
+| keys | where | action |
+|---|---|---|
+| Shift+Enter | cell editor | run the cell, focus the next cell (not on danger cells) |
+| Mod+Enter | cell editor | run the selection, else the caret line (not on danger cells) |
+| Mod+. | cell or live terminal | Stop; again after 5 s = Kill |
+| Esc | cell editor | leave the editor (chat cells return to read-only if unedited) |
+| Mod+Shift+Enter | runbook bar or note header focused | Run all |
+| typing, arrows | live terminal | sent to the program (167's mapping) |
+
+### 11.8 Theming
+
+CSS variables only; no hex in components.
+- nteract components already use shadcn semantic classes; the fixed palettes are replaced once when copied in: ribbons (`gutter-colors.ts`), stream colours in `ansi-output` (stdout → `text-foreground`, stderr → `text-destructive`), status badges → `--status-*` tokens (171-recon-theirs.md §1.6).
+- ANSI's 16 colours are `--ansi-*` variables (nteract's convention, 171-recon-theirs.md §1.6) defined once in theuth's stylesheet from its chart and status tokens, light and dark.
+- CodeMirror: one `EditorView.theme` reading `var(--…)` plus a `HighlightStyle` mapping keywords → `--chart-5`, strings → `--chart-4`, numbers → `--chart-3`, functions → `--chart-1`, comments → `--fg-tertiary` (the mock's mapping), memoised extensions (171-recon-theirs.md §16 trap 7).
+- xterm keeps the viewer's fixed soot canvas in both themes (`crates/desktop/ui/src/components/chat/TerminalViewer.tsx:27-29`), as the mock does.
+- HTML outputs take theuth's theme through 120's bridge (`docs/design/120-inline-pages.md` §7).
+
+### 11.9 Accessibility
+
+The Run button's accessible name is its label ("Apply to ir-prod1"); disabled buttons carry the reason as description. State changes are announced politely from the footer ("Preview finished, exit 0, expect met"). Gutter ▶ and the selection pill have keyboard equivalents (Mod+Enter). The live xterm offers xterm's screen-reader mode; the static view is plain text. Spinners honour `prefers-reduced-motion`. Danger is never colour-only: the chip says "danger".
+
+### 11.10 The mock, panel by panel (`docs/design/assets/171-cells.html`)
+
+- **A Chat** — the §3.8 runbook: runbook bar, cell 1 folded with a selection pill, cell 2 open with expect met and a hovered line ▶, cell 3 danger and armed, the kernel strip on the composer. Matches §11.1–§11.4. Deliberate difference: cell 1 exports `AWS_PROFILE` in its code; the design's example uses `#| env:` (both work; the skill prefers `env`).
+- **B Running** — the danger cell live: "running 0:41", Stop (Ctrl-C), Kill (enabled 5 s after Stop), pulumi's arrow prompt answered in place. Matches §7.3–§7.4. The `$ pulumi up …` first line is drawn by the client above the run's bytes (the run line itself is before mark C, §5.5).
+- **C Note** — paper look, header pill, a `.venv` cell with a DataFrame and an SVG chart, a Monty cell (`[1]`, 4 ms, "no tools, no network"), and a "Monty can't run this" cell. Deliberate difference: the mock labels that cell `auto → Monty`; in this design `auto` would pick the `.venv` silently (§6.1), and the warning belongs to an explicit `python: monty`.
+- **D Variants** — superseded, "Run Alice's edit", lint chips, cwd missing, failed with Run all stopped, guest view, edited in chat, private. Matches §11.2 and §13.
+- **E Phone** — 390 px, danger cell, stacked bar, 48 px targets. Addition not in the mock: the key row of §11.6.
