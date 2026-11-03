@@ -13,7 +13,8 @@ use tracing::Instrument;
 
 use crate::CallStats;
 
-/// `markdown_text` limit per call (`msg_too_long` above it).
+/// `markdown_text` limit: per call for `chat.postMessage` / `chat.update`,
+/// per stream in total for `chat.*Stream` (`msg_too_long` above it).
 pub const MARKDOWN_TEXT_MAX: usize = 12_000;
 
 /// Minimum gap between two `chat.appendStream` calls across all threads (21 §4.2).
@@ -97,7 +98,8 @@ pub enum Chunk {
         status: TaskStatus,
         /// One line under the title.
         details: Option<String>,
-        /// Card body (reasoning text, 21 §8.5); no server-side cap seen up to 40 000.
+        /// Card body; Slack appends it to the card's on every send (164) and
+        /// leaves out a field over 12 000 chars.
         output: Option<String>,
         /// Links.
         sources: Vec<Source>,
