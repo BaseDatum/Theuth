@@ -43,7 +43,7 @@ Every `path:line` below was re-opened in `~/Develop/theuth-171` (branch `docs/17
 - W-e Python shim protocol: newline-delimited JSON on the shim's stdin and a private dup of its stdout; nine frame types (§5.8).
 - W-f Run store `~/.theuth/cells/cells.sqlite` + `~/.theuth/cells/<run>/`; 30 days, latest run per cell kept forever (§8.4).
 - W-g Latest-output replication: a fifth replicated table `cell_latest` in `documents/index.sqlite` (§13.2).
-- W-h OSC 133/OSC 7 rc snippets per shell; marks read through `vt100::Callbacks::unhandled_osc` (§5.5).
+- W-h OSC 133/OSC 7 are emitted by the engine-typed run line (no prompt hooks); marks are scanned on the job's log path, which gives byte offsets (§5.5).
 - W-i `<cell_error>` is a pass inside `check_fences`, one round per turn, hidden on the desktop like `<surface_error>` (§9.2).
 - W-j Kernel strip sits directly on the composer (transcript · dots · to-do · kernel strip · composer); in notes it is a pill in the header (§11.5).
 - W-k Config keys beyond the calls (§15.6).
@@ -53,6 +53,7 @@ Every `path:line` below was re-opened in `~/Develop/theuth-171` (branch `docs/17
 - W-o The block is present in attended channel sessions (Slack/Telegram/Signal), absent for unattended runs and subagents (§10.6).
 - W-p Kill is enabled 5 s after Stop (mock panel B) (§7.3).
 - W-q Chat identity is `(session, entry, ordinal-among-cells)` unless `name` is set (§3.4).
+- W-r Run all is an engine pass (`cell_run_all`), not a client loop of RPCs (§5.10).
 
 **Calls vs tree**
 1. D2 puts note defaults in "the note's front matter block": only knowledge documents carry one (`docs/design/59-documents.md:485`, `packages/documents/src/schema.ts:4`) → a ```` ```cells ```` block (W-c).
@@ -246,6 +247,7 @@ The **cell digest** is SHA-256 over the cell's full text (header + code) with LF
 | `after_unknown` / `after_cycle` | `after` names no cell in scope, itself, or a cycle |
 | `name_duplicate` | two cells with one `name` in the same reply or note |
 | `secret_unknown` | a `{{secret:NAME}}` naming no vault entry (names checked, values never read) |
+| `secret_in_code` | a placeholder in the code; placeholders belong in `#\| env:` and the code uses `$NAME` (keeps secret values out of the run file's code and out of every echo) |
 | `monty_insufficient` | `python: monty` and Monty's type check fails (the cell offers the one-press switch, §6.2) |
 | `empty` | no code after the header |
 
@@ -343,3 +345,126 @@ Every markdown rendering the engine produces for a reader of a note — `doc_rea
 - **Chat** for up to about five one-off steps tied to the conversation (the preview → apply example).
 - **Note** for longer or repeatable procedures, a "run sheet", anything Sky will come back to, or when the session is a notebook chat (then a note in that notebook). The agent writes the note with `doc_insert`/`doc_create` and posts one line in chat with the link; the note's runs report back to the session that wrote the cells (§9.5).
 - Never both: the agent does not paste the same cells into chat and a note.
+
+## 5. Kernels
+
+### 5.1 Scope, keying and placement
+
+- **Key.** `KernelId = (Scope, Spec)`. `Scope::Session(SessionId)` for chat cells, `Scope::Doc(DocId)` for note cells. `Spec` is the resolved program: `Shell{kind: bash|zsh|sh|pwsh, path}`, `Python{path}`, `Monty`. Each distinct interpreter path is its own kernel: a note with a `.venv` cell and a `python: /usr/bin/python3` cell has two python kernels, and the kernel strip lists both.
+- **Which engine (W-d).** Chat: the session's owner — every cell RPC asks `forward::route` first, exactly like `send_input` (fact 17): a user session is taken here, an agent desk is forwarded. Notes: the document's hub — document writes are hub-only and forwarded (144 §3.5), and cell RPCs on a doc follow the same rule, so one note has one kernel per spec across the mesh.
+- **Owning session for PTY jobs (W-b).** A chat kernel's PTY job belongs to the chat session, so `CloseSessions` closes it with the session. A note kernel's job belongs to a deterministic **kernel session id**, UUIDv5(`cells`, doc id): the jobs layer uses the id for the log path and the `jobs` row only (`crates/tools/src/jobs.rs:1036`), it never appears in a session list, and deleting the note closes it.
+- **Clients never attach by job id.** Live bytes, typing and Stop go through `cell_attach` / `cell_input` / `cell_stop`, authorized by the cell's scope (§15.2), so chat and notes share one path and the agent-facing `send`/`cancel_job` stay unrelated.
+
+### 5.2 Specs
+
+| spec | process | started through | state that persists between runs | interrupt | wave |
+|---|---|---|---|---|---|
+| `bash`, `zsh`, `sh` | the resolved shell binary on a PTY (`-i`, theuth rc, §5.5) | `Jobs` `StartPty` with `cell: true` and an explicit `program` (§15.1) — never `$SHELL -lc` (fact 21), never the agent's brush shell (fact 29) | cwd, exports, functions, aliases, shell options | Ctrl-C (`\x03`) into the PTY | W1 |
+| `pwsh` | `pwsh -NoLogo -NoExit` on a PTY (Windows; macOS/Linux when installed) | same | location, variables, functions | Ctrl-C | W1 |
+| `python` | the resolved interpreter running `~/.theuth/cells/shim.py` (§5.8) on pipes, own process group | the cells actor (`tokio::process`; the jobs layer's pipe jobs have stdin `/dev/null`, `crates/tools/src/jobs.rs:1747`) | the module namespace, imports, cwd, `os.environ` | SIGINT to the group (Unix); `interrupt` frame (Windows) | W2 |
+| `monty` | a checkout from the cells' own Monty pool, no tool table (§5.9) | the cells actor | the Monty heap (names not starting with `_`) | the run's checkout is cancelled | W2 |
+| `node`/`deno`/`bun` | the runtime running a JS shim with the same frames | the cells actor | the REPL context | SIGINT | W3 (F5) |
+| `jupyter:<kernelspec>` | an interpreter with ipykernel, or `deno jupyter` | runtimed's `jupyter-zmq-client` + `jupyter-protocol` (171-recon-theirs.md §4.4) | the Jupyter kernel | `interrupt_request` | W3 |
+
+Rejected: Jupyter for everything (ipykernel in every venv, no bash kernel, no stdin prompts — 171-recon-theirs.md §3.12); a fresh process per run (no `cd sub` then `ls`, no exports carried).
+
+### 5.3 Lifecycle
+
+| state | entered when | leaves to |
+|---|---|---|
+| `starting` | the first run for a key arrives | `ready` on the rc's ready mark (shell) or the shim's `status ready` (python); `dead` on spawn failure |
+| `ready` | idle, no run | `busy` on the next queued run; `closed` after `cells.kernel_idle_hours` (12) idle, on Close, on session close or doc delete |
+| `busy` | a run is executing | `ready` at the run's end; `dead` if the process exits mid-run (`exit` in a cell): the run ends with the process's exit code and the strip says "kernel exited — the next run starts a new one" |
+| `dead` / `closed` | — | `starting` on the next run (a fresh kernel; the strip says "new kernel — cd, exports and variables reset") |
+| `lost` | the engine stopped or crashed while the kernel lived | nothing: 109 R1 — the kernel is gone and a running run ends `lost` (next list) |
+
+- **Restart** (kernel strip) = Close then start on the next run. **Close** = Stop any run, kill the process group, release the PTY.
+- **Engine restart.** Kernels are jobs, and jobs are not durable (fact 43). At start the cells actor settles every `running` run row `lost`, keeps its log and the PTY's last screen (the `pty_screens` row 109 already writes), delivers `<cell_result exit="lost">` to the scope's session quietly (§9.3), and the cell reads "lost — engine restarted" with the last screen, the log path and a **Run again** button. Nothing is replayed.
+- **Graceful quit and `t update` (F6 a).** Before the desktop dispatches `requested` (163 D5), `App.tsx` asks `cell_live()`; when a run is in flight it shows a sheet *before* the overlay: "Apply to ir-prod1 is running (2:14) · sa-frp-integration", buttons **Wait for Apply to ir-prod1** (the quit proceeds by itself when the last run ends; the sheet ticks down live), **Stop it and quit** (Stop, Kill 5 s later, then quit) and **Cancel**. `t update` prints the same list and asks `wait / stop / cancel` on a TTY; without a TTY it refuses unless `--stop-cells`. The engine's drain is untouched: once the quit proceeds, `KillAll` kills what is left (109 D3), so no process outlives the engine.
+
+### 5.4 Environment capture (D5)
+
+- `platform::env::login_env(shell, timeout) -> BTreeMap<String, String>` beside `login_path` (`crates/platform/src/env.rs:12`), same harness (stdin null, own session, timeout): `$SHELL -l -i -c 'env -0'`, parsed on NUL. Captured once per engine start on first use, cached; **Refresh environment** in the kernel strip re-captures and offers Restart for live kernels.
+- Dropped before use: `PWD OLDPWD SHLVL _ TERM COLUMNS LINES` and every `THEUTH_*`; set: `TERM=xterm-256color`, `COLORTERM=truecolor`, `THEUTH_CELL=1` (so a user's rc can tell).
+- Windows has no login shell: the engine's own environment is the user's (a GUI app inherits it from Explorer); `login_env` returns it.
+- The engine's launchd environment is never used for a kernel; a capture failure (timeout, broken rc) makes kernels start with the engine environment plus the login `PATH` and a warning chip "your shell's environment could not be read — Refresh" on the kernel strip.
+
+### 5.5 Shell integration and terminal parsing (writer's call W-h)
+
+The engine types one **run line** per run; the run line itself emits the marks, so no prompt hooks are needed and bash 3.2, Homebrew bash, zsh, dash and pwsh behave identically:
+
+```sh
+printf '\033]133;C\007'; . '/Users/sky/.theuth/cells/kernels/k7/run.sh'; printf '\033]133;D;%s\007\033]7;file://%s%s\007' "$?" "$(hostname)" "$PWD"
+```
+
+```powershell
+[Console]::Write("`e]133;C`a"); . 'C:\Users\sky\.theuth\cells\kernels\k7\run.ps1'; $c = if ($?) { 0 } elseif ($LASTEXITCODE) { $LASTEXITCODE } else { 1 }; [Console]::Write("`e]133;D;$c`a`e]7;file://localhost/$($PWD.Path)`a")
+```
+
+The rc files are binary-owned (written at start under `~/.theuth/cells/rc/`), each a few lines:
+
+| shell | started as | rc does |
+|---|---|---|
+| bash | `<bash> --noprofile --rcfile ~/.theuth/cells/rc/bash.rc -i` | `. ~/.bashrc` if readable; `PS1= PS2=`; `unset PROMPT_COMMAND`; `printf '\033]133;A\007'` (ready) |
+| zsh | `ZDOTDIR=~/.theuth/cells/rc/zsh <zsh> -i` | sources the user's `~/.zshenv` and `~/.zshrc`; `setopt interactive_comments`; `PROMPT= RPROMPT=`; `precmd_functions=()`; ready mark |
+| sh | `ENV=~/.theuth/cells/rc/sh.rc <sh> -i` | `PS1= PS2=`; ready mark |
+| pwsh | `pwsh -NoLogo -NoExit -Command ". ~/.theuth/cells/rc/rc.ps1"` | dot-sources `$PROFILE` if present; `function prompt { '' }`; ready mark |
+
+**Reading the marks.** For a `cell: true` PTY job, `Log::push` (fact 23) scans each chunk *after* redaction for `ESC ] 133 ; A|C|D[;n]` and `ESC ] 7 ; file://…` terminated by BEL or ST, with a 32-byte carry for a sequence split across chunks (the responder's carry is the precedent, `crates/tools/src/pty.rs:2460`), and sends `Mark{kind, exit, cwd, offset}` to the cells actor on the channel given in `StartPty`; `offset` indexes the log file as written. `vt100`'s `Callbacks::unhandled_osc` (fact 26) was the alternative and is not used: it gives no byte offset. A run's output is exactly the log range `[C, D)`; the D mark's number is the exit code; OSC 7 updates the kernel's live cwd for the strip.
+
+### 5.6 How code enters a shell kernel (D6)
+
+1. **Preconditions at press**: the cell's cwd exists (else the run is refused "folder not found — this cell will not start anywhere else"); the kernel is `ready` or `busy` (then the run queues, §5.10).
+2. **Run file.** The engine writes `~/.theuth/cells/kernels/<kernel>/run.sh` (`run.ps1` for pwsh), mode 0600: a prologue when the CWD rule says so, then the exact code (whole cell, the line, or the selection). Placeholders are expanded into the prologue only (§12, invariant 9); the file is deleted when the D mark arrives. The run record stores the unexpanded code.
+3. **Run line** typed into the PTY (§5.5). Nothing is typed ahead onto a program's prompt: the shell reads one line and runs it; a program that reads stdin (pulumi's prompt, `read -p`) gets only what the user types into the live terminal. An incomplete construct (an unclosed `if`, a dangling quote) is a syntax error of the sourced file — it fails at once with the shell's message instead of hanging in a `>` continuation prompt.
+4. **CWD rule** — the prologue is `cd -- '<cwd>'` plus one `export KEY='value'` per `env` line, written when the run is a **whole-cell run**, or a **line/selection run whose kernel's previous run came from a different cell or which is the kernel's first run**.
+
+Worked example — cell A (`cwd: ~/x`, `env: P=1`), code `cd sub` / `ls`; cell B elsewhere:
+
+| press | prologue? | runs in |
+|---|---|---|
+| Run A | yes (whole cell) | `cd ~/x; export P=1; cd sub; ls` → lists `~/x/sub` |
+| then line 2 of A | no (previous run was A) | `ls` in `~/x/sub` — the `cd sub` holds |
+| then Run B, then line 2 of A | yes (previous run was B) | `cd ~/x; export P=1; ls` → lists `~/x` |
+| fresh kernel, selection of lines 1–2 of A | yes (first run) | `cd ~/x; export P=1; cd sub; ls` |
+
+Python applies the same rule in the shim (`os.chdir`, `os.environ.update`) via the `cwd`/`env` fields of `execute`; Monty mounts the cell's cwd at `/cwd` per run.
+
+### 5.7 Windows
+
+`pwsh` cells are native (`pwsh.exe`, else `powershell.exe`, the same choice the PTY layer makes, `crates/platform/src/shell.rs:45-55`); `bash` cells run Git Bash's `bash.exe` when found, else WSL's `bash.exe` with the cwd translated (`wslpath`), else the cell is invalid with "no bash on this machine — install Git for Windows or WSL". `zsh`/`sh` follow the same lookup. The PTY layer uses a Job Object instead of a process group; Stop is Ctrl-C into the console either way.
+
+### 5.8 The python shim (writer's call W-e)
+
+`crates/cells/shim.py`, stdlib only, Python ≥ 3.8, ≤ 250 lines, embedded with `include_str!` and written to `~/.theuth/cells/shim.py` at start (binary-owned, like the sensor shim). Launched as `<python> -u ~/.theuth/cells/shim.py` with the login environment plus `MPLBACKEND=Agg`. At start the shim keeps a private duplicate of fd 1 for frames, then points fd 1 and 2 at a pipe it forwards as `stream` frames — so output from C extensions and subprocesses is captured too. Frames are one JSON object per line; `id` is the run id.
+
+| # | frame | direction | fields | meaning |
+|---|---|---|---|---|
+| 1 | `execute` | engine → shim | `id, code, mode, cwd?, env?` | run `code` in the kernel namespace; `cwd`/`env` present when the CWD rule says so; the last expression of a `cell`/`selection` run is displayed (Jupyter's rule) |
+| 2 | `stream` | shim → engine | `id, name: stdout\|stderr, text` | output, flushed every 50 ms or 4 KiB |
+| 3 | `display` | shim → engine | `id, data: {mime: payload}, metadata` | `display()` calls and every open matplotlib figure after the run (PNG, then closed) |
+| 4 | `result` | shim → engine | `id, data, count` | the last expression's MIME bundle: `_repr_html_`, `_repr_markdown_`, `_repr_svg_`, `_repr_png_`, `_repr_json_`, always `text/plain` (`repr`) |
+| 5 | `error` | shim → engine | `id, ename, evalue, traceback[]` | an uncaught exception; traceback trimmed to frames in the user's code |
+| 6 | `input_request` | shim → engine | `id, prompt, password` | `input()` / `getpass()` was called; the cell shows an input line |
+| 7 | `input_reply` | engine → shim | `id, value` | the user's answer (never logged when `password`) |
+| 8 | `interrupt` | engine → shim | — | Windows only: `_thread.interrupt_main()`; Unix uses SIGINT to the group, which also wakes blocking calls |
+| 9 | `status` | shim → engine | `state: ready\|busy\|idle, id?, ok?` | `ready` once at start; `idle` with `id` and `ok` ends a run (written after its last output — the record-then-read order, fact 44) |
+
+Kill (5 s after Stop) kills the process group; the kernel is `dead` and the next run starts a fresh one.
+
+### 5.9 The Monty kernel
+
+- **Isolation.** The sensor runner's tool-less profile is the precedent (fact 39): a cells-owned `monty-pool` `Pool` (`cells.monty_workers`, 4), `ReplConfig { type_check: true, type_check_stubs: None, limits: MAX_MEMORY 512 MiB (`crates/agent/src/repl.rs:42`), … }`, an empty tool table — every name lookup that is not a Monty builtin fails — `/cwd` mounted read-only at the cell's cwd, no `/spill`. No file writes, no network, no subprocess, no secrets, by construction.
+- **State.** The kernel holds its checkout between runs, so names persist (except `_`-prefixed ones, Monty's rule). The fifth Monty kernel evicts the least recently used idle one ("Monty kernel stopped to make room").
+- **Limits.** One run is one protocol turn: 60 s wall clock (`REQUEST_TIMEOUT`, `crates/agent/src/repl.rs:53`); `timeout:` above 60 s is a validation warning. `MemoryError` kills the worker: the run ends `error`, the kernel is `dead`.
+- **Buffering.** Print output is collected per run by the synchronous callback (`crates/agent/src/repl.rs:1274`) and appears when the run ends; the cell says "Monty shows output when the run ends". The last expression is displayed as `text/plain` (Monty has no `_repr_*`).
+- **Type check at presentation.** `interpreters`/`auto` resolution and the `monty_insufficient` check call the pool's check-only path (the `feed` call with type checking, `crates/agent/src/repl.rs:1621`) once per presented cell digest, cached (§6.2).
+
+### 5.10 Queueing and concurrency
+
+- **FIFO per kernel**, one run at a time. A press while the kernel is busy queues the run: the cell shows "queued · 2nd" and its Stop removes it (`cancelled`, never ran). Runs on different kernels of the same scope run concurrently.
+- **Second press on the same cell** while it is queued or running is not a new run: the RPC returns the existing run id and the client attaches to it. Run ids are minted by the client (`r_` + ULID, nteract's client-minted `execution_id`, 171-recon-theirs.md §14) so a retried RPC is idempotent; a reused id with a different cell or digest is refused.
+- **Two clients.** Both see the same run: the engine is the only writer, each client attaches. Either can press Stop. Only one can type at a time in practice, and every keystroke is recorded with its device (§8.4).
+- **Run all is an engine pass**, not a client loop (nteract's `RunAllCells`, 171-recon-theirs.md §14): `cell_run_all` enqueues the cells in order, stops at the boundaries of §7.2, and survives the window closing or the phone locking.
+- **PTY size.** Kernel PTYs are fixed at `cells.pty_cols` × `cells.pty_rows` (100 × 30); inline viewers never send a resize (two viewers fight over size today, fact 28); a wider program scrolls horizontally in the cell.
+- **Budget.** At most `cells.max_kernels` (16) live kernels engine-wide; each shell kernel also counts against the 512 MiB PTY budget (fact 22). Over the cap the oldest idle kernel is closed with a note on its strip; with none idle the run is refused "16 kernels are busy — close one".
