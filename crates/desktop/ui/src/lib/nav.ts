@@ -38,7 +38,7 @@ export const tabOf = (group: Group, pathname: string): string | null =>
 export const groupOf = (pathname: string): Group | null =>
   tabOf('agents', pathname) ? 'agents' : tabOf('library', pathname) ? 'library' : null
 
-export type Section = 'home' | 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | null
+export type Section = 'home' | 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | 'costs' | null
 
 /** Which sidebar row `pathname` lights up; null for chats, settings, and the rest. */
 export const sectionOf = (pathname: string): Section => {
@@ -49,5 +49,6 @@ export const sectionOf = (pathname: string): Section => {
   // The start form is the Meeting button's page, not a Library tab.
   if (pathname === '/meetings/new') return 'meeting'
   if (tabOf('library', pathname)) return 'library'
+  if (pathname === '/costs' || pathname.startsWith('/costs/')) return 'costs'
   return null
 }
