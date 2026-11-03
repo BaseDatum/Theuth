@@ -1,6 +1,6 @@
 # 172 CHANNEL-ORIGIN — ENG as built (D1–D3)
 
-Status: built 2026-11-03 on `feat/172-channel-origin-eng` (main `7d5011a4` + design `b11ec784`). Scope: D1–D3 of `172-channel-origin.md`. D4–D6 (chip, quote cards, icons) are the UI worker's.
+Status: built 2026-11-03 on `feat/172-channel-origin-eng` (main `7d5011a4` + design `b11ec784`). Scope: D1–D3 of `172-channel-origin.md`, plus two additions from the orchestrator at 17:28: Slack-marker-free session titles, and `QueuedInput.channel`. D4–D6 (chip, quote cards, icons) are the UI worker's.
 
 ## What was built, and where
 
@@ -26,6 +26,18 @@ Status: built 2026-11-03 on `feat/172-channel-origin-eng` (main `7d5011a4` + des
   - `InputQueued.channel` is the queued input's origin (`:1425`).
   - `InputInjected` names the queued id and has no field, as specified.
 - **Regenerate:** `RestartTurn` with `input: None` replays the stored opener and re-reads that row's origin from `Store::channels` (`:1964`), so the new row keeps the chip. An edited opener (`input: Some`) is new desktop text and gets `None`.
+
+### Queued steers (orchestrator addition 2)
+- `QueuedInput.channel?: ChannelOrigin` (`crates/agent/src/lib.rs:323`) has the same attributes as the other optional fields: serde default, `skip_serializing_if`, `ts(optional)`.
+- The session actor's `QueuedInputs` (behind `ListQueued`) fills it from the queued steer (`crates/agent/src/loop_.rs:1875`). A UI that reloads the queue keeps the chip.
+- ACP children answer `ListQueued` with nothing, as before.
+- The TUI builds its own `QueuedInput`s with `channel: None`; D7 keeps the TUI out of scope.
+
+### Session titles (orchestrator addition 1)
+- `attach::first_line` (`crates/agent/src/attach.rs:234`) now skips one leading non-empty line that is exactly `[slack dm]` or `[slack channel]` and names the session by the next non-empty line.
+- This is the one naming rule (66 §8). It covers the seeded title in `start_turn` (`loop_.rs`), `session_title` (the display name), and the title-less name that `session_read` and notebooks show.
+- The stored row and the model's input keep the marker line. A marker anywhere but first is not skipped. A message that is only the marker has no line to name it by.
+- The UI's copy of the rule (`lib/attach.ts` `chatName`) belongs to the UI worker.
 
 ### ACP harness children
 - `acp_child::Queued.channel` (`crates/agent/src/acp_child.rs:176`) is filled from `UserInput`.
@@ -85,6 +97,12 @@ The port traits changed: Slack `Port::send_input`/`steer` (`channel.rs:96`), Sig
   - regenerate keeps it;
   - a desktop input stores none;
   - an identified input queued behind a running compaction gets `InputQueued.channel`, then opens the next turn with `TurnStarted.channel` and a stored origin.
+- `crates/agent/src/attach.rs`, `attach::tests::names_skip_markers_and_fall_back_to_the_attachment_title`:
+  - `[slack dm]\nhi there` names the session `hi there`;
+  - `[slack channel]` followed by a blank line names it by the next non-empty line;
+  - a marker that is not the first line is kept;
+  - a marker-only message gives `None`.
+- `loop_::channel_tests` also checks that the seeded title of a `[slack dm]` session is the text line, and that `QueuedInputs` (behind `ListQueued`) returns the queued steer with its origin.
 - Slack (`crates/slack/src/channel.rs`), each asserting the exact `ChannelOrigin`:
   - owner DM text (`dm_text_is_prefixed_with_the_slack_dm_marker`);
   - steer (`reply_in_a_running_thread_steers`);
@@ -118,7 +136,8 @@ Env: `export PATH="$HOME/.theuth/bin:$HOME/.rustup/toolchains/stable-aarch64-app
    - Log: `/tmp/172/eng-clippy2.log`.
 3. **tests.**
    - Build: `BUILD_LABEL=172e build-lock mbx test -p agent -p slack -p signal -p telegram -p rpc --lib --no-run`, rc 0.
-   - Run, bare: `mbx test -p agent -p slack -p signal -p telegram -p rpc --lib --no-fail-fast`.
+   - After the orchestrator's additions (titles, `QueuedInput`): the same build plus `mbx test … --lib --no-fail-fast` with `/opt/homebrew/bin` dropped from `PATH`. Result: agent 664/0, rpc 62/0, signal 70/0, slack 164/0, telegram 141/0 (`/tmp/172/eng-test4.log`). Clippy rc 0 (`/tmp/172/eng-clippy3.log`). Workspace check rc 0 with the same pre-existing warnings (`/tmp/172/eng-check5.log`).
+   - First run, bare: `mbx test -p agent -p slack -p signal -p telegram -p rpc --lib --no-fail-fast`.
    - Results: agent 660 passed / 4 failed, rpc 62/0, signal 70/0, slack 164/0, telegram 141/0. Log: `/tmp/172/eng-test2.log`.
    - The 4 agent failures (`sensor::tests::{fs_exists_through_monty, monty_budgets_and_allowlist, pr_watch_type_checks}`, `loop_::runtime_bridge_tests::guessed_direct_calls_are_bridged_or_refused`) all come from `/opt/homebrew/bin/t`, a stale Python worker on `PATH`: "monty worker crashed: unsupported protocol version 6 (server supports protocol version 5)".
    - Rerun of those tests with `/opt/homebrew/bin` dropped from `PATH`: 13/13 ok (`/tmp/172/eng-test3.log`). They are environmental and do not involve this change.
@@ -130,7 +149,8 @@ Env: `export PATH="$HOME/.theuth/bin:$HOME/.rustup/toolchains/stable-aarch64-app
 5. **bindings.**
    - Command: `BUILD_SLOTS=1 BUILD_LABEL=172e build-lock mbx test -p rpc --features ts --lib --quiet export_bindings`, 8 passed.
    - Diff: `/tmp/172/eng-bindings.diff`.
-   - Against main's export (`/tmp/172/bindings-main`), `HistoryEntry.ts` and `AgentEvent.ts` differ only by the `ChannelOrigin` import and the new `channel?: ChannelOrigin` fields.
+   - Against main's export (`/tmp/172/bindings-main`), `HistoryEntry.ts`, `AgentEvent.ts` and `QueuedInput.ts` differ only by the `ChannelOrigin` import and the new `channel?: ChannelOrigin` fields.
+   - No other generated file changed, apart from the three new ones.
    - Against the UI worktree's bindings (main plus the UI stub), only comment text and the order of one import line differ.
 
 Generated:
@@ -141,6 +161,8 @@ export type ChannelVia = "slack" | "signal" | "telegram";
 export type ChannelChat = "dm" | "group";
 // ChannelOrigin.ts (JSDoc per field omitted here)
 export type ChannelOrigin = { via: ChannelVia, chat: ChannelChat, from?: string, title?: string, };
+// QueuedInput.ts (JSDoc omitted)
+export type QueuedInput = { id: InputId, text: string, channel?: ChannelOrigin, };
 ```
 
 ## Deviations from the brief
