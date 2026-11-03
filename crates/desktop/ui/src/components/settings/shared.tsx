@@ -57,15 +57,35 @@ export function ChordInput({
   )
 }
 
-/** One `label / description / control` line of a settings pane. `stack` drops a wide control under the label below `md`. */
-export function Row({ label, description, stack, children }: { label: ReactNode; description?: ReactNode; stack?: boolean; children?: ReactNode }) {
+/** One `label / description / control` line of a settings pane; the control sits right of the label. */
+export function Row({
+  label,
+  description,
+  stack,
+  wide,
+  children,
+}: {
+  label: ReactNode
+  description?: ReactNode
+  /** A control that is narrow on desktop (a model picker): right of the label there, dropped under it below `md`. */
+  stack?: boolean
+  /** A control that grows (chips, lists, switch or button groups, long text): always under the label at full width, at any width (169). */
+  wide?: boolean
+  children?: ReactNode
+}) {
   return (
-    <div className={`flex items-center justify-between gap-6 border-b border-border-subtle py-4 last:border-0${stack ? ' max-md:flex-col max-md:items-stretch max-md:gap-3' : ''}`}>
+    <div
+      className={
+        wide
+          ? 'flex flex-col gap-3 border-b border-border-subtle py-4 last:border-0'
+          : `flex items-center justify-between gap-6 border-b border-border-subtle py-4 last:border-0${stack ? ' max-md:flex-col max-md:items-stretch max-md:gap-3' : ''}`
+      }
+    >
       <div className="min-w-0">
         <div className="text-sm">{label}</div>
         {description && <div className="mt-0.5 text-[13px] text-fg-secondary">{description}</div>}
       </div>
-      {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
+      {children && <div className={wide ? 'flex w-full items-center gap-2' : 'flex shrink-0 items-center gap-2'}>{children}</div>}
     </div>
   )
 }
