@@ -333,4 +333,39 @@ public enum MeetingReducer {
         case .degraded, .ok: return nil
         }
     }
+
+    /// 173 — the collapsed pill's word while a track is not heard, the system track first; `nil` when both are heard.
+    public static func capturePill(_ c: CaptureStatus, app: String?) -> String? {
+        switch c.system {
+        case .recovering, .lost: return "Not hearing \(app ?? "the meeting app")"
+        case .degraded: return "Recording all system audio"
+        case .ok: break
+        }
+        switch c.mic {
+        case .recovering, .lost, .degraded: return "Not hearing your microphone"
+        case .ok: return nil
+        }
+    }
+
+    /// `Island.tsx` `badge`: a degradation's strip word. A denied permission is `nil` — the capture badge carries the live
+    /// permission state and clears itself; the degradation list keeps it until the next `State`.
+    public static func badge(_ d: Degradation) -> String? {
+        switch d {
+        case .micNoAec: return "headphones recommended"
+        case .modelDown: return "model down"
+        case .diskLow: return "disk low"
+        case .nearMaxLength: return "10 min left"
+        case .sttDown: return "transcription down"
+        case .permissionDenied: return nil
+        case .other("NoNote"): return "no note"
+        case .other("DiarizationDown"): return "speaker labels down"
+        case .other: return nil
+        }
+    }
+
+    /// The live strip's badges: the degradations, the capture word, then the cues.
+    public static func stripBadges(_ s: MeetingSlice) -> [String] {
+        s.degraded.compactMap(badge) + (captureBadge(s.capture).map { [$0] } ?? [])
+            + (s.approvalWaiting ? ["approval waiting"] : []) + (s.listening ? ["listening…"] : [])
+    }
 }

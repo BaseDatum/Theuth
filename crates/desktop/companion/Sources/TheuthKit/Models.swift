@@ -666,14 +666,12 @@ public enum MeetingState: Codable, Equatable, Sendable {
     public var isLive: Bool { self == .recording || self == .paused }
 }
 
-/// `Degradation`: a bare word, `{"SttDown": "<track>"}` / `{"PermissionDenied": "<permission>"}`, or 173's
-/// `{"SystemAudioFallback": {"reason": F, "at_ms": n, "until_ms": n|null}}` (`ended` = `until_ms` set). Any other object
-/// reads as `.other(key)` — one unknown shape never fails a whole `State` or `meeting_status`.
+/// `Degradation`: a bare word or `{"SttDown": "<track>"}` / `{"PermissionDenied": "<permission>"}`. Any other object reads
+/// as `.other(key)` — one unknown shape never fails a whole `State` or `meeting_status`.
 public enum Degradation: Codable, Equatable, Sendable {
     case micNoAec, modelDown, diskLow, nearMaxLength
     case sttDown(Track)
     case permissionDenied(String)
-    case systemAudioFallback(reason: String, ended: Bool)
     case other(String)
 
     static let words: [String: Degradation] = [
@@ -686,7 +684,6 @@ public enum Degradation: Codable, Equatable, Sendable {
         init(stringValue: String) { self.stringValue = stringValue }
         init?(intValue: Int) { nil }
     }
-    private struct Fallback: Codable { let reason: String; let untilMs: UInt64? }
 
     public init(from decoder: Decoder) throws {
         if let s = try? decoder.singleValueContainer().decode(String.self) { self = Self.words[s] ?? .other(s); return }
@@ -697,8 +694,6 @@ public enum Degradation: Codable, Equatable, Sendable {
             self = (try? c.decode(Track.self, forKey: k)).map(Degradation.sttDown) ?? .other(k.stringValue)
         case "PermissionDenied":
             self = (try? c.decode(String.self, forKey: k)).map(Degradation.permissionDenied) ?? .other(k.stringValue)
-        case "SystemAudioFallback":
-            self = (try? c.decode(Fallback.self, forKey: k)).map { .systemAudioFallback(reason: $0.reason, ended: $0.untilMs != nil) } ?? .other(k.stringValue)
         default:
             self = .other(k.stringValue)
         }
@@ -709,7 +704,6 @@ public enum Degradation: Codable, Equatable, Sendable {
         switch self {
         case .sttDown(let t): try c.encode(["SttDown": t.rawValue])
         case .permissionDenied(let p): try c.encode(["PermissionDenied": p])
-        case .systemAudioFallback(let reason, let ended): try c.encode(["SystemAudioFallback": Fallback(reason: reason, untilMs: ended ? 0 : nil)])
         case .other(let s): try c.encode(s)
         default: try c.encode(Self.words.first { $0.value == self }!.key)
         }

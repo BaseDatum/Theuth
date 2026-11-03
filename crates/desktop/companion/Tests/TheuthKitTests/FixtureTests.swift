@@ -266,11 +266,11 @@ struct FixtureTests {
     }
 
     @Test func captureAndFallbackShapesDecode() throws {
-        // 173: the object-valued degradation never fails the whole State; unknown shapes read as `.other`.
-        let state = try MeetingEvent.decode(Data(#"{"type":"State","meeting":"m","state":"Recording","degraded":[{"SystemAudioFallback":{"reason":"Silent","at_ms":1,"until_ms":null}},{"SystemAudioFallback":{"reason":"Stalled","at_ms":1,"until_ms":9}},{"PermissionDenied":"Microphone"},{"Future":{"x":1}}]}"#.utf8))
+        // 173: an object-valued degradation this build has no word for (the retired `SystemAudioFallback`, anything future)
+        // reads as `.other(key)`; it never fails the whole State.
+        let state = try MeetingEvent.decode(Data(#"{"type":"State","meeting":"m","state":"Recording","degraded":[{"SystemAudioFallback":{"reason":"Silent","at_ms":1,"until_ms":null}},{"PermissionDenied":"Microphone"},{"Future":{"x":1}}]}"#.utf8))
         #expect(state == .state(meeting: "m", state: .recording, degraded: [
-            .systemAudioFallback(reason: "Silent", ended: false), .systemAudioFallback(reason: "Stalled", ended: true),
-            .permissionDenied("Microphone"), .other("Future"),
+            .other("SystemAudioFallback"), .permissionDenied("Microphone"), .other("Future"),
         ]))
         let capture = try MeetingEvent.decode(Data(#"{"type":"Capture","meeting":"m","capture":{"mic":{"state":"Ok"},"system":{"state":"Lost","reason":"PermissionDenied","since":"2026-11-03T10:00:00Z"}}}"#.utf8))
         #expect(capture == .capture(meeting: "m", capture: CaptureStatus(mic: .ok, system: .lost(reason: .permissionDenied, since: "2026-11-03T10:00:00Z"))))
@@ -281,7 +281,6 @@ struct FixtureTests {
         let status = try TheuthJSON.decoder.decode(MeetingStatus.self, from: Data(#"{"state":"Recording","capture":{"mic":{"state":"Recovering","reason":"Stalled","since":"2026-11-03T10:00:00Z"},"system":{"state":"Ok"}}}"#.utf8))
         #expect(status.capture == CaptureStatus(mic: .recovering(reason: .stalled, since: "2026-11-03T10:00:00Z"), system: .ok))
         #expect(try decode(MeetingStatus.self, "meeting_status_149").capture == .ok)
-        #expect(try json(Degradation.systemAudioFallback(reason: "Silent", ended: false)) == #"{"SystemAudioFallback":{"reason":"Silent"}}"#)
     }
 
     @Test func pointAndDecisionShapes() throws {

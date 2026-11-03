@@ -398,4 +398,28 @@ struct MeetingReducerTests {
         #expect(MeetingReducer.captureBadge(CaptureStatus(mic: .lost(reason: .permissionDenied, since: iso), system: .ok)) == "no mic permission")
         #expect(MeetingReducer.captureBadge(.ok) == nil)
     }
+
+    @Test func stripBadgesLeaveThePermissionToTheCaptureBadge() {
+        let since = "2026-11-03T10:00:00Z"
+        var s = MeetingReducer.reduce(live(), .capture(meeting: "m1", capture: CaptureStatus(mic: .ok, system: .lost(reason: .permissionDenied, since: since))), now: t0)
+        s = MeetingReducer.reduce(s, .state(meeting: "m1", state: .recording, degraded: [.permissionDenied("AudioCapture"), .micNoAec]), now: t0)
+        #expect(MeetingReducer.stripBadges(s) == ["headphones recommended", "no system audio permission"])
+        // The permission came back: the capture badge clears itself; the stale degradation never shows.
+        s = MeetingReducer.reduce(s, .capture(meeting: "m1", capture: .ok), now: t0)
+        #expect(MeetingReducer.stripBadges(s) == ["headphones recommended"])
+        #expect(!MeetingReducer.stripBadges(s).contains { $0.contains("permission") })
+        s.listening = true; s.approvalWaiting = true
+        #expect(MeetingReducer.stripBadges(s) == ["headphones recommended", "approval waiting", "listening…"])
+        #expect(MeetingReducer.badge(.other("SystemAudioFallback")) == nil)
+    }
+
+    @Test func capturePillNamesTheUnheardTrack() {
+        let since = "2026-11-03T10:00:00Z"
+        #expect(MeetingReducer.capturePill(.ok, app: "zoom.us") == nil)
+        #expect(MeetingReducer.capturePill(CaptureStatus(mic: .ok, system: .recovering(reason: .stalled, since: since)), app: "zoom.us") == "Not hearing zoom.us")
+        #expect(MeetingReducer.capturePill(CaptureStatus(mic: .ok, system: .lost(reason: .permissionDenied, since: since)), app: nil) == "Not hearing the meeting app")
+        #expect(MeetingReducer.capturePill(CaptureStatus(mic: .lost(reason: .silent, since: since), system: .degraded(reason: .failed)), app: "zoom.us") == "Recording all system audio")
+        #expect(MeetingReducer.capturePill(CaptureStatus(mic: .lost(reason: .silent, since: since), system: .ok), app: "zoom.us") == "Not hearing your microphone")
+        #expect(MeetingReducer.capturePill(CaptureStatus(mic: .recovering(reason: .stalled, since: since), system: .ok), app: nil) == "Not hearing your microphone")
+    }
 }
