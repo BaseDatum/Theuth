@@ -353,8 +353,8 @@ function Training({ s, settings }: { s: DoubleStatus | undefined; settings: Doub
   const tierC = settings?.training.tiers.c.enabled === true
   return (
     <>
-      <Row label="Train now" description="Tier A: temperatures, k-NN memory and heads, in process, seconds. Tier B: the LoRA adapter on the whole corpus, gate-promoted, minutes to an hour.">
-        <div className="flex flex-wrap items-center justify-end gap-1.5">
+      <Row wide label="Train now" description="Tier A: temperatures, k-NN memory and heads, in process, seconds. Tier B: the LoRA adapter on the whole corpus, gate-promoted, minutes to an hour.">
+        <div className="flex flex-wrap items-center gap-1.5">
           <Button size="sm" variant="outline" disabled={busy || off} onClick={() => train.mutate({ tier: 'a', venue: { venue: 'local' } })}>
             Tier A
           </Button>
@@ -394,7 +394,7 @@ function Training({ s, settings }: { s: DoubleStatus | undefined; settings: Doub
           Save
         </Button>
       </Row>
-      <Row stack label="Capture" description="Which cards the double predicts and learns from. Secret requests and hand-offs are never captured.">
+      <Row wide label="Capture" description="Which cards the double predicts and learns from. Secret requests and hand-offs are never captured.">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           {(['approvals', 'asks', 'attention', 'packets', 'drafts'] as const).map((k) => (
             <label key={k} className="flex items-center gap-1.5 text-xs">

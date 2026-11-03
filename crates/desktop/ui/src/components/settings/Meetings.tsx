@@ -170,7 +170,7 @@ export function Meetings() {
         <Row label="Detect meetings from the microphone" description="Ask when another app has held the microphone for 15 seconds. Nothing is recorded until you start.">
           <Switch aria-label="Detect meetings" checked={s?.detect.enabled ?? true} disabled={busy} onCheckedChange={(enabled) => s && set({ detect: { ...s.detect, enabled } })} />
         </Row>
-        <Row stack label="Ignored apps" description="Apps on this list never prompt. theuth's own dictation is always ignored. Bundle id on macOS (com.apple.FaceTime), image name on Windows (obs64.exe), application name on Linux.">
+        <Row wide label="Ignored apps" description="Apps on this list never prompt. theuth's own dictation is always ignored. Bundle id on macOS (com.apple.FaceTime), image name on Windows (obs64.exe), application name on Linux.">
           <Chips
             label="Ignored app"
             items={s?.detect.ignore ?? []}
@@ -181,13 +181,13 @@ export function Meetings() {
       </Section>
       {!local && (
         <Section title="Echo">
-          <Row stack label="Echo in your microphone" description="Without echo cancellation the other side can leak back in through your microphone and be transcribed twice. This counts it; nothing is removed. Review asks per meeting whether you used speakers.">
+          <Row wide label="Echo in your microphone" description="Without echo cancellation the other side can leak back in through your microphone and be transcribed twice. This counts it; nothing is removed. Review asks per meeting whether you used speakers.">
             <span className="text-[13px] text-fg-secondary">{echo.isError ? errorText(echo.error) : echo.data ? echoSummary(echo.data) : null}</span>
           </Row>
         </Section>
       )}
       <Section title="Live tools" actions={<Button variant="outline" size="sm" disabled={busy || JSON.stringify(s?.live_tools) === JSON.stringify(DEFAULT_LIVE_TOOLS)} onClick={() => set({ live_tools: DEFAULT_LIVE_TOOLS })}>Reset to default</Button>}>
-        <Row stack label="Allowed while a meeting runs" description="The meeting session's toolset: topics, briefs, knowledge and the web by default. Tool names as the Tools page lists them.">
+        <Row wide label="Allowed while a meeting runs" description="The meeting session's toolset: topics, briefs, knowledge and the web by default. Tool names as the Tools page lists them.">
           <Chips label="Live tool" items={s?.live_tools ?? []} disabled={busy} onChange={(live_tools) => set({ live_tools })} />
         </Row>
       </Section>
