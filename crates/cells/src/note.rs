@@ -220,13 +220,10 @@ pub async fn route(doc: &DocId) -> Result<Route, CellsError> {
 
 /// Read a note cell's current text, language and last author (`CodeBlockText`).
 pub async fn source(doc: &DocId, key: &NoteKey) -> Result<NoteSource, CellsError> {
-    docs().code_block(doc, key).await.map_err(|e| {
-        if e.contains("not built") {
-            CellsError::NotBuilt("D2")
-        } else {
-            CellsError::NotFound(e)
-        }
-    })
+    docs()
+        .code_block(doc, key)
+        .await
+        .map_err(CellsError::NotFound)
 }
 
 /// §9.6: the session whose agent last wrote the block; `None` = the owner (or a member) wrote it.
@@ -365,9 +362,7 @@ pub async fn deliver(run: &CellRun, cleaned: &str) -> Result<(), CellsError> {
     let origin = src.as_ref().and_then(|s| author_session(&s.last_author));
     if let Some(session) = origin {
         let full = crate::deliver::cell_result(run, cleaned, &cfg);
-        if full.is_empty() {
-            tracing::debug!("cell_result not built; origin delivery skipped");
-        } else if let Err(e) =
+        if let Err(e) =
             crate::deliver::deliver(session, run, with_in(&full, &in_attr), review).await
         {
             tracing::warn!(%session, "note cell delivery failed: {e}");
@@ -424,17 +419,21 @@ fn expect_text(run: &CellRun) -> Option<String> {
     })
 }
 
-/// Insert `in="…"` into the opening tag of a `<cell_result …>` (L2: after `at`, before `pass`).
+/// Put the titled `in="note <doc> \"<title>\""` into the opening tag of a `<cell_result …>`:
+/// in place of the builder's bare `in="note <doc>"`, else after `at`, before `pass` (L2).
 fn with_in(full: &str, in_attr: &str) -> String {
-    if full.contains(" in=\"note ") {
-        return full.to_owned();
-    }
     let Some(end) = full.find('>') else {
         return full.to_owned();
     };
     let open = &full[..end];
+    let attr = format!(" in=\"{in_attr}\"");
+    if let Some(start) = open.find(" in=\"note ") {
+        let value = start + " in=\"".len();
+        let close = open[value..].find('"').map_or(end, |i| value + i + 1);
+        return format!("{}{attr}{}", &full[..start], &full[close..]);
+    }
     let at = open.find(" pass=\"").unwrap_or(end);
-    format!("{} in=\"{in_attr}\"{}", &full[..at], &full[at..])
+    format!("{}{attr}{}", &full[..at], &full[at..])
 }
 
 /// §9.6 / 157: the body-less quiet line for notebook chats — ids and exit only.
@@ -822,6 +821,14 @@ mod tests {
         assert!(
             with_in("<cell_result run=\"r\">x</cell_result>", in_attr)
                 .starts_with("<cell_result run=\"r\" in=\"note d1")
+        );
+        // The builder's bare `in="note d1"` gives way to the titled one.
+        assert_eq!(
+            with_in(
+                "<cell_result run=\"r\" in=\"note d1\" pass=\"p\">x</cell_result>",
+                in_attr
+            ),
+            "<cell_result run=\"r\" in=\"note d1 \\\"Runbook\\\"\" pass=\"p\">x</cell_result>"
         );
         let line = run_line(&r);
         assert!(

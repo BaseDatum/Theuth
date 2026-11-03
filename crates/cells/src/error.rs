@@ -6,9 +6,6 @@
 /// A cells failure or refusal.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CellsError {
-    /// The code path belongs to a 171 worker that has not landed yet (the worker tag).
-    #[error("not built yet (171:{0})")]
-    NotBuilt(&'static str),
     /// The cells plugin is disabled or its actor is not running.
     #[error("cells is not running")]
     NotRunning,
@@ -60,7 +57,6 @@ impl CellsError {
     /// Stable machine reason, carried as the JSON-RPC error's `data.reason`.
     pub fn code(&self) -> &'static str {
         match self {
-            CellsError::NotBuilt(_) => "not_built",
             CellsError::NotRunning => "not_running",
             CellsError::NotOwner => "not_owner",
             CellsError::Changed => "changed",

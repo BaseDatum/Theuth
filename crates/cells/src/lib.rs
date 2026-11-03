@@ -3,7 +3,7 @@
 //! kernels (shell PTY jobs, a python shim, Monty), a run store, `<cell_result>` delivery, RPC.
 //! The grammar is `surface::cell`.
 //!
-//! Module owners (docs/design/171-ownership.md; every stub returns `NotBuilt("<owner>")`):
+//! Module owners (docs/design/171-ownership.md):
 //! - C (frozen): [`types`], [`error`], [`config`], [`kernel`], this file, `migrations/0001`.
 //! - E1: [`actor`] (method set frozen), [`shell`], [`run`], [`render`], [`redact`], [`store`],
 //!   [`deliver`].

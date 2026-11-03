@@ -45,7 +45,7 @@ fn functions(cells: Cells) -> Vec<DynTool> {
     ]
 }
 
-/// A refusal or a stub's `NotBuilt`, as the model reads it.
+/// A refusal, as the model reads it.
 fn refused(name: &str, e: CellsError) -> anyhow::Error {
     anyhow::anyhow!("{name}: {e}")
 }
