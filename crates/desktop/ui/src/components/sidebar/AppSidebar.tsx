@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { AudioLines, Bell, Bot, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
+import { AudioLines, Bell, Bot, ChartColumn, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Mark } from '@/components/Mark'
@@ -144,7 +144,7 @@ function DeskRow({
 }
 
 /**
- * ChatGPT's left rail: Chat, Talk, Note, Meeting, Attention, Agents, Library, the desks, the chat list, Settings; Search sits in
+ * ChatGPT's left rail: Chat, Talk, Note, Meeting, Attention, Agents, Library, Costs, the desks, the chat list, Settings; Search sits in
  * the header beside the toggle (49 §5.1). 97: the five Agents pages and the five Library pages are one row each; the
  * page under it carries the tab band (`SectionBand`), so the rail stays short.
  */
@@ -312,6 +312,14 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <SidebarMenuButton asChild isActive={section === 'library'} className="h-9 rounded-[10px] px-2.5">
               <Link to="/artifacts">
                 <Library /> Library
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          {/* Sky, 2026-11-02: the costs dashboard (160) gets its own row; the HUD SPEND button stays too. */}
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={section === 'costs'} className="h-9 rounded-[10px] px-2.5">
+              <Link to="/costs" preload="intent">
+                <ChartColumn /> Costs
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

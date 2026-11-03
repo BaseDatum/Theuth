@@ -35,6 +35,7 @@ test('sectionOf lights the right sidebar row', () => {
   expect(sectionOf('/tasks/abc')).toBe('agents')
   expect(sectionOf('/routines/new')).toBe('agents')
   expect(sectionOf('/attention')).toBe('attention')
+  expect(sectionOf('/costs')).toBe('costs')
   expect(sectionOf('/attention/review%3Aabc')).toBe('attention')
   expect(sectionOf('/attention/decision:t:decision:u')).toBe('attention')
   expect(sectionOf('/attentionx')).toBeNull()
