@@ -50,52 +50,22 @@ function soleDiagram(content: HTMLElement): SVGSVGElement | null {
   return text(content) === label + text(svg) && content.querySelectorAll('svg').length === card.querySelectorAll('svg').length ? svg : null
 }
 
-/** Computed values of a pristine element per tag, from a stylesheet-free frame: what need not be written inline. */
-function defaultStyles(): { of: (el: Element) => Record<string, string>; drop: () => void } {
-  const frame = document.createElement('iframe')
-  frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:100px;height:100px;opacity:0;pointer-events:none'
-  frame.setAttribute('aria-hidden', 'true')
-  document.body.append(frame)
-  const doc = frame.contentDocument!
-  const cache: Record<string, Record<string, string>> = {}
-  return {
-    of(el) {
-      const key = `${el.namespaceURI} ${el.localName}`
-      if (cache[key]) return cache[key]
-      const probe = doc.createElementNS(el.namespaceURI, el.localName)
-      ;(el.namespaceURI === 'http://www.w3.org/2000/svg' ? doc.body.appendChild(doc.createElementNS(el.namespaceURI, 'svg')) : doc.body).appendChild(probe)
-      const cs = getComputedStyle(probe)
-      const out: Record<string, string> = {}
-      for (let i = 0; i < cs.length; i++) out[cs[i]!] = cs.getPropertyValue(cs[i]!)
-      probe.remove()
-      return (cache[key] = out)
-    },
-    drop: () => frame.remove(),
-  }
-}
-
-/** `cs` as declarations, skipping values both the default and the parent already give (inherited or not, they hold). */
-function declarations(cs: CSSStyleDeclaration, defaults: Record<string, string>, parent: Record<string, string> | null): { css: string; values: Record<string, string> } {
-  const values: Record<string, string> = {}
+/**
+ * `cs` as declarations, every standard property: a diff against defaults is wrong whenever a skipped value only held
+ * together with another (a `0px` border width is the default only while the style is `none`).
+ */
+function declarations(cs: CSSStyleDeclaration): string {
   let css = ''
-  for (let i = 0; i < cs.length; i++) {
-    const p = cs[i]!
-    if (p.startsWith('--')) continue
-    const v = cs.getPropertyValue(p)
-    values[p] = v
-    if (v === defaults[p] && (parent === null || parent[p] === v)) continue
-    css += `${p}:${v};`
-  }
-  return { css, values }
+  for (let i = 0; i < cs.length; i++) if (!cs[i]!.startsWith('--')) css += `${cs[i]}:${cs.getPropertyValue(cs[i]!)};`
+  return css
 }
 
 /** `src` deep-cloned with its computed styles inline, pseudo elements as rules, form state and canvases kept. */
 function inlined(src: HTMLElement, background: string): { node: HTMLElement; css: string; families: Set<string> } {
-  const defaults = defaultStyles()
   const families = new Set<string>()
   let css = ''
   let n = 0
-  const walk = (el: Element, parent: Record<string, string> | null): Node => {
+  const walk = (el: Element, top: boolean): Node => {
     if (el instanceof HTMLCanvasElement) {
       const img = document.createElement('img')
       img.src = el.toDataURL()
@@ -104,13 +74,13 @@ function inlined(src: HTMLElement, background: string): { node: HTMLElement; css
     }
     const out = el.cloneNode(false) as Element
     const cs = getComputedStyle(el)
-    const own = declarations(cs, defaults.of(el), parent)
+    // A picture cannot scroll: no scrollbars (the clipped overflow stays clipped, as in the chat at this width).
+    let style = `${declarations(cs)}scrollbar-width:none;`
     // Custom properties a subtree sets for itself (`style={{ '--c': … }}`) still feed `var()` in svg attributes.
-    let style = own.css
     if (el instanceof HTMLElement || el instanceof SVGElement) {
       for (const p of el.style) if (p.startsWith('--')) style += `${p}:${el.style.getPropertyValue(p)};`
     }
-    if (parent === null) {
+    if (top) {
       for (let i = 0; i < cs.length; i++) if (cs[i]!.startsWith('--')) style += `${cs[i]}:${cs.getPropertyValue(cs[i]!)};`
       style += `background-color:${background};margin:0;`
     }
@@ -145,17 +115,13 @@ function inlined(src: HTMLElement, background: string): { node: HTMLElement; css
     if (!(el instanceof HTMLTextAreaElement)) {
       for (const child of el.childNodes) {
         if (child instanceof Element) {
-          if (child.localName !== 'script') out.appendChild(walk(child, own.values))
+          if (child.localName !== 'script') out.appendChild(walk(child, false))
         } else if (child.nodeType === Node.TEXT_NODE) out.appendChild(child.cloneNode())
       }
     }
     return out
   }
-  try {
-    return { node: walk(src, null) as HTMLElement, css, families }
-  } finally {
-    defaults.drop()
-  }
+  return { node: walk(src, true) as HTMLElement, css, families }
 }
 
 /** `blob` as a `data:` URL. */
