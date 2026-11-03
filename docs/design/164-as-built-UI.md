@@ -59,9 +59,14 @@ repo-root `bindings/methods.json`.
   `initialize(config())`; all mermaid renders (chat and snapshot) go through one promise chain so the swap never reaches a
   chat render. Mermaid serialises renders internally anyway, so chat throughput is unchanged.
 - Chrome hidden by the context (default off, so the chat is unchanged): DiagramFrame's hover toolbar (Copy/Save/
-  Fullscreen) and OpenUI's `Open as app`/`Show source` toolbar are not rendered; OpenUI's `ThemeProvider` takes the
-  requested appearance. Focus rings, hover tooltips and selection need nothing: nothing is focused, hovered or selected
-  off-screen. The HTML picture also drops scrollbars (`scrollbar-width:none` on every clone).
+  Fullscreen), OpenUI's `Open as app`/`Show source` toolbar, and (R2) the Excerpt's `Copy excerpt` and the Code block's
+  `Copy code` buttons are not rendered; OpenUI's `ThemeProvider` takes the requested appearance. A snapshot Excerpt also
+  shows every row with no "Show all N lines" button (its 18-row cap is a vertical scroller; a picture cannot scroll or
+  click — the same rule as widening). Searched `components/chat/surface` and `lib/diagram` for other per-block chrome:
+  none left. Kept on purpose: the Image block's `Load image` button (a remote `src` loads only on the reader's click,
+  design 30 §11; a snapshot must not fetch it either), Accordion/Collapsible/Tabs (their drawn state is content).
+  Focus rings, hover tooltips and selection need nothing: nothing is focused, hovered or selected off-screen. The HTML
+  picture also drops scrollbars (`scrollbar-width:none` on every clone).
 - Errors: `FenceFallback` (the shared closed-fence failure state of all three fences, also what the json-render error
   boundary renders) calls `snapshot.fail(reason)` in an effect → `failed { reason }`. A render throw outside it reaches
   `createRoot`'s `onUncaughtError` → `failed`.
@@ -106,17 +111,21 @@ repo-root `bindings/methods.json`.
 Harness: `/tmp/163-164/ui-proof/harness.{html,tsx}` served by this worktree's own vite config through a wrapper
 (`vite.config.ts` there, port 5199); it installs the real runner with a fake `answer_fence_snapshot` sink and feeds
 `FenceSnapshotRequested` events through the real `dispatch`. Driver `run.mjs`. Cases: Graph (`valid-graph-extended`),
-Sequence, StateMachine, Gantt, Kanban, Excerpt, Code (fixtures), a Stack of MetricGrid + Checklist + Table, a 6-column
-Table, a mermaid flowchart, an openui card, a truncated json-render fence; widths 560 and 720; scale 2; light unless stated.
+Sequence, StateMachine, Gantt, Kanban, Excerpt, Code (fixtures), a 30-line Excerpt, a Stack of MetricGrid + Checklist +
+Table, a 6-column Table, a mermaid flowchart, an openui card, a truncated json-render fence; widths 560 and 720; scale 2;
+light unless stated.
 
-| Run | Result (24 requests) |
+| Run | Result (26 requests) |
 |---|---|
-| Chrome (CfT 1226, headless) visible | 22 `done`, both broken → `failed` (`Interactive view unavailable: …`), all in ≈ 5.5 s |
-| Chrome hidden | same, ≈ 7.4 s (see the one stall below) |
-| WebKit (Playwright 2370, headless) visible | same, ≈ 5.2 s; foreignObject pictures draw (no taint, fonts right) |
-| WebKit hidden | same, ≈ 5.2 s |
-| Chrome and WebKit, app in `.dark`, light requested | all 22 pictures per engine **byte-identical** (`cmp`) to the light-app run's, Stack, Excerpt and Code included |
+| Chrome (CfT 1226, headless) visible | 24 `done`, both broken → `failed` (`Interactive view unavailable: …`), all in ≈ 6.6 s |
+| Chrome hidden | same, ≈ 9.7 s (see the one stall below) |
+| WebKit (Playwright 2370, headless) visible | same, ≈ 6.1 s; foreignObject pictures draw (no taint, fonts right) |
+| WebKit hidden | same, ≈ 5.9 s |
+| Chrome and WebKit, app in `.dark`, light requested | all 24 pictures per engine **byte-identical** (`cmp`) to the light-app run's, Stack, Excerpt, Code and Table included |
 | Chrome, dark requested | dark pictures (Excerpt with the shiki dark tokens through the frame's `.dark`) |
+
+Copy chrome: the Excerpt and Code pictures carry no copy button; the 30-line Excerpt is 1326 px tall at scale 2 with all
+30 rows (the chat caps it at 18 behind "Show all").
 
 Widening, both engines: `kanban-560` is 1264×412 px (632 CSS px: all three columns, "Done" included, where it used to
 clip at 560); `table6-560` is 1580/1582×326 px (790/791 CSS px, all six columns, no wrapping into a scroller); at 720
@@ -140,10 +149,11 @@ that matters (the runner uses neither). Timer throttling of a really hidden page
 
 Chat unchanged: the chat's own Streamdown rendering of Graph + Release-readiness (MetricGrid + Table) + Excerpt + Code,
 screenshotted from an untouched copy of the tree (`git archive e9eebf92` under `/tmp/163-164/ui-base`, own vite server)
-and from this branch, app light and app dark: `chat-before-light.png` = `chat-after-light.png` and
-`chat-before-dark.png` = `chat-after-dark.png`, byte for byte.
+and from this branch, app light and app dark, re-taken after R2: `chat-before-light.png` = `chat-after-light.png` and
+`chat-before-dark.png` = `chat-after-dark.png`, byte for byte. The chat keeps its buttons: both trees' DOM has
+`Copy excerpt` 1, `Copy code` 1, `Copy PNG` 1, `Fullscreen` 1.
 
-Artifacts: `/tmp/163-164/ui-proof/png/` (154 PNGs: `<engine>-<mode>-<case>-<width>.png`),
+Artifacts: `/tmp/163-164/ui-proof/png/` (168 PNGs: `<engine>-<mode>-<case>-<width>.png`),
 `/tmp/163-164/ui-proof/contact-sheet.html`, `/tmp/163-164/ui-proof/result-*.json`, `chat-{before,after}-{light,dark}.png`.
 
 ## Deviations from the brief
@@ -155,6 +165,8 @@ Artifacts: `/tmp/163-164/ui-proof/png/` (154 PNGs: `<engine>-<mode>-<case>-<widt
   hook), `lib/diagram/chart/frame.tsx` (private `useTokens` removed in favour of it).
 - Frame hidden with `opacity:0` off-screen instead of page-preview's `visibility:hidden` (reason above).
 - `styles.css:7` (R1 decision): the `dark` custom variant skips `[data-snapshot-light]` subtrees.
+- `components/chat/surface/Excerpt.tsx` and `registry.tsx` (`Code`), R2 decision: one `useSnapshot()` read each to drop
+  the copy buttons (and the Excerpt row cap) in pictures.
 - Svg-path pictures are the diagram alone (no card label/border) at natural width up to 1600 CSS px; HTML pictures are
   `width` wide with 16 px side padding, wider when the content scrolls horizontally (widening above).
 
@@ -174,8 +186,6 @@ Artifacts: `/tmp/163-164/ui-proof/png/` (154 PNGs: `<engine>-<mode>-<case>-<widt
   chained timers to once a minute; WebKit throttles hidden windows. The runner's timers start from event and
   MutationObserver tasks, not timer chains, so it should stay inside the engine's 20 s, but this was not observable in
   headless engines.
-- Excerpt and Code blocks keep their own copy button in the picture (their chrome is not behind the snapshot context;
-  only DiagramFrame's and OpenUI's toolbars are).
 - OpenUI `BarChart`/`LineChart`/`ScatterChart`/`RadarChart` are upstream recharts (`ResponsiveContainer`, a
   ResizeObserver): in a hidden window they may lay out at 0 size. json-render charts are unaffected.
 - External images inside a surface (cross-origin `<img>`) cannot be read back and stay blank in HTML pictures.
