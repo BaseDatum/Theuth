@@ -50,7 +50,8 @@ impl Lang {
 pub fn lang_of(info: &str) -> Option<Lang> {
     let word = info.split_whitespace().next()?.to_ascii_lowercase();
     Some(match word.as_str() {
-        "bash" => Lang::Bash,
+        // BlockNote stores every shell code block (```` ```bash ````, `sh`, `zsh`) as `shellscript`.
+        "bash" | "shellscript" => Lang::Bash,
         "zsh" => Lang::Zsh,
         "sh" => Lang::Sh,
         "pwsh" | "powershell" => Lang::Pwsh,

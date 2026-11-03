@@ -21,10 +21,10 @@ test('routing before the diagram branch: cell, guest cell, defaults line, plain 
   const guest = { guest: {} }
   expect(routeOf('bash', '#| name: up\nmake up', owner, false)).toMatchObject({ kind: 'cell', spec: { lang: 'bash', options: { name: 'up' } } })
   expect(routeOf('python', '#| python: .venv\nprint(1)', guest, true)).toMatchObject({ kind: 'guest', spec: { lang: 'python' } })
-  // A plain snippet, an unrunnable language with a header, BlockNote's `shellscript`: the code path as today.
+  // A plain snippet, an unrunnable language with a header: the code path as today. BlockNote's `shellscript` is bash.
   expect(routeOf('bash', 'make up', owner, false)).toEqual({ kind: 'code' })
   expect(routeOf('rust', '#| name: x\nfn main() {}', owner, false)).toEqual({ kind: 'code' })
-  expect(routeOf('shellscript', '#| name: x\nls', owner, false)).toEqual({ kind: 'code' })
+  expect(routeOf('shellscript', '#| name: x\nls', owner, false)).toMatchObject({ kind: 'cell', spec: { lang: 'bash', options: { name: 'x' } } })
   // Mermaid is never a cell — it keeps the diagram branch.
   expect(routeOf('mermaid', '#| name: x\nflowchart LR\n  A --> B', owner, false)).toEqual({ kind: 'code' })
   expect(diagramOf('mermaid')).toBe('mermaid')

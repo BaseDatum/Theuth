@@ -5512,15 +5512,10 @@ impl ApiServer for Server {
         member_outcome(&peer, &meta);
         let meta = meta?;
         let annotate = format == artifact::ExportFormat::Pdf;
-        let markdown = doc_send(
-            &docs,
-            document::Markdown {
-                doc,
-                blocks: None,
-                annotate,
-            },
-        )
-        .await?;
+        // 171 §4.4: the user's export carries each cell's last output and run line.
+        let markdown = document::reader_markdown(&docs, doc, None, annotate)
+            .await
+            .map_err(|e| failed(e.to_string()))?;
         send(
             &artifact()?,
             artifact::ExportDoc {

@@ -259,6 +259,40 @@
       "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
     },
     {
+      "name": "lang-shellscript-is-bash",
+      "lang": "shellscript",
+      "body": "#| cwd: /tmp\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
+    },
+    {
       "name": "lang-pwsh",
       "lang": "pwsh",
       "body": "#| cwd: /tmp\nls\n",

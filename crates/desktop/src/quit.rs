@@ -190,6 +190,7 @@ fn listen_hold(app: &AppHandle) {
         app.listen(CANCEL, move |_| {
             if handle.state::<Quit>().cancel() {
                 tracing::info!("quit cancelled from the pre-quit sheet");
+                log_err(tray_restore(&handle), "tray: restore after a cancelled quit");
             }
         });
     });
@@ -244,6 +245,15 @@ fn tray_shutting_down(app: &AppHandle) -> tauri::Result<()> {
         None::<&str>,
     )?;
     tray.set_menu(Some(Menu::with_items(app, &[&item])?))
+}
+
+/// 171 §5.3: the sheet's Cancel undoes [`tray_shutting_down`]; the webview's badge rewrites the title.
+fn tray_restore(app: &AppHandle) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id("main") else {
+        return Ok(());
+    };
+    tray.set_tooltip(Some("theuth"))?;
+    tray.set_menu(Some(crate::desktop::tray_menu(app)?))
 }
 
 /// The real run: progress to every webview, the companion if it runs, the daemon out of [`Launch`].

@@ -8,7 +8,7 @@ import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import { CELL_LANGUAGES } from './CellFence'
 import { cellOf } from './grammar'
 
-/** BlockNote's Shell entry: the ```` ```bash ```` input rule and the language menu store `shellscript`, which no engine parses as a cell language. */
+/** BlockNote's Shell entry: the ```` ```bash ```` input rule and the language menu store `shellscript` (the grammar reads it as `bash`). */
 const SHELLSCRIPT = 'shellscript'
 
 /** A code block "Make it a cell" applies to (§4.2): a runnable language of v1 — shells and python. */

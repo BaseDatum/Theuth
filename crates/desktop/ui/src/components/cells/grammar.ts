@@ -11,6 +11,7 @@ import type { PythonChoice } from '@/rpc/bindings/PythonChoice'
 
 const LANGS: Record<string, Lang> = {
   bash: 'bash',
+  shellscript: 'bash', // BlockNote stores every shell code block as `shellscript`
   zsh: 'zsh',
   sh: 'sh',
   pwsh: 'pwsh',

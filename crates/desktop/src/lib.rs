@@ -374,6 +374,24 @@ mod desktop {
             .store(!state_file.exists(), SeqCst);
 
         let tray = app.tray_by_id("main").context("tray icon `main`")?;
+        tray.set_menu(Some(tray_menu(app)?))?;
+        tray.on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle(tray.app_handle());
+            }
+        });
+        update::start(app);
+        models::start(app);
+        Ok(())
+    }
+
+    /// The tray's menu; 171: also restored when the pre-quit sheet cancels a quit (`quit.rs`).
+    pub(crate) fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         let menu = Menu::with_items(
             app,
             &[
@@ -397,20 +415,7 @@ mod desktop {
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
         ])?;
-        tray.set_menu(Some(menu))?;
-        tray.on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                toggle(tray.app_handle());
-            }
-        });
-        update::start(app);
-        models::start(app);
-        Ok(())
+        Ok(menu)
     }
 
     /// Tauri's default macOS menu minus About, with Quit as our own item so ⌘Q goes
