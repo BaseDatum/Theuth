@@ -1,10 +1,10 @@
 import { AudioLines, ExternalLink, Forward, GitFork, Link2, Mic, Paperclip, Pencil, X } from 'lucide-react'
-import { memo } from 'react'
+import { memo, type ReactNode } from 'react'
 import { ChannelIcon } from '@/components/icons/channels'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { type AttachRef, compose, parse } from '@/lib/attach'
-import { type Segment, type SharedMessage, originLabel, originOf, parseShared, stripMarker } from '@/lib/channel-origin'
+import { type Segment, type SharedMessage, originLabel, originOf, parseMrkdwn, parseShared, shownText } from '@/lib/channel-origin'
 import { parseAsk } from '@/lib/board-ask'
 import { type Edit, useDrafts } from '@/lib/drafts'
 import { parseSpoken } from '@/lib/injected'
@@ -61,6 +61,23 @@ function OriginChip({ origin }: { origin: ChannelOrigin }) {
   )
 }
 
+/** A link out of the app (`openExternal`); the click never reaches the bubble's stamp toggle. */
+function OutLink({ href, className, children }: { href: string; className: string; children: ReactNode }) {
+  return (
+    <a
+      href={href}
+      onClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        openExternal(href)
+      }}
+      className={className}
+    >
+      {children}
+    </a>
+  )
+}
+
 /** 172 D5: a forwarded or linked Slack message as a quote card; its `(channel …, ts …)` line is not shown. */
 function SharedCard({ message: m }: { message: SharedMessage }) {
   const Icon = m.kind === 'forwarded' ? Forward : Link2
@@ -73,20 +90,24 @@ function SharedCard({ message: m }: { message: SharedMessage }) {
         {m.channel && <span className="wrap-anywhere">#{m.channel}</span>}
         {m.time && <span>{m.time}</span>}
         {m.permalink && (
-          <a
-            href={m.permalink}
-            onClick={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              openExternal(m.permalink!)
-            }}
-            className="inline-flex items-center gap-1 underline-offset-4 hover:text-foreground hover:underline"
-          >
+          <OutLink href={m.permalink} className="inline-flex items-center gap-1 underline-offset-4 hover:text-foreground hover:underline">
             Open in Slack <ExternalLink className="size-3" aria-hidden="true" />
-          </a>
+          </OutLink>
         )}
       </div>
-      {m.body && <div className="mt-2 border-l-2 border-fg-accent pl-3 leading-6 whitespace-pre-wrap wrap-anywhere">{m.body}</div>}
+      {m.body && (
+        <div className="mt-2 border-l-2 border-fg-accent pl-3 leading-6 whitespace-pre-wrap wrap-anywhere">
+          {parseMrkdwn(m.body).map((p, i) =>
+            p.kind === 'text' ? (
+              p.text
+            ) : (
+              <OutLink key={i} href={p.href} className="underline underline-offset-2 hover:text-fg-accent">
+                {p.text}
+              </OutLink>
+            ),
+          )}
+        </div>
+      )}
       {m.files && <div className="mt-1.5 text-xs text-fg-secondary wrap-anywhere">files: {m.files}</div>}
     </div>
   )
@@ -199,9 +220,10 @@ export const MessageUser = memo(function MessageUser({
   const fork = useFork(session)
   const edit = useDrafts((s) => s.edits[session])
   const editing = !readOnly && turn != null && edit?.turn === turn
-  // 45 §7.4 / 66 §7.9: the markers are the text, so own sends and history render alike. 172: the Slack marker is for the model.
+  // 45 §7.4 / 66 §7.9: the markers are the text, so own sends and history render alike. 172: the Slack marker and an
+  // allowed sender's `<from>: ` prefix are for the model; the chip shows both.
   const origin = originOf({ text, channel })
-  const { refs, body } = parse(stripMarker(text))
+  const { refs, body } = parse(shownText({ text, channel }))
   const note = parseNote(body)
   // 76 talk: `[spoken, N s(, interrupted)]` is the user's utterance from the live talk — the same bubble under a caption.
   const spoken = note ? null : parseSpoken(body)

@@ -240,8 +240,8 @@ export type SessionSlice = {
   /** Bumped by turn/edit activity (deltas, tool calls, interjections, context changes); a settled snapshot requested under an older value is discarded. */
   live: number;
   /** `defer` (62 §3.1): lands at the next turn, not after this tool batch; unknown after a reload (`list_queued` lacks it).
-   * `channel` (172 D3): its origin, carried to the transcript card on `InputInjected`; unknown after a reload too. */
-  queued: (QueuedInput & { defer?: boolean; channel?: ChannelOrigin })[];
+   * `QueuedInput.channel` (172 D3) survives a reload and moves to the transcript card on `InputInjected`. */
+  queued: (QueuedInput & { defer?: boolean })[];
   skills: string[];
   name?: string | null;
   parent?: string | null;

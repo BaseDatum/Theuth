@@ -14,6 +14,38 @@ export function originOf(entry: { text: string; channel?: ChannelOrigin }): Chan
 /** The text without one leading `[slack dm]` / `[slack channel]` line; anything else unchanged. */
 export const stripMarker = (text: string): string => text.replace(MARKER, '')
 
+/** What a bubble or queued chip shows of a channel row: no marker line, and no exact `<from>: ` prefix the channel adds
+ * for an allowed user (the chip already says "from <from>"). The model's input is unchanged. */
+export function shownText(entry: { text: string; channel?: ChannelOrigin }): string {
+  const text = stripMarker(entry.text)
+  const from = entry.channel?.from
+  return from && text.startsWith(`${from}: `) ? text.slice(from.length + 2) : text
+}
+
+export type MrkdwnPart = { kind: 'text'; text: string } | { kind: 'link'; href: string; text: string }
+
+/** Slack's `<#C…|name>`, `<@U…|name>` (bare ids too) and `<https://…|label>` tokens in a shared message's raw text
+ * (`forward.rs` copies `attachment.text` verbatim): mentions as `#name` / `@name` text, URLs as links. */
+const MRKDWN = /<([#@])([A-Z0-9]+)(?:\|([^>]*))?>|<(https?:\/\/[^|>\s]+)(?:\|([^>]*))?>/g
+
+export function parseMrkdwn(text: string): MrkdwnPart[] {
+  const out: MrkdwnPart[] = []
+  const push = (t: string) => {
+    const last = out.at(-1)
+    if (last?.kind === 'text') last.text += t
+    else if (t) out.push({ kind: 'text', text: t })
+  }
+  let at = 0
+  for (const m of text.matchAll(MRKDWN)) {
+    push(text.slice(at, m.index))
+    if (m[4]) out.push({ kind: 'link', href: m[4], text: m[5] || m[4] })
+    else push(`${m[1]}${m[3] || m[2]}`)
+    at = m.index + m[0].length
+  }
+  push(text.slice(at))
+  return out
+}
+
 /** A one-line preview of a user text, or a title seeded from one: without the Slack marker; a marker-only text (the
  * engine seeds a Slack session's title from its first line) as its chip label. */
 export function previewText(text: string): string {

@@ -337,6 +337,19 @@ test('a user row keeps its channel origin from history, TurnStarted and a queued
   expect(desk.entries[0]).not.toHaveProperty('channel')
 })
 
+// 172: `QueuedInput.channel` rides the reload's `queued`, so a channel steer queued before it still lands with its origin.
+test('store: a queued channel steer rebuilt from a reload keeps its channel through InputInjected', () => {
+  const id = 'q172'
+  const signal = { via: 'signal', chat: 'dm', from: 'Ana' } as const
+  const st = useSessions.getState()
+  st.loadHistory(id, { ...loaded(), running: true, settled: false, queued: [{ id: 'i9', text: 'Ana: also bread', channel: signal }, { id: 'i10', text: 'mine' }], history: [], first_seq: null, more: false }, 'replace')
+  expect(useSessions.getState().sessions[id]?.queued).toEqual([{ id: 'i9', text: 'Ana: also bread', channel: signal }, { id: 'i10', text: 'mine' }])
+  st.applyEvents([{ type: 'InputInjected', session: id, id: 'i9', turn: 'T9' }])
+  const s = useSessions.getState().sessions[id]
+  expect(s?.entries.at(-1)).toMatchObject({ kind: 'user', text: 'Ana: also bread', injected: true, channel: signal })
+  expect(s?.queued).toEqual([{ id: 'i10', text: 'mine' }])
+})
+
 test('TurnStarted echo: skipped for our own send (once) and engine wrappers, skill shows a chip', () => {
   const c = ctx()
   c.sent.add('mine')

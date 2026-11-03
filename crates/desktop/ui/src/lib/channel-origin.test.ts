@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { originLabel, originOf, parseShared, previewText, stripMarker, stripSnippet } from './channel-origin'
+import { originLabel, originOf, parseMrkdwn, parseShared, previewText, shownText, stripMarker, stripSnippet } from './channel-origin'
 
 const PERMALINK = 'https://acme.slack.com/archives/C0SRE/p1793368920123456?thread_ts=1793368000.000100&cid=C0SRE'
 const HEADER = `[forwarded message from Jane Doe · #general · 2026-10-30 14:02 UTC · ${PERMALINK}]`
@@ -79,6 +79,32 @@ test('parseShared: anything off-grammar stays text', () => {
     { kind: 'shared', message: { kind: 'forwarded', author: 'A', body: 'x' } },
     { kind: 'text', text: '(channel C1 ts 2)' },
   ])
+})
+
+test('shownText drops the marker and only an exact `<from>: ` prefix', () => {
+  const ops = { via: 'slack', chat: 'group', title: 'ops', from: 'Jane Doe' } as const
+  expect(shownText({ text: '[slack channel]\nJane Doe: is the API back up?', channel: ops })).toBe('is the API back up?')
+  expect(shownText({ text: 'Ana: dinner at 8?', channel: { via: 'telegram', chat: 'group', from: 'Ana' } })).toBe('dinner at 8?')
+  // Not the exact prefix: another name, no space, not at the start, case differs.
+  for (const text of ['Jane: hi', 'Jane Doe:hi', 'ok Jane Doe: hi', 'jane doe: hi'])
+    expect(shownText({ text, channel: ops })).toBe(text)
+  // No `from` (the owner), no channel (desktop): the text as typed, minus a Slack marker.
+  expect(shownText({ text: 'Ana: hi', channel: { via: 'telegram', chat: 'dm' } })).toBe('Ana: hi')
+  expect(shownText({ text: '[slack dm]\nAna: hi' })).toBe('Ana: hi')
+})
+
+test('parseMrkdwn: mentions as #name/@name text, URLs as links; everything else unchanged', () => {
+  expect(parseMrkdwn('see <#C0OPS|ops> and <#C0SRE>, ping <@U0JANE|jane> or <@U0SKY>')).toEqual([{ kind: 'text', text: 'see #ops and #C0SRE, ping @jane or @U0SKY' }])
+  expect(parseMrkdwn('docs <https://x.example/a?b=1|the runbook> or <https://y.example>.')).toEqual([
+    { kind: 'text', text: 'docs ' },
+    { kind: 'link', href: 'https://x.example/a?b=1', text: 'the runbook' },
+    { kind: 'text', text: ' or ' },
+    { kind: 'link', href: 'https://y.example', text: 'https://y.example' },
+    { kind: 'text', text: '.' },
+  ])
+  expect(parseMrkdwn('<#C1|>')).toEqual([{ kind: 'text', text: '#C1' }])
+  for (const text of ['a < b > c', '<!here> <!subteam^S1>', '<mailto:a@b.c|a>', '<#lower>', '[the dashboard](https://grafana.example/d/api)', ''])
+    expect(parseMrkdwn(text)).toEqual(text ? [{ kind: 'text', text }] : [])
 })
 
 test('previews drop the marker; a marker-only title reads as its label; snippet ranges shift', () => {
