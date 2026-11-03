@@ -228,7 +228,7 @@ impl Card {
                     let text = if r.text.trim().is_empty() {
                         String::new()
                     } else {
-                        format!("\n\n{}\n", r.text.trim_end())
+                        format!("\n\n{}\n", r.shown().trim_end())
                     };
                     out.push_str(&format!(
                         "<details><summary>{}</summary>{text}</details>",

@@ -73,6 +73,18 @@ impl Reasoning {
         }
     }
 
+    /// The text as shown: a picture fence never leaks its body (164 D2) —
+    /// `_drawing…_` while the run streams (D8), its D7 text once it ended.
+    #[must_use]
+    pub fn shown(&self) -> std::borrow::Cow<'_, str> {
+        let text = self.text.trim_end();
+        if self.live() {
+            surface::picture_preview(text)
+        } else {
+            surface::flatten(text, artifact::snapshot::FALLBACK_COLUMNS).into()
+        }
+    }
+
     /// The expandable quote, or nothing when there is no text.
     #[must_use]
     pub fn quote(&self) -> String {
@@ -82,7 +94,7 @@ impl Reasoning {
         format!(
             "**{}**\n<blockquote expandable>\n{}\n</blockquote>\n\n",
             self.heading.as_deref().unwrap_or("thinking"),
-            self.text.trim_end()
+            self.shown().trim_end()
         )
     }
 
@@ -668,6 +680,34 @@ mod tests {
     fn clip_counts_the_rest() {
         assert_eq!(clip("abcdef", 3), "abc… (3 more chars)");
         assert_eq!(clip("ab", 3), "ab");
+    }
+
+    /// 164-Z live proof: a model that repeats the fence while thinking must not leak its body
+    /// through the reasoning quote — `_drawing…_` while it streams, the D7 text once it ended.
+    #[test]
+    fn reasoning_never_shows_a_picture_fence_body() {
+        let spec = r#"{"root":"g","elements":{"g":{"type":"Graph","props":{"nodes":[{"id":"a","label":"Alpha"},{"id":"b","label":"Beta"}],"edges":[{"from":"a","to":"b"}]}}}}"#;
+        let mut r = Reasoning::start();
+        r.text = format!("Let me reproduce it:\n\n```json-render\n{spec}\n```\n\nDone.");
+        let leaks = |s: &str| {
+            s.contains(r#""root""#) || s.contains("```json-render") || s.contains(r#""elements""#)
+        };
+        let live = r.quote();
+        assert!(!leaks(&live), "{live}");
+        assert!(
+            live.contains(surface::DRAWING) && live.contains("Done."),
+            "{live}"
+        );
+        // still typing the fence: nothing of the body either
+        r.text = format!("Let me reproduce it:\n\n```json-render\n{}", &spec[..40]);
+        assert!(!leaks(&r.quote()), "{}", r.quote());
+        r.text = format!("Let me reproduce it:\n\n```json-render\n{spec}\n```\n\nDone.");
+        r.end(Some(1000));
+        let ended = r.quote();
+        assert!(
+            !leaks(&ended) && ended.contains("Alpha") && ended.contains("thought 1 s"),
+            "{ended}"
+        );
     }
 
     /// 164 D9: the cut lands just past the closing fence line's break; none while the fence
