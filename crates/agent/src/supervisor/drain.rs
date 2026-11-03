@@ -22,7 +22,7 @@ use runtime::{Runtime, SessionId, TurnId};
 use super::{Agents, LiveActor};
 use crate::durability::{DurabilityConfig, StepKind};
 use crate::loop_::Draining;
-use crate::store::Scope;
+use crate::store::{Scope, Store};
 use crate::{AGENT_ACTOR, AgentEvent, HistoryEntry, ResumeState};
 
 /// Set by the first [`Drain`]; a second one (the token-fired path in
@@ -242,7 +242,7 @@ impl Agents {
     /// turn's `resume_reports` row (§8.2) keeps the banner's counts until
     /// the next turn starts.
     pub(super) async fn resume_state(
-        &self,
+        store: &Store,
         session: SessionId,
         running: bool,
         resumed: Option<TurnId>,
@@ -250,7 +250,7 @@ impl Agents {
         // 139 §5.1 item 12 / §5.2: a display read, any owner — the row says
         // who runs the turn; `resumed` (this engine's flag) matters only when
         // `here`.
-        let (owner, here) = match self.store.session(session).await {
+        let (owner, here) = match store.session(session).await {
             Ok(Some(row)) => ((!row.owner.is_empty()).then_some(row.owner), row.here),
             Ok(None) => (None, true),
             Err(e) => {
@@ -258,7 +258,7 @@ impl Agents {
                 (None, true)
             }
         };
-        let open = match self.store.open_turn(session).await {
+        let open = match store.open_turn(session).await {
             Ok(open) => open,
             Err(e) => {
                 tracing::error!(%session, "109: open_turn: {e:#}");
@@ -266,7 +266,7 @@ impl Agents {
             }
         };
         let Some((turn, _)) = open else {
-            return match self.store.latest_resume_report(session).await {
+            return match store.latest_resume_report(session).await {
                 Ok(Some(row)) => (
                     Some(ResumeState {
                         turn: row.turn,
@@ -290,14 +290,14 @@ impl Agents {
         if running && resumed != Some(turn) {
             return (None, None);
         }
-        let report = match self.store.resume_report(session, turn).await {
+        let report = match store.resume_report(session, turn).await {
             Ok(row) => row.map(|r| r.report),
             Err(e) => {
                 tracing::error!(%session, %turn, "109: resume_report: {e:#}");
                 None
             }
         };
-        match self.store.resume_plan(session, turn).await {
+        match store.resume_plan(session, turn).await {
             Ok(plan) => (
                 Some(ResumeState {
                     turn,
@@ -395,10 +395,10 @@ mod tests {
         let sink = Sink::spawn_with_mailbox(Sink(tx), runtime::subscriber_mailbox());
         rt.subscribe::<Sink, AgentEvent>(&sink).await;
         let (sid, turn) = own_turn(&b).await;
-        let (state, _) = b.resume_state(foreign, false, None).await;
+        let (state, _) = Agents::resume_state(&b.store, foreign, false, None).await;
         let state = state.unwrap();
         assert_eq!((state.owner.as_deref(), state.here), (Some("a"), false));
-        let (state, _) = b.resume_state(sid, false, None).await;
+        let (state, _) = Agents::resume_state(&b.store, sid, false, None).await;
         let state = state.unwrap();
         assert_eq!((state.owner.as_deref(), state.here), (Some("b"), true));
         let agents = Agents::spawn(b);
@@ -468,7 +468,12 @@ mod tests {
             .create_session(sid, "m", None, None, None)
             .await
             .unwrap();
-        assert!(a.resume_state(sid, true, None).await.0.is_none());
+        assert!(
+            Agents::resume_state(&a.store, sid, true, None)
+                .await
+                .0
+                .is_none()
+        );
         a.store
             .step(
                 sid,
@@ -479,9 +484,15 @@ mod tests {
             )
             .await
             .unwrap();
-        let waiting = a.resume_state(sid, false, None).await.0.unwrap();
+        let waiting = Agents::resume_state(&a.store, sid, false, None)
+            .await
+            .0
+            .unwrap();
         assert!(waiting.turn == turn && !waiting.resumed);
-        let relaunched = a.resume_state(sid, true, Some(turn)).await.0.unwrap();
+        let relaunched = Agents::resume_state(&a.store, sid, true, Some(turn))
+            .await
+            .0
+            .unwrap();
         assert_eq!(
             relaunched,
             ResumeState {
@@ -505,7 +516,10 @@ mod tests {
             },
         };
         a.store.resume_report_put(&row).await.unwrap();
-        let settled = a.resume_state(sid, true, Some(turn)).await.0.unwrap();
+        let settled = Agents::resume_state(&a.store, sid, true, Some(turn))
+            .await
+            .0
+            .unwrap();
         assert_eq!(
             settled,
             ResumeState {
@@ -515,7 +529,7 @@ mod tests {
         );
         // …and, once the turn finished, as the newest turn's state (not running).
         a.store.finish_turn(sid, turn, "end_turn").await.unwrap();
-        let (finished, partial) = a.resume_state(sid, false, None).await;
+        let (finished, partial) = Agents::resume_state(&a.store, sid, false, None).await;
         assert!(partial.is_none());
         assert_eq!(
             finished.unwrap(),
@@ -538,8 +552,16 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(a.resume_state(sid, true, None).await.0.is_none());
-        let waiting = a.resume_state(sid, false, None).await.0.unwrap();
+        assert!(
+            Agents::resume_state(&a.store, sid, true, None)
+                .await
+                .0
+                .is_none()
+        );
+        let waiting = Agents::resume_state(&a.store, sid, false, None)
+            .await
+            .0
+            .unwrap();
         assert!(waiting.turn == next && !waiting.resumed && waiting.report.is_none());
     }
 
@@ -585,14 +607,14 @@ mod tests {
             .await
             .unwrap();
         // Not running here (a crash): banner + the greyed partial, as before.
-        let (state, partial) = a.resume_state(sid, false, None).await;
+        let (state, partial) = Agents::resume_state(&a.store, sid, false, None).await;
         assert!(state.is_some_and(|s| s.turn == turn && !s.resumed));
         assert!(
             matches!(partial, Some(HistoryEntry::Interrupted { ref text, .. }) if text == "half"),
             "{partial:?}"
         );
         // Running as an ordinary turn: nothing.
-        let (state, partial) = a.resume_state(sid, true, None).await;
+        let (state, partial) = Agents::resume_state(&a.store, sid, true, None).await;
         assert!(state.is_none(), "no banner: {state:?}");
         assert!(partial.is_none(), "no interrupted partial: {partial:?}");
     }

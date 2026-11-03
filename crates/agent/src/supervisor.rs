@@ -104,8 +104,8 @@ use crate::{
     TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
-    AdvisorConfig, DurableStore, GetPolishModel, ModelRole, ObservedState, Polish, PolishReply,
-    Rewrite, SessionCostQuery, SessionKind, SetPolishModel, SpendReportQuery, SubagentsConfig,
+    AdvisorConfig, DurableStore, GetPolishModel, ModelRole, Polish, PolishReply, Rewrite,
+    SessionCostQuery, SessionKind, SetPolishModel, SpendReportQuery, SubagentsConfig,
     UnloadSession, cost::CallKind, polish,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
@@ -128,6 +128,7 @@ pub mod child_waits; // 139 W3
 mod drain;
 mod resume;
 pub mod transfer; // 139 W2
+mod view; // 176 E1
 mod waits;
 pub use acp_resume::LastBootPass; // 146 D4
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
@@ -1068,7 +1069,16 @@ impl Agents {
         if self.communication.0.read().root_of(id).is_ok() {
             return;
         }
-        let lineage = match self.store.lineage(id).await {
+        let lineage = self.store.lineage(id).await;
+        self.apply_lineage(id, lineage);
+    }
+
+    /// [`Self::mirror`] given its lineage read, which 176 E1 may have done
+    /// off the mailbox: a no-op when `id` became known meanwhile, and a root
+    /// already known keeps its live scope (a `SetPeerScope` since the read
+    /// is never undone).
+    fn apply_lineage(&self, id: SessionId, lineage: anyhow::Result<store::communication::Lineage>) {
+        let lineage = match lineage {
             Ok(l) => l,
             // No row: nothing to mirror; every route for `id` fails closed.
             Err(e) if e.downcast_ref::<CommError>() == Some(&CommError::NotFound) => return,
@@ -1078,13 +1088,18 @@ impl Agents {
             }
         };
         let mut p = self.communication.0.write();
-        let root = lineage.root();
-        if let Err(e) = p.record_root(root, lineage.scope) {
-            tracing::error!(session = %root, "record_root: {e}");
+        if p.root_of(id).is_ok() {
             return;
         }
-        if lineage.alias.is_some() {
-            let _ = p.set_scope(root, lineage.scope, lineage.alias.clone());
+        let root = lineage.root();
+        if p.root_of(root).is_err() {
+            if let Err(e) = p.record_root(root, lineage.scope) {
+                tracing::error!(session = %root, "record_root: {e}");
+                return;
+            }
+            if lineage.alias.is_some() {
+                let _ = p.set_scope(root, lineage.scope, lineage.alias.clone());
+            }
         }
         // Root first, then each child of the one just recorded.
         for pair in lineage.chain.windows(2).rev() {
@@ -5501,10 +5516,38 @@ impl Message<SetPeerScope> for Agents {
 }
 
 impl Message<ListPeers> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<PeerPage, String>>;
+
+    /// 176 E1: the session list, lineages, mesh names and job counts are
+    /// read off the mailbox ([`PeerRead`]); the policy walk and paging come
+    /// back to it ([`PeersRead`]), where every policy mutation happens.
+    async fn handle(&mut self, m: ListPeers, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (store, policy) = (self.store.clone(), self.communication.clone());
+        let me = ctx.actor_ref().clone();
+        ctx.spawn(async move {
+            let read = PeerRead::fetch(&store, &policy, m.session).await?;
+            me.ask(PeersRead { m, read }).await.map_err(|e| match e {
+                SendError::HandlerError(e) => e,
+                e => e.to_string(),
+            })
+        })
+    }
+}
+
+/// `ask` (internal, 176 E1): [`ListPeers`] once its [`PeerRead`] is in.
+struct PeersRead {
+    m: ListPeers,
+    read: PeerRead,
+}
+
+impl Message<PeersRead> for Agents {
     type Reply = Result<PeerPage, String>;
 
-    async fn handle(&mut self, m: ListPeers, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.mirror(m.session).await;
+    async fn handle(
+        &mut self,
+        PeersRead { m, read }: PeersRead,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let limit = m
             .limit
             .filter(|l| *l > 0)
@@ -5515,7 +5558,7 @@ impl Message<ListPeers> for Agents {
             .as_deref()
             .map(str::to_lowercase)
             .filter(|q| !q.is_empty());
-        let mut rows = self.directory(m.session).await?;
+        let mut rows = self.directory_from(m.session, read)?;
         arrange(&mut rows, m.active_only);
         if let Some(q) = &query {
             rows.retain(|p| p.name.to_lowercase().contains(q) || p.address.contains(q.as_str()));
@@ -5538,33 +5581,79 @@ impl Message<ListPeers> for Agents {
     }
 }
 
+/// [`Agents::directory_from`]'s I/O, read off the mailbox: the durable rows
+/// in creation order, the lineage of `session` and of every row the policy
+/// does not know yet, the mesh engine names and every row's job counts.
+struct PeerRead {
+    rows: Vec<SessionSummary>,
+    lineages: Vec<(SessionId, anyhow::Result<store::communication::Lineage>)>,
+    engines: (String, HashMap<String, String>),
+    counts: HashMap<SessionId, (u16, u16)>,
+}
+
+impl PeerRead {
+    async fn fetch(
+        store: &Store,
+        policy: &SharedPolicy,
+        session: SessionId,
+    ) -> Result<Self, String> {
+        let mut rows = store.list_sessions().await.map_err(|e| e.to_string())?;
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.0.cmp(&b.id.0)));
+        let mut lineages = Vec::new();
+        for id in std::iter::once(session).chain(rows.iter().map(|r| r.id)) {
+            let known = policy.0.read().root_of(id).is_ok();
+            if !known {
+                lineages.push((id, store.lineage(id).await));
+            }
+        }
+        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
+        Ok(Self {
+            engines: peer_mesh::engine_names().await,
+            counts: view::job_counts(&ids).await,
+            rows,
+            lineages,
+        })
+    }
+}
+
 impl Agents {
+    /// [`PeerRead::fetch`] then [`Self::directory_from`] in one go.
+    #[cfg(test)]
+    async fn directory(&mut self, session: SessionId) -> Result<Vec<PeerInfo>, String> {
+        let read = PeerRead::fetch(&self.store, &self.communication, session).await?;
+        self.directory_from(session, read)
+    }
+
     /// The full permitted directory for `session` (50 §5.1) in stable order:
     /// same-tree sessions (parent, children, siblings, ancestors,
     /// descendants), then other `owner` roots and their trees when this
     /// root is `owner`, then configured remotes. Each local candidate passes
     /// [`Policy::route`]; nothing dormant is woken and no network is probed.
-    async fn directory(&mut self, session: SessionId) -> Result<Vec<PeerInfo>, String> {
+    /// Every row is mirrored first, so `route` never fails on a dangling link.
+    fn directory_from(
+        &mut self,
+        session: SessionId,
+        read: PeerRead,
+    ) -> Result<Vec<PeerInfo>, String> {
+        let PeerRead {
+            rows,
+            lineages,
+            engines,
+            counts,
+        } = read;
+        for (id, lineage) in lineages {
+            self.apply_lineage(id, lineage);
+        }
         let root = {
             let p = self.communication.0.read();
             p.enabled(session).map_err(|e| e.to_string())?;
             p.root_of(session).map_err(|e| e.to_string())?
         };
-        let mut rows = self
-            .store
-            .list_sessions()
-            .await
-            .map_err(|e| e.to_string())?;
-        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.0.cmp(&b.id.0)));
-        // Mirror every row so `route` never fails on a dangling link.
-        for r in &rows {
-            self.mirror(r.id).await;
-        }
         let me_parent = rows.iter().find(|r| r.id == session).and_then(|r| r.parent);
         // 69 P: engine display names, asked once; rows owned elsewhere are
         // `remote` (no activity here — their owner would know), ours carry
         // this engine's name for symmetry.
-        let (me_name, names) = peer_mesh::engine_names().await;
+        let (me_name, names) = engines;
         // Rows keep their session id for the activity lookup, which runs once
         // the policy guard is released.
         let mut same = Vec::new();
@@ -5664,12 +5753,14 @@ impl Agents {
         }
         same.extend(other);
         // Remote rows have no activity here: their owner's engine would know.
-        let ids: Vec<SessionId> = same
+        let wanted: HashSet<SessionId> = same
             .iter()
             .filter(|(_, info)| info.state != PeerState::Remote)
             .map(|(id, _)| *id)
             .collect();
-        let mut activity = self.activity_for(&ids).await;
+        let mut activity = self
+            .view()
+            .activity_of_rows(rows.iter().filter(|r| wanted.contains(&r.id)), &counts);
         let now = Instant::now();
         let mut out: Vec<PeerInfo> = same
             .into_iter()
@@ -6174,198 +6265,6 @@ impl Message<PeerContext> for Agents {
 }
 
 impl Agents {
-    /// [`AgentInfo`] for every descendant of `session`, store rows in
-    /// pre-order plus live state from this actor (design doc 19 §2.1).
-    async fn agents(&self, session: SessionId) -> Vec<AgentInfo> {
-        let store = self.store_for(session);
-        let rows = match store.descendants(session).await {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::error!(session = %session, "descendants: {e:#}");
-                return Vec::new();
-            }
-        };
-        let names: HashMap<SessionId, &str> = rows
-            .iter()
-            .filter_map(|(_, s)| Some((s.id, s.name.as_deref()?)))
-            .collect();
-        let ids: Vec<SessionId> = rows.iter().map(|(_, r)| r.id).collect();
-        let mut activity = self.activity_for(&ids).await;
-        let mut out = Vec::with_capacity(rows.len());
-        for (depth, row) in &rows {
-            let parent = row.parent.unwrap_or(session);
-            // Names of cold siblings are known here; keep the two states equal.
-            let state = self.state_of_row(row, Some(parent), &names);
-            let mut activity = activity.remove(&row.id).unwrap_or_default();
-            activity.state = state.clone();
-            out.push(
-                self.info_row(store, row, *depth, parent, state, activity)
-                    .await,
-            );
-        }
-        out
-    }
-
-    /// [`SessionActivity`] for `ids` (62 §0.5): one `JobCounts` ask for all
-    /// of them, the rest from this actor's maps; the store is read only for
-    /// a cold session's `updated_at`.
-    async fn activity_for(&self, ids: &[SessionId]) -> HashMap<SessionId, SessionActivity> {
-        let counts = match ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR) {
-            Ok(Some(jobs)) => jobs
-                .ask(tools::JobCounts(ids.to_vec()))
-                .await
-                .unwrap_or_default(),
-            _ => HashMap::new(),
-        };
-        self.assemble_activity(ids, &counts).await
-    }
-
-    /// [`Self::activity_for`] given the `JobCounts` reply.
-    async fn assemble_activity(
-        &self,
-        ids: &[SessionId],
-        counts: &HashMap<SessionId, (u16, u16)>,
-    ) -> HashMap<SessionId, SessionActivity> {
-        // Live descendants per ancestor: walk each live session's parent chain.
-        let mut children: HashMap<SessionId, u16> = HashMap::new();
-        for (id, live) in &self.sessions {
-            if !live.actor.is_alive() {
-                continue;
-            }
-            let mut cur = *id;
-            while let Some((p, _)) = self.sessions.get(&cur).and_then(|l| l.parent.as_ref()) {
-                *children.entry(*p).or_default() += 1;
-                cur = *p;
-            }
-        }
-        let names = HashMap::new();
-        let mut out = HashMap::with_capacity(ids.len());
-        for &id in ids {
-            let parent = self
-                .sessions
-                .get(&id)
-                .and_then(|l| l.parent.as_ref().map(|(p, _)| *p));
-            let turn_started_at = self.child_turns.get(&id).map(|ct| ct.started_at);
-            let mut last_active = [
-                self.last_input.get(&id).copied(),
-                self.last_stop.get(&id).map(|(_, at)| *at),
-                turn_started_at,
-            ]
-            .into_iter()
-            .flatten()
-            .max();
-            if last_active.is_none() {
-                last_active = self
-                    .store_for(id)
-                    .session(id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|s| s.updated_at);
-            }
-            let (jobs, ptys) = counts.get(&id).copied().unwrap_or_default();
-            let state = self.state_of(id, parent, &names);
-            // 130 E2: how long the user (or a peer) has been waited on.
-            let waiting_since_ms = match &state {
-                AgentState::Approval { .. } => self.approvals.get(&id).map(|(.., at)| *at),
-                AgentState::Awaiting { .. } => self
-                    .waits
-                    .values()
-                    .find(|w| w.session == id)
-                    .map(|w| w.since_ms),
-                _ => None,
-            };
-            out.insert(
-                id,
-                SessionActivity {
-                    state,
-                    last_active,
-                    turn_started_at,
-                    jobs,
-                    ptys,
-                    children: children.get(&id).copied().unwrap_or_default(),
-                    asks: None,
-                    live: self.live(id).is_some(),
-                    waiting_since_ms,
-                },
-            );
-        }
-        out
-    }
-
-    /// Every stored session row, durable store first then each open private
-    /// tree's, in each store's `list_sessions` order.
-    async fn all_rows(&self) -> Vec<SessionSummary> {
-        let mut rows = self.store.list_sessions().await.unwrap_or_else(|e| {
-            tracing::error!("list sessions: {e:#}");
-            Vec::new()
-        });
-        for p in self.private.values().filter(|p| !p.closing) {
-            rows.extend(p.store.list_sessions().await.unwrap_or_default());
-        }
-        rows
-    }
-
-    /// Live state of `id` as the roster shows it (design doc 19 §2.1).
-    /// `names` maps sibling ids to their peer names for `Awaiting { from }`.
-    fn state_of(
-        &self,
-        id: SessionId,
-        parent: Option<SessionId>,
-        names: &HashMap<SessionId, &str>,
-    ) -> AgentState {
-        if let Some((_, tool, _)) = self.approvals.get(&id) {
-            AgentState::Approval { tool: tool.clone() }
-        } else if let Some(w) = self.waits.values().find(|w| w.session == id) {
-            // The awaited peer by its convenience name when it has one.
-            let from = match PeerAddress::local(&w.to) {
-                Some(p) if Some(p) == parent => "parent".to_owned(),
-                Some(p) => names
-                    .get(&p)
-                    .map(|n| (*n).to_owned())
-                    .or_else(|| Some(self.sessions.get(&p)?.parent.as_ref()?.1.clone()))
-                    .unwrap_or_else(|| w.to.clone()),
-                None => w.to.clone(),
-            };
-            AgentState::Awaiting { from }
-        } else if self.running.contains(&id) {
-            AgentState::Running
-        } else {
-            match self.last_stop.get(&id).map(|(reason, _)| reason.as_str()) {
-                Some("error") => AgentState::Error,
-                Some("cancelled") => AgentState::Cancelled,
-                _ => AgentState::Idle,
-            }
-        }
-    }
-
-    /// [`Self::state_of`] for a store row: a watch-only child's state comes
-    /// from the harness (141 §5.2 table) — except an unanswered permission
-    /// ask keyed to it, which is `Approval` like anyone's.
-    fn state_of_row(
-        &self,
-        row: &SessionSummary,
-        parent: Option<SessionId>,
-        names: &HashMap<SessionId, &str>,
-    ) -> AgentState {
-        let live = self.state_of(row.id, parent, names);
-        match &row.observed {
-            Some(o) if !matches!(live, AgentState::Approval { .. }) => match o.state {
-                ObservedState::Running => AgentState::Running,
-                ObservedState::RequiresAction => AgentState::Approval {
-                    tool: o.description.clone().unwrap_or_default(),
-                },
-                ObservedState::Failed => AgentState::Error,
-                ObservedState::Cancelled => AgentState::Cancelled,
-                ObservedState::Pending
-                | ObservedState::Idle
-                | ObservedState::Completed
-                | ObservedState::Unknown => AgentState::Idle,
-            },
-            _ => live,
-        }
-    }
-
     /// 141 §7.7: stop watch-only `row` through the live harness actor that
     /// runs it — its parent, or the nearest ACP ancestor when nested. No
     /// live harness: nothing to tell; the row is already lost or terminal.
@@ -6426,106 +6325,29 @@ impl Agents {
                 .await;
         }
     }
-
-    /// One roster row from its store row plus live state.
-    async fn info_row(
-        &self,
-        store: &Store,
-        row: &SessionSummary,
-        depth: u8,
-        parent: SessionId,
-        state: AgentState,
-        activity: SessionActivity,
-    ) -> AgentInfo {
-        let id = row.id;
-        // ponytail: one message replay per row; a `last_text` column if the picker gets slow.
-        let last = store.last_turn_text(id).await.unwrap_or_else(|e| {
-            tracing::error!(session = %id, "last_turn_text: {e:#}");
-            String::new()
-        });
-        AgentInfo {
-            id,
-            name: row.name.clone().unwrap_or_default(),
-            parent,
-            depth,
-            agent: row.agent.clone(),
-            model: row.model.clone(),
-            state,
-            started_at: self.child_turns.get(&id).map(|ct| ct.started_at),
-            finished_at: self.last_stop.get(&id).map(|(_, at)| *at),
-            last: first_line(&last),
-            project: row.project.clone(),
-            retention: self.retention_of(id),
-            activity,
-            cap: self.caps.get(&id).copied(),
-            kind: row.kind,
-            observed: row.observed.clone(),
-        }
-    }
-
-    /// [`ListActivity`]'s rows (62 §3.2): every root, plus every session with
-    /// a live actor or a running job; `depth` from its own root.
-    async fn activity_rows(&self) -> Vec<AgentInfo> {
-        let rows = self.all_rows().await;
-        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
-        let mut activity = self.activity_for(&ids).await;
-        // Pre-order like `agents()`: roots in roster order, then each one's
-        // children oldest first. A cold child is skipped but its live
-        // descendants are still walked (their depth counts it).
-        let mut kids: HashMap<SessionId, Vec<&SessionSummary>> = HashMap::new();
-        for r in &rows {
-            if let Some(p) = r.parent {
-                kids.entry(p).or_default().push(r);
-            }
-        }
-        for v in kids.values_mut() {
-            v.sort_by_key(|r| r.created_at);
-        }
-        let mut stack: Vec<(&SessionSummary, u8)> = rows
-            .iter()
-            .filter(|r| r.parent.is_none())
-            .rev()
-            .map(|r| (r, 0))
-            .collect();
-        let mut out = Vec::new();
-        while let Some((row, depth)) = stack.pop() {
-            if let Some(children) = kids.get(&row.id) {
-                stack.extend(children.iter().rev().map(|c| (*c, depth.saturating_add(1))));
-            }
-            let Some(a) = activity.remove(&row.id) else {
-                continue;
-            };
-            if depth > 0 && !a.live && a.jobs + a.ptys == 0 {
-                continue;
-            }
-            let parent = row.parent.unwrap_or(row.id);
-            let state = if row.observed.is_some() {
-                self.state_of_row(row, row.parent, &HashMap::new())
-            } else {
-                a.state.clone()
-            };
-            out.push(
-                self.info_row(self.store_for(row.id), row, depth, parent, state, a)
-                    .await,
-            );
-        }
-        out
-    }
 }
 
 impl Message<ListActivity> for Agents {
-    type Reply = Vec<AgentInfo>;
+    type Reply = kameo::reply::DelegatedReply<Vec<AgentInfo>>;
 
-    async fn handle(&mut self, _: ListActivity, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.activity_rows().await
+    /// 176 E1: the session list, job counts and last replies are read off
+    /// the mailbox, over the state as of this handler.
+    async fn handle(
+        &mut self,
+        _: ListActivity,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let view = self.view();
+        ctx.spawn(async move { view.activity_rows().await })
     }
 }
 
 impl Message<ActivityOf> for Agents {
-    type Reply = HashMap<SessionId, SessionActivity>;
+    type Reply = kameo::reply::DelegatedReply<HashMap<SessionId, SessionActivity>>;
 
-    async fn handle(&mut self, m: ActivityOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.activity_for(&m.0).await
+    async fn handle(&mut self, m: ActivityOf, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let view = self.view();
+        ctx.spawn(async move { view.activity_for(&m.0).await })
     }
 }
 
@@ -6534,9 +6356,10 @@ impl Agents {
     /// filled, every resolved row `Skipped{"dry run"}` and an unknown id
     /// `Failed{"unknown session"}`. `Running`/`Roots` never name a child.
     async fn resolve_targets(&self, targets: &BroadcastTargets) -> Vec<BroadcastRow> {
-        let rows = self.all_rows().await;
+        let view = self.view();
+        let rows = view.all_rows().await;
         let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
-        let mut activity = self.activity_for(&ids).await;
+        let mut activity = view.activity_of_rows(&rows, &view::job_counts(&ids).await);
         let by_id: HashMap<SessionId, &SessionSummary> = rows.iter().map(|r| (r.id, r)).collect();
         let row = |id: SessionId, before: SessionActivity| {
             let s = by_id[&id];
@@ -6703,32 +6526,37 @@ fn first_line(text: &str) -> String {
 }
 
 impl Message<ListAgents> for Agents {
-    type Reply = Vec<AgentInfo>;
+    type Reply = kameo::reply::DelegatedReply<Vec<AgentInfo>>;
 
-    async fn handle(&mut self, m: ListAgents, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.agents(m.session).await
+    /// 176 E1: read off the mailbox like [`ListActivity`].
+    async fn handle(&mut self, m: ListAgents, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let view = self.view();
+        ctx.spawn(async move { view.agents(m.session).await })
     }
 }
 
 impl Message<Roster> for Agents {
-    type Reply = String;
+    type Reply = kameo::reply::DelegatedReply<String>;
 
-    async fn handle(&mut self, m: Roster, _: &mut Context<Self, Self::Reply>) -> String {
-        let agents = self.agents(m.session).await;
-        if agents.is_empty() {
-            return String::new();
-        }
-        let mut s = String::from("Subagents: ");
-        for (i, a) in agents.iter().enumerate() {
-            if i > 0 {
-                s.push_str(", ");
+    async fn handle(&mut self, m: Roster, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let view = self.view();
+        ctx.spawn(async move {
+            let agents = view.agents(m.session).await;
+            if agents.is_empty() {
+                return String::new();
             }
-            s.push_str(&a.name);
-            s.push_str(" (");
-            s.push_str(a.state.word());
-            s.push(')');
-        }
-        s
+            let mut s = String::from("Subagents: ");
+            for (i, a) in agents.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&a.name);
+                s.push_str(" (");
+                s.push_str(a.state.word());
+                s.push(')');
+            }
+            s
+        })
     }
 }
 
@@ -6918,28 +6746,26 @@ impl Agents {
 }
 
 impl Message<ListSessions> for Agents {
-    type Reply = Vec<SessionSummary>;
+    type Reply = kameo::reply::DelegatedReply<Vec<SessionSummary>>;
 
+    /// The durable session list with each row's live `running` flag; 176
+    /// E1: read off the mailbox, `running` as of this handler.
     async fn handle(
         &mut self,
         _: ListSessions,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Vec<SessionSummary> {
-        self.list_sessions().await
-    }
-}
-
-impl Agents {
-    /// The durable session list with each row's live `running` flag.
-    async fn list_sessions(&self) -> Vec<SessionSummary> {
-        let mut rows = self.store.list_sessions().await.unwrap_or_else(|e| {
-            tracing::error!("list sessions: {e:#}");
-            Vec::new()
-        });
-        for r in &mut rows {
-            r.running = self.running.contains(&r.id);
-        }
-        rows
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (store, running) = (self.store.clone(), self.running.clone());
+        ctx.spawn(async move {
+            let mut rows = store.list_sessions().await.unwrap_or_else(|e| {
+                tracing::error!("list sessions: {e:#}");
+                Vec::new()
+            });
+            for r in &mut rows {
+                r.running = running.contains(&r.id);
+            }
+            rows
+        })
     }
 }
 
@@ -6981,316 +6807,373 @@ impl Message<Ancestors> for Agents {
 }
 
 impl Message<ReadSession> for Agents {
-    type Reply = Result<SessionRead, String>;
+    type Reply = kameo::reply::DelegatedReply<Result<SessionRead, String>>;
 
-    async fn handle(&mut self, m: ReadSession, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    /// 176 E1: the transcript is read and rendered off the mailbox.
+    async fn handle(
+        &mut self,
+        m: ReadSession,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         // 51 §4.2 / 66 §9: a private tree's sessions are readable only from
         // inside that tree; everything durable is readable from anywhere.
         let target_root = self.private_member.get(&m.session);
         if target_root.is_some() && target_root != self.private_member.get(&m.caller) {
-            return Err(format!("session {} is private to another tree", m.session));
+            return ctx.reply(Err(format!(
+                "session {} is private to another tree",
+                m.session
+            )));
         }
         let store = self.store_for(m.session).clone();
-        let mut summary = store
-            .session(m.session)
-            .await
-            .map_err(|e| format!("{e:#}"))?
-            .ok_or_else(|| format!("session {} not found", m.session))?;
-        // 125 §4.2: an advisor's transcript is readable by nobody else.
-        if summary.kind == SessionKind::Advisor {
-            return Err(format!("session {} is not a peer", m.session));
-        }
-        summary.retention = self.retention_of(m.session);
-        let h = store
-            .context_history(m.session)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-        let advisories = store.advisories(m.session).await.unwrap_or_default();
-        let mut out = render_with(&h.messages, &h.entries, &h.thinking, &advisories);
-        // Peer provenance (50 §9), as `load_session` marks it.
-        if let Ok(rows) = store.consumed_exchanges(m.session).await {
-            let peers: HashMap<i64, PeerOrigin> = rows
-                .into_iter()
-                .map(|(seq, r)| (seq, origin_of(&r)))
-                .collect();
-            for (seq, entry) in &mut out {
-                if let HistoryEntry::User { peer, .. } = entry
-                    && let Some(o) = peers.get(seq)
-                {
-                    *peer = Some(o.clone());
-                }
+        let retention = self.retention_of(m.session);
+        ctx.spawn(async move { read_session(&store, m.session, retention).await })
+    }
+}
+
+/// [`ReadSession`]'s reads once the caller may see `session`.
+async fn read_session(
+    store: &Store,
+    session: SessionId,
+    retention: Retention,
+) -> Result<SessionRead, String> {
+    let mut summary = store
+        .session(session)
+        .await
+        .map_err(|e| format!("{e:#}"))?
+        .ok_or_else(|| format!("session {session} not found"))?;
+    // 125 §4.2: an advisor's transcript is readable by nobody else.
+    if summary.kind == SessionKind::Advisor {
+        return Err(format!("session {session} is not a peer"));
+    }
+    summary.retention = retention;
+    let h = store
+        .context_history(session)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let advisories = store.advisories(session).await.unwrap_or_default();
+    let mut out = render_with(&h.messages, &h.entries, &h.thinking, &advisories);
+    // Peer provenance (50 §9), as `load_session` marks it.
+    if let Ok(rows) = store.consumed_exchanges(session).await {
+        let peers: HashMap<i64, PeerOrigin> = rows
+            .into_iter()
+            .map(|(seq, r)| (seq, origin_of(&r)))
+            .collect();
+        for (seq, entry) in &mut out {
+            if let HistoryEntry::User { peer, .. } = entry
+                && let Some(o) = peers.get(seq)
+            {
+                *peer = Some(o.clone());
             }
         }
-        // 172: channel provenance, as `load_session` marks it.
-        if let Ok(channels) = store.channels(m.session).await {
-            mark_channels(&mut out, &channels);
-        }
-        Ok(SessionRead {
-            summary,
-            history: out.into_iter().map(|(_, e)| e).collect(),
+    }
+    // 172: channel provenance, as `load_session` marks it.
+    if let Ok(channels) = store.channels(session).await {
+        mark_channels(&mut out, &channels);
+    }
+    Ok(SessionRead {
+        summary,
+        history: out.into_iter().map(|(_, e)| e).collect(),
+    })
+}
+
+impl Message<LoadSession> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Loaded>;
+
+    /// 176 E1: the store reads and the session actor's asks run off the
+    /// mailbox; only the lineage mirror and the communication state come
+    /// back to it ([`Mirrored`]).
+    async fn handle(
+        &mut self,
+        m: LoadSession,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let session = m.session;
+        let store = self.store_for(session).clone();
+        let durable = self.store.clone();
+        let live = self.live(session).cloned();
+        let root = self.resources_for(session).root.clone();
+        let retention = self.retention_of(session);
+        let known = self.communication.0.read().root_of(session).is_ok();
+        let me = ctx.actor_ref().clone();
+        ctx.spawn(async move {
+            let mut loaded = load_session(m, &store, &durable, live, &root, retention).await;
+            let lineage = if known {
+                None
+            } else {
+                Some(durable.lineage(session).await)
+            };
+            loaded.communication = me.ask(Mirrored { session, lineage }).await.ok().flatten();
+            loaded
         })
     }
 }
 
-impl Message<LoadSession> for Agents {
-    type Reply = Loaded;
+/// `ask` (internal, 176 E1) → `Option<CommunicationState>`: apply a lineage
+/// read off the mailbox (`None`: it was already known) and read `session`'s
+/// switches, as [`Agents::mirror`] then `GetCommunication` would.
+struct Mirrored {
+    session: SessionId,
+    lineage: Option<anyhow::Result<store::communication::Lineage>>,
+}
 
-    async fn handle(&mut self, m: LoadSession, _: &mut Context<Self, Self::Reply>) -> Loaded {
-        // Raw rows and their context metadata in one consistent read (48 §5):
-        // through the session actor when it is live (it owns admission and
-        // fills editable/reason), from the store when no actor exists (idle
-        // by construction) or the session runs on an external harness.
-        let store = self.store_for(m.session).clone();
-        let row = store.session(m.session).await.unwrap_or_else(|e| {
-            tracing::error!(session = %m.session, "load session: {e:#}");
-            None
-        });
-        let external = row.as_ref().is_some_and(|r| r.agent.is_some());
-        let live = self.live(m.session).cloned();
-        let native = live.as_ref().and_then(|a| a.native().ok());
-        // `Err(reason)` = the actor refused a settled read (busy); the store
-        // still answers so the reply is honest but not installable.
-        let (read, refused) = match native {
-            Some(a) => match a
-                .ask(ContextHistoryNow {
-                    settled_only: m.settled_only,
-                })
-                .await
-            {
-                Ok(h) => (Ok(h), None),
-                Err(SendError::HandlerError(busy)) => {
-                    (store.context_history(m.session).await, Some(busy))
-                }
-                Err(e) => (Err(anyhow::anyhow!("{e}")), None),
+impl Message<Mirrored> for Agents {
+    type Reply = Option<CommunicationState>;
+
+    async fn handle(&mut self, m: Mirrored, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(lineage) = m.lineage {
+            self.apply_lineage(m.session, lineage);
+        }
+        self.communication.0.read().state(Some(m.session)).ok()
+    }
+}
+
+/// [`LoadSession`]'s reads over the handler's snapshot; `communication` is
+/// left `None` for the mailbox to fill.
+async fn load_session(
+    m: LoadSession,
+    store: &Store,
+    durable: &Store,
+    live: Option<LiveActor>,
+    root: &Path,
+    retention: Retention,
+) -> Loaded {
+    // Raw rows and their context metadata in one consistent read (48 §5):
+    // through the session actor when it is live (it owns admission and
+    // fills editable/reason), from the store when no actor exists (idle
+    // by construction) or the session runs on an external harness.
+    let row = store.session(m.session).await.unwrap_or_else(|e| {
+        tracing::error!(session = %m.session, "load session: {e:#}");
+        None
+    });
+    let external = row.as_ref().is_some_and(|r| r.agent.is_some());
+    let native = live.as_ref().and_then(|a| a.native().ok());
+    // `Err(reason)` = the actor refused a settled read (busy); the store
+    // still answers so the reply is honest but not installable.
+    let (read, refused) = match native {
+        Some(a) => match a
+            .ask(ContextHistoryNow {
+                settled_only: m.settled_only,
+            })
+            .await
+        {
+            Ok(h) => (Ok(h), None),
+            Err(SendError::HandlerError(busy)) => {
+                (store.context_history(m.session).await, Some(busy))
+            }
+            Err(e) => (Err(anyhow::anyhow!("{e}")), None),
+        },
+        None => (store.context_history(m.session).await, None),
+    };
+    let (running, resumed, queued) = match &live {
+        Some(actor) => (
+            actor.is_running().await,
+            actor.resumed_turn().await,
+            match actor.native() {
+                Ok(a) => a.ask(QueuedInputs).await.unwrap_or_default(),
+                Err(_) => Vec::new(),
             },
-            None => (store.context_history(m.session).await, None),
-        };
-        let (running, resumed, queued) = match &live {
-            Some(actor) => (
-                actor.is_running().await,
-                actor.resumed_turn().await,
-                match actor.native() {
-                    Ok(a) => a.ask(QueuedInputs).await.unwrap_or_default(),
-                    Err(_) => Vec::new(),
-                },
-            ),
-            None => (false, None, Vec::new()),
-        };
-        // ponytail: every row is read and rendered per page; a seq-ranged
-        // query is the upgrade if a measured session makes this slow.
-        let (history, first_seq, more, skills, context) = match read {
-            Ok(h) => {
-                let ContextHistory {
-                    revision,
-                    messages,
-                    epochs,
-                    entries,
-                    thinking,
-                    heads,
-                    snapshot,
-                } = h;
-                // The frame is the latest epoch's tail (07 §8.4); its skills
-                // are the badge (04 §2.4), read off the effective rows.
-                let from = epochs.last().map_or(0, |e| e.tail_from);
-                let at = messages.partition_point(|(seq, _)| *seq < from);
-                let tail = &messages[at..];
-                let removed = |seq: &i64| entries.get(seq).is_some_and(|e| e.removed);
-                let skills = if tail.iter().any(|(seq, _)| removed(seq)) {
-                    let kept: Vec<_> = tail.iter().filter(|(s, _)| !removed(s)).cloned().collect();
-                    skills::in_frame(&kept)
-                } else {
-                    skills::in_frame(tail)
+        ),
+        None => (false, None, Vec::new()),
+    };
+    // ponytail: every row is read and rendered per page; a seq-ranged
+    // query is the upgrade if a measured session makes this slow.
+    let (history, first_seq, more, skills, context) = match read {
+        Ok(h) => {
+            let ContextHistory {
+                revision,
+                messages,
+                epochs,
+                entries,
+                thinking,
+                heads,
+                snapshot,
+            } = h;
+            // The frame is the latest epoch's tail (07 §8.4); its skills
+            // are the badge (04 §2.4), read off the effective rows.
+            let from = epochs.last().map_or(0, |e| e.tail_from);
+            let at = messages.partition_point(|(seq, _)| *seq < from);
+            let tail = &messages[at..];
+            let removed = |seq: &i64| entries.get(seq).is_some_and(|e| e.removed);
+            let skills = if tail.iter().any(|(seq, _)| removed(seq)) {
+                let kept: Vec<_> = tail.iter().filter(|(s, _)| !removed(s)).cloned().collect();
+                skills::in_frame(&kept)
+            } else {
+                skills::in_frame(tail)
+            }
+            .into_iter()
+            .collect();
+            // A boundary sits right after the last entry completed at or
+            // before `at_seq`, i.e. before the first entry past it.
+            let mut dividers = epochs.iter().peekable();
+            let mut out = Vec::new();
+            // 125 §5.4: Advisory rows render as typed cards (`role: "advisory"`).
+            let advisories = store.advisories(m.session).await.unwrap_or_default();
+            for (seq, entry) in render_with(&messages, &entries, &thinking, &advisories) {
+                while let Some(e) = dividers.next_if(|e| e.at_seq < seq) {
+                    out.push((e.at_seq, compacted(e, heads.get(&e.n).cloned())));
                 }
-                .into_iter()
-                .collect();
-                // A boundary sits right after the last entry completed at or
-                // before `at_seq`, i.e. before the first entry past it.
-                let mut dividers = epochs.iter().peekable();
-                let mut out = Vec::new();
-                // 125 §5.4: Advisory rows render as typed cards (`role: "advisory"`).
-                let advisories = store.advisories(m.session).await.unwrap_or_default();
-                for (seq, entry) in render_with(&messages, &entries, &thinking, &advisories) {
-                    while let Some(e) = dividers.next_if(|e| e.at_seq < seq) {
-                        out.push((e.at_seq, compacted(e, heads.get(&e.n).cloned())));
-                    }
-                    out.push((seq, entry));
+                out.push((seq, entry));
+            }
+            out.extend(dividers.map(|e| (e.at_seq, compacted(e, heads.get(&e.n).cloned()))));
+            // 172: the channel that delivered each user row (`messages.channel`).
+            match store.channels(m.session).await {
+                Ok(channels) => mark_channels(&mut out, &channels),
+                Err(e) => tracing::error!(session = %m.session, "channels: {e:#}"),
+            }
+            // Durable failures sit behind their anchor's whole seq group
+            // (tool siblings, a divider), so paging keeps them with it.
+            match store.errors(m.session).await {
+                Ok(errors) if !errors.is_empty() => {
+                    out.extend(errors.into_iter().map(|(at, text)| {
+                        (
+                            at,
+                            HistoryEntry::Error {
+                                text,
+                                context: None,
+                            },
+                        )
+                    }));
+                    // Unfinished calls trail the transcript, regardless of
+                    // their older call seq (they have no completion seq).
+                    out.sort_by_key(|(seq, entry)| {
+                        (
+                            matches!(entry, HistoryEntry::Tool { result: None, .. }),
+                            *seq,
+                        )
+                    });
                 }
-                out.extend(dividers.map(|e| (e.at_seq, compacted(e, heads.get(&e.n).cloned()))));
-                // 172: the channel that delivered each user row (`messages.channel`).
-                match store.channels(m.session).await {
-                    Ok(channels) => mark_channels(&mut out, &channels),
-                    Err(e) => tracing::error!(session = %m.session, "channels: {e:#}"),
-                }
-                // Durable failures sit behind their anchor's whole seq group
-                // (tool siblings, a divider), so paging keeps them with it.
-                match store.errors(m.session).await {
-                    Ok(errors) if !errors.is_empty() => {
-                        out.extend(errors.into_iter().map(|(at, text)| {
-                            (
-                                at,
-                                HistoryEntry::Error {
-                                    text,
-                                    context: None,
-                                },
-                            )
-                        }));
-                        // Unfinished calls trail the transcript, regardless of
-                        // their older call seq (they have no completion seq).
-                        out.sort_by_key(|(seq, entry)| {
-                            (
-                                matches!(entry, HistoryEntry::Tool { result: None, .. }),
-                                *seq,
-                            )
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::error!(session = %m.session, "errors: {e:#}"),
-                }
-                // Typed provenance for replay (50 §9): the exchange rows this
-                // session consumed, keyed by the history row they became.
-                match store.consumed_exchanges(m.session).await {
-                    Ok(rows) => {
-                        let peers: HashMap<i64, PeerOrigin> = rows
-                            .into_iter()
-                            .map(|(seq, r)| (seq, origin_of(&r)))
-                            .collect();
-                        for (seq, entry) in &mut out {
-                            if let HistoryEntry::User { peer, .. } = entry
-                                && let Some(o) = peers.get(seq)
-                            {
-                                *peer = Some(o.clone());
-                            }
+                Ok(_) => {}
+                Err(e) => tracing::error!(session = %m.session, "errors: {e:#}"),
+            }
+            // Typed provenance for replay (50 §9): the exchange rows this
+            // session consumed, keyed by the history row they became.
+            match store.consumed_exchanges(m.session).await {
+                Ok(rows) => {
+                    let peers: HashMap<i64, PeerOrigin> = rows
+                        .into_iter()
+                        .map(|(seq, r)| (seq, origin_of(&r)))
+                        .collect();
+                    for (seq, entry) in &mut out {
+                        if let HistoryEntry::User { peer, .. } = entry
+                            && let Some(o) = peers.get(seq)
+                        {
+                            *peer = Some(o.clone());
                         }
                     }
-                    Err(e) => tracing::error!(session = %m.session, "consumed_exchanges: {e:#}"),
                 }
-                let (mut history, first_seq, more) = page(out, m.before, m.limit);
-                match store.inner_calls(m.session).await {
-                    Ok(mut inner) if !inner.is_empty() => {
-                        attach_inner(&mut history, &mut inner, running);
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::error!(session = %m.session, "inner_calls: {e:#}"),
+                Err(e) => tracing::error!(session = %m.session, "consumed_exchanges: {e:#}"),
+            }
+            let (mut history, first_seq, more) = page(out, m.before, m.limit);
+            match store.inner_calls(m.session).await {
+                Ok(mut inner) if !inner.is_empty() => {
+                    attach_inner(&mut history, &mut inner, running);
                 }
-                // Previews land under the tree's root (51 §4.5): the data
-                // dir for durable, the scratch dir for private.
-                let root = self.resources_for(m.session).root.clone();
-                materialize(&mut history, &messages, &epochs, &root);
-                let (editable, reason, settled) = match (&refused, native.is_some(), external) {
-                    (Some(busy), _, _) => (false, Some(busy.clone()), false),
-                    (None, _, true) => (false, Some(NOT_NATIVE.to_owned()), !running),
-                    // The actor filled these from its own idle state.
-                    (None, true, false) => (snapshot.editable, snapshot.reason, snapshot.editable),
-                    // No actor: nothing runs; a removal resumes one.
-                    (None, false, false) => (true, None, true),
-                };
-                let context = (
-                    revision,
-                    editable,
-                    reason,
-                    (!external).then_some(snapshot.estimated_tokens),
-                    settled,
-                );
-                (history, first_seq, more, skills, context)
+                Ok(_) => {}
+                Err(e) => tracing::error!(session = %m.session, "inner_calls: {e:#}"),
             }
-            Err(e) => {
-                tracing::error!(session = %m.session, "load session: {e:#}");
-                let reason = Some(format!("load session: {e:#}"));
-                (
-                    Vec::new(),
-                    None,
-                    false,
-                    Vec::new(),
-                    (String::new(), false, reason, None, false),
-                )
-            }
-        };
-        let undone = store.hidden_turns(m.session).await.unwrap_or_else(|e| {
-            tracing::error!(session = %m.session, "hidden_turns: {e:#}");
-            0
-        });
-        let (
-            model,
-            effort,
-            agent,
-            harness_model,
-            context_size,
-            name,
-            parent,
-            project,
-            kind,
-            observed,
-        ) = row
-            .map(|r| {
-                (
-                    r.model,
-                    r.effort,
-                    r.agent,
-                    r.harness_model,
-                    r.context_size,
-                    r.name,
-                    r.parent,
-                    r.project,
-                    r.kind,
-                    r.observed,
-                )
-            })
-            .unwrap_or_default();
-        // 75 §3: the harness's manifest, only where a harness exists.
-        let harness_commands = if external {
-            store.harness_commands(m.session).await.unwrap_or_else(|e| {
-                tracing::error!(session = %m.session, "harness_commands: {e:#}");
-                Vec::new()
-            })
-        } else {
-            Vec::new()
-        };
-        let (context_revision, context_editable, context_reason, context_estimate, settled) =
-            context;
-        // 47 §5.1: the committed plan, independent of paging and of a running
-        // turn; a failed read is `None` (unavailable), never an empty plan.
-        let todos = store
-            .todos(m.session)
-            .await
-            .map_err(|e| tracing::error!(session = %m.session, "todos: {e:#}"))
-            .ok();
-        self.mirror(m.session).await;
-        let communication = self.communication.0.read().state(Some(m.session)).ok();
-        // 109 W5 §10.3: the open turn's state and its partial, after everything
-        // stored. `resumed` tells a relaunched open turn from one that is
-        // simply running (no banner for the latter).
-        let (resume, partial) = self.resume_state(m.session, running, resumed).await;
-        let mut history = history;
-        history.extend(partial);
-        Loaded {
-            history,
-            running,
-            model,
-            effort,
-            queued,
-            undone,
-            agent,
-            harness_model,
-            harness_commands,
-            context_size,
-            name,
-            parent,
-            skills,
-            first_seq,
-            more,
-            context_revision,
-            context_editable,
-            context_reason,
-            context_estimate,
-            settled,
-            todos,
-            communication,
-            project,
-            retention: self.retention_of(m.session),
-            resume,
-            kind,
-            observed,
+            // Previews land under the tree's root (51 §4.5): the data
+            // dir for durable, the scratch dir for private.
+            materialize(&mut history, &messages, &epochs, root);
+            let (editable, reason, settled) = match (&refused, native.is_some(), external) {
+                (Some(busy), _, _) => (false, Some(busy.clone()), false),
+                (None, _, true) => (false, Some(NOT_NATIVE.to_owned()), !running),
+                // The actor filled these from its own idle state.
+                (None, true, false) => (snapshot.editable, snapshot.reason, snapshot.editable),
+                // No actor: nothing runs; a removal resumes one.
+                (None, false, false) => (true, None, true),
+            };
+            let context = (
+                revision,
+                editable,
+                reason,
+                (!external).then_some(snapshot.estimated_tokens),
+                settled,
+            );
+            (history, first_seq, more, skills, context)
         }
+        Err(e) => {
+            tracing::error!(session = %m.session, "load session: {e:#}");
+            let reason = Some(format!("load session: {e:#}"));
+            (
+                Vec::new(),
+                None,
+                false,
+                Vec::new(),
+                (String::new(), false, reason, None, false),
+            )
+        }
+    };
+    let undone = store.hidden_turns(m.session).await.unwrap_or_else(|e| {
+        tracing::error!(session = %m.session, "hidden_turns: {e:#}");
+        0
+    });
+    let (model, effort, agent, harness_model, context_size, name, parent, project, kind, observed) =
+        row.map(|r| {
+            (
+                r.model,
+                r.effort,
+                r.agent,
+                r.harness_model,
+                r.context_size,
+                r.name,
+                r.parent,
+                r.project,
+                r.kind,
+                r.observed,
+            )
+        })
+        .unwrap_or_default();
+    // 75 §3: the harness's manifest, only where a harness exists.
+    let harness_commands = if external {
+        store.harness_commands(m.session).await.unwrap_or_else(|e| {
+            tracing::error!(session = %m.session, "harness_commands: {e:#}");
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
+    let (context_revision, context_editable, context_reason, context_estimate, settled) = context;
+    // 47 §5.1: the committed plan, independent of paging and of a running
+    // turn; a failed read is `None` (unavailable), never an empty plan.
+    let todos = store
+        .todos(m.session)
+        .await
+        .map_err(|e| tracing::error!(session = %m.session, "todos: {e:#}"))
+        .ok();
+    // 109 W5 §10.3: the open turn's state and its partial, after everything
+    // stored. `resumed` tells a relaunched open turn from one that is
+    // simply running (no banner for the latter).
+    let (resume, partial) = Agents::resume_state(durable, m.session, running, resumed).await;
+    let mut history = history;
+    history.extend(partial);
+    Loaded {
+        history,
+        running,
+        model,
+        effort,
+        queued,
+        undone,
+        agent,
+        harness_model,
+        harness_commands,
+        context_size,
+        name,
+        parent,
+        skills,
+        first_seq,
+        more,
+        context_revision,
+        context_editable,
+        context_reason,
+        context_estimate,
+        settled,
+        todos,
+        communication: None,
+        project,
+        retention,
+        resume,
+        kind,
+        observed,
     }
 }
 
@@ -7498,33 +7381,38 @@ impl Message<ContextItems> for Agents {
 }
 
 impl Message<SessionContextBreakdown> for Agents {
-    type Reply = Result<ContextBreakdown, String>;
+    type Reply = kameo::reply::DelegatedReply<Result<ContextBreakdown, String>>;
 
+    /// 176 E1: the store reads and the session actor's ask run off the mailbox.
     async fn handle(
         &mut self,
         m: SessionContextBreakdown,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.stored(m.session).await?;
-        if let Some(a) = self.live(m.session).and_then(|a| a.native().ok())
-            && let Ok(Some(b)) = a.ask(ContextBreakdownNow).await
-        {
-            return Ok(b);
-        }
-        // Busy or not running: the stored frame, without the live turn's
-        // system prompt, calibration and provider bill.
-        let (_, head, tail) = self
-            .store_for(m.session)
-            .frame(m.session)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-        Ok(ContextBreakdown::build(
-            0,
-            head.as_ref(),
-            tail.iter().map(|(_, m)| m),
-            None,
-            None,
-        ))
+        let store = self.store_for(m.session).clone();
+        let live = self.live(m.session).and_then(|a| a.native().ok()).cloned();
+        ctx.spawn(async move {
+            store
+                .session(m.session)
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .ok_or_else(|| "unknown session".to_owned())?;
+            if let Some(a) = live
+                && let Ok(Some(b)) = a.ask(ContextBreakdownNow).await
+            {
+                return Ok(b);
+            }
+            // Busy or not running: the stored frame, without the live turn's
+            // system prompt, calibration and provider bill.
+            let (_, head, tail) = store.frame(m.session).await.map_err(|e| format!("{e:#}"))?;
+            Ok(ContextBreakdown::build(
+                0,
+                head.as_ref(),
+                tail.iter().map(|(_, m)| m),
+                None,
+                None,
+            ))
+        })
     }
 }
 
@@ -8097,6 +7985,35 @@ impl Message<SetModel> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<ModelInfo, String> {
         self.set_model(m).await
+    }
+}
+
+impl Message<crate::GetInfoDefaults> for Agents {
+    type Reply = Result<crate::InfoDefaults, String>;
+
+    /// 176 E3: the fields the per-field `Get*` handlers answer, read alike.
+    async fn handle(
+        &mut self,
+        _: crate::GetInfoDefaults,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        Ok(crate::InfoDefaults {
+            default_model: self.default_model.clone(),
+            default_effort: self.default_effort.clone(),
+            favorite_models: self.favorite_models.clone(),
+            compact_style: *self.compact_style.read().unwrap_or_else(|p| p.into_inner()),
+            subagent_timeout_secs: self.cfg.subagents.max_runtime_secs,
+            max_tool_rounds: self.cfg.max_tool_rounds,
+            stream_idle_secs: self.cfg.stream_idle_secs,
+            max_salvages: self.cfg.max_salvages,
+            communication: self
+                .communication
+                .0
+                .read()
+                .state(None)
+                .map_err(|e| e.to_string())?,
+            advisor: self.advisor_cfg.defaults(),
+        })
     }
 }
 
@@ -10747,34 +10664,40 @@ impl Message<PrivateClosed> for Agents {
 }
 
 impl Message<SessionCostQuery> for Agents {
-    type Reply = Result<Option<crate::cost::SessionCost>, String>;
+    type Reply = kameo::reply::DelegatedReply<Result<Option<crate::cost::SessionCost>, String>>;
 
+    /// 176 E1: read off the mailbox.
     async fn handle(
         &mut self,
         m: SessionCostQuery,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.store_for(m.0)
-            .session_cost(m.0)
-            .await
-            .map_err(|e| format!("{e:#}"))
+        let store = self.store_for(m.0).clone();
+        ctx.spawn(async move { store.session_cost(m.0).await.map_err(|e| format!("{e:#}")) })
     }
 }
 
 impl Message<SpendReportQuery> for Agents {
-    type Reply = Result<crate::cost::SpendReport, String>;
+    type Reply = kameo::reply::DelegatedReply<Result<crate::cost::SpendReport, String>>;
 
+    /// 176 E1: read off the mailbox.
     async fn handle(
         &mut self,
         m: SpendReportQuery,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         // The durable store only: private trees (51 §4.5) never reach the HUD's ledger.
         // 160 H5: plus the cube's placed reported money.
-        self.costs
-            .spend_report(Utc::now().timestamp_millis().max(0) as u64, m.0)
-            .await
-            .map_err(|e| format!("{e:#}"))
+        let (costs, now) = (
+            self.costs.clone(),
+            Utc::now().timestamp_millis().max(0) as u64,
+        );
+        ctx.spawn(async move {
+            costs
+                .spend_report(now, m.0)
+                .await
+                .map_err(|e| format!("{e:#}"))
+        })
     }
 }
 
@@ -10902,6 +10825,7 @@ pub async fn spawn_test_agents(
 pub(crate) mod tests {
     use super::*;
     use crate::CreateSessionOptions;
+    use crate::ObservedState;
     use crate::context::ContextAttachment;
 
     #[tokio::test]
@@ -13347,7 +13271,7 @@ pub(crate) mod tests {
         let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let counts = HashMap::from([(root, (0u16, 1u16))]);
-        let act = a.assemble_activity(&[root], &counts).await;
+        let act = a.view().assemble_activity(&[root], &counts).await;
         let act = &act[&root];
         assert_eq!(act.state, AgentState::Idle);
         assert_eq!((act.jobs, act.ptys, act.children), (0, 1, 0));
@@ -13369,7 +13293,7 @@ pub(crate) mod tests {
             root,
             (ApprovalId(uuid::Uuid::now_v7()), "bash".into(), 4_200),
         );
-        let act = a.assemble_activity(&[root], &HashMap::new()).await;
+        let act = a.view().assemble_activity(&[root], &HashMap::new()).await;
         assert_eq!(
             act[&root].state,
             AgentState::Approval {
@@ -13380,7 +13304,7 @@ pub(crate) mod tests {
         let v = serde_json::to_value(&act[&root]).unwrap();
         assert_eq!(v["waiting_since_ms"], 4_200);
         a.approvals.clear();
-        let act = a.assemble_activity(&[root], &HashMap::new()).await;
+        let act = a.view().assemble_activity(&[root], &HashMap::new()).await;
         assert_eq!(
             act[&root].waiting_since_ms, None,
             "cleared when the state leaves"
@@ -13405,7 +13329,7 @@ pub(crate) mod tests {
             .unwrap();
         a.sessions.remove(&child);
         a.running.insert(root);
-        let rows = a.activity_for(&[root, child]).await;
+        let rows = a.view().activity_for(&[root, child]).await;
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[&root].state, AgentState::Running);
         assert!(rows[&root].live && !rows[&child].live);
@@ -13413,7 +13337,7 @@ pub(crate) mod tests {
             rows[&child].last_active.is_some(),
             "cold: the store's updated_at"
         );
-        assert!(a.activity_for(&[]).await.is_empty());
+        assert!(a.view().activity_for(&[]).await.is_empty());
     }
 
     /// 62 §3.2: `ListActivity` lists every root, cold or not, and a child only
@@ -13434,7 +13358,7 @@ pub(crate) mod tests {
         a.sessions.remove(&cold_root);
         a.sessions.remove(&cold_child);
 
-        let rows = a.activity_rows().await;
+        let rows = a.view().activity_rows().await;
         let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
         assert!(ids.contains(&root) && ids.contains(&cold_root));
         assert!(ids.contains(&live_child) && !ids.contains(&cold_child));
@@ -13462,9 +13386,75 @@ pub(crate) mod tests {
             .await
             .unwrap();
         a.running.insert(child);
-        let rows = a.list_sessions().await;
+        let rows = Agents::spawn(a).ask(ListSessions).await.unwrap();
         let running = |id| rows.iter().find(|r| r.id == id).unwrap().running;
         assert!(running(child) && !running(root));
+    }
+
+    /// 176 E5: a read never holds the mailbox for its I/O. Every
+    /// `session`/`list_sessions`/`descendants` read is stalled 1 s
+    /// (`Store::set_read_delay`); while `ListActivity`, `ListAgents` or
+    /// `LoadSession` is in flight, `GetCompactStyle` answers in < 100 ms and
+    /// before it. Shown to fail without E1: with those three handlers made
+    /// to await their read inline again (the pre-176 shape), every case
+    /// failed the 100 ms bound, the style ask waiting out the stalled read.
+    #[tokio::test]
+    async fn trivial_ask_answers_while_a_read_is_in_flight() {
+        let (_scratch, mut a) = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.session(
+            Some(SessionId::new()),
+            Some((root, "kid")),
+            None,
+            (None, None),
+        )
+        .await
+        .unwrap();
+        let store = a.store.clone();
+        let agents = Agents::spawn(a);
+        store.set_read_delay(Duration::from_secs(1));
+        for which in ["ListActivity", "ListAgents", "LoadSession"] {
+            let reader = {
+                let agents = agents.clone();
+                tokio::spawn(async move {
+                    match which {
+                        "ListActivity" => {
+                            assert!(!agents.ask(ListActivity).await.unwrap().is_empty())
+                        }
+                        "ListAgents" => {
+                            let rows = agents.ask(ListAgents { session: root }).await.unwrap();
+                            assert_eq!(rows.len(), 1);
+                        }
+                        _ => {
+                            let load = LoadSession {
+                                session: root,
+                                before: None,
+                                limit: None,
+                                settled_only: false,
+                            };
+                            agents.ask(load).await.unwrap();
+                        }
+                    }
+                    Instant::now()
+                })
+            };
+            // The read is in the mailbox (and, inline, would be mid-stall).
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let asked = Instant::now();
+            agents.ask(GetCompactStyle).await.unwrap();
+            let answered = Instant::now();
+            let read_done = reader.await.unwrap();
+            assert!(
+                answered - asked < Duration::from_millis(100),
+                "{which}: GetCompactStyle took {:?}",
+                answered - asked
+            );
+            assert!(answered < read_done, "{which}: answered after the read");
+            assert!(
+                read_done - asked >= Duration::from_millis(900),
+                "{which}: the read was not stalled"
+            );
+        }
     }
 
     /// 62 §0.2, §3.3: `Running` names roots only — a running child is never
@@ -15409,7 +15399,7 @@ pub(crate) mod tests {
             .find(|r| r.address == format!("session:{child}"))
             .expect("listed");
         assert!(!row.send && !row.reply, "{row:?}");
-        let infos = a.agents(root).await;
+        let infos = a.view().agents(root).await;
         let info = infos.iter().find(|i| i.id == child).expect("in the tree");
         assert_eq!(info.state, AgentState::Running, "{info:?}");
         assert_eq!(info.kind, SessionKind::Observed);
@@ -15432,7 +15422,7 @@ pub(crate) mod tests {
         };
         assert_eq!(observed.state, ObservedState::Unknown);
         assert_eq!(observed.stop.as_deref(), Some("lost contact"));
-        let infos = a.agents(root).await;
+        let infos = a.view().agents(root).await;
         let info = infos.iter().find(|i| i.id == child).unwrap();
         assert_eq!(
             info.state,
