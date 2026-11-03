@@ -4,7 +4,7 @@
 /* Project palette classes are built from keys at runtime (project-style.ts), so the scanner never sees them. */
 @source inline("{text,bg}-project-{ochre,carnelian,malachite,faience,lapis,nile,umber,slate,sand,plum}");
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:is(.dark *):not(:where([data-snapshot-light], [data-snapshot-light] *)));
 
 /* theuth palette: warm ink on bone (docs/design/25-desktop.md §2.4). No pure #000/#FFF; accents are
    mineral (ochre, malachite, faience, carnelian). Status washes are the status colour at low alpha. */

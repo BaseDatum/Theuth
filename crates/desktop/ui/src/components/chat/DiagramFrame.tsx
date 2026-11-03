@@ -8,6 +8,7 @@ import { rasterize, standalone } from '@/lib/diagram-export'
 import { isLocal, saveBlob } from '@/lib/files'
 import { container } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
+import { useSnapshot } from '@/lib/snapshot-mode'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
 import { Reserve } from './Reserve'
@@ -244,13 +245,15 @@ export function DiagramFrame({
   const [full, setFull] = useState(false)
   const inline = useRef<HTMLDivElement>(null)
   const { entry } = useContext(FenceContext)
+  // 164 D3: a channel picture carries no toolbar; its placeholder tells the snapshot the layout is still pending.
+  const snap = useSnapshot()
   const content: Content | null = svg ? { svg } : children ? { children } : null
   /** The markup to export: mermaid's string, or the mounted `<svg>` of the React content. */
   const markup = () => svg ?? inline.current?.querySelector('svg')?.outerHTML ?? ''
   return (
     <div className={cn('group relative rounded-xl border bg-layer-1 p-2', fill ? 'flex h-full flex-col' : 'my-4')} data-streamdown={kind} title={title}>
       <div className="flex h-8 items-center px-1 font-mono text-xs text-fg-tertiary">{label}</div>
-      {content && (
+      {content && !snap && (
         <div className="absolute top-2 right-2 flex items-center gap-0.5 rounded-md bg-layer-1/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
           <Tools markup={markup} name={name} extra={<Tool icon={Maximize2} label="Fullscreen" onClick={() => setFull(true)} />} />
         </div>
@@ -259,7 +262,9 @@ export function DiagramFrame({
         {content ? (
           <Surface content={content} view={view} onView={setView} fill={fill} contentRef={inline} />
         ) : (
-          <div className="flex min-h-28 items-center justify-center text-xs text-fg-tertiary">Rendering diagram…</div>
+          <div className="flex min-h-28 items-center justify-center text-xs text-fg-tertiary" data-snapshot-pending={snap ? '' : undefined}>
+            Rendering diagram…
+          </div>
         )}
       </Reserve>
       {full && content && <Fullscreen content={content} markup={markup} name={name} onClose={() => setFull(false)} />}

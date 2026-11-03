@@ -18,9 +18,9 @@ export interface DiagramTokens {
   series: [string, string, string, string, string, string]
 }
 
-/** Current values of the CSS custom properties, resolved through their `var()` chains. */
-export function diagramTokens(): DiagramTokens {
-  const s = getComputedStyle(document.documentElement)
+/** Current values of the CSS custom properties, resolved through their `var()` chains (on `el`: a snapshot frame's palette). */
+export function diagramTokens(el: Element = document.documentElement): DiagramTokens {
+  const s = getComputedStyle(el)
   const v = (name: string, fallback: string) => s.getPropertyValue(name).trim() || fallback
   return {
     background: v('--background', '#e8dcc8'),

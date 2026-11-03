@@ -1,6 +1,7 @@
 import { JSONUIProvider, Renderer, type Spec } from '@json-render/react'
-import { Component, createContext, type ReactNode, useContext, useMemo } from 'react'
+import { Component, createContext, type ReactNode, useContext, useEffect, useMemo } from 'react'
 import type { CustomRendererProps } from 'streamdown'
+import { useSnapshot } from '@/lib/snapshot-mode'
 import { type ParseResult, parsePartial, parseSpec } from './parse'
 import { registry } from './registry'
 
@@ -23,6 +24,11 @@ export const FenceContext = createContext<FenceContext>({ running: false, hasLat
  */
 export function FenceFallback({ error, source, title }: { error: string; source: string; title?: string }) {
   const { running, hasLaterAssistant } = useContext(FenceContext)
+  // 164 D3: a channel picture of a broken fence is no picture; the snapshot answers `failed`.
+  const snap = useSnapshot()
+  useEffect(() => {
+    snap?.fail(title ? `${title}: ${error}` : error)
+  }, [snap, title, error])
   if (hasLaterAssistant) return null
   if (running) return <div className="my-4 h-24 animate-pulse rounded-xl bg-layer-2" aria-busy="true" />
   return (
