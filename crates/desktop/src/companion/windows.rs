@@ -76,7 +76,9 @@ pub fn alive() -> bool {
 }
 
 /// Quit handshake, after the engine's `shutdown` and before the sidecar stops (and before the NSIS
-/// updater replaces `companion\`, which it cannot do while the exe runs). Blocks the exiting main thread.
+/// updater replaces `companion\`, which it cannot do while the exe runs). Blocks the caller: the quit worker
+/// (163 D1), or `RunEvent::Exit` for an exit that bypassed it. Any thread: `FindWindowW`, `PostMessageW`
+/// (posts, never waits on the rail's thread), `OpenMutexW` and `TerminateProcess` have no thread affinity.
 pub fn terminate() {
     if !mutex_held() {
         return;

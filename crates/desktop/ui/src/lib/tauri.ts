@@ -47,7 +47,7 @@ export const launchLog = (): Promise<string> =>
 export const relaunch = (): Promise<Connection> =>
   isTauri() ? invoke<Connection>('relaunch') : Promise.resolve(devConnection())
 
-/** The webview finished its part of the quit sequence; the app exits now. */
+/** The webview finished its part of the quit sequence; the shell's quit worker takes it from here (163). */
 export const quitAck = (): Promise<void> =>
   isTauri() ? invoke<void>('quit_ack') : Promise.resolve()
 
@@ -57,8 +57,13 @@ const on = <T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> =>
 export const onLaunchLog = (cb: (chunk: string) => void) => on<string>('launch-log', cb)
 /** Tray menu / app menu: show the window and go to `path` (`/`, `/knowledge`, `/settings/general`). */
 export const onNavigate = (cb: (path: string) => void) => on<string>('navigate', cb)
-/** ⌘Q / tray Quit: run RPC `shutdown` if we own the daemon, then `quitAck`. */
-export const onQuitRequested = (cb: () => void) => on<null>('quit-requested', cb)
+/** `quit::Requested`: `restart` on Settings › Install and restart. */
+export type QuitRequested = { restart: boolean }
+/** `quit::Progress`: one per quit-worker step (163 D4); a second `engine` with `forced` when the daemon was killed. */
+export type QuitProgress = { step: 'companion' | 'engine' | 'closing'; forced?: boolean }
+/** ⌘Q / tray Quit / `theuth://quit` / Install and restart: show the overlay, RPC `shutdown` if we own the daemon, then `quitAck`. */
+export const onQuitRequested = (cb: (p: QuitRequested) => void) => on<QuitRequested>('quit-requested', cb)
+export const onQuitProgress = (cb: (p: QuitProgress) => void) => on<QuitProgress>('quit-progress', cb)
 /** 39 §3.3: the app downloaded and verified a newer bundle; it installs at quit. */
 export const onUpdateReady = (cb: (p: { version: string }) => void) =>
   on<{ version: string }>('update-ready', cb)

@@ -1,0 +1,15 @@
+/* 163 D5: the drain-deadline bar fills once from the quit request; duration and offset come inline. */
+.quit-drain {
+  transform-origin: left;
+  animation-name: quit-drain;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+@keyframes quit-drain {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}

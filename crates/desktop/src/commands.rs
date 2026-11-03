@@ -88,12 +88,12 @@ pub async fn relaunch(app: AppHandle) -> Result<Connection, String> {
     blocking(move || app.state::<Launch>().relaunch(&app)).await
 }
 
-/// The webview finished its part of the quit sequence (RPC `shutdown` when it
-/// owned the daemon); exit (or relaunch for an update install) now instead of at the 3 s fallback.
+/// The webview finished its part of the quit sequence (RPC `shutdown` when it owned the daemon): start the
+/// quit worker now instead of at the 3 s fallback (163). Returns at once; the worker exits the app.
 #[cfg(desktop)]
 #[tauri::command]
 pub fn quit_ack(app: AppHandle) {
-    crate::update::exit(&app);
+    crate::quit::start(&app);
 }
 
 #[cfg(desktop)]

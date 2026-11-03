@@ -59,6 +59,8 @@ public enum DeepLink {
     }
     public static func session(_ id: String) -> URL { URL(string: "theuth://c/\(id)")! }
     public static let new = URL(string: "theuth://new")!
+    /// The whole app, one quit (130 W7, 163): the shell runs its quit handshake.
+    public static let quit = URL(string: "theuth://quit")!
 }
 
 /// E5: an answer goes out only if the item is still in the latest list.
