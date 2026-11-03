@@ -333,10 +333,10 @@ fn map_err(e: SlackClientError) -> ApiError {
 pub(crate) fn session_fix(code: &str) -> &'static str {
     match code {
         "missing_agent_session_stopped_event_subscription" => {
-            "the installed Slack app is not subscribed to the agent_session_stopped bot event, so Slack shows \"Stop isn't available\" instead of a Stop button: api.slack.com/apps → theuth → Event Subscriptions → Subscribe to bot events → add agent_session_stopped → Save Changes (or paste crates/slack/manifest.yaml under App Manifest), then reinstall if Slack asks"
+            "the installed Slack app is not subscribed to the agent_session_stopped bot event, so Slack shows \"Stop isn't available\" instead of a Stop button: api.slack.com/apps → theuth → Event Subscriptions → Subscribe to bot events → add agent_session_stopped → Save Changes (or copy the manifest from Settings › Channels › Slack › App manifest and paste it under App Manifest), then reinstall if Slack asks"
         }
         "missing_scope" | "not_allowed_token_type" => {
-            "the slack_bot secret must be the bot token (xoxb-…) of an app declared as an agent (features.agent_view and chat:write in crates/slack/manifest.yaml); update the app from the manifest and reinstall it"
+            "the slack_bot secret must be the bot token (xoxb-…) of an app declared as an agent (features.agent_view and chat:write in its manifest); update the app from the manifest (copy it from Settings › Channels › Slack › App manifest and paste it under App Manifest) and reinstall it"
         }
         "feature_disabled" => {
             "agent sessions are not enabled for this workspace; a workspace admin must allow agent apps"

@@ -82,6 +82,8 @@ export const queryKeys = {
   escalateModel: ['escalate-model'] as const,
   signal: ['signal'] as const,
   slack: ['slack'] as const,
+  /** `slack_manifest()` (170 D1): static per engine build; not under `slack` so channel events never refetch it. */
+  slackManifest: ['slack-manifest'] as const,
   telegram: ['telegram'] as const,
   computer: ['computer'] as const,
   secrets: ['secrets'] as const,
