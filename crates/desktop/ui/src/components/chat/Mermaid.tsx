@@ -7,15 +7,15 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { CustomRendererProps } from 'streamdown'
 import { fnv, LruCache } from '@/lib/diagram/elk'
 import { diagramName } from '@/lib/diagram-export'
-import { diagramTokens } from '@/lib/diagram-theme'
+import { type DiagramTokens, diagramTokens } from '@/lib/diagram-theme'
 import { createRenderQueue, type RenderQueue } from '@/lib/render-queue'
+import { type SnapshotMode, useSnapshot } from '@/lib/snapshot-mode'
 import { subscribeDark } from '@/lib/theme'
 import { DiagramFrame } from './DiagramFrame'
 import { ErrorCard } from './surface/JsonRenderFence'
 
 /** 65 §4.2. `layout` unset: ELK is 12's default; a diagram's frontmatter may still say `layout: dagre`. */
-function config(): MermaidConfig {
-  const t = diagramTokens()
+function config(t: DiagramTokens = diagramTokens()): MermaidConfig {
   return {
     startOnLoad: false,
     securityLevel: 'strict',
@@ -71,9 +71,36 @@ type Request = { chart: string; incomplete: boolean }
 export const svgCache = new LruCache<string>(64)
 export const svgKey = (chart: string): string => `${fnv(chart)}:${epoch}`
 
-/** The chart's svg (the last one that rendered, kept through a broken mid-stream state) and the closed fence's error. */
+/** Renders run one at a time (mermaid queues them internally too), so a snapshot's palette swap never reaches a chat render. */
+let chain: Promise<unknown> = Promise.resolve()
+
+/**
+ * `chart` rendered; under a snapshot whose appearance is not the app's (164 D3), between an `initialize` in the
+ * snapshot frame's palette and one back in the app's.
+ */
+function render(m: Mermaid, chart: string, snap: SnapshotMode | null): Promise<{ svg: string }> {
+  const id = `mermaid-${Math.random().toString(36).slice(2)}`
+  const swap = snap !== null && (snap.appearance === 'dark') !== document.documentElement.classList.contains('dark')
+  const job = chain.then(async () => {
+    if (!swap) return m.render(id, chart)
+    m.initialize(config(diagramTokens(snap.root)))
+    try {
+      return await m.render(id, chart)
+    } finally {
+      m.initialize(config())
+    }
+  })
+  chain = job.catch(() => {})
+  return job
+}
+
+/**
+ * The chart's svg (the last one that rendered, kept through a broken mid-stream state) and the closed fence's error.
+ * A snapshot neither reads nor fills `svgCache`: its palette may not be the app's.
+ */
 function useRender(chart: string, incomplete: boolean): { svg: string | null; error: string | null } {
-  const [svg, setSvg] = useState<string | null>(() => svgCache.get(svgKey(chart)) ?? null)
+  const snap = useSnapshot()
+  const [svg, setSvg] = useState<string | null>(() => (snap ? null : (svgCache.get(svgKey(chart)) ?? null)))
   const [error, setError] = useState<string | null>(null)
   const theme = useSyncExternalStore(subscribeEpoch, () => epoch, () => epoch)
   const queue = useRef<RenderQueue<Request> | null>(null)
@@ -81,8 +108,8 @@ function useRender(chart: string, incomplete: boolean): { svg: string | null; er
     const q = createRenderQueue<Request>(async (req, isCurrent) => {
       try {
         const m = await loadMermaid()
-        const r = await m.render(`mermaid-${Math.random().toString(36).slice(2)}`, req.chart)
-        if (!req.incomplete) svgCache.set(svgKey(req.chart), r.svg)
+        const r = await render(m, req.chart, snap)
+        if (!req.incomplete && !snap) svgCache.set(svgKey(req.chart), r.svg)
         if (!isCurrent()) return
         setSvg(r.svg)
         setError(null)
@@ -92,14 +119,14 @@ function useRender(chart: string, incomplete: boolean): { svg: string | null; er
     })
     queue.current = q
     return () => q.dispose()
-  }, [])
+  }, [snap])
   useEffect(() => {
-    const hit = svgCache.get(svgKey(chart))
+    const hit = snap ? undefined : svgCache.get(svgKey(chart))
     if (hit) {
       setSvg(hit)
       setError(null)
     } else queue.current?.request({ chart, incomplete })
-  }, [chart, incomplete, theme])
+  }, [chart, incomplete, theme, snap])
   return { svg, error }
 }
 

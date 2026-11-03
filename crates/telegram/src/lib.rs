@@ -75,6 +75,8 @@ pub struct TelegramConfig {
     pub tools: ToolsMode,
     /// Reasoning text in the expandable quote.
     pub reasoning: bool,
+    /// Diagrams and surfaces in replies go out as pictures (164 D10); `false` = text fallback.
+    pub pictures: bool,
     /// Where approvals for sessions not bound to a thread go.
     pub approvals: ApprovalsMode,
     /// Tests and proofs only: overrides `https://api.telegram.org` so a live
@@ -91,6 +93,7 @@ impl Default for TelegramConfig {
             groups: Vec::new(),
             tools: ToolsMode::All,
             reasoning: true,
+            pictures: true,
             approvals: ApprovalsMode::All,
             api_host: None,
         }
@@ -948,6 +951,9 @@ mod tests {
         assert_eq!(c.owner, Some(5));
         assert!(c.enabled);
         assert!(c.reasoning);
+        assert!(c.pictures, "164 D10: pictures default on");
+        let c: TelegramConfig = serde_yaml::from_str("pictures: false\n").unwrap();
+        assert!(!c.pictures);
         assert_eq!(yaml_list(&[1u64, 2]), "[1, 2]");
         let v: Vec<i64> = serde_yaml::from_str(&yaml_list(&[-100i64, 7])).unwrap();
         assert_eq!(v, vec![-100, 7]);

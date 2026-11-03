@@ -21,6 +21,7 @@ import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { leaves, usePanes } from '@/lib/panes'
+import { installFenceSnapshot } from '@/lib/fence-snapshot'
 import { installPagePreview } from '@/lib/page-preview'
 import { container, isDesktop } from '@/lib/platform'
 import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
@@ -644,6 +645,7 @@ function Main() {
   useEffect(installMeetingListeners, [])
   // 120 §11.3: only the main window renders `page_preview` requests; a popout or the island would race it.
   useEffect(() => (AUX ? undefined : installPagePreview()), [])
+  useEffect(() => (AUX ? undefined : installFenceSnapshot()), [])
   // The shell flips both windows; each webview mirrors the value into its own settings copy.
   useEffect(() => {
     const off = onCaptureHidden((h) => useMeetingSettings.getState().setHidden(h))

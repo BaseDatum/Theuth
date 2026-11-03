@@ -99,7 +99,7 @@ fn is_diagram(c: &Component) -> bool {
 }
 
 /// The line under a diagram image: `Name: n units[, m links]` (`*StateMachine: 6 states, 9 transitions*`).
-fn caption(c: &Component) -> Option<String> {
+pub(crate) fn caption(c: &Component) -> Option<String> {
     let two =
         |name: &str, n: usize, a: &str, m: usize, b: &str| format!("{name}: {n} {a}, {m} {b}");
     let one = |name: &str, n: usize, a: &str| format!("{name}: {n} {a}");

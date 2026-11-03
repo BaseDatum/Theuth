@@ -14,7 +14,7 @@ use std::time::Duration;
 use agent::{
     AGENT_ACTOR, AgentEvent, Agents, Ancestors, NewRootSession, PeerScope, SendInput, Steer,
 };
-use artifact::ArtifactShown;
+use artifact::{ArtifactShown, snapshot};
 use async_trait::async_trait;
 use futures::StreamExt;
 use kameo::Actor;
@@ -526,9 +526,11 @@ pub(crate) struct State {
 pub(crate) struct Channel {
     pub(crate) transport: Arc<dyn SignalTransport>,
     port: Arc<dyn Port>,
-    rt: Runtime,
+    pub(crate) rt: Runtime,
     pub(crate) owner: String,
     device_name: String,
+    /// 164 D10: draw picture fences as PNGs; `false` = text fallback only.
+    pub(crate) pictures: bool,
     control: mpsc::UnboundedSender<Control>,
     // ponytail: one std mutex for all state, never held across an await; split if it ever contends.
     state: Mutex<State>,
@@ -714,6 +716,7 @@ impl Channel {
             port,
             owner,
             device_name: cfg.device_name,
+            pictures: cfg.pictures,
             control,
             state: Mutex::new(State {
                 allowed,
@@ -1829,18 +1832,48 @@ impl Channel {
             turn.prefixed = true;
             (std::mem::take(&mut turn.text), turn.voice, prefix)
         };
-        // 30 §9: json-render fences as their rendering; `markdown_to_plain`
-        // keeps the ``` lines, so the box arrives monospace-readable.
-        let plain = text::markdown_to_plain(&surface::flatten(&md, 60));
-        if !plain.trim().is_empty() {
-            match prefix {
-                Some(p) => self.send_chunks(to, &(p + &plain)).await,
-                None => self.send_chunks(to, &plain).await,
-            };
+        // 164 D9: pictures drawn by a connected client go out as PNGs in
+        // place; the rest is the D7 text. `markdown_to_plain` keeps the ```
+        // lines, so a fallback box arrives monospace-readable.
+        let mut prefix = prefix;
+        for piece in snapshot::paint(&self.rt, &md, snapshot::PHONE_WIDTH, self.pictures).await {
+            match piece {
+                snapshot::Piece::Text(t) => {
+                    let plain = text::markdown_to_plain(&t);
+                    if plain.trim().is_empty() {
+                        continue;
+                    }
+                    match prefix.take() {
+                        Some(p) => self.send_chunks(to, &(p + &plain)).await,
+                        None => self.send_chunks(to, &plain).await,
+                    };
+                }
+                snapshot::Piece::Picture(p) => {
+                    // A picture-first turn carries the 67 §10 prefix in its caption.
+                    let caption = match prefix.take() {
+                        Some(pre) => Some(
+                            pre + p
+                                .title
+                                .as_deref()
+                                .unwrap_or_else(|| p.name.trim_end_matches(".png")),
+                        ),
+                        None => p.title,
+                    };
+                    if !self
+                        .send_attachment(to, &p.png, "image/png", Some(&p.name), caption.as_deref())
+                        .await
+                    {
+                        tracing::warn!(to = %to.number, name = %p.name, "picture send failed");
+                    }
+                }
+            }
         }
         if !voice {
             return;
         }
+        let Some(spoken) = clip_text(&md) else {
+            return;
+        };
         let Ok(Some(tts)) = ActorRef::<voice::Voice>::lookup(voice::VOICE_ACTOR) else {
             return;
         };
@@ -1857,7 +1890,7 @@ impl Channel {
         turn.clip_tail = Some(tokio::spawn(async move {
             // Synthesis starts at once; only the send waits for the previous clip.
             let clip = tts
-                .ask(voice::Synthesize { text: md })
+                .ask(voice::Synthesize { text: spoken })
                 .await
                 .map_err(|e| e.to_string());
             if let Some(p) = prev {
@@ -1877,6 +1910,13 @@ impl Channel {
             }
         }));
     }
+}
+
+/// What a voice turn's clip reads (164 D9): the block without its picture
+/// fences; `None` when nothing is left to say.
+fn clip_text(md: &str) -> Option<String> {
+    let spoken = surface::strip_pictures(md);
+    (!spoken.trim().is_empty()).then(|| spoken.into_owned())
 }
 
 /// Asks the `"signal"` actor so `lib.rs` keeps config persistence in one place.
@@ -2159,6 +2199,10 @@ mod tests {
 
     /// An unstarted channel (call `start` for the supervisor tests).
     async fn fixture() -> Fixture {
+        fixture_with(cfg()).await
+    }
+
+    async fn fixture_with(cfg: SignalConfig) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -2180,7 +2224,7 @@ mod tests {
         let handle = Handle {
             chan: Arc::new(Channel::new(
                 Arc::new(transport.clone()),
-                cfg(),
+                cfg,
                 rt,
                 Arc::clone(&stub) as Arc<dyn Port>,
                 tx,
@@ -2194,6 +2238,86 @@ mod tests {
             events,
             _dir: dir,
         }
+    }
+
+    /// A client that draws every requested fence as `png` (164 D3), counting requests.
+    #[derive(Actor)]
+    struct FakeRenderer {
+        png: Vec<u8>,
+        hits: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Message<snapshot::FenceSnapshotRequested> for FakeRenderer {
+        type Reply = ();
+        async fn handle(&mut self, m: snapshot::FenceSnapshotRequested, _: &mut Context<Self, ()>) {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            snapshot::answer(
+                m.id,
+                snapshot::FenceSnapshotAnswer::done(
+                    &self.png,
+                    1120,
+                    600,
+                    artifact::preview::Client::Desktop,
+                ),
+            );
+        }
+    }
+
+    /// Installs the live feed and a renderer on `f`'s bus; returns its request counter.
+    async fn fake_renderer(f: &Fixture, png: &[u8]) -> Arc<std::sync::atomic::AtomicUsize> {
+        let (tx, rx) = tokio::sync::broadcast::channel::<Arc<serde_json::Value>>(4);
+        artifact::preview::watch_feed(tx);
+        std::mem::forget(rx);
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let actor = FakeRenderer::spawn_with_mailbox(
+            FakeRenderer {
+                png: png.to_vec(),
+                hits: Arc::clone(&hits),
+            },
+            runtime::subscriber_mailbox(),
+        );
+        f.chan
+            .rt
+            .subscribe::<FakeRenderer, snapshot::FenceSnapshotRequested>(&actor)
+            .await;
+        hits
+    }
+
+    /// A PNG the snapshot engine accepts: signature + IHDR.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut b = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        b.extend(b"IHDR");
+        b.extend(w.to_be_bytes());
+        b.extend(h.to_be_bytes());
+        b.extend([8, 6, 0, 0, 0]);
+        b
+    }
+
+    /// A titled Graph fence between two lines of prose.
+    const GRAPH_REPLY: &str = "Here is the flow:\n\n```json-render\n{\"root\":\"g\",\"elements\":{\"g\":{\"type\":\"Graph\",\
+        \"props\":{\"title\":\"Data flow\",\"nodes\":[{\"id\":\"api\",\"label\":\"API\"},{\"id\":\"db\",\"label\":\"Postgres\"}],\
+        \"edges\":[{\"from\":\"api\",\"to\":\"db\",\"label\":\"reads\"}]}}}}\n```\n\nThat is all.\n";
+
+    /// Drives one turn whose reply is `reply`; the items sent.
+    async fn reply_turn(f: &Fixture, reply: &str) -> Vec<SentItem> {
+        let session = f.stub.session;
+        f.chan.handle_envelope(env(OWNER, 10, "status?")).await;
+        f.chan.handle_event(Event::Agent(started(session))).await;
+        f.chan
+            .handle_event(Event::Agent(AgentEvent::TextDelta {
+                session,
+                turn: runtime::TurnId(Uuid::nil()),
+                text: reply.into(),
+            }))
+            .await;
+        f.chan
+            .handle_event(Event::Agent(finished(session, "end_turn")))
+            .await;
+        f.transport
+            .sent()
+            .into_iter()
+            .filter(|s| matches!(s, SentItem::Text { .. } | SentItem::Attachment { .. }))
+            .collect()
     }
 
     fn env(from: &str, ts: u64, text: &str) -> SignalEnvelope {
@@ -2771,28 +2895,21 @@ mod tests {
         );
     }
 
-    /// 30 §9: a `json-render` fence arrives as a monospace block of its
-    /// rendering, not its JSON.
-    #[tokio::test]
-    async fn json_render_fence_arrives_flattened() {
+    /// 30 §9 / 164 D7: with no client to draw it, a `json-render` fence
+    /// arrives as a monospace block of its rendering, not its JSON.
+    #[tokio::test(start_paused = true)]
+    async fn json_render_fence_without_renderer_arrives_flattened() {
         let f = fixture().await;
-        let session = f.stub.session;
-        f.chan.handle_envelope(env(OWNER, 10, "status?")).await;
-        f.chan.handle_event(Event::Agent(started(session))).await;
         let reply = "Status:\n\n```json-render\n{\"root\":\"c\",\"elements\":{\
             \"c\":{\"type\":\"Card\",\"props\":{\"title\":\"Rollout\"},\"children\":[\"l\"]},\
             \"l\":{\"type\":\"Checklist\",\"props\":{\"items\":[{\"text\":\"schema migration\",\"done\":true}]}}}}\n```\n";
-        f.chan
-            .handle_event(Event::Agent(AgentEvent::TextDelta {
-                session,
-                turn: runtime::TurnId(Uuid::nil()),
-                text: reply.into(),
-            }))
-            .await;
-        f.chan
-            .handle_event(Event::Agent(finished(session, "end_turn")))
-            .await;
-        let sent = f.transport.sent();
+        let sent = reply_turn(&f, reply).await;
+        assert!(
+            !sent
+                .iter()
+                .any(|s| matches!(s, SentItem::Attachment { .. })),
+            "{sent:?}"
+        );
         let text = sent
             .iter()
             .find_map(|s| match s {
@@ -2803,6 +2920,106 @@ mod tests {
         assert!(text.contains("```\n╭"), "{text}");
         assert!(text.contains("[x] schema migration"), "{text}");
         assert!(!text.contains("\"type\""), "{text}");
+        // A Graph nobody drew is its adjacency box, never the JSON.
+        let sent = reply_turn(&f, GRAPH_REPLY).await;
+        let texts: Vec<&str> = sent
+            .iter()
+            .filter_map(|s| match s {
+                SentItem::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let graph = texts
+            .iter()
+            .find(|t| t.starts_with("Here is the flow:"))
+            .expect("graph reply sent");
+        assert!(
+            graph.contains("API") && graph.contains("That is all."),
+            "{graph}"
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.contains("\"root\"") || t.contains("\"type\"")),
+            "{texts:?}"
+        );
+    }
+
+    /// 164 D6/D9: a fence a client draws goes out as a PNG in its place —
+    /// text before, picture (title as caption, slug as name), text after.
+    #[tokio::test]
+    async fn drawn_fence_is_a_picture_between_its_prose() {
+        let f = fixture().await;
+        let image = png(1120, 600);
+        let hits = fake_renderer(&f, &image).await;
+        let sent = reply_turn(&f, GRAPH_REPLY).await;
+        assert_eq!(sent.len(), 3, "{sent:?}");
+        assert!(
+            matches!(&sent[0], SentItem::Text { to, text, .. } if to == OWNER && text == "Here is the flow:"),
+            "{:?}",
+            sent[0]
+        );
+        assert_eq!(
+            sent[1],
+            SentItem::Attachment {
+                to: OWNER.into(),
+                mime: "image/png".into(),
+                bytes: image,
+                file_name: Some("data-flow.png".into()),
+                caption: Some("Data flow".into()),
+            }
+        );
+        assert!(
+            matches!(&sent[2], SentItem::Text { text, .. } if text == "That is all."),
+            "{:?}",
+            sent[2]
+        );
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        for s in &sent {
+            if let SentItem::Text { text, .. } = s {
+                assert!(
+                    !text.contains("\"root\"") && !text.contains("\"type\""),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    /// 164 D10: `signal.pictures: false` sends the D7 text and asks no client.
+    #[tokio::test]
+    async fn pictures_off_sends_fallback_text_and_requests_nothing() {
+        let f = fixture_with(SignalConfig {
+            pictures: false,
+            ..cfg()
+        })
+        .await;
+        let hits = fake_renderer(&f, &png(1120, 600)).await;
+        let sent = reply_turn(&f, GRAPH_REPLY).await;
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let SentItem::Text { text, .. } = &sent[0] else {
+            panic!("{:?}", sent[0]);
+        };
+        assert!(text.starts_with("Here is the flow:"), "{text}");
+        assert!(
+            text.contains("API") && text.ends_with("That is all."),
+            "{text}"
+        );
+        assert!(
+            !text.contains("\"root\"") && !text.contains("\"type\""),
+            "{text}"
+        );
+    }
+
+    /// 164 D9: the voice clip never reads a fence body; a picture-only block has no clip.
+    #[test]
+    fn clip_text_skips_pictures() {
+        assert_eq!(
+            clip_text(GRAPH_REPLY).as_deref(),
+            Some("Here is the flow:\n\n\n\nThat is all.\n")
+        );
+        assert_eq!(clip_text("```mermaid\ngraph LR\n  A --> B\n```\n"), None);
+        assert_eq!(clip_text("plain").as_deref(), Some("plain"));
     }
 
     /// Every send driven by a bus event carries the ACI the inbound envelope

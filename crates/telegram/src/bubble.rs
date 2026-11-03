@@ -6,10 +6,12 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use artifact::snapshot::{PHONE_WIDTH, Picture, Piece, paint};
 use parking_lot::Mutex;
+use surface::{PictureFence, PicturePart};
 use tokio::time::Instant;
 
-use crate::api::{self, ApiError, MsgRef};
+use crate::api::{self, ApiError, MsgRef, OutFile};
 use crate::threads::OpenMsg;
 use crate::worker::{WorkerCtx, WorkerNote, brand};
 
@@ -71,6 +73,18 @@ impl Reasoning {
         }
     }
 
+    /// The text as shown: a picture fence never leaks its body (164 D2) —
+    /// `_drawing…_` while the run streams (D8), its D7 text once it ended.
+    #[must_use]
+    pub fn shown(&self) -> std::borrow::Cow<'_, str> {
+        let text = self.text.trim_end();
+        if self.live() {
+            surface::picture_preview(text)
+        } else {
+            surface::flatten(text, artifact::snapshot::FALLBACK_COLUMNS).into()
+        }
+    }
+
     /// The expandable quote, or nothing when there is no text.
     #[must_use]
     pub fn quote(&self) -> String {
@@ -80,7 +94,7 @@ impl Reasoning {
         format!(
             "**{}**\n<blockquote expandable>\n{}\n</blockquote>\n\n",
             self.heading.as_deref().unwrap_or("thinking"),
-            self.text.trim_end()
+            self.shown().trim_end()
         )
     }
 
@@ -191,7 +205,8 @@ impl Bubble {
         self.reasoning.take()
     }
 
-    /// Reasoning (+ draft indicator) above `raw[..upto]`, branded.
+    /// Reasoning (+ draft indicator) above `raw[..upto]`, branded. Live text:
+    /// a picture fence shows as `_drawing…_` (164 D8).
     fn render(&self, ctx: &WorkerCtx, draft: bool, upto: usize) -> String {
         let mut out = String::new();
         if let Some(r) = &self.reasoning {
@@ -200,7 +215,7 @@ impl Bubble {
             }
             out.push_str(&r.quote());
         }
-        out.push_str(&self.text.raw()[..upto]);
+        out.push_str(&surface::picture_preview(&self.text.raw()[..upto]));
         brand(ctx, &out)
     }
 
@@ -240,7 +255,8 @@ impl Bubble {
                         return;
                     }
                     if self.plain {
-                        send_plain(ctx, &self.text.raw()[self.sent..committed]).await;
+                        let rest = &self.text.raw()[self.sent..committed];
+                        send_plain(ctx, &surface::picture_preview(rest)).await;
                         self.sent = committed;
                         self.dirty = false;
                         self.last_call = Instant::now();
@@ -286,7 +302,11 @@ impl Bubble {
         }
     }
 
-    /// Persists the block (+ footer) as one message; `false` when empty.
+    /// Persists the block (+ footer): the text as rich messages, every
+    /// closed picture fence as a photo between them (164 D6, D7, D9);
+    /// `false` when empty. The first text piece is the bubble's message
+    /// (reasoning quote above, edited in place in Edit mode); the footer
+    /// rides on the last text piece or goes out on its own after a picture.
     pub async fn close(mut self, ctx: &WorkerCtx, footer: Option<&str>) -> bool {
         self.text.finish();
         if let Some(r) = &mut self.reasoning {
@@ -296,57 +316,168 @@ impl Bubble {
             if let Mode::Edit { msg: Some(m) } = self.mode {
                 note_open(ctx, m, false);
             }
-            return false;
+            // The turn ended on a picture (its bubble already closed): the footer is never lost.
+            return match footer {
+                Some(f) => {
+                    send_md(ctx, f).await;
+                    true
+                }
+                None => false,
+            };
         }
-        let raw_len = self.text.raw().len();
-        let mut md = self.render(ctx, false, raw_len);
-        if let Some(f) = footer {
-            md.push_str("\n\n");
-            md.push_str(f);
+        // Plain fallback: `raw[..sent]` already went out as plain chunks.
+        let plain = self.plain && matches!(self.mode, Mode::Edit { msg: None });
+        let from = if plain { self.sent } else { 0 };
+        let mut pieces = paint(
+            &ctx.rt,
+            &self.text.raw()[from..],
+            PHONE_WIDTH,
+            ctx.cfg.pictures,
+        )
+        .await;
+        let footer_alone = match (footer, pieces.last_mut()) {
+            (Some(f), Some(Piece::Text(t))) => {
+                t.push_str("\n\n");
+                t.push_str(f);
+                None
+            }
+            (f, _) => f,
+        };
+        let (head, rest) = match pieces.split_first() {
+            Some((Piece::Text(t), rest)) => (Some(t.as_str()), rest),
+            _ => (None, pieces.as_slice()),
+        };
+        if plain {
+            if let Some(h) = head {
+                send_plain(ctx, h).await;
+            }
+        } else {
+            self.place(ctx, head).await;
         }
-        match self.mode {
-            Mode::Edit { msg: None } if self.plain => {
-                let mut rest = self.text.raw()[self.sent..].to_owned();
-                if let Some(f) = footer {
-                    rest.push_str("\n\n");
-                    rest.push_str(f);
-                }
-                send_plain(ctx, &rest).await;
+        for p in rest {
+            match p {
+                Piece::Text(t) if plain => send_plain(ctx, t).await,
+                Piece::Text(t) => send_md(ctx, t).await,
+                Piece::Picture(p) => send_picture(ctx, p).await,
             }
-            Mode::Draft { .. } | Mode::Edit { msg: None } => {
-                if let Err(e) = send_rich_or_plain(ctx, &md).await {
-                    report(ctx, &e, "bubble close");
-                }
-            }
-            Mode::Edit { msg: Some(m) } => {
-                match ctx.api.edit_rich(&m, &md, None).await {
-                    Ok(()) => {}
-                    Err(e) if api::is_not_modified(&e) => {}
-                    Err(e) if api::is_gone_message(&e) => {
-                        if let Err(e) = send_rich_or_plain(ctx, &md).await {
-                            report(ctx, &e, "bubble close");
-                        }
-                    }
-                    Err(e) => report(ctx, &e, "bubble close"),
-                }
-                note_open(ctx, m, false);
-            }
+        }
+        if let Some(f) = footer_alone {
+            send_md(ctx, f).await;
         }
         true
     }
 
-    /// Over the soft cap: `(head, tail)` where `head` ends at a block
-    /// boundary (or, for one giant block, at its last newline with the fence
-    /// closed and re-opened in `tail`).
+    /// The bubble's own message: reasoning quote + `head`, sent (Draft, no
+    /// message yet) or edited in place (Edit). A message that held only the
+    /// live preview of a picture (no quote, no head) is deleted.
+    async fn place(&self, ctx: &WorkerCtx, head: Option<&str>) {
+        let mut md = self
+            .reasoning
+            .as_ref()
+            .map(Reasoning::quote)
+            .unwrap_or_default();
+        md.push_str(head.unwrap_or_default());
+        let md = md.trim_end();
+        match self.mode {
+            Mode::Draft { .. } | Mode::Edit { msg: None } => {
+                if !md.is_empty() {
+                    send_md(ctx, md).await;
+                }
+            }
+            Mode::Edit { msg: Some(m) } => {
+                if md.is_empty() {
+                    if let Err(e) = ctx.api.delete_message(&m).await {
+                        report(ctx, &e, "bubble delete");
+                    }
+                } else {
+                    match ctx.api.edit_rich(&m, &brand(ctx, md), None).await {
+                        Ok(()) => {}
+                        Err(e) if api::is_not_modified(&e) => {}
+                        Err(e) if api::is_gone_message(&e) => send_md(ctx, md).await,
+                        Err(e) => report(ctx, &e, "bubble close"),
+                    }
+                }
+                note_open(ctx, m, false);
+            }
+        }
+    }
+
+    /// `(head, tail)` at the next block boundary: after a closed picture
+    /// fence (164 D9), else over the soft cap (98 §8.5). Never inside a
+    /// picture fence: an open one closes into a boundary of its own.
     #[must_use]
     pub fn split(&self) -> Option<(String, String)> {
-        split_at_cap(self.text.raw(), self.text.committed())
+        let raw = self.text.raw();
+        let first = surface::picture_parts(raw)
+            .into_iter()
+            .find_map(|p| match p {
+                PicturePart::Picture(f) => Some(f),
+                PicturePart::Text(_) => None,
+            });
+        if let Some(f) = first {
+            let cut = picture_cut(raw, &f)?;
+            let tail = raw[cut..].trim_start_matches('\n');
+            return Some((raw[..cut].to_owned(), tail.to_owned()));
+        }
+        split_at_cap(raw, self.text.committed())
     }
 
     /// Replaces the text with `head` so `close` persists exactly that.
     pub fn truncate_to(&mut self, head: &str) {
         self.text = markdown::Text::complete(head);
     }
+}
+
+/// Byte offset in `raw` just past picture fence `f`'s closing line break; `None` while it
+/// is open or its closing line has no line break yet (a bare closing run may still grow
+/// into content, e.g. ```` ```text ````).
+fn picture_cut(raw: &str, f: &PictureFence<'_>) -> Option<usize> {
+    let end = f.range.end;
+    f.closed
+        .then(|| raw[end..].find('\n'))
+        .flatten()
+        .map(|i| end + i + 1)
+}
+
+/// A painted picture as a photo (document past Telegram's photo limits,
+/// `api::file_kind`), captioned with its title (164 D6, D9).
+pub async fn send_picture(ctx: &WorkerCtx, p: &Picture) {
+    let file = OutFile {
+        name: p.name.clone(),
+        mime: "image/png".to_owned(),
+        bytes: p.png.clone(),
+    };
+    if let Err(e) = ctx
+        .api
+        .send_file(&ctx.to, &file, p.title.as_deref(), None)
+        .await
+    {
+        report(ctx, &e, "picture");
+    }
+}
+
+/// Paints `md` (164 D6, D7) and sends it in order: text as rich messages,
+/// `lead` prefixed to the first (or alone when the text was only pictures),
+/// pictures as photos.
+pub async fn send_painted(ctx: &WorkerCtx, lead: &str, md: &str) {
+    let pieces = paint(&ctx.rt, md, PHONE_WIDTH, ctx.cfg.pictures).await;
+    let mut lead = Some(lead);
+    for p in &pieces {
+        match p {
+            Piece::Text(t) => {
+                send_md(ctx, &format!("{}{t}", lead.take().unwrap_or_default())).await
+            }
+            Piece::Picture(p) => send_picture(ctx, p).await,
+        }
+    }
+    if let Some(l) = lead.filter(|l| !l.trim().is_empty()) {
+        send_md(ctx, l.trim_end()).await;
+    }
+}
+
+/// `send_rich_or_plain` of the branded `md` (it reports its own failures).
+async fn send_md(ctx: &WorkerCtx, md: &str) {
+    let _ = send_rich_or_plain(ctx, &brand(ctx, md)).await;
 }
 
 /// `(head, tail)` of `raw` once it crosses [`BUBBLE_SOFT_MAX`] (98 §8.5).
@@ -549,5 +680,85 @@ mod tests {
     fn clip_counts_the_rest() {
         assert_eq!(clip("abcdef", 3), "abc… (3 more chars)");
         assert_eq!(clip("ab", 3), "ab");
+    }
+
+    /// 164-Z live proof: a model that repeats the fence while thinking must not leak its body
+    /// through the reasoning quote — `_drawing…_` while it streams, the D7 text once it ended.
+    #[test]
+    fn reasoning_never_shows_a_picture_fence_body() {
+        let spec = r#"{"root":"g","elements":{"g":{"type":"Graph","props":{"nodes":[{"id":"a","label":"Alpha"},{"id":"b","label":"Beta"}],"edges":[{"from":"a","to":"b"}]}}}}"#;
+        let mut r = Reasoning::start();
+        r.text = format!("Let me reproduce it:\n\n```json-render\n{spec}\n```\n\nDone.");
+        let leaks = |s: &str| {
+            s.contains(r#""root""#) || s.contains("```json-render") || s.contains(r#""elements""#)
+        };
+        let live = r.quote();
+        assert!(!leaks(&live), "{live}");
+        assert!(
+            live.contains(surface::DRAWING) && live.contains("Done."),
+            "{live}"
+        );
+        // still typing the fence: nothing of the body either
+        r.text = format!("Let me reproduce it:\n\n```json-render\n{}", &spec[..40]);
+        assert!(!leaks(&r.quote()), "{}", r.quote());
+        r.text = format!("Let me reproduce it:\n\n```json-render\n{spec}\n```\n\nDone.");
+        r.end(Some(1000));
+        let ended = r.quote();
+        assert!(
+            !leaks(&ended) && ended.contains("Alpha") && ended.contains("thought 1 s"),
+            "{ended}"
+        );
+    }
+
+    /// 164 D9: the cut lands just past the closing fence line's break; none while the fence
+    /// is open or its closing line has no break yet.
+    #[test]
+    fn picture_cut_ends_at_the_closing_line() {
+        fn first(raw: &str) -> PictureFence<'_> {
+            surface::picture_parts(raw)
+                .into_iter()
+                .find_map(|p| match p {
+                    PicturePart::Picture(f) => Some(f),
+                    PicturePart::Text(_) => None,
+                })
+                .expect("a picture fence")
+        }
+        let raw = "a\n\n```mermaid\ngraph LR\n```\n\nb\n```mermaid\nx\n```";
+        let cut = picture_cut(raw, &first(raw)).unwrap();
+        assert_eq!(&raw[..cut], "a\n\n```mermaid\ngraph LR\n```\n");
+        assert_eq!(&raw[cut..], "\nb\n```mermaid\nx\n```");
+        let tail = &raw[cut..];
+        assert_eq!(picture_cut(tail, &first(tail)), None, "no break after");
+        let crlf = "```mermaid\nx\r\n```\r\nb";
+        assert_eq!(picture_cut(crlf, &first(crlf)), Some(crlf.len() - 1));
+        let open = "a\n```mermaid\ngraph LR\n";
+        assert_eq!(picture_cut(open, &first(open)), None);
+    }
+
+    /// 164: over the cap inside an open picture fence the bubble waits for the
+    /// fence to close rather than cutting its body; a closed one cuts at once.
+    #[test]
+    fn split_never_cuts_inside_a_picture_fence() {
+        let mut text = markdown::Text::new();
+        text.push("intro\n\n```mermaid\n");
+        while text.raw().len() < BUBBLE_SOFT_MAX + 100 {
+            text.push("A --> B\n");
+        }
+        let b = Bubble {
+            mode: Mode::Edit { msg: None },
+            text,
+            sent: 0,
+            dirty: false,
+            last_call: Instant::now(),
+            opened: Instant::now(),
+            reasoning: None,
+            plain: false,
+        };
+        assert!(b.split().is_none(), "open picture fence: wait");
+        let mut b = b;
+        b.push("```\n\nafter");
+        let (head, tail) = b.split().unwrap();
+        assert!(head.starts_with("intro\n\n```mermaid\n") && head.ends_with("\n```\n"));
+        assert_eq!(tail, "after");
     }
 }

@@ -9,6 +9,7 @@ import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import type { z } from 'zod'
 import { Button } from '@/components/ui/button'
+import { useSnapshot } from '@/lib/snapshot-mode'
 import { cn } from '@/lib/utils'
 import type { excerptProps } from './catalog'
 import { excerptLines } from './parse'
@@ -42,7 +43,9 @@ export function Excerpt({ path, text, start = 1, lang, caption, mark, symbol, ac
     }
   }, [lang, text])
   const marked = (n: number) => (mark ?? []).some(([a, b]) => a! <= n && n <= b!)
-  const capped = !full && !all && lines.length > VISIBLE_ROWS
+  // 164: a channel picture has no copy button and cannot scroll or click "Show all": every row, no chrome.
+  const snap = useSnapshot()
+  const capped = !full && !snap && !all && lines.length > VISIBLE_ROWS
   return (
     <div className="flex flex-col overflow-hidden rounded-md border text-xs" data-streamdown="excerpt">
       <div className="flex items-center gap-2 border-b bg-layer-2 py-1 pr-1 pl-3 font-mono text-fg-tertiary">
@@ -55,14 +58,16 @@ export function Excerpt({ path, text, start = 1, lang, caption, mark, symbol, ac
           {lang && <> · {lang}</>}
         </span>
         {chip}
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Copy excerpt"
-          onClick={() => navigator.clipboard.writeText(text).then(() => toast.message('Copied'), () => toast.error('Copy failed'))}
-        >
-          <Copy />
-        </Button>
+        {!snap && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Copy excerpt"
+            onClick={() => navigator.clipboard.writeText(text).then(() => toast.message('Copied'), () => toast.error('Copy failed'))}
+          >
+            <Copy />
+          </Button>
+        )}
       </div>
       <div className="overflow-auto font-mono leading-5" style={capped ? { maxHeight: VISIBLE_ROWS * ROW_PX } : undefined}>
         <div className="min-w-max py-0.5">

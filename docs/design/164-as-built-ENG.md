@@ -1,0 +1,116 @@
+# 164 as built — ENG (channel pictures, engine side)
+
+Branch `feat/164-eng` off main `cc757054` + the contract commit `e9eebf92`. Crates touched: `surface`, `artifact`, `rpc`, `signal`, `telegram`, `slack`, and — granted by the orchestrator for this one change — `crates/agent/src/user.rs` (+ `Cargo.lock`: the `telegram → surface` edge only). The contract (`164-channel-pictures.md`) is unchanged; deviations are listed below.
+
+## Ask
+
+Sky (2026-11-03): on Signal, Telegram and Slack, render json-render and the other diagrams, attach them as images to the message and omit the raw JSON; the desktop/mobile UI stays exactly as it is.
+
+## Shared core
+
+### `surface` — `crates/surface/src/pictures.rs` (new; `flatten.rs` deleted, its `flatten` moved here)
+- `PictureLang` (`:31`): `json-render` / `jsonrender` / `mermaid` / `openui`, matched on the info string's first word, ASCII case-insensitive (`PictureLang::of`).
+- `PictureFence { lang, body, closed, range }` (`:74`) with `fallback(width)` (D7; unclosed → placeholder), `title()` (root element's `title` prop, read generically through `serde_json::to_value(component)["props"]["title"]`), `alt()` (first non-blank line of `export::lower`, markdown markers trimmed, ≤ 1000 chars; else title/caption; else `diagram` / `interactive panel`). `range` = the fence lines in the split text, same convention as `fences::Fence::range` (the channels need it to cut bubbles at a fence).
+- `PicturePart { Text, Picture }`, `picture_parts(text)` (`:141`).
+- `picture_fallback(lang, body, width)` (`:173`), D7 exactly: parsed json-render → `spec_lines_text` box in a plain ``` block when it fits, else the compacted `export::lower` markdown (blank-line runs collapsed, ≤ 3500 bytes), else `[<title or export caption or "diagram"> — open theuth to see it]`; mermaid → `mermaid_lines(body, 60)` box, else placeholder; openui and unparsable json-render → placeholder (`interactive panel` / `diagram`). Every result is checked against ```` ```json-render ````, ```` ```jsonrender ````, ```` ```mermaid ````, ```` ```openui ```` and `{"root"`; a hit becomes the placeholder (a spec whose Text says ```` ```mermaid ```` cannot smuggle a fence out).
+- `picture_preview(text)` (`:203`, D8): every picture fence, open or closed, → the line `_drawing…_` (`DRAWING`); a trailing opener still typing its info string (```` ```mer ````) counts too.
+- `strip_pictures(text)` (`:225`): the text without picture fences — what voice clips read (D9 "the TTS clip never reads a fence body").
+- `flatten(text, width)` (`:243`): every picture fence → `PictureFence::fallback`. Last line of defence; now never leaks a body (wide/broken json-render, mermaid, openui, unclosed all → D7).
+- `export::caption` made `pub(crate)` for the placeholder label.
+
+### `artifact::snapshot` — `crates/artifact/src/snapshot.rs` (new)
+- Contract types (`:54`–`:135`), every one `#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]`; `From<PictureLang> for FenceLang`; `FenceSnapshotAnswer::done(png_bytes, w, h, client)` (base64 inside) for Rust-side answerers (the channel tests' fake clients — no base64 dependency in the channel crates).
+- `answer(id, answer) -> bool` (`:236`): `true` while pending; first terminal wins; `Started` extends.
+- `render(rt, lang, source, width, appearance, scale) -> SnapshotOutcome` (`:271`): cache hit → `Done` at once; no event subscriber (`preview::feed_live()` false) → `NoRenderer` at once, nothing published; engine in back-off → `NoRenderer` at once; else publish `FenceSnapshotRequested`, wait (3 s for `Started`, 20 s total from the request), check a `Done`, publish `FenceSnapshotResolved`. A `Done` is decoded (standard base64), must start with the PNG signature + `IHDR`, have non-zero sides and be ≤ 4 MiB (`MAX_PNG`); anything else is `Failed(reason)`. A dropped render future removes its pending entry (`Unpend` guard).
+- D3 back-off: a 3 s no-`Started` window sets a 60 s back-off; any later answer of that engine — including a late one for an already resolved id (64 recent ids remembered) — clears it.
+- D5 cache: last 64 `Done` PNGs per engine, key sha256(lang, appearance, width, scale, source).
+- Engine = the runtime's bus (`rt.bus.id()`): production has one `Runtime` (cloned everywhere), so cache and back-off are engine-wide; every test's own `Runtime` is isolated.
+- `paint(rt, text, width, pictures) -> Vec<Piece>` (`:444`): the channels' one entry point. Splits with `picture_parts`, requests every drawable fence concurrently (`join_all`), returns in order `Piece::Text(markdown)` (prose + D7 text of what nobody drew, merged, trimmed, never empty) and `Piece::Picture(Picture { png, width, height, title, alt, name })`. Not requested: `pictures: false`, unclosed fences, json-render that does not parse (straight to the placeholder). `name` = title slug (≤ 40 chars) `.png`, else `diagram.png` / `panel.png`. Consts `PHONE_WIDTH` 560, `SLACK_WIDTH` 720, `SCALE` 2, `FALLBACK_COLUMNS` 60 (D4).
+
+### `rpc`
+- `bridge.rs:17,135-136,207-208`: `FenceSnapshotRequested` / `FenceSnapshotResolved` forwarded to every client like the page-preview events.
+- `export.rs:593-597`: the five types in the ts export list.
+- `api.rs:680` trait `answer_fence_snapshot(id, answer) -> bool`, impl `:4713` → `artifact::snapshot::answer`.
+- Request size: the client connection is jsonrpsee 0.26.1's server with the default `max_request_body_size` = `TEN_MB_SIZE_BYTES` = 10 485 760 bytes (`jsonrpsee-server-0.26.1/src/server.rs:366`; `rpc/src/lib.rs:212` only sets `max_connections`). A 4 MiB PNG is 5 592 408 base64 chars; the full answer request is ~5.6 MB. Proven by `api::tests::fence_snapshot::a_four_mib_png_passes_the_websocket` (real `accept` server, authenticated `WsClient`, 4 194 304-byte PNG → `true`, decoded intact). No limit raised.
+
+## Channels, per decision
+
+### D2, D6, D7 — Signal (`crates/signal`)
+- `channel.rs` `flush()`: `paint(&self.rt, &md, PHONE_WIDTH, self.pictures)`; `Text` → `markdown_to_plain` → `send_chunks`; `Picture` → `send_attachment(to, png, "image/png", Some(name), title)`. The 67 §10 `"<Title> — "` prefix goes on the first piece of the turn; when that is a picture, it goes into the caption (`"<Title> — <caption or file stem>"`). A failed picture send is logged and the rest of the block still goes out.
+- Voice: the clip text is `surface::strip_pictures(md)` (`clip_text`); nothing left → no clip.
+- `user.rs` `UserSink::deliver`: same painting, then the files as before; any failed send → `Err("signal: send failed")` (unchanged contract).
+- Other paths audited: approvals/asks cards, errors, advisories, slash-command replies carry no model markdown → unchanged. `surface::flatten` no longer called in the crate.
+
+### D2, D6–D9 — Telegram (`crates/telegram`)
+- D9 boundary: `Bubble::split` (`bubble.rs`) cuts just past the first CLOSED picture fence's closing line break (`picture_cut`, from `PictureFence::range`); while the first picture fence is open, or its closing line has no line break yet (a bare closing run may still grow into content), nothing is cut — neither at the fence nor at the soft cap, so no body is ever split. The `TextDelta` handler loops on `split`: close the head, speak, open a new bubble with the tail.
+- `Bubble::close` paints the block: the first `Text` piece is the bubble's message exactly as before (reasoning quote, branding, edit in place / send); later `Text` pieces are new rich messages; `Picture` → `send_file(OutFile { name, "image/png", png }, caption = title)`. The footer rides on the last text piece; a turn ending on a picture sends it alone (an empty bubble with a footer now sends the footer instead of losing it).
+- D8: `Bubble::render` (draft text and the Edit-mode committed prefix) and the Edit plain-fallback slice go through `surface::picture_preview`.
+- D9 photo vs document: `api::file_kind(mime, bytes)` reads a PNG's IHDR; `photo_fits(len, w, h)` = ≤ 10 MB, w + h ≤ 10000, long/short ≤ 20; otherwise `sendDocument`. The rule lives in the one send path, so every PNG upload (artifacts too) obeys it.
+- Voice: `Turn::speak` feeds `strip_pictures(unspoken)`.
+- `user.rs` deliveries and the `MessageDelivered` peer text are painted (lead `⟵ **from**` on the first text piece). The child task note (`channel.rs`) is a note that cannot carry a picture → `surface::flatten`.
+
+### D2, D6–D9, D11 — Slack (`crates/slack`)
+- `bubble.rs` `Bubble::parts`: per picture fence, in order: closed `json-render` that `slack_blocks` renders within the remaining budget (blocks on) → Block Kit exactly as before (design 110 ruling); any other closed picture fence → a picture (`artifact::snapshot::render` at 720 / light / 2); the first unsettled fence ends the list (everything after it is held). A picture fence is a bubble boundary: text before it is appended/edited, the bubble closed, the PNG uploaded into the thread (`upload_file`, title = `PictureFence::title()` else `diagram`, `alt_txt` = `alt()`), the text after it opens the next bubble. No PNG / upload error / `pictures: false` / unparsable json-render → the D7 text in place (remembered in `fallbacks`, never re-requested).
+- D8 stream: `streamable()` stops at the first unsettled picture fence (open, closed-not-posted, closing line without its break, or a half-typed opener incl. a bare backtick run). Stream mode shows no `_drawing…_` (see deviations); update mode shows prose + `_drawing…_` until the fence settles. Rotation and repair never cut inside or past a held fence.
+- `api.rs` `UploadFile` gained `title` and `alt`; the real `upload_file` sends `alt_txt` on `files.getUploadURLExternal` (the only alt-text slot in the files v2 flow) and `title` (falls back to the name) on `files.completeUploadExternal`.
+- D11 `prompt.rs`: "Diagrams (json-render, mermaid) arrive as pictures; Alert, Callout, Table, Bars, Sparkline, Metric, MetricGrid, KeyValueList and Checklist arrive as native blocks; no openui." Its test updated.
+- `user.rs` deliveries: same classifier (`bubble::pieces`): text posts, blocks, uploads in order; attachments last with the trailing text as `initial_comment`. Voice clip text → `strip_pictures`. Child/peer result card and a child's `▸ task` line have no file slot → `surface::flatten`.
+
+### D10
+`signal.pictures`, `telegram.pictures`, `slack.pictures`: `bool`, serde default `true` (each struct's `Default`); `false` → `paint(.., false)` / D7 text only, nothing requested. Read at channel construction like the other render switches (not live-reloaded). No Settings UI change.
+
+### `message_user` — `crates/agent/src/user.rs`
+`MessageUserTool` now hands the sinks `text: args.text` (was `surface::flatten(&args.text, 60)`); `Outbound.text` is documented as the model's markdown, picture fences included, which every sink must draw or flatten. Every consumer of `Outbound.text` in the workspace (grep of `impl UserSink`, `RegisterUserSink`, `Outbound {`):
+- `signal::channel::Handle` (`crates/signal/src/user.rs`) — paints: PNG attachments in place, D7 text otherwise.
+- `telegram::channel::Handle` (`crates/telegram/src/user.rs`) — paints: photos/documents in place.
+- `slack::channel::Handle` (`crates/slack/src/user.rs`) — Block Kit for block-capable json-render, uploads for the rest, D7 text otherwise.
+- `agent::user::tests::Fake` — test sink, records the text.
+- `UserChannels`' `Deliver` handler only routes to the sinks. No other sink or `Outbound.text` reader exists, so no other place needed `surface::flatten`. Producers `schedule` (`lib.rs:1745`) and `autoresearch` (`actor.rs:1654`, `world.rs:965`) already sent raw text.
+Test: `message_user_text_is_flattened` → `message_user_text_reaches_the_sinks_unflattened` (the sink receives the json-render fence verbatim). With this, test (g) of every channel (`UserSink::deliver` with a raw fence → picture in place) covers `message_user` end to end.
+
+### D1, D12
+No transcript, desktop or TUI code touched; in `agent` only the `message_user` hand-off above. The engine code is platform-independent Rust.
+
+## Deviations and decisions (with reasons)
+
+1. **`message_user` pictures needed an `agent` edit.** `crates/agent/src/user.rs:210` flattened the text before the sinks saw it. Reported mid-run; the orchestrator granted the edit (section "`message_user`" above). Resolved on this branch.
+2. **No subscriber → `NoRenderer` at once, without starting the back-off**, and "no rpc bridge at all" (`FEED` unset) counts as no subscriber (page_preview waits 2 s there). The check is free, so re-evaluating it lets pictures start the moment a client connects; the 60 s back-off only spares the 3 s wait it exists for.
+3. **`TimedOut` / `Failed` do not start the back-off**: a renderer exists; only `NoRenderer` from the 3 s window does (D3 wording).
+4. **`Done` width/height come from the PNG header**, not the answer's numbers (the bytes are the truth; Telegram's photo limits use them); a PNG without IHDR or with a zero side is `Failed`.
+5. **Back-off and cache are per engine (runtime bus)** rather than process statics: identical in production, isolated in tests (a test's no-renderer case cannot disable another test's renderer).
+6. **Additions to the brief's API**: `PictureFence.range`, `picture_preview`, `strip_pictures`, `paint` / `Piece` / `Picture`, `FenceSnapshotAnswer::done`, the width/scale consts — so the three channels share one implementation instead of three.
+7. **`flatten` on an unclosed picture fence** now emits the placeholder (it used to keep it verbatim) — `flatten` runs on final texts.
+8. **Slack stream mode shows no `_drawing…_`**: `appendStream` is append-only and `stopStream` cannot replace text, so the line would cost a retracting `chat.update` per picture; Slack's own `processing` status covers the pause. Update mode shows it. D2 (no body) holds in both.
+9. **Telegram photo vs document via `file_kind(mime, bytes)` reading the IHDR** instead of a new flag on `OutFile`/`Sender`: no call-site churn, and the rule sits in the one send path.
+10. **Signal picture-first prefix in the caption** (67 §10 "once per turn" kept without reopening the state lock).
+11. **Lowering cap 3500 bytes** for the D7 markdown (fits one Telegram message with room); over it → placeholder.
+12. **Renders are awaited inline** by each channel's turn task (Signal `flush`, Telegram worker, Slack worker tick): deterministic ordering, matching D6; the cost is a stall of ≤ 3 s per unit with a connected-but-silent client once per 60 s, ≤ 20 s for a client that starts and never finishes.
+13. **Contract amendment: `SnapshotId` → `FenceSnapshotId`** (orchestrator, 13:52). The contract's `SnapshotId` collided with `sandbox::vm::SnapshotId` (`crates/sandbox/src/vm/mod.rs:250`), which already exports `bindings/SnapshotId.ts`. Renamed in Rust itself: `pub struct FenceSnapshotId(pub uuid::Uuid)` (`#[serde(transparent)]`, ts-rs export → `bindings/FenceSnapshotId.ts` = `export type FenceSnapshotId = string;`); `FenceSnapshotRequested.id`, `FenceSnapshotResolved.id` and `answer_fence_snapshot(id: FenceSnapshotId, answer)` use it; the bindings import `./FenceSnapshotId`. Wire JSON is unchanged (a UUID string). `bindings/SnapshotId.ts` is the sandbox's alone again. The orchestrator amends `164-channel-pictures.md` at integration.
+
+## Tests
+
+- surface (`pictures.rs`): `langs_are_the_first_word_case_insensitive`, `parts_split_a_mixed_reply_in_order` (prose + Graph + mermaid + openui + rust + broken + unclosed, with ranges; `strip_pictures`), `fallback_goldens_for_every_branch`, `titles_and_alt_text`, `no_fixture_fallback_leaks_the_body` (every `fixtures/json-render/*.json`, valid and broken, at 60 and 20 columns, through `picture_fallback` and `flatten`: no fence info string, no `{"root"`, never the body), `flatten_never_leaks_a_body`, `preview_never_shows_a_body_while_streaming` (every prefix of a streamed reply). `render.rs`: `flatten_replaces_only_renderable_json_render_fences` → `flatten_replaces_every_picture_fence` (broken json-render, unrenderable mermaid and the unclosed fence are now placeholders — changed on purpose, D7).
+- artifact (`snapshot.rs`): `wire_shapes_match_the_contract`, `round_trip_started_then_done`, `failed_answer_is_failed`, `no_subscriber_is_no_renderer_at_once`, `silence_is_no_renderer_after_three_seconds_then_backs_off` (paused time; late answer ends the back-off), `started_without_an_answer_times_out_at_twenty_seconds`, `cache_hit_skips_the_request` (other width = other key; engines do not share), `bad_pngs_fail` (bad base64, non-PNG, zero side, 4 MiB + 1; exactly 4 MiB passes), `paint_keeps_order_and_falls_back`, `paint_requests_every_fence_at_once` (two timeouts in 20 s, not 40), `file_names`.
+- rpc (`api.rs` `fence_snapshot`): `first_done_wins_and_late_answers_are_refused` (Capture style), `a_four_mib_png_passes_the_websocket`.
+- signal: added `drawn_fence_is_a_picture_between_its_prose` (a), `pictures_off_sends_fallback_text_and_requests_nothing` (c), `clip_text_skips_pictures`, `user::raw_fence_is_delivered_as_a_picture_in_place` (g); `json_render_fence_arrives_flattened` → `json_render_fence_without_renderer_arrives_flattened` (b; now also a Graph fence, no attachment).
+- telegram: added `picture_fence_is_a_block_boundary_with_the_photo_in_place` (a), `no_renderer_sends_the_text_fallback` (b), `pictures_off_falls_back_without_a_request` (c), `streamed_fence_never_shows_its_body_in_a_draft` (d), `photo_limits_at_each_boundary` + `oversize_picture_goes_out_as_a_document` (e), `raw_fence_is_delivered_as_a_photo_in_place` + `pictures_off_delivers_fallback_text` (g), `turn_ending_on_a_picture_keeps_its_footer`, `group_edit_mode_places_the_photo_between_messages`, `delivered_message_carries_its_picture`, `spoken_text_drops_picture_fences`, `picture_cut_ends_at_the_closing_line`, `split_never_cuts_inside_a_picture_fence`; extended `send_file_picks_photo_voice_or_document`, `file_kind_by_mime_and_size`, `config_defaults_and_lowercase_modes`; `long_turn_rotates_at_block_boundary_and_reopens_fence` now expects the trimmed persisted text (paint trims trailing blank lines, which Telegram drops anyway).
+- slack: added `graph_fence_streams_as_a_picture_between_its_text` (a, stream), `graph_fence_in_update_mode_is_a_picture_between_its_text` (a, update), `graph_fence_without_a_renderer_is_its_fallback_text` (b), `pictures_off_sends_the_fallback_and_requests_nothing` (c), `fence_streamed_byte_by_byte_never_leaks` (d), `block_capable_fence_stays_blocks_while_graph_is_a_picture` (f, blocks on and off), `footer_follows_a_reply_that_ends_in_a_picture`, `user::picture_fence_in_a_delivery_uploads_in_place` (g); renamed to the new behaviour: `json_render_fence_streams_flattened_when_blocks_are_off` → `json_render_fence_is_a_picture_when_blocks_are_off`, `unsupported_fence_streams_flattened` → `unsupported_fence_streams_as_its_fallback_without_a_renderer`, `fence_blocks_cap_at_fifty_per_bubble` → `fence_over_the_fifty_block_cap_is_a_picture`; prompt and config tests updated.
+- No fixture or golden file was regenerated.
+
+## Gates (all run on the final tree)
+
+1. `cargo fmt -p surface -p artifact -p rpc -p signal -p telegram -p slack` — clean; `crates/agent/src/user.rs` formatted with `rustfmt --edition 2024` on that file only (agent is not rustfmt-clean on main).
+2. `BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx clippy -p surface -p artifact -p rpc -p signal -p telegram -p slack --all-targets --no-deps -- -D warnings` — exit 0; the only warnings printed are the pre-existing `link` `fetch_update` and `mcp-server` rmcp deprecations from dependencies.
+3. `BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx test -p surface -p artifact -p rpc -p signal -p telegram -p slack --lib --no-run` — exit 0; `mbx test -p surface -p artifact -p rpc -p signal -p telegram -p slack --lib` — run 1: all green except the listed flake `slack channel::tests::observed_child_is_a_watch_row_on_the_board_and_gets_no_thread`; that test alone: 1 passed; run 2 (full): artifact 95, rpc 61, signal 69, slack 162, surface 104, telegram 139 — all passed.
+   With `-p agent` added after the `message_user` change: `BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx test -p surface -p artifact -p rpc -p signal -p telegram -p slack -p agent --lib --no-run` — exit 0; `mbx test` with the same seven crates — artifact 95, rpc 61, signal 69, slack 162, surface 104, telegram 139 all passed; agent 658 passed, 4 failed, all outside this change and reproducible alone (`/tmp/164eng-test-agent-rerun.log`): `sensor::tests::{fs_exists_through_monty, monty_budgets_and_allowlist, pr_watch_type_checks}` and `loop_::runtime_bridge_tests::guessed_direct_calls_are_bridged_or_refused` — every one needs the monty worker pool, which crashes on this machine with "unsupported protocol version 6 (server supports protocol version 5)" (an installed worker older than the client; `monty_budgets_and_allowlist` is also on the listed-flake list). `capping_binds_out_name` passed in this run. `user::tests::message_user_text_reaches_the_sinks_unflattened` passed.
+   Clippy with agent: `BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx clippy -p surface -p artifact -p rpc -p signal -p telegram -p slack -p agent --all-targets --no-deps -- -D warnings -A deprecated` — exit 0 (`-A deprecated` per the build rules: without it the run stops on the pre-existing `fetch_update` in `crates/agent/src/loop_/thinking_tests.rs:52`).
+4. `BUILD_SLOTS=1 BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` — 8 passed (re-run after the `FenceSnapshotId` rename). New in `bindings/`: `FenceSnapshotId.ts`, `FenceLang.ts`, `FenceSnapshotRequested.ts`, `FenceSnapshotResolved.ts`, `FenceSnapshotAnswer.ts` (the requested/resolved events import `./FenceSnapshotId`); `methods.json` gains `answer_fence_snapshot`; `SnapshotId.ts` is untouched sandbox output. Shapes match the amended contract (ts-rs adds JSDoc comments).
+
+After the rename (final tree): build `BUILD_LABEL=164-ENG ~/.theuth/bin/build-lock mbx test -p surface -p artifact -p rpc -p signal -p telegram -p slack -p agent --lib --no-run` — exit 0; `mbx test` with the same seven crates — artifact 95, rpc 61, signal 69, slack 162, surface 104, telegram 139 passed; agent 657 passed, 5 failed: the four monty-worker tests above, plus `advisor::tests::advisors_contract` (an "event within 10s" wait under full-suite load; alone: 1 passed, `/tmp/164eng-test-advisor.log`). Clippy with agent (command above) — exit 0. `cargo fmt` on the six crates — clean.
+
+## Residual risks / open items
+
+- Relay-served web clients (link records, 64 KiB chunks reassembled) were not measured for a 6 MB message; the desktop shell and a direct browser connection go through the 10 MiB jsonrpsee limit proven above.
+- Telegram: whether a sent photo clears a live `sendMessageDraft` like a sent rich message is [INFERENCE] from the existing close path (the photo always follows a closed bubble, so a stale draft is not expected).
+- A render future dropped mid-wait (channel task aborted) removes its pending entry but cannot publish `FenceSnapshotResolved` from `Drop`; the client's own timeout tears its frame down.
+- Channel turn tasks wait for drawings inline (decision 12).

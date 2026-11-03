@@ -16,6 +16,8 @@ voice = { workspace = true }
 roster = { workspace = true }
 mesh = { workspace = true }
 link = { workspace = true }
+# 164: picture fences (split, D7 fallback, live preview) for replies and deliveries.
+surface = { workspace = true }
 # Stage-2 seams (98 contract §1): `markdown` for RENDER (Text, plain, chunks, urls),
 # `tasks` for ROUTE (MarkAnswered), `mime_guess` for ROUTE (inbox names). Pre-added so
 # no worker edits this file.

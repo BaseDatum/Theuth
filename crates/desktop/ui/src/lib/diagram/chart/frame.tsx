@@ -2,9 +2,9 @@
 // token colours, `min-width` = viewBox width inside an `overflow-x: auto` wrapper), the hooks a `<NameView>` needs
 // (theme tokens, the unit contract, the legend toggle) and the `DiagramFrame` + tooltip host. The pure `<NameSvg>`s
 // take a `Units` so a test renders them with `staticUnits()` and no hooks.
-import { type KeyboardEvent, type ReactNode, useId, useMemo, useRef, useSyncExternalStore } from 'react'
-import { type DiagramTokens, diagramTokens } from '../../diagram-theme'
-import { subscribeDark } from '../../theme'
+import { type KeyboardEvent, type ReactNode, useId, useRef } from 'react'
+import type { DiagramTokens } from '../../diagram-theme'
+import { useThemeTokens } from '../../snapshot-mode'
 import { DiagramFrame } from '@/components/chat/DiagramFrame'
 import { svgA11y } from '../a11y'
 import { useLegend } from '../legend'
@@ -86,16 +86,6 @@ export function ChartSvg({ name, id, title, desc, W, H, tokens: t, interactive, 
   )
 }
 
-/** Theme tokens, re-read when the theme flips. */
-export function useTokens(): DiagramTokens {
-  const dark = useSyncExternalStore(
-    subscribeDark,
-    () => document.documentElement.classList.contains('dark'),
-    () => false,
-  )
-  return useMemo(diagramTokens, [dark])
-}
-
 /** `useLegend()`'s shape (the kernel exports the hook, not the type). */
 export interface LegendToggle {
   hidden: readonly string[]
@@ -113,7 +103,7 @@ export interface ChartHooks {
 /** The hooks every `<NameView>` runs: tokens, the unit contract over `ids`, the legend toggle. */
 export function useChart(opts: { ids: readonly string[]; incident?: (id: string) => readonly string[]; highlight?: readonly string[]; onSelect?: (id: string) => void }): ChartHooks {
   const id = useId().replace(/:/g, '')
-  const tokens = useTokens()
+  const tokens = useThemeTokens()
   const units = useUnits(opts)
   const legend = useLegend()
   return { id, tokens, units, legend }

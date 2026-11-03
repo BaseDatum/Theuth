@@ -46,7 +46,9 @@ pub struct Outbound {
     pub sessions: Vec<SessionId>,
     /// `session <last 8> · <title>` for the fallback pass; the sink decides how to show it.
     pub origin: String,
-    /// Markdown; Signal receives it as plain text.
+    /// Markdown as the model wrote it, picture fences included (164): each sink sends
+    /// `json-render`/`mermaid`/`openui` fences as pictures or their text fallback
+    /// (`surface::flatten` for a sink that cannot send pictures). Signal receives it as plain text.
     pub text: String,
     /// Validated by the tool: regular files, at most [`MAX_FILE`] each, with their guessed MIME.
     pub files: Vec<OutboundFile>,
@@ -206,8 +208,8 @@ impl Tool for MessageUserTool {
         let m = Outbound {
             sessions: chain.iter().map(|a| a.id).collect(),
             origin,
-            // 30 §9: json-render fences as their text rendering on chat channels.
-            text: surface::flatten(&args.text, 60),
+            // 164 D9: raw; every sink draws or flattens the picture fences itself.
+            text: args.text,
             files,
         };
         Ok(match channels.ask(Deliver { m, via: args.via }).await {
@@ -454,10 +456,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// 30 §9: the delivered body carries a `json-render` fence as its
-    /// rendering, not its JSON.
+    /// 164 D9: the delivered body is the text as written, fences included; the
+    /// sinks draw them (or stand their D7 text in), so none is flattened here.
     #[tokio::test]
-    async fn message_user_text_is_flattened() {
+    async fn message_user_text_reaches_the_sinks_unflattened() {
         let a = Fake::new("slack", true, false);
         channels(std::slice::from_ref(&a))
             .await
@@ -486,8 +488,11 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         let texts = a.texts.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        assert!(texts[0].starts_with("Status:\n\n```\n╭"), "{}", texts[0]);
-        assert!(texts[0].contains("[x] schema migration"), "{}", texts[0]);
-        assert!(!texts[0].contains("\"type\""), "{}", texts[0]);
+        assert!(
+            texts[0].starts_with("Status:\n\n```json-render\n{\"root\":\"c\""),
+            "{}",
+            texts[0]
+        );
+        assert!(texts[0].ends_with("}}}}\n```\n"), "{}", texts[0]);
     }
 }

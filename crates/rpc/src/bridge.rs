@@ -14,6 +14,7 @@ use agent::{
 use app::AppCallChanged;
 use artifact::ArtifactShown;
 use artifact::preview::{PagePreviewRequested, PagePreviewResolved};
+use artifact::snapshot::{FenceSnapshotRequested, FenceSnapshotResolved};
 use autoresearch::StudyEvent;
 use browser::BrowserEvent;
 use codeindex::CodeindexEvent;
@@ -131,6 +132,8 @@ forward!(
     ArtifactShown,
     PagePreviewRequested,
     PagePreviewResolved,
+    FenceSnapshotRequested,
+    FenceSnapshotResolved,
     SecretsEvent,
     ScrapeProgress,
     UpdateReady,
@@ -201,6 +204,8 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, ArtifactShown>(&actor).await;
     rt.subscribe::<Bridge, PagePreviewRequested>(&actor).await;
     rt.subscribe::<Bridge, PagePreviewResolved>(&actor).await;
+    rt.subscribe::<Bridge, FenceSnapshotRequested>(&actor).await;
+    rt.subscribe::<Bridge, FenceSnapshotResolved>(&actor).await;
     rt.subscribe::<Bridge, SecretsEvent>(&actor).await;
     rt.subscribe::<Bridge, ScrapeProgress>(&actor).await;
     rt.subscribe::<Bridge, UpdateReady>(&actor).await;
