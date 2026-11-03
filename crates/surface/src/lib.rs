@@ -5,8 +5,9 @@
 //! on failure, then validation that reports every problem with a JSON Pointer path.
 //! [`check`] runs that over every fence in a finished reply. [`spec_lines`] and
 //! [`mermaid_lines`] render to [`markdown::Line`]s at a width; [`fence`] is the
-//! `markdown` hook over both, and [`flatten`] replaces renderable fences in a text for
-//! channels that only carry text. The catalog the prompt and the skill show
+//! `markdown` hook over both. For chat channels (164), [`picture_parts`] splits a reply at
+//! the fences a client draws as pictures, [`picture_fallback`] and [`flatten`] stand text in
+//! for them and [`picture_preview`] hides them from a streaming draft. The catalog the prompt and the skill show
 //! ([`catalog_compact`], [`catalog_schema`]) is read off the same types.
 //! UI-agnostic: the TUI, the text channels and (via ts-rs) the desktop consume this.
 
@@ -15,10 +16,10 @@ mod catalog;
 mod elk_family;
 pub mod export;
 mod fences;
-mod flatten;
 /// 147 §6.5: `graph::to_mermaid` / `graph::from_mermaid` for the CodeMap generator and export.
 pub mod graph;
 mod mermaid;
+mod pictures;
 pub mod prompt;
 mod render;
 mod sequence;
@@ -28,8 +29,11 @@ mod validate;
 
 pub use catalog::{catalog_compact, catalog_schema};
 pub use fences::json_render_fences;
-pub use flatten::flatten;
 pub use mermaid::mermaid_lines;
+pub use pictures::{
+    DRAWING, PictureFence, PictureLang, PicturePart, flatten, picture_fallback, picture_parts,
+    picture_preview,
+};
 pub use prompt::*;
 pub use render::{fence, spec_lines};
 pub use slack::{SlackBlocksError, slack_blocks};

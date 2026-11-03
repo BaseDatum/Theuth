@@ -10,7 +10,7 @@
 //!   plugin (46 §3): [`Commit`], [`GetRecord`], [`ClaimInvocation`],
 //!   [`CompleteInvocation`], [`MarkInvocationUnknown`], [`GetInvocation`],
 //!   [`ListInvocations`]
-//! - events: [`ArtifactShown`]
+//! - events: [`ArtifactShown`]; [`snapshot`]'s fence pictures for chat channels (164)
 
 pub mod archive;
 pub mod export;
@@ -20,6 +20,7 @@ pub mod mesh;
 pub mod pdf;
 pub mod preview;
 pub mod search;
+pub mod snapshot;
 pub mod sniff;
 pub mod store;
 pub mod svg;

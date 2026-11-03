@@ -677,6 +677,15 @@ pub trait Api {
         id: artifact::preview::PreviewId,
         answer: artifact::preview::PagePreviewAnswer,
     ) -> RpcResult<bool>;
+    /// A client's answer to a `FenceSnapshotRequested` (164 D3): `Started`
+    /// extends the wait, the first `Done`/`Failed` resolves it. `true` while
+    /// the request was pending.
+    #[method(name = "answer_fence_snapshot")]
+    async fn answer_fence_snapshot(
+        &self,
+        id: artifact::snapshot::SnapshotId,
+        answer: artifact::snapshot::FenceSnapshotAnswer,
+    ) -> RpcResult<bool>;
     /// Every catalog model whose provider is configured.
     #[method(name = "list_models")]
     async fn list_models(&self) -> RpcResult<Vec<ModelInfo>>;
@@ -4699,6 +4708,14 @@ impl ApiServer for Server {
         answer: artifact::preview::PagePreviewAnswer,
     ) -> RpcResult<bool> {
         Ok(artifact::preview::answer(id, answer))
+    }
+
+    async fn answer_fence_snapshot(
+        &self,
+        id: artifact::snapshot::SnapshotId,
+        answer: artifact::snapshot::FenceSnapshotAnswer,
+    ) -> RpcResult<bool> {
+        Ok(artifact::snapshot::answer(id, answer))
     }
 
     async fn list_models(&self) -> RpcResult<Vec<ModelInfo>> {
@@ -10217,6 +10234,187 @@ mod tests {
             assert!(h.answer(other_id, &done(200)).await);
             assert!(!first.await.unwrap().is_error);
             assert!(!second.await.unwrap().is_error);
+        }
+    }
+
+    /// 164 D3: the fence snapshot round trip against the real `answer_fence_snapshot`
+    /// dispatch, and a full-size answer over a real authenticated WebSocket.
+    mod fence_snapshot {
+        use super::*;
+
+        use artifact::snapshot::{
+            Appearance, Client, FenceLang, FenceSnapshotAnswer, FenceSnapshotRequested,
+            FenceSnapshotResolved, SnapshotId, SnapshotOutcome,
+        };
+        use kameo::actor::Spawn;
+        use kameo::message::Context;
+        use tokio::sync::{broadcast, mpsc};
+
+        /// Bus subscriber: `(resolved, id)` of every request and resolution, in order.
+        #[derive(kameo::Actor)]
+        struct Capture(mpsc::UnboundedSender<(bool, SnapshotId)>);
+
+        impl Message<FenceSnapshotRequested> for Capture {
+            type Reply = ();
+            async fn handle(&mut self, m: FenceSnapshotRequested, _: &mut Context<Self, ()>) {
+                let _ = self.0.send((false, m.id));
+            }
+        }
+
+        impl Message<FenceSnapshotResolved> for Capture {
+            type Reply = ();
+            async fn handle(&mut self, m: FenceSnapshotResolved, _: &mut Context<Self, ()>) {
+                let _ = self.0.send((true, m.id));
+            }
+        }
+
+        /// A runtime with a capture on its bus and a live event feed (no subscriber at all
+        /// short-circuits to "no renderer").
+        async fn harness() -> (Runtime, mpsc::UnboundedReceiver<(bool, SnapshotId)>) {
+            let (tx, rx) = broadcast::channel::<crate::bridge::Event>(4);
+            artifact::preview::watch_feed(tx);
+            std::mem::forget(rx);
+            if let Ok(Some(b)) =
+                ActorRef::<crate::bridge::Bridge>::lookup(crate::bridge::BRIDGE_ACTOR)
+                && let Ok(tx) = b.ask(crate::bridge::Feed).await
+            {
+                std::mem::forget(tx.subscribe());
+            }
+            let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+            let (tx, events) = mpsc::unbounded_channel();
+            let cap = Capture::spawn(Capture(tx));
+            rt.subscribe::<Capture, FenceSnapshotRequested>(&cap).await;
+            rt.subscribe::<Capture, FenceSnapshotResolved>(&cap).await;
+            (rt, events)
+        }
+
+        fn render(rt: &Runtime, source: &str) -> tokio::task::JoinHandle<SnapshotOutcome> {
+            let (rt, source) = (rt.clone(), source.to_owned());
+            tokio::spawn(async move {
+                artifact::snapshot::render(
+                    &rt,
+                    FenceLang::JsonRender,
+                    &source,
+                    560,
+                    Appearance::Light,
+                    2,
+                )
+                .await
+            })
+        }
+
+        /// A PNG header `w`×`h` padded with zeros to `len` bytes.
+        fn png(w: u32, h: u32, len: usize) -> Vec<u8> {
+            let mut b = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+            b.extend(b"IHDR");
+            b.extend(w.to_be_bytes());
+            b.extend(h.to_be_bytes());
+            b.resize(len.max(24), 0);
+            b
+        }
+
+        fn done(bytes: &[u8]) -> FenceSnapshotAnswer {
+            FenceSnapshotAnswer::Done {
+                png: base64::engine::general_purpose::STANDARD.encode(bytes),
+                width: 1,
+                height: 1,
+                client: Client::Desktop,
+            }
+        }
+
+        /// The raw `answer_fence_snapshot` result.
+        async fn answer(
+            methods: &jsonrpsee::Methods,
+            id: SnapshotId,
+            answer: &FenceSnapshotAnswer,
+        ) -> bool {
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","method":"answer_fence_snapshot","params":[{},{}],"id":1}}"#,
+                serde_json::to_string(&id).unwrap(),
+                serde_json::to_string(answer).unwrap()
+            );
+            let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+            v["result"].as_bool().unwrap_or_else(|| panic!("{v}"))
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn first_done_wins_and_late_answers_are_refused() {
+            let (rt, mut events) = harness().await;
+            let methods: jsonrpsee::Methods = Server::new(rt.clone()).into_rpc().into();
+            let call = render(&rt, "{\"a\":1}");
+            let (resolved, id) = events.recv().await.unwrap();
+            assert!(!resolved);
+            let started = FenceSnapshotAnswer::Started {
+                client: Client::Web,
+            };
+            assert!(answer(&methods, id, &started).await);
+            let pic = png(1120, 600, 64);
+            assert!(answer(&methods, id, &done(&pic)).await);
+            assert!(
+                !answer(&methods, id, &done(&pic)).await,
+                "second Done is late"
+            );
+            assert!(
+                !answer(&methods, id, &started).await,
+                "Started after Done is late"
+            );
+            assert_eq!(
+                call.await.unwrap(),
+                SnapshotOutcome::Done {
+                    png: pic,
+                    width: 1120,
+                    height: 600,
+                    client: Client::Desktop
+                }
+            );
+            assert_eq!(events.recv().await.unwrap(), (true, id));
+        }
+
+        /// The largest PNG a client sends (4 MiB → ~5.6 MB of base64, ~6 MB with the
+        /// envelope) fits the server's request limit (jsonrpsee's default 10 MiB) over a
+        /// real authenticated WebSocket.
+        #[tokio::test]
+        async fn a_four_mib_png_passes_the_websocket() {
+            use jsonrpsee::core::client::ClientT;
+            use jsonrpsee::rpc_params;
+            use jsonrpsee::ws_client::{HeaderMap, HeaderValue, WsClientBuilder};
+
+            let (rt, mut events) = harness().await;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let methods: jsonrpsee::Methods = Server::new(rt.clone()).into_rpc().into();
+            tokio::spawn(crate::accept(
+                listener,
+                methods,
+                "t".into(),
+                std::future::pending(),
+            ));
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", HeaderValue::from_static("Bearer t"));
+            let client = WsClientBuilder::default()
+                .set_headers(headers)
+                .build(format!("ws://{addr}"))
+                .await
+                .unwrap();
+
+            let call = render(&rt, "{\"big\":true}");
+            let (_, id) = events.recv().await.unwrap();
+            let pic = png(4000, 8000, artifact::snapshot::MAX_PNG);
+            let answer = done(&pic);
+            let body = serde_json::to_string(&answer).unwrap().len();
+            assert!(body > 5_500_000, "{body}");
+            let ok: bool = client
+                .request("answer_fence_snapshot", rpc_params![id, answer])
+                .await
+                .unwrap();
+            assert!(ok);
+            match call.await.unwrap() {
+                SnapshotOutcome::Done { png, height, .. } => {
+                    assert_eq!((png.len(), height), (artifact::snapshot::MAX_PNG, 8000));
+                }
+                other => panic!("{other:?}"),
+            }
         }
     }
 }

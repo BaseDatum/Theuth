@@ -1656,15 +1656,16 @@ mod tests {
     }
 
     #[test]
-    fn flatten_replaces_only_renderable_json_render_fences() {
+    fn flatten_replaces_every_picture_fence() {
         const OPEN: &str =
             "```json-render\n{\"root\":\"s\",\"elements\":{\"s\":{\"type\":\"Separator\"}}}\n";
         let text = format!(
-            "Takeaway.\n\n```json-render\n{READINESS}```\n\nBroken:\n\n```json-render\n{BROKEN}```\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n{OPEN}"
+            "Takeaway.\n\n```json-render\n{READINESS}```\n\nBroken:\n\n```json-render\n{BROKEN}```\n\n```mermaid\nflowchart LR\n  A[f(x)] --> B\n```\n\n{OPEN}"
         );
         let rendered = plain_text(&spec_lines(&spec(READINESS), 60).expect("fits"));
+        let placeholder = "[diagram — open theuth to see it]";
         let want = format!(
-            "Takeaway.\n\n```\n{rendered}\n```\n\nBroken:\n\n```json-render\n{BROKEN}```\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n{OPEN}"
+            "Takeaway.\n\n```\n{rendered}\n```\n\nBroken:\n\n{placeholder}\n\n{placeholder}\n\n{placeholder}"
         );
         assert_eq!(flatten(&text, 60), want);
         assert_eq!(flatten("no fences\n", 60), "no fences\n");
