@@ -109,7 +109,8 @@ final class SpeechPlayer: SpeechSink {
     func decode(_ packet: Data) -> AVAudioPCMBuffer? {
         guard let converter else { return nil }
         let opus = converter.inputFormat
-        let inBuf = AVAudioCompressedBuffer(format: opus, packetCapacity: 1, maximumPacketSize: packet.count)
+        // The input block is `@Sendable` but `convert(to:error:withInputFrom:)` calls it synchronously on this thread.
+        nonisolated(unsafe) let inBuf = AVAudioCompressedBuffer(format: opus, packetCapacity: 1, maximumPacketSize: packet.count)
         inBuf.byteLength = UInt32(packet.count)
         inBuf.packetCount = 1
         packet.withUnsafeBytes { inBuf.data.copyMemory(from: $0.baseAddress!, byteCount: packet.count) }

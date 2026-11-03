@@ -147,7 +147,7 @@ public actor RpcClient {
         attempt += 1
         Task {
             try? await Task.sleep(for: .seconds(delay))
-            await self.connect()
+            self.connect()
         }
     }
 
