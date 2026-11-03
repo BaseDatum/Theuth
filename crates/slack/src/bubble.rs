@@ -406,6 +406,50 @@ fn half_opener(text: &str) -> Option<usize> {
         .then_some(start)
 }
 
+/// Reasoning text as shown wherever it is replaced in place (thought lines,
+/// the update-mode quote): a picture fence never shows its body (164 D2,
+/// Telegram's `Reasoning::shown`) — [`DRAWING`] while the run is live, its
+/// D7 text once it ended.
+fn reasoning_text(text: &str, live: bool) -> std::borrow::Cow<'_, str> {
+    if live {
+        surface::picture_preview(text)
+    } else {
+        surface::flatten(text, FALLBACK_COLUMNS).into()
+    }
+}
+
+/// The one-line summary of reasoning (a thought line, a card's `details`):
+/// the first line of [`reasoning_text`] while live, the first prose line once
+/// ended (a D7 box's ```` ``` ```` opener says nothing in one line).
+fn reasoning_line(text: &str, live: bool) -> Option<String> {
+    if live {
+        first_line(&surface::picture_preview(text))
+    } else {
+        first_line(&surface::strip_pictures(text))
+    }
+}
+
+/// The live stream-mode reasoning card's `output`: every settled picture
+/// fence (closed, closing line broken) as its D7 text, nothing from the first
+/// unsettled one (open, closing line still unbroken, or a half-typed opener)
+/// on. Each output is a prefix of every later one and of the ended run's
+/// [`reasoning_text`], so the card only ever grows and no byte of a fence
+/// body goes out.
+fn reasoning_settled(text: &str) -> String {
+    let text = &text[..half_opener(text).unwrap_or(text.len())];
+    let mut out = String::with_capacity(text.len());
+    for part in surface::picture_parts(text) {
+        match part {
+            PicturePart::Text(t) => out.push_str(t),
+            PicturePart::Picture(f) if f.closed && text[f.range.end..].contains('\n') => {
+                out.push_str(&f.fallback(FALLBACK_COLUMNS));
+            }
+            PicturePart::Picture(_) => break,
+        }
+    }
+    out
+}
+
 /// The Block Kit form of a closed picture fence (110 §8, 164 D9): a
 /// `json-render` fence `surface::slack_blocks` renders within `budget`
 /// blocks while `blocks` is on. Everything else is a picture.
@@ -674,7 +718,7 @@ impl Thought {
                 None => "💭 thought".to_owned(),
             }
         };
-        match first_line(&self.text) {
+        match reasoning_line(&self.text, self.live) {
             Some(l) => format!("{head} — {}", truncate_chars(&l, THOUGHT_MAX)),
             None => head,
         }
@@ -935,7 +979,10 @@ impl ReasoningRun {
             title: "thinking".to_owned(),
             status: TaskStatus::InProgress,
             details: None,
-            output: Some(truncate_chars(self.text.raw(), MARKDOWN_TEXT_MAX)),
+            output: Some(truncate_chars(
+                &reasoning_settled(self.text.raw()),
+                MARKDOWN_TEXT_MAX,
+            )),
             sources: Vec::new(),
         }
     }
@@ -1153,18 +1200,18 @@ impl Turn {
             s.finish().await;
         }
         if let Some(run) = self.reasoning_run.take() {
-            let raw = run.text.raw();
+            let raw = reasoning_text(run.text.raw(), false);
             let ms = run.ms.unwrap_or_else(|| ms_of(run.started.elapsed()));
             self.queue_chunk(
                 Chunk::Task {
                     id: run.id.clone(),
                     title: thought_title(ms),
                     status: TaskStatus::Complete,
-                    details: first_line(raw),
-                    output: Some(truncate_chars(raw, MARKDOWN_TEXT_MAX)),
+                    details: reasoning_line(run.text.raw(), false),
+                    output: Some(truncate_chars(&raw, MARKDOWN_TEXT_MAX)),
                     sources: Vec::new(),
                 },
-                Segment::quote(raw),
+                Segment::quote(&raw),
             );
         }
         if let Some(i) = self.open_batch()
@@ -1201,16 +1248,17 @@ impl Turn {
         t.end();
         self.reasoning_runs += 1;
         let ms = t.ms.unwrap_or_default();
+        let text = reasoning_text(&t.text, false);
         self.queue_chunk(
             Chunk::Task {
                 id: format!("reasoning-{}", self.reasoning_runs),
                 title: thought_title(ms),
                 status: TaskStatus::Complete,
-                details: first_line(&t.text),
-                output: Some(truncate_chars(&t.text, MARKDOWN_TEXT_MAX)),
+                details: reasoning_line(&t.text, false),
+                output: Some(truncate_chars(&text, MARKDOWN_TEXT_MAX)),
                 sources: Vec::new(),
             },
-            Segment::quote(&t.text),
+            Segment::quote(&text),
         );
     }
 
@@ -2109,14 +2157,21 @@ impl Segment {
         }
     }
 
-    /// Final update with everything.
+    /// Final update with everything; also when nothing grew but the last
+    /// update showed a picture fence as [`DRAWING`] (its D7 text is due).
     async fn finish(&mut self) {
+        if matches!(
+            surface::picture_preview(&self.text.raw()[..self.shown]),
+            std::borrow::Cow::Owned(_)
+        ) {
+            self.shown = 0;
+        }
         self.text.finish();
         self.tick().await;
     }
 
     fn body(&self, upto: usize) -> String {
-        let raw = &self.text.raw()[..upto];
+        let raw = &*reasoning_text(&self.text.raw()[..upto], !self.text.is_done());
         let prefixed = match self.prefix {
             Some(p) => Self::prefixed(raw, p),
             None => raw.trim().to_owned(),
@@ -3480,6 +3535,94 @@ pub(crate) mod tests {
                 .filter(|c| matches!(c, Call::Post { .. }))
                 .count(),
             1
+        );
+    }
+
+    /// 164-Z R1: a model that repeats a picture fence while thinking (seen live on Telegram).
+    const FENCED_THINKING: &str = "Let me reproduce it:\n\n```json-render\n{\"root\":\"g\",\"elements\":{\"g\":{\"type\":\"Graph\",\"props\":{\"nodes\":[{\"id\":\"a\",\"label\":\"Alpha\"},{\"id\":\"b\",\"label\":\"Beta\"}],\"edges\":[{\"from\":\"a\",\"to\":\"b\"}]}}}}\n```\n\nDone.";
+
+    /// A fence line (or a half-typed one) or the body.
+    fn leaks_fence(s: &str) -> bool {
+        ["\"root\"", "\"elements\"", "```j", "```m", "```o", "{\"g\""]
+            .iter()
+            .any(|p| s.contains(p))
+    }
+
+    /// Streams `FENCED_THINKING` in 3-byte deltas, a tick after each.
+    async fn stream_fenced_thinking(t: &mut Turn) {
+        for chunk in FENCED_THINKING.as_bytes().chunks(3) {
+            t.reasoning(std::str::from_utf8(chunk).unwrap()).await;
+            t.tick().await;
+        }
+        t.reasoning_done(1_000);
+        t.text("answer").await;
+        t.tick().await;
+    }
+
+    /// Stream mode: every output of the `reasoning-1` card extends the one before (append-safe,
+    /// nothing retracted), none shows a fence line or the body, the last ends with the D7 text.
+    #[tokio::test(start_paused = true)]
+    async fn stream_reasoning_never_shows_a_picture_fence_body() {
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        stream_fenced_thinking(&mut t).await;
+        let outs: Vec<(TaskStatus, String)> = task_of(&api.task_chunks(), "reasoning-1")
+            .into_iter()
+            .map(|(s, _, o)| (s, o.unwrap_or_default()))
+            .collect();
+        assert!(outs.len() > 2, "{outs:?}");
+        for w in outs.windows(2) {
+            assert!(w[1].1.starts_with(&w[0].1), "retracted: {w:?}");
+        }
+        for (_, o) in &outs {
+            assert!(!leaks_fence(o), "{o}");
+        }
+        assert!(
+            outs.iter().any(|(_, o)| o == "Let me reproduce it:\n\n"),
+            "{outs:?}"
+        );
+        let (status, last) = outs.last().unwrap();
+        assert_eq!(*status, TaskStatus::Complete);
+        assert!(
+            last.contains("Alpha") && last.ends_with("```\n\nDone."),
+            "{last}"
+        );
+        // A thought line inside a batch card: the same rule.
+        let mut th = Thought::new(&FENCED_THINKING["Let me reproduce it:\n\n".len()..]);
+        assert!(
+            !leaks_fence(&th.line()) && th.line().contains(DRAWING),
+            "{}",
+            th.line()
+        );
+        th.end();
+        assert!(!leaks_fence(&th.line()), "{}", th.line());
+    }
+
+    /// Update mode: every quoted reasoning message shows no fence line and no body; the last
+    /// carries the D7 text.
+    #[tokio::test(start_paused = true)]
+    async fn update_reasoning_never_shows_a_picture_fence_body() {
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        api.fail("start", "channel_type_not_supported");
+        stream_fenced_thinking(&mut t).await;
+        let quoted: Vec<String> = api
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Update { ts, md } if ts == "ts0" => Some(md),
+                _ => None,
+            })
+            .collect();
+        assert!(quoted.len() > 1, "{:?}", api.calls());
+        for md in &quoted {
+            assert!(!leaks_fence(md), "{md}");
+        }
+        assert!(quoted.iter().any(|md| md.contains(DRAWING)), "{quoted:?}");
+        let last = quoted.last().unwrap();
+        assert!(
+            last.contains("Alpha") && last.ends_with("> Done."),
+            "{last}"
         );
     }
 
