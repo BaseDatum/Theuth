@@ -37,7 +37,6 @@
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
-    "positioner:default",
     "window-state:default",
     "dialog:allow-open",
     "dialog:allow-save",

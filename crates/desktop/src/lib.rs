@@ -1,7 +1,8 @@
 //! Design docs 25 and 31 §8.3. The Rust side does launch, probe, quit and OS
 //! integration only (25 §0.4); the webview owns the WebSocket. Desktop: one
-//! hidden-on-close window, a template tray icon that toggles it,
-//! `ActivationPolicy::Accessory` (no Dock icon), the local daemon on a pty.
+//! hidden-on-close window, a template tray icon that toggles it, a Dock icon and
+//! ⌘Tab entry (`ActivationPolicy::Regular`, 166: Dock click / ⌘Tab show the
+//! hidden window, `dock.rs`), the local daemon on a pty.
 //! Mobile: the same webview as a link device (QR scanner + universal link), no
 //! local daemon; the window is built here (not from `tauri.ios.conf.json`) so the
 //! iOS keyboard's accessory bar can be dropped, and backgrounding holds a
@@ -11,6 +12,8 @@
 mod commands;
 #[cfg(desktop)]
 mod companion;
+#[cfg(target_os = "macos")]
+mod dock;
 #[cfg(target_os = "ios")]
 mod ios_windowing;
 #[cfg(desktop)]
@@ -50,10 +53,12 @@ pub fn run() {
     #[cfg(target_os = "ios")]
     ios_windowing::install();
     #[cfg(desktop)]
-    app.run(|app, event| {
-        if let tauri::RunEvent::Exit = event {
-            quit::on_exit(app);
-        }
+    app.run(|app, event| match event {
+        tauri::RunEvent::Exit => quit::on_exit(app),
+        // 166 D2: a Dock click.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => dock::reopen(app),
+        _ => {}
     });
     #[cfg(mobile)]
     app.run(mobile::on_event);
@@ -204,11 +209,13 @@ mod desktop {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
-    use tauri_plugin_positioner::{Position, WindowExt};
 
     use crate::{commands, companion, island, launch, models, point, quit, update};
 
-    /// Position the window under the tray on the first show of a fresh profile (window-state restores it afterwards).
+    /// 166 R1: argv of the login item's launch (all desktops write it; only macOS reads it, `dock::launch`).
+    pub(crate) const AUTOSTART_ARG: &str = "--autostart";
+
+    /// Centre the window on the first show of a fresh profile (window-state restores it afterwards).
     #[derive(Default)]
     struct Flags {
         position_on_show: AtomicBool,
@@ -249,9 +256,8 @@ mod desktop {
             .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-                None,
+                Some(vec![AUTOSTART_ARG]),
             ))
-            .plugin(tauri_plugin_positioner::init())
             // The island is placed by `island::island_place`, never by saved window state (03 §1); the
             // overlays by `point::overlay_ensure` (96 §4.6). The denylist is exact-match, hence the filter.
             .plugin(
@@ -305,7 +311,7 @@ mod desktop {
             companion::companion_alive,
             companion::companion_login_item_status,
         ]);
-        // The native menu bar is macOS's (⌘C/⌘V under Accessory policy); GTK would paint it inside the window.
+        // The native menu bar is macOS's (⌘C/⌘V reach the webview through it); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]
         let builder = builder.menu(app_menu);
         builder
@@ -327,14 +333,20 @@ mod desktop {
                 _ => {}
             })
             .setup(|app| {
+                // 166 D1: Dock icon and ⌘Tab entry; the tray / companion menu bar icon stays as it is.
                 #[cfg(target_os = "macos")]
-                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                app.set_activation_policy(tauri::ActivationPolicy::Regular);
                 setup(app.handle())?;
                 island::init(app.handle())?;
                 point::init(app.handle())?;
                 companion::init(app.handle())?;
+                #[cfg(target_os = "macos")]
+                crate::dock::init(app.handle());
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 deep_links(app.handle());
+                // 166 R1: last, so a user launch shows a window that is fully set up.
+                #[cfg(target_os = "macos")]
+                crate::dock::launch(app.handle());
                 Ok(())
             })
     }
@@ -387,7 +399,6 @@ mod desktop {
         ])?;
         tray.set_menu(Some(menu))?;
         tray.on_tray_icon_event(|tray, event| {
-            tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -404,7 +415,7 @@ mod desktop {
 
     /// Tauri's default macOS menu minus About, with Quit as our own item so ⌘Q goes
     /// through the `quit-requested` handshake instead of `terminate:` (25 §4.5:
-    /// the menu stays so ⌘C/⌘V/⌘A/⌘W reach the webview under Accessory policy).
+    /// the menu stays so ⌘C/⌘V/⌘A/⌘W reach the webview).
     #[cfg(target_os = "macos")]
     fn app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         Menu::with_items(
@@ -539,12 +550,12 @@ mod desktop {
         }
     }
 
-    fn show(app: &AppHandle) {
+    pub(crate) fn show(app: &AppHandle) {
         let Some(win) = main_window(app) else {
             return;
         };
         if app.state::<Flags>().position_on_show.swap(false, SeqCst) {
-            log_err(win.move_window(Position::TrayCenter), "position window");
+            log_err(win.center(), "centre window");
         }
         log_err(win.show(), "show window");
         log_err(win.set_focus(), "focus window");

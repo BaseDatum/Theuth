@@ -42,7 +42,7 @@ pub fn init(app: &AppHandle) -> anyhow::Result<()> {
             | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
             | NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary,
     );
-    // Panels hide when the app deactivates by default; ours is an Accessory app that is rarely active.
+    // Panels hide when the app deactivates by default; the island stays up while the meeting app is active.
     panel.set_hides_on_deactivate(false);
     // Buttons never take key, so typing keeps going to the meeting app (check 4); only the request box
     // does, and `island_resign_key` hands it back.
