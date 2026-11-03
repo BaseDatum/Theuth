@@ -69,6 +69,9 @@ const SCRIPT: [number, MeetingEvent][] = [
   [16000, brief('tap1', 'Tap', 'DR cutover', ['Planned 3 Oct, 09:00 UTC', 'Runbook: ops/dr-cutover.md', 'Go/no-go call the day before'], 't3')],
   [18000, { type: 'ApprovalWaiting', meeting: M, waiting: true }],
   [21000, { type: 'ApprovalWaiting', meeting: M, waiting: false }],
+  // 173: the app's tap goes quiet, the watchdog reconnects, audio comes back.
+  [22000, { type: 'Capture', meeting: M, capture: { mic: { state: 'Ok' }, system: { state: 'Recovering', reason: 'Silent', since: new Date().toISOString() } } }],
+  [26000, { type: 'Capture', meeting: M, capture: { mic: { state: 'Ok' }, system: { state: 'Ok' } } }],
   [30000, { type: 'State', meeting: M, state: 'Done', degraded: ['MicNoAec'] }],
 ]
 

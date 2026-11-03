@@ -67,7 +67,16 @@ fn main() {
     let paused = Arc::new(AtomicBool::new(false));
     let (feed, mut enc, _stt): (Feed, _, _) = rings(&paused);
     let t = Instant::now();
-    let thread = match capture::system::spawn(pid, feed, stop.clone()) {
+    // 173: the watchdog's reports print as they arrive; nothing drains them otherwise.
+    let (reports, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let thread = match capture::system::spawn(
+        pid,
+        None,
+        feed,
+        stop.clone(),
+        reports,
+        tracing::Span::none(),
+    ) {
         Ok(t) => t,
         Err(e) => {
             println!("loopback pid {pid}: ERROR {e:#}");
@@ -91,6 +100,9 @@ fn main() {
                 sumsq += f64::from(s * s);
                 peak = peak.max(s.abs());
             }
+        }
+        while let Ok(r) = rx.try_recv() {
+            println!("  watchdog: {r:?}");
         }
         if Instant::now() >= next {
             next += Duration::from_secs(1);
@@ -130,7 +142,9 @@ fn mic_probe() -> Result<Vec<meeting::Degradation>, String> {
     let paused = Arc::new(AtomicBool::new(false));
     let (feed, mut enc, _stt) = rings(&paused);
     let stop = Arc::new(AtomicBool::new(false));
-    let (mic, degraded) = capture::mic::open(feed, stop.clone()).map_err(|e| format!("{e:#}"))?;
+    let (reports, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mic, degraded) = capture::mic::open(feed, stop.clone(), reports, tracing::Span::none())
+        .map_err(|e| format!("{e:#}"))?;
     std::thread::sleep(Duration::from_secs(1));
     let mut n = 0usize;
     while enc.pop().is_ok() {

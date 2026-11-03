@@ -26,7 +26,9 @@ pub const MANIFEST: &str = "manifest.json";
 /// Sample rate of the three tracks.
 pub const TRACK_RATE: u32 = 24_000;
 
-/// A pause: `dur_ms` of wall time missing from the recording clock at `at_ms`.
+/// A pause: `dur_ms` of wall time missing from the recording clock at `at_ms`. 173: with
+/// `track` set, a capture gap instead — the clock ran but `track` was silence-padded from
+/// `at_ms` for `dur_ms` (the watchdog's episode, `reason`; `retarget`: the pid the tap moved to).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Gap {
@@ -34,6 +36,18 @@ pub struct Gap {
     pub at_ms: u64,
     /// How long it lasted.
     pub dur_ms: u64,
+    /// 173: the silence-padded track of a capture gap; `None` for a pause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub track: Option<Stem>,
+    /// 173: why the capture gap happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub reason: Option<crate::CaptureFault>,
+    /// 173: the same-bundle pid the system tap moved to during the gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub retarget: Option<u32>,
 }
 
 /// Which file a [`TrackFile`] is.
@@ -590,11 +604,55 @@ mod tests {
         m.gaps.push(Gap {
             at_ms: 20_000,
             dur_ms: 5_000,
+            track: None,
+            reason: None,
+            retarget: None,
         });
         m.degraded.push(Degradation::MicNoAec);
         m.state = MeetingState::Done;
         m.duration_ms = Some(35_000);
         m
+    }
+
+    /// The 2026-11-02 incident's `manifest.json`, verbatim (written by main 1f921ce4's types).
+    const INCIDENT: &str = r#"{
+  "id": "01a19e11-dc39-7912-9f9f-0ed0169b1ccf",
+  "session": "01a19e11-dc39-7912-9f9f-0eeda3254f9d",
+  "title": "SRE technical interview: troubleshooting questions, recommended moving forward",
+  "context": null,
+  "started_at": "2026-11-02T21:02:13.049500+00:00",
+  "ended_at": "2026-11-02T21:46:35.401392+00:00",
+  "duration_ms": 2657938,
+  "process": { "pid": 51437, "name": "zoom.us", "bundle_id": "us.zoom.xos", "active": true },
+  "consent_at": "2026-11-02T21:02:13.049500+00:00",
+  "gaps": [],
+  "degraded": [],
+  "state": "Done",
+  "failure": null,
+  "session_model": null,
+  "memory": "endless",
+  "tracks": [
+    { "track": "mic", "file": "mic.opus", "sample_rate": 24000 },
+    { "track": "system", "file": "system.opus", "sample_rate": 24000 },
+    { "track": "mix", "file": "mix.opus", "sample_rate": 24000 }
+  ],
+  "note": "rvtckcmvi5kw3g5fhw5jc5anqq",
+  "event": null,
+  "project": null,
+  "template": "meeting",
+  "stats": { "echo_dupes": 0, "mic_segments": 178, "speakers": null }
+}"#;
+
+    /// 173: a main-era manifest (the 2026-11-02 incident's, verbatim) loads with this build's
+    /// types, and re-serializes unchanged (every 173 field is optional).
+    #[test]
+    fn a_main_era_manifest_loads() {
+        let m: Manifest = serde_json::from_str(INCIDENT).unwrap();
+        assert_eq!(m.process.bundle_id.as_deref(), Some("us.zoom.xos"));
+        assert!(m.gaps.is_empty() && m.degraded.is_empty());
+        let again: serde_json::Value = serde_json::to_value(&m).unwrap();
+        let orig: serde_json::Value = serde_json::from_str(INCIDENT).unwrap();
+        assert_eq!(again, orig);
     }
 
     /// 158 §13 (W6): a manifest written before `stats` (and a `stats` written before
