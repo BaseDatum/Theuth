@@ -285,8 +285,9 @@ import type {
   Info,
   LoadedPage,
   LoginInfo,
-  ProviderInfo,
 } from '@/rpc/extra'
+import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
+import type { RefreshedModels } from '@/rpc/bindings/RefreshedModels'
 import type { VoiceStatus } from '@/rpc/bindings/VoiceStatus'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import type { MemoryMode } from '@/rpc/bindings/MemoryMode'
@@ -963,6 +964,8 @@ export interface Api {
   /** Write base64 `bytes` to `<data_dir>/attachments/<sha256[..16]>.<ext>`; returns the path for `send_input.files`. */
   put_attachment(bytes_b64: string, ext: string): Promise<string>
   redo(session: SessionId): Promise<string>
+  /** List a provider's models again and reload the catalog (162 D3); errors are user-facing. */
+  refresh_provider_models(name: string): Promise<RefreshedModels>
   /** Regenerate the reply to the turn opened at `turn` (29 §3); refused mid-turn. */
   regenerate(session: SessionId, turn: number): Promise<null>
   /** Re-read and atomically replace the A2A peer/export configuration (50 §6.1); a failed reload keeps the old one live and reports in `error`. */
@@ -1558,6 +1561,7 @@ export const METHODS = [
   'put_schedule',
   'put_session_attachment',
   'redo',
+  'refresh_provider_models',
   'regenerate',
   'reload_a2a',
   'remove_acp',

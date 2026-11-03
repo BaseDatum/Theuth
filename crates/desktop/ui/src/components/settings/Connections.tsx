@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
-import { Trash2 } from 'lucide-react'
+import { RefreshCw, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { builtinKeyNote, BUILTIN_LABEL, splitProviders } from '@/components/settings/providers'
+import { builtinKeyNote, BUILTIN_LABEL, orderProviders, refreshedText } from '@/components/settings/providers'
 import { Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -23,8 +23,7 @@ export function Connections() {
   return (
     <>
       <Logins />
-      <BuiltIns />
-      <Gateways />
+      <Providers />
       <Bedrock />
     </>
   )
@@ -129,43 +128,68 @@ function Logins() {
 }
 
 /**
- * The built-in key providers (85 §0.9): OpenCode Zen and OpenRouter, keyed by the
- * `opencode` / `openrouter` secret through the same masked `set_secret` entry the
- * other Settings key forms use; the value is never read back.
+ * One list of model providers (162 D2/D9): the built-in key providers (85 §0.9: OpenCode Zen, OpenRouter, keyed by the
+ * `opencode` / `openrouter` secret through the masked `set_secret` entry; the value is never read back), then the custom
+ * OpenAI-compatible providers (key sent once with `add_provider`, never echoed).
  */
-function BuiltIns() {
+function Providers() {
   const api = useApi()
   const providers = useQuery({
     queryKey: queryKeys.providers,
     queryFn: () => api.list_providers(),
   })
+  const rows = orderProviders(providers.data)
+  // A provider change changes which models `list_models` may offer (85 §2).
+  const keys = [queryKeys.providers, queryKeys.models]
   const [open, setOpen] = useState<string | null>(null)
   const [value, setValue] = useState('')
   const store = useAction((v: { name: string; value: string }) => api.set_secret(v.name, v.value, builtinKeyNote(v.name)), {
-    // A new key changes which models `list_models` may offer (85 §2).
-    keys: [queryKeys.providers, queryKeys.models, queryKeys.secrets],
+    keys: [...keys, queryKeys.secrets],
     onSuccess: (s) => {
       setValue('')
       setOpen(null)
       toast.success(`Stored ${s.name}; the value is encrypted and never shown`)
     },
   })
+  const refresh = useAction((name: string) => api.refresh_provider_models(name), {
+    keys,
+    onSuccess: (r) => toast.success(refreshedText(r)),
+  })
+  const [form, setForm] = useState({ name: '', url: '', key: '' })
+  const add = useAction((v: typeof form) => api.add_provider(v.name, v.url, v.key), {
+    keys,
+    onSuccess: (p) => {
+      setForm({ name: '', url: '', key: '' })
+      toast.success(`Added ${p.name}: ${p.models} models`)
+    },
+  })
+  const remove = useAction((name: string) => api.remove_provider(name), { keys })
+  const ready = form.name.trim() && form.url.trim() && form.key.trim()
 
   return (
-    <Section title="Built-in providers">
-      {splitProviders(providers.data).builtins.map((p) => (
+    <Section title="Providers">
+      {rows.map((p) => (
         <Row
           key={p.name}
           label={
             <span className="flex items-center gap-2">
               <Dot on={p.configured} />
               {BUILTIN_LABEL[p.name] ?? p.name}
+              <Badge variant="outline" className="font-normal">
+                {p.builtin ? 'built-in' : 'custom'}
+              </Badge>
             </span>
           }
           description={
             <>
               <span className="font-mono">{p.name}/…</span> · {p.models} models ·{' '}
-              {p.configured ? 'key set' : `no key (secret \`${p.name}\`)`}
+              {!p.builtin ? (
+                <span className="font-mono">{p.base_url}</span>
+              ) : p.configured ? (
+                'key set'
+              ) : (
+                `no key (secret \`${p.name}\`)`
+              )}
             </>
           }
         >
@@ -195,63 +219,35 @@ function BuiltIns() {
               </Button>
             </form>
           ) : (
-            <Button size="sm" variant="outline" onClick={() => setOpen(p.name)}>
-              {p.configured ? 'Replace key…' : 'Set key…'}
-            </Button>
+            <span className="flex items-center gap-2">
+              {p.refreshable && (
+                <Button size="sm" variant="outline" disabled={refresh.isPending} onClick={() => refresh.mutate(p.name)}>
+                  <RefreshCw className={refresh.isPending && refresh.variables === p.name ? 'animate-spin' : undefined} /> Refresh models
+                </Button>
+              )}
+              {p.builtin ? (
+                <Button size="sm" variant="outline" onClick={() => setOpen(p.name)}>
+                  {p.configured ? 'Replace key…' : 'Set key…'}
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Remove ${p.name}`}
+                  disabled={remove.isPending}
+                  onClick={() => remove.mutate(p.name)}
+                >
+                  <Trash2 />
+                </Button>
+              )}
+            </span>
           )}
         </Row>
       ))}
-    </Section>
-  )
-}
-
-/** Named OpenAI-compatible gateways; the key is sent once and never echoed. */
-function Gateways() {
-  const api = useApi()
-  const providers = useQuery({
-    queryKey: queryKeys.providers,
-    queryFn: () => api.list_providers(),
-  })
-  const gateways = splitProviders(providers.data).gateways
-  const [form, setForm] = useState({ name: '', url: '', key: '' })
-  const add = useAction((v: typeof form) => api.add_provider(v.name, v.url, v.key), {
-    keys: [queryKeys.providers, queryKeys.models],
-    onSuccess: (p) => {
-      setForm({ name: '', url: '', key: '' })
-      toast.success(`Added ${p.name}: ${p.models} models`)
-    },
-  })
-  const remove = useAction((name: string) => api.remove_provider(name), {
-    keys: [queryKeys.providers, queryKeys.models],
-  })
-  const ready = form.name.trim() && form.url.trim() && form.key.trim()
-
-  return (
-    <Section title="Gateways">
-      {providers.data && gateways.length === 0 && <Empty>No gateway configured.</Empty>}
-      {gateways.map((p) => (
-        <Row
-          key={p.name}
-          label={p.name}
-          description={
-            <>
-              <span className="font-mono">{p.base_url}</span> · {p.models} models
-            </>
-          }
-        >
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Remove ${p.name}`}
-            disabled={remove.isPending}
-            onClick={() => remove.mutate(p.name)}
-          >
-            <Trash2 />
-          </Button>
-        </Row>
-      ))}
+      {providers.data && !rows.some((p) => !p.builtin) && <Empty>No custom providers yet.</Empty>}
       <form
         className="mt-4 grid grid-cols-[1fr_2fr_2fr_auto] gap-2"
+        aria-label="Add custom provider"
         onSubmit={(e) => {
           e.preventDefault()
           if (ready)
@@ -266,14 +262,14 @@ function Gateways() {
           value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
           placeholder="Name"
-          aria-label="Gateway name"
+          aria-label="Custom provider name"
           spellCheck={false}
         />
         <Input
           value={form.url}
           onChange={(e) => setForm({ ...form, url: e.target.value })}
           placeholder="https://host/v1/"
-          aria-label="Base URL"
+          aria-label="Custom provider base URL"
           spellCheck={false}
         />
         <Input
@@ -281,11 +277,11 @@ function Gateways() {
           value={form.key}
           onChange={(e) => setForm({ ...form, key: e.target.value })}
           placeholder="API key"
-          aria-label="API key"
+          aria-label="Custom provider API key"
           autoComplete="off"
         />
         <Button type="submit" variant="outline" disabled={!ready || add.isPending}>
-          Add
+          Add custom provider
         </Button>
       </form>
     </Section>

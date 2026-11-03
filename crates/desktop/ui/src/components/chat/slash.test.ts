@@ -184,3 +184,21 @@ test('157 D3: /endless on|off switches the session through set_session_memory; a
   await expect(run('/endless on', { ...ctxFor({ set_session_memory }), session: null })).rejects.toThrow(/no session yet/)
   expect(set_session_memory).toHaveBeenCalledTimes(2)
 })
+
+test('162 D8: /provider refresh <name> toasts the counts, bare refresh opens Connections, an engine error surfaces verbatim', async () => {
+  const provider = { name: 'rwx', base_url: 'https://rwx/v1/', models: 14, builtin: false, configured: true, refreshable: true }
+  const refresh_provider_models = vi.fn().mockResolvedValue({ provider, added: ['a', 'b'], removed: ['c'] })
+  await run('/provider refresh rwx', ctxFor({ refresh_provider_models }))
+  expect(refresh_provider_models).toHaveBeenCalledWith('rwx')
+  expect(toast).toHaveBeenLastCalledWith('rwx: 14 models (+2, −1)')
+  refresh_provider_models.mockResolvedValueOnce({ provider, added: [], removed: [] })
+  await run('/provider refresh rwx', ctxFor({ refresh_provider_models }))
+  expect(toast).toHaveBeenLastCalledWith('rwx: 14 models, no change')
+  const ctx = ctxFor({ refresh_provider_models })
+  await run('/provider refresh', ctx)
+  expect(ctx.navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'connections' }, search: { session: 'abc' } })
+  refresh_provider_models.mockRejectedValueOnce(new Error('rwx has no key; set it first'))
+  await expect(run('/provider refresh rwx', ctxFor({ refresh_provider_models }))).rejects.toThrow('rwx has no key; set it first')
+  await expect(run('/provider bogus', ctxFor({}))).rejects.toThrow('usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]')
+  expect(refresh_provider_models).toHaveBeenCalledTimes(3)
+})
