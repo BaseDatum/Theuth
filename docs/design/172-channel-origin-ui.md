@@ -5,29 +5,38 @@ Status: as built 2026-11-03, branch `feat/172-channel-origin-ui`, against the D2
 
 ## What was built, where (all under `crates/desktop/ui/src`)
 - **Data (D3 consumer).**
-  - `store/sessions.ts`: the `user` entry gets `channel?: ChannelOrigin`; `queued` items get `channel?` too.
+  - `store/sessions.ts`: the `user` entry gets `channel?: ChannelOrigin`. Queued items are `QueuedInput & { defer? }`, and `QueuedInput` now carries `channel?` itself (stubbed in the contract; see below).
   - `store/reduce.ts`: `userEntries(…, channel)` puts `channel` on the `you` row (plain and skill rows). Its sources:
     - history: `HistoryEntry` user `channel`;
     - live: `TurnStarted.channel`;
     - `InputQueued.channel`, kept on the queued item and moved onto the transcript row on `InputInjected`. The `TurnStarted` echo of an injected steer is skipped as before, so the origin survives.
+    - after a reload, `loadHistory` copies `loaded.queued` (`QueuedInput[]`, now with `channel`) unchanged, so a channel steer queued before the reload still lands with its chip.
 - **`lib/channel-origin.ts`** (pure):
   - `originOf(entry)`: the typed `channel`, else, for rows stored before 172, a leading `[slack dm]` line gives `{via:'slack', chat:'dm'}` and `[slack channel]` gives `chat:'group'`.
   - `stripMarker(text)`: drops exactly one leading marker line.
+  - `shownText({text, channel})`: what the bubble and the queued chip show. It is `stripMarker`, then drops the sender prefix, but only when `channel.from` is set and the text starts with exactly `${from}: ` (case-sensitive, with a space). The model input is unchanged.
   - `originLabel(origin)`: the D4 labels.
   - `parseShared(text)`: the grammar below.
+  - `parseMrkdwn(text)`: for the shared-card body only. Slack tokens become text and link parts:
+    - `<#C…|name>` → `#name`, `<#C…>` → `#C…`;
+    - `<@U…|name>` → `@name`, `<@U…>` → `@U…`;
+    - `<https://…|label>` → a link "label", `<https://…>` → a link showing the URL.
+    - Ids are uppercase alphanumerics. An empty `|` label falls back to the id or the URL. Everything else stays text: `<!here>`, `<!subteam^…>`, `mailto:`, a bare `<…>`, and the `[text](url)` markdown that `blocks_markdown` emits.
   - `previewText(text)` / `stripSnippet(text, ranges)`: preview helpers for the sidebar, header and search.
 - **Rendering (D4/D5).** `components/chat/MessageUser.tsx` (passed `channel` by `Message.tsx`):
   - `OriginChip` is the tag (`rounded-full bg-layer-2 px-2 text-xs leading-5 text-fg-secondary`, the same tag style `BoardQuoteCard` uses) with a 14 px `ChannelIcon` and the label. It sits at the top of the message group and is truncated to the bubble's max width.
-  - The marker line is stripped before the existing pipeline (attach refs, voice note, spoken, board ask, screen lines).
+  - `shownText` is applied before the existing pipeline (attach refs, voice note, spoken, board ask, screen lines). So "Slack · #ops · from Jane Doe" is followed by "is the API back up?", and a Signal `Ana: [voice note, 3 s] …` still gets its voice-note caption.
   - For a Slack origin only, the remaining words go through `parseShared`:
     - text segments are ordinary bubbles;
-    - forwarded and linked blocks are a `SharedCard`, styled like `BoardQuoteCard` (`rounded-xl border bg-layer-1`). Its header has the forward or link icon, "Forwarded message" or "Linked message", the author (emphasised), `#chan`, the time, and "Open in Slack" (`openExternal`; it stops propagation so the bubble's stamp toggle does not fire). Then the body with a left accent rule, then `files: …` muted;
+    - forwarded and linked blocks are a `SharedCard`, styled like `BoardQuoteCard` (`rounded-xl border bg-layer-1`). Its header has the forward or link icon, "Forwarded message" or "Linked message", the author (emphasised), `#chan`, the time, and "Open in Slack". Then the body with a left accent rule, rendered through `parseMrkdwn`, then `files: …` muted. Both the permalink and the body links are an `OutLink`: `openExternal`, with propagation stopped so the bubble's stamp toggle does not fire. The user's own text is never run through `parseMrkdwn`;
     - an attachment is one muted, truncated line (paperclip, `from · text`, with the full text in `title`).
   - A desktop-typed message has no `channel` and no marker, so it gets no chip.
 - **Previews.**
   - `sidebar/SessionItem.tsx` and `chat/Header.tsx` titles go through `previewText`.
   - `sidebar/SearchDialog.tsx` `SessionRow`: the hit title goes through `previewText`, and the title and message snippets go through `SessionSnippet` (`stripSnippet` and `Snippet`, with ranges shifted).
   - Notifications show no user text (`lib/notify.ts` is only called by `AlertNotifier`), so nothing changed there.
+  - `chat/QueuedChips.tsx`: a queued channel steer shows its `ChannelIcon` (with `originLabel` on hover) instead of `◇`, followed by `shownText`. This is the one preview that has the channel.
+  - **The `from` prefix in other previews.** The sidebar and header titles and the search hits carry no `ChannelOrigin`: `SessionSummary` and `SearchHit` have no channel field. So there is no `from` to match there, and they strip only the marker. They cannot de-duplicate the name without engine data (see Open items).
 - **Icons (D6).** `components/icons/channels.tsx`: `SlackIcon`, `SignalIcon`, `TelegramIcon` and `ChannelIcon({via})`, inline SVG with no dependency.
 - **`openExternal` moved** from `components/attention/Pointers.tsx` to `lib/platform.ts`, with the same body and its callers repointed (`Pointers`, `PacketMarkdown`, `settings/Channels`, `MessageUser`). Reason: importing it from `Pointers` pulled the artifact `Viewer` and its router API into the chat bubble's module graph, and the existing `ScreenContextCard.test.ts` (which renders `MessageUser` under a two-export router mock) failed on it. `lib/platform` is where "how this container opens things" already lives.
 
@@ -63,8 +72,12 @@ attachment := "[attachment" (" from " label)? "]" (" " text)?
     - `originOf`, including no chip for a desktop message, `[voice note, N s] …`, and text that merely starts like the marker (`[slack dm] hi`, `[slack dms]`, `[slack]`, a leading space, a marker that is not on the first line);
     - `stripMarker`, `originLabel` (every D4 form);
     - `parseShared` on the slack crate's own fixtures (`channel.rs` around 3720–3780), the linked, empty-quote and files cases, and off-grammar input;
-    - the preview and snippet helpers.
-  - `src/store/reduce.test.ts`, "a user row keeps its channel origin…": history, `TurnStarted`, and a queued steer that is injected and then echoed, plus desktop rows without one.
+    - the preview and snippet helpers;
+    - `shownText`: the exact-prefix cases, near misses (another name, no space, not at the start, different case), the owner (no `from`) and desktop;
+    - `parseMrkdwn`: named and bare channel and user mentions, labelled and bare URLs, an empty label, and text left alone.
+  - `src/store/reduce.test.ts`:
+    - "a user row keeps its channel origin…": history, `TurnStarted`, and a queued steer that is injected and then echoed, plus desktop rows without one;
+    - "store: a queued channel steer rebuilt from a reload…": `loadHistory` with `queued` carrying `channel`, then `InputInjected` gives the `you` row that channel, and a desktop steer next to it stays without one.
   - Output: `vitest.txt`.
 - **Screenshots.** `{chromium,webkit}-{light,dark}-{desktop,phone}.png`:
   - headless Playwright 1.64.1 (`/tmp/172/pw`, not a repo dependency). WebKit 2370 is the matching build; Chromium is the installed headless shell 1226, through `executablePath`;
@@ -72,19 +85,22 @@ attachment := "[attachment" (" from " label)? "]" (" " text)?
   - `icons-1x-{light,dark}.png` shows the chips at 1×, i.e. the true 14 px icon size.
   - The fixtures are the eight from the brief. They are rendered through the real `fromHistory` and the transcript `Message` component on a throwaway harness page served by this worktree's vite on port 1472. The page was deleted after the shots; a copy is in `harness/` along with the shoot scripts.
   - `shoot.log` records, per shot, the chips found (7, one per channel fixture; none for the desktop row), one shared card, `rawMarkerVisible: false`, and no page errors.
-- **Contract stub.** `ui-stub.patch` (also at `/tmp/172/ui-stub.patch`) is `diff -ruN /tmp/172/bindings-main` against the stubbed `src/rpc/bindings`.
+  - **Review round:** `r2-chromium-light-desktop.png` and `r2-webkit-dark-desktop.png` (1280×800).
+    - The `#ops` and `Family` bubbles read "is the API back up?" and "dinner at 8 on Saturday?", without the name.
+    - The forwarded card body has `<#C0OPS|ops>`, `<@U0SKY|sky>`, `<@U0BOB>` and `<https://wiki.example/rollback|rollback steps>`, shown as "see #ops and ping @sky or @U0BOB" and a "rollback steps" link.
+    - `shoot-r2.log` records the bubble texts, the card links with their hrefs and the quote text; `harness/shoot-r2.mjs` is the script.
+- **Contract stub.** `ui-stub.patch` (also at `/tmp/172/ui-stub.patch`) is `diff -ruN /tmp/172/bindings-main` against the stubbed `src/rpc/bindings`: new `ChannelVia.ts`, `ChannelChat.ts` and `ChannelOrigin.ts`, and `channel?: ChannelOrigin` on `HistoryEntry` user, `AgentEvent` `TurnStarted` and `InputQueued`, and `QueuedInput`.
 - **tsc.** `tsc.txt`: no errors beyond the baseline.
 
 ## Decisions and deviations
 - **Edit uses the stripped text.** Editing a Slack-origin turn from the desktop (Pencil) starts from the text without the marker line, because the edit is a desktop send. A `[slack dm]` line there would make the model write for Slack while the reply lands on the desktop.
 - **Search snippets.** A snippet is stripped only when it starts at the row's first character with the marker. A snippet cut mid-row starts with `…` and is left alone. A snippet that matched only inside the marker shows the chip label, without highlight.
 - **The time in the card is shown as Slack rendered it** (`2026-10-30 14:02 UTC`), not converted to local time. The header text is all the UI has, and it is unambiguous.
-- **The "from" prefix is not stripped.** Signal and Telegram allowed users, and Slack, prefix the body with `name: `, and the chip also says "· from name". The duplication is kept rather than editing the body on a guess (see Open items).
+- **The sender prefix is stripped only on an exact match.** The bubble and the queued chip drop `${from}: ` only when it is exactly at the start; anything else is shown as sent. Editing such a turn from the desktop starts from the shown text, without the marker and the prefix, for the same reason as the marker.
 - **`openExternal` moved** to `lib/platform.ts`; reason above. This is a deviation from "use the helper in `Pointers.tsx`": it is the same helper in a lighter module.
 
 ## Open items
 - **Title seeding (engine, D1–D3 side).** `attach::first_line` seeds a Slack-started session's title as the literal `[slack dm]`. The UI now shows the chip label ("Slack · DM") for such a title, but the engine should skip the marker line when seeding.
-- **Queued steers after a reload.** `list_queued` (`QueuedInput`) carries no `channel`, so a steer queued before a reload loses its origin. The fix is to add `channel` to `QueuedInput` if it matters.
-- **The duplicated `name: ` prefix** for allowed users: strip it in the bubble when `channel.from` matches, if Sky wants that.
+- **The sender prefix in titles and search.** `SessionSummary` and `SearchHit` carry no `ChannelOrigin`, so the sidebar and header titles and the search hits still show `Ana: …` for a session or hit that starts with an allowed user's message. Fixing that needs the engine to expose the channel there, or to seed titles without the prefix.
 - **Slack trademark.** The 15.x Slack path is CC0, but Slack/Salesforce asked Simple Icons to remove it. Showing Slack's logo to indicate the Slack integration is ordinary nominative use; check Slack's brand guidelines before shipping it more widely.
-- **D7 out of scope:** the TUI, push notifications, sidebar icons for channel-bound sessions, and a chip on the queued-steer chips (`QueuedChips`).
+- **D7 out of scope:** the TUI, push notifications, and sidebar icons for channel-bound sessions.
