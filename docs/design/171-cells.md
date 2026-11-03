@@ -46,7 +46,7 @@ Every `path:line` below was re-opened in `~/Develop/theuth-171` (branch `docs/17
 - W-h OSC 133/OSC 7 are emitted by the engine-typed run line (no prompt hooks); marks are scanned on the job's log path, which gives byte offsets (§5.5).
 - W-i `<cell_error>` is a pass inside `check_fences`, one round per turn, hidden on the desktop like `<surface_error>` (§9.2).
 - W-j Kernel strip sits directly on the composer (transcript · dots · to-do · kernel strip · composer); in notes it is a pill in the header (§11.5).
-- W-k Config keys beyond the calls (§15.6).
+- W-k Config keys beyond the calls: `max_kernels`, `monty_workers`, `pty_cols/rows`, `kill_after_secs`, `correct_rounds`, `after_max_age_mins`, `render_scrollback`, `ui_tail_lines`, `export_output_bytes`, `replicate_bytes`, `retention_days`, `store_max_mb`, `login_env_timeout_secs` (§15.4).
 - W-l Prompt heading `## User cells`, not `## Cells` (§10.1).
 - W-m Quiet delivery generalises 145's park: `HarnessDeliver { wake: false }`, re-parked at start from the run store (§9.3).
 - W-n Cell RPCs refuse `RpcPeer::internal()` callers (MCP server 158, ACP bridge, TUI) unless forwarded (§12.1).
@@ -1029,3 +1029,133 @@ The cell's engine is the chat session's owner or the note's hub (§5.1). When th
 ### 14.3 Channels
 
 The Slack, Telegram and Signal adapters send a cell fence as ordinary code — the header lines stay, they are the cell's text — followed by one line `Run in theuth: theuth://c/<session>?cell=<name or ordinal>`. The desktop route keeps the query and scrolls to the cell (`crates/desktop/src/lib.rs:607-619` today drops it); the phone app handles the same link. 164's picture fences are untouched (`docs/design/164-channel-pictures.md:19-20`): a cell fence is never a picture. No run is ever started from a channel message.
+
+## 15. Contract
+
+Frozen for the wave; the contract worker C lands types, stubs and no-op handlers first (§17). Naming follows `crates/rpc/src/api.rs` (snake_case methods, `#[method(name = "…", with_extensions)]`, subscriptions with `unsubscribe`/`item`) and every wire type is `ts-rs` exported through `export!` (`crates/rpc/src/export.rs:1`, `:16`).
+
+### 15.1 Rust types (`crates/cells/src/types.rs`; grammar types in `crates/surface/src/cell.rs`)
+
+```rust
+pub enum CellRef { Chat { session: SessionId, entry: String, ordinal: u32 }, Note { doc: DocId, key: NoteKey } }
+pub enum NoteKey { Name(String), Block(String) }
+pub struct CellOptions {                       // surface::cell
+    pub cwd: Option<String>, pub name: Option<String>, pub label: Option<String>, pub danger: bool,
+    pub after: Option<String>, pub expect: Vec<Expect>, pub env: Vec<(String, String)>,
+    pub python: Option<PythonChoice>, pub review: bool, pub private: bool,
+    pub timeout_secs: Option<u64>, pub on: Option<String>, pub unknown: Vec<String>,
+}
+pub enum Expect { Text(String), Regex(String) }
+pub enum PythonChoice { Monty, Auto, Venv, Uv, Path(PathBuf) }
+pub enum Scope { Session(SessionId), Doc(DocId) }
+pub enum ShellKind { Bash, Zsh, Sh, Pwsh }
+pub enum KernelSpec { Shell { kind: ShellKind, path: PathBuf }, Python { path: PathBuf }, Monty }
+pub struct KernelId { pub scope: Scope, pub spec: KernelSpec }
+pub enum KernelPhase { Starting, Ready, Busy, Dead, Closed }
+pub struct KernelState { pub id: KernelId, pub phase: KernelPhase, pub label: String, pub cwd: Option<String> }
+pub enum RunMode { Cell, Line { line: u32 }, Selection { from: u32, to: u32 } }   // code offsets, header excluded
+pub struct RunId(pub String);                  // "r_" + ULID, client-minted
+pub enum RunState { Queued, Running, Done, Failed, Stopped, Timeout, Killed, Lost, Cancelled }
+pub enum ExitStatus { Code(i32), Signal(String) }
+pub struct ExpectResult { pub item: Expect, pub met: bool }
+pub struct CellRun {
+    pub id: RunId, pub cell: CellRef, pub mode: RunMode, pub pass: Option<String>, pub kernel: KernelId,
+    pub interpreter: String, pub cwd: String, pub env_names: Vec<String>, pub presented_sha: String,
+    pub code_sha: String, pub edited: bool, pub pressed_by: String, pub state: RunState,
+    pub exit: Option<ExitStatus>, pub secs: Option<f64>, pub expect: Vec<ExpectResult>,
+    pub summary: Option<String>, pub output_bytes: Option<u64>, pub queued_ms: i64,
+    pub started_ms: Option<i64>, pub ended_ms: Option<i64>,
+}
+pub enum CellOutput {                          // nbformat v4
+    Stream { name: String, text: String },
+    DisplayData { data: BTreeMap<String, serde_json::Value>, metadata: serde_json::Value },
+    ExecuteResult { data: BTreeMap<String, serde_json::Value>, metadata: serde_json::Value, count: u32 },
+    Error { ename: String, evalue: String, traceback: Vec<String> },
+}
+pub struct Armed { pub by: RunId, pub at_ms: i64, pub summary: String }
+pub struct CellState {
+    pub cell: CellRef, pub digest: String, pub problems: Vec<Problem>, pub chips: Vec<Chip>,
+    pub armed: Option<Armed>, pub superseded_by: Option<CellRef>, pub latest: Option<CellRun>,
+    pub stale: bool, pub member_edit: Option<String>, pub interpreter: Option<Interpreter>,
+}
+pub struct Interpreter { /* §6.4 */ }
+pub struct Mark { pub kind: MarkKind, pub exit: Option<i32>, pub cwd: Option<String>, pub offset: u64 }   // tools::pty
+```
+
+Changes to existing types: `tools::pty::StartPty` gains `program: Option<(PathBuf, Vec<String>)>` and `cell: Option<mpsc::Sender<Mark>>` (internal fields — the model-facing `StartArgs` schema is untouched); `link::RpcPeer` gains `is_internal()`; `agent::HarnessDeliver` gains `wake: bool` (serde default `true`).
+
+### 15.2 RPC methods (`rpc::Api`; all on the `CELLS_ACTOR` behind them)
+
+| method | params | returns | auth | routing |
+|---|---|---|---|---|
+| `cell_run` | `cell: CellRef, seen: String, mode: RunMode, run: RunId, edited: Option<String>, member_ack: Option<String>` | `CellRun` | press guard (invariant 1) + `authorize` (chat) / owner (doc) | `forward::route` (chat) / hub (doc) |
+| `cell_run_all` | `scope: Scope, cells: Vec<(CellRef, String)>, pass: String` | `String` (pass id) | press guard | as above |
+| `cell_stop` | `run: RunId, kill: bool` | `()` | press guard | as above |
+| `cell_input` | `run: RunId, data: String` (base64) | `()` | press guard | as above |
+| `cell_ask` | `run: RunId` | `()` — wakes the session with that result | press guard | session owner |
+| `cell_attach` / `cell_detach` | subscription: `run: RunId` | items `tools::pty::PtyChunk` from mark C | owner, not guest | as above |
+| `cell_state` | `scope: Scope, cells: Vec<CellRef>` | `{cells: Vec<CellState>, kernels: Vec<KernelState>}` | owner, not guest | as above |
+| `cell_run_get` | `run: RunId` | `{run: CellRun, outputs: Vec<CellOutput>}` (text capped) | owner, not guest | as above |
+| `cell_output` | `run: RunId, offset: u64, limit: u32, ansi: bool` | `{text, offset, total, next}` | owner, not guest | as above |
+| `cell_output_file` | `run: RunId, name: String` | base64 bytes | owner, not guest | as above |
+| `cell_runs` | `scope: Scope, limit: u32` | `Vec<CellRun>` | owner, not guest | as above |
+| `cell_interpreters` | `cwd: String, engine: Option<String>` | `Vec<Interpreter>` | owner, not guest | local, or the named engine |
+| `cell_kernel_restart` / `cell_kernel_close` | `kernel: KernelId` | `()` | press guard | as above |
+| `cell_env_refresh` | — | `()` | press guard | local |
+| `cell_live` | — | `Vec<CellRun>` (running, this engine) | owner, not guest | local |
+| `cell_latest` | `doc: DocId` | `Vec<CellLatest>` (§13.2) | owner, member or guest; membership per call | any engine (replica) |
+
+Document-actor message (internal, not RPC): `CodeBlockText { doc, key: NoteKey } -> Result<{block, language, text, last_author: Principal}>`, read with yrs from the live Y.Doc.
+
+### 15.3 Events, runtime functions, input tags
+
+- Bus event `CellEvent` (fanned out by the RPC bridge to `subscribe_events`): `RunQueued{run}`, `RunStarted{run}`, `RunFinished{run}`, `KernelChanged{kernel}`, `CellsChanged{scope}` (validation, armed or supersede state recomputed). Hints only; clients re-read (§8.7).
+- Runtime functions (agent, `Risk::ReadOnly`): `cell_runs`, `cell_output`, `interpreters` (§9.5).
+- Input tags: `<cell_result …>` (§9.1), `<cell_error>` (§9.2). Desktop: `CARD.cell_result`, `HIDDEN.cell_error`.
+
+### 15.4 Config (`cells:` section)
+
+```yaml
+cells:
+  enabled: true
+  kernel_idle_hours: 12       # D4
+  max_kernels: 16
+  monty_workers: 4
+  pty_cols: 100
+  pty_rows: 30
+  kill_after_secs: 5          # Kill enabled after Stop; timeout → Kill
+  agent_bytes: 8192           # D11 head+tail cap
+  correct_rounds: 1           # <cell_error> rounds per turn
+  notify_after_secs: 30       # D16
+  after_max_age_mins: 60      # §7.6
+  render_scrollback: 10000    # §8.3
+  ui_tail_lines: 200
+  export_output_bytes: 8192   # §4.4
+  replicate_bytes: 16384      # §13.2
+  retention_days: 30
+  store_max_mb: 2048
+  login_env_timeout_secs: 10
+```
+
+### 15.5 Files, migrations, bindings, new files
+
+- `~/.theuth/cells/`: `cells.sqlite`, `shim.py`, `rc/{bash.rc, zsh/.zshenv, zsh/.zshrc, sh.rc, rc.ps1}`, `kernels/<kernel>/run.sh` (per run, deleted), `runs/<run>/{code, term.log, out.ansi, out.txt, outputs.json, img-<n>.png}`; `~/.theuth/skills/cells.md`.
+- Migrations: `crates/cells/migrations/0001_cells.sql` (§8.4); `cell_latest` created beside `sources` in `crates/document/src/store.rs`; **no** `crates/agent/migrations` change (latest stays `0048_cost_calls_filters.sql`).
+- Bindings: new types in `export!(…)`; method names added to `METHODS` (`crates/desktop/ui/src/rpc/api.ts:1240`) and the `Api` interface; `bindings/methods.json` regenerated by `just ts` (git-ignored, 171-recon-ours.md A.2 item 3).
+- New files: `crates/cells/{Cargo.toml, cells.md, shim.py, migrations/0001_cells.sql, src/{lib.rs, types.rs, actor.rs, kernel.rs, shell.rs, python.rs, monty.rs, interp.rs, run.rs, render.rs, redact.rs, store.rs, deliver.rs, prompt.rs, tools.rs}}`, `crates/surface/src/cell.rs`, `crates/surface/tests/cells.json`, `crates/desktop/ui/src/components/cells/{Cell.tsx, CellFence.tsx, NoteCell.tsx, CellDefaults.tsx, RunbookBar.tsx, KernelStrip.tsx, grammar.ts, theme.ts, vendor/…}`.
+
+### 15.6 Seams in existing crates (writer's call W-k covers the config above)
+
+| crate / file | change |
+|---|---|
+| `crates/tools/src/pty.rs`, `jobs.rs` | `StartPty.program`, `StartPty.cell` (mark scan in `Log::push`); `jobs()` omits, `send`/`cancel_job` refuse cell jobs |
+| `crates/agent` | `HarnessDeliver.wake` + parking; supervisor skips cell jobs; `prompt_blocks` unattended arm `"app" \| "cells" => None`; `check_fences` cell pass |
+| `crates/surface` | `cell.rs`; `prompt::cell_error`; the sentence at `prompt.rs:289` and `visualize.md:42` |
+| `crates/document` | `CodeBlockText`; `RunAnnotations` hook in `doc_read`; `cell_latest` table + read |
+| `crates/platform/src/env.rs` | `login_env` |
+| `crates/link` | `RpcPeer::is_internal`; `GUEST_METHODS` += `cell_latest` |
+| `crates/rpc` | the methods of §15.2; press guard helper; exports |
+| `crates/theuth/src/main.rs` | start the cells plugin; `cells.md` in `first_run` |
+| `crates/desktop/src/lib.rs` | deep link keeps `?cell=` |
+| `crates/desktop/ui` | §11; `injected.ts`; `MessageAssistant.tsx` renderer + `CellOrdinals`; `CodeBlock.tsx` branch; `Editor.tsx` menu items; `TerminalViewer.tsx` `source` prop; `App.tsx` quit sheet; `c.$session.tsx` kernel strip |
+| `crates/slack`, `crates/telegram`, `crates/signal` | the "Run in theuth" line after a cell fence |
