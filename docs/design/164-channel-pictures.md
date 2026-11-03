@@ -38,12 +38,14 @@ Status: contract (orchestrator, 2026-11-03). Workers append as-built notes in `1
 
 ## Contract
 
+> **Amendment (164-ENG, applied by both workers, recorded by 164-Z):** the id type is `FenceSnapshotId`, not `SnapshotId` — `crates/sandbox` already exports a ts-rs `SnapshotId`, and both would emit `bindings/SnapshotId.ts`.
+
 ### Rust (`crates/artifact/src/snapshot.rs`, every type `#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]`)
 
 ```rust
 /// Correlates a snapshot request with its answers.
 #[serde(transparent)]
-pub struct SnapshotId(pub uuid::Uuid);
+pub struct FenceSnapshotId(pub uuid::Uuid);
 
 /// The fence languages a client draws.
 #[serde(rename_all = "kebab-case")]
@@ -52,7 +54,7 @@ pub enum FenceLang { JsonRender, Mermaid, Openui }
 /// Event: a channel reply wants a fence drawn as a PNG.
 #[serde(tag = "type")]
 pub struct FenceSnapshotRequested {
-    pub id: SnapshotId,
+    pub id: FenceSnapshotId,
     pub lang: FenceLang,
     /// The fence body verbatim (between the fence lines).
     pub source: String,
@@ -66,7 +68,7 @@ pub struct FenceSnapshotRequested {
 
 /// Event: the request was answered or timed out; clients drop late renders.
 #[serde(tag = "type")]
-pub struct FenceSnapshotResolved { pub id: SnapshotId }
+pub struct FenceSnapshotResolved { pub id: FenceSnapshotId }
 
 /// A client's answer (`crate::preview::Client`).
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -78,26 +80,26 @@ pub enum FenceSnapshotAnswer {
 }
 ```
 
-RPC (mirrors `answer_page_preview`): `answer_fence_snapshot(id: SnapshotId, answer: FenceSnapshotAnswer) -> bool` — `true` while the request was pending.
+RPC (mirrors `answer_page_preview`): `answer_fence_snapshot(id: FenceSnapshotId, answer: FenceSnapshotAnswer) -> bool` — `true` while the request was pending.
 
 ### TypeScript exactly as ts-rs emits it (`crates/desktop/ui/src/rpc/bindings/`, gitignored)
 
 ```ts
-// SnapshotId.ts
-export type SnapshotId = string;
+// FenceSnapshotId.ts
+export type FenceSnapshotId = string;
 // FenceLang.ts
 export type FenceLang = "json-render" | "mermaid" | "openui";
 // FenceSnapshotRequested.ts
 import type { Appearance } from "./Appearance";
 import type { FenceLang } from "./FenceLang";
-import type { SnapshotId } from "./SnapshotId";
-export type FenceSnapshotRequested = { "type": "FenceSnapshotRequested", id: SnapshotId, lang: FenceLang, source: string, width: number, appearance: Appearance, scale: number, };
+import type { FenceSnapshotId } from "./FenceSnapshotId";
+export type FenceSnapshotRequested = { "type": "FenceSnapshotRequested", id: FenceSnapshotId, lang: FenceLang, source: string, width: number, appearance: Appearance, scale: number, };
 // FenceSnapshotResolved.ts
-import type { SnapshotId } from "./SnapshotId";
-export type FenceSnapshotResolved = { "type": "FenceSnapshotResolved", id: SnapshotId, };
+import type { FenceSnapshotId } from "./FenceSnapshotId";
+export type FenceSnapshotResolved = { "type": "FenceSnapshotResolved", id: FenceSnapshotId, };
 // FenceSnapshotAnswer.ts
 import type { Client } from "./Client";
 export type FenceSnapshotAnswer = { "kind": "started", client: Client, } | { "kind": "done", png: string, width: number, height: number, client: Client, } | { "kind": "failed", reason: string, client: Client, };
 ```
 
-`src/rpc/api.ts`: `answer_fence_snapshot(id: SnapshotId, answer: FenceSnapshotAnswer): Promise<boolean>` plus `'answer_fence_snapshot'` in the METHODS list; `bindings/methods.json` gains the same name.
+`src/rpc/api.ts`: `answer_fence_snapshot(id: FenceSnapshotId, answer: FenceSnapshotAnswer): Promise<boolean>` plus `'answer_fence_snapshot'` in the METHODS list; `bindings/methods.json` gains the same name.
