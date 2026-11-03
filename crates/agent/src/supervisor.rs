@@ -13396,8 +13396,8 @@ pub(crate) mod tests {
     /// (`Store::set_read_delay`); while `ListActivity`, `ListAgents` or
     /// `LoadSession` is in flight, `GetCompactStyle` answers in < 100 ms and
     /// before it. Shown to fail without E1: with those three handlers made
-    /// to await their read inline again (the pre-176 shape), every case
-    /// failed the 100 ms bound, the style ask waiting out the stalled read.
+    /// to await their reads inline again (the pre-176 shape), it failed at
+    /// its first case — "ListActivity: GetCompactStyle took 953.556083ms".
     #[tokio::test]
     async fn trivial_ask_answers_while_a_read_is_in_flight() {
         let (_scratch, mut a) = agents().await;
