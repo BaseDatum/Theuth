@@ -4,15 +4,15 @@
 // `data-step={i}` for the board reader; `state` recolours the arrow, `note` sits beside it on a `card` mask, activations
 // are derived (call opens, return closes) and `fragments` draw frames with an `ALT` tab and `[else]` divider.
 // Colours are inline attributes from the CSS tokens so `DiagramFrame`'s export carries them; `SequenceSvg` is pure.
-import { useMemo, useRef, useSyncExternalStore } from 'react'
+import { useMemo, useRef } from 'react'
 import type { z } from 'zod'
 import { describe, svgA11y, unitLabel } from '@/lib/diagram/a11y'
 import { truncate } from '@/lib/diagram/label'
 import { DiagramTooltip } from '@/lib/diagram/tooltip'
 import { useUnits } from '@/lib/diagram/units'
-import { type DiagramTokens, diagramTokens } from '@/lib/diagram-theme'
+import type { DiagramTokens } from '@/lib/diagram-theme'
+import { useThemeTokens } from '@/lib/snapshot-mode'
 import { FONT_PX } from '@/lib/graph-layout'
-import { subscribeDark } from '@/lib/theme'
 import { DiagramFrame } from '../DiagramFrame'
 import type { sequenceProps } from './catalog'
 
@@ -267,8 +267,7 @@ export interface SequenceViewProps {
 /** The Sequence card: the svg in the shared `DiagramFrame` (pan/zoom, export, fullscreen), recoloured with the theme. */
 export function SequenceView({ props, highlight, onSelect }: SequenceViewProps) {
   const hash = useMemo(() => sequenceHash(props), [props])
-  const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'), () => false)
-  const tokens = useMemo(diagramTokens, [dark])
+  const tokens = useThemeTokens()
   return (
     <DiagramFrame name={`sequence-${hash}`} label="sequence" kind="sequence-block">
       <SequenceSvg data={props} tokens={tokens} markerId={`seq-${hash}`} highlight={highlight} onSelect={onSelect} />

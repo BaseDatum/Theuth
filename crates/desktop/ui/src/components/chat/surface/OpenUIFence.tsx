@@ -16,6 +16,7 @@ import type { CustomRendererProps } from 'streamdown'
 import { useDark } from '@/components/apps/theme'
 import { Button } from '@/components/ui/button'
 import { useApi } from '@/lib/rpc'
+import { useSnapshot } from '@/lib/snapshot-mode'
 import type { Api } from '@/rpc/api'
 import { useSessions } from '@/store/sessions'
 import { FenceContext, FenceFallback } from './JsonRenderFence'
@@ -67,6 +68,8 @@ export function OpenUIFence({ code, isIncomplete }: CustomRendererProps) {
   const { session } = useContext(FenceContext)
   const api = useApi()
   const dark = useDark()
+  // 164 D3: a channel picture: no toolbar, the requested palette.
+  const snap = useSnapshot()
   const [busy, setBusy] = useState(false)
   const [source, setSource] = useState(false)
   // The closed program's first failure; tool availability is the engine's business (the transcript has no snapshot).
@@ -85,18 +88,20 @@ export function OpenUIFence({ code, isIncomplete }: CustomRendererProps) {
   }
   return (
     <div className="group relative my-4 text-sm" data-streamdown="openui">
-      <div className="absolute top-0 right-0 z-10 flex gap-1 rounded-lg bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        {session !== undefined && (
-          <Button variant="ghost" size="sm" disabled={isIncomplete || busy} onClick={() => void publish()}>
-            Open as app
+      {!snap && (
+        <div className="absolute top-0 right-0 z-10 flex gap-1 rounded-lg bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          {session !== undefined && (
+            <Button variant="ghost" size="sm" disabled={isIncomplete || busy} onClick={() => void publish()}>
+              Open as app
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => setSource((s) => !s)}>
+            {source ? 'Hide source' : 'Show source'}
           </Button>
-        )}
-        <Button variant="ghost" size="sm" onClick={() => setSource((s) => !s)}>
-          {source ? 'Hide source' : 'Show source'}
-        </Button>
-      </div>
+        </div>
+      )}
       <div className="[&_a]:underline">
-        <ThemeProvider mode={dark ? 'dark' : 'light'}>
+        <ThemeProvider mode={snap ? snap.appearance : dark ? 'dark' : 'light'}>
           <AppRenderer response={code} library={library} isStreaming={isIncomplete} generation={0} provider={staticProvider} paused={false} onAction={onAction} />
         </ThemeProvider>
       </div>

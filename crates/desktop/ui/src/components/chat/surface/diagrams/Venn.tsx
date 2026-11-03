@@ -1,7 +1,7 @@
 // 123 §5.2(c) (W3): `Venn` — two or three equal circles at fixed geometry, overlap labels at the lens centroids,
 // set labels outside their circle. `VennSvg` is the pure drawing over `vennLayout()` (snapshot-tested); `VennView`
 // wraps it in `DiagramFrame` with the theme tokens.
-import { useId, useMemo, useRef, useSyncExternalStore } from 'react'
+import { useId, useMemo, useRef } from 'react'
 import type { z } from 'zod'
 import { describe, svgA11y, unitLabel } from '@/lib/diagram/a11y'
 import { fnv } from '@/lib/diagram/elk'
@@ -9,8 +9,8 @@ import { truncate } from '@/lib/diagram/label'
 import { DiagramTooltip } from '@/lib/diagram/tooltip'
 import type { DiagramHostProps, Point } from '@/lib/diagram/types'
 import { useUnits } from '@/lib/diagram/units'
-import { type DiagramTokens, diagramTokens } from '@/lib/diagram-theme'
-import { subscribeDark } from '@/lib/theme'
+import type { DiagramTokens } from '@/lib/diagram-theme'
+import { useThemeTokens } from '@/lib/snapshot-mode'
 import { DiagramFrame } from '../../DiagramFrame'
 import type { vennProps } from '../catalog'
 
@@ -200,8 +200,7 @@ export function VennSvg({ data: d, layout: l, tokens: t, markerId, highlight, on
 export function VennView({ props, highlight, onSelect }: DiagramHostProps<VennData>) {
   const id = useId().replace(/:/g, '')
   const hash = useMemo(() => fnv(JSON.stringify(props)), [props])
-  const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'), () => false)
-  const tokens = useMemo(diagramTokens, [dark])
+  const tokens = useThemeTokens()
   const n = props.sets.length >= 3 ? 3 : 2
   const layout = useMemo(() => vennLayout(n, props.title ? 28 : 0), [n, props.title])
   return (

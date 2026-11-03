@@ -1,7 +1,7 @@
 // 123 §5.2(c) (W3): `Treemap` — squarified cells (Bruls/Huizing/van Wijk), groups as headed rectangles laid out by
 // their totals. `TreemapSvg` is the pure drawing over `treemapLayout()` (snapshot-tested); `TreemapView` wraps it in
 // `DiagramFrame` with the theme tokens. Labels appear only in cells ≥ 72 × 36 px; the tooltip carries the rest.
-import { useId, useMemo, useRef, useSyncExternalStore } from 'react'
+import { useId, useMemo, useRef } from 'react'
 import type { z } from 'zod'
 import { describe, svgA11y, unitLabel } from '@/lib/diagram/a11y'
 import { fnv } from '@/lib/diagram/elk'
@@ -9,8 +9,8 @@ import { truncate } from '@/lib/diagram/label'
 import { DiagramTooltip } from '@/lib/diagram/tooltip'
 import type { DiagramHostProps, UnitState } from '@/lib/diagram/types'
 import { useUnits } from '@/lib/diagram/units'
-import { type DiagramTokens, diagramTokens } from '@/lib/diagram-theme'
-import { subscribeDark } from '@/lib/theme'
+import type { DiagramTokens } from '@/lib/diagram-theme'
+import { useThemeTokens } from '@/lib/snapshot-mode'
 import { DiagramFrame } from '../../DiagramFrame'
 import type { treemapProps } from '../catalog'
 
@@ -262,8 +262,7 @@ export function TreemapSvg({ data: d, layout: l, tokens: t, markerId, highlight,
 export function TreemapView({ props, highlight, onSelect }: DiagramHostProps<TreemapData>) {
   const id = useId().replace(/:/g, '')
   const hash = useMemo(() => fnv(JSON.stringify(props)), [props])
-  const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'), () => false)
-  const tokens = useMemo(diagramTokens, [dark])
+  const tokens = useThemeTokens()
   const layout = useMemo(() => treemapLayout(props, 560, props.title ? 28 : 0), [props])
   return (
     <DiagramFrame name={`treemap-${hash}`} label="treemap" kind="treemap-block">

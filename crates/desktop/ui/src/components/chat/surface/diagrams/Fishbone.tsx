@@ -1,7 +1,7 @@
 // 123 §5.2(c) (W3): `Fishbone` — the effect box at the right of a horizontal spine, one 60° bone per cause
 // alternating above/below (first cause nearest the head), sub-causes as horizontal ticks off the bone. `FishboneSvg`
 // is the pure drawing over `fishboneLayout()` (snapshot-tested); `FishboneView` wraps it in `DiagramFrame`.
-import { useId, useMemo, useRef, useSyncExternalStore } from 'react'
+import { useId, useMemo, useRef } from 'react'
 import type { z } from 'zod'
 import { describe, svgA11y, unitLabel } from '@/lib/diagram/a11y'
 import { fnv } from '@/lib/diagram/elk'
@@ -9,8 +9,8 @@ import { truncate } from '@/lib/diagram/label'
 import { DiagramTooltip } from '@/lib/diagram/tooltip'
 import type { DiagramHostProps } from '@/lib/diagram/types'
 import { useUnits } from '@/lib/diagram/units'
-import { type DiagramTokens, diagramTokens } from '@/lib/diagram-theme'
-import { subscribeDark } from '@/lib/theme'
+import type { DiagramTokens } from '@/lib/diagram-theme'
+import { useThemeTokens } from '@/lib/snapshot-mode'
 import { DiagramFrame } from '../../DiagramFrame'
 import type { fishboneProps } from '../catalog'
 
@@ -165,8 +165,7 @@ export function FishboneSvg({ data: d, layout: l, tokens: t, markerId, highlight
 export function FishboneView({ props, highlight, onSelect }: DiagramHostProps<FishboneData>) {
   const id = useId().replace(/:/g, '')
   const hash = useMemo(() => fnv(JSON.stringify(props)), [props])
-  const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'), () => false)
-  const tokens = useMemo(diagramTokens, [dark])
+  const tokens = useThemeTokens()
   const layout = useMemo(() => fishboneLayout(props, props.title ? 28 : 0), [props])
   return (
     <DiagramFrame name={`fishbone-${hash}`} label="fishbone" kind="fishbone-block">
