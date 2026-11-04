@@ -12,6 +12,7 @@ import type { CellScope } from '@/rpc/bindings/CellScope'
 import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import type { CellState } from '@/rpc/bindings/CellState'
 import type { KernelState } from '@/rpc/bindings/KernelState'
+import type { PassEnd } from '@/rpc/bindings/PassEnd'
 import { on } from '@/store/sessions'
 
 /** `cells.notify_after_secs` (§7.7, §15.4): a longer run that ends unfocused posts a system notification. */
@@ -70,8 +71,9 @@ export async function press<T>(id: string, call: (id: string) => Promise<T>, tri
   }
 }
 
-type Registered = { ref: CellRef; spec: CellSpec; label: string; mounts: number }
-type Slice = { states: Record<string, CellState>; kernels: KernelState[]; error: string | null; notices: Record<string, string> }
+type Registered = { ref: CellRef; spec: CellSpec | null; label: string; mounts: number }
+// 171:U1a-ADD (171F B11) `pass`: the scope's last finished Run all pass (`StateReply.pass`).
+type Slice = { states: Record<string, CellState>; kernels: KernelState[]; error: string | null; notices: Record<string, string>; pass?: PassEnd | null }
 const EMPTY: Slice = { states: {}, kernels: [], error: null, notices: {} }
 
 type Cells = { scopes: Record<string, Slice> }
@@ -115,7 +117,7 @@ export async function refresh(scope: CellScope): Promise<void> {
       states[k] = s
       announceEnd(prev[k]?.latest, s.latest, r.cells.get(k)?.label ?? 'Cell')
     }
-    patch(key, () => ({ states, kernels: reply.kernels, error: null }))
+    patch(key, () => ({ states, kernels: reply.kernels, error: null, pass: reply.pass ?? null }))
   } catch (e) {
     patch(key, () => ({ error: errorText(e) }))
   } finally {
@@ -149,8 +151,12 @@ function listen() {
   on('kernel_changed', (e) => schedule(e.kernel.scope))
 }
 
-/** Mount a cell (or, with `cell` null, only watch the scope's kernels): read now, re-read on hints. Returns the unmount. */
-export function register(api: Api, scope: CellScope, cell: { ref: CellRef; spec: CellSpec; label: string } | null): () => void {
+/**
+ * Mount a cell (or, with `cell` null, only watch the scope's kernels): read now, re-read on hints. Returns the unmount.
+ * A `spec: null` cell is watch-only (171F B8: a runbook bar following a replacement it does not mount); it never
+ * overwrites the spec of a mounted cell with the same ref.
+ */
+export function register(api: Api, scope: CellScope, cell: { ref: CellRef; spec: CellSpec | null; label: string } | null): () => void {
   listen()
   const key = scopeKey(scope)
   let r = registry.get(key)
@@ -159,7 +165,7 @@ export function register(api: Api, scope: CellScope, cell: { ref: CellRef; spec:
   const k = cell && refKey(cell.ref)
   if (cell && k) {
     const cur = r.cells.get(k)
-    r.cells.set(k, { ...cell, mounts: (cur?.mounts ?? 0) + 1 })
+    r.cells.set(k, cur?.spec && !cell.spec ? { ...cur, mounts: cur.mounts + 1 } : { ...cell, mounts: (cur?.mounts ?? 0) + 1 })
   }
   schedule(scope)
   return () => {
@@ -201,7 +207,13 @@ export function useScope(scope: CellScope): Slice {
   return useCells((st) => st.scopes[key] ?? EMPTY)
 }
 
-/** States of several refs at once (runbook bar), stable while none changes. */
-export function useStates(refs: CellRef[]): (CellState | null)[] {
-  return useCells(useShallow((st) => refs.map((r) => st.scopes[scopeKey(scopeOf(r))]?.states[refKey(r)] ?? null)))
+/** The scope's last Run all pass (171F B11); `null` once a newer pass is running (its runs carry another pass id). */
+export function lastPass(s: Slice): PassEnd | null {
+  const p = s.pass ?? null
+  return p && Object.values(s.states).some((st) => st.latest?.pass && st.latest.pass !== p.pass && !ended(st.latest)) ? null : p
+}
+
+/** States of several refs at once (runbook bar), stable while none changes; a `null` ref reads `null`. */
+export function useStates(refs: (CellRef | null)[]): (CellState | null)[] {
+  return useCells(useShallow((st) => refs.map((r) => (r ? (st.scopes[scopeKey(scopeOf(r))]?.states[refKey(r)] ?? null) : null))))
 }

@@ -2,8 +2,9 @@ import { createElement as h } from 'react'
 import { expect, test } from 'vitest'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { KernelState } from '@/rpc/bindings/KernelState'
+import type { PassEnd } from '@/rpc/bindings/PassEnd'
 import { digest } from './grammar'
-import { NoteKernelPill, pillText, runAllNote } from './NoteKernelPill'
+import { NoteKernelPill, passLine, pillText, runAllNote } from './NoteKernelPill'
 import { cells, scopeKey } from './store'
 import { fakeApi, render } from './test-fixtures'
 
@@ -51,4 +52,18 @@ test('Run all is one engine pass: every cell top to bottom with its digest, a p_
     [b, await digest('#| label: Test\nmake test')],
   ])
   expect(pass).toMatch(/^p_[0-9A-HJKMNP-TV-Z]{26}$/)
+})
+
+test('the last pass in one line (171F B11): stopped before, stopped at, nothing after a clean end or no pass', () => {
+  const ref = (value: string): CellRef => ({ type: 'note', doc: DOC, key: { kind: 'name', value } })
+  const order = [ref('build'), ref('migrate'), ref('deploy')]
+  const pass = (stopped: PassEnd['stopped']): PassEnd => ({ pass: 'p_1', total: 3, ran: 1, stopped })
+  expect(passLine(pass({ cell: ref('migrate'), why: "Monty can't run this cell: line 2: open() is not available", before: true }), order)).toBe(
+    'Run all stopped before "migrate" (2/3): Monty can\'t run this cell: line 2: open() is not available',
+  )
+  expect(passLine(pass({ cell: ref('build'), why: 'exit 1', before: false }), order)).toBe('Run all stopped at "build" (1/3): exit 1')
+  // A cell no longer on the page: its place from the pass's own count.
+  expect(passLine(pass({ cell: ref('gone'), why: 'danger', before: true }), [])).toBe('Run all stopped before "gone" (2/3): danger')
+  expect(passLine(pass(null), order)).toBeNull()
+  expect(passLine(null, order)).toBeNull()
 })
