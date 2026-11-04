@@ -466,7 +466,8 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
         </Notice>
       )}
       {state?.member_edit && <Notice tone="warning">Changed by {state.member_edit} since your last run</Notice>}
-      {state?.armed && (
+      {/* 171F4 T2-4: a replaced cell has no Run button; its arming (the newer preview's) is not its own. */}
+      {state?.armed && !state.superseded_by && (
         <Notice tone="success">
           {`armed by ${(extras.afterLabel ?? o.after ?? '').toLowerCase()} ✓ ${clock(state.armed.at_ms)} · ${state.armed.summary}`}
         </Notice>
