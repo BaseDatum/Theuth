@@ -856,6 +856,7 @@ async fn e2e_real_shells() {
     assert_eq!(r9.state, RunState::Cancelled);
     assert!(r9.started_ms.is_none());
     b.until("r_8", |r| r.state == RunState::Running).await;
+    let mut live8 = cells.attach(RunId("r_8".into())).await.unwrap();
     cells.stop(RunId("r_8".into()), false).await.unwrap();
     assert_eq!(b.done("r_8").await.state, RunState::Stopped);
     // 171F B14: theuth's own echoed probe / D-mark printf never reaches the record.
@@ -863,6 +864,23 @@ async fn e2e_real_shells() {
     assert!(
         !out8.contains("133;D") && !out8.contains("printf"),
         "{out8:?}"
+    );
+    // 171F2-L: nor the live terminal — no echoed run line, no echoed probe.
+    let mut seen8 = Vec::new();
+    while let Some(chunk) = live8.recv().await {
+        match chunk {
+            PtyChunk::Reset { data, .. } | PtyChunk::Data { data } => seen8.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .unwrap(),
+            ),
+            PtyChunk::Exit { .. } => break,
+        }
+    }
+    let seen8 = String::from_utf8_lossy(&seen8);
+    assert!(
+        !seen8.contains("printf") && !seen8.contains("run.sh"),
+        "{seen8:?}"
     );
 
     // Stop under a `yes` flood: the Stop reaches the kernel in < 500 ms.

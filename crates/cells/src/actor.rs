@@ -1208,7 +1208,6 @@ impl Cells {
             };
             l.record.state = RunState::Running;
             l.record.started_ms = Some(at);
-            l.buf.clear();
             (l.record.cell.scope(), log)
         };
         if let Ok(store) = self.store() {
@@ -2133,7 +2132,8 @@ impl Cells {
                     .find_run(&run)
                     .await?
                     .ok_or_else(|| CellsError::NotFound(run.0.clone()))?;
-                let bytes = std::fs::read(self.inner.paths.run_dir(&run).join("term.log"))
+                // The record's own render (B14: no echoed probe), not the raw `term.log`.
+                let bytes = std::fs::read(self.inner.paths.run_dir(&run).join("out.ansi"))
                     .unwrap_or_default();
                 let tail = &bytes[bytes.len().saturating_sub(ATTACH_BUF)..];
                 let _ = tx
