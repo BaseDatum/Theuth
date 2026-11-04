@@ -18,6 +18,7 @@ import type { NoteKey } from '@/rpc/bindings/NoteKey'
 import { Cell, CellExtras, Chip, Notice } from './Cell'
 import { digest } from './grammar'
 import { MARK_LOOK, useLineRun } from './line-run'
+import { historyAfter } from './open-as-note'
 import { lineDiff, lineStart, memberName, modeOf, pythonValue, withPython } from './note-edit'
 import { NoteHost } from './note-context'
 import { clock, errorText, lastPass, mintId, press, refKey, refresh, register, scopeKey, scopeOf, setNotice, useCellRecord, useCells } from './store'
@@ -208,6 +209,14 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     const t = setTimeout(() => setHint(null), 4000)
     return () => clearTimeout(t)
   }, [hint])
+  // 171F4 T2-3: the chat run's history Open as note wrote after this cell gives way to the cell's own first run, so
+  // the note holds one output per cell (the owner's editor edits the note; members and `doc_read` read the result).
+  const hasRun = latest !== null
+  useEffect(() => {
+    if (!hasRun || !editable) return
+    const old = historyAfter(blocknote.document, block)
+    if (old.length) blocknote.removeBlocks(old)
+  }, [hasRun, editable, blocknote, block])
 
   const act = (f: () => Promise<unknown>) => {
     setNotice(ref, null)
