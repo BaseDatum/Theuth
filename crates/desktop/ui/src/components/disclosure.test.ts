@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement as h, type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { Streamdown } from 'streamdown'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type * as Rpc from '@/lib/rpc'
@@ -16,6 +17,7 @@ import type { Entry } from '@/store/sessions'
 import { AttachChip } from './chat/AttachChip'
 import { DisclosureScope, FenceText, toolKey } from './chat/disclosure'
 import { Message } from './chat/Message'
+import { markdownComponents, plugins, rehypePlugins, shikiTheme } from './chat/MessageAssistant'
 import { RosterCard } from './chat/RosterCard'
 import { Excerpt } from './chat/surface/Excerpt'
 import { JsonRenderFence } from './chat/surface/JsonRenderFence'
@@ -53,7 +55,6 @@ const ALLOWED = new Set([
   'cells/NoteCell.tsx:useState:review', // U1b
   'cells/RunbookBar.tsx:useState:why', // U1a
   'cells/vendor/nteract/outputs/ansi-output.tsx:useState:expanded', // U1b
-  'cells/vendor/nteract/outputs/json-output.tsx:useState:expandedPaths', // U1b
 ])
 
 function sources(dir: string): string[] {
@@ -129,7 +130,7 @@ const rows: Row[] = [
   },
   { name: 'resume card', key: 'r1|resume', el: row({ id: 'r1', kind: 'resume', restored: true, clock: '10:00:00', sections: [], text: 'resumed body' }), open: (html) => html.includes('resumed body') },
   { name: 'lost child card', key: 'l1|lost', el: row({ id: 'l1', kind: 'lost', name: 'kid', session: '', clock: '', why: '', text: 'lost body' }), open: (html) => html.includes('lost body') },
-  { name: "parent's view card", key: 'w1|view', el: row({ id: 'w1', kind: 'parentView', lines: [{ id: 'a', n: 1, text: 'remembered', earlier: false }], bytes: 10 }), open: (html) => html.includes('remembered') },
+  { name: "parent's view card", key: 'w1|view', el: row({ id: 'w1', kind: 'parentView', lines: [{ id: 7, n: 1, text: 'remembered', earlier: false }], bytes: 10 }), open: (html) => html.includes('remembered') },
   { name: 'advisory card', key: 'a1|advisory', el: row({ id: 'a1', kind: 'advisory', notes: [{ severity: 'nit', note: 'tidy' }] }), open: expanded },
   {
     name: 'advisory show more',
@@ -175,13 +176,20 @@ test.each(rows)('$name: a preset store shows its other state on the first render
   expect(open(renderToStaticMarkup(el))).toBe(!initial)
 })
 
-test('a fence keeps its scope while the reply streams: the offset in the reply, not the body, keys it', () => {
-  const code = broken
-  const early = reply(md(code), code)
-  const later = reply(`${md(code)}\nMore prose after the fence.`, code)
-  expect(later.key('source')).toBe(early.key('source'))
-  useToolRuns.setState({ disclosed: { [early.key('source')]: true } })
-  expect(expanded(renderToStaticMarkup(later.el))).toBe(true)
+test('through streamdown, a fence keeps its scope from mid-stream to settled, in either mode', () => {
+  const text = `Intro.\n\n${md(accordion)}\nAfter.`
+  const key = disclosureKey('r1', 'fence', text.indexOf(accordion), 'accordion|0|One')
+  const render = (t: string, mode: 'static' | undefined, isAnimating: boolean) =>
+    renderToStaticMarkup(h(DisclosureScope, { value: 'r1' }, h(FenceText, { value: t }, h(Streamdown, { mode, isAnimating, plugins, rehypePlugins, components: markdownComponents, shikiTheme }, t))))
+  // The reader closed the accordion; an open fence (its body cut short, streamdown appends a newline) and the closed one
+  // both find it.
+  useToolRuns.setState({ disclosed: { [key]: false } })
+  for (const mode of ['static', undefined] as const) {
+    expect(render(text.slice(0, text.indexOf(accordion) + accordion.length - 3), mode, true)).not.toContain('first body')
+    expect(render(text, mode, false)).not.toContain('first body')
+  }
+  useToolRuns.setState({ disclosed: {} })
+  expect(render(text, undefined, false)).toContain('first body')
 })
 
 // ---------------------------------------------------------------------------------------------------------------- (c)

@@ -59,6 +59,9 @@ Base `0daf1005` (C skeleton). UI only, `crates/desktop/ui/src/`.
   test: AdvisorPill, AttachPicker, CostPill, HeaderMenu, HeldStrip, ModelCombobox, ModelMenu, OrphansBanner) are skipped:
   not transcript, never remounted by a stream, and a menu's open state in a global store would reopen it after
   navigation. `useState` hits count only boolean state with a disclosure-shaped name.
+- T6b pairs by body: verified for `<job_result>` and `<reminder>` (`supervisor.rs` `job_result`/`reminder` wrap the
+  delivered `text` verbatim between newlines; `classify` strips them and `trimEnd`s). The `<subagent_result>` body is
+  assumed to be the delivered text the same way (its writer was not traced); if not, that card still loses its id.
 
 ## Allowlist (Z clears each entry once the owner's branch is merged; the test also fails on a stale entry)
 | entry | owner |
@@ -66,12 +69,24 @@ Base `0daf1005` (C skeleton). UI only, `crates/desktop/ui/src/`.
 | `cells/Cell.tsx:useState:open`, `cells/Cell.tsx:useState:raw` | U1b |
 | `cells/KernelStrip.tsx:useState:open` | U1b |
 | `cells/NoteCell.tsx:useState:open`, `cells/NoteCell.tsx:useState:review` | U1b |
-| `cells/vendor/nteract/outputs/ansi-output.tsx:useState:expanded`, `…/json-output.tsx:useState:expandedPaths` | U1b |
+| `cells/vendor/nteract/outputs/ansi-output.tsx:useState:expanded` | U1b |
 | `cells/RunbookBar.tsx:useState:why` | U1a |
+
 U2's files (`MessageUser.tsx`, `ResultCard.tsx`, `LongText.tsx`, `SentResults.tsx`) have no hit on this base.
+Not matched by the ratchet (non-boolean state) but a disclosure in U1b's file: `json-output.tsx` `expandedPaths` (a
+`Set` of opened JSON paths); U1b converts it.
 
 ## Not covered by the contract table (static render cannot show them)
 Radix portals (SkillCard sheet, Attachments lightbox, DiagramFrame fullscreen, the popovers' content — AttachChip is
 covered through its trigger's `data-state`), HtmlPage errors (needs iframe console messages), Stamp (coarse pointer
 only), DoubleChip / CitationLink / AskCard / Provenance / ArtifactCard (need prediction, citation, packet or artifact
 stores). They use the same hook. No live app run (manual check optional per brief).
+
+## Verification
+- Tests fail on the old code: with `reduce.ts`, `MessagePeer.tsx` and `registry.tsx` checked out from `0daf1005`,
+  `disclosure.test.ts` fails 7 (ratchet, peer, accordion, tree, tab, picture, settled reload) and passes after.
+- Throwaway smoke (deleted): streamdown streaming mode with `isAnimating=false` renders the same markup as `static` for a
+  heading/list/table/json-render reply except `\n` text nodes between blocks (no visual difference), so a reply mounted
+  while streaming and kept in streaming mode looks settled; a reply mounted settled is static. The same smoke found that
+  streamdown hands an open fence its body plus a trailing newline: `FenceScope` trims before the offset search (the
+  permanent "through streamdown" test covers it, mid-stream and settled, both modes).

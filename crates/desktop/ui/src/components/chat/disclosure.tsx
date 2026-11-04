@@ -39,13 +39,15 @@ export function useDisclosed<T extends string | number | boolean>(pick: (open: R
 
 /**
  * Scopes the disclosures of the fence whose body is `code` by its offset in the reply (`FenceText`): stable while the
- * reply streams (text only grows) and across remounts. A body not found verbatim (a fence indented inside a list
- * item) falls back to its first 80 characters.
+ * reply streams (text only grows) and across remounts. Trimmed first: streamdown closes an open fence with a newline
+ * the reply does not have yet. A body still not found verbatim (a fence indented inside a list item) falls back to its
+ * first 80 characters.
  */
 export function FenceScope({ code, children }: { code: string; children: ReactNode }) {
   const text = useContext(FenceText)
-  const at = text?.indexOf(code) ?? -1
-  return <DisclosureScope value={useScopeKey(disclosureKey('fence', at >= 0 ? at : code.slice(0, 80)))}>{children}</DisclosureScope>
+  const body = code.trimEnd()
+  const at = text?.indexOf(body) ?? -1
+  return <DisclosureScope value={useScopeKey(disclosureKey('fence', at >= 0 ? at : body.slice(0, 80)))}>{children}</DisclosureScope>
 }
 
 /** A transcript card's fold (what an HTML details element used to be): `trigger` toggles `children`; open state under `part` in the enclosing scope.
