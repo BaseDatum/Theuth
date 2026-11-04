@@ -3,7 +3,7 @@ import type { BlockNoteEditor } from '@blocknote/core'
 import { useEditorState } from '@blocknote/react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, Play } from 'lucide-react'
-import { type MouseEvent, type ReactNode, useContext, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type MouseEvent, type ReactNode, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { isApple } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
@@ -12,14 +12,15 @@ import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/api'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
+import type { CellScope } from '@/rpc/bindings/CellScope'
 import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import type { DocId } from '@/rpc/bindings/DocId'
 import type { NoteKey } from '@/rpc/bindings/NoteKey'
 import { Cell, CellExtras, Chip, Notice } from './Cell'
 import { digest } from './grammar'
-import { MARK_LOOK, useLineRun } from './line-run'
+import { MARK_LOOK, noteHover, useLineRun } from './line-run'
 import { historyAfter } from './open-as-note'
-import { lineDiff, lineStart, memberName, modeOf, pythonValue, withPython } from './note-edit'
+import { headerFolded, lineDiff, lineStart, memberName, modeOf, pythonValue, withPython } from './note-edit'
 import { NoteHost } from './note-context'
 import { clock, errorText, lastPass, mintId, press, refKey, refresh, register, scopeKey, scopeOf, setNotice, useCellRecord, useCells } from './store'
 import { interpreterText, labelOf, titleOf, viewOf } from './view'
@@ -60,6 +61,22 @@ export function mountedCells(doc: DocId): { ref: CellRef; text: string }[] {
 export async function pressNote(api: Pick<Api, 'cell_run'>, ref: CellRef, text: string, mode: CellRunMode, memberAck: string | null) {
   const seen = await digest(text)
   return press(mintId('r_'), (id) => api.cell_run(ref, seen, mode, id, null, memberAck))
+}
+
+/**
+ * 171F4 N1: one re-read of the note's record per settled edit, `ms` after the last change (each change restarts the
+ * wait): the engine's stale mark ("ran an earlier version") and its validation follow the text, never per keystroke.
+ */
+export function rereadAfterEdit(scope: CellScope, ms = 800) {
+  let stop = () => {}
+  return {
+    edit() {
+      stop()
+      const t = setTimeout(() => void refresh(scope), ms)
+      stop = () => clearTimeout(t)
+    },
+    stop: () => stop(),
+  }
 }
 
 const decode = (b64: string) => new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
@@ -184,16 +201,16 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   useEffect(() => register(api, scopeOf(ref), { ref, spec: cell, label: title }), [api, key, title])
   mounted.set(key, { ref, text: code })
   useEffect(() => () => void mounted.delete(key), [key])
-  // 171F (B10 proof): a header edit (Use Python, the chip menu, typed `#|` lines) changes validation; re-read the
-  // record once the engine has the new text. Header only: code keystrokes still never re-read.
-  const header = code.match(/^(?:#\|.*(?:\n|$))*/)?.[0] ?? ''
-  const seenHeader = useRef(header)
+  // 171F4 N1: any edit of the block (code or header) re-reads the record once it settles, so validation and the
+  // stale mark follow the text (171F B10 re-read headers only).
+  const reread = useMemo(() => rereadAfterEdit(scope), [key])
+  const seenCode = useRef(code)
   useEffect(() => {
-    if (seenHeader.current === header) return
-    seenHeader.current = header
-    const t = setTimeout(() => void refresh(scope), 800)
-    return () => clearTimeout(t)
-  }, [header])
+    if (seenCode.current === code) return
+    seenCode.current = code
+    reread.edit()
+  }, [code, reread])
+  useEffect(() => reread.stop, [reread])
 
   const { state: record, notice } = useCellRecord(ref)
   const latest = record?.latest ?? null
@@ -299,28 +316,50 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const onMove = (e: MouseEvent<HTMLDivElement>) => {
     if (danger || (e.target instanceof Element && e.target.closest('button'))) return
     const codeEl = slot.current?.querySelector('code')
-    const at = caretAt(e.clientX, e.clientY)
-    // 171F B2: off the code text (the padding band before the ►) keeps the hover; leaving the slot clears it.
-    if (!codeEl || !slot.current || !at || !codeEl.contains(at.node)) return
-    const range = document.createRange()
-    range.setStart(codeEl, 0)
-    range.setEnd(at.node, at.offset)
-    const offset = range.toString().length
-    const mode = modeOf(code, cell, offset, offset)
-    if (mode?.type !== 'line') return setHover(null)
-    range.collapse(false)
-    const box = range.getBoundingClientRect()
-    const top = Math.round((box.height ? box.top : e.clientY - 10) - slot.current.getBoundingClientRect().top)
-    if (hover?.line !== mode.line || hover.top !== top) setHover({ line: mode.line, top })
+    if (!codeEl || !slot.current) return
+    // 171F4 N2: the band before the code text, where the ► sits, keeps the hovered line (`noteHover`); over the
+    // text the line under the pointer; leaving the slot clears it.
+    const textLeft = codeEl.getBoundingClientRect().left
+    const at = e.clientX < textLeft ? null : caretAt(e.clientX, e.clientY)
+    if (e.clientX >= textLeft && (!at || !codeEl.contains(at.node))) return
+    let line: number | null = null
+    let top = hover?.top ?? 0
+    if (at) {
+      const range = document.createRange()
+      range.setStart(codeEl, 0)
+      range.setEnd(at.node, at.offset)
+      const offset = range.toString().length
+      const mode = modeOf(code, cell, offset, offset)
+      if (mode?.type === 'line') {
+        line = mode.line
+        range.collapse(false)
+        const box = range.getBoundingClientRect()
+        top = Math.round((box.height ? box.top : e.clientY - 10) - slot.current.getBoundingClientRect().top)
+      }
+    }
+    const next = noteHover(hover?.line ?? null, e.clientX, textLeft, line)
+    if (next === null) return setHover(null)
+    if (hover?.line !== next || hover.top !== top) setHover({ line: next, top })
   }
   const [selFrom, selTo] = sel ? (sel.split(':').map(Number) as [number, number]) : [0, 0]
   const selMode = sel && selFrom !== selTo ? modeOf(code, cell, selFrom, selTo) : null
   const selLine = modeOf(code, cell, Math.min(selFrom, selTo), Math.min(selFrom, selTo))
   const mod = isApple() ? '⌘' : 'Ctrl'
   const mark = danger ? null : lineRun.mark
+  // 171F4 N3: the `#|` lines fold behind the "#|" pill (the chips show the same options); display only, the text
+  // keeps them. Shown while the caret is in them or the pill is on. The fold pulls the code up by the header's height
+  // and clips the header (note-cells.css), so the caret can still arrow up into it.
+  const [pill] = useDisclosure(disclosureKey(key, 'raw'))
+  const folded = headerFolded(code, cell, sel ? [selFrom, selTo] : null, pill)
+  const [foldPx, setFoldPx] = useState(0)
+  // ponytail: measured per edit and fold change; a late font swap leaves it stale until the next one.
+  useLayoutEffect(() => {
+    if (folded) setFoldPx(lineTop(slot.current, lineStart(code, cell, 1)) - lineTop(slot.current, 0))
+  }, [folded, code])
+  const fold = folded && foldPx > 0 ? ({ '--header-fold': `${foldPx}px` } as CSSProperties) : undefined
 
   const slotted = (
-    <div ref={slot} className="relative" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+    <div ref={slot} className="relative" data-header-fold={fold ? '' : undefined} style={fold} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
       {editor}
       {mark && (
         <span
@@ -376,11 +415,20 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const extras: CellExtras = {
     // A note cell never folds: the folded row has no editor slot, and BlockNote needs its content mounted.
     open: true,
+    // 171F4 N3: the "#|" pill unfolds the header in the editor (the header is the note's text).
+    headerInEditor: true,
     notice,
     hint: hint ?? (monty && latest?.state === 'running' ? 'Monty shows output when the run ends' : null),
     runText: member ? `Run ${member}'s edit` : undefined,
     chip: cell.lang === 'python' && editable ? <PythonChip text={chipText} cwd={cwd} at={key} onPick={(v) => blocknote.updateBlock(block, { content: withPython(code, v) })} /> : undefined,
-    footer: latest?.ended_ms != null ? <span className="tabular-nums">ran {clock(latest.ended_ms)}</span> : undefined,
+    // 171F4 N1: the stale mark as `doc_read` writes it (`ran 15:08 · … · ran an earlier version`).
+    footer:
+      latest?.ended_ms != null ? (
+        <span className="tabular-nums">
+          ran {clock(latest.ended_ms)}
+          {record?.stale && ' · ran an earlier version'}
+        </span>
+      ) : undefined,
     rows: (
       <>
         {member && (
@@ -417,7 +465,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   }
 
   return (
-    <div data-note-cell="" data-ref-key={key} data-block={block} className={cn(passStop !== null && 'rounded-xl ring-2 ring-danger')}>
+    <div data-note-cell="" data-doc={doc} data-ref-key={key} data-block={block} className={cn(passStop !== null && 'rounded-xl ring-2 ring-danger')}>
       <CellExtras value={extras}>
         <Cell
           cellRef={ref}

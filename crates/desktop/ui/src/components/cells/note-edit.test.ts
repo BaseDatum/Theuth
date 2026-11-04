@@ -4,7 +4,7 @@ import { expect, test } from 'vitest'
 import { diagramOf } from '@/components/editor/codeLanguages'
 import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import { cellOf } from './grammar'
-import { CELL_STARTER, firstDefaults, lineDiff, makeCell, makePlain, memberName, modeOf, noteRef, routeOf, slugOf, withPython, withoutHeader } from './note-edit'
+import { CELL_STARTER, firstDefaults, headerFolded, lineDiff, makeCell, makePlain, memberName, modeOf, noteRef, routeOf, slugOf, withPython, withoutHeader } from './note-edit'
 
 /** A headless editor over the documents schema (the UI's code block has the same config) holding `blocks`. */
 function editorWith(blocks: unknown[]) {
@@ -112,4 +112,21 @@ test('member review diff, member names, python header rewrite, first defaults bl
   ]
   expect(firstDefaults(blocks, 'b')).toBe(true)
   expect(firstDefaults(blocks, 'c')).toBe(false)
+})
+
+test('171F4 N3: the #| header folds unless the caret is in it or the pill is on; a cell with only a header never folds', () => {
+  const text = '#| name: fetch\n#| label: Fetch\ncurl -fsSL x\nwc -l x'
+  const spec = cellOf('bash', text) as CellSpec
+  const code = text.indexOf('curl')
+  expect(headerFolded(text, spec, null, false)).toBe(true)
+  expect(headerFolded(text, spec, [code, code], false)).toBe(true)
+  expect(headerFolded(text, spec, [text.length, text.length], false)).toBe(true)
+  // The caret anywhere in the header, its last line's end included, or a selection reaching into it: shown.
+  expect(headerFolded(text, spec, [0, 0], false)).toBe(false)
+  expect(headerFolded(text, spec, [code - 1, code - 1], false)).toBe(false)
+  expect(headerFolded(text, spec, [code + 4, 3], false)).toBe(false)
+  // The pill toggles it open wherever the caret is.
+  expect(headerFolded(text, spec, null, true)).toBe(false)
+  // Typing `#|` at the top of a cell: the header is all there is (or a blank line follows) — it stays in view.
+  for (const typed of ['#|', '#| name: step-1', '#| name: step-1\n']) expect(headerFolded(typed, cellOf('bash', typed) as CellSpec, null, false)).toBe(false)
 })

@@ -918,7 +918,7 @@ The mock's 390 px panel: 48 px touch targets, the runbook bar stacked, the Run b
 | Mod+Enter | cell editor | run the selection, else the caret line (not on danger cells) |
 | Mod+. | cell or live terminal | Stop; again after 5 s = Kill |
 | Esc | cell editor | leave the editor (chat cells return to read-only if unedited) |
-| Mod+Shift+Enter | runbook bar or note header focused | Run all |
+| Mod+Shift+Enter | runbook bar or note header focused, or anywhere in a note's editor (body or a cell; 171F4 N5) | Run all |
 | typing, arrows | live terminal | sent to the program (167's mapping) |
 
 ### 11.8 Theming

@@ -133,6 +133,17 @@ export function lineStart(text: string, spec: CellSpec, line: number): number {
   return lines.slice(0, spec.header_lines + line - 1).reduce((n, l) => n + l.length + 1, 0)
 }
 
+/**
+ * 171F4 N3: whether a note cell's `#|` header lines fold behind the "#|" pill (display only). `sel` = the BlockNote
+ * selection `[from, to]` in the block's text when it lies in the block. Shown while the selection touches the header
+ * (typing `#|` keeps them in view) or the pill is on; never folded when no code follows the header.
+ */
+export function headerFolded(text: string, spec: CellSpec, sel: readonly [number, number] | null, pill: boolean): boolean {
+  const code = lineStart(text, spec, 1)
+  if (pill || spec.header_lines === 0 || code >= text.replaceAll('\r\n', '\n').length) return false
+  return sel === null || Math.min(sel[0], sel[1]) >= code
+}
+
 export type DiffRow = { op: ' ' | '+' | '-'; line: string }
 
 /**

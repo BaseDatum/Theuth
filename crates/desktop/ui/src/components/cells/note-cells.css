@@ -24,3 +24,12 @@ html [data-note-cell] pre[data-cell-code] {
     line-height: 24px;
   }
 }
+
+/* 171F4 N3: the folded `#|` header (NoteCell sets `--header-fold`, the header's height). Display only: the code moves
+   up over the header lines, which are clipped (no paint, no pointer); the text, the caret and save keep them. */
+html [data-note-cell] [data-header-fold] pre[data-cell-code] > code {
+  display: block;
+  margin-top: calc(-1 * var(--header-fold));
+  /* Only the top is clipped: lines wider than the box (the pre scrolls) and descenders stay painted. */
+  clip-path: inset(var(--header-fold) -100vmax -100vmax -100vmax);
+}

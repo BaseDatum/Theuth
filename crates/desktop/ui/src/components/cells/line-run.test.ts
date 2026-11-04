@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { busy, pressed, refused, settled, started } from './line-run'
+import { busy, hoverAfter, noteHover, pressed, refused, settled, started } from './line-run'
 import { run } from './test-fixtures'
 
 const ID = 'r_01JC7Q2M8V0000000000000001'
@@ -44,4 +44,22 @@ test('171F4 T2-6: output, a newer run or a refused press clears the mark', () =>
   const other = pressed(null, 5)
   expect(started(other, 3, mine())).toBe(other)
   expect(refused(other, 3)).toBe(other)
+})
+
+test('171F4 N2: in a note the pointer may travel left to the ► — the band before the text keeps the hovered line', () => {
+  const TEXT_LEFT = 342
+  let line = noteHover(null, 450, TEXT_LEFT, 2)
+  expect(line).toBe(2)
+  // In the band WebKit's caretRangeFromPoint answers a header offset (no code line): the ► stays on line 2.
+  line = noteHover(line, 330, TEXT_LEFT, null)
+  expect(line).toBe(2)
+  line = noteHover(line, 316, TEXT_LEFT, 1)
+  expect(line).toBe(2)
+  // Back over the text: the line under the pointer, none on a header line.
+  expect(noteHover(line, 400, TEXT_LEFT, 3)).toBe(3)
+  expect(noteHover(line, 400, TEXT_LEFT, null)).toBeNull()
+  // The band never invents a hover.
+  expect(noteHover(null, 330, TEXT_LEFT, 1)).toBeNull()
+  // Leaving the slot clears it (the same rule as the chat gutter).
+  expect(hoverAfter(2, { kind: 'leave', inEditor: false })).toBeNull()
 })

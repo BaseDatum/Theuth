@@ -47,6 +47,8 @@ export type CellExtras = {
   chip?: ReactNode
   below?: ReactNode
   footer?: ReactNode
+  /** 171F4 N3: the header lines are in the editor (a note): the "#|" pill folds them there, no read-only copy. */
+  headerInEditor?: boolean
 }
 export const CellExtras = createContext<CellExtras>({})
 
@@ -591,7 +593,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
             <div contentEditable={false}>
               {header}
               {notices}
-              {raw && (
+              {raw && !extras.headerInEditor && (
                 <pre className="border-y border-border-subtle px-3 py-1 font-mono text-xs text-fg-tertiary">
                   {cell.header.map((h) => `#| ${h.key}${h.value === null ? '' : `: ${h.value}`}`).join('\n')}
                 </pre>

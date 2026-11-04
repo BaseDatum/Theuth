@@ -1,7 +1,7 @@
 import { createCodeBlockSpec, plainContentToString } from '@blocknote/core'
 import { type ReactCustomBlockRenderProps, createReactBlockSpec, useEditorState } from '@blocknote/react'
 import { PencilLine } from 'lucide-react'
-import { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { CellDefaults } from '@/components/cells/CellDefaults'
 import { GuestCell, useLatest } from '@/components/cells/GuestCell'
 import { NoteCell } from '@/components/cells/NoteCell'
@@ -140,6 +140,15 @@ function CodeBlock({ block, editor, contentRef }: Props) {
   // Yjs text are the default's.
   const host = useContext(NoteHost)
   const route = useMemo(() => routeOf(block.props.language, source, host, selected), [block.props.language, source, host, selected])
+  // 171F4 N3: typing at the top of a block can re-route it (`#` before `#| name` makes `##|`, plain code, until the
+  // `|`), which moves its content into another element and drops the browser's caret; put it back where
+  // ProseMirror has it before the next key lands.
+  const routed = useRef(route.kind)
+  useLayoutEffect(() => {
+    if (routed.current === route.kind) return
+    routed.current = route.kind
+    if (selected && editor.isFocused()) editor.prosemirrorView?.focus()
+  }, [route.kind])
   const open = () => {
     editor.setTextCursorPosition(block.id, 'end')
     editor.focus()

@@ -12,7 +12,7 @@ import { isApple } from '@/lib/chord'
 import type { CellRun } from '@/rpc/bindings/CellRun'
 import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
 import type { Lang } from '@/rpc/bindings/Lang'
-import { type LineMark, MARK_LOOK, useLineRun } from './line-run'
+import { type HoverEvent, type LineMark, MARK_LOOK, hoverAfter, useLineRun } from './line-run'
 import { cellTheme } from './theme'
 
 const LANGUAGE: Partial<Record<Lang, () => Extension>> = { bash: langs.bash, zsh: langs.sh, sh: langs.sh, pwsh: langs.ps1, python: langs.python }
@@ -21,16 +21,6 @@ const LANGUAGE: Partial<Record<Lang, () => Extension>> = { bash: langs.bash, zsh
 const bytesBefore = (doc: string, pos: number) => new TextEncoder().encode(doc.slice(0, pos)).length
 
 const hover = StateEffect.define<number | null>()
-
-/**
- * 171F B2: the hovered line after a pointer event. A move (text or the ► gutter) hovers its line; leaving the text
- * for somewhere inside the editor (the ► itself) keeps it; only leaving the editor clears it.
- */
-export function hoverAfter(current: number | null, e: HoverEvent): number | null {
-  if (e.kind === 'move') return e.line
-  return e.inEditor ? current : null
-}
-type HoverEvent = { kind: 'move'; line: number | null } | { kind: 'leave'; inEditor: boolean }
 const pointer = (v: EditorView, e: HoverEvent) => {
   const next = hoverAfter(v.state.field(hovered), e)
   if (next !== v.state.field(hovered)) v.dispatch({ effects: hover.of(next) })
