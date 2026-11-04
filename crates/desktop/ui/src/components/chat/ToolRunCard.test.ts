@@ -1,12 +1,10 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
+import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { Entry } from '@/store/sessions'
 import { foldRuns, isDeliverable, summarize, ToolRunCard } from './ToolRunCard'
 
-// `renderToStaticMarkup` reads zustand's server snapshot (the initial state), so the open map is a plain object here.
-const store = vi.hoisted(() => ({ open: {} as Record<string, boolean>, toggle: () => {} }))
-vi.mock('@/lib/tool-runs', () => ({ useToolRuns: (pick: (s: typeof store) => unknown) => pick(store) }))
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: unknown }) => children }))
 
 type Tool = Extract<Entry, { kind: 'tool' }>
@@ -95,7 +93,7 @@ test('ToolRunCard: collapsed shows one header and no cards; expanded shows all t
   expect(collapsed).toContain('3 tools')
   expect(collapsed).toContain('aria-expanded="false"')
   expect(collapsed).not.toContain('>t1<')
-  store.open.c1 = true
+  useToolRuns.setState({ disclosed: { [disclosureKey('run', 'c1')]: true } })
   const expanded = render()
   expect(expanded).toContain('aria-expanded="true"')
   for (const name of ['t1', 't2', 't3']) expect(expanded).toContain(`>${name}<`)

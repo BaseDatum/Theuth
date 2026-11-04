@@ -1,7 +1,7 @@
 // 171F B13: every transcript disclosure keeps its open state in `useToolRuns.disclosed` (`useDisclosure`), never in
 // the component, so no remount can close what the reader expanded: a lone tool folding into a run, a row crossing the
 // transcript's two arrays or leaving the virtual window, a reply's stream closing, the settled reload. The ratchet in
-// `components/disclosure.test.ts` keeps `useState`, `<details>`, `defaultOpen` and `defaultValue` out of the transcript.
+// `components/disclosure.test.ts` keeps component-local open state out of the transcript.
 
 import { createContext, type ReactNode, useContext, useId, useSyncExternalStore } from 'react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -48,7 +48,7 @@ export function FenceScope({ code, children }: { code: string; children: ReactNo
   return <DisclosureScope value={useScopeKey(disclosureKey('fence', at >= 0 ? at : code.slice(0, 80)))}>{children}</DisclosureScope>
 }
 
-/** The `<details>` of a transcript card: `trigger` toggles `children`; open state under `part` in the enclosing scope.
+/** A transcript card's fold (what an HTML details element used to be): `trigger` toggles `children`; open state under `part` in the enclosing scope.
  * The root carries `data-state`, so a `group/x` class on it styles the chevron with `group-data-[state=open]/x:`. */
 export function Details({ part, className, trigger, triggerClassName, children }: { part: string; className?: string; trigger: ReactNode; triggerClassName?: string; children: ReactNode }) {
   const [open, setOpen] = useScopedDisclosure(part)

@@ -16,13 +16,14 @@ import {
   SquareCheck,
   TriangleAlert,
 } from 'lucide-react'
-import { Children, type ComponentProps, isValidElement, type ReactNode, useState } from 'react'
+import { Children, type ComponentProps, isValidElement, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useSnapshot } from '@/lib/snapshot-mode'
+import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import { catalog } from './catalog'
 import { Excerpt } from './Excerpt'
@@ -52,14 +53,17 @@ import { WaterfallView } from './diagrams/Waterfall'
 import { GraphView } from './Graph'
 import { SequenceView } from './Sequence'
 import { Tag } from './Tag'
+import { useDisclosed, useScopeKey, useScopedDisclosure } from '../disclosure'
 
 // Every string is a React text node — no `dangerouslySetInnerHTML` (design 30 §11). Text, lists and headings are
 // `div`s with ARIA roles because the Streamdown wrapper styles `p`/`li`/`h1-h4` descendants for prose.
+// 171F B13: what a reader opens or picks (tree branches, accordion items, the tab, a loaded picture) lives in the
+// disclosure store under the fence's scope, keyed by the element's own content (json-render passes no element key).
 
 // A remote `src` is a fetch the model chose (design 30 §11: a block is a sink if a component carries bytes out), so it
 // loads only on the reader's click; an inline `data:image/` has nothing to leak and shows at once.
 function Picture({ src, alt, caption }: { src: string; alt: string; caption?: string }) {
-  const [shown, setShown] = useState(() => src.toLowerCase().startsWith('data:image/'))
+  const [shown, setShown] = useScopedDisclosure(`picture|${src}`, src.toLowerCase().startsWith('data:image/'))
   return (
     <figure className="flex flex-col items-start gap-1 text-sm">
       {shown ? (
@@ -137,25 +141,73 @@ function nest(items: { label: string; depth?: number; detail?: string }[]): Tree
   }
   return roots
 }
-function TreeRows({ nodes }: { nodes: TreeNode[] }) {
+/** `path`: the labels and positions above, so a branch keeps its key while later items stream in. */
+function TreeRows({ nodes, path = '' }: { nodes: TreeNode[]; path?: string }) {
   return nodes.map((n, i) =>
     n.children.length ? (
-      <Collapsible key={i} defaultOpen>
-        <CollapsibleTrigger className="flex w-full items-center gap-1.5 text-left [&[data-state=open]>svg]:rotate-90">
-          <ArrowRight className="size-3.5 shrink-0 text-fg-tertiary transition-transform" aria-hidden />
-          <span className="font-medium">{n.label}</span>
-          {n.detail && <span className="text-xs text-fg-tertiary">{n.detail}</span>}
-        </CollapsibleTrigger>
-        <CollapsibleContent className="ml-1.5 border-l border-border-subtle pl-4">
-          <TreeRows nodes={n.children} />
-        </CollapsibleContent>
-      </Collapsible>
+      <TreeBranch key={i} node={n} path={`${path}/${i}:${n.label}`} />
     ) : (
       <div key={i} className="flex items-center gap-1.5 pl-5">
         <span>{n.label}</span>
         {n.detail && <span className="text-xs text-fg-tertiary">{n.detail}</span>}
       </div>
     ),
+  )
+}
+function TreeBranch({ node: n, path }: { node: TreeNode; path: string }) {
+  const [open, setOpen] = useScopedDisclosure(`tree|${path}`, true)
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="flex w-full items-center gap-1.5 text-left [&[data-state=open]>svg]:rotate-90">
+        <ArrowRight className="size-3.5 shrink-0 text-fg-tertiary transition-transform" aria-hidden />
+        <span className="font-medium">{n.label}</span>
+        {n.detail && <span className="text-xs text-fg-tertiary">{n.detail}</span>}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="ml-1.5 border-l border-border-subtle pl-4">
+        <TreeRows nodes={n.children} path={path} />
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/** The picked tab is one disclosure per tab (the first open one wins; the first tab while none is). */
+function SurfaceTabs({ labels, children }: { labels: string[]; children?: ReactNode }) {
+  const key = useScopeKey(`tabs|${labels.join('|')}`)
+  const active = useDisclosed((open) => labels.findIndex((_, i) => open[disclosureKey(key, i)]))
+  const pick = (value: string) => {
+    const { setDisclosed } = useToolRuns.getState()
+    if (active >= 0) setDisclosed(disclosureKey(key, active), false)
+    setDisclosed(disclosureKey(key, value), true)
+  }
+  return (
+    <Tabs value={String(Math.max(active, 0))} onValueChange={pick}>
+      <TabsList>
+        {labels.map((l, i) => (
+          <TabsTrigger key={i} value={String(i)}>
+            {l}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      {labels.map((_, i) => (
+        <TabsContent key={i} value={String(i)}>
+          {Children.toArray(children)[i]}
+        </TabsContent>
+      ))}
+    </Tabs>
+  )
+}
+
+/** One accordion item, open until the reader closes it. */
+function AccordionItem({ title, index, children }: { title: string; index: number; children: ReactNode }) {
+  const [open, setOpen] = useScopedDisclosure(`accordion|${index}|${title}`, true)
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="group/acc py-2">
+      <CollapsibleTrigger className="flex w-full items-center gap-2 text-left text-sm font-medium">
+        <ArrowRight className="size-3.5 shrink-0 text-fg-tertiary transition-transform group-data-[state=open]/acc:rotate-90" aria-hidden />
+        {title}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pt-2 pl-5.5">{children}</CollapsibleContent>
+    </Collapsible>
   )
 }
 
@@ -375,32 +427,13 @@ const components: Components<typeof catalog> = {
       ))}
     </div>
   ),
-  Tabs: ({ props, children }) => (
-    <Tabs defaultValue="0">
-      <TabsList>
-        {props.labels.map((l, i) => (
-          <TabsTrigger key={i} value={String(i)}>
-            {l}
-          </TabsTrigger>
-        ))}
-      </TabsList>
-      {props.labels.map((_, i) => (
-        <TabsContent key={i} value={String(i)}>
-          {Children.toArray(children)[i]}
-        </TabsContent>
-      ))}
-    </Tabs>
-  ),
+  Tabs: ({ props, children }) => <SurfaceTabs labels={props.labels}>{children}</SurfaceTabs>,
   Accordion: ({ props, children }) => (
     <div className="flex flex-col divide-y divide-border-subtle">
       {props.titles.map((t, i) => (
-        <Collapsible key={i} defaultOpen className="group/acc py-2">
-          <CollapsibleTrigger className="flex w-full items-center gap-2 text-left text-sm font-medium">
-            <ArrowRight className="size-3.5 shrink-0 text-fg-tertiary transition-transform group-data-[state=open]/acc:rotate-90" aria-hidden />
-            {t}
-          </CollapsibleTrigger>
-          <CollapsibleContent className="pt-2 pl-5.5">{Children.toArray(children)[i]}</CollapsibleContent>
-        </Collapsible>
+        <AccordionItem key={i} title={t} index={i}>
+          {Children.toArray(children)[i]}
+        </AccordionItem>
       ))}
     </div>
   ),
