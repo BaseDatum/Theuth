@@ -465,7 +465,7 @@ async fn input_prompt_is_shown_until_answered() {
                 stop: None,
                 buf: Vec::new(),
                 tx: broadcast::channel(4).0,
-                done: Vec::new(),
+                done: oneshot::channel().0,
             },
         );
     }
@@ -681,6 +681,7 @@ impl Bench {
                 p,
             )
             .await
+            .map(|(r, _)| r)
     }
 
     async fn until(&self, id: &str, what: impl Fn(&CellRun) -> bool) -> CellRun {
@@ -1096,25 +1097,78 @@ impl note::Docs for Blocks {
     }
 }
 
-/// 171F4 T2-1: the Run all pass of Sky's repro — five trivial `python: auto` cells in a note
-/// (a local python, else Monty). `None` (skip) when neither runs here.
+/// A `python: auto` cell runs here: a local python, else a Monty worker. `false` (the
+/// caller skips) when neither.
+async fn python_here(cells: &Cells, dir: &Path) -> bool {
+    let env = cells.login_env().await;
+    let ok = crate::interp::resolve(None, dir, &env.vars, false)
+        .await
+        .is_ok()
+        || crate::monty::sufficient("y = 1").await == Some(Ok(()));
+    if !ok {
+        eprintln!("no python and no Monty worker; skipping");
+    }
+    ok
+}
+
+/// 171F4 T2-2: a line run is a fragment — its cell's `expect` is not judged (the exit
+/// decides) and its `<cell_result>` says `mode="line"`; the whole cell is still judged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn line_run_skips_expect_and_says_its_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let cells = cells_in(&dir).await;
+    if !python_here(&cells, &dir).await {
+        return;
+    }
+    let cwd = format!("cwd: {}", dir.display());
+    let b = Bench {
+        cells: cells.clone(),
+        session: SessionId(uuid::Uuid::new_v4()),
+        text: fence("python", &[&cwd, "expect: 3.14"], "import sys\nprint(3.14)"),
+        dir: dir.clone(),
+    };
+    let (r, _) = b.run(1, RunMode::Line { line: 1 }, "r_line").await;
+    assert_eq!(r.exit, Some(ExitStatus::Code(0)));
+    assert_eq!(r.state, RunState::Done);
+    assert!(r.expect.is_empty(), "{:?}", r.expect);
+    let res = crate::deliver::cell_result(&r, "", cells.config());
+    assert!(
+        res.contains(" mode=\"line\"") && !res.contains("expect"),
+        "{res}"
+    );
+    let (r, _) = b.run(1, RunMode::Cell, "r_whole").await;
+    assert_eq!(r.state, RunState::Done);
+    assert_eq!(r.expect.len(), 1);
+    assert!(r.expect[0].met);
+    let res = crate::deliver::cell_result(&r, "", cells.config());
+    assert!(
+        res.contains(" expect=\"met 1/1\"") && !res.contains("mode="),
+        "{res}"
+    );
+    for k in cells.kernels_of(&Scope::Session(b.session)) {
+        cells.kernel_close(k.id).await.unwrap();
+    }
+}
+
+/// 171F4 T2-1: the Run all pass of Sky's repro — five trivial `python: auto` cells in a note.
+/// `None` (skip) when no python runs here.
 async fn py_pass(dir: &Path) -> Option<(Cells, Vec<(CellRef, String)>, DocId)> {
     let dir = dir.canonicalize().unwrap();
     let cells = cells_in(&dir).await;
-    let env = cells.login_env().await;
-    if crate::interp::resolve(None, &dir, &env.vars, false)
-        .await
-        .is_err()
-        && crate::monty::sufficient("y = 1").await != Some(Ok(()))
-    {
-        eprintln!("no python and no Monty worker; skipping");
+    if !python_here(&cells, &dir).await {
         return None;
     }
     let doc = DocId("d-py".into());
     let blocks: HashMap<String, String> = ["y = 1", "z = y + 1", "y + z", "w = y * z", "w + 1"]
         .iter()
         .enumerate()
-        .map(|(i, code)| (format!("py{i}"), format!("#| cwd: {}\n{code}", dir.display())))
+        .map(|(i, code)| {
+            (
+                format!("py{i}"),
+                format!("#| cwd: {}\n{code}", dir.display()),
+            )
+        })
         .collect();
     let mut cells_of: Vec<(CellRef, String)> = blocks
         .iter()

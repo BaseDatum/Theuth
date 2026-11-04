@@ -8,7 +8,9 @@ use kameo::actor::ActorRef;
 
 use crate::config::CellsConfig;
 use crate::error::{CellsError, Result};
-use crate::types::{CellOutput, CellRef, CellRun, ExitStatus, Expect, RunState, SessionId};
+use crate::types::{
+    CellOutput, CellRef, CellRun, ExitStatus, Expect, RunMode, RunState, SessionId,
+};
 
 /// What the row does not hold but the result shows.
 #[derive(Clone, Debug, Default)]
@@ -75,6 +77,12 @@ pub(crate) fn parts(
     let _ = write!(a, " exit=\"{}\"", exit_word(run));
     if let Some(s) = run.secs {
         let _ = write!(a, " secs=\"{}\"", s.round() as i64);
+    }
+    // 171F4 T2-2: a fragment run says which it was (its `expect` was not judged).
+    match run.mode {
+        RunMode::Cell => {}
+        RunMode::Line { .. } => a.push_str(" mode=\"line\""),
+        RunMode::Selection { .. } => a.push_str(" mode=\"selection\""),
     }
     let _ = write!(a, " cwd=\"{}\"", esc(&tilde(&run.cwd, x.home)));
     let _ = write!(a, " interpreter=\"{}\"", esc(chip_of(&run.interpreter)));

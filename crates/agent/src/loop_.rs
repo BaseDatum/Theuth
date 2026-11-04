@@ -1363,7 +1363,8 @@ impl Session {
     /// (arrival order) — when its opener is a private input: a human's, or a harness input
     /// without a request scope. A peer exchange or a scoped opener keeps them parked for
     /// the next private turn (50 §6.3). 171F B22: a parked copy of a run the batch also
-    /// carries with a ticket (Ask theuth, a review) is dropped — the run comes once.
+    /// carries with a ticket (Ask theuth, a review) is dropped — the run comes once. 171F4
+    /// T2-5: a cell's repeats fold into its newest result ([`fold_cell_repeats`]).
     fn join_quiet(&mut self, inputs: Vec<Queued>) -> Vec<Queued> {
         let private = inputs
             .first()
@@ -1384,7 +1385,7 @@ impl Session {
                 i.ticket.is_some() || cell_run(&i.text).is_none_or(|r| !owed.contains(r))
             });
         }
-        joined
+        fold_cell_repeats(joined)
     }
 
     /// 171F B22: a run delivered with a wake is un-parked — its quiet copy, parked here or
@@ -1407,6 +1408,78 @@ impl Session {
 fn cell_run(text: &str) -> Option<&str> {
     let (_, rest) = text.split_once("<cell_result run=\"")?;
     rest.split_once('"').map(|(id, _)| id)
+}
+
+/// The opening tag of a `<cell_result …>` input, `None` for any other input.
+fn cell_tag(text: &str) -> Option<&str> {
+    let at = text.find("<cell_result run=\"")?;
+    let tag = &text[at..];
+    Some(&tag[..tag.find('>')?])
+}
+
+/// One attribute of a `<cell_result>` tag (values are escaped: no `"` inside).
+fn tag_attr<'a>(tag: &'a str, key: &str) -> Option<&'a str> {
+    let (_, rest) = tag.split_once(&format!(" {key}=\""))?;
+    rest.split_once('"').map(|(v, _)| v)
+}
+
+/// Which cell a `<cell_result>` tag reports: its `name`, else `cell` + `message`, plus the
+/// note it ran in; `None` when the tag names no cell.
+fn cell_of(tag: &str) -> Option<String> {
+    let attr = |k| tag_attr(tag, k).unwrap_or_default();
+    (tag_attr(tag, "name").is_some() || tag_attr(tag, "cell").is_some())
+        .then(|| [attr("name"), attr("cell"), attr("message"), attr("in")].join("\u{1f}"))
+}
+
+/// 171F4 T2-5: the results of one cell collapse into its newest (at the newest's place);
+/// it gains `runs="N"` — the runs it stands for — and, when earlier runs exited otherwise
+/// than it, `earlier="k failed"` / `"k ok"` (exit `0` is ok, any other exit failed). A
+/// ticketed result (Ask theuth, a review wake) is owed: it is never dropped. The dropped
+/// runs stay in `cell_runs`; the cells actor consumes them with the newest.
+fn fold_cell_repeats(joined: Vec<Queued>) -> Vec<Queued> {
+    let mut newest: HashMap<String, usize> = HashMap::new();
+    for (n, (_, i)) in joined.iter().enumerate() {
+        if let Some(cell) = cell_tag(&i.text).and_then(cell_of) {
+            newest.insert(cell, n);
+        }
+    }
+    let mut earlier: HashMap<String, Vec<String>> = HashMap::new();
+    let mut out = Vec::with_capacity(joined.len());
+    for (n, (id, mut input)) in joined.into_iter().enumerate() {
+        let Some(tag) = cell_tag(&input.text) else {
+            out.push((id, input));
+            continue;
+        };
+        let Some(cell) = cell_of(tag) else {
+            out.push((id, input));
+            continue;
+        };
+        let exit = tag_attr(tag, "exit").unwrap_or_default().to_owned();
+        if newest[&cell] != n && input.ticket.is_none() {
+            earlier.entry(cell).or_default().push(exit);
+            continue;
+        }
+        if newest[&cell] == n
+            && let Some(exits) = earlier.remove(&cell)
+        {
+            let mut attrs = format!(" runs=\"{}\"", exits.len() + 1);
+            let differ = exits.iter().filter(|e| **e != exit);
+            let ok = differ.clone().filter(|e| *e == "0").count();
+            let failed = differ.count() - ok;
+            let words: Vec<String> = [(failed, "failed"), (ok, "ok")]
+                .into_iter()
+                .filter(|(k, _)| *k > 0)
+                .map(|(k, w)| format!("{k} {w}"))
+                .collect();
+            if !words.is_empty() {
+                attrs.push_str(&format!(" earlier=\"{}\"", words.join(", ")));
+            }
+            let end = input.text.find("<cell_result run=\"").unwrap_or(0) + tag.len();
+            input.text.insert_str(end, &attrs);
+        }
+        out.push((id, input));
+    }
+    out
 }
 
 /// `ask` → the address of the child-work semaphore this session's bounded

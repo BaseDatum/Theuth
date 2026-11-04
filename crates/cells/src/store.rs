@@ -393,18 +393,22 @@ impl Store {
     }
 
     /// A turn opened in `scope` whose text carries `run="<id>"` for these ids: those parked
-    /// results joined it (§9.3). Scoped / peer-opened turns carry none, so nothing is
-    /// consumed by them.
+    /// results joined it (§9.3), and so did the earlier parked runs of the same cell (or
+    /// name) — the session folds a cell's repeats into its newest result (171F4 T2-5).
+    /// Scoped / peer-opened turns carry none, so nothing is consumed by them.
     pub(crate) async fn consumed(&self, scope: &str, ids: &[RunId], at_ms: i64) -> Result<u64> {
         let mut n = 0;
         for id in ids {
             n += sqlx::query(
-                "UPDATE cell_runs SET consumed_ms = ? WHERE id = ? AND scope = ? \
-                 AND delivery = 'parked' AND consumed_ms IS NULL",
+                "UPDATE cell_runs SET consumed_ms = ?1 WHERE scope = ?2 \
+                 AND delivery = 'parked' AND consumed_ms IS NULL AND (id = ?3 OR ( \
+                   rowid < (SELECT rowid FROM cell_runs WHERE id = ?3) AND ( \
+                     cell = (SELECT cell FROM cell_runs WHERE id = ?3) \
+                     OR lineage = (SELECT lineage FROM cell_runs WHERE id = ?3))))",
             )
             .bind(at_ms)
-            .bind(id.as_str())
             .bind(scope)
+            .bind(id.as_str())
             .execute(&self.pool)
             .await
             .map_err(db)?
@@ -753,6 +757,33 @@ mod tests {
             .map(|r| r.run.id)
             .collect();
         assert_eq!(left, [RunId("r_b".into())]);
+    }
+
+    /// 171F4 T2-5: naming a cell's newest parked run consumes its earlier parked runs too
+    /// (the turn carried them folded into it), never a later one nor another cell's.
+    #[tokio::test]
+    async fn naming_the_newest_run_consumes_its_cells_repeats() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("c.sqlite")).await.unwrap();
+        let runs = [("r_1", 1), ("r_2", 1), ("r_o", 2), ("r_3", 1), ("r_4", 1)];
+        for (at, (id, ordinal)) in (1..).zip(runs) {
+            let mut r = run(id, ordinal, at);
+            s.insert(&r, "session:x", None).await.unwrap();
+            r.state = RunState::Done;
+            r.ended_ms = Some(at);
+            s.finish(&r, None, None).await.unwrap();
+            s.delivery(&r.id, "parked").await.unwrap();
+        }
+        let named = [RunId("r_3".into())];
+        assert_eq!(s.consumed("session:x", &named, 9).await.unwrap(), 3);
+        let left: Vec<RunId> = s
+            .parked(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.run.id)
+            .collect();
+        assert_eq!(left, [RunId("r_o".into()), RunId("r_4".into())]);
     }
 
     #[tokio::test]
