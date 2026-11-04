@@ -354,7 +354,7 @@ search(query: String, categories?: SearchCategory[], limit?: u32)
 search_refresh(categories?: SearchCategory[]) -> ()
 
 knowledge_read_revision(id: String, commit: String) -> HistoricalConcept
-get_artifact(call_id: String) -> Artifact
+get_artifact(call_id: String, session?: SessionId) -> Artifact   # 51 §4.2: a private record only to its owner naming `session`
 artifact_search_match(call_id: String, query: String) -> ArtifactMatchContext
 ```
 

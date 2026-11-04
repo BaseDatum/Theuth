@@ -531,7 +531,7 @@ syntax. Authenticated owner clients are the same trust boundary as today's
 All methods are lookup + app-actor ask; types belong to app:
 
 ```text
-get_app(record_call_id)
+get_app(record_call_id, session?)   # 51 §4.2: a private record only to its owner naming `session`
   -> {artifact, source, library_hash, bindings, diagnostics}
 app_call_tool({record_call_id, instance_id, generation, statement_id,
                request_id, args, trigger, action_id?})
