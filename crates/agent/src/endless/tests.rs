@@ -695,6 +695,8 @@ struct Probe {
     dropped: Arc<AtomicU32>,
     /// `<chat>` bytes of every call.
     ctx_lens: Mutex<Vec<usize>>,
+    /// The step input of every call, in call order.
+    inputs: Mutex<Vec<String>>,
 }
 
 impl Probe {
@@ -714,6 +716,7 @@ impl Probe {
             max_inflight: AtomicU32::new(0),
             dropped: Arc::new(AtomicU32::new(0)),
             ctx_lens: Mutex::new(Vec::new()),
+            inputs: Mutex::new(Vec::new()),
         })
     }
 
@@ -762,6 +765,7 @@ impl Compactor for Probe {
         self.ctx_lens.lock().push(ctx.len());
         let act = *self.act.lock();
         let line = echo_line(convo);
+        self.inputs.lock().push(line.clone());
         // Armed now, so a call dropped before its first poll counts too.
         let on_drop = (act == Act::Hang).then(|| OnDrop(self.dropped.clone()));
         Box::pin(async move {
@@ -1145,4 +1149,51 @@ async fn local_compactor_receives_the_capped_view() {
         sent.iter().any(|n| *n > 3_000),
         "trimmed to the cap, not below: {sent:?}"
     );
+}
+
+/// R2-1: a local session's merge queued at a held gate does not keep its
+/// next frontier job from being spawned; that job waits too and is served
+/// first on release.
+#[tokio::test]
+async fn queued_merge_does_not_hold_back_the_frontier() {
+    let p = Probe::with("fake/a", Act::Echo, Some("ep"), Duration::ZERO);
+    let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
+    let gate = super::pump::gate_for_tests(&endless.inner, "ep");
+    let held = gate.acquire(1).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    // Two free level-0 lines (≤ 512 B each) whose merge needs the model.
+    for tag in ["alpha", "beta"] {
+        let text = format!(
+            "{tag}: {}",
+            "keep the nginx worker_processes line ".repeat(7)
+        );
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
+    endless.attach(id, attached()).await.unwrap();
+    until("the merge queued at the gate", || {
+        super::pump::running_for_tests(&endless.inner, id) == [(1, 0)]
+    })
+    .await;
+    let unit = format!(
+        "UNIT2 {}",
+        "rotate the error_log and reload nginx now ".repeat(20)
+    );
+    store.append(id, &ChatMessage::user(unit)).await.unwrap();
+    endless.on_rows_committed(id);
+    until("the frontier spawned beside the merge", || {
+        super::pump::running_for_tests(&endless.inner, id) == [(0, 2), (1, 0)]
+    })
+    .await;
+    assert_eq!(p.calls(), 0, "both wait at the held gate");
+    drop(held);
+    until("both served", || p.calls() >= 2).await;
+    let inputs = p.inputs.lock().clone();
+    assert!(
+        inputs[0].contains("UNIT2"),
+        "the frontier first: {inputs:?}"
+    );
+    assert!(endless.settle(id, Duration::from_secs(10)).await);
 }

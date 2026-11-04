@@ -116,17 +116,35 @@ impl Queues {
 }
 
 /// 137F R1-8: a local endpoint's permits, handed out by priority (a live
-/// session's frontier before merges and backfill), then by arrival.
+/// session's frontier before merges and backfill), then by arrival. R2-2:
+/// every [`AGE_EVERY`]th grant goes to the oldest waiter whatever its
+/// priority, so merges and backfill cannot starve under steady frontier load.
 pub(crate) struct Gate {
     state: Mutex<GateState>,
     freed: Notify,
 }
 
+/// One grant in this many serves the oldest waiter (R2-2).
+const AGE_EVERY: u64 = 4;
+
 struct GateState {
     free: usize,
     next: u64,
-    /// `(priority, arrival)`; the first entry is served next.
+    /// Permits handed out so far (the aging turn).
+    grants: u64,
+    /// `(priority, arrival)`; ordered highest priority first.
     waiting: BTreeSet<(Reverse<u8>, u64)>,
+}
+
+impl GateState {
+    /// The waiter the next permit goes to.
+    fn head(&self) -> Option<(Reverse<u8>, u64)> {
+        if self.grants % AGE_EVERY == AGE_EVERY - 1 {
+            self.waiting.iter().min_by_key(|k| k.1).copied()
+        } else {
+            self.waiting.first().copied()
+        }
+    }
 }
 
 /// One held permit; dropping it frees the slot.
@@ -159,13 +177,15 @@ impl Gate {
             state: Mutex::new(GateState {
                 free: permits,
                 next: 0,
+                grants: 0,
                 waiting: BTreeSet::new(),
             }),
             freed: Notify::new(),
         })
     }
 
-    /// Wait for a permit; higher `priority` is served first. Cancel-safe.
+    /// Wait for a permit; higher `priority` is served first, the oldest
+    /// waiter every [`AGE_EVERY`]th grant. Cancel-safe.
     pub(crate) async fn acquire(self: &Arc<Self>, priority: u8) -> Permit {
         let key = {
             let mut s = self.state.lock();
@@ -181,9 +201,10 @@ impl Gate {
             freed.as_mut().enable();
             {
                 let mut s = self.state.lock();
-                if s.free > 0 && s.waiting.first() == Some(&key) {
+                if s.free > 0 && s.head() == Some(key) {
                     s.waiting.remove(&key);
                     s.free -= 1;
+                    s.grants += 1;
                     if s.free > 0 && !s.waiting.is_empty() {
                         self.freed.notify_waiters();
                     }
@@ -839,15 +860,21 @@ fn schedule(state: &Arc<State>) {
         }
         l += 1;
     }
-    // E9: a local compactor is one serial server: one job per session (the
-    // frontier first — it heads `candidates`), the engine-wide queue does the rest.
-    let jobs = if state.compactor().local().is_some() {
-        1
+    let picked: Vec<(u8, u64)> = if state.compactor().local().is_some() {
+        // E9 / R2-1: a local compactor is one serial server, so the gate
+        // serialises the calls and orders them by priority. Per session, one
+        // level-0 job and one merge may wait there at once, so a queued merge
+        // never keeps the next frontier job from being spawned.
+        let level0 = live.running.iter().any(|k| k.0 == 0);
+        let merging = live.running.iter().any(|k| k.0 > 0);
+        let frontier = candidates.iter().find(|k| k.0 == 0 && !level0);
+        let merge = candidates.iter().find(|k| k.0 > 0 && !merging);
+        frontier.into_iter().chain(merge).copied().collect()
     } else {
-        usize::from(state.cfg.read().jobs.max(1))
+        let slots = usize::from(state.cfg.read().jobs.max(1)).saturating_sub(live.running.len());
+        candidates.into_iter().take(slots).collect()
     };
-    let slots = jobs.saturating_sub(live.running.len());
-    for key in candidates.into_iter().take(slots) {
+    for key in picked {
         live.running.insert(key);
         spawn_build(state.clone(), key, &mut live);
     }
@@ -1809,6 +1836,21 @@ pub(crate) fn key_for_tests(state: &State) -> String {
     state.current.read().key.clone()
 }
 
+/// Test seam: the engine-wide gate of a local endpoint.
+#[cfg(test)]
+pub(crate) fn gate_for_tests(inner: &Inner, endpoint: &str) -> Arc<Gate> {
+    inner.queues.get(endpoint, inner.cfg.read().local_jobs)
+}
+
+/// Test seam: the session's running job keys, sorted.
+#[cfg(test)]
+pub(crate) fn running_for_tests(inner: &Inner, session: SessionId) -> Vec<(u8, u64)> {
+    let state = state_of(inner, session).expect("attached");
+    let mut v: Vec<_> = state.live.lock().running.iter().copied().collect();
+    v.sort();
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1948,5 +1990,34 @@ mod tests {
         merge.await.unwrap();
         assert_eq!(*order.lock(), ["frontier", "merge"]);
         assert_eq!(gate.state.lock().free, 1, "every permit came back");
+    }
+
+    /// R2-2: under steady frontier load every 4th grant goes to the oldest
+    /// waiter, so a merge queued first is not starved.
+    #[tokio::test]
+    async fn local_gate_ages_the_oldest_waiter_in() {
+        let gate = Gate::new(1);
+        let held = gate.acquire(1).await; // grant 1
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let waiter = |name: &'static str, priority: u8| {
+            let (gate, order) = (gate.clone(), order.clone());
+            tokio::spawn(async move {
+                let _p = gate.acquire(priority).await;
+                order.lock().push(name);
+                tokio::task::yield_now().await;
+            })
+        };
+        let mut tasks = vec![waiter("merge", 0)];
+        tokio::task::yield_now().await;
+        for name in ["f1", "f2", "f3", "f4"] {
+            tasks.push(waiter(name, 1));
+            tokio::task::yield_now().await;
+        }
+        drop(held);
+        for t in tasks {
+            t.await.unwrap();
+        }
+        // Grants 2 and 3 by priority, grant 4 to the oldest, then priority again.
+        assert_eq!(*order.lock(), ["f1", "f2", "merge", "f3", "f4"]);
     }
 }

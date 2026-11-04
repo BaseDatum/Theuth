@@ -21,12 +21,12 @@
 - **E4.** `finish` (and the E10 guard) now bumps `built_tx` on every outcome, so a waiting `settle` re-checks right after a failure. Before, it woke only when a node landed. `settle` returns `false` as soon as the frontier has ≥ 2 consecutive failures, **whether it is waiting out its delay or running its retry**. Deviation from the brief's "and is in backoff": the first live run (retry_secs 1, local_attempt_secs 30) showed a turn waiting 24.7 s for the third attempt of a node that had already failed twice. A success, `endless_retry` or a compactor switch clears the state, and then turns wait normally again.
 - **E6 locality** (`compactor::is_local` / `local_endpoint`, narrowed in R1-1). A compactor counts as local when one of these holds:
   - provider or genai namespace is ollama / lmstudio / lm-studio / llama.cpp / llamacpp / llama-cpp / vllm / localai / koboldcpp / mlx;
-  - the gateway base-URL host is a single-label name, `*.localhost` or `*.local`, or an IP that is loopback / RFC 1918 / CGNAT 100.64/10 / link-local / unspecified / ULA (an IPv4-mapped IPv6 form included);
+  - the gateway base-URL host is a single-label name; or `*.localhost`, `*.local`, `*.internal`, `*.lan`, `*.home.arpa` or `*.ts.net` (R2-3); or an IP that is loopback / RFC 1918 / CGNAT 100.64/10 / link-local / unspecified / ULA (an IPv4-mapped IPv6 form included);
   - a catalog entry exists and has no `cost`.
 
   An id the catalog does not know (custom gateway names, Azure deployments) is cloud unless its provider or host says local. For genai's built-in adapters (no gateway) the base URL is not known synchronously, so the namespace decides. E9's queue key is the base URL, else the provider, else the namespace, else the id.
 - **E6 bounds.** `build()` wraps each attempt (transport/auth included) in `timeout(attempt)`. `ATTEMPT_TIMEOUT` is gone. Stream options:
-  - cloud (R1-12): `stream_header_timeout` = the attempt bound; `stream_read_timeout` = `max(60 s, attempt_secs / 2)`, so a silent reasoning model is not cut at 60 s;
+  - cloud (R1-12, R2-4): `stream_header_timeout` = `stream_read_timeout` = the attempt bound, so a silent reasoning model gets the whole attempt;
   - local: `stream_read_timeout` 120 s, no header timeout, because the attempt bound already covers time to first token. Ceiling: a slow box doing prompt eval for more than 120 s after headers but before the first chunk trips the read timeout. `local_ctx_bytes` keeps the prompt small enough that this should not happen.
 - **E7 (R1-13).** Only a timeout (our attempt bound, or genai's stream header/read bound — matched on "timed out") after a candidate exists ends the loop on the shortest candidate (`tries` negative). A provider or transport error (429/5xx) fails the node as before. Only answered attempts are `endless_calls` rows.
 - **E8.**
@@ -36,8 +36,10 @@
 - **E8 reasoning (R1-14).** Only a direct Ollama endpoint gets `ReasoningEffort::Zero`, which genai's adapter sends as `think: false`; a gateway target does not. Assumption: Ollama accepts `think: false` for non-thinking models. I believe it only refuses `true`; not verified against a real Ollama. OpenAI-compatible local endpoints are left alone: genai would send `reasoning_effort: "none"`, which LM Studio / llama.cpp may reject.
 - **E9.**
   - Queues: a `Queues` map in `Inner` holds `endpoint → (local_jobs, Gate)`. Changing `local_jobs` installs a fresh gate; calls holding permits on the old one finish there.
-  - `Gate` (R1-8) is a small priority wait line, `(priority, arrival)` in a `BTreeSet` plus a `Notify`. It is cancel-safe: a dropped wait removes its ticket. A level-0 job of a session that is not backfilling gets priority 1; merges and backfill get 0.
-  - Jobs: local compactors get one job per session (frontier first; it already heads the candidate list). Cloud compactors keep the per-session `jobs`, with no engine-wide cap.
+  - `Gate` (R1-8) is a small priority wait line, `(priority, arrival)` in a `BTreeSet` plus a `Notify`. It is cancel-safe: a dropped wait removes its ticket.
+    - Priority: a level-0 job of a session that is not backfilling gets 1; merges and backfill get 0.
+    - Aging (R2-2): every 4th grant goes to the oldest waiter whatever its priority, so merges and backfill cannot starve.
+  - Jobs (R2-1): a local session may have one level-0 job and one merge waiting or running at once. A merge queued at the gate therefore never keeps the next frontier job from being spawned; the gate serialises the calls and the priority orders them. Cloud compactors keep the per-session `jobs`, with no engine-wide cap.
   - Order: the permit is taken before the `model_calls` row is reserved and before the attempt timer starts, so queue time is never counted or ledgered.
 - **E10.**
   - R1-4: `call()` wraps the build in `AssertUnwindSafe(..).catch_unwind()` inside the select. A panic becomes `Err("compactor panicked")`, its `model_calls` row settles `failed`, and the node backs off.

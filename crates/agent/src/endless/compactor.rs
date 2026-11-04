@@ -30,9 +30,6 @@ pub fn prompt(agent: &str) -> String {
 
 /// Reply ceiling without thinking (§5.3).
 pub const MAX_TOKENS: u32 = 600;
-/// 137F E6: a cloud stream's shortest between-chunk idle bound (R1-12:
-/// `max(60 s, attempt_secs / 2)`, so a silent reasoning model is not cut at 60 s).
-const CLOUD_IDLE: Duration = Duration::from_secs(60);
 /// 137F E6: a local stream's between-chunk idle bound (its header bound is the attempt's).
 const LOCAL_IDLE: Duration = Duration::from_secs(120);
 
@@ -57,7 +54,8 @@ const LOCAL_RUNTIMES: [&str; 10] = [
 
 /// 137F E6: a local compactor — a local runtime provider; a loopback /
 /// private (RFC 1918, CGNAT 100.64/10, link-local, ULA) / `*.local` /
-/// single-label base-URL host; or a catalog entry without a price. An id
+/// `*.internal` / `*.lan` / `*.home.arpa` / `*.ts.net` / single-label
+/// base-URL host; or a catalog entry without a price. An id
 /// the catalog does not know is cloud unless its provider or host says
 /// local (custom gateways, Azure deployments). The one locality rule
 /// (attempt bound, E8 prompt cap, E9 queue).
@@ -79,7 +77,17 @@ pub fn is_local(model: &Resolved, base_url: Option<&str>) -> bool {
         let private = match host {
             url::Host::Domain(d) => {
                 let d = d.to_ascii_lowercase();
-                !d.contains('.') || d.ends_with(".localhost") || d.ends_with(".local")
+                !d.contains('.')
+                    || [
+                        ".localhost",
+                        ".local",
+                        ".internal",
+                        ".lan",
+                        ".home.arpa",
+                        ".ts.net",
+                    ]
+                    .iter()
+                    .any(|s| d.ends_with(s))
             }
             url::Host::Ipv4(ip) => private_v4(ip),
             url::Host::Ipv6(ip) => {
@@ -474,14 +482,15 @@ impl ModelCompactor {
             .with_max_tokens(self.reply_tokens());
         // E6: idle bounds; a local stream's first token may take the whole
         // attempt (prompt eval on slow hardware), which `build` bounds. A
-        // cloud stream's first byte may take the attempt bound too (R1-12).
+        // cloud stream's first byte and every silence between chunks may
+        // take the attempt bound (R1-12, R2-4: a silent reasoning model).
         opts = if self.local.is_some() {
             opts.with_stream_read_timeout(LOCAL_IDLE)
         } else {
             let attempt =
                 Duration::from_secs(u64::from(self.cfg.read().attempt_secs.clamp(10, 3_600)));
             opts.with_stream_header_timeout(attempt)
-                .with_stream_read_timeout(CLOUD_IDLE.max(attempt / 2))
+                .with_stream_read_timeout(attempt)
         };
         if t == Transport::OpenAiLike {
             opts = opts
@@ -728,6 +737,10 @@ mod tests {
             "http://[fe80::1]/",
             "http://100.101.102.103:8000/",
             "http://gpu-box:8000/v1/",
+            "http://gpu.corp.internal/v1/",
+            "http://nas.lan:8080/",
+            "http://box.home.arpa/",
+            "http://gpu.tail1234.ts.net:11434/",
         ] {
             assert!(is_local(&cloud, Some(url)), "{url}");
         }
@@ -812,8 +825,8 @@ mod tests {
         assert_eq!(req.messages.len(), 2);
         assert!(req.system.is_some());
         assert_eq!(opts.max_tokens, Some(600));
-        // R1-12: cloud first byte = the attempt bound, idle = max(60 s, attempt / 2).
+        // R1-12 / R2-4: cloud first byte and idle = the attempt bound.
         assert_eq!(opts.stream_header_timeout, Some(Duration::from_secs(300)));
-        assert_eq!(opts.stream_read_timeout, Some(Duration::from_secs(150)));
+        assert_eq!(opts.stream_read_timeout, Some(Duration::from_secs(300)));
     }
 }
