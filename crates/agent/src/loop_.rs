@@ -1362,18 +1362,51 @@ impl Session {
     /// 171 §9.3: the quiet results parked here join the turn `inputs` opens, ahead of them
     /// (arrival order) — when its opener is a private input: a human's, or a harness input
     /// without a request scope. A peer exchange or a scoped opener keeps them parked for
-    /// the next private turn (50 §6.3).
+    /// the next private turn (50 §6.3). 171F B22: a parked copy of a run the batch also
+    /// carries with a ticket (Ask theuth, a review) is dropped — the run comes once.
     fn join_quiet(&mut self, inputs: Vec<Queued>) -> Vec<Queued> {
         let private = inputs
             .first()
             .is_some_and(|(_, i)| i.scope.is_none() && i.peer.is_none());
-        if !private || self.quiet.is_empty() {
-            return inputs;
-        }
-        let mut joined = std::mem::take(&mut self.quiet);
+        let mut joined = if private {
+            std::mem::take(&mut self.quiet)
+        } else {
+            Vec::new()
+        };
         joined.extend(inputs);
+        let owed: HashSet<String> = joined
+            .iter()
+            .filter(|(_, i)| i.ticket.is_some())
+            .filter_map(|(_, i)| cell_run(&i.text).map(str::to_owned))
+            .collect();
+        if !owed.is_empty() {
+            joined.retain(|(_, i)| {
+                i.ticket.is_some() || cell_run(&i.text).is_none_or(|r| !owed.contains(r))
+            });
+        }
         joined
     }
+
+    /// 171F B22: a run delivered with a wake is un-parked — its quiet copy, parked here or
+    /// waiting as a passive steer, never reaches a turn beside it.
+    fn unpark_run(&mut self, text: &str) {
+        let Some(run) = cell_run(text) else {
+            return;
+        };
+        let parked = |i: &Input| i.ticket.is_none() && cell_run(&i.text) == Some(run);
+        self.quiet.retain(|(_, i)| !parked(i));
+        self.shared
+            .steer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(_, i)| !(i.passive && parked(i)));
+    }
+}
+
+/// The run id of a `<cell_result run="…">` input (171 §9.1: `run` is its first attribute).
+fn cell_run(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once("<cell_result run=\"")?;
+    rest.split_once('"').map(|(id, _)| id)
 }
 
 /// `ask` → the address of the child-work semaphore this session's bounded
@@ -1427,6 +1460,9 @@ impl Message<UserInput> for Session {
         }: UserInput,
         ctx: &mut Context<Self, Self::Reply>,
     ) {
+        if ticket.is_some() {
+            self.unpark_run(&text);
+        }
         let input = Input {
             text,
             channel,
@@ -3261,12 +3297,13 @@ type InvalidCell = (usize, Option<String>, Vec<surface::cell::Problem>);
 /// never warnings. `after` resolves against this reply's names and the names of `earlier`
 /// assistant cells of the session (a re-presented name supersedes, so it is no duplicate);
 /// `name_duplicate` is within the reply. `secrets` are vault names (never values); `monty`
-/// holds, per cell, the sufficiency verdict of a `python: monty` cell (`None` = unchecked).
+/// holds, per cell, the sufficiency verdict of a `python: monty` cell with its reason
+/// (`None` = unchecked).
 fn invalid_cells(
     cells: &[surface::cell::Cell],
     earlier: &[surface::cell::Cell],
     secrets: Option<&[String]>,
-    monty: &[Option<bool>],
+    monty: &[Option<Result<(), String>>],
 ) -> Vec<InvalidCell> {
     // This reply's names once per occurrence; an earlier name once, unless re-presented here.
     let mut names: Vec<String> = cells
@@ -3303,7 +3340,8 @@ fn invalid_cells(
                     .cloned()
                     .collect(),
                 secrets: secrets.map(<[String]>::to_vec),
-                monty_ok: monty.get(i).copied().flatten(),
+                monty_ok: monty.get(i).and_then(|m| m.as_ref().map(Result::is_ok)),
+                monty_why: monty.get(i).and_then(|m| m.clone()?.err()),
                 ..surface::cell::ValidateCtx::default()
             };
             let errors: Vec<_> = surface::cell::validate(cell, &ctx)
@@ -3352,11 +3390,7 @@ impl Turn {
         for c in &cells {
             monty.push(
                 if c.options.python == Some(surface::cell::PythonChoice::Monty) {
-                    Some(
-                        repl::monty_sufficient(self.shared.pool.as_deref(), &c.code)
-                            .await
-                            .is_ok(),
-                    )
+                    Some(repl::monty_sufficient(self.shared.pool.as_deref(), &c.code).await)
                 } else {
                     None
                 },
@@ -8564,17 +8598,24 @@ mod tests {
             dup.iter()
                 .all(|(_, _, p)| p.iter().any(|p| p.code == "name_duplicate"))
         );
-        // Vault names are checked, a failed Monty check is an error.
+        // Vault names are checked, a failed Monty check is an error that carries its reason.
         let secret =
             "```python\n#| cwd: /tmp\n#| python: monty\n#| env: T={{secret:NOPE}}\nprint(1)\n```\n";
         let got = invalid_cells(
             &cells_of(secret),
             &[],
             Some(&["TOKEN".to_owned()]),
-            &[Some(false)],
+            &[Some(Err("line 1: no module named pandas".into()))],
         );
         let codes: Vec<&str> = got[0].2.iter().map(|p| p.code.as_str()).collect();
         assert_eq!(codes, ["secret_unknown", "monty_insufficient"]);
+        let msg = surface::cell_error(&got);
+        assert!(
+            msg.contains(
+                "monty_insufficient — Monty can't run this cell: line 1: no module named pandas"
+            ),
+            "{msg}"
+        );
     }
 
     /// 171 §9.2: one `<cell_error>` round per turn (`cells.correct_rounds` 1) — the second

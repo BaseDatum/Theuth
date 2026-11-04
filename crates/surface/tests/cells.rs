@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use surface::cell::{
-    Cell, ChipKind, NoteDefaults, ValidateCtx, digest, lint, lint_scripts, monty_scan, parse,
-    parse_defaults, parse_duration, validate,
+    Cell, ChipKind, NoteDefaults, ValidateCtx, digest, lint, lint_scripts, monty_reason,
+    monty_scan, parse, parse_defaults, parse_duration, validate,
 };
 
 const FIXTURES: &str = include_str!("cells.json");
@@ -61,6 +61,10 @@ fn ctx_of(fixture: &Value, cell: &Cell) -> ValidateCtx {
             .filter(|v| !v.is_null())
             .map(|v| serde_json::from_value::<NoteDefaults>(v.clone()).expect("defaults")),
         monty_ok: c.get("monty_ok").and_then(Value::as_bool),
+        monty_why: c
+            .get("monty_why")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         cwd_exists: c.get("cwd_exists").and_then(Value::as_bool),
         second_defaults: c
             .get("second_defaults")
@@ -238,39 +242,91 @@ fn edited_scripts() {
 
 #[test]
 fn monty_scanning() {
+    let pkg = |line: usize, m: &str| {
+        Err(format!(
+            "line {line}: no module named {m} — Monty runs the standard library only; use a local python"
+        ))
+    };
+    let uses = |line: usize, m: &str| {
+        Err(format!(
+            "line {line}: uses `{m}` — Monty has no files, processes or network; use a local python"
+        ))
+    };
     assert_eq!(
         monty_scan("import json, re as r\nfrom os.path import join\nprint(json.dumps({}))"),
         Ok(())
     );
-    assert_eq!(
-        monty_scan("import pandas as pd"),
-        Err("no module named pandas".to_string())
-    );
-    assert_eq!(
-        monty_scan("from numpy.linalg import norm"),
-        Err("no module named numpy".to_string())
-    );
-    assert_eq!(
-        monty_scan("  import typing"),
-        Err("no module named typing".to_string())
-    );
-    assert_eq!(
-        monty_scan("data = open('x').read()"),
-        Err("uses `open(`".to_string())
-    );
+    assert_eq!(monty_scan("import pandas as pd"), pkg(1, "pandas"));
+    assert_eq!(monty_scan("from numpy.linalg import norm"), pkg(1, "numpy"));
+    // The line is the import's own, after blank lines too.
+    assert_eq!(monty_scan("x = 1\n\n  import typing"), pkg(3, "typing"));
+    assert_eq!(monty_scan("data = open('x').read()"), uses(1, "open("));
     assert_eq!(
         monty_scan("import os\nos.system('ls')"),
-        Err("uses `os.system`".to_string())
+        uses(2, "os.system")
     );
-    assert_eq!(
-        monty_scan("import subprocess"),
-        Err("no module named subprocess".to_string())
-    );
-    assert_eq!(monty_scan("eval(x)"), Err("uses `eval(`".to_string()));
+    assert_eq!(monty_scan("import subprocess"), pkg(1, "subprocess"));
+    assert_eq!(monty_scan("eval(x)"), uses(1, "eval("));
     assert_eq!(
         monty_scan("reopen(x)\nx.popen_count = 1"),
         Ok(()),
         "word boundaries"
+    );
+}
+
+/// B10: Monty's diagnostics → the cell's reason; unresolved names (an earlier cell's) drop.
+#[test]
+fn monty_reasons() {
+    let full = "error[unresolved-reference]: Name `rows` used when not defined\n \
+                --> cell.py:3:20\n  |\n3 |     total = sum(r for r in rows)\n  |\n\n\
+                error[no-matching-overload]: No overload of function `sum` matches arguments\n \
+                --> cell.py:4:13\n  |\n4 |     total = sum(r[\"usd\"] for r in rows)\n  |\n\
+                info: rule `no-matching-overload` is enabled by default\n";
+    assert_eq!(
+        monty_reason(full, 2).as_deref(),
+        Some("line 2: No overload of function `sum` matches arguments")
+    );
+    let concise = "cell.py:3:5: error[unresolved-reference] Name `rows` used when not defined\n\
+                   cell.py:5:1: error[invalid-assignment] Object of type `Literal[\"a\"]` is not assignable to `int`";
+    assert_eq!(
+        monty_reason(concise, 1).as_deref(),
+        Some("line 4: Object of type `Literal[\"a\"]` is not assignable to `int`")
+    );
+    // Import resolution stays a reason.
+    assert_eq!(
+        monty_reason(
+            "cell.py:3:8: error[unresolved-import] Cannot resolve imported module `pandas`",
+            2
+        )
+        .as_deref(),
+        Some("line 1: Cannot resolve imported module `pandas`")
+    );
+    // Only unknown names: sufficient.
+    assert_eq!(
+        monty_reason(
+            "error[unresolved-reference]: Name `x` used when not defined\n --> cell.py:3:5\n",
+            2
+        ),
+        None
+    );
+    // Text that is no diagnostic is its own reason.
+    assert_eq!(
+        monty_reason("\nSyntaxError: invalid syntax\n", 2).as_deref(),
+        Some("SyntaxError: invalid syntax")
+    );
+    // The reason reaches the cell's problem.
+    let cell = parse("python", "#| python: monty\n#| cwd: /tmp\nsum(x)").expect("cell");
+    let ctx = ValidateCtx {
+        names: Vec::new(),
+        monty_ok: Some(false),
+        monty_why: Some("line 1: No overload".into()),
+        ..ValidateCtx::default()
+    };
+    let p = validate(&cell, &ctx);
+    assert_eq!(p[0].code, "monty_insufficient");
+    assert_eq!(
+        p[0].message,
+        "Monty can't run this cell: line 1: No overload"
     );
 }
 
@@ -291,8 +347,42 @@ fn problem_shape() {
     assert_eq!(problems[1].key.as_deref(), Some("after"));
     assert_eq!(
         problems[1].message,
-        "`after: preview` names no cell in scope; cells here: apply, export"
+        "`after: preview`: no cell named `preview` in this note"
     );
     assert_eq!(problems[2].key.as_deref(), Some("color"));
     assert_eq!(problems[2].severity, surface::cell::Severity::Warning);
+}
+
+/// B30: `after_unknown` lists at most 5 names, closest first; "no cell named" when none is.
+#[test]
+fn after_unknown_lists_the_closest_names() {
+    let cell = parse("bash", "#| after: preview-prod\n#| cwd: /tmp\nls\n").expect("cell");
+    let mut names: Vec<String> = (1..=30).map(|i| format!("step-{i}")).collect();
+    names.extend(["apply-prod", "preview-prd", "preview", "export"].map(String::from));
+    let msg = |names: Vec<String>, chat: bool| {
+        let ctx = ValidateCtx {
+            chat,
+            names,
+            ..ValidateCtx::default()
+        };
+        validate(&cell, &ctx)
+            .into_iter()
+            .find(|p| p.code == "after_unknown")
+            .expect("after_unknown")
+            .message
+    };
+    assert_eq!(
+        msg(names, true),
+        "`after: preview-prod` names no cell in scope; cells here: preview-prd, preview, \
+         apply-prod, step-1, step-2 … and 29 more"
+    );
+    let far: Vec<String> = (1..=30).map(|i| format!("step-{i}")).collect();
+    assert_eq!(
+        msg(far.clone(), true),
+        "`after: preview-prod`: no cell named `preview-prod` in this chat"
+    );
+    assert_eq!(
+        msg(far, false),
+        "`after: preview-prod`: no cell named `preview-prod` in this note"
+    );
 }

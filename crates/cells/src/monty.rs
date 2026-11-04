@@ -514,7 +514,11 @@ pub async fn sufficient(code: &str) -> Option<Result<(), String>> {
         .await
     {
         Ok(_) | Err(PoolError::Runtime(_)) => Ok(()),
-        Err(PoolError::Typing(diag)) => Err(typing_reason(&diag)),
+        // The wrapper's two lines come first; names an earlier cell bound are not a "no".
+        Err(PoolError::Typing(diag)) => match surface::cell::monty_reason(&diag, 2) {
+            Some(why) => Err(why),
+            None => Ok(()),
+        },
         Err(e) => {
             tracing::debug!("Monty sufficiency check failed to run: {e}");
             return None;
@@ -524,15 +528,6 @@ pub async fn sufficient(code: &str) -> Option<Result<(), String>> {
     let _ = checkout.finish().await;
     SUFFICIENT.lock().insert(key, res.clone());
     Some(res)
-}
-
-/// The first meaningful line of a type-check diagnostic, for the cell's one-line reason.
-fn typing_reason(diag: &str) -> String {
-    diag.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("Monty's type check failed")
-        .to_owned()
 }
 
 #[cfg(test)]
@@ -600,7 +595,11 @@ mod tests {
     async fn static_scan_refuses_without_a_worker() {
         assert_eq!(
             sufficient("import pandas").await,
-            Some(Err("no module named pandas".into()))
+            Some(Err(
+                "line 1: no module named pandas — Monty runs the standard library only; \
+                 use a local python"
+                    .into()
+            ))
         );
         assert!(matches!(sufficient("open('x')").await, Some(Err(_))));
     }
@@ -727,5 +726,15 @@ mod tests {
         }
         assert_eq!(sufficient("import math\nmath.sqrt(2)").await, Some(Ok(())));
         assert!(matches!(sufficient("x: int = 'a'").await, Some(Err(_))));
+        // B10: the reason names Monty's error and the user's line.
+        let rows = "rows: list[dict[str, str | float]] = [{\"usd\": 1.0, \"k\": \"a\"}]\n\
+                    total = sum(r[\"usd\"] for r in rows)";
+        let why = sufficient(rows).await.unwrap().unwrap_err();
+        assert!(
+            why.contains("No overload") && why.starts_with("line 2: "),
+            "{why}"
+        );
+        // B10b: a name an earlier cell bound in the kernel is not a refusal.
+        assert_eq!(sufficient("print(rows_from_before)").await, Some(Ok(())));
     }
 }
