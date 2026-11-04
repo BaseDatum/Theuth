@@ -2,6 +2,7 @@
 // like the theme, plus the in-memory set of runs and thinking blocks the user has opened. Nothing here changes the
 // session or its context.
 
+import { useSyncExternalStore } from 'react'
 import { create } from 'zustand'
 
 const KEY = 'collapse-tool-calls'
@@ -20,6 +21,10 @@ type ToolRunStore = {
    * watching stays where it is when the next tool call arrives. Closing keeps the pin. Same `Set` while unchanged. */
   pinned: ReadonlySet<string>
   toggleThinking(id: string, streaming: boolean): void
+  /** 171F B13: open state of any disclosure (`disclosureKey`), so a transcript re-render or remount cannot close
+   * what the reader expanded. Not persisted. */
+  disclosed: Record<string, boolean>
+  setDisclosed(key: string, open: boolean): void
 }
 
 export const useToolRuns = create<ToolRunStore>()((set) => ({
@@ -42,4 +47,22 @@ export const useToolRuns = create<ToolRunStore>()((set) => ({
       return { thinking: { ...s.thinking, [id]: open }, pinned }
     })
   },
+  disclosed: {},
+  setDisclosed(key, open) {
+    set((s) => ({ disclosed: { ...s.disclosed, [key]: open } }))
+  },
 }))
+
+/** A `disclosed` key: the defined parts joined with `|` (`disclosureKey('s1', undefined, 3, 'x') === 's1|3|x'`). */
+export function disclosureKey(...parts: Array<string | number | null | undefined>): string {
+  return parts.filter((p) => p != null).join('|')
+}
+
+/** `useState` for a disclosure whose open state lives in `disclosed[key]` (`initial` while unset). Reads through
+ * `useSyncExternalStore` with the live state as server snapshot, so a preset store shows in `renderToStaticMarkup`. */
+export function useDisclosure(key: string, initial = false): [boolean, (next: boolean | ((open: boolean) => boolean)) => void] {
+  const read = () => useToolRuns.getState().disclosed[key] ?? initial
+  const open = useSyncExternalStore(useToolRuns.subscribe, read, read)
+  const set = (next: boolean | ((open: boolean) => boolean)) => useToolRuns.getState().setDisclosed(key, typeof next === 'function' ? next(read()) : next)
+  return [open, set]
+}

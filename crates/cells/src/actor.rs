@@ -1804,6 +1804,7 @@ impl Cells {
         Ok(StateReply {
             cells: out,
             kernels: self.kernels_of(&scope),
+            pass: None, // 171:E1 the pass end (B11)
         })
     }
 

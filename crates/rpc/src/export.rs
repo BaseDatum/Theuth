@@ -447,6 +447,8 @@ async fn export_bindings() {
         cells::InterpreterKind,
         cells::Interpreter,
         cells::StateReply,
+        cells::PassStop,
+        cells::PassEnd,
         cells::RunGet,
         cells::OutputPage,
         cells::CellEvent,

@@ -1,9 +1,11 @@
 // fix/thinking-open-while-streaming: a thinking block's open state is display state keyed by entry id, and opening one
 // while it streams pins it so `foldRuns` cannot fold it into a tool run.
+import { createElement as h } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test } from 'vitest'
-import { useToolRuns } from './tool-runs'
+import { disclosureKey, useDisclosure, useToolRuns } from './tool-runs'
 
-const reset = () => useToolRuns.setState({ thinking: {}, pinned: new Set() })
+const reset = () => useToolRuns.setState({ thinking: {}, pinned: new Set(), disclosed: {} })
 beforeEach(reset)
 
 test('opening a streaming block pins it; closing keeps the pin; reopening a pinned block keeps the same set', () => {
@@ -35,4 +37,37 @@ test('toggling is per entry id', () => {
   st.toggleThinking('a', true)
   expect(useToolRuns.getState().thinking).toEqual({ a: false, b: true })
   expect([...useToolRuns.getState().pinned]).toEqual(['a'])
+})
+
+// 171F B13: disclosures keep their open state in the store, keyed by `disclosureKey`.
+test('disclosureKey joins the defined parts with | and skips null/undefined', () => {
+  expect(disclosureKey('s1', undefined, 3, 'x')).toBe('s1|3|x')
+  expect(disclosureKey(null, 'a', 0, '')).toBe('a|0|')
+})
+
+function Probe({ k, initial }: { k: string; initial?: boolean }) {
+  const [open] = useDisclosure(k, initial)
+  return h('i', null, open ? 'open' : 'shut')
+}
+
+test('a preset store renders open on the first static render; initial applies only while the key is absent', () => {
+  useToolRuns.setState({ disclosed: { k: true, off: false } })
+  expect(renderToStaticMarkup(h(Probe, { k: 'k' }))).toBe('<i>open</i>')
+  expect(renderToStaticMarkup(h(Probe, { k: 'missing' }))).toBe('<i>shut</i>')
+  expect(renderToStaticMarkup(h(Probe, { k: 'missing', initial: true }))).toBe('<i>open</i>')
+  expect(renderToStaticMarkup(h(Probe, { k: 'off', initial: true }))).toBe('<i>shut</i>')
+})
+
+test('setDisclosed round-trips per key; the hook setter resolves a function against the current value', () => {
+  const st = useToolRuns.getState()
+  st.setDisclosed('a', true)
+  st.setDisclosed('b', false)
+  st.setDisclosed('a', false)
+  expect(useToolRuns.getState().disclosed).toEqual({ a: false, b: false })
+  let set: ((next: boolean | ((open: boolean) => boolean)) => void) | undefined
+  renderToStaticMarkup(h(() => ((set = useDisclosure('c', true)[1]), null)))
+  set?.((open) => !open)
+  expect(useToolRuns.getState().disclosed.c).toBe(false)
+  set?.(true)
+  expect(useToolRuns.getState().disclosed.c).toBe(true)
 })

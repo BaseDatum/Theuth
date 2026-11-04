@@ -1284,6 +1284,10 @@ export interface Api {
   cell_live(): Promise<CellRun[]>
   /** 171 §13.2: the latest run per cell of `doc`, as replicated to members. */
   cell_latest(doc: DocId): Promise<CellLatest[]>
+  /** 171F B9: the note reply `entry` of `session` was opened as, if any. */
+  cell_reply_note_get(session: SessionId, entry: string): Promise<DocId | null>
+  /** 171F B9: remember that reply `entry` of `session` was opened as note `doc`. */
+  cell_reply_note_set(session: SessionId, entry: string, doc: DocId): Promise<null>
 }
 
 /** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
@@ -1368,6 +1372,8 @@ export const METHODS = [
   'cell_live',
   'cell_output',
   'cell_output_file',
+  'cell_reply_note_get',
+  'cell_reply_note_set',
   'cell_run',
   'cell_run_all',
   'cell_run_get',
