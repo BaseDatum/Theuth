@@ -1,5 +1,6 @@
 import { AppWindow, ChevronLeft } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
+import { NoteKernelPill } from '@/components/cells/NoteKernelPill'
 import { prefillDraft } from '@/components/chat/Composer'
 import { Live } from '@/components/editor/DocumentPage'
 import { useDocument } from '@/components/editor/useDocument'
@@ -40,6 +41,7 @@ export function NotePane({ notebook, id, fresh, onBack }: { notebook: string; id
           <ChevronLeft /> Notes
         </Button>
         <TitleInput ref={titleInput} value={title} disabled={!live.provider || body.deleted} onCommit={rename} />
+        {!body.deleted && <NoteKernelPill doc={id} />}
         {canPopout() && (
           <Tooltip>
             <TooltipTrigger asChild>

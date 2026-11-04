@@ -13,6 +13,10 @@
 
 pub mod anchor;
 mod catalog;
+/// 171 §3: the cell grammar — `parse`, `validate`, `lint`, `digest` for runnable fences.
+pub mod cell;
+/// 171 §14.3: user-cell fences of a reply and the channels' "Run in theuth" line.
+pub mod cell_link; // 171:A1-ADD
 mod elk_family;
 pub mod export;
 mod fences;

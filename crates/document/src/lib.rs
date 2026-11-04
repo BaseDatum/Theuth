@@ -21,6 +21,7 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
 pub mod actor;
+pub mod cells;
 pub mod cite_check;
 pub mod helper;
 pub mod hub;
@@ -29,6 +30,7 @@ pub mod ingest;
 pub mod meta;
 pub mod mirror;
 pub mod nb_tools;
+pub mod note_cells;
 pub mod notebook;
 pub mod relay;
 pub mod search;
@@ -44,12 +46,17 @@ pub use actor::{
     SetDerived, Snapshot, Snapshots, Stats, Subscribe, Tick, UndoLastAgentEdit, board_frontmatter,
     with_heading,
 };
+pub use cells::{
+    CellAnnotation, CellLatest, CodeBlockText, CodeBlockTextReply, NoteKey, RunAnnotations,
+    run_annotations, set_run_annotations,
+};
 pub use helper::{
     Edit as BlockEdit, EditError, HelperProcess, HelperStatus, ImportMode, helper_path,
     helper_status, protocol_version,
 };
 pub use hub::{DocError, HUB_MOVED};
 pub use meta::*;
+pub use note_cells::{CheckCells, CodeBlocks, reader_markdown};
 pub use notebook::*;
 pub use share::{
     Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,

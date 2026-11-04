@@ -1,0 +1,4121 @@
+{
+  "cells": [
+    {
+      "name": "minimal",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\necho hi\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo hi",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "afd998138a783c365278593a09643af47e58c85bd782047e6183cbd979e44119"
+    },
+    {
+      "name": "minimal-no-trailing-newline",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\necho hi",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo hi",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "afd998138a783c365278593a09643af47e58c85bd782047e6183cbd979e44119"
+    },
+    {
+      "name": "crlf-body",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\r\necho hi\r\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo hi",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "afd998138a783c365278593a09643af47e58c85bd782047e6183cbd979e44119"
+    },
+    {
+      "name": "no-header-is-snippet",
+      "lang": "bash",
+      "body": "echo hi\n",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "56a79f3b115448072387c2480044bfa2cf8f90e4f5fddd8c943b4e051b81f80b"
+    },
+    {
+      "name": "info-string-extra-words",
+      "lang": "Bash title=\"x\" {.cls}",
+      "body": "#| cwd: ~/x\necho hi\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo hi",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "afd998138a783c365278593a09643af47e58c85bd782047e6183cbd979e44119"
+    },
+    {
+      "name": "not-runnable-rust",
+      "lang": "rust",
+      "body": "#| cwd: ~/x\nsomething\n",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "352b1d347689c76e7bccd73945c4f5e0b473e5bff74393f71204c8d5b5d5de7f"
+    },
+    {
+      "name": "not-runnable-json",
+      "lang": "json",
+      "body": "#| cwd: ~/x\nsomething\n",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "352b1d347689c76e7bccd73945c4f5e0b473e5bff74393f71204c8d5b5d5de7f"
+    },
+    {
+      "name": "not-runnable-text",
+      "lang": "text",
+      "body": "#| cwd: ~/x\nsomething\n",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "352b1d347689c76e7bccd73945c4f5e0b473e5bff74393f71204c8d5b5d5de7f"
+    },
+    {
+      "name": "not-runnable-mermaid",
+      "lang": "mermaid",
+      "body": "#| cwd: ~/x\nsomething\n",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "352b1d347689c76e7bccd73945c4f5e0b473e5bff74393f71204c8d5b5d5de7f"
+    },
+    {
+      "name": "empty-body",
+      "lang": "bash",
+      "body": "",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "lang-zsh",
+      "lang": "zsh",
+      "body": "#| cwd: /tmp\nls\n",
+      "cell": {
+        "lang": "zsh",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
+    },
+    {
+      "name": "lang-sh",
+      "lang": "sh",
+      "body": "#| cwd: /tmp\nls\n",
+      "cell": {
+        "lang": "sh",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
+    },
+    {
+      "name": "lang-shellscript-is-bash",
+      "lang": "shellscript",
+      "body": "#| cwd: /tmp\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
+    },
+    {
+      "name": "lang-pwsh",
+      "lang": "pwsh",
+      "body": "#| cwd: /tmp\nls\n",
+      "cell": {
+        "lang": "pwsh",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
+    },
+    {
+      "name": "lang-powershell",
+      "lang": "powershell",
+      "body": "#| cwd: /tmp\nls\n",
+      "cell": {
+        "lang": "pwsh",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
+    },
+    {
+      "name": "lang-python",
+      "lang": "python",
+      "body": "#| cwd: /tmp\nls\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
+    },
+    {
+      "name": "lang-py",
+      "lang": "py",
+      "body": "#| cwd: /tmp\nls\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
+    },
+    {
+      "name": "lang-uppercase-python",
+      "lang": "PYTHON",
+      "body": "#| cwd: /tmp\nls\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b8d95d06e6a02507e782ee503771cc35ca15f4e49c729071a3fd003e1c12cb95"
+    },
+    {
+      "name": "lang-javascript",
+      "lang": "javascript",
+      "body": "//| cwd: /tmp\nconsole.log(1)\n",
+      "cell": {
+        "lang": "javascript",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "console.log(1)",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "63b65e7ce5560bda7798d91ff1f8befcc1c86cf7b5141615233d9a9328188bd1"
+    },
+    {
+      "name": "lang-js",
+      "lang": "js",
+      "body": "//| cwd: /tmp\nconsole.log(1)\n",
+      "cell": {
+        "lang": "javascript",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "console.log(1)",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "63b65e7ce5560bda7798d91ff1f8befcc1c86cf7b5141615233d9a9328188bd1"
+    },
+    {
+      "name": "lang-typescript",
+      "lang": "typescript",
+      "body": "//| cwd: /tmp\nconsole.log(1)\n",
+      "cell": {
+        "lang": "typescript",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "console.log(1)",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "63b65e7ce5560bda7798d91ff1f8befcc1c86cf7b5141615233d9a9328188bd1"
+    },
+    {
+      "name": "lang-ts",
+      "lang": "ts",
+      "body": "//| cwd: /tmp\nconsole.log(1)\n",
+      "cell": {
+        "lang": "typescript",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "console.log(1)",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "63b65e7ce5560bda7798d91ff1f8befcc1c86cf7b5141615233d9a9328188bd1"
+    },
+    {
+      "name": "js-hash-header-is-not-a-header",
+      "lang": "javascript",
+      "body": "#| cwd: /tmp\nconsole.log(1)\n",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "dcf33231f3a667aeb74dde7901b5e9ba0ccd214ac6dd78deb0d28e5d4d10efec"
+    },
+    {
+      "name": "bash-slash-header-is-not-a-header",
+      "lang": "bash",
+      "body": "//| cwd: /tmp\nls\n",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "4fd7d57f5f2148fce398c998bd252c3f557e9f40011033166c9fc1883bb81caf"
+    },
+    {
+      "name": "header-ends-at-first-code-line",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\necho a\n#| name: later\necho b\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo a\n#| name: later\necho b",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "a9a571420619ba44fd9de4d52b9e587b6628790fbec09e4c7ffad8a79d37eaa8"
+    },
+    {
+      "name": "blank-line-ends-header",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n\n#| name: x\necho a\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "\n#| name: x\necho a",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "029f9c11c32983c69e9d7b69b5b7b7d3a142c99bb2baf831aa77e5460fe46b93"
+    },
+    {
+      "name": "header-spaces-and-no-space",
+      "lang": "bash",
+      "body": "#|   cwd:   ~/x   \n#|name:prep\necho a\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "prep"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": "prep",
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo a",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "c071ca1fa2eb2a75c876a79ad061eebebd67d42243dc530cdff3efede073ad96"
+    },
+    {
+      "name": "code-keeps-inner-newlines",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\necho a\n\n\necho b\n\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo a\n\n\necho b\n",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "9a5493b69442391fc5976b149a63e2320e85ebee183c33e2de72b43ddbaeb95d"
+    },
+    {
+      "name": "all-options",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| name: apply\n#| label: Apply it\n#| danger\n#| after: prep\n#| expect: 3 to update\n#| expect: /\\d+ to update/\n#| env: AWS_PROFILE=ir-prod1\n#| env: EMPTY=\n#| review\n#| private\n#| timeout: 20m\n#| on: sandbox:build\necho done\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "apply"
+          },
+          {
+            "key": "label",
+            "value": "Apply it"
+          },
+          {
+            "key": "danger",
+            "value": null
+          },
+          {
+            "key": "after",
+            "value": "prep"
+          },
+          {
+            "key": "expect",
+            "value": "3 to update"
+          },
+          {
+            "key": "expect",
+            "value": "/\\d+ to update/"
+          },
+          {
+            "key": "env",
+            "value": "AWS_PROFILE=ir-prod1"
+          },
+          {
+            "key": "env",
+            "value": "EMPTY="
+          },
+          {
+            "key": "review",
+            "value": null
+          },
+          {
+            "key": "private",
+            "value": null
+          },
+          {
+            "key": "timeout",
+            "value": "20m"
+          },
+          {
+            "key": "on",
+            "value": "sandbox:build"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": "apply",
+          "label": "Apply it",
+          "danger": true,
+          "after": "prep",
+          "expect": [
+            {
+              "kind": "text",
+              "value": "3 to update"
+            },
+            {
+              "kind": "regex",
+              "value": "\\d+ to update"
+            }
+          ],
+          "env": [
+            [
+              "AWS_PROFILE",
+              "ir-prod1"
+            ],
+            [
+              "EMPTY",
+              ""
+            ]
+          ],
+          "python": null,
+          "review": true,
+          "private": true,
+          "timeout_secs": 1200,
+          "on": "sandbox:build",
+          "unknown": []
+        },
+        "code": "echo done",
+        "header_lines": 13
+      },
+      "problems": [
+        "on_not_yet"
+      ],
+      "chips": [],
+      "digest": "07213155639342d9642a3a64ac9a4f39065c085e0eb774f09103068f80cfdf7c",
+      "ctx": {
+        "names": [
+          "apply",
+          "prep"
+        ]
+      }
+    },
+    {
+      "name": "quoted-values",
+      "lang": "bash",
+      "body": "#| cwd: \"~/my dir\"\n#| label: \"Run it\"\n#| expect: \"  padded  \"\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/my dir"
+          },
+          {
+            "key": "label",
+            "value": "Run it"
+          },
+          {
+            "key": "expect",
+            "value": "  padded  "
+          }
+        ],
+        "options": {
+          "cwd": "~/my dir",
+          "name": null,
+          "label": "Run it",
+          "danger": false,
+          "after": null,
+          "expect": [
+            {
+              "kind": "text",
+              "value": "  padded  "
+            }
+          ],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 3
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "137828b49a5909e4b0885ace0db6d5de4fd368ecd25e6e14832acfb5be51ca64"
+    },
+    {
+      "name": "repeat-last-wins",
+      "lang": "bash",
+      "body": "#| cwd: ~/a\n#| cwd: ~/b\n#| label: One\n#| label: Two\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/a"
+          },
+          {
+            "key": "cwd",
+            "value": "~/b"
+          },
+          {
+            "key": "label",
+            "value": "One"
+          },
+          {
+            "key": "label",
+            "value": "Two"
+          }
+        ],
+        "options": {
+          "cwd": "~/b",
+          "name": null,
+          "label": "Two",
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 4
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "f443356a2e03bd92e6ede188164c7db90e66b78bf830d7914c6660b41276c13a"
+    },
+    {
+      "name": "bools-bare-and-explicit",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| danger\n#| review: true\n#| private: false\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "danger",
+            "value": null
+          },
+          {
+            "key": "review",
+            "value": "true"
+          },
+          {
+            "key": "private",
+            "value": "false"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": true,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": true,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 4
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "d208c4d1037fc7c4ae7b55e537545783ff24c9a690a8861791671670ac344519"
+    },
+    {
+      "name": "bad-bool",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| danger: yes\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "danger",
+            "value": "yes"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [
+        "bad_option"
+      ],
+      "chips": [],
+      "digest": "4145ae75da5ce933f3d3131b5d1767e30b3d97b71135f3e2625f12ec2ba4d6b2"
+    },
+    {
+      "name": "timeout-seconds",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| timeout: 30s\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "timeout",
+            "value": "30s"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": 30,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "6675af0aca8386990b9e0c621166eca26d499832c213179a2e20d3c5b5f4cc85"
+    },
+    {
+      "name": "timeout-hours",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| timeout: 2h\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "timeout",
+            "value": "2h"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": 7200,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "32edf04719ab270ad9b79f5733656a425bcc8ea63fe0fc1325038e645130b266"
+    },
+    {
+      "name": "bad-duration",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| timeout: 20min\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "timeout",
+            "value": "20min"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [
+        "bad_option"
+      ],
+      "chips": [],
+      "digest": "4f8aed9818ebaf0594649fc026003ee225c6636a83749615694d2f9f729fc7a2"
+    },
+    {
+      "name": "bad-slug",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| name: Preview Prod\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "Preview Prod"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [
+        "bad_option"
+      ],
+      "chips": [],
+      "digest": "9870f95df768bf9c98145a99961d42cd2dee17d06abce87f42615a6bcc22625a"
+    },
+    {
+      "name": "label-40-ok",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| label: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "label",
+            "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "f9a9698d583d23897b9902bbdf073fd7d1d5dbd79a7d4edc82d1aac7d0cc8701"
+    },
+    {
+      "name": "label-too-long",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| label: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "label",
+            "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [
+        "bad_option"
+      ],
+      "chips": [],
+      "digest": "d028a23d5799859a21b35fbdf81bc8bc67dab8adbd5d3aa5a1296dd5ab71128f"
+    },
+    {
+      "name": "bad-env",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| env: NOEQUALS\n#| env: 1BAD=x\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "env",
+            "value": "NOEQUALS"
+          },
+          {
+            "key": "env",
+            "value": "1BAD=x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 3
+      },
+      "problems": [
+        "bad_option",
+        "bad_option"
+      ],
+      "chips": [],
+      "digest": "41a91433bdf0670c465fa8d7975cd0e619b94ba63e04cca54f3a536889bc604d"
+    },
+    {
+      "name": "bad-regex",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| expect: /[/\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "expect",
+            "value": "/[/"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [
+        "bad_option"
+      ],
+      "chips": [],
+      "digest": "ba761669b843b6466c0b40cff35cc7c63668acc5ebf93042d424e51872d6c1b1"
+    },
+    {
+      "name": "bare-cwd",
+      "lang": "bash",
+      "body": "#| cwd\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": null
+          }
+        ],
+        "options": {
+          "cwd": null,
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [
+        "bad_option"
+      ],
+      "chips": [],
+      "digest": "366b0efa0029494b9d599ede97dc9236ce93bf20d1c089554c83d2335f493fde"
+    },
+    {
+      "name": "unknown-key",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| color: red\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "color",
+            "value": "red"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": [
+            "color"
+          ]
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [
+        "unknown_option"
+      ],
+      "chips": [],
+      "digest": "76270b42e1c054e51cd676cd7296561f0b302773cd63048fa82d749f18c25165"
+    },
+    {
+      "name": "malformed-header-line",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| not a key!\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "not a key!",
+            "value": null
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": [
+            "not a key!"
+          ]
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [
+        "unknown_option"
+      ],
+      "chips": [],
+      "digest": "c3c94486c39b655d74d772b791ac0622f6c0d97575d391590d0ce29b6636446e"
+    },
+    {
+      "name": "python-monty",
+      "lang": "python",
+      "body": "#| cwd: /tmp\n#| python: monty\nprint(1)\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": "monty"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": {
+            "kind": "monty"
+          },
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "print(1)",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "d1b272717e0c3d66c9d52f823aa8be80ee1d9c82fce6a9d71674499b22afd6c8"
+    },
+    {
+      "name": "python-auto",
+      "lang": "python",
+      "body": "#| cwd: /tmp\n#| python: auto\nprint(1)\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": "auto"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": {
+            "kind": "auto"
+          },
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "print(1)",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "e2b1a8875273dcae31c330571f95b0601031af08ef69bb7b6aed34c204111d40"
+    },
+    {
+      "name": "python-venv",
+      "lang": "python",
+      "body": "#| cwd: /tmp\n#| python: .venv\nprint(1)\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": ".venv"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": {
+            "kind": "venv"
+          },
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "print(1)",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "2a73d4560840e6f569d9228049179d588fd5b71c369a2bb5366692dded853d41"
+    },
+    {
+      "name": "python-uv",
+      "lang": "python",
+      "body": "#| cwd: /tmp\n#| python: uv\nprint(1)\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": "uv"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": {
+            "kind": "uv"
+          },
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "print(1)",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "f52aaaf4101ad9a595c6c0d2fe4c9067d22482d33c89542aac59af073c3faa61"
+    },
+    {
+      "name": "python-usr-bin-python3",
+      "lang": "python",
+      "body": "#| cwd: /tmp\n#| python: /usr/bin/python3\nprint(1)\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": "/usr/bin/python3"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": {
+            "kind": "path",
+            "value": "/usr/bin/python3"
+          },
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "print(1)",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "1ed01eba6bfb26430df940ba012cf0f06b31db8cd34c2e14bf242c0f66b5163b"
+    },
+    {
+      "name": "python-unknown-value",
+      "lang": "python",
+      "body": "#| cwd: /tmp\n#| python: conda\nprint(1)\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": "conda"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "print(1)",
+        "header_lines": 2
+      },
+      "problems": [
+        "python_option"
+      ],
+      "chips": [],
+      "digest": "454bfbed3fd05774bbf6e1f9ccf630849d19d132f5d217e236bef19ee83eed56"
+    },
+    {
+      "name": "python-on-bash",
+      "lang": "bash",
+      "body": "#| cwd: /tmp\n#| python: monty\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": "monty"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": {
+            "kind": "monty"
+          },
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [
+        "python_option"
+      ],
+      "chips": [],
+      "digest": "3b9417a920c447a66c0e5d134f645ceec8a4dfd0155097e74dfe352b09292be2"
+    },
+    {
+      "name": "cwd-missing-chat",
+      "lang": "bash",
+      "body": "#| name: prep\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "name",
+            "value": "prep"
+          }
+        ],
+        "options": {
+          "cwd": null,
+          "name": "prep",
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [
+        "cwd_missing"
+      ],
+      "chips": [],
+      "digest": "fe4f9df0b16886f530973ac41dd3b2fbc1ad429e27968cda11cdc46ba71f5562"
+    },
+    {
+      "name": "cwd-relative-chat",
+      "lang": "bash",
+      "body": "#| cwd: stacks/a\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "stacks/a"
+          }
+        ],
+        "options": {
+          "cwd": "stacks/a",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [
+        "cwd_relative"
+      ],
+      "chips": [],
+      "digest": "0f3296e346a86692c2b9546b34509fc3c1b83039c5bcf0c8a548bbfcd5f0ad0d"
+    },
+    {
+      "name": "cwd-missing-note",
+      "lang": "bash",
+      "body": "#| name: prep\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "name",
+            "value": "prep"
+          }
+        ],
+        "options": {
+          "cwd": null,
+          "name": "prep",
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [
+        "cwd_missing"
+      ],
+      "chips": [],
+      "digest": "fe4f9df0b16886f530973ac41dd3b2fbc1ad429e27968cda11cdc46ba71f5562",
+      "ctx": {
+        "chat": false
+      }
+    },
+    {
+      "name": "cwd-from-note-default",
+      "lang": "bash",
+      "body": "#| name: prep\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "name",
+            "value": "prep"
+          }
+        ],
+        "options": {
+          "cwd": null,
+          "name": "prep",
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "fe4f9df0b16886f530973ac41dd3b2fbc1ad429e27968cda11cdc46ba71f5562",
+      "ctx": {
+        "chat": false,
+        "defaults": {
+          "cwd": "~/p",
+          "shell": null,
+          "python": null,
+          "unknown": []
+        }
+      }
+    },
+    {
+      "name": "cwd-relative-under-note-default",
+      "lang": "bash",
+      "body": "#| cwd: stacks/a\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "stacks/a"
+          }
+        ],
+        "options": {
+          "cwd": "stacks/a",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "0f3296e346a86692c2b9546b34509fc3c1b83039c5bcf0c8a548bbfcd5f0ad0d",
+      "ctx": {
+        "chat": false,
+        "defaults": {
+          "cwd": "~/p",
+          "shell": null,
+          "python": null,
+          "unknown": []
+        }
+      }
+    },
+    {
+      "name": "cwd-home-only",
+      "lang": "bash",
+      "body": "#| cwd: ~\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~"
+          }
+        ],
+        "options": {
+          "cwd": "~",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "5adc6df3e56b5feb45d11e0e479d124072649e0a876709b50f27e074e7cbe3ec"
+    },
+    {
+      "name": "cwd-not-found",
+      "lang": "bash",
+      "body": "#| cwd: ~/gone\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/gone"
+          }
+        ],
+        "options": {
+          "cwd": "~/gone",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [
+        "cwd_not_found"
+      ],
+      "chips": [],
+      "digest": "cf1c0e25e6322a1b3001733324e265afc575bef64a1c7694799164adefc3a94a",
+      "ctx": {
+        "cwd_exists": false
+      }
+    },
+    {
+      "name": "after-unknown",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| name: apply\n#| after: preview\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "apply"
+          },
+          {
+            "key": "after",
+            "value": "preview"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": "apply",
+          "label": null,
+          "danger": false,
+          "after": "preview",
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 3
+      },
+      "problems": [
+        "after_unknown"
+      ],
+      "chips": [],
+      "digest": "a36fd3ffc736ef63af130c37f176da582075d3823672ebbec312d5c6aa128c45",
+      "ctx": {
+        "names": [
+          "apply",
+          "export"
+        ]
+      }
+    },
+    {
+      "name": "after-self",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| name: apply\n#| after: apply\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "apply"
+          },
+          {
+            "key": "after",
+            "value": "apply"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": "apply",
+          "label": null,
+          "danger": false,
+          "after": "apply",
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 3
+      },
+      "problems": [
+        "after_cycle"
+      ],
+      "chips": [],
+      "digest": "ec98b3459f8720241317f668d987b2179002e589d27af015838e72403fdba0c9"
+    },
+    {
+      "name": "after-cycle",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| name: a\n#| after: b\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "a"
+          },
+          {
+            "key": "after",
+            "value": "b"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": "a",
+          "label": null,
+          "danger": false,
+          "after": "b",
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 3
+      },
+      "problems": [
+        "after_cycle"
+      ],
+      "chips": [],
+      "digest": "bc1eda64dfc793cbbd2ecbb7068ec9ca2ee2fc2025af161128091c3c8dd1eac3",
+      "ctx": {
+        "names": [
+          "a",
+          "b",
+          "c"
+        ],
+        "after_edges": [
+          [
+            "b",
+            "c"
+          ],
+          [
+            "c",
+            "a"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "after-chain-ok",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| name: a\n#| after: b\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "a"
+          },
+          {
+            "key": "after",
+            "value": "b"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": "a",
+          "label": null,
+          "danger": false,
+          "after": "b",
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 3
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "bc1eda64dfc793cbbd2ecbb7068ec9ca2ee2fc2025af161128091c3c8dd1eac3",
+      "ctx": {
+        "names": [
+          "a",
+          "b",
+          "c"
+        ],
+        "after_edges": [
+          [
+            "b",
+            "c"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "after-unnamed-cell",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| after: b\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "after",
+            "value": "b"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": "b",
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "25bd701c6e31ed0b29d1682cd461e558eb68cc5b7f45811daeb243b593d8b75e",
+      "ctx": {
+        "names": [
+          "b"
+        ]
+      }
+    },
+    {
+      "name": "name-duplicate",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| name: prep\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "prep"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": "prep",
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 2
+      },
+      "problems": [
+        "name_duplicate"
+      ],
+      "chips": [],
+      "digest": "be1b40551494c70d8a3cc64625dcc755334a28bff0f4c830df2038592f47ce32",
+      "ctx": {
+        "names": [
+          "prep",
+          "prep"
+        ]
+      }
+    },
+    {
+      "name": "secret-known",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| env: TOKEN={{secret:GH_TOKEN}}\ngh auth status\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "env",
+            "value": "TOKEN={{secret:GH_TOKEN}}"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [
+            [
+              "TOKEN",
+              "{{secret:GH_TOKEN}}"
+            ]
+          ],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "gh auth status",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [
+        "secret"
+      ],
+      "digest": "82c8164eb4561c25f042d5d9d54eb63ae174413b10b6fa77f8478f07a91ffad7",
+      "ctx": {
+        "secrets": [
+          "GH_TOKEN"
+        ]
+      }
+    },
+    {
+      "name": "secret-unknown",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| env: TOKEN={{secret:GH_TOKEN}}\ngh auth status\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "env",
+            "value": "TOKEN={{secret:GH_TOKEN}}"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [
+            [
+              "TOKEN",
+              "{{secret:GH_TOKEN}}"
+            ]
+          ],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "gh auth status",
+        "header_lines": 2
+      },
+      "problems": [
+        "secret_unknown"
+      ],
+      "chips": [
+        "secret"
+      ],
+      "digest": "82c8164eb4561c25f042d5d9d54eb63ae174413b10b6fa77f8478f07a91ffad7",
+      "ctx": {
+        "secrets": [
+          "OTHER"
+        ]
+      }
+    },
+    {
+      "name": "secret-vault-unknown",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| env: TOKEN={{secret:GH_TOKEN}}\ngh auth status\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "env",
+            "value": "TOKEN={{secret:GH_TOKEN}}"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [
+            [
+              "TOKEN",
+              "{{secret:GH_TOKEN}}"
+            ]
+          ],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "gh auth status",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [
+        "secret"
+      ],
+      "digest": "82c8164eb4561c25f042d5d9d54eb63ae174413b10b6fa77f8478f07a91ffad7"
+    },
+    {
+      "name": "secret-in-code",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\ncurl -H \"Authorization: {{secret:GH_TOKEN}}\" https://api\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "curl -H \"Authorization: {{secret:GH_TOKEN}}\" https://api",
+        "header_lines": 1
+      },
+      "problems": [
+        "secret_in_code"
+      ],
+      "chips": [
+        "secret"
+      ],
+      "digest": "f2f034657baec6eb7385aa59e257b1f48d0cc982d3293011936391430bf01409"
+    },
+    {
+      "name": "secret-two-distinct",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| env: A={{secret:A}}\n#| env: B={{secret:B}}\n#| env: C={{secret:A}}\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "env",
+            "value": "A={{secret:A}}"
+          },
+          {
+            "key": "env",
+            "value": "B={{secret:B}}"
+          },
+          {
+            "key": "env",
+            "value": "C={{secret:A}}"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [
+            [
+              "A",
+              "{{secret:A}}"
+            ],
+            [
+              "B",
+              "{{secret:B}}"
+            ],
+            [
+              "C",
+              "{{secret:A}}"
+            ]
+          ],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 4
+      },
+      "problems": [],
+      "chips": [
+        "secret",
+        "secret"
+      ],
+      "digest": "ed17b58977e2a5be75f696b3a5af37862f1a5c4545cd3ac0671507cc8c3b32e4"
+    },
+    {
+      "name": "monty-insufficient",
+      "lang": "python",
+      "body": "#| cwd: /tmp\n#| python: monty\nimport pandas\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": "monty"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": {
+            "kind": "monty"
+          },
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "import pandas",
+        "header_lines": 2
+      },
+      "problems": [
+        "monty_insufficient"
+      ],
+      "chips": [],
+      "digest": "32af1762a84836a442ffecffd8d4e9ad2fca2763307373ca1da8850d074d18ea",
+      "ctx": {
+        "monty_ok": false
+      }
+    },
+    {
+      "name": "monty-ok",
+      "lang": "python",
+      "body": "#| cwd: /tmp\n#| python: monty\nprint(1)\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": "monty"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": {
+            "kind": "monty"
+          },
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "print(1)",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "d1b272717e0c3d66c9d52f823aa8be80ee1d9c82fce6a9d71674499b22afd6c8",
+      "ctx": {
+        "monty_ok": true
+      }
+    },
+    {
+      "name": "monty-timeout",
+      "lang": "python",
+      "body": "#| cwd: /tmp\n#| python: monty\n#| timeout: 2m\nprint(1)\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          },
+          {
+            "key": "python",
+            "value": "monty"
+          },
+          {
+            "key": "timeout",
+            "value": "2m"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": {
+            "kind": "monty"
+          },
+          "review": false,
+          "private": false,
+          "timeout_secs": 120,
+          "on": null,
+          "unknown": []
+        },
+        "code": "print(1)",
+        "header_lines": 3
+      },
+      "problems": [
+        "monty_timeout"
+      ],
+      "chips": [],
+      "digest": "21e156d11d4b1f46228a526b48a44e3fc4bbc5e9880004d57e5efb74f1b66d41"
+    },
+    {
+      "name": "empty",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "",
+        "header_lines": 1
+      },
+      "problems": [
+        "empty"
+      ],
+      "chips": [],
+      "digest": "3e9a21fbfe1e77d48f358d09e9d14ba2e38025c99a5180ad0428ca189e142951"
+    },
+    {
+      "name": "empty-whitespace",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n   \n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "   ",
+        "header_lines": 1
+      },
+      "problems": [
+        "empty"
+      ],
+      "chips": [],
+      "digest": "97a21b34e03e3da0b8308f77f5adc894fe31111de07e464f929a7aa3ed793507"
+    },
+    {
+      "name": "second-defaults",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 1
+      },
+      "problems": [
+        "second_defaults"
+      ],
+      "chips": [],
+      "digest": "5ecd7bdcf516bf92fd684f7e752672d2ac5e1c272c824c391f420c1a80b00628",
+      "ctx": {
+        "second_defaults": true
+      }
+    },
+    {
+      "name": "errors-before-warnings",
+      "lang": "bash",
+      "body": "#| color: red\n#| timeout: soon\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "color",
+            "value": "red"
+          },
+          {
+            "key": "timeout",
+            "value": "soon"
+          }
+        ],
+        "options": {
+          "cwd": null,
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": [
+            "color"
+          ]
+        },
+        "code": "",
+        "header_lines": 2
+      },
+      "problems": [
+        "cwd_missing",
+        "bad_option",
+        "empty",
+        "unknown_option"
+      ],
+      "chips": [],
+      "digest": "a51faf7896cf71f550ef48babad1def3a383a5f01c082f9dd6aaf714e8653439"
+    },
+    {
+      "name": "changing-pulumi-up-without-label",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\npulumi up -s ir-prod1\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "pulumi up -s ir-prod1",
+        "header_lines": 1
+      },
+      "problems": [
+        "changing_without_label"
+      ],
+      "chips": [],
+      "digest": "4231541f71c8772117fd33a7cce7d4630ac822af1e03ceae077db38b5ee78602"
+    },
+    {
+      "name": "changing-terraform-destroy",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\nterraform destroy\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "terraform destroy",
+        "header_lines": 1
+      },
+      "problems": [
+        "changing_without_label"
+      ],
+      "chips": [],
+      "digest": "9a619990876b6796b8983f7f34aa5aa4f1150aaf2eb79d79a5cc26d83e5e8f36"
+    },
+    {
+      "name": "changing-aws-delete",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\naws s3api delete-bucket --bucket b\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "aws s3api delete-bucket --bucket b",
+        "header_lines": 1
+      },
+      "problems": [
+        "changing_without_label"
+      ],
+      "chips": [],
+      "digest": "4c3480d925982f8d40e9ed55c324d0aad1ef4e552bf4ab172c13339a4d0f6450"
+    },
+    {
+      "name": "changing-with-label",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| label: Apply\nkubectl apply -f x.yaml\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "label",
+            "value": "Apply"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": "Apply",
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "kubectl apply -f x.yaml",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "908869958eb72626ef633d41e0d3e5dab668c805f773ac9106e2ad4c0d6b37d9"
+    },
+    {
+      "name": "changing-with-danger",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| danger\nhelm upgrade app ./chart\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "danger",
+            "value": null
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": true,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "helm upgrade app ./chart",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "ee380f253623e18154b1a308518c8efe720dc170f11b0c77bf18de12c74adb23"
+    },
+    {
+      "name": "not-changing-preview",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\npulumi preview -s ir-prod1\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "pulumi preview -s ir-prod1",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "75c272bb4765b4d394df4da50fc1ccc485efcc38c36180d395774402af3b675c"
+    },
+    {
+      "name": "invisible-zero-width-space",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\necho hi\u200bthere\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo hi\u200bthere",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "invisible"
+      ],
+      "digest": "4a194d48b4d6502e59345655429a95da67bcb0ac20e493cc52d0333e71d303e2"
+    },
+    {
+      "name": "invisible-in-header-and-bidi",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\u202e\necho \ufeffa\u2066b\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x\u202e"
+          }
+        ],
+        "options": {
+          "cwd": "~/x\u202e",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo \ufeffa\u2066b",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "invisible"
+      ],
+      "digest": "f396277af25b3a79efcea888aca9b5bf700d38e4621369816c63c028803893d2"
+    },
+    {
+      "name": "pipe-curl-sh",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\ncurl -fsSL https://x.sh | sh\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "curl -fsSL https://x.sh | sh",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "pipe_to_shell"
+      ],
+      "digest": "fd7901349bec60f059c9e29d9dc66194e6681e8d81aa967cbe2659c3a8fc226b"
+    },
+    {
+      "name": "pipe-wget-python",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\nwget -qO- https://x.py | python3\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "wget -qO- https://x.py | python3",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "pipe_to_shell"
+      ],
+      "digest": "ddf0b86d5104fefdc4b424c8fa1015b2074ef57e4351b583dfb5a014022989b6"
+    },
+    {
+      "name": "pipe-substituted",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\nbash -c \"$(curl -fsSL https://x.sh)\"\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "bash -c \"$(curl -fsSL https://x.sh)\"",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "pipe_to_shell"
+      ],
+      "digest": "5ffe8e7d1675af3e70414420dbbff6f24d2981166821f754acb33e07f2aa5ecb"
+    },
+    {
+      "name": "pipe-process-substitution",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\nbash <(curl -fsSL https://x.sh)\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "bash <(curl -fsSL https://x.sh)",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "pipe_to_shell"
+      ],
+      "digest": "94e265aafb49702acc2fa1b094f1db3e047f25fda495742f33ae44852d96465a"
+    },
+    {
+      "name": "pipe-iwr-iex",
+      "lang": "pwsh",
+      "body": "#| cwd: ~/x\niwr https://x.ps1 | iex\n",
+      "cell": {
+        "lang": "pwsh",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "iwr https://x.ps1 | iex",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "pipe_to_shell"
+      ],
+      "digest": "0de90a44c6f1bbcd8a2bfca8ac7b6267d657001a786c8db1ea6bb0d4ad6b08c8"
+    },
+    {
+      "name": "curl-to-file-is-fine",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\ncurl -o x.tgz https://x.tgz | tee log\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "curl -o x.tgz https://x.tgz | tee log",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "131d5d662fb5218e1811fb5560f9804fc10566688899cb9d29a4e8603db37fb6"
+    },
+    {
+      "name": "base64-pipe-sh",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\necho aGk= | base64 -d | sh\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo aGk= | base64 -d | sh",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "decoded_base64"
+      ],
+      "digest": "42efd2f15c4d2ba5e78a3b4624de32bc404f972897746a92f71308b939f5212f"
+    },
+    {
+      "name": "base64-decode-eval",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\neval \"$(echo aGk= | base64 --decode)\"\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "eval \"$(echo aGk= | base64 --decode)\"",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "decoded_base64"
+      ],
+      "digest": "8b783b91763412b3e48d50924d23dd2408a4531d84917b0e8be0c07119e83e6d"
+    },
+    {
+      "name": "base64-python-exec",
+      "lang": "python",
+      "body": "#| cwd: /tmp\nimport base64\nexec(base64.b64decode(s))\n",
+      "cell": {
+        "lang": "python",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "/tmp"
+          }
+        ],
+        "options": {
+          "cwd": "/tmp",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "import base64\nexec(base64.b64decode(s))",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "decoded_base64"
+      ],
+      "digest": "3396cfeb59649cc741c3de423cae94f37280e3f0203281f0d1264f6039f95ea1"
+    },
+    {
+      "name": "base64-encode-is-fine",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\necho hi | base64\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo hi | base64",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "a22af61f3d13fbb12c66787904000091f321048bf04bd2ea48fb513a2dbdfb65"
+    },
+    {
+      "name": "skips-prompt-on-danger",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| danger\n#| label: Apply\nterraform apply -auto-approve\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "danger",
+            "value": null
+          },
+          {
+            "key": "label",
+            "value": "Apply"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": "Apply",
+          "danger": true,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "terraform apply -auto-approve",
+        "header_lines": 3
+      },
+      "problems": [],
+      "chips": [
+        "skips_prompt"
+      ],
+      "digest": "aefc5d276ef5b046a4c3b80471ee9591f018c014234b617dfd620525a44d7554"
+    },
+    {
+      "name": "skips-prompt-yes-on-danger",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| danger\npulumi up --yes -s x\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "danger",
+            "value": null
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": true,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "pulumi up --yes -s x",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [
+        "skips_prompt"
+      ],
+      "digest": "194b22ce3e8b7c3f82e59aea4a0b4f9ed9de2b2bf2a0cd2239add8aa3dfdf281"
+    },
+    {
+      "name": "yes-without-danger-no-chip",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\napt-get install -y jq\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "apt-get install -y jq",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "7486c4000fa3b78aee59225fe435a3f87a26927768d9d609b2d6ab3203ebc3d1"
+    },
+    {
+      "name": "force-in-word-no-chip",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| danger\ngit push --force-with-lease\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "danger",
+            "value": null
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": true,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "git push --force-with-lease",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "b5dc277e6f1c2335256c731c10756f9bf713b387ae8d93b22f73cfcbb67ec61d"
+    },
+    {
+      "name": "sudo",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\nsudo apt-get update\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "sudo apt-get update",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "sudo"
+      ],
+      "digest": "1b9c4f6f043614904bac746b162a876fc2c8b016fc0ae3f21db21e0f89c79ac4"
+    },
+    {
+      "name": "sudo-after-and",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\nmake && sudo make install\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "make && sudo make install",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [
+        "sudo"
+      ],
+      "digest": "53dfb7f54384a281373d50f85ef288e03fdb453c3c52a5d4780292ec13601a61"
+    },
+    {
+      "name": "sudoers-is-not-sudo",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\ncat /etc/sudoers\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "cat /etc/sudoers",
+        "header_lines": 1
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "a37d561e8b3c5fd7d507d6babb5110fbd949d6abf4cd5b5c218b5eb7d0754417"
+    },
+    {
+      "name": "many-chips",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| danger\n#| env: T={{secret:T}}\nsudo sh -c \"$(curl x)\" --yes # \u200b\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "danger",
+            "value": null
+          },
+          {
+            "key": "env",
+            "value": "T={{secret:T}}"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": true,
+          "after": null,
+          "expect": [],
+          "env": [
+            [
+              "T",
+              "{{secret:T}}"
+            ]
+          ],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "sudo sh -c \"$(curl x)\" --yes # \u200b",
+        "header_lines": 3
+      },
+      "problems": [],
+      "chips": [
+        "invisible",
+        "pipe_to_shell",
+        "skips_prompt",
+        "sudo",
+        "secret"
+      ],
+      "digest": "2174de0351040cf09462170d0d7cac719943a7055f90e99a598f66ad48dff6f3"
+    },
+    {
+      "name": "runbook-export",
+      "lang": "bash",
+      "body": "#| name: export-ir-prod1\n#| label: Export state\n#| cwd: ~/dr-t6/frp-integration/stacks/sa-frp-integration\n#| env: AWS_PROFILE=ir-prod1\n#| expect: Exported to\npulumi stack export -s ir-prod1 --file /tmp/sa-frp-integration-ir-prod1-pre.json\necho \"Exported to /tmp/sa-frp-integration-ir-prod1-pre.json\"\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "name",
+            "value": "export-ir-prod1"
+          },
+          {
+            "key": "label",
+            "value": "Export state"
+          },
+          {
+            "key": "cwd",
+            "value": "~/dr-t6/frp-integration/stacks/sa-frp-integration"
+          },
+          {
+            "key": "env",
+            "value": "AWS_PROFILE=ir-prod1"
+          },
+          {
+            "key": "expect",
+            "value": "Exported to"
+          }
+        ],
+        "options": {
+          "cwd": "~/dr-t6/frp-integration/stacks/sa-frp-integration",
+          "name": "export-ir-prod1",
+          "label": "Export state",
+          "danger": false,
+          "after": null,
+          "expect": [
+            {
+              "kind": "text",
+              "value": "Exported to"
+            }
+          ],
+          "env": [
+            [
+              "AWS_PROFILE",
+              "ir-prod1"
+            ]
+          ],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "pulumi stack export -s ir-prod1 --file /tmp/sa-frp-integration-ir-prod1-pre.json\necho \"Exported to /tmp/sa-frp-integration-ir-prod1-pre.json\"",
+        "header_lines": 5
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "0f67e128c9ab3cf7b21cc33ba9ae141908b89b62a3017b4a5348e30510adbfc6",
+      "ctx": {
+        "names": [
+          "export-ir-prod1",
+          "preview-ir-prod1",
+          "apply-ir-prod1"
+        ],
+        "after_edges": [
+          [
+            "apply-ir-prod1",
+            "preview-ir-prod1"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "runbook-preview",
+      "lang": "bash",
+      "body": "#| name: preview-ir-prod1\n#| label: Preview\n#| cwd: ~/dr-t6/frp-integration/stacks/sa-frp-integration\n#| env: AWS_PROFILE=ir-prod1\n#| expect: 3 to update\npulumi preview -s ir-prod1 --refresh=false --diff\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "name",
+            "value": "preview-ir-prod1"
+          },
+          {
+            "key": "label",
+            "value": "Preview"
+          },
+          {
+            "key": "cwd",
+            "value": "~/dr-t6/frp-integration/stacks/sa-frp-integration"
+          },
+          {
+            "key": "env",
+            "value": "AWS_PROFILE=ir-prod1"
+          },
+          {
+            "key": "expect",
+            "value": "3 to update"
+          }
+        ],
+        "options": {
+          "cwd": "~/dr-t6/frp-integration/stacks/sa-frp-integration",
+          "name": "preview-ir-prod1",
+          "label": "Preview",
+          "danger": false,
+          "after": null,
+          "expect": [
+            {
+              "kind": "text",
+              "value": "3 to update"
+            }
+          ],
+          "env": [
+            [
+              "AWS_PROFILE",
+              "ir-prod1"
+            ]
+          ],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "pulumi preview -s ir-prod1 --refresh=false --diff",
+        "header_lines": 5
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "e588e75dbfe277bd9b5039a9f8dde66229cdb372c54741e0a603ea5d79bbe528",
+      "ctx": {
+        "names": [
+          "export-ir-prod1",
+          "preview-ir-prod1",
+          "apply-ir-prod1"
+        ],
+        "after_edges": [
+          [
+            "apply-ir-prod1",
+            "preview-ir-prod1"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "runbook-apply",
+      "lang": "bash",
+      "body": "#| name: apply-ir-prod1\n#| label: Apply to ir-prod1\n#| danger\n#| after: preview-ir-prod1\n#| review\n#| cwd: ~/dr-t6/frp-integration/stacks/sa-frp-integration\n#| env: AWS_PROFILE=ir-prod1\n#| expect: 3 updated\npulumi up -s ir-prod1 --refresh=false --diff\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "name",
+            "value": "apply-ir-prod1"
+          },
+          {
+            "key": "label",
+            "value": "Apply to ir-prod1"
+          },
+          {
+            "key": "danger",
+            "value": null
+          },
+          {
+            "key": "after",
+            "value": "preview-ir-prod1"
+          },
+          {
+            "key": "review",
+            "value": null
+          },
+          {
+            "key": "cwd",
+            "value": "~/dr-t6/frp-integration/stacks/sa-frp-integration"
+          },
+          {
+            "key": "env",
+            "value": "AWS_PROFILE=ir-prod1"
+          },
+          {
+            "key": "expect",
+            "value": "3 updated"
+          }
+        ],
+        "options": {
+          "cwd": "~/dr-t6/frp-integration/stacks/sa-frp-integration",
+          "name": "apply-ir-prod1",
+          "label": "Apply to ir-prod1",
+          "danger": true,
+          "after": "preview-ir-prod1",
+          "expect": [
+            {
+              "kind": "text",
+              "value": "3 updated"
+            }
+          ],
+          "env": [
+            [
+              "AWS_PROFILE",
+              "ir-prod1"
+            ]
+          ],
+          "python": null,
+          "review": true,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "pulumi up -s ir-prod1 --refresh=false --diff",
+        "header_lines": 8
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "97e458d61cb841df4bd3bf373aba16846446f4b4185f33fdf5ac1cf93c4ae92e",
+      "ctx": {
+        "names": [
+          "export-ir-prod1",
+          "preview-ir-prod1",
+          "apply-ir-prod1"
+        ]
+      }
+    }
+  ],
+  "defaults": [
+    {
+      "name": "full",
+      "body": "#| cwd: ~/dr-t6/frp-integration\n#| shell: /opt/homebrew/bin/bash\n#| python: .venv\n",
+      "defaults": {
+        "cwd": "~/dr-t6/frp-integration",
+        "shell": "/opt/homebrew/bin/bash",
+        "python": {
+          "kind": "venv"
+        },
+        "unknown": []
+      }
+    },
+    {
+      "name": "empty",
+      "body": "",
+      "defaults": {
+        "cwd": null,
+        "shell": null,
+        "python": null,
+        "unknown": []
+      }
+    },
+    {
+      "name": "unknown-and-bad",
+      "body": "#| cwd: ~/p\n#| color: red\n#| python: conda\n# a comment\nnot a header\n",
+      "defaults": {
+        "cwd": "~/p",
+        "shell": null,
+        "python": null,
+        "unknown": [
+          "color",
+          "python"
+        ]
+      }
+    },
+    {
+      "name": "crlf-quoted",
+      "body": "#| cwd: \"~/my dir\"\r\n#| python: /usr/bin/python3\r\n",
+      "defaults": {
+        "cwd": "~/my dir",
+        "shell": null,
+        "python": {
+          "kind": "path",
+          "value": "/usr/bin/python3"
+        },
+        "unknown": []
+      }
+    },
+    {
+      "name": "last-wins",
+      "body": "#| cwd: ~/a\n#| cwd: ~/b\n",
+      "defaults": {
+        "cwd": "~/b",
+        "shell": null,
+        "python": null,
+        "unknown": []
+      }
+    }
+  ]
+}

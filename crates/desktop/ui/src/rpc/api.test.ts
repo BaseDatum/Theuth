@@ -7,7 +7,8 @@ import { METHODS } from './api'
 const METHODS_JSON = fileURLToPath(new URL('../../../../../bindings/methods.json', import.meta.url))
 
 // Stream pairs are `RpcClient.subscribe` / `RpcClient.stream`, not `Api` methods.
-const STREAM = ['subscribe_events', 'unsubscribe_events', 'subscribe_pty', 'unsubscribe_pty', 'doc_subscribe', 'doc_unsubscribe']
+// 171:C — `cell_attach` / `cell_detach` likewise.
+const STREAM = ['subscribe_events', 'unsubscribe_events', 'subscribe_pty', 'unsubscribe_pty', 'doc_subscribe', 'doc_unsubscribe', 'cell_attach', 'cell_detach']
 
 test.skipIf(!existsSync(METHODS_JSON))('METHODS equals the server method list', () => {
   const server = (JSON.parse(readFileSync(METHODS_JSON, 'utf8')) as string[]).filter((m) => !STREAM.includes(m))

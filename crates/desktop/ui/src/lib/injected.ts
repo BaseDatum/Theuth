@@ -46,16 +46,22 @@ export type Injected =
   /** 151 R1 (D7): `<autoresearch slug event>` — a study's start / result / failure card delivered into its setup chat
    * when no messaging channel renders the session; `text` is the card markdown (a `json-render` fence or a line). */
   | { kind: 'autoresearch'; slug: string; event: string; text: string }
+  /** 171 §9.1: `<cell_result run=… name=…|cell=… message=… exit secs …>` — a user cell's run the agent read; one quiet line. */
+  | { kind: 'cell_result'; run: string; name?: string; cell?: string; message?: string; exit: string; secs: string; text: string }
 
 export type ResumeSection = { title: string; text: string; count?: number }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
 const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="', advisory: 'severity="', child_lost: 'name="', autoresearch: 'slug="' }
+// 171 §9.1 (L2): keyed on `run="`, the first attribute, which every cell result carries (unnamed cells have `cell="<ordinal>"`).
+CARD.cell_result = 'run="'
 // `surface_error` (30 §8): the correction round is quiet on the desktop — the fence shows its own failure state — so the
 // `<surface_error>` / `<surface_error final="true">` notes render nothing; the notice entry above stays for other clients.
 // 144 §5.3: `<notebook id title>` is the bound chat's volatile context block — a harness note the context line already
 // summarises (`in context: N sources · M notes`), so it renders nothing, like `<runtime>`.
 const HIDDEN: Record<string, true> = { context_summary: true, runtime: true, surface_error: true, notebook: true }
+// 171 §9.2: the `<cell_error>` correction round is quiet on the desktop, like `surface_error`; the cell shows its invalid state.
+HIDDEN.cell_error = true
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]
@@ -309,6 +315,20 @@ export function classify(text: string): Injected[] | null {
         out.push({ kind: 'lost', name: unescape(from), session: attr(open, 'session="') ?? '', clock: attr(open, 'at="') ?? '', why: unescape(attr(open, 'why="') ?? ''), text: body.trim() })
       } else if (name === 'autoresearch') {
         out.push({ kind: 'autoresearch', slug: unescape(from), event: unescape(attr(open, 'event="') ?? ''), text: body.trim() })
+      } else if (name === 'cell_result') {
+        const cellName = attr(open, ' name="')
+        const ordinal = attr(open, ' cell="')
+        const entry = attr(open, ' message="')
+        out.push({
+          kind: 'cell_result',
+          run: from,
+          ...(cellName === undefined ? {} : { name: unescape(cellName) }),
+          ...(ordinal === undefined ? {} : { cell: ordinal }),
+          ...(entry === undefined ? {} : { message: entry }),
+          exit: attr(open, ' exit="') ?? '',
+          secs: attr(open, ' secs="') ?? '',
+          text: body,
+        })
       } else if (name === 'desk') {
         const j = body.indexOf('</journal>')
         out.push({ kind: 'desk', agent: from, charter: inner(body, 'charter'), journal: inner(body, 'journal'), manual: j < 0 ? '' : body.slice(j + '</journal>'.length).trim() })

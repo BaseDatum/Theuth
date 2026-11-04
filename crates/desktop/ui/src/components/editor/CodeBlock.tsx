@@ -1,13 +1,20 @@
 import { createCodeBlockSpec, plainContentToString } from '@blocknote/core'
 import { type ReactCustomBlockRenderProps, createReactBlockSpec, useEditorState } from '@blocknote/react'
 import { PencilLine } from 'lucide-react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { CellDefaults } from '@/components/cells/CellDefaults'
+import { GuestCell, useLatest } from '@/components/cells/GuestCell'
+import { NoteCell } from '@/components/cells/NoteCell'
+import { NoteHost } from '@/components/cells/note-context'
+import { firstDefaults, noteRef, routeOf } from '@/components/cells/note-edit'
 import { loadMermaid, MermaidFence } from '@/components/chat/Mermaid'
 import { JsonRenderFence } from '@/components/chat/surface/JsonRenderFence'
 import { parseSpec } from '@/components/chat/surface/parse'
 import { CODE_BLOCK_OPTIONS, type Diagram, diagramOf } from '@/components/editor/codeLanguages'
 import { Button } from '@/components/ui/button'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import type { Api } from '@/rpc/api'
+import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import { cn } from 'cn'
 
 /**
@@ -101,6 +108,12 @@ function DiagramView({ kind, source, parses, editable, onEdit }: { kind: Diagram
   )
 }
 
+/** A share-link member's note cell (§13): the replicated latest row through the member's own api, no Run. */
+function GuestBlock({ api, doc, spec, source, block, editor }: { api: Api; doc: string; spec: CellSpec; source: string; block: string; editor: ReactNode }) {
+  const ref = noteRef(doc, spec, block)
+  return <GuestCell cell={spec} code={source} latest={useLatest(api, doc, ref.key.value)} cellRef={ref} editor={editor} />
+}
+
 /**
  * Source is shown when the block is code, has the caret or a selection, or does not parse; otherwise the diagram.
  * Leaving the block (the selection moves out) is what returns to the diagram, so no toggle state lives outside
@@ -123,15 +136,32 @@ function CodeBlock({ block, editor, contentRef }: Props) {
     },
   })
   const parses = useParses(kind, source)
-  const diagram = kind !== null && !selected && parses !== false
+  // 171 §4.2 (D14): cells and the `cells` defaults line come before the diagram branch (`routeOf`); the node and its
+  // Yjs text are the default's.
+  const host = useContext(NoteHost)
+  const route = useMemo(() => routeOf(block.props.language, source, host, selected), [block.props.language, source, host, selected])
   const open = () => {
     editor.setTextCursorPosition(block.id, 'end')
     editor.focus()
   }
+  if (host && (route.kind === 'cell' || route.kind === 'guest')) {
+    const code = (
+      <pre data-cell-code="" spellCheck={false}>
+        <code ref={contentRef} />
+      </pre>
+    )
+    if (route.kind === 'guest' && host.guest) return <GuestBlock api={host.guest} doc={host.provider.id} spec={route.spec} source={source} block={block.id} editor={code} />
+    const key = noteRef(host.provider.id, route.spec, block.id).key
+    return <NoteCell doc={host.provider.id} key_={key} cell={route.spec} code={source} editor={code} editable={editable} block={block.id} blocknote={editor} />
+  }
+  // The `cells` block shows its one line until the caret enters it; the source stays mounted (parked), like a diagram's.
+  const defaults = route.kind === 'defaults'
+  const diagram = kind !== null && !selected && parses !== false
   return (
     <>
+      {defaults && <CellDefaults text={source} second={!firstDefaults(editor.document, block.id)} onOpen={open} />}
       {diagram && <DiagramView kind={kind} source={source} parses={parses} editable={editable} onEdit={open} />}
-      <div contentEditable={false} className={cn(diagram && 'hidden')}>
+      <div contentEditable={false} className={cn((diagram || defaults) && 'hidden')}>
         <select
           value={block.props.language}
           disabled={!editable}
@@ -145,7 +175,7 @@ function CodeBlock({ block, editor, contentRef }: Props) {
           {!(block.props.language in supportedLanguages) && <option value={block.props.language}>{block.props.language}</option>}
         </select>
       </div>
-      <pre className={cn(diagram && PARKED)} aria-hidden={diagram || undefined}>
+      <pre className={cn((diagram || defaults) && PARKED)} aria-hidden={diagram || defaults || undefined}>
         <code ref={contentRef} />
       </pre>
       {kind !== null && !diagram && parses === false && (

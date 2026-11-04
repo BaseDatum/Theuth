@@ -55,6 +55,7 @@ import type { DreamNightFinished } from '@/rpc/bindings/DreamNightFinished'
 import type { DreamUndone } from '@/rpc/bindings/DreamUndone'
 import type { StudyEvent } from '@/rpc/bindings/StudyEvent'
 import type { EndlessProgress } from '@/rpc/bindings/EndlessProgress'
+import type { CellEvent } from '@/rpc/bindings/CellEvent'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
@@ -146,3 +147,5 @@ export type WireEvent =
   | EndlessProgress
   /** 160 §3.2: the cost cube changed; `cost_cube(since)` answers the delta. */
   | CostCubeChanged
+  /** 171 §10: a cell run was queued / started / finished, a scope's cells or a kernel changed. */
+  | CellEvent

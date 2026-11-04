@@ -286,6 +286,8 @@ pub struct RpcPeer {
     closed: CancellationToken,
     remote: bool,
     guest: Option<std::sync::Arc<Guest>>,
+    /// Set only by [`RpcPeer::internal`] (171 §12.1).
+    internal: bool,
 }
 
 /// A mode-2 conn's identity (59 §8.3): the unknown static that completed `IK`
@@ -412,6 +414,7 @@ impl RpcPeer {
                 closed,
                 remote,
                 guest,
+                internal: false,
             },
             guard,
         )
@@ -426,6 +429,7 @@ impl RpcPeer {
             closed: CancellationToken::new(),
             remote: false,
             guest: None,
+            internal: true,
         }
     }
 
@@ -438,6 +442,13 @@ impl RpcPeer {
     /// The guest identity of a mode-2 conn; `None` for the owner's devices and local callers.
     pub fn guest(&self) -> Option<&Guest> {
         self.guest.as_deref()
+    }
+
+    /// Whether this is the in-process peer of [`RpcPeer::internal`]: the
+    /// owner console behind the MCP server, the ACP agent half and the TUI,
+    /// none of which is a human press (171 §12.1 invariant 1).
+    pub fn is_internal(&self) -> bool {
+        self.internal
     }
 
     /// Random per connection; collision-resistant across the Noise and local
@@ -461,5 +472,18 @@ impl RpcPeer {
     /// the peer id (a private root's lease, 51 §4.3).
     pub fn closed_token(&self) -> CancellationToken {
         self.closed.clone()
+    }
+}
+
+#[cfg(test)]
+mod internal_tests {
+    use super::RpcPeer;
+
+    #[test]
+    fn only_internal_is_internal() {
+        assert!(RpcPeer::internal().is_internal());
+        assert!(!RpcPeer::open().0.is_internal());
+        assert!(!RpcPeer::open_remote().0.is_internal());
+        assert!(!RpcPeer::open_guest([1; 32], [2; 32]).0.is_internal());
     }
 }

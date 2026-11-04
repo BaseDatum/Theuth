@@ -1,17 +1,131 @@
+// Node environment (no DOM): the wire is driven through `attachSource` with a fake xterm; the key row is checked as
+// static markup (171 §7.4, §11.6).
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, expect, test, vi } from 'vitest'
-import { PopoutTerminalButton } from './TerminalViewer'
+import { beforeEach, expect, test, vi } from 'vitest'
+import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
+import { attachSource, CELL_KEYS, Terminal } from './TerminalViewer'
 
-afterEach(() => vi.unstubAllGlobals())
+const api = { cell_input: vi.fn(async () => null), pty_input: vi.fn(async () => null), pty_resize: vi.fn(async () => null) }
+const unsub = vi.fn(async () => undefined)
+const client = { stream: vi.fn(async <T,>(_m: string, _p: unknown[], _u: string, _on: (c: T) => void) => unsub) }
+const touch = vi.fn(() => false)
 
-test('the terminal toolbar shows "Open in new window" only where a second window exists (canPopout)', () => {
-  const button = () => renderToStaticMarkup(createElement(PopoutTerminalButton, { session: 's1', job: 'j1' }))
-  const mac = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)'
-  vi.stubGlobal('window', { __TAURI_INTERNALS__: {}, innerWidth: 1280 })
-  vi.stubGlobal('navigator', { userAgent: mac, maxTouchPoints: 0 })
-  expect(button()).toContain('aria-label="Open in new window"')
-  // The iOS shell: one webview, no window manager.
-  vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148', maxTouchPoints: 5 })
-  expect(button()).toBe('')
+vi.mock('@xterm/xterm', () => ({ Terminal: class {} }))
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: class {} }))
+vi.mock('@/lib/rpc', () => ({ useApi: () => api, queryKeys: { terminals: (s: string) => ['terminals', s] } }))
+vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: typeof client }) => unknown) => sel({ client }) }))
+vi.mock('@/store/sessions', () => ({ useSessionField: () => null }))
+vi.mock('@/lib/platform', () => ({ touch: () => touch() }))
+vi.mock('@/lib/chord', () => ({ isApple: () => true }))
+vi.mock('@/lib/popout', () => ({ canPopout: () => false, openPopout: async () => undefined }))
+vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
+
+/** The slice of xterm `attachSource` touches. */
+const fakeTerm = () => {
+  const t = {
+    rows: 30,
+    cols: 100,
+    data: null as ((d: string) => void) | null,
+    keys: null as ((e: KeyboardEvent) => boolean) | null,
+    reset: vi.fn(),
+    resize: vi.fn(),
+    write: vi.fn(),
+    onData(cb: (d: string) => void) {
+      t.data = cb
+      return { dispose: vi.fn() }
+    },
+    attachCustomKeyEventHandler(cb: (e: KeyboardEvent) => boolean) {
+      t.keys = cb
+    },
+    parser: { registerCsiHandler: vi.fn(), registerOscHandler: vi.fn() },
+  }
+  return t
+}
+
+type Term = Parameters<typeof attachSource>[1]
+/** Drains the input lane's microtasks (one macrotask turn, not a duration). */
+const flush = () => {
+  const { promise, resolve } = Promise.withResolvers<void>()
+  setTimeout(resolve)
+  return promise
+}
+
+const onItem = () => client.stream.mock.calls[0]![3] as (c: PtyChunk) => void
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  touch.mockReturnValue(false)
+})
+
+test('a cell source attaches with cell_attach/cell_detach and types through cell_input as base64 UTF-8', async () => {
+  const term = fakeTerm()
+  const onExit = vi.fn()
+  const wire = attachSource({ kind: 'cell', run: 'run-1' }, term as unknown as Term, api, client, onExit)
+  expect(client.stream).toHaveBeenCalledTimes(1)
+  expect(client.stream.mock.calls[0]!.slice(0, 3)).toEqual(['cell_attach', ['run-1'], 'cell_detach'])
+  expect(term.parser.registerCsiHandler).toHaveBeenCalled()
+
+  term.data!('é')
+  // 167 D1 through the same lane: ⌥← on a Mac.
+  term.keys!({ type: 'keydown', code: 'ArrowLeft', altKey: true, metaKey: false, ctrlKey: false, shiftKey: false, preventDefault() {} } as unknown as KeyboardEvent)
+  await flush()
+  expect(api.cell_input.mock.calls).toEqual([
+    ['run-1', 'w6k='],
+    ['run-1', btoa('\x1bb')],
+  ])
+  expect(api.pty_input).not.toHaveBeenCalled()
+
+  onItem()({ type: 'reset', data: btoa('hi'), rows: 24, cols: 80 })
+  expect(term.reset).toHaveBeenCalledTimes(1)
+  expect(term.resize).toHaveBeenCalledWith(80, 24)
+  expect(term.write).toHaveBeenCalledTimes(1)
+  onItem()({ type: 'data', data: btoa('x') })
+  expect(term.write).toHaveBeenCalledTimes(2)
+
+  onItem()({ type: 'exit', exit: { exited: 0 } })
+  onItem()({ type: 'exit', exit: { exited: 0 } })
+  expect(onExit).toHaveBeenCalledTimes(1)
+  expect(wire.ended()).toBe(true)
+  term.data!('after')
+  wire.send('after')
+  await flush()
+  expect(api.cell_input).toHaveBeenCalledTimes(2)
+
+  wire.dispose()
+  await flush()
+  expect(unsub).toHaveBeenCalledTimes(1)
+  expect(api.pty_resize).not.toHaveBeenCalled()
+})
+
+test('the pty source still goes through subscribe_pty and pty_input', async () => {
+  const term = fakeTerm()
+  attachSource({ kind: 'pty', session: 's', job: 'j' }, term as unknown as Term, api, client, () => {})
+  expect(client.stream.mock.calls[0]!.slice(0, 3)).toEqual(['subscribe_pty', ['s', 'j', 30, 100], 'unsubscribe_pty'])
+  term.data!('x')
+  await flush()
+  expect(api.pty_input).toHaveBeenCalledWith('s', 'j', 'x', null)
+  expect(api.cell_input).not.toHaveBeenCalled()
+})
+
+test('the cell key row: ↑ ↓ ⏎ Esc Tab ^C raw bytes, arrows per cursor-key mode, 48 px targets, only under touch (171 §11.6)', () => {
+  const seq = Object.fromEntries(CELL_KEYS)
+  expect(seq['↑']!(false)).toBe('\x1b[A')
+  expect(seq['↑']!(true)).toBe('\x1bOA')
+  expect(seq['↓']!(false)).toBe('\x1b[B')
+  expect([seq['⏎']!(false), seq['Esc']!(false), seq['Tab']!(false), seq['^C']!(false)]).toEqual(['\r', '\x1b', '\t', '\x03'])
+  expect(btoa(seq['↑']!(false))).toBe('G1tB')
+
+  const cell = () => renderToStaticMarkup(createElement(Terminal, { source: { kind: 'cell', run: 'run-1' }, label: 'python' }))
+  expect(cell()).not.toContain('Terminal keys')
+  touch.mockReturnValue(true)
+  const html = cell()
+  expect(html).toContain('role="group" aria-label="Terminal keys"')
+  for (const [text] of CELL_KEYS) expect(html).toContain(`>${text}<`)
+  expect(html).toContain('h-12 min-w-12')
+  expect(html).not.toContain('h-11')
+  expect(html).toContain('>python<')
+  // The pty source keeps its own strip: on a desktop (useIsMobile false) nothing, even under touch.
+  expect(renderToStaticMarkup(createElement(Terminal, { session: 's', job: 'j', label: 'sh' }))).not.toContain('Terminal keys')
+  expect(api.pty_resize).not.toHaveBeenCalled()
 })

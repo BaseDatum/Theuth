@@ -181,6 +181,57 @@ pub async fn open_pool(worker: &Path, max_processes: usize) -> Option<Arc<Pool>>
     }
 }
 
+/// How long [`monty_sufficient`]'s type check may wait for a worker and answer.
+const SUFFICIENT_CHECK: Duration = Duration::from_secs(10);
+
+/// 171 §6.2: whether a user cell's `code` can run on Monty — `Err(reason)` when not.
+/// (a) the static scan [`surface::cell::monty_scan`]; (b) Monty's type check on a worker of
+/// `pool`, check-only: the code is fed as the body of an `async def` that is never called,
+/// so it is parsed and type-checked but nothing of it runs. A missing pool, a busy pool or a
+/// worker failure leaves (b) unchecked (fail-open, like the fence checkers).
+pub async fn monty_sufficient(pool: Option<&Pool>, code: &str) -> Result<(), String> {
+    surface::cell::monty_scan(code)?;
+    let Some(pool) = pool else {
+        return Ok(());
+    };
+    let mut wrapped = String::from("async def __theuth_cell_check__():\n");
+    for line in code.lines() {
+        wrapped.push_str("    ");
+        wrapped.push_str(line);
+        wrapped.push('\n');
+    }
+    wrapped.push_str("    pass\n");
+    let check = async {
+        let cfg = ReplConfig {
+            type_check: true,
+            ..ReplConfig::default()
+        };
+        let mut c = pool.checkout(&cfg).await?;
+        let mut quiet = on_print_sync(|_, _| {});
+        let fed = c
+            .feed(wrapped, Vec::new(), Vec::new(), false, &mut quiet)
+            .await;
+        if let Err(e) = c.finish().await {
+            tracing::debug!("monty sufficiency checkout finish: {e}");
+        }
+        fed.map(|_| ())
+    };
+    match tokio::time::timeout(SUFFICIENT_CHECK, check).await {
+        Ok(Ok(())) => Ok(()),
+        // Defining the function ran nothing: a typing or compile error is Monty's "no".
+        Ok(Err(PoolError::Typing(why))) => Err(why),
+        Ok(Err(PoolError::Runtime(e))) => Err(e.to_string()),
+        Ok(Err(e)) => {
+            tracing::debug!("monty sufficiency check skipped: {e}");
+            Ok(())
+        }
+        Err(_) => {
+            tracing::debug!("monty sufficiency check timed out");
+            Ok(())
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Signatures, stubs, help, prompt block
 // ---------------------------------------------------------------------------
@@ -2292,6 +2343,40 @@ mod tests {
         assert_eq!(from_monty(to_monty(&v).as_ref()), v);
         let d = MontyObject::dict([(MontyObject::int(1), MontyObject::string("a"))]);
         assert_eq!(from_monty(d.as_ref()), serde_json::json!({"1": "a"}));
+    }
+
+    /// 171 §6.2: the static scan refuses packages, files and processes without a pool; the
+    /// type check refuses a typing error and runs nothing (a raising cell passes).
+    #[tokio::test]
+    async fn monty_sufficient_scans_then_type_checks_without_running() {
+        assert_eq!(monty_sufficient(None, "sum([1, 2, 3])").await, Ok(()));
+        let pandas = monty_sufficient(None, "import pandas as pd\npd.read_csv('x')").await;
+        assert!(pandas.unwrap_err().contains("pandas"));
+        assert!(monty_sufficient(None, "open('x').read()").await.is_err());
+        let Some(pool) = monty_pool().await else {
+            return;
+        };
+        // A worker of another protocol version (a stale `monty` on PATH) cannot check.
+        let probe = async {
+            let mut c = pool.checkout(&ReplConfig::default()).await?;
+            let mut quiet = on_print_sync(|_, _| {});
+            let fed = c.feed("1", Vec::new(), Vec::new(), true, &mut quiet).await;
+            let _ = c.finish().await;
+            fed.map(|_| ())
+        };
+        if let Err(e) = probe.await {
+            eprintln!("monty worker unusable ({e}); skipping the type check");
+            return;
+        }
+        assert_eq!(
+            monty_sufficient(Some(&pool), "total = sum([1, 2, 3])\ntotal").await,
+            Ok(())
+        );
+        assert!(monty_sufficient(Some(&pool), "x: int = 'a'").await.is_err());
+        assert_eq!(
+            monty_sufficient(Some(&pool), "raise ValueError('ran')").await,
+            Ok(())
+        );
     }
 
     /// A pool over `$THEUTH_MONTY_WORKER` (any binary that serves

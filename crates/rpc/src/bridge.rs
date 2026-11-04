@@ -17,6 +17,7 @@ use artifact::preview::{PagePreviewRequested, PagePreviewResolved};
 use artifact::snapshot::{FenceSnapshotRequested, FenceSnapshotResolved};
 use autoresearch::StudyEvent;
 use browser::BrowserEvent;
+use cells::CellEvent; // 171:C
 use codeindex::CodeindexEvent;
 use document::{DocumentChanged, SourceEvent};
 use double::{DoubleAnswered, DoublePredicted, DoubleTrainingState, DoubleVersionActivated};
@@ -157,6 +158,7 @@ forward!(
     DreamNightFinished,
     DreamUndone,
     StudyEvent,
+    CellEvent,
     EndlessProgress,
     CostCubeChanged
 );
@@ -228,6 +230,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, DreamNightFinished>(&actor).await;
     rt.subscribe::<Bridge, DreamUndone>(&actor).await;
     rt.subscribe::<Bridge, StudyEvent>(&actor).await;
+    rt.subscribe::<Bridge, CellEvent>(&actor).await; // 171:C
     rt.subscribe::<Bridge, ReminderEvent>(&actor).await;
     rt.subscribe::<Bridge, EndlessProgress>(&actor).await;
     rt.subscribe::<Bridge, CostCubeChanged>(&actor).await;

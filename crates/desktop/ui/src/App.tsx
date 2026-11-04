@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { ATTENTION_KEY } from '@/components/hud/queries'
 import { QuitOverlay, useQuit } from '@/components/launch/QuitOverlay'
+import { PreQuit, confirmQuit, tauriShellQuit } from '@/components/cells/QuitSheet'
 import { StartupScreen } from '@/components/launch/StartupScreen'
 import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
@@ -33,6 +34,7 @@ import {
   connection,
   isIsland,
   isOverlay,
+  isTauri,
   onCaptureHidden,
   onModelsProgress,
   onNavigate,
@@ -96,6 +98,8 @@ let owned = false
  */
 async function quit(restart = false): Promise<void> {
   const local = scope(LOCAL)
+  // 171 §5.3 (F6 a): a live cell run shows the pre-quit sheet before the overlay; Cancel keeps the app open.
+  if (!(await confirmQuit(local.connection.getState().api, isTauri() ? tauriShellQuit : undefined))) return
   useQuit.getState().send({
     type: 'requested',
     restart,
@@ -737,6 +741,7 @@ function Main() {
       <Toaster />
       {/* 163 D5: portalled to <body>; it makes everything else there inert while it is up. */}
       {!AUX && <QuitOverlay />}
+      {!AUX && <PreQuit />}
     </>
   )
 }

@@ -21,6 +21,7 @@ import { MeetingCard } from './MeetingCard'
 import { MessageUser } from './MessageUser'
 import { MessageVision } from './MessageVision'
 import { SecretRequestCard } from './SecretRequestCard'
+import { ResultCard } from '@/components/cells/ResultCard'
 
 /** `readOnly`: an archive/inspection rendering (search's Earlier messages page): no turn, fork or context-removal controls. */
 function body(entry: Entry, session: string, readOnly?: boolean) {
@@ -57,6 +58,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <ChildLostCard {...entry} />
     case 'autoresearch':
       return <AutoresearchCard {...entry} />
+    case 'cell_result': // 171:U1-ADD
+      return <ResultCard run={entry.run} session={session} name={entry.name} cell={entry.cell} exit={entry.exit} secs={entry.secs} />
     case 'parentView':
       return <ParentViewCard {...entry} />
     case 'vision':

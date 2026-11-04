@@ -139,7 +139,7 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       origin?: PeerOrigin;
       seq?: number;
     }
-  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'autoresearch' }>
+  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'autoresearch' | 'cell_result' }> // 171:U1-ADD cell_result
   /** 152 D3: the view an endless parent handed a native child before its brief (137 R1-D1); folded, the lines render
    * only while open. Reload/reseed only: a live `TurnStarted` carries the brief without the view. */
   | { kind: "parentView"; lines: ParentViewLine[]; bytes: number }
