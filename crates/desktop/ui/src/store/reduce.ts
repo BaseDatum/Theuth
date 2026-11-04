@@ -681,10 +681,14 @@ export function apply(
 ): SessionSlice {
   // Bookkeeping that must not finish a streaming tail.
   switch (e.type) {
+    // 171F4 N7: `files` only on our own steer (the composer's attachments); the engine's echo of it changes nothing.
     case "InputQueued":
       return slice.queued.some((q) => q.id === e.id)
         ? slice
-        : { ...slice, queued: [...slice.queued, { id: e.id, text: e.text, defer: e.defer, ...(e.channel ? { channel: e.channel } : {}) }] };
+        : {
+            ...slice,
+            queued: [...slice.queued, { id: e.id, text: e.text, defer: e.defer, ...(e.channel ? { channel: e.channel } : {}), ...(e.files?.length ? { files: e.files } : {}) }],
+          };
     case "InputWithdrawn": {
       const queued = slice.queued.filter((q) => q.id !== e.id);
       return queued.length === slice.queued.length
@@ -957,10 +961,13 @@ function turn(
       const q = s.queued[at];
       if (!q) return s;
       const { view, text } = userText(q.text);
+      const rows = userEntries(text, classify(text), true, undefined, undefined, q.channel);
+      // 171F4 N7: the steer's attachments ride on its `you` row, as on a send's (`markSent`).
+      const you = q.files ? rows.findIndex((x) => x.kind === "user") : -1;
       return {
         ...s,
         queued: s.queued.toSpliced(at, 1),
-        entries: [...s.entries, ...(view ? [view] : []), ...userEntries(text, classify(text), true, undefined, undefined, q.channel).map((x) => ({ ...x, at: Date.now() }))],
+        entries: [...s.entries, ...(view ? [view] : []), ...rows.map((x, i) => ({ ...x, at: Date.now(), ...(i === you ? { files: q.files } : {}) }))],
         lastInjected: e.turn,
       };
     }

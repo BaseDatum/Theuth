@@ -60,11 +60,13 @@ import type { CellEvent } from '@/rpc/bindings/CellEvent'
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
  * `TitleChanged`, `SessionDeleted`, `ToolCallProgress` (35 §3.6), `VisionProgress` (52 §6) and
- * `ToolCallFinished.files` (paths of files the tool produced, `[]` when none).
+ * `ToolCallFinished.files` (paths of files the tool produced, `[]` when none), and `InputQueued.files` (171F4 N7:
+ * client-side only — the files the composer attached to its own steer; the engine's echo has none).
  */
 export type AgentEvent =
-  | Exclude<Bound, { type: 'ToolCallFinished' | 'VisionProgress' }>
+  | Exclude<Bound, { type: 'ToolCallFinished' | 'VisionProgress' | 'InputQueued' }>
   | (Extract<Bound, { type: 'ToolCallFinished' }> & { files: string[] })
+  | (Extract<Bound, { type: 'InputQueued' }> & { files?: string[] })
   | TitleChanged
   | SessionDeleted
   | ToolCallProgress

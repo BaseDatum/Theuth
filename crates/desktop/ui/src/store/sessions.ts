@@ -244,8 +244,10 @@ export type SessionSlice = {
   /** Bumped by turn/edit activity (deltas, tool calls, interjections, context changes); a settled snapshot requested under an older value is discarded. */
   live: number;
   /** `defer` (62 §3.1): lands at the next turn, not after this tool batch; unknown after a reload (`list_queued` lacks it).
-   * `QueuedInput.channel` (172 D3) survives a reload and moves to the transcript card on `InputInjected`. */
-  queued: (QueuedInput & { defer?: boolean })[];
+   * `QueuedInput.channel` (172 D3) survives a reload and moves to the transcript card on `InputInjected`.
+   * `files` (171F4 N7): our own steer's attachments, shown on the chip and moved to the `you` row on `InputInjected`;
+   * unknown after a reload (`list_queued` lacks them). */
+  queued: (QueuedInput & { defer?: boolean; files?: string[] })[];
   skills: string[];
   name?: string | null;
   parent?: string | null;
@@ -507,7 +509,11 @@ export const createSessions = (): SessionsApi =>
             activity: loaded.running ? "thinking" : "idle",
             model: loaded.model,
             effort: loaded.effort,
-            queued: loaded.queued,
+            // 171F4 N7: the engine's queue has no attachments; ours (by id) keep theirs.
+            queued: loaded.queued.map((q) => {
+              const files = cur.queued.find((c) => c.id === q.id)?.files;
+              return files ? { ...q, files } : q;
+            }),
             undone: loaded.undone,
             agent: loaded.agent,
             kind: loaded.kind,

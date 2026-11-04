@@ -10,6 +10,7 @@ import { touch } from '@/lib/platform'
 import { useShortcuts } from '@/lib/shortcuts'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import { useSessionField } from '@/store/sessions'
+import { Attachments } from './Attachments'
 
 /** A queued input's chip: a skill injection shows the skills icon, its name and the words; an app input its app and message;
  * a channel steer (172) its channel icon (label on hover) and the shown text; anything else `◇ text`. */
@@ -63,31 +64,35 @@ export function QueuedChips({ session, onEdit }: { session: string; onEdit(text:
   return (
     <div className="mb-2 flex flex-wrap gap-2">
       {queued.map((q) => (
-        <span key={q.id} className="flex max-w-full items-center gap-1 rounded-full bg-layer-2 pl-3 pr-1 text-sm text-fg-secondary">
-          <button
-            type="button"
-            className="truncate py-1 hover:text-foreground"
-            title="Edit"
-            onClick={async () => {
-              const text = await withdraw(q.id)
-              if (text !== null) onEdit(text)
-            }}
-          >
-            {label(q)}
-            {q.defer && <span className="ml-1 text-xs text-fg-tertiary">next turn</span>}
-            {q === queued[queued.length - 1] && (
-              <span className="ml-1 text-xs text-fg-tertiary">queued · {touch() ? 'hold Steer' : chordLabel(interject)} to interrupt</span>
-            )}
-          </button>
-          <button
-            type="button"
-            aria-label="Withdraw"
-            className="rounded-full p-1 hover:bg-layer-3"
-            onClick={() => void withdraw(q.id)}
-          >
-            <X className="size-3.5" />
-          </button>
-        </span>
+        <div key={q.id} className="flex max-w-full flex-col items-start gap-1">
+          {/* 171F4 N7: the steer's own attachments at once, as its bubble will show them (thumbnails kept small here). */}
+          <Attachments files={q.files} className="[&_img]:max-h-16" />
+          <span className="flex max-w-full items-center gap-1 rounded-full bg-layer-2 pl-3 pr-1 text-sm text-fg-secondary">
+            <button
+              type="button"
+              className="truncate py-1 hover:text-foreground"
+              title="Edit"
+              onClick={async () => {
+                const text = await withdraw(q.id)
+                if (text !== null) onEdit(text)
+              }}
+            >
+              {label(q)}
+              {q.defer && <span className="ml-1 text-xs text-fg-tertiary">next turn</span>}
+              {q === queued[queued.length - 1] && (
+                <span className="ml-1 text-xs text-fg-tertiary">queued · {touch() ? 'hold Steer' : chordLabel(interject)} to interrupt</span>
+              )}
+            </button>
+            <button
+              type="button"
+              aria-label="Withdraw"
+              className="rounded-full p-1 hover:bg-layer-3"
+              onClick={() => void withdraw(q.id)}
+            >
+              <X className="size-3.5" />
+            </button>
+          </span>
+        </div>
       ))}
     </div>
   )
