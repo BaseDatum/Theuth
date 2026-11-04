@@ -210,6 +210,16 @@ fn wake_follows_the_section_9_3_table() {
     assert!(wake_rule(false, false, Some(true)).0);
 }
 
+/// B5: a user Stop (or Kill) is not relabelled by the watchdog's later timeout.
+#[test]
+fn user_stop_survives_a_later_timeout() {
+    assert_eq!(stop_after(Some(Stop::Stopped), Stop::Timeout), Some(Stop::Stopped));
+    assert_eq!(stop_after(Some(Stop::Killed), Stop::Timeout), Some(Stop::Killed));
+    assert_eq!(stop_after(Some(Stop::Stopped), Stop::Killed), Some(Stop::Killed));
+    assert_eq!(stop_after(Some(Stop::Timeout), Stop::Killed), Some(Stop::Timeout));
+    assert_eq!(stop_after(None, Stop::Timeout), Some(Stop::Timeout));
+}
+
 fn finished(id: &str, cell: CellRef, code_sha: &str, ended_ms: i64, state: RunState) -> CellRun {
     CellRun {
         id: RunId(id.into()),
@@ -728,6 +738,12 @@ async fn e2e_real_shells() {
         ), // 11
         fence("bash", &[&cwd, "private"], "echo hidden"), // 12
         fence("zsh", &[&cwd], "echo zsh-ok # comment\nfalse"), // 13
+        fence(
+            "bash",
+            &[&cwd],
+            "export E1_MARK=old; trap '' INT; sleep 120; trap - INT; echo after-kill",
+        ), // 14
+        fence("bash", &[&cwd], "echo \"mark=${E1_MARK:-fresh}\""), // 15
     ]
     .concat();
     let b = Bench {
@@ -862,6 +878,28 @@ async fn e2e_real_shells() {
         assert!(out.contains("zsh-ok"), "{out:?}");
         assert_eq!(r.exit, Some(ExitStatus::Code(1)));
     }
+
+    // B16: Kill ends a run whose shell ignores Stop; the kernel closes, the next run is fresh.
+    b.press(14, RunMode::Cell, "r_trap").await.unwrap();
+    b.until("r_trap", |r| r.state == RunState::Running).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    cells.stop(RunId("r_trap".into()), false).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(cells.is_live(&RunId("r_trap".into())), "Stop is ignored");
+    cells.stop(RunId("r_trap".into()), true).await.unwrap();
+    let r = b.done("r_trap").await;
+    assert_eq!(r.state, RunState::Killed);
+    assert!(!b.out("r_trap").contains("after-kill"), "{:?}", b.out("r_trap"));
+    assert!(
+        cells
+            .kernels_of(&Scope::Session(b.session))
+            .iter()
+            .any(|k| matches!(k.id.spec, KernelSpec::Shell { .. })
+                && matches!(k.phase, KernelPhase::Dead | KernelPhase::Closed)),
+        "the killed kernel is gone"
+    );
+    let (_, out) = b.run(15, RunMode::Cell, "r_fresh").await;
+    assert!(out.contains("mark=fresh"), "{out:?}");
 
     // Inv. 13: every RunFinished came after its final row.
     tokio::time::sleep(Duration::from_millis(200)).await;

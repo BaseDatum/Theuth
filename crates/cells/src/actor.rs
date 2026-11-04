@@ -125,6 +125,16 @@ enum Stop {
     Timeout,
 }
 
+/// The stop that sticks: the first reason wins over a later timeout (a user Stop stays
+/// "stopped"), a Kill overrides a Stop, nothing overrides a timeout.
+fn stop_after(prev: Option<Stop>, how: Stop) -> Option<Stop> {
+    match (prev, how) {
+        (Some(Stop::Timeout), _) => Some(Stop::Timeout),
+        (Some(s), Stop::Timeout) => Some(s),
+        (_, h) => Some(h),
+    }
+}
+
 /// A queued or running run.
 struct Live {
     record: CellRun,
@@ -1223,17 +1233,14 @@ impl Cells {
         self.inner.state.lock().runs.contains_key(id)
     }
 
-    /// Record how a live run is being stopped (the first reason sticks, Kill overrides
-    /// Stop); `false` when the run is no longer live.
+    /// Record how a live run is being stopped (`stop_after`); `false` when the run is no
+    /// longer live.
     fn mark_stop(&self, id: &RunId, how: Stop) -> bool {
         let mut s = self.inner.state.lock();
         let Some(l) = s.runs.get_mut(id) else {
             return false;
         };
-        l.stop = match (l.stop, how) {
-            (Some(Stop::Timeout), _) => Some(Stop::Timeout),
-            (_, h) => Some(h),
-        };
+        l.stop = stop_after(l.stop, how);
         true
     }
 
@@ -1676,17 +1683,7 @@ impl Cells {
             return Ok(()); // still starting: the worker sees the stop before executing
         };
         if kill {
-            kernel.kill().await?;
-            // A kill that leaves the run going (the shell itself is busy) closes the kernel.
-            let me = self.clone();
-            let grace = Duration::from_secs(self.inner.config.kill_after_secs.max(1));
-            tokio::spawn(async move {
-                tokio::time::sleep(grace).await;
-                if me.is_live(&run) {
-                    let _ = kernel.shutdown().await;
-                }
-            });
-            Ok(())
+            kernel.kill().await
         } else {
             kernel.interrupt().await
         }
