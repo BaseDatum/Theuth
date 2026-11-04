@@ -571,6 +571,8 @@ async fn watch(mut w: Watch) {
                 let due = probed.is_none_or(|t| t.elapsed() > Duration::from_secs(2));
                 if fg_ticks >= PROBE_TICKS && due && let Some(exit) = stopping {
                     probed = Some(tokio::time::Instant::now());
+                    // The run is over for the user: the prompt and the probe's echo are theuth's.
+                    cut.end();
                     let _ = type_into(&w.jobs, w.session, &w.job, probe_line(w.kind, exit), true).await;
                 }
             },
@@ -597,8 +599,9 @@ async fn on_mark(shared: &Shared, m: Mark, cut: &mut LiveCut) {
                     _ => None,
                 }
             };
+            // The live cut starts at the C bytes themselves, never at this mark: the mark
+            // comes on its own channel and can be handled before the run line's echo is.
             if let Some(sink) = sink {
-                cut.start();
                 let _ = sink
                     .send(KernelEvent::Started {
                         log_from: Some(m.offset),
@@ -656,8 +659,9 @@ async fn died(shared: &Shared, exit: &JobExit) {
 }
 
 /// Cuts the live byte stream to the run's `[C, D)` for `cell_attach` (the record itself is
-/// rendered from the log range, §8.3). The marks arrive on their own channel; this only
-/// trims the C/D sequences out of the chunks that carry them.
+/// rendered from the log range, §8.3): only the C sequence in the bytes starts it, so the
+/// run line's echo before it never shows. It ends at the D sequence, the D mark, or the
+/// Stop probe (whose echo would show otherwise).
 #[derive(Default)]
 struct LiveCut {
     on: bool,
@@ -668,10 +672,6 @@ const C_SEQ: &[u8] = b"\x1b]133;C\x07";
 const D_SEQ: &[u8] = b"\x1b]133;D";
 
 impl LiveCut {
-    fn start(&mut self) {
-        self.on = true;
-    }
-
     fn end(&mut self) {
         self.on = false;
         self.carry.clear();
@@ -948,6 +948,72 @@ mod tests {
             }
             let got = String::from_utf8_lossy(&got).into_owned();
             assert_eq!(got, "hello\n", "split {split}");
+        }
+    }
+
+    /// 171F2-L: the C mark comes on its own channel, ahead of the chunk that carries the C
+    /// bytes but possibly behind the run line's echo chunks; whichever the watcher handles
+    /// first, the live stream starts at C.
+    #[tokio::test]
+    async fn live_bytes_start_at_c_whatever_the_mark_order() {
+        use kameo::actor::Spawn as _;
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let jobs = Jobs::spawn(Jobs::new(
+            rt,
+            Duration::from_secs(1),
+            Duration::from_secs(600),
+        ));
+        let echo = run_line(ShellKind::Bash, Path::new("/k/run.sh"));
+        for round in 0..32 {
+            let (sink, mut events) = mpsc::channel(64);
+            let shared = Arc::new(Shared {
+                phase: Mutex::new(KernelPhase::Busy),
+                cwd: Mutex::new(None),
+                run: Mutex::new(Some(Current {
+                    id: RunId("r_1".into()),
+                    sink,
+                    started: false,
+                    stopping: None,
+                    run_file: dir.path().join("run.sh"),
+                })),
+            });
+            let (mark_tx, marks) = mpsc::channel(8);
+            let (out_tx, stream) = broadcast::channel(16);
+            let (head, tail) = echo.split_at(40);
+            for chunk in [head, tail, "\r\n", "\x1b]133;C\x07start\r\n"] {
+                out_tx
+                    .send(PtyOut::Data(Arc::from(chunk.as_bytes())))
+                    .unwrap();
+            }
+            out_tx.send(PtyOut::Exit(JobExit::Lost)).unwrap();
+            mark_tx
+                .send(Mark {
+                    kind: MarkKind::Start,
+                    exit: None,
+                    cwd: None,
+                    offset: 0,
+                })
+                .await
+                .unwrap();
+            watch(Watch {
+                shared,
+                jobs: jobs.clone(),
+                session: SessionId(uuid::Uuid::new_v4()),
+                job: JobId("j_1".into()),
+                kind: ShellKind::Bash,
+                marks,
+                stream,
+            })
+            .await;
+            drop(mark_tx);
+            let mut live = Vec::new();
+            while let Ok(e) = events.try_recv() {
+                if let KernelEvent::Bytes(b) = e {
+                    live.extend(b);
+                }
+            }
+            assert_eq!(String::from_utf8_lossy(&live), "start\r\n", "round {round}");
         }
     }
 
