@@ -73,14 +73,24 @@ pub fn is_local(model: &Resolved, base_url: Option<&str>) -> bool {
                 let d = d.to_ascii_lowercase();
                 d == "localhost" || d.ends_with(".localhost") || d.ends_with(".local")
             }
-            url::Host::Ipv4(ip) => ip.is_loopback() || ip.is_private() || ip.is_unspecified(),
-            url::Host::Ipv6(ip) => ip.is_loopback() || ip.is_unique_local() || ip.is_unspecified(),
+            url::Host::Ipv4(ip) => private_v4(ip),
+            url::Host::Ipv6(ip) => {
+                ip.is_loopback()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local()
+                    || ip.is_unspecified()
+                    || ip.to_ipv4_mapped().is_some_and(private_v4)
+            }
         };
         if private {
             return true;
         }
     }
     model.model.as_ref().and_then(|m| m.cost).is_none()
+}
+
+fn private_v4(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()
 }
 
 /// The E9 queue key of a local compactor (`None` = cloud): its base URL,
@@ -684,6 +694,9 @@ mod tests {
             "http://[::1]:8000/",
             "http://[fd12::1]/",
             "http://gpu-box.local:8000/v1/",
+            "http://[::ffff:127.0.0.1]:8000/",
+            "http://169.254.10.2/",
+            "http://[fe80::1]/",
         ] {
             assert!(is_local(&cloud, Some(url)), "{url}");
         }

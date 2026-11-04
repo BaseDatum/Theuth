@@ -386,17 +386,15 @@ impl Live {
         })
     }
 
-    /// E4: the frontier failed at least twice and waits out its backoff.
+    /// E4: the frontier failed at least twice in a row and is in backoff —
+    /// waiting out its delay or running its retry (a turn does not wait for
+    /// a retry of a node that keeps failing; a success clears the state).
     fn frontier_stalled(&mut self, cfg: FoldCfg) -> bool {
         if self.failed.is_empty() {
             return false;
         }
         let front = (0u8, self.frontier(cfg));
-        !self.running.contains(&front)
-            && self
-                .failed
-                .get(&front)
-                .is_some_and(|r| r.failures >= 2 && r.at > Instant::now())
+        self.failed.get(&front).is_some_and(|r| r.failures >= 2)
     }
 }
 
