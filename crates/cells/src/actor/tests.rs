@@ -1066,7 +1066,12 @@ impl note::Docs for Blocks {
         let text = self.0.get(n).ok_or_else(|| format!("no block {n}"))?;
         Ok(note::NoteSource {
             block: n.clone(),
-            language: if n.starts_with("ps") { "pwsh" } else { "bash" }.into(),
+            language: match n.get(..2) {
+                Some("ps") => "pwsh",
+                Some("py") => "python",
+                _ => "bash",
+            }
+            .into(),
             text: text.clone(),
             last_author: crate::types::Principal::Owner { device: None },
         })
@@ -1089,6 +1094,97 @@ impl note::Docs for Blocks {
     async fn latest(&self, _: &DocId) -> Result<Vec<CellLatest>, String> {
         Ok(Vec::new())
     }
+}
+
+/// 171F4 T2-1: the Run all pass of Sky's repro — five trivial `python: auto` cells in a note
+/// (a local python, else Monty). `None` (skip) when neither runs here.
+async fn py_pass(dir: &Path) -> Option<(Cells, Vec<(CellRef, String)>, DocId)> {
+    let dir = dir.canonicalize().unwrap();
+    let cells = cells_in(&dir).await;
+    let env = cells.login_env().await;
+    if crate::interp::resolve(None, &dir, &env.vars, false)
+        .await
+        .is_err()
+        && crate::monty::sufficient("y = 1").await != Some(Ok(()))
+    {
+        eprintln!("no python and no Monty worker; skipping");
+        return None;
+    }
+    let doc = DocId("d-py".into());
+    let blocks: HashMap<String, String> = ["y = 1", "z = y + 1", "y + z", "w = y * z", "w + 1"]
+        .iter()
+        .enumerate()
+        .map(|(i, code)| (format!("py{i}"), format!("#| cwd: {}\n{code}", dir.display())))
+        .collect();
+    let mut cells_of: Vec<(CellRef, String)> = blocks
+        .iter()
+        .map(|(k, text)| {
+            let cell = CellRef::Note {
+                doc: doc.clone(),
+                key: NoteKey::Block(k.clone()),
+            };
+            (cell, surface::cell::digest(text))
+        })
+        .collect();
+    cells_of.sort_by_key(|(c, _)| json(c));
+    note::set_docs(Arc::new(Blocks(blocks)));
+    Some((cells, cells_of, doc))
+}
+
+/// Run `n` passes of `py_pass`'s cells: each ends 5/5 and every result handed over is the
+/// final record (exit, secs and at; never `exit="?"`).
+async fn py_passes(cells: &Cells, list: &[(CellRef, String)], doc: &DocId, n: usize) {
+    for i in 0..n {
+        let req = RunAllRequest {
+            scope: Scope::Doc(doc.clone()),
+            cells: list.to_vec(),
+            pass: format!("p_{i}"),
+            pressed_by: "desktop · test".into(),
+        };
+        let p = pass_end(cells.clone(), req).await;
+        assert_eq!((p.stopped, p.ran, p.total), (None, 5, 5), "pass {i}");
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while cells.inner.state.lock().delivered.len() < 5 * n {
+        assert!(Instant::now() < deadline, "results never all delivered");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let delivered = cells.inner.state.lock().delivered.clone();
+    assert_eq!(delivered.len(), 5 * n);
+    for r in &delivered {
+        assert!(
+            r.contains(" exit=\"0\"") && r.contains(" secs=\"") && r.contains(" at=\""),
+            "{r}"
+        );
+        assert!(!r.contains("exit=\"?\""), "{r}");
+    }
+    for k in cells.kernels_of(&Scope::Doc(doc.clone())) {
+        cells.kernel_close(k.id).await.unwrap();
+    }
+}
+
+/// 171F4 T2-1 (a): the hook holds every run between its end and its finished row and holds
+/// the pass until the run has left the live set — a pass still judges only the final record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pass_judges_only_the_final_record() {
+    let _one = note::DOCS_TEST.lock().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((cells, list, doc)) = py_pass(tmp.path()).await else {
+        return;
+    };
+    cells.inner.state.lock().race = true;
+    py_passes(&cells, &list, &doc, 1).await;
+}
+
+/// 171F4 T2-1 (b): 50 passes of Sky's repro all end 5/5 with final results.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fifty_python_passes_end_five_of_five() {
+    let _one = note::DOCS_TEST.lock().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((cells, list, doc)) = py_pass(tmp.path()).await else {
+        return;
+    };
+    py_passes(&cells, &list, &doc, 50).await;
 }
 
 /// B19: a cell whose interpreter is missing is invalid on `cell_state`, with the reason —

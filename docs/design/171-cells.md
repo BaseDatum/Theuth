@@ -445,7 +445,7 @@ Python applies the same rule in the shim (`os.chdir`, `os.environ.update`) via t
 
 | # | frame | direction | fields | meaning |
 |---|---|---|---|---|
-| 1 | `execute` | engine → shim | `id, code, mode, cwd?, env?` | run `code` in the kernel namespace; `cwd`/`env` present when the CWD rule says so; the last expression of a `cell`/`selection` run is displayed (Jupyter's rule) |
+| 1 | `execute` | engine → shim | `id, code, mode, cwd?, env?` | run `code` in the kernel namespace; `cwd`/`env` present when the CWD rule says so; the last expression of a `cell`/`selection` run is displayed (Jupyter's rule), and a `line` run of a bare expression echoes its value like a REPL (a statement line prints nothing; Monty the same, 171F4) |
 | 2 | `stream` | shim → engine | `id, name: stdout\|stderr, text` | output, flushed every 50 ms or 4 KiB |
 | 3 | `display` | shim → engine | `id, data: {mime: payload}, metadata` | `display()` calls and every open matplotlib figure after the run (PNG, then closed) |
 | 4 | `result` | shim → engine | `id, data, count` | the last expression's MIME bundle: `_repr_html_`, `_repr_markdown_`, `_repr_svg_`, `_repr_png_`, `_repr_json_`, always `text/plain` (`repr`) |

@@ -177,6 +177,13 @@ struct State {
     stopped_passes: std::collections::HashSet<String>,
     /// The last finished pass of each scope (`json(scope)`), cleared when one starts.
     last_pass: HashMap<String, PassEnd>,
+    /// 171F4 T2-1 test hook: every run pauses between its end and its finished row, and a
+    /// pass waits until its run is no longer live before it waits on it.
+    #[cfg(test)]
+    race: bool,
+    /// Every `<cell_result>` handed over, built from the delivered record.
+    #[cfg(test)]
+    delivered: Vec<String>,
 }
 
 struct Inner {
@@ -1286,6 +1293,18 @@ impl Cells {
         self.inner.state.lock().runs.contains_key(id)
     }
 
+    /// The T2-1 hook's pass side: hold until the run is no longer live (10 s at most).
+    #[cfg(test)]
+    async fn race_wait(&self, id: &RunId) {
+        if !self.inner.state.lock().race {
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.is_live(id) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     /// Record how a live run is being stopped (`stop_after`); `false` when the run is no
     /// longer live.
     fn mark_stop(&self, id: &RunId, how: Stop) -> bool {
@@ -1388,6 +1407,13 @@ impl Cells {
             None if ok => RunState::Done,
             None => RunState::Failed,
         };
+        #[cfg(test)]
+        {
+            let race = self.inner.state.lock().race;
+            if race {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
         if let Ok(store) = self.store()
             && let Err(e) = store.finish(&rec, Some(&sha(&text)), log_to).await
         {
@@ -1416,6 +1442,11 @@ impl Cells {
     /// Build and hand over the `<cell_result>` of a finished run. `force_wake`: Ask theuth
     /// (`Some(true)`) or a pass end (`Some(review)`); else the §9.3 rule.
     async fn deliver_run(&self, rec: &CellRun, pass_end: bool, force_wake: Option<bool>) {
+        #[cfg(test)]
+        {
+            let r = crate::deliver::cell_result(rec, "", &self.inner.config);
+            self.inner.state.lock().delivered.push(r);
+        }
         if rec.state == RunState::Cancelled {
             if let Ok(s) = self.store() {
                 let _ = s.delivery(&rec.id, "none").await;
@@ -1695,6 +1726,8 @@ impl Cells {
             if let Some(prev) = pending.take() {
                 self.deliver_run(&prev, false, Some(false)).await;
             }
+            #[cfg(test)]
+            self.race_wait(&rec.id).await;
             let (tx, rx) = oneshot::channel();
             let waited = {
                 let mut s = self.inner.state.lock();
