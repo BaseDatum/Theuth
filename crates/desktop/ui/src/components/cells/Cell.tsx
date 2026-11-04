@@ -49,6 +49,8 @@ export type CellExtras = {
   footer?: ReactNode
   /** 171F4 N3: the header lines are in the editor (a note): the "#|" pill folds them there, no read-only copy. */
   headerInEditor?: boolean
+  /** The host's footer says "ran an earlier version" (a note, 171F4): no stale notice row as well. */
+  staleInFooter?: boolean
 }
 export const CellExtras = createContext<CellExtras>({})
 
@@ -475,7 +477,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
         </Notice>
       )}
       {view === 'lost' && <Notice tone="warning">lost — engine restarted{latest?.cwd ? ` · ${latest.cwd}` : ''}</Notice>}
-      {view === 'stale' && <Notice tone="muted">ran an earlier version</Notice>}
+      {view === 'stale' && !extras.staleInFooter && <Notice tone="muted">ran an earlier version</Notice>}
       {view === 'edited' && <Notice tone="muted">theuth will see the code that actually ran.</Notice>}
       {view === 'stopped' && <Notice tone="muted">{stopText(latest)}</Notice>}
       {view === 'guest' && <Notice tone="muted">Only the owner can run cells</Notice>}
