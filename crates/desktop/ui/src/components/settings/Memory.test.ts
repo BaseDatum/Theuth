@@ -41,3 +41,11 @@ test('the page reads agent.endless: switches, sliders and the settle count show 
   expect(html).not.toContain('Same as the session')
   expect(html).toContain('copy · grounding · status · format — always on')
 })
+
+test('137F: the compactor model applies live — next summary call, old calls cancelled, no restart — and local models run one at a time', async () => {
+  const html = await render()
+  expect(html).toContain('A change applies to the next summary call, and calls still running on the previous model are cancelled; no restart.')
+  expect(html).toContain('Local models summarise one call at a time with a longer timeout')
+  expect(html).not.toMatch(/after (a )?restart/i)
+  expect(html).toMatch(/<button[^>]*id="compactor-model"[^>]*aria-label="Compactor model"/)
+})

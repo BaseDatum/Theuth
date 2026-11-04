@@ -1,21 +1,28 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
+import { LoaderCircle, TriangleAlert } from 'lucide-react'
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { ago } from '@/lib/costs/format'
 import { fmtBytes } from '@/lib/files'
 import { EARLIER_HISTORY, tokenEstimate } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import type { Api } from '@/rpc/api'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { GuardTrips } from '@/rpc/bindings/GuardTrips'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
+import type { Stalled } from '@/rpc/bindings/Stalled'
 import type { ViewLine } from '@/rpc/bindings/ViewLine'
 import { MenuRow } from './HeaderMenu'
+import { settings } from './slash'
 
 /** `id+n`, the line's address in the view (137 §5.1); `prefix` keeps a recall hit apart from the same line in the view. */
 export const lineKey = (l: ViewLine, prefix = ''): string => `${prefix}${l.id}+${l.n}`
@@ -23,13 +30,15 @@ export const lineKey = (l: ViewLine, prefix = ''): string => `${prefix}${l.id}+$
 /** Bytes of the view as rendered (`id+n|text\n` per line, 137 §7.2). */
 export const viewBytes = (view: readonly ViewLine[]): number => view.reduce((n, l) => n + new TextEncoder().encode(l.text).length + lineKey(l).length + 2, 0)
 
-/** The badge's tooltip (137 §11.3): `Endless memory · view 61 KB · 71 lines · up to date` / `… settling 3 lines` / `… backfill 12/80`. */
+/** The badge's tooltip (137 §11.3): `Endless memory · view 61 KB · 71 lines · up to date` / `… settling 3 lines` / `… backfill 12/80` / `… summaries failing` (137F). */
 export function badgeTip(m: SessionMemory): string {
-  const state = m.backfill
-    ? `backfill ${m.backfill.done}/${m.backfill.total}`
-    : m.settling
-      ? `settling ${m.unbuilt} line${m.unbuilt === 1 ? '' : 's'}`
-      : 'up to date'
+  const state = m.stalled
+    ? 'summaries failing'
+    : m.backfill
+      ? `backfill ${m.backfill.done}/${m.backfill.total}`
+      : m.settling
+        ? `settling ${m.unbuilt} line${m.unbuilt === 1 ? '' : 's'}`
+        : 'up to date'
   return `Endless memory · view ${fmtBytes(viewBytes(m.view))} · ${m.view.length} line${m.view.length === 1 ? '' : 's'} · ${state}`
 }
 
@@ -109,15 +118,24 @@ export function useSessionMemory(session: string, enabled: boolean) {
 /**
  * The header's `∞` badge (137 §11.3): muted pill after the title, same height as the cost pill; tooltip with view size
  * and settle state; pulses softly (motion-safe) while the compactor is settling or backfilling; click toggles the panel.
- * `row`: the compact menu's line.
+ * 137F: a failing settle turns it to the warning tone and stops the pulse. `row`: the compact menu's line.
  */
 export function MemoryBadge({ session, summary, row, open, onToggle }: { session: string; summary: SessionSummary | undefined; row?: boolean; open: boolean; onToggle(): void }) {
   const endless = summary?.memory === 'endless'
   const memory = useSessionMemory(session, endless)
   if (!endless) return null
   const m = memory.data
-  const busy = !!m && (m.settling || m.backfill !== null)
-  if (row) return <MenuRow icon={<span className="size-4 shrink-0 text-center text-sm leading-4 text-fg-secondary">∞</span>} label="Endless memory" detail={m ? (busy ? 'settling' : `${m.view.length} lines`) : undefined} onSelect={onToggle} />
+  const failing = !!m?.stalled
+  const busy = !!m && !failing && (m.settling || m.backfill !== null)
+  if (row)
+    return (
+      <MenuRow
+        icon={<span className={cn('size-4 shrink-0 text-center text-sm leading-4', failing ? 'text-warning' : 'text-fg-secondary')}>∞</span>}
+        label="Endless memory"
+        detail={m ? (failing ? <span className="text-warning">summaries failing</span> : busy ? 'settling' : `${m.view.length} lines`) : undefined}
+        onSelect={onToggle}
+      />
+    )
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -127,6 +145,7 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
           aria-expanded={open}
           className={cn(
             'shrink-0 rounded-full border border-border-subtle px-2.5 py-0.5 text-sm leading-4 text-fg-secondary hover:text-foreground',
+            failing && 'border-warning-border bg-warning-bg text-warning hover:text-warning',
             busy && 'motion-safe:animate-pulse',
           )}
           onClick={onToggle}
@@ -252,6 +271,66 @@ function LineNode({ line, prefix, depth, kids, open, cursorKey, query, onToggle 
 /** `~4 min` / `~40 s` for the backfill's ETA. */
 const eta = (secs: number): string => (secs >= 90 ? `~${Math.round(secs / 60)} min` : `~${Math.round(secs)} s`)
 
+/** `endless_retry` (137F) as mutation options: the reply replaces the cached memory like the view-size Select's; an error toasts and changes nothing. */
+export const retryMutation = (api: Api, qc: QueryClient, session: string) => ({
+  mutationFn: () => api.endless_retry(session),
+  onSuccess: (next: SessionMemory) => qc.setQueryData(queryKeys.sessionMemory(session), next),
+  onError: (e: Error) => void toast.error(e.message),
+})
+
+/** `Next try in 40 s` (`in a moment` once due); `Retrying now…` while the retry runs (`next_retry_at` null). */
+export function nextTry(s: Stalled, now: number): string {
+  if (!s.next_retry_at) return 'Retrying now…'
+  const at = Date.parse(s.next_retry_at)
+  return `Next try ${at - now >= 5_000 ? ago(at, now) : 'in a moment'}`
+}
+
+/** 137F: a view part keeps failing — what fails (full error on hover), when the summariser tries again, Retry now and Change model. */
+function Failing({ session, s }: { session: string; s: Stalled }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const retry = useMutation(retryMutation(api, qc, session))
+  const [now, setNow] = useState(Date.now)
+  // The countdown ticks while the panel shows it; no timer while the retry runs.
+  useEffect(() => {
+    if (!s.next_retry_at) return
+    setNow(Date.now())
+    const t = setInterval(() => setNow(Date.now()), 1_000)
+    return () => clearInterval(t)
+  }, [s.next_retry_at])
+  return (
+    <div role="status" className="flex flex-col gap-1 rounded-md border border-warning-border bg-warning-bg px-3 py-2 text-xs">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <p className="flex min-w-0 items-center gap-1.5 font-medium text-warning">
+            <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
+            <span className="truncate">
+              {`Summaries are failing · ${s.failures} attempt${s.failures === 1 ? '' : 's'} · ${s.error}`}
+            </span>
+          </p>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-96 break-words">
+          {s.error}
+        </TooltipContent>
+      </Tooltip>
+      <p className="truncate text-fg-secondary">
+        {`${nextTry(s, now)} · model ${s.model}`}
+      </p>
+      {s.blocking && <p className="text-fg-secondary">Newer lines wait behind this one.</p>}
+      <div className="mt-1 flex gap-2">
+        <Button size="xs" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate()}>
+          {retry.isPending && <LoaderCircle className="animate-spin" />}
+          Retry now
+        </Button>
+        <Button size="xs" variant="ghost" onClick={() => void settings(navigate, 'memory', session, 'model')}>
+          Change model
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 /** Determinate bar for settle (`built / lines`) or backfill (R1-D4: `done / total`, the ETA and the projected cost). */
 function Progress({ m }: { m: SessionMemory }) {
   const b = m.backfill
@@ -260,7 +339,7 @@ function Progress({ m }: { m: SessionMemory }) {
     : [`Settling ${m.unbuilt} line${m.unbuilt === 1 ? '' : 's'}`, m.view.length - m.unbuilt, m.view.length]
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
   return (
-    <SheetFooter className="gap-1.5 border-t border-border-subtle">
+    <>
       <div className="flex items-center justify-between text-xs text-fg-secondary">
         <span>{label}</span>
         <span className="tabular-nums">{pct}%</span>
@@ -268,6 +347,17 @@ function Progress({ m }: { m: SessionMemory }) {
       <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={label} className="h-1 w-full overflow-hidden rounded-full bg-muted">
         <div className="h-full rounded-full bg-primary transition-[width] motion-safe:duration-500" style={{ width: `${pct}%` }} />
       </div>
+    </>
+  )
+}
+
+/** The panel's footer: the failing settle (137F) above the settle/backfill bar; nothing once both are done. */
+export function MemoryFooter({ session, m }: { session: string; m: SessionMemory }) {
+  if (m.mode !== 'endless' || !(m.stalled || m.settling || m.backfill)) return null
+  return (
+    <SheetFooter className="gap-1.5 border-t border-border-subtle">
+      {m.stalled && <Failing session={session} s={m.stalled} />}
+      {(m.settling || m.backfill) && <Progress m={m} />}
     </SheetFooter>
   )
 }
@@ -445,7 +535,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
           ))}
           {m && m.mode === 'endless' && m.view.length === 0 && <p className="px-2 py-4 text-sm text-fg-tertiary">Nothing in the view yet: it fills as the chat goes.</p>}
         </div>
-        {m && m.mode === 'endless' && (m.settling || m.backfill) && <Progress m={m} />}
+        {m && <MemoryFooter session={session} m={m} />}
       </SheetContent>
     </Sheet>
   )

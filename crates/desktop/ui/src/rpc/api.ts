@@ -1012,6 +1012,8 @@ export interface Api {
   set_session_project(session: SessionId, project: string | null): Promise<void>
   /** 137 §11.2: the session's memory mode, view, settle state, compactor stats and backfill; `mode: 'epochs'` with an empty view otherwise. */
   session_memory(session: SessionId): Promise<SessionMemory>
+  /** 137F: reset every failed view part's backoff, re-resolve the compactor, wake the summariser; the fresh memory (an epochs session's unchanged). */
+  endless_retry(session: SessionId): Promise<SessionMemory>
   /** 137 §9 `zoom`: `n = 1` → one line with the whole message; `n > 1` → the two children of `id+n`. */
   endless_zoom(session: SessionId, id: number, n: number): Promise<ViewLine[]>
   /** 137 §9 `recall`: FTS over the level-0 lines (raw fallback under 2 hits); `limit` null = 8. */
@@ -1475,6 +1477,7 @@ export const METHODS = [
   'edit_turn',
   'enable_schedule',
   'endless_recall',
+  'endless_retry',
   'endless_settings_get',
   'endless_settings_set',
   'endless_zoom',

@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import type { Api } from '@/rpc/api'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 import { isPopout, openPopout } from '@/lib/popout'
@@ -306,7 +307,11 @@ export function useInvalidateOn(): void {
       on('peer', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
       on('lease', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
       // 137 §11.2: the compactor advanced (throttled server-side to 2 Hz); the ∞ badge and Memory panel re-read the view.
-      on('EndlessProgress', (e) => void qc.invalidateQueries({ queryKey: queryKeys.sessionMemory(e.session) })),
+      // 137F: the event's `stalled` lands at once (the refetch follows), so the failing row appears and clears with it.
+      on('EndlessProgress', (e) => {
+        qc.setQueryData<SessionMemory>(queryKeys.sessionMemory(e.session), (m) => m && { ...m, stalled: e.stalled ?? null })
+        void qc.invalidateQueries({ queryKey: queryKeys.sessionMemory(e.session) })
+      }),
     ]
     return () => {
       clearTimeout(timer)

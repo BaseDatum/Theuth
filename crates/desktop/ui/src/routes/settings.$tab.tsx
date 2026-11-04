@@ -4,13 +4,14 @@ import { movedSettingsTab } from '@/components/routines/helpers'
 import { SettingsDialog, type Tab, isTab } from '@/components/settings/SettingsDialog'
 import { isMacDesktop } from '@/lib/hotkeys'
 
-/** `?session=<id>`: the chat the dialog was opened from, for per-session rows; `?peer=<message id>` focuses one pending peer request on the communication tab. */
-type Search = { session?: string; peer?: string }
+/** `?session=<id>`: the chat the dialog was opened from, for per-session rows; `?peer=<message id>` focuses one pending peer request on the communication tab; `?focus=model` the compactor model on the memory tab. */
+type Search = { session?: string; peer?: string; focus?: string }
 
 export const Route = createFileRoute('/settings/$tab')({
   validateSearch: (s: Record<string, unknown>): Search => ({
     ...(typeof s.session === 'string' && { session: s.session }),
     ...(typeof s.peer === 'string' && { peer: s.peer }),
+    ...(typeof s.focus === 'string' && { focus: s.focus }),
   }),
   beforeLoad: ({ params, search }) => {
     // Skills and Tools became Agents pages, Secrets a Library page, and Schedules became Routines; old links and `/settings/<tab>` bookmarks follow.
@@ -28,7 +29,7 @@ export const Route = createFileRoute('/settings/$tab')({
 
 function Settings() {
   const tab = Route.useParams().tab as Tab
-  const { session, peer } = Route.useSearch()
+  const { session, peer, focus } = Route.useSearch()
   const router = useRouter()
   const navigate = useNavigate()
   // The inset behind the modal is otherwise empty; keep the header band draggable.
@@ -37,6 +38,7 @@ function Settings() {
       <div data-tauri-drag-region={isMacDesktop() || undefined} className="h-[52px]" />
       <SettingsDialog
         tab={tab}
+        focus={focus ?? null}
         session={session ?? null}
         peer={peer ?? null}
         onTab={(t) =>

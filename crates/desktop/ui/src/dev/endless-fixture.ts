@@ -7,7 +7,7 @@ import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
 import type { ViewLine } from '@/rpc/bindings/ViewLine'
 
-/** `"1"` turns the fixture on; `"backfill"` also serves the R1-D4 capped-backfill memory. `null` = off. */
+/** `"1"` turns the fixture on; `"backfill"` also serves the R1-D4 capped-backfill memory; `"stalled"` a failing frontier (137F), `"retrying"` the same while its retry runs. `null` = off. */
 const flag = (): string | null => (import.meta.env.DEV ? globalThis.localStorage?.getItem('endless-fixture') || import.meta.env.VITE_ENDLESS_FIXTURE || null : null)
 export const endlessFixtureOn = (): boolean => !!flag()
 
@@ -79,6 +79,24 @@ const backfilling: SessionMemory = {
   backfill: { done: 812, total: 2_000, eta_secs: 3_540, usd_estimate: 2.9 },
 }
 
+/** `"stalled"` / `"retrying"` (137F): the frontier keeps failing on a local model, newer lines wait; Retry now answers `retrying`. */
+const stalled = (retrying: boolean): SessionMemory => ({
+  ...memory,
+  unbuilt: 3,
+  stalled: {
+    failures: 4,
+    error: 'ollama/qwen3:8b: request timed out after 120 s (no first token); the model is still loading or the machine is out of memory, try a smaller model or a cloud one',
+    next_retry_at: retrying ? null : new Date(Date.now() + 40_000).toISOString(),
+    model: 'ollama/qwen3:8b',
+    blocking: true,
+  },
+})
+
+const current = (): SessionMemory => {
+  const f = flag()
+  return f === 'backfill' ? backfilling : f === 'stalled' || f === 'retrying' ? stalled(f === 'retrying') : memory
+}
+
 let settings: EndlessConfig = {
   default_chat: false,
   default_desk: true,
@@ -111,7 +129,12 @@ export function endlessFixture(api: Api): Api {
         let left = 2
         return rows.map((r) => (r.parent === null && !r.archived && !r.desk && left-- > 0 ? { ...r, memory: 'endless' as const } : r))
       }),
-    session_memory: () => Promise.resolve(flag() === 'backfill' ? backfilling : memory),
+    session_memory: () => Promise.resolve(current()),
+    endless_retry: () => {
+      const { promise, resolve } = Promise.withResolvers<SessionMemory>()
+      setTimeout(() => resolve(flag() === 'stalled' || flag() === 'retrying' ? stalled(true) : current()), 800)
+      return promise
+    },
     endless_zoom: (_s, id, n) => Promise.resolve(children(id, n)),
     endless_recall: (_s, query) => {
       const q = query.toLowerCase()

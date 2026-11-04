@@ -99,11 +99,13 @@ type Props = {
   session: string | null
   /** Pending peer request to focus on the communication tab (`?peer=`). */
   peer: string | null
+  /** A control the tab focuses on open (`?focus=`); Memory: `model`, the compactor model picker. */
+  focus: string | null
   onTab: (tab: Tab) => void
   onClose: () => void
 }
 
-function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
+function Pane({ tab, session, peer, focus, onClose }: Omit<Props, 'onTab'>) {
   return (
     <>
       {tab === 'general' && <General />}
@@ -114,7 +116,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'autoresearch' && <Autoresearch />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}
-      {tab === 'memory' && <Memory />}
+      {tab === 'memory' && <Memory focusModel={focus === 'model'} />}
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
       {tab === 'calendar' && <Calendar />}
@@ -139,7 +141,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
  * Under the mobile breakpoint (31 §8.1) it is a full-screen sheet: the tab
  * list first, a tap pushes the tab with a back chevron.
  */
-export function SettingsDialog({ tab, session, peer, onTab, onClose }: Props) {
+export function SettingsDialog({ tab, session, peer, focus, onTab, onClose }: Props) {
   const mobile = useIsMobile()
   const [pushed, setPushed] = useState(false)
   // Labs only while `decision.enabled` (57 §7.1).
@@ -175,7 +177,7 @@ export function SettingsDialog({ tab, session, peer, onTab, onClose }: Props) {
           </div>
           {pushed ? (
             <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
-              <Pane tab={tab} session={session} peer={peer} onClose={onClose} />
+              <Pane tab={tab} session={session} peer={peer} focus={focus} onClose={onClose} />
             </div>
           ) : (
             <nav className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -228,7 +230,7 @@ export function SettingsDialog({ tab, session, peer, onTab, onClose }: Props) {
         {/* Not ScrollArea: Radix wraps the viewport in `display: table`, which never shrinks, so rows overflowed. */}
         <div className="min-w-0 flex-1 overflow-y-auto">
           <div className="px-8 pt-6 pb-8">
-            <Pane tab={tab} session={session} peer={peer} onClose={onClose} />
+            <Pane tab={tab} session={session} peer={peer} focus={focus} onClose={onClose} />
           </div>
         </div>
       </DialogContent>

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
 import { Switch } from '@/components/ui/switch'
@@ -27,8 +27,8 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
   )
 }
 
-/** Settings › Memory (137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`). */
-export function Memory() {
+/** Settings › Memory (137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`). `focusModel`: the Memory panel's "Change model" (137F). */
+export function Memory({ focusModel = false }: { focusModel?: boolean }) {
   const api = useApi()
   const settings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
@@ -43,6 +43,10 @@ export function Memory() {
   const pct = slackPct ?? (s ? s.slack * 100 : 12.5)
   // R1-D3: `null` resolves to the title model when one is set; the picker's first row names what that is right now.
   const resolved = useCompactorLabel(null)
+  // 137F: opened from a failing settle; the picker is disabled until the settings load, and a disabled button takes no focus.
+  useEffect(() => {
+    if (focusModel && !busy) document.getElementById('compactor-model')?.focus()
+  }, [focusModel, busy])
 
   return (
     <>
@@ -111,8 +115,13 @@ export function Memory() {
         </Row>
       </Section>
       <Section title="Compactor">
-        <Row stack label="Compactor model" description="Writes the one-line summaries in the background. Unset, it follows the title model (your cheap side-call choice) when one is set, else the session's own model.">
+        <Row
+          stack
+          label="Compactor model"
+          description="Writes the one-line summaries in the background. Unset, it follows the title model (your cheap side-call choice) when one is set, else the session's own model. A change applies to the next summary call, and calls still running on the previous model are cancelled; no restart. Local models summarise one call at a time with a longer timeout: slower, but they finish."
+        >
           <ModelCombobox
+            id="compactor-model"
             aria-label="Compactor model"
             className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
