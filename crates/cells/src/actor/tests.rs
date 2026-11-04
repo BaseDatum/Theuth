@@ -858,6 +858,12 @@ async fn e2e_real_shells() {
     b.until("r_8", |r| r.state == RunState::Running).await;
     cells.stop(RunId("r_8".into()), false).await.unwrap();
     assert_eq!(b.done("r_8").await.state, RunState::Stopped);
+    // 171F B14: theuth's own echoed probe / D-mark printf never reaches the record.
+    let out8 = b.out("r_8");
+    assert!(
+        !out8.contains("133;D") && !out8.contains("printf"),
+        "{out8:?}"
+    );
 
     // Stop under a `yes` flood: the Stop reaches the kernel in < 500 ms.
     b.press(10, RunMode::Cell, "r_yes").await.unwrap();

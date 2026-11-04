@@ -586,7 +586,7 @@ mod tests {
             text,
             "nothing changed: a cell does not validate — fix it and retry\n\
              cell 2: cwd_missing — needs `cwd` or a note default\n\
-             cell 2: after_unknown — `after: nope` names no cell in scope; cells here: preview, one, preview\n\
+             cell 2: after_unknown — `after: nope` names no cell in scope; cells here: one, preview\n\
              cell 2: name_duplicate — two cells are named `preview`\n\
              cell 2: secret_unknown — no secret named `NOPE`\n"
         );

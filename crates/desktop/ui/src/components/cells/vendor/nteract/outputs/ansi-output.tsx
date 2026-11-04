@@ -361,9 +361,8 @@ function buildStreamPreview(text: string): {
  * AnsiStreamOutput component specifically for stdout/stderr rendering.
  */
 export function AnsiStreamOutput({ text, streamName, className = "" }: AnsiStreamOutputProps) {
-  // ponytail: keyed by stream and length, not the output's index (OutputArea does not pass it); two same-length
-  // streams of one run would share the toggle.
-  const [expanded, setExpanded] = useDisclosure(disclosureKey(useContext(OutputDisclosure), "stream", streamName, text.length));
+  // 171F B13: OutputArea scopes `OutputDisclosure` to this output's index.
+  const [expanded, setExpanded] = useDisclosure(disclosureKey(useContext(OutputDisclosure), "stream", streamName));
   const preview = useMemo(() => buildStreamPreview(text), [text]);
   const isStderr = streamName === "stderr";
   const streamClasses = isStderr ? "text-destructive" : "text-foreground";

@@ -2684,7 +2684,7 @@ async fn doc_read_annotates_note_cells_through_the_hook() {
     assert_eq!(
         refused.content,
         "nothing changed: a cell does not validate — fix it and retry\n\
-         cell 1: after_unknown — `after: nope` names no cell in scope; cells here: preview, apply\n"
+         cell 1: after_unknown — `after: nope`: no cell named `nope` in this note\n"
     );
     stop(actor).await;
 }

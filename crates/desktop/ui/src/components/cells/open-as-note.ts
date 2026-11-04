@@ -57,7 +57,7 @@ export async function openAsNote(api: Api, qc: QueryClient, session: string, ord
   inflight.add(key)
   try {
     const known = await api.cell_reply_note_get(session, entry)
-    // ponytail: the 500 newest notes (the notes list's own window); an older remembered note is made again.
+    // limit: the 500 newest notes (the notes list's own window); an older remembered note is made again.
     if (known && (await api.doc_list('note', 500)).some((d) => d.id === known)) return open(known)
     const md = await noteMarkdown(api, ordinals, states)
     const title = ordinals.cells[0]?.spec.options.label ?? 'Runbook'

@@ -19,7 +19,7 @@ const JsonViewerContext = createContext<JsonViewerContextType>({
   displayDataTypes: false,
 });
 
-/** A path's open state; ponytail: two JSON outputs of one run share a path's toggle (OutputArea passes no index). */
+/** A path's open state, under the output's own `OutputDisclosure` key (run + output index). */
 function usePathOpen(path: string) {
   const { initial } = useContext(JsonViewerContext);
   return useDisclosure(disclosureKey(useContext(OutputDisclosure), "json", path), initial.has(path));
