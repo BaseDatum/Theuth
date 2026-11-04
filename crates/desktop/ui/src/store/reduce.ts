@@ -317,6 +317,7 @@ function userEntries(
       case "wake":
       case "resume":
       case "lost":
+      case "child":
       case "autoresearch":
         return { id: nextId(), ...c, context };
       // 171F B4: `turn` when this row opened the turn, so `foldCells` can hand it to the user's words that follow.
@@ -557,6 +558,8 @@ function signature(e: Entry): string {
       return `r${e.clock}\n${e.text}`;
     case "lost":
       return `l${e.session}\n${e.clock}`;
+    case "child":
+      return `ch${e.event}\n${e.session}\n${e.clock}\n${e.text}`;
     case "autoresearch":
       return `ar${e.slug}\n${e.event}\n${e.text}`;
     case "cell_result": // 171:U1-ADD
