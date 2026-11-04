@@ -3134,7 +3134,9 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn ids_are_never_reused_across_a_restart() {
         let mut fx = fixture(Duration::ZERO, Duration::from_secs(60)).await;
-        let StartReply::Running { id, log, .. } = spawn_job(&fx, "echo first").await else {
+        // Each job outlives the zero grace, so the reply is the `Running` stub with its id.
+        let StartReply::Running { id, log, .. } = spawn_job(&fx, "sleep 0.3; echo first").await
+        else {
             panic!("expected Running");
         };
         assert_eq!(id.0, "j1");
@@ -3147,13 +3149,13 @@ pub(crate) mod tests {
             Jobs::new(rt, Duration::ZERO, Duration::from_secs(60)),
             runtime::subscriber_mailbox(),
         );
-        let StartReply::Running { id, .. } = spawn_job(&fx, "echo second").await else {
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 0.3; echo second").await else {
             panic!("expected Running");
         };
         assert_eq!(id.0, "j4");
         let stray = log.with_file_name("j5.log");
         std::fs::write(&stray, "not mine\n").unwrap();
-        let StartReply::Running { id, .. } = spawn_job(&fx, "echo third").await else {
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 0.3; echo third").await else {
             panic!("expected Running");
         };
         assert_eq!(id.0, "j6");

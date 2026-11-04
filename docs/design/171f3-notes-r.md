@@ -47,3 +47,14 @@ boot can be lost by a second crash is the 109 design's known limit (no "reported
   `log_to`/`log_from` its runs recorded is left too: a reused id overwrote it (the `j4.log` case), so it
   is an agent job's log now, and moving it would hide that job's log from its own row. The agent
   store's `jobs.log` for an old kernel is not rewritten (nothing model-facing reads it any more).
+- **R4** (added 09:52) — the agent cannot depend on `cells` (cells depends on agent), so the seam is
+  `tools::jobs::{set_program_check, program_missing}` (tools is the crate agent, cells and document
+  share; the cell job constants already live there). The cells plugin installs it at start: language
+  word + note `shell:` → `cells::shell::program`, the spawn-free half of `shell::resolve` (the version
+  probe stays in `resolve`), over the cached login env — the same resolver and words as the cell
+  state's B19 `no_interpreter` ("no pwsh on this machine"). `Turn::check_cells` asks once per language
+  per reply and `invalid_cells` adds a `no_interpreter` error to the cell; the note-write check
+  (`document::note_cells::cell_problems`, now async) does the same per language with the note's
+  `shell:` default, so an agent write with such a cell is refused like any other invalid cell. Only
+  shell languages are checked (python resolution depends on cwd and the Monty fallback). Without the
+  cells plugin nothing is flagged. `surface::cell::Lang` gained `word()` and `Hash`.
