@@ -173,6 +173,7 @@ async fn show_twice_then_edit_is_three_versions_of_one_document() {
         .ask(Export {
             id: v3.id.clone(),
             dest: dest.clone(),
+            session: None,
         })
         .await
         .unwrap();

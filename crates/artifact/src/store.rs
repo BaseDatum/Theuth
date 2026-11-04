@@ -1931,11 +1931,14 @@ impl State {
     /// The record `call_id` names, or `Err` when there is none or its owning
     /// session is gone (asked of the agent supervisor, never `sessions.sqlite`;
     /// design doc 49 §4.3). Orphan rows left by a deletion while this plugin
-    /// was disabled are therefore invisible.
+    /// was disabled are therefore invisible. A private tree's store (no
+    /// `owner_lock`) lives exactly as long as the tree, which the supervisor's
+    /// durable session list never names: its rows are alive while it is open.
     pub async fn get(&self, call_id: &str) -> Result<Artifact, String> {
         let artifact = self.record(call_id).await?;
         // Note exports (72) are recorded under `EXPORT_SESSION`, which is no chat and never dies.
-        if artifact.session != crate::EXPORT_SESSION
+        if self.owner_lock.is_some()
+            && artifact.session != crate::EXPORT_SESSION
             && !search::alive_sessions().await?.contains(&artifact.session)
         {
             return Err(format!("{call_id}: owning session no longer exists"));
@@ -2162,8 +2165,25 @@ impl Stores {
         self.trees.read().members.get(&session).cloned()
     }
 
-    /// Every store, durable first: id-keyed lookups (a record by call id, an
-    /// invocation by request id) carry no session and try each.
+    /// What an id-keyed read on behalf of a client may see (51 §4.2): the
+    /// durable store, plus `session`'s private store when it is a member of
+    /// an open tree. The caller has authorized `session` (the RPC layer's
+    /// `authorize`); without one no private record is ever reached. `Err`
+    /// for a member of a closed tree.
+    pub fn visible(&self, session: Option<SessionId>) -> Result<Vec<Arc<State>>, String> {
+        let mut states = vec![self.durable.clone()];
+        if let Some(s) = session {
+            let state = self.state_for(s)?;
+            if !Arc::ptr_eq(&state, &self.durable) {
+                states.push(state);
+            }
+        }
+        Ok(states)
+    }
+
+    /// Every store, durable first: engine-internal id-keyed lookups (the app
+    /// plugin's record and invocations) carry no session and try each. A
+    /// client's read goes through [`Self::visible`].
     pub fn all(&self) -> Vec<Arc<State>> {
         let t = self.trees.read();
         std::iter::once(self.durable.clone())

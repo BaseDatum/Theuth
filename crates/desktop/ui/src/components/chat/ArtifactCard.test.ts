@@ -70,7 +70,8 @@ test('openShow: no record → get_artifact, applied as ArtifactShown, panel open
   fresh()
   api.get_artifact.mockResolvedValueOnce(artifact)
   await openShow(api, S, 'c1', artifact.name)
-  expect(api.get_artifact).toHaveBeenCalledWith('c1')
+  // A durable chat names no session (51 §4.2: only a private tree's owner does).
+  expect(api.get_artifact).toHaveBeenCalledWith('c1', undefined)
   const s = useSessions.getState().sessions[S]
   expect(s?.artifacts.get('c1')).toEqual(artifact)
   expect(s?.artifactPanel).toBe('c1')

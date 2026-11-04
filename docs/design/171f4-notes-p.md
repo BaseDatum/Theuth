@@ -31,7 +31,26 @@ way, and on the local daemon `asset://` (scope `data_dir` only) could not reach 
 - `files.ts` ↔ `private.ts` import each other; both uses are call-time only (no module-level reads), so the cycle is
   harmless.
 
-## For theuth (engine, not changed)
-- `get_artifact` and `get_artifact_listing` (`crates/rpc/src/api.rs` ~8717-8749) take no extensions: any peer that
-  knows a private artifact's `call_id` gets its record and an archive's listing, unlike `get_attachment`, which
-  authorizes the owner. Worth a look against 51 §4.2.
+## Follow-up: artifact RPCs get the `get_attachment` rule (engine, `crates/rpc` + `crates/artifact`)
+- What was actually open at `2a4bb91c`: `export_artifact` (any store by id, no peer) copied a private blob for any
+  peer; `get_app` (the app plugin's `GetRecord`, any store) served a private app record; `publish_app` wrote into any
+  session, private ones included. `get_artifact` and `get_artifact_listing` searched every store but `State::get`
+  checks the owner against the supervisor's durable session list, so a private record always came back "owning
+  session no longer exists" — to everyone, its owner included (the panel's `openShow` fallback never worked in a
+  private chat).
+- Rule: `get_artifact`, `get_artifact_listing`, `export_artifact`, `get_app` take an optional trailing `session`,
+  authorized with `authorize_opt` (the same helper `list_artifacts` and `get_attachment` use). The artifact actor's
+  `search::Get` / `Export` carry it and look up `Stores::visible(session)`: the durable store, plus the session's
+  private store when it is a tree member. No session → durable only. Another peer naming the session →
+  `-32000 unauthorized` from `authorize`; no session → `-32000 "<call_id>: no such artifact"` (the durable miss).
+- `get_app` checks visibility with `search::Get` in the RPC handler before asking the app plugin, so `crates/app`
+  is unchanged; `-32001` (apps disabled) still comes first. `publish_app` authorizes its `session`.
+- `artifact_search_match` reads the durable store only (`ReadSearchMatch`): a private tree is never indexed.
+- `State::get` skips the alive-session check for a private store (no `owner_lock`): its rows live exactly as long
+  as the tree.
+- Engine-internal lookups (`GetRecord`, invocations) keep `Stores::all()`: the app plugin's runtime is peer-bound
+  (`app_call_tool` carries the peer).
+- Callers: UI `openShow` (`get_artifact`), `saveAs` (`export_artifact`), `ArchiveView` (`get_artifact_listing`),
+  `AppHost` (`get_app`) pass `privateOwner(...)`; the explorer, attention and notebook callers stay session-less
+  (durable; navigating there leaves a private tree). TUI: `/artifacts` export names the owned tree's session, a
+  search hit none.

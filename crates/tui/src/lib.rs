@@ -1060,12 +1060,12 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 sessions,
             }
         }
-        Command::ExportArtifact { id, name } => {
+        Command::ExportArtifact { id, name, session } => {
             let dest = std::env::home_dir()
                 .ok_or_else(|| anyhow::anyhow!("no home directory"))?
                 .join("Downloads")
                 .join(name);
-            let path = msg(api.export_artifact(id, dest).await)?;
+            let path = msg(api.export_artifact(id, dest, session).await)?;
             UiEvent::Info(format!("exported → {}", path.display()))
         }
         Command::ListSecrets => UiEvent::Secrets(msg(api.list_secrets().await)?),
@@ -1284,7 +1284,8 @@ async fn search_request(api: &Engine, kind: search::RequestKind) -> search::Repl
             Reply::Refreshed(api.search_refresh(Some(categories)).await.map_err(reason))
         }
         RequestKind::Artifact { call_id, query } => {
-            let artifact = match api.get_artifact(call_id.clone()).await {
+            // A search hit is durable: a private tree is never indexed.
+            let artifact = match api.get_artifact(call_id.clone(), None).await {
                 Ok(a) => a,
                 Err(e) => return Reply::Artifact(Err(reason(e))),
             };

@@ -2685,20 +2685,32 @@ pub trait Api {
         descendants: Option<bool>,
     ) -> RpcResult<Vec<artifact::Artifact>>;
     /// Copy artifact `id`'s blob to `dest` (parent created; refuses to
-    /// overwrite); returns the written path (35 §3.5).
-    #[method(name = "export_artifact")]
-    async fn export_artifact(&self, id: String, dest: PathBuf) -> RpcResult<PathBuf>;
+    /// overwrite); returns the written path (35 §3.5). A private artifact
+    /// needs its owning `session` (authorized, 51 §4.2).
+    #[method(name = "export_artifact", with_extensions)]
+    async fn export_artifact(
+        &self,
+        id: String,
+        dest: PathBuf,
+        session: Option<SessionId>,
+    ) -> RpcResult<PathBuf>;
     /// A committed app record: its artifact, source, compatibility hash,
     /// pinned tool bindings and diagnostics (46 §6.3, §8.3). Rejects with
     /// `-32001` when the app plugin is disabled: the client falls back to
-    /// the artifact's readable source.
-    #[method(name = "get_app")]
-    async fn get_app(&self, record_call_id: String) -> RpcResult<AppDoc>;
+    /// the artifact's readable source. A private record needs its owning
+    /// `session` (authorized, 51 §4.2).
+    #[method(name = "get_app", with_extensions)]
+    async fn get_app(
+        &self,
+        record_call_id: String,
+        session: Option<SessionId>,
+    ) -> RpcResult<AppDoc>;
     /// Publish a reply fence's OpenUI source as an app artifact of `session` without a
     /// model turn (30 §9): validated and committed exactly like the `app` tool with
     /// `edit: false`, under a synthetic `ui-<uuid v7>` call id, no transcript entry. The
-    /// error message is the tool's located diagnostics text.
-    #[method(name = "publish_app")]
+    /// error message is the tool's located diagnostics text. `session` is
+    /// authorized: a private tree takes apps from its owner only.
+    #[method(name = "publish_app", with_extensions)]
     async fn publish_app(
         &self,
         session: SessionId,
@@ -2720,20 +2732,29 @@ pub trait Api {
     async fn app_close(&self, instance_id: String) -> RpcResult<()>;
     /// The artifact record of one `show` call, for opening a search hit
     /// without listing everything; vanished record is an error (49 §4.2).
-    #[method(name = "get_artifact")]
-    async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact>;
+    /// A private record is served only to its tree's owner naming the
+    /// `session` (authorized, 51 §4.2), as `get_attachment`.
+    #[method(name = "get_artifact", with_extensions)]
+    async fn get_artifact(
+        &self,
+        call_id: String,
+        session: Option<SessionId>,
+    ) -> RpcResult<artifact::Artifact>;
     /// The member listing of a `Kind::Archive` record (35 §3.2): paths,
     /// sizes and dates from the archive's headers, at most 5,000 entries
     /// (`truncated` past that). Rejects when the record vanished or the
-    /// archive was unreadable at show time (no listing sidecar).
-    #[method(name = "get_artifact_listing")]
+    /// archive was unreadable at show time (no listing sidecar). A private
+    /// record needs its owning `session`, as `get_artifact`.
+    #[method(name = "get_artifact_listing", with_extensions)]
     async fn get_artifact_listing(
         &self,
         call_id: String,
+        session: Option<SessionId>,
     ) -> RpcResult<artifact::archive::ArchiveListing>;
     /// Up to 2,000 characters of the artifact's indexed text around the
     /// occurrence `query` matches, with highlight ranges and content coverage;
     /// unavailable extraction is an error, never the live `origin` (49 §7).
+    /// Durable records only: a private tree is never indexed (51 §4.5).
     #[method(name = "artifact_search_match")]
     async fn artifact_search_match(
         &self,
@@ -8670,20 +8691,45 @@ impl ApiServer for Server {
         .await
     }
 
-    async fn export_artifact(&self, id: String, dest: PathBuf) -> RpcResult<PathBuf> {
-        send(&artifact()?, artifact::Export { id, dest }).await
+    async fn export_artifact(
+        &self,
+        ext: &Extensions,
+        id: String,
+        dest: PathBuf,
+        session: Option<SessionId>,
+    ) -> RpcResult<PathBuf> {
+        self.authorize_opt(ext, session).await?;
+        send(&artifact()?, artifact::Export { id, dest, session }).await
     }
 
-    async fn get_app(&self, record_call_id: String) -> RpcResult<AppDoc> {
-        send(&apps()?, GetApp { record_call_id }).await
+    async fn get_app(
+        &self,
+        ext: &Extensions,
+        record_call_id: String,
+        session: Option<SessionId>,
+    ) -> RpcResult<AppDoc> {
+        let apps = apps()?;
+        self.authorize_opt(ext, session).await?;
+        // The app plugin reads any store by call id: the record must be one this caller may see.
+        send(
+            &artifact()?,
+            artifact::search::Get {
+                call_id: record_call_id.clone(),
+                session,
+            },
+        )
+        .await?;
+        send(&apps, GetApp { record_call_id }).await
     }
 
     async fn publish_app(
         &self,
+        ext: &Extensions,
         session: SessionId,
         name: String,
         source: String,
     ) -> RpcResult<AppDoc> {
+        self.authorize(ext, session).await?;
         send(
             &apps()?,
             PublishFromUi {
@@ -8714,17 +8760,25 @@ impl ApiServer for Server {
         send(&apps()?, CloseApp { peer, instance_id }).await
     }
 
-    async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact> {
+    async fn get_artifact(
+        &self,
+        ext: &Extensions,
+        call_id: String,
+        session: Option<SessionId>,
+    ) -> RpcResult<artifact::Artifact> {
+        self.authorize_opt(ext, session).await?;
         match send(
             &artifact()?,
             artifact::search::Get {
                 call_id: call_id.clone(),
+                session,
             },
         )
         .await
         {
             Ok(a) => Ok(a),
-            // 68 §7: the index is engine-local; a record shown elsewhere comes from a peer.
+            // 68 §7: the index is engine-local; a record shown elsewhere comes from a peer
+            // (peers serve durable records only).
             Err(e) => artifact::mesh::fetch_record(&self.rt.data_dir, &call_id, None)
                 .await
                 .map_err(|_| e),
@@ -8733,9 +8787,12 @@ impl ApiServer for Server {
 
     async fn get_artifact_listing(
         &self,
+        ext: &Extensions,
         call_id: String,
+        session: Option<SessionId>,
     ) -> RpcResult<artifact::archive::ArchiveListing> {
-        let a = send(&artifact()?, artifact::search::Get { call_id }).await?;
+        self.authorize_opt(ext, session).await?;
+        let a = send(&artifact()?, artifact::search::Get { call_id, session }).await?;
         if a.kind != artifact::Kind::Archive {
             return Err(ErrorObjectOwned::owned(
                 ASK_FAILED,

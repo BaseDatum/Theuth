@@ -210,13 +210,16 @@ pub struct List {
 }
 
 /// `ask` → `Result<PathBuf, String>`: copy the blob to `dest` (parent created;
-/// refuses to overwrite).
+/// refuses to overwrite). A private blob only through its tree's authorized
+/// `session`, as [`search::Get`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Export {
     /// Artifact id.
     pub id: String,
     /// Destination file.
     pub dest: PathBuf,
+    /// An authorized session whose private tree may hold the artifact.
+    pub session: Option<SessionId>,
 }
 
 /// `ask` → `Result<Artifact, CommitError>`: publish already-validated bytes as
@@ -423,7 +426,7 @@ impl Message<Export> for ArtifactActor {
     type Reply = Result<PathBuf, String>;
 
     async fn handle(&mut self, m: Export, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        any(self.stores.all(), Result::is_ok, |s| {
+        any(self.stores.visible(m.session)?, Result::is_ok, |s| {
             let (id, dest) = (m.id.clone(), m.dest.clone());
             async move { s.export(&id, &dest).await }
         })
@@ -589,7 +592,13 @@ impl Message<search::Get> for ArtifactActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let states = self.stores.all();
+        let states = match self.stores.visible(m.session) {
+            Ok(s) => s,
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
         // Leaves the mailbox: asks the agent whether the owning session exists.
         tokio::spawn(async move {
             tx.send(
@@ -614,15 +623,10 @@ impl Message<search::ReadSearchMatch> for ArtifactActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let states = self.stores.all();
+        // Durable only: a private tree is never indexed (51 §4.5), nor served here.
+        let state = self.stores.durable().clone();
         tokio::spawn(async move {
-            tx.send(
-                any(states, Result::is_ok, |s| {
-                    let (call_id, query) = (m.call_id.clone(), m.query.clone());
-                    async move { s.read_search_match(call_id, query).await }
-                })
-                .await,
-            );
+            tx.send(state.read_search_match(m.call_id, m.query).await);
         });
         reply
     }

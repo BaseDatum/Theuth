@@ -761,12 +761,14 @@ pub enum Command {
         /// Filter to apps.
         apps: bool,
     },
-    /// `export_artifact(id, ~/Downloads/<name>)`.
+    /// `export_artifact(id, ~/Downloads/<name>, session)`.
     ExportArtifact {
         /// The artifact.
         id: String,
         /// Its file name.
         name: String,
+        /// The owned private session it belongs to; `None` when durable.
+        session: Option<SessionId>,
     },
     /// Open a local file with the OS default handler ([`platform::open::open_path`], detached).
     OpenPath(PathBuf),
@@ -9980,6 +9982,8 @@ impl Model {
                             Command::ExportArtifact {
                                 id: a.id.clone(),
                                 name: a.name.clone(),
+                                // A search hit is durable: a private tree is never indexed.
+                                session: None,
                             },
                         );
                     }
@@ -10238,6 +10242,12 @@ impl Model {
                         Command::ExportArtifact {
                             id: a.id.clone(),
                             name: a.name.clone(),
+                            // 51 §4.2: a private blob is exported for its tree's owner only.
+                            session: self
+                                .private
+                                .as_ref()
+                                .filter(|p| p.member(a.session))
+                                .map(|_| a.session),
                         },
                     );
                 }

@@ -84,16 +84,21 @@ pub struct SearchArtifacts {
 }
 
 /// `ask` → `Result<Artifact, String>`: the exact record, or why not (unknown
-/// `call_id`, or its owning session no longer exists).
+/// `call_id`, or its owning session no longer exists). A private record is
+/// found only through its tree's `session`, which the caller authorized
+/// (51 §4.2); `None` sees durable records only.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Get {
     /// Record identity.
     pub call_id: String,
+    /// An authorized session whose private tree may hold the record.
+    pub session: Option<SessionId>,
 }
 
 /// `ask` → `Result<ArtifactMatchContext, String>`: bounded context for the
 /// selected occurrence from the indexed projection; `Err` while indexing,
-/// when the record is gone, or when nothing in it matches.
+/// when the record is gone, or when nothing in it matches. Durable records
+/// only: a private tree is never indexed (51 §4.5).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadSearchMatch {
     /// Record identity.
