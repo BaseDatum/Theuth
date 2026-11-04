@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { classify, parseBroadcast, parseSpoken, splitParentView } from './injected'
+import { classify, parseBroadcast, parseSpoken, splitLeading, splitParentView } from './injected'
 
 test('human text is plain', () => {
   expect(classify('hello <b>there</b>')).toBeNull()
@@ -333,4 +333,29 @@ test('splitParentView rejects anything but the exact shape', () => {
 test('152 D5: the budget notice carries attributes and is still an engine notice card', () => {
   const body = "This session's money budget is spent: 0.25 USD of a 0.01 USD cap. The last model call was refused and the turn ended; further calls are refused until the budget is raised. Finish with what is already written."
   expect(classify(`<budget spent="250000000" cap="10000000" currency="USD">\n${body}\n</budget>`)).toEqual([{ kind: 'engine', notice: 'budget', text: body }])
+})
+
+test('171F B4: splitLeading peels only the leading <cell_result> blocks', () => {
+  const a = '<cell_result run="r_a" name="say-hello" exit="0" secs="1">\nexpect ✓ hello\n</cell_result>'
+  const b = '<cell_result run="r_b" cell="2" exit="1" secs="3">\nprivate\n</cell_result>'
+  const { cells, rest } = splitLeading(`${a}\n${b}\nok done`)
+  expect(cells.map((c) => [c.run, c.name ?? c.cell, c.text])).toEqual([['r_a', 'say-hello', 'expect ✓ hello'], ['r_b', '2', 'private']])
+  expect(rest).toBe('ok done')
+  // Results only (a review wake): nothing left.
+  expect(splitLeading(a)).toMatchObject({ rest: '' })
+  // No leading block: the text comes back untouched, whitespace included.
+  expect(splitLeading('  hi')).toEqual({ cells: [], rest: '  hi' })
+  // A block typed mid-message stays, and so does every other wrapper after the peeled ones.
+  expect(splitLeading(`see ${a}`)).toEqual({ cells: [], rest: `see ${a}` })
+  const peer = '<message from="x">hi</message>'
+  expect(splitLeading(`${a}\nlook: ${peer} and ${b}`)).toMatchObject({ rest: `look: ${peer} and ${b}` })
+  expect(splitLeading(`${a}\n${peer}`).rest).toBe(peer)
+  // An unterminated block is the user's text.
+  expect(splitLeading('<cell_result run="r_a" exit="0">\nno close').cells).toEqual([])
+})
+
+test('171F B20: <cell_result label=…> carries the label; without it there is none', () => {
+  const tag = (attrs: string) => classify(`<cell_result run="r_1" name="say-hello"${attrs} exit="0" secs="1">\nhello\n</cell_result>`)
+  expect(tag(' label="Say &quot;hi&quot;"')).toEqual([{ kind: 'cell_result', run: 'r_1', name: 'say-hello', label: 'Say "hi"', exit: '0', secs: '1', text: 'hello' }])
+  expect(tag('')).toEqual([{ kind: 'cell_result', run: 'r_1', name: 'say-hello', exit: '0', secs: '1', text: 'hello' }])
 })

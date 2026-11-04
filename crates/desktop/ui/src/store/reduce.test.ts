@@ -6,7 +6,7 @@ import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { WireEvent } from '@/rpc/events'
 import type { LoadedPage, VisionNote, VisionSource } from '@/rpc/extra'
 import { adopt, apply, empty, fromHistory, resumeFromLoaded, route, settleCompacting, type Ctx } from './reduce'
-import { type Freshness, type SessionSlice, browserBusy, freshness, shownActivity, useSessions } from './sessions'
+import { type Entry, type Freshness, type SessionSlice, browserBusy, foldCells, freshness, shownActivity, useSessions } from './sessions'
 import type { CodeToolRan } from '@/lib/codemap/types'
 import codemapEvents from '@/components/codemap/__fixtures__/events.json'
 import { runningSubagents } from '@/components/sidebar/SessionItem'
@@ -1398,4 +1398,69 @@ test('152: resume_handoff and child_lost rows are cards, never user entries; a l
   expect(run([{ type: 'TurnStarted', session: S, turn: T, text: lost, model: 'm', turn_seq: 9 }]).entries).toEqual([])
   // The settled reload adopts the live card's id.
   expect(adopt(live.entries, rows)[0]?.id).toBe(live.entries[0]?.id)
+})
+
+// 171F B4: parked cell results lead the turn's joined text (`loop_.rs` `texts.join("\n")`), one stored row each.
+const CELL_A = '<cell_result run="r_a" name="say-hello" label="Say hello" exit="0" secs="1">\nexpect ✓ hello\n</cell_result>'
+const CELL_B = '<cell_result run="r_b" cell="2" message="42" exit="1" secs="3">\noutput kept from theuth (private)\n</cell_result>'
+const JOINED = `${CELL_A}\n${CELL_B}\nok done`
+const texts = (s: SessionSlice) => s.entries.map((e) => ('text' in e ? e.text : ''))
+
+test('171F B4: own send carrying parked cell results is one user entry with its cells, never a raw echo', () => {
+  const sent = { ...empty(S), entries: [{ id: 'u1', kind: 'user' as const, text: 'ok done' }] }
+  const s = apply(sent, { type: 'TurnStarted', session: S, turn: T, text: JOINED, model: 'm', turn_seq: 5 }, { sent: new Set(['ok done']), now: 0 })
+  const users = s.entries.filter((e) => e.kind === 'user')
+  expect(users).toHaveLength(1)
+  expect(users[0]).toMatchObject({ id: 'u1', text: 'ok done', turn: 5 })
+  expect(users[0]?.kind === 'user' && users[0].cells?.map((c) => [c.run, c.label ?? c.cell])).toEqual([['r_a', 'Say hello'], ['r_b', '2']])
+  expect(texts(s).some((t) => t.includes('<cell_result'))).toBe(false)
+})
+
+test('171F B4: another client\'s send is one echoed user entry; a results-only wake is result cards', () => {
+  const echo = apply(empty(S), { type: 'TurnStarted', session: S, turn: T, text: JOINED, model: 'm', turn_seq: 5 }, ctx())
+  expect(echo.entries).toHaveLength(1)
+  expect(echo.entries[0]).toMatchObject({ kind: 'user', text: 'ok done', turn: 5, cells: [{ run: 'r_a' }, { run: 'r_b' }] })
+  const wake = apply(empty(S), { type: 'TurnStarted', session: S, turn: T, text: `${CELL_A}\n${CELL_B}`, model: 'm', turn_seq: 6 }, ctx())
+  expect(wake.entries.map((e) => (e.kind === 'cell_result' ? e.run : e.kind))).toEqual(['r_a', 'r_b'])
+})
+
+test('171F B4: a cell\'s MessageDelivered draws no peer card; other senders still do', () => {
+  const s = empty(S)
+  expect(apply(s, { type: 'MessageDelivered', session: S, from: 'cell x', text: CELL_A }, ctx())).toBe(s)
+  expect(apply(s, { type: 'MessageDelivered', session: S, from: 'cellar', text: 'hi' }, ctx()).entries).toHaveLength(1)
+})
+
+test('171F B4: reload folds the parked rows into the user entry — same shape and ids as live, turn for Edit/Fork', () => {
+  const C = 'cells-b4'
+  const st = useSessions.getState()
+  st.loadHistory(C, { ...loaded(), history: [], first_seq: null, more: false }, 'replace')
+  st.markSent(C, 'ok done')
+  st.applyEvents([
+    { type: 'MessageDelivered', session: C, from: 'cell say-hello', text: CELL_A },
+    { type: 'TurnStarted', session: C, turn: T, text: JOINED, model: 'm', turn_seq: 5 },
+  ])
+  const live = useSessions.getState().sessions[C]?.entries ?? []
+  expect(live).toHaveLength(1)
+  st.loadHistory(
+    C,
+    {
+      ...loaded(),
+      history: [
+        { role: 'user', text: CELL_A, turn: 5 },
+        { role: 'user', text: CELL_B },
+        { role: 'user', text: 'ok done' },
+        { role: 'assistant', text: 'thanks', turn: 5 },
+      ],
+      first_seq: 5,
+      more: false,
+    },
+    'replace',
+  )
+  const back = useSessions.getState().sessions[C]?.entries ?? []
+  expect(back.map((e) => e.kind)).toEqual(['user', 'assistant'])
+  expect(back[0]).toMatchObject({ id: live[0]?.id, text: 'ok done', turn: 5 })
+  const strip = (e: Entry | undefined) => (e?.kind === 'user' ? e.cells : undefined)
+  expect(strip(back[0])).toEqual(strip(live[0]))
+  // A run followed by no user words (a review wake) stays as result cards.
+  expect(foldCells(fromHistory({ role: 'user', text: CELL_A, turn: 7 })).map((e) => e.kind)).toEqual(['cell_result'])
 })

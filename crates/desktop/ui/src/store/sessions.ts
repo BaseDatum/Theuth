@@ -1,6 +1,6 @@
 import { type StoreApi, createStore } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import type { Injected, ParentViewLine } from '@/lib/injected';
+import type { CellResultInput, Injected, ParentViewLine } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
@@ -93,6 +93,8 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       turn?: number;
       /** 172 D3: the channel that delivered it (Slack, Signal, Telegram); absent for desktop input and rows stored before 172. */
       channel?: ChannelOrigin;
+      /** 171F B4: the parked cell results this message carried into its turn (live `splitLeading`, reload `foldCells`). */
+      cells?: CellResultInput[];
     }
   | {
       kind: "assistant";
@@ -139,7 +141,9 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       origin?: PeerOrigin;
       seq?: number;
     }
-  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'autoresearch' | 'cell_result' }> // 171:U1-ADD cell_result
+  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'autoresearch' }>
+  /** 171 §9.1: a cell result the agent read; `turn` when its stored row opened the turn (`foldCells` hands it on). */
+  | (CellResultInput & { turn?: number })
   /** 152 D3: the view an endless parent handed a native child before its brief (137 R1-D1); folded, the lines render
    * only while open. Reload/reseed only: a live `TurnStarted` carries the brief without the view. */
   | { kind: "parentView"; lines: ParentViewLine[]; bytes: number }
@@ -394,6 +398,27 @@ type SessionsStore = {
 
 export type SessionsApi = StoreApi<SessionsStore>;
 
+/** 171F B4: parked cell results reload as their own rows ahead of the user's words (one row per input; the first row
+ * opens the turn). A run of `cell_result` entries immediately followed by a `user` entry folds into that entry's
+ * `cells`, and the entry takes the run's turn: the card a live `TurnStarted` builds, so `adopt` pairs the two and the
+ * message keeps Edit/Fork. A run followed by anything else (a review wake) stays as result cards. */
+export function foldCells(entries: Entry[]): Entry[] {
+  const out: Entry[] = [];
+  let run: Extract<Entry, { kind: "cell_result" }>[] = [];
+  for (const e of entries) {
+    if (e.kind === "cell_result") {
+      run.push(e);
+      continue;
+    }
+    if (e.kind === "user" && run.length) {
+      const cells = run.map(({ id: _id, context: _context, at: _at, turn: _turn, ...c }) => c);
+      out.push({ ...e, turn: run[0]?.turn ?? e.turn, cells: [...(e.cells ?? []), ...cells] });
+    } else out.push(...run, e);
+    run = [];
+  }
+  return out.concat(run);
+}
+
 /** One engine's sessions (31 §7.4); `useSessions` reads the enclosing engine's. */
 export const createSessions = (): SessionsApi =>
   createStore<SessionsStore>()(
@@ -441,7 +466,7 @@ export const createSessions = (): SessionsApi =>
             set((st) => ({ sessions: { ...st.sessions, [id]: cur } }));
           return false;
         }
-        const raw = loaded.history.flatMap(fromHistory);
+        const raw = foldCells(loaded.history.flatMap(fromHistory));
         // 146 D7: an ACP child that is not running cannot still be inside its last tool call.
         const entries = loaded.agent && !loaded.running ? interruptDangling(raw) : raw;
         const browser =
@@ -459,7 +484,8 @@ export const createSessions = (): SessionsApi =>
             ...cur,
             browser,
             codemap,
-            entries: [...entries, ...cur.entries],
+            // A page may end inside a parked run whose user row opens the page already shown.
+            entries: foldCells([...entries, ...cur.entries]),
             firstSeq: loaded.first_seq ?? cur.firstSeq,
             more: loaded.more,
           };
