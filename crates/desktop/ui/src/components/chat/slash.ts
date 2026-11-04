@@ -253,15 +253,16 @@ export type SettingsTab =
   | 'connections'
   | 'channels'
   | 'shortcuts'
+  | 'memory'
 
 type Navigate = UseNavigateResult<string>
 
-/** Open the settings dialog on `tab`; `session` scopes the per-session switches. */
-export function settings(navigate: Navigate, tab: SettingsTab, session: string | null | undefined) {
+/** Open the settings dialog on `tab`; `session` scopes the per-session switches; `focus` names a control the tab focuses (Memory: `model`). */
+export function settings(navigate: Navigate, tab: SettingsTab, session: string | null | undefined, focus?: string) {
   return navigate({
     to: '/settings/$tab',
     params: { tab },
-    search: session ? { session } : {},
+    search: { ...(session && { session }), ...(focus && { focus }) },
   })
 }
 

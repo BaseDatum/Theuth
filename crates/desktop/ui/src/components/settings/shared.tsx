@@ -108,26 +108,35 @@ export function Empty({ children }: { children: ReactNode }) {
   return <p className="py-4 text-sm text-fg-tertiary">{children}</p>
 }
 
-/** A whole-number `Info` field edited on blur/Enter (Agent loop, Advisor); values outside `[min, max]` are ignored. */
+/**
+ * A whole-number `Info` field edited on blur/Enter (Agent loop, Advisor); values outside `[min, max]` are ignored.
+ * `placeholder`: a key the engine may not send (an optional one); the field stays editable and shows the engine default.
+ */
 export function Count({
   value,
   min,
   max,
+  placeholder,
   action,
+  'aria-label': ariaLabel,
 }: {
   value: number | undefined
   min: number
   max?: number
+  placeholder?: number
   action: { mutate: (n: number) => void; isPending: boolean }
+  'aria-label'?: string
 }) {
   return (
     <Input
       key={value}
       type="number"
+      aria-label={ariaLabel}
       min={min}
       max={max}
       defaultValue={value}
-      disabled={value === undefined || action.isPending}
+      placeholder={placeholder?.toString()}
+      disabled={(value === undefined && placeholder === undefined) || action.isPending}
       className="w-28 text-right"
       onBlur={(e) => {
         const n = bounded(e.currentTarget.value, min, max)

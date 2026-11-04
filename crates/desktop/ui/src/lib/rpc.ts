@@ -1,8 +1,10 @@
-import { useQueryClient } from '@tanstack/react-query'
+import { type QueryClient, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import type { Api } from '@/rpc/api'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
+import type { EndlessProgress } from '@/rpc/bindings/EndlessProgress'
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 import { isPopout, openPopout } from '@/lib/popout'
@@ -156,6 +158,15 @@ export function withOwner(
 const SESSIONS_DEBOUNCE_MS = 500
 
 /**
+ * 137 §11.2: the compactor advanced (throttled server-side to 2 Hz); the ∞ badge and Memory panel re-read the view.
+ * 137F: the event's `stalled` lands in the cache at once (the refetch follows), so the failing row appears and clears with it.
+ */
+export function applyEndlessProgress(qc: QueryClient, e: EndlessProgress): void {
+  qc.setQueryData<SessionMemory>(queryKeys.sessionMemory(e.session), (m) => m && { ...m, stalled: e.stalled ?? null })
+  void qc.invalidateQueries({ queryKey: queryKeys.sessionMemory(e.session) })
+}
+
+/**
  * Wire events to query invalidation (25 §6.2): the session list debounced, the rest immediate. The agents roster
  * (`status`, `desk`) rides the same debounce (100 D5), so the Agents page's chips follow turns within ~0.5 s.
  */
@@ -305,8 +316,7 @@ export function useInvalidateOn(): void {
       // 67 §4, bridged since 79: the Mesh page's peers and lease follow the bus instead of the poll alone.
       on('peer', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
       on('lease', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
-      // 137 §11.2: the compactor advanced (throttled server-side to 2 Hz); the ∞ badge and Memory panel re-read the view.
-      on('EndlessProgress', (e) => void qc.invalidateQueries({ queryKey: queryKeys.sessionMemory(e.session) })),
+      on('EndlessProgress', (e) => applyEndlessProgress(qc, e)),
     ]
     return () => {
       clearTimeout(timer)
