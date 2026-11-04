@@ -7,6 +7,7 @@ import { type MouseEvent, type ReactNode, useContext, useEffect, useRef, useStat
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { isApple } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
+import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/api'
 import type { CellRef } from '@/rpc/bindings/CellRef'
@@ -19,7 +20,7 @@ import { digest } from './grammar'
 import { lineDiff, memberName, modeOf, pythonValue, withPython } from './note-edit'
 import { NoteHost } from './note-context'
 import { clock, errorText, mintId, press, refKey, refresh, register, scopeOf, setNotice, useCellRecord } from './store'
-import { labelOf, titleOf, viewOf } from './view'
+import { interpreterText, labelOf, titleOf, viewOf } from './view'
 import './note-cells.css'
 
 export type NoteCellProps = {
@@ -112,9 +113,9 @@ function RanCode({ run }: { run: string }) {
 }
 
 /** §6.3: the python chip as a menu of `cell_interpreters(cwd)`; a pick rewrites the `#| python:` header. */
-function PythonChip({ text, cwd, onPick }: { text: string; cwd: string; onPick(value: string): void }) {
+function PythonChip({ text, cwd, at, onPick }: { text: string; cwd: string; at: string; onPick(value: string): void }) {
   const api = useApi()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useDisclosure(disclosureKey(at, 'python'))
   const q = useQuery({ queryKey: ['cells', 'interpreters', cwd], queryFn: () => api.cell_interpreters(cwd, null), enabled: open, staleTime: 60_000 })
   const picks = (q.data ?? []).filter((i) => i.kind === 'python' || i.kind === 'monty')
   return (
@@ -171,8 +172,8 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const view = viewOf(record, cell, false)
   const danger = cell.options.danger
   const [hint, setHint] = useState<string | null>(null)
-  const [review, setReview] = useState(false)
-  const [ranCode, setRanCode] = useState(false)
+  const [review, setReview] = useDisclosure(disclosureKey(key, 'review'))
+  const [ranCode, setRanCode] = useDisclosure(disclosureKey(key, 'ran-code'))
   useEffect(() => {
     if (!hint) return
     const t = setTimeout(() => setHint(null), 4000)
@@ -247,7 +248,8 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     if (danger || (e.target instanceof Element && e.target.closest('button'))) return
     const codeEl = slot.current?.querySelector('code')
     const at = caretAt(e.clientX, e.clientY)
-    if (!codeEl || !slot.current || !at || !codeEl.contains(at.node)) return setHover(null)
+    // 171F B2: off the code text (the padding band before the ►) keeps the hover; leaving the slot clears it.
+    if (!codeEl || !slot.current || !at || !codeEl.contains(at.node)) return
     const range = document.createRange()
     range.setStart(codeEl, 0)
     range.setEnd(at.node, at.offset)
@@ -295,7 +297,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   )
 
   const interpreter = record?.interpreter
-  const chipText = interpreter ? [interpreter.kind, interpreter.version, `(${interpreter.source})`].filter(Boolean).join(' ') : cell.lang
+  const chipText = interpreterText(cell, interpreter ?? null)
   const o = cell.options
   const cwd = o.cwd && /^[~/]/.test(o.cwd) ? o.cwd : (latest?.cwd ?? '~')
   const monty = o.python?.kind === 'monty' || interpreter?.kind === 'monty'
@@ -305,7 +307,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     notice,
     hint: hint ?? (monty && latest?.state === 'running' ? 'Monty shows output when the run ends' : null),
     runText: member ? `Run ${member}'s edit` : undefined,
-    chip: cell.lang === 'python' && editable ? <PythonChip text={chipText} cwd={cwd} onPick={(v) => blocknote.updateBlock(block, { content: withPython(code, v) })} /> : undefined,
+    chip: cell.lang === 'python' && editable ? <PythonChip text={chipText} cwd={cwd} at={key} onPick={(v) => blocknote.updateBlock(block, { content: withPython(code, v) })} /> : undefined,
     footer: latest?.ended_ms != null ? <span className="tabular-nums">ran {clock(latest.ended_ms)}</span> : undefined,
     rows: (
       <>

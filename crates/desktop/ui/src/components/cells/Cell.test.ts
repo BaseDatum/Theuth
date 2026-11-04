@@ -1,11 +1,16 @@
 import { createElement as h } from 'react'
 import { expect, test } from 'vitest'
+import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
+import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import type { CellState } from '@/rpc/bindings/CellState'
-import { Cell, CellExtras } from './Cell'
-import { keyRun } from './CellEditor'
+import type { Interpreter } from '@/rpc/bindings/Interpreter'
+import { Cell, CellExtras, trimBlankTail } from './Cell'
+import { hoverAfter, keyRun } from './CellEditor'
+import { cellOf } from './grammar'
+import { refKey } from './store'
 import { chatRef, render, run, spec, state } from './test-fixtures'
 import type { CellViewState } from './types'
-import { viewOf } from './view'
+import { chatEditable, interpreterText, viewOf } from './view'
 
 const noop = () => undefined
 const callbacks = { onRun: noop, onStop: noop, onInput: noop, onAsk: noop, onEdit: noop, onAttach: () => noop }
@@ -40,6 +45,10 @@ test('every §11.2 state renders its look and button', () => {
         expect(x).toMatch(/running \d/)
         expect(button(x, 'Stop')).toBeDefined()
         expect(button(x, 'Kill')).toContain('disabled')
+        expect(button(x, 'Kill')).toContain('title="Kill — closes the kernel; the next run starts fresh"')
+        // 171F B12: the live shell box sizes to its rows, no fixed 32rem.
+        expect(x).toContain('max-h-[60vh]')
+        expect(x).not.toContain('h-[32rem]')
       },
     ],
     ['done', cell(1, state(ref, { latest: run() })), (x) => expect(x).toMatch(/exit 0 · 41 s · expect ✓.*~3 update/)],
@@ -53,6 +62,24 @@ test('every §11.2 state renders its look and button', () => {
       },
     ],
     ['stopped', cell(1, state(ref, { latest: run({ state: 'stopped', exit: { type: 'signal', value: 'SIGINT' } }) })), (x) => expect(x).toContain('stopped by you')],
+    [
+      'stopped',
+      cell(1, state(ref, { latest: run({ state: 'timeout', exit: { type: 'code', value: 130 }, secs: 5.3 }) })),
+      (x) => {
+        expect(x).toContain('timed out after 5.3 s')
+        expect(x).toContain('✗ timed out')
+        expect(x).not.toContain('stopped by you')
+        expect(x).not.toContain('exit 130')
+      },
+    ],
+    [
+      'stopped',
+      cell(1, state(ref, { latest: run({ state: 'killed', exit: { type: 'signal', value: 'SIGKILL' } }) })),
+      (x) => {
+        expect(x).toContain('killed — the kernel was closed; the next run starts fresh')
+        expect(x).not.toContain('stopped by you')
+      },
+    ],
     [
       'lost',
       cell(1, state(ref, { latest: run({ state: 'lost', exit: null }) })),
@@ -132,4 +159,51 @@ test('L11 fields render when present and nothing when absent', () => {
     cell(1, state(ref, { latest: { ...run({ state: 'running', exit: null, secs: null, ended_ms: null }), kernel: { ...run().kernel, spec: { type: 'python', path: '/usr/bin/python3' } }, input: { prompt: 'Token: ', password } } })).html
   expect(asking(true)).toMatch(/Token: [\s\S]*type="password"/)
   expect(asking(false)).toContain('type="text"')
+})
+
+test('171F B3: a stored screen loses its trailing blank rows, keeping the colour reset; inner blank lines stay', () => {
+  expect(trimBlankTail('a\nb\n\n\n\n')).toBe('a\nb')
+  expect(trimBlankTail('\x1b[32mok\x1b[0m\n\x1b[0m\n   \n\r\n')).toBe('\x1b[32mok\x1b[0m\x1b[0m')
+  expect(trimBlankTail('a\n\nb')).toBe('a\n\nb')
+  expect(trimBlankTail('')).toBe('')
+})
+
+test('171F B27: an auto (or unset) python pick says so; an explicit pick and shell cells do not', () => {
+  const py = (header: string) => cellOf('python', `${header}print(1)`) as CellSpec
+  const system: Interpreter = { kind: 'python', source: 'system', path: '/usr/bin/python3', version: '3.14.8', why: '', auto: true }
+  expect(interpreterText(py(''), system)).toBe('auto → python 3.14.8 (system)')
+  expect(interpreterText(py('#| python: auto\n'), system)).toBe('auto → python 3.14.8 (system)')
+  expect(interpreterText(py('#| python: .venv\n'), { ...system, source: '.venv' })).toBe('python 3.14.8 (.venv)')
+  expect(interpreterText(py(''), null)).toBe('python')
+  expect(interpreterText(spec(1), { kind: 'bash', source: 'homebrew', path: '/opt/homebrew/bin/bash', version: '5.2', why: '', auto: true })).toBe('bash 5.2 (homebrew)')
+})
+
+test('171F B21: a runnable chat cell takes edits until a run, a newer version or an error holds it', () => {
+  for (const v of ['ready', 'done', 'failed', 'stopped', 'stale', 'edited', 'armed', 'disarmed', 'lost'] as const) expect(chatEditable(v, true), v).toBe(true)
+  for (const v of ['running', 'queued', 'superseded', 'invalid', 'guest'] as const) expect(chatEditable(v, true), v).toBe(false)
+  // Not runnable: the reply is still being written, or a read-only view.
+  expect(chatEditable('ready', false)).toBe(false)
+})
+
+test('171F B2: moving from the text onto the ► keeps the hovered line; only leaving the editor clears it', () => {
+  let line = hoverAfter(null, { kind: 'move', line: 3 })
+  expect(line).toBe(3)
+  line = hoverAfter(line, { kind: 'leave', inEditor: true })
+  expect(line).toBe(3)
+  line = hoverAfter(line, { kind: 'move', line: 4 })
+  expect(line).toBe(4)
+  expect(hoverAfter(line, { kind: 'leave', inEditor: false })).toBeNull()
+})
+
+test('171F B13: what the reader toggled lives in the store, so a remounted cell shows it again', () => {
+  const done = state(ref, { latest: run() })
+  const k = refKey(ref)
+  useToolRuns.setState({ disclosed: { [disclosureKey(k, 'raw')]: true, [disclosureKey(k, 'fold')]: false, [disclosureKey(k, 'output')]: false } })
+  const html = cell(1, done).html
+  expect(html).toContain('#| name: preview-ir-prod1')
+  expect(html).toContain('aria-pressed="true"')
+  expect(html).toContain('show output')
+  expect(html).toContain('>fold</button>')
+  useToolRuns.setState({ disclosed: {} })
+  expect(cell(1, done).html).not.toContain('#| name: preview-ir-prod1')
 })

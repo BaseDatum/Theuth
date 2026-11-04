@@ -9,12 +9,13 @@ import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
 import { Cell, CellExtras } from './Cell'
 import { CellEditor } from './CellEditor'
+import { setEdit, useEdit } from './edits'
 import { bodyKey, type ReplyCell, replyCells } from './fences'
 import { cellOf, digest } from './grammar'
 import { openAsNote } from './open-as-note'
 import { RunbookBar } from './RunbookBar'
-import { errorText, mintId, press, refresh, register, registeredCells, scopeOf, setNotice, useCellRecord, useScope, useStates } from './store'
-import { labelOf, titleOf, viewOf } from './view'
+import { errorText, mintId, press, refKey, refresh, register, registeredCells, scopeOf, setNotice, useCellRecord, useScope, useStates } from './store'
+import { chatEditable, labelOf, titleOf, viewOf } from './view'
 
 /** 171 §4.1: the fence languages `CellFence` registers for. */
 export const CELL_LANGUAGES = ['bash', 'zsh', 'sh', 'pwsh', 'powershell', 'python', 'py']
@@ -90,7 +91,9 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     [session, ordinals.entry, ordinal],
   )
   const pending = !!session && (isIncomplete || ordinals.turnRunning || !ordinals.entry)
-  const [edited, setEdited] = useState<string | null>(null)
+  // F4: the user's edit outlives a remount (`edits`, by `refKey`); a cell without a ref cannot be edited.
+  const editKey = cellRef ? refKey(cellRef) : ''
+  const edited = useEdit(editKey)
   const [hint, setHint] = useState<string | null>(null)
   const label = spec ? labelOf(spec) : 'Run'
   const title = spec ? titleOf(spec, ordinal) : ''
@@ -163,11 +166,11 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     onAsk: () => {
       if (latest) act(() => api.cell_ask(latest.id))
     },
-    onEdit: (next: string) => setEdited(next === spec.code ? null : next),
+    onEdit: (next: string) => cellRef && setEdit(editKey, next, spec.code),
     // `Terminal`'s cell source attaches itself (one attach path for chat and notes); kept for the frozen `CellCallbacks`.
     onAttach: () => () => undefined,
   }
-  const locked = !cellRef || view === 'running' || view === 'queued' || view === 'superseded' || view === 'invalid'
+  const locked = !chatEditable(view, runnable)
   const extras: CellExtras = {
     open: lastRun === ordinal || view === 'failed',
     afterLabel,

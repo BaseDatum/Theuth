@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
 import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
-import { attachSource, CELL_KEYS, Terminal } from './TerminalViewer'
+import { attachSource, CELL_KEYS, liveRows, Terminal } from './TerminalViewer'
 
 const api = { cell_input: vi.fn(async () => null), pty_input: vi.fn(async () => null), pty_resize: vi.fn(async () => null) }
 const unsub = vi.fn(async () => undefined)
@@ -128,4 +128,11 @@ test('the cell key row: ↑ ↓ ⏎ Esc Tab ^C raw bytes, arrows per cursor-key 
   // The pty source keeps its own strip: on a desktop (useIsMobile false) nothing, even under touch.
   expect(renderToStaticMarkup(createElement(Terminal, { session: 's', job: 'j', label: 'sh' }))).not.toContain('Terminal keys')
   expect(api.pty_resize).not.toHaveBeenCalled()
+})
+
+test('171F B12: a cell terminal opens at 12 rows and grows with the rows in use to the 30-row grid; a pty box keeps its own size', () => {
+  expect([liveRows(1, 12, 30), liveRows(12, 12, 30), liveRows(20, 12, 30), liveRows(30, 12, 30), liveRows(31, 12, 30)]).toEqual([12, 12, 20, 30, 30])
+  const cell = renderToStaticMarkup(createElement(Terminal, { source: { kind: 'cell', run: 'run-1' }, label: 'bash' }))
+  expect(cell).toContain('height:188px')
+  expect(renderToStaticMarkup(createElement(Terminal, { session: 's', job: 'j', label: 'sh' }))).not.toContain('height:')
 })

@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 import { RpcError } from '@/rpc/client'
-import { duration, mintId, press } from './store'
+import { duration, exitText, mintId, press } from './store'
+import { run } from './test-fixtures'
 
 test('run ids are r_ + a 26-character Crockford ULID, time-ordered (§5.10)', () => {
   const a = mintId('r_', 1_762_180_000_000, new Uint8Array(10))
@@ -44,4 +45,13 @@ test('a transport failure retries the SAME run id; an engine answer is final', a
 
 test('durations read like the design: 2.1 s, 41 s, 2:14', () => {
   expect([duration(2.1), duration(41), duration(134)]).toEqual(['2.1 s', '41 s', '2:14'])
+})
+
+test('171F B5: an ending state names itself before the exit code (timeout exits 130 too), like deliver::exit_word', () => {
+  expect(exitText(run({ state: 'timeout', exit: { type: 'code', value: 130 } }))).toBe('timed out')
+  expect(exitText(run({ state: 'killed', exit: { type: 'signal', value: 'SIGKILL' } }))).toBe('killed')
+  expect(exitText(run({ state: 'lost', exit: null }))).toBe('lost')
+  expect(exitText(run({ state: 'failed', exit: { type: 'code', value: 1 } }))).toBe('exit 1')
+  expect(exitText(run({ state: 'stopped', exit: { type: 'signal', value: 'SIGINT' } }))).toBe('SIGINT')
+  expect(exitText(run({ state: 'stopped', exit: null }))).toBe('stopped')
 })

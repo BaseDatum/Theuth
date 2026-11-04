@@ -9,14 +9,17 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { isApple } from '@/lib/chord'
 import { isDesktop, touch } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
+import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRun } from '@/rpc/bindings/CellRun'
 import { useConnection } from '@/store/connection'
+import { setPicked, setStoppedAt, usePicked, useStoppedAt } from './edits'
 import { AnsiText, CellContainer, CellOutputs, ExecutionCount } from './Outputs'
 import { clock, duration, ended, errorText, exitText, refKey, scopeOf } from './store'
 import type { CellProps, CellViewState } from './types'
-import { labelOf, titleOf } from './view'
+import { OutputDisclosure } from './vendor/nteract/outputs/ansi-output'
+import { interpreterText, labelOf, titleOf } from './view'
 // xterm loads with the first live run.
 const Terminal = lazy(() => import('@/components/chat/TerminalViewer').then((m) => ({ default: m.Terminal })))
 
@@ -65,6 +68,13 @@ const expectText = (run: CellRun) => {
   return met === run.expect.length ? `expect ✓ ${met}/${run.expect.length}` : `expect ✗ ${run.expect.length - met}/${run.expect.length} missed`
 }
 const succeeded = (run: CellRun) => run.state === 'done'
+
+/** 171F B5: why a run ended without finishing — the record's state, never the exit code (a timeout exits 130 too). */
+function stopText(run: CellRun | null): string {
+  if (run?.state === 'timeout') return run.secs == null ? 'timed out' : `timed out after ${duration(run.secs)}`
+  if (run?.state === 'killed') return 'killed — the kernel was closed; the next run starts fresh'
+  return 'stopped by you'
+}
 
 /** Seconds since `from`, ticking while `active`. */
 function useElapsed(from: number | null, active: boolean): number {
@@ -133,43 +143,60 @@ export function Notice({ tone, children }: { tone: 'danger' | 'warning' | 'succe
   )
 }
 
+/**
+ * 171F B3: drop the trailing blank rows of a stored screen (newlines with only blanks or SGR codes between them),
+ * keeping the SGR codes so a colour still resets: old runs stored a mostly empty 30-row grid.
+ */
+export const trimBlankTail = (text: string) => text.replace(/(?:\r?\n(?:[ \t]|\x1b\[[0-9;]*m)*)+$/, (tail) => tail.replace(/[\r\n \t]/g, ''))
+
 /** The finished run's text: the last `TAIL_LINES` lines, "show all N lines" pages the rest through `cell_output`. */
-function StaticText({ run, text }: { run: CellRun; text: string }) {
+function StaticText({ run, text, at }: { run: CellRun; text: string; at: string }) {
   const api = useApi()
-  const [all, setAll] = useState<string | null>(null)
-  const lines = text.split('\n')
-  const shown = all ?? (lines.length > TAIL_LINES ? lines.slice(-TAIL_LINES).join('\n') : text)
-  const loadAll = async () => {
-    let out = ''
-    for (let offset: number | null = 0; offset !== null; ) {
-      const page = await api.cell_output(run.id, offset, 256 * 1024, true)
-      out += page.text
-      offset = page.next
-    }
-    setAll(out)
-  }
+  const [showAll, setShowAll] = useDisclosure(disclosureKey(at, run.id, 'all'))
+  const all = useQuery({
+    queryKey: ['cells', 'output', run.id, 'all'],
+    enabled: showAll,
+    staleTime: Infinity,
+    queryFn: async () => {
+      let out = ''
+      for (let offset: number | null = 0; offset !== null; ) {
+        const page = await api.cell_output(run.id, offset, 256 * 1024, true)
+        out += page.text
+        offset = page.next
+      }
+      return trimBlankTail(out)
+    },
+  })
+  const trimmed = trimBlankTail(text)
+  const lines = trimmed.split('\n')
+  const shown = (showAll && all.data) || (lines.length > TAIL_LINES ? lines.slice(-TAIL_LINES).join('\n') : trimmed)
   return (
     <>
-      {all === null && lines.length > TAIL_LINES && (
-        <Button variant="link" size="sm" className="h-6 px-0 text-xs" onClick={() => void loadAll()}>
+      {!showAll && lines.length > TAIL_LINES && (
+        <Button variant="link" size="sm" className="h-6 px-0 text-xs" onClick={() => setShowAll(true)}>
           show all {lines.length.toLocaleString()} lines
         </Button>
       )}
+      {all.error && <p className="text-xs text-danger">{errorText(all.error)}</p>}
       <AnsiText text={shown} className="max-h-[28rem] overflow-auto whitespace-pre pl-2 text-xs" />
     </>
   )
 }
 
 /** The output of a run that is not live: the record's outputs (`cell_run_get`), shell text as ANSI, rich ones through the media router. */
-function RunOutput({ run }: { run: CellRun }) {
+function RunOutput({ run, at }: { run: CellRun; at: string }) {
   const api = useApi()
   const q = useQuery({ queryKey: ['cells', 'run', run.id, run.state, run.ended_ms], queryFn: () => api.cell_run_get(run.id), staleTime: Infinity })
   if (q.error) return <p className="text-xs text-danger">{errorText(q.error)}</p>
   if (!q.data) return <p className="text-xs text-fg-tertiary">loading output…</p>
   const outputs = q.data.outputs
   if (outputs.length === 0) return <p className="text-xs text-fg-tertiary">no output</p>
-  if (outputs.every((o) => o.output_type === 'stream')) return <StaticText run={run} text={outputs.map((o) => o.text).join('')} />
-  return <CellOutputs run={run.id} outputs={outputs} />
+  if (outputs.every((o) => o.output_type === 'stream')) return <StaticText run={run} text={outputs.map((o) => o.text).join('')} at={at} />
+  return (
+    <OutputDisclosure value={disclosureKey(at, run.id)}>
+      <CellOutputs run={run.id} outputs={outputs} />
+    </OutputDisclosure>
+  )
 }
 
 /**
@@ -213,7 +240,8 @@ function LiveTerminal({ run, code, label }: { run: CellRun; code: string; label:
     <div className="flex flex-col gap-1">
       <div className="rounded-md p-0.5 ring-1 ring-fg-accent">
         <p className="truncate px-2 pt-1 font-mono text-xs text-fg-tertiary">$ {first}</p>
-        <div className="flex h-[32rem] max-h-[60vh] flex-col">
+        {/* 171F B12: no fixed height — the terminal sizes itself to the rows in use (12 to the 30-row grid). */}
+        <div className="flex max-h-[60vh] flex-col">
           <Suspense fallback={null}>
             <Terminal source={{ kind: 'cell', run: run.id }} label={label} />
           </Suspense>
@@ -250,8 +278,8 @@ function CopyOutput({ run }: { run: CellRun }) {
 /** history ▾: this cell's runs (`cell_runs` of its scope, filtered to the cell); picking one shows its output. */
 function HistoryMenu({ cellRef, onPick }: { cellRef: CellRef; onPick(run: CellRun): void }) {
   const api = useApi()
-  const [open, setOpen] = useState(false)
   const key = refKey(cellRef)
+  const [open, setOpen] = useDisclosure(disclosureKey(key, 'history'))
   const q = useQuery({ queryKey: ['cells', 'runs', key], queryFn: () => api.cell_runs(scopeOf(cellRef), 50), enabled: open })
   const runs = (q.data ?? []).filter((r) => refKey(r.cell) === key)
   return (
@@ -285,21 +313,20 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
   const label = labelOf(cell)
   const title = titleOf(cell, cellRef.type === 'chat' ? cellRef.ordinal : undefined)
   const o = cell.options
-  const [picked, setPicked] = useState<CellRun | null>(null)
+  const k = refKey(cellRef)
+  const picked = usePicked(k)
   const run = picked ?? latest
   const waiting = latest?.input
   const live = latest?.state === 'running' || latest?.state === 'queued'
-  const [showOutput, setShowOutput] = useState<boolean | null>(null)
-  const [folded, setFolded] = useState<boolean | null>(null)
-  const [raw, setRaw] = useState(false)
+  const autoFold = !extras.open && view === 'done' && !picked
+  const [outputOpen, setShowOutput] = useDisclosure(disclosureKey(k, 'output'), view !== 'done' || !!extras.open || !!picked)
+  const [isFolded, setFolded] = useDisclosure(disclosureKey(k, 'fold'), autoFold)
+  const [raw, setRaw] = useDisclosure(disclosureKey(k, 'raw'))
   const [focused, setFocused] = useState(false)
-  const [stoppedAt, setStoppedAt] = useState<number | null>(null)
+  const stoppedAt = useStoppedAt(latest?.id)
   const elapsed = useElapsed(latest?.started_ms ?? null, latest?.state === 'running')
   const sinceStop = useElapsed(stoppedAt, stoppedAt !== null && live)
   const killReady = stoppedAt !== null && sinceStop * 1000 >= KILL_AFTER_MS
-  useEffect(() => {
-    if (!live) setStoppedAt(null)
-  }, [live])
 
   // §11.9: state changes are announced politely from the footer.
   const [announce, setAnnounce] = useState('')
@@ -323,12 +350,10 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
   const stop = () => {
     if (!latest || !live) return
     if (stoppedAt === null) {
-      setStoppedAt(Date.now())
+      setStoppedAt(latest.id, Date.now())
       callbacks.onStop(false)
     } else if (killReady) callbacks.onStop(true)
   }
-  const isFolded = folded ?? (!extras.open && view === 'done' && !picked)
-  const outputOpen = showOutput ?? (view !== 'done' || !!extras.open || !!picked)
 
   const mod = isApple() ? '⌘' : 'Ctrl'
   const phoneDanger = touch() && o.danger
@@ -347,6 +372,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
               variant="outline"
               className="h-7 pointer-coarse:h-12"
               disabled={!killReady}
+              title="Kill — closes the kernel; the next run starts fresh"
               aria-description={killReady ? undefined : 'Kill is enabled 5 s after Stop'}
               onClick={() => callbacks.onStop(true)}
             >
@@ -379,7 +405,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       <StateDot view={view} />
       <span className={cn('mr-1 text-sm font-medium', view === 'superseded' && 'text-fg-tertiary')}>{title}</span>
       {o.danger && <Chip tone="danger">danger</Chip>}
-      {extras.chip ?? /* 171:U2-ADD */ <Chip>{state?.interpreter ? [state.interpreter.kind, state.interpreter.version, `(${state.interpreter.source})`].filter(Boolean).join(' ') : cell.lang}</Chip>}
+      {extras.chip ?? /* 171:U2-ADD */ <Chip>{interpreterText(cell, state?.interpreter ?? null)}</Chip>}
       {o.cwd && (
         <Chip mono title={o.cwd} tone={cwdMissing ? 'warning' : undefined}>
           {middleEllipsis(o.cwd)}
@@ -448,7 +474,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       {view === 'lost' && <Notice tone="warning">lost — engine restarted{latest?.cwd ? ` · ${latest.cwd}` : ''}</Notice>}
       {view === 'stale' && <Notice tone="muted">ran an earlier version</Notice>}
       {view === 'edited' && <Notice tone="muted">theuth will see the code that actually ran.</Notice>}
-      {view === 'stopped' && <Notice tone="muted">stopped by you</Notice>}
+      {view === 'stopped' && <Notice tone="muted">{stopText(latest)}</Notice>}
       {view === 'guest' && <Notice tone="muted">Only the owner can run cells</Notice>}
       {extras.pending && <Notice tone="muted">ready when the reply ends</Notice>}
       {extras.notice && <Notice tone="danger">{extras.notice}</Notice>}
@@ -487,7 +513,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
           </Button>
         )}
         <CopyOutput run={run} />
-        {!readOnly && <HistoryMenu cellRef={cellRef} onPick={(r) => setPicked(r.id === latest?.id ? null : r)} />}
+        {!readOnly && <HistoryMenu cellRef={cellRef} onPick={(r) => setPicked(k, r.id === latest?.id ? null : r)} />}
       </span>
     </div>
   )
@@ -502,7 +528,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       </div>
     )
   ) : run && ended(run) && outputOpen ? (
-    <RunOutput run={run} />
+    <RunOutput run={run} at={k} />
   ) : null
 
   const id = cellDomId(cellRef)
@@ -575,7 +601,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
               {extras.below}
               {phoneDanger && primary && <div className="p-2">{primary}</div>}
               {footer}
-              {folded === false && run && view === 'done' && (
+              {!isFolded && autoFold && run && (
                 <Button variant="ghost" size="sm" className="mx-2 mb-1 h-7 px-2 text-xs" onClick={() => setFolded(true)}>
                   fold
                 </Button>

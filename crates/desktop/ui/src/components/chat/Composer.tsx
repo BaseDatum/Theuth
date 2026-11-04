@@ -19,6 +19,7 @@ import {
   type DragEvent,
   Fragment,
   type KeyboardEvent,
+  type ReactNode,
   type SyntheticEvent,
   useEffect,
   useMemo,
@@ -267,6 +268,7 @@ export function Composer({
   onSent,
   compact = false,
   readOnly = false,
+  strip,
 }: {
   session: string | null
   /** The split pane this composer sits in when it is not `session`'s (a draft pane's id); `null` = not tiled, always addressed. */
@@ -285,6 +287,8 @@ export function Composer({
   compact?: boolean
   /** 76 §0.12: the talk view's transcript — the box shows but takes nothing; speech is the input. */
   readOnly?: boolean
+  /** 171F B7: the kernel strip, drawn on top of the input box (below the queued chips). */
+  strip?: ReactNode
 }) {
   const api = useApi()
   const active = useEngines((s) => s.active)
@@ -1200,6 +1204,7 @@ export function Composer({
         onAttach={picked}
         onEmpty={dismissAt}
       />
+      {strip}
       <div
         ref={box}
         className="relative rounded-[28px] border border-border-subtle bg-elevated px-2 py-[7px] shadow-sm"
