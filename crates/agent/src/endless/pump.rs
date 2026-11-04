@@ -4,11 +4,13 @@
 //! Also the home of the §9 tools and 8.6 `set_mode`, which read the same
 //! live state.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use futures::FutureExt as _;
 use parking_lot::{Mutex, RwLock};
 use runtime::SessionId;
 use tokio::sync::{Notify, watch};
@@ -19,8 +21,8 @@ use super::fold::ViewBlock;
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
 use super::tree::{self, Node, Tree, Unit, exists, id_n};
 use super::{
-    Attached, Backfill, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode, UnitFilter,
-    ViewLine, units,
+    Attached, Backfill, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode, Stalled,
+    UnitFilter, ViewLine, units,
 };
 use crate::backend::Backend;
 use crate::cost::{CallKind, CallStatus};
@@ -50,10 +52,14 @@ fn retry_delay(base_secs: u32, failures: u32) -> Duration {
     Duration::from_secs(secs).min(RETRY_CAP)
 }
 
-/// A failed node: when it may retry and how many times in a row it failed.
+/// A failed node: when it may retry, how many times in a row it failed, and why.
 struct Retry {
     at: Instant,
     failures: u32,
+    /// Last error, one line, ≤ 300 chars.
+    error: String,
+    /// The compactor model id that failed.
+    model: String,
 }
 
 /// One attached session's live state.
@@ -87,6 +93,140 @@ impl Drop for Handle {
     }
 }
 
+/// 137F E9: one [`Gate`] per local endpoint, engine-wide, sized by
+/// `local_jobs` (a changed size gets a fresh gate; calls on the old one finish there).
+#[derive(Clone, Default)]
+pub(crate) struct Queues(Arc<Mutex<HashMap<String, Queue>>>);
+
+/// `(permits, gate)` of one endpoint.
+type Queue = (u8, Arc<Gate>);
+
+impl Queues {
+    fn get(&self, endpoint: &str, permits: u8) -> Arc<Gate> {
+        let permits = permits.clamp(1, 16);
+        let mut map = self.0.lock();
+        let slot = map
+            .entry(endpoint.to_owned())
+            .or_insert_with(|| (permits, Gate::new(usize::from(permits))));
+        if slot.0 != permits {
+            *slot = (permits, Gate::new(usize::from(permits)));
+        }
+        slot.1.clone()
+    }
+}
+
+/// 137F R1-8: a local endpoint's permits, handed out by priority (a live
+/// session's frontier before merges and backfill), then by arrival. R2-2:
+/// every [`AGE_EVERY`]th grant goes to the oldest waiter whatever its
+/// priority, so merges and backfill cannot starve under steady frontier load.
+pub(crate) struct Gate {
+    state: Mutex<GateState>,
+    freed: Notify,
+}
+
+/// One grant in this many serves the oldest waiter (R2-2).
+const AGE_EVERY: u64 = 4;
+
+struct GateState {
+    free: usize,
+    next: u64,
+    /// Permits handed out so far (the aging turn).
+    grants: u64,
+    /// `(priority, arrival)`; ordered highest priority first.
+    waiting: BTreeSet<(Reverse<u8>, u64)>,
+}
+
+impl GateState {
+    /// The waiter the next permit goes to.
+    fn head(&self) -> Option<(Reverse<u8>, u64)> {
+        if self.grants % AGE_EVERY == AGE_EVERY - 1 {
+            self.waiting.iter().min_by_key(|k| k.1).copied()
+        } else {
+            self.waiting.first().copied()
+        }
+    }
+}
+
+/// One held permit; dropping it frees the slot.
+pub(crate) struct Permit(Arc<Gate>);
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.state.lock().free += 1;
+        self.0.freed.notify_waiters();
+    }
+}
+
+/// A waiter's place in line; a dropped wait (cancel) gives it up.
+struct Ticket<'a> {
+    gate: &'a Gate,
+    key: (Reverse<u8>, u64),
+}
+
+impl Drop for Ticket<'_> {
+    fn drop(&mut self) {
+        if self.gate.state.lock().waiting.remove(&self.key) {
+            self.gate.freed.notify_waiters();
+        }
+    }
+}
+
+impl Gate {
+    fn new(permits: usize) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(GateState {
+                free: permits,
+                next: 0,
+                grants: 0,
+                waiting: BTreeSet::new(),
+            }),
+            freed: Notify::new(),
+        })
+    }
+
+    /// Wait for a permit; higher `priority` is served first, the oldest
+    /// waiter every [`AGE_EVERY`]th grant. Cancel-safe.
+    pub(crate) async fn acquire(self: &Arc<Self>, priority: u8) -> Permit {
+        let key = {
+            let mut s = self.state.lock();
+            let key = (Reverse(priority), s.next);
+            s.next += 1;
+            s.waiting.insert(key);
+            key
+        };
+        let _ticket = Ticket { gate: self, key };
+        loop {
+            let freed = self.freed.notified();
+            tokio::pin!(freed);
+            freed.as_mut().enable();
+            {
+                let mut s = self.state.lock();
+                if s.free > 0 && s.head() == Some(key) {
+                    s.waiting.remove(&key);
+                    s.free -= 1;
+                    s.grants += 1;
+                    if s.free > 0 && !s.waiting.is_empty() {
+                        self.freed.notify_waiters();
+                    }
+                    return Permit(self.clone());
+                }
+            }
+            freed.await;
+        }
+    }
+}
+
+/// Test seam: the scripted compactor for a resolved model id.
+pub(crate) type CompactorFactory = Arc<dyn Fn(&str) -> Arc<dyn Compactor> + Send + Sync>;
+
+/// The compactor in force and the token that cancels the calls made with it.
+struct Current {
+    /// Resolved model id + effort: equal keys mean the same compactor.
+    key: String,
+    compactor: Arc<dyn Compactor>,
+    cancel: CancellationToken,
+}
+
 /// Shared between the handle, the pump task and its jobs.
 pub(crate) struct State {
     session: SessionId,
@@ -94,11 +234,14 @@ pub(crate) struct State {
     rt: runtime::Runtime,
     /// Shared with [`Inner`]: Settings › Memory replaces it live.
     cfg: Arc<RwLock<super::EndlessConfig>>,
-    compactor: Arc<dyn Compactor>,
+    /// 137F E1: re-resolved whenever a link of the R1-D3 chain changes.
+    current: RwLock<Current>,
+    /// Shared with [`Inner`] (E9).
+    queues: Queues,
     live: Mutex<Live>,
     /// Pump loop wake-up (new rows, a finished job, a mode switch).
     wake: Notify,
-    /// Bumped whenever a node lands; `settle` waits on it.
+    /// Bumped whenever a job finishes (a node lands or fails); `settle` waits on it.
     built_tx: watch::Sender<u64>,
     /// Serialises row ingestion between the pump and the turn (`settle`, `render_for_turn`).
     ingest: tokio::sync::Mutex<()>,
@@ -109,7 +252,7 @@ impl State {
         session: SessionId,
         store: Store,
         inner: &Inner,
-        compactor: Arc<dyn Compactor>,
+        (key, compactor): (String, Arc<dyn Compactor>),
         meta: crate::store::endless::EndlessMeta,
     ) -> Self {
         Self {
@@ -117,12 +260,60 @@ impl State {
             store,
             rt: inner.rt.clone(),
             cfg: inner.cfg.clone(),
-            compactor,
+            current: RwLock::new(Current {
+                key,
+                compactor,
+                cancel: CancellationToken::new(),
+            }),
+            queues: inner.queues.clone(),
             live: Mutex::new(Live::new(meta)),
             wake: Notify::new(),
             built_tx: watch::channel(0).0,
             ingest: tokio::sync::Mutex::new(()),
         }
+    }
+
+    fn compactor(&self) -> Arc<dyn Compactor> {
+        self.current.read().compactor.clone()
+    }
+
+    /// E2/E3: install `compactor` when its key differs — cancel the calls
+    /// made with the old one, reset every backoff, wake the pump. `true` = changed.
+    fn switch(&self, (key, compactor): (String, Arc<dyn Compactor>)) -> bool {
+        {
+            let mut cur = self.current.write();
+            if cur.key == key {
+                return false;
+            }
+            tracing::info!(session = %self.session, from = %cur.key, to = %key, "endless: compactor switched");
+            cur.cancel.cancel();
+            *cur = Current {
+                key,
+                compactor,
+                cancel: CancellationToken::new(),
+            };
+        }
+        self.reset_backoff();
+        true
+    }
+
+    /// Every failed node may run now (E2, E5); running jobs keep their keys.
+    fn reset_backoff(&self) {
+        {
+            let mut live = self.live.lock();
+            live.failed.clear();
+            live.reported.clear();
+            live.dirty = true;
+        }
+        self.wake.notify_one();
+    }
+
+    /// R1-9 / R1-10: cancel the calls in flight (not failures; their nodes
+    /// reschedule) and keep the compactor.
+    fn cancel_calls(&self) {
+        let mut cur = self.current.write();
+        cur.cancel.cancel();
+        cur.cancel = CancellationToken::new();
     }
 }
 
@@ -269,6 +460,56 @@ impl Live {
             .max()
             .unwrap_or(0)
     }
+
+    /// Rule 3 frontier: the start of the first unbuilt view part (T when all built).
+    fn frontier(&mut self, cfg: FoldCfg) -> u64 {
+        self.ensure_fold(cfg);
+        let t = self.t();
+        self.fold
+            .as_ref()
+            .expect("ensured")
+            .parts
+            .iter()
+            .find(|p| !self.tree.built(p.l, p.i))
+            .map_or(t, |p| p.start())
+    }
+
+    /// 137F: the failing node that blocks most — the level-0 frontier, else
+    /// the one with the most consecutive failures.
+    fn stalled(&mut self, cfg: FoldCfg) -> Option<Stalled> {
+        if self.failed.is_empty() {
+            return None;
+        }
+        let front = (0u8, self.frontier(cfg));
+        let (key, r) = self.failed.get_key_value(&front).or_else(|| {
+            self.failed
+                .iter()
+                .max_by(|a, b| a.1.failures.cmp(&b.1.failures).then(b.0.cmp(a.0)))
+        })?;
+        let next_retry_at = (!self.running.contains(key)).then(|| {
+            let left = r.at.saturating_duration_since(Instant::now());
+            (Utc::now() + chrono::Duration::from_std(left).unwrap_or_default())
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        });
+        Some(Stalled {
+            failures: r.failures,
+            error: r.error.clone(),
+            next_retry_at,
+            model: r.model.clone(),
+            blocking: *key == front,
+        })
+    }
+
+    /// E4: the frontier failed at least twice in a row and is in backoff —
+    /// waiting out its delay or running its retry (a turn does not wait for
+    /// a retry of a node that keeps failing; a success clears the state).
+    fn frontier_stalled(&mut self, cfg: FoldCfg) -> bool {
+        if self.failed.is_empty() {
+            return false;
+        }
+        let front = (0u8, self.frontier(cfg));
+        self.failed.get(&front).is_some_and(|r| r.failures >= 2)
+    }
 }
 
 impl Live {
@@ -299,13 +540,29 @@ impl Live {
 }
 
 /// The compactor for a session (R1-D3): `agent.endless.model` → else
-/// `agent.title_model` → else the session's own model with its effort.
-fn compactor_for(inner: &Inner, session: SessionId, attached: &Attached) -> ModelCompactor {
-    let model = inner.cfg.read().model.clone();
-    let (model, effort) = match model.as_ref().or(inner.title_model.as_ref()) {
+/// `agent.title_model` → else the session's own model with its effort —
+/// every link read live (137F E1). Keyed by model id + effort.
+fn compactor_for(
+    inner: &Inner,
+    session: SessionId,
+    attached: &Attached,
+) -> (String, Arc<dyn Compactor>) {
+    let chosen = inner
+        .cfg
+        .read()
+        .model
+        .clone()
+        .or_else(|| inner.title_model.read().clone());
+    if let Some(f) = &inner.compactor_for_tests {
+        let id = chosen.unwrap_or_else(|| attached.model.id.clone());
+        let c = f(&id);
+        return (id, c);
+    }
+    let (model, effort) = match chosen {
         Some(id) => match inner
             .catalog
-            .resolve(id, &*crate::supervisor::configured(inner.auth.clone()))
+            .read()
+            .resolve(&id, &*crate::supervisor::configured(inner.auth.clone()))
         {
             Ok(m) => {
                 let effort = crate::frame::default_effort(&m);
@@ -318,12 +575,45 @@ fn compactor_for(inner: &Inner, session: SessionId, attached: &Attached) -> Mode
         },
         None => (attached.model.clone(), attached.effort.clone()),
     };
-    ModelCompactor {
+    let base =
+        crate::backend::target_for(&model, &inner.auth).map(|t| t.endpoint.base_url().to_owned());
+    let local = compactor::local_endpoint(&model, base.as_deref());
+    // E8: a local Ollama model must not spend the reply cap on thinking
+    // (`think: false`) — genai's own Ollama adapter only, not a gateway (R1-14).
+    let effort = if local.is_some() && base.is_none() && crate::loop_::ns(&model.genai) == "ollama"
+    {
+        Some(genai::chat::ReasoningEffort::Zero)
+    } else {
+        effort
+    };
+    let key = format!("{}|{effort:?}", model.id);
+    let c = ModelCompactor {
         session,
         backend: Backend::for_model(&model, &inner.client, &inner.auth),
         model,
         system: compactor::prompt(&attached.agent),
         effort,
+        local,
+        cfg: inner.cfg.clone(),
+    };
+    (key, Arc::new(c))
+}
+
+/// E1/E2: re-resolve the compactor of `session` (`None` = every attached
+/// session); a changed one cancels its old calls and resets backoff. Every
+/// target's pump wakes either way (a changed `jobs` applies now, R1-7).
+pub(crate) fn reresolve(inner: &Inner, session: Option<SessionId>) {
+    let targets: Vec<(SessionId, Arc<State>, Attached)> = inner
+        .sessions
+        .lock()
+        .iter()
+        .filter(|(id, _)| session.is_none_or(|s| s == **id))
+        .map(|(id, h)| (*id, h.state.clone(), h.attached.clone()))
+        .collect();
+    for (id, state, attached) in targets {
+        if !state.switch(compactor_for(inner, id, &attached)) {
+            state.wake.notify_one();
+        }
     }
 }
 
@@ -336,7 +626,7 @@ pub(crate) async fn resume_all(inner: &Inner) -> anyhow::Result<usize> {
         let Ok(session) = row.id.parse::<SessionId>() else {
             continue;
         };
-        let model = match inner.catalog.resolve(
+        let model = match inner.catalog.read().resolve(
             &row.model,
             &*crate::supervisor::configured(inner.auth.clone()),
         ) {
@@ -384,30 +674,34 @@ pub(crate) async fn attach(
             state
         }
         None => {
-            let compactor: Arc<dyn Compactor> = match inner.compactor_for_tests.clone() {
-                Some(c) => c,
-                None => Arc::new(compactor_for(inner, session, &attached)),
-            };
-            let state = Arc::new(State::new(session, store, inner, compactor, meta));
+            let current = compactor_for(inner, session, &attached);
+            let state = Arc::new(State::new(session, store, inner, current, meta));
             load(&state).await?;
             state
         }
     };
     let cancel = CancellationToken::new();
     let handle = Handle {
-        attached,
+        attached: attached.clone(),
         state: state.clone(),
         cancel: cancel.clone(),
     };
     inner.sessions.lock().insert(session, handle);
+    // R1-2: a link of the chain that changed while this attach ran (or the
+    // session's model since the last one) — idempotent when nothing moved.
+    state.switch(compactor_for(inner, session, &attached));
     if mode == MemoryMode::Endless {
         start_pump(state, cancel);
     }
     Ok(())
 }
 
+/// The actor stopped: stop the pump and cancel its calls in flight, so a
+/// local permit is not held for a whole attempt (R1-9).
 pub(crate) fn detach(inner: &Inner, session: SessionId) {
-    inner.sessions.lock().remove(&session);
+    if let Some(h) = inner.sessions.lock().remove(&session) {
+        h.state.cancel_calls();
+    }
 }
 
 /// Load units (cache + rows) and nodes from the store into a fresh state.
@@ -541,16 +835,7 @@ fn schedule(state: &Arc<State>) {
     let t = live.t();
     let base = live.base;
     let now = Instant::now();
-    // Rule 3 frontier: the start of the first unbuilt view part (T when all built).
-    live.ensure_fold(cfg);
-    let frontier = live
-        .fold
-        .as_ref()
-        .expect("ensured")
-        .parts
-        .iter()
-        .find(|p| !live.tree.built(p.l, p.i))
-        .map_or(t, |p| p.start());
+    let frontier = live.frontier(cfg);
     let free = |live: &Live, key: &(u8, u64)| {
         !live.running.contains(key) && live.failed.get(key).is_none_or(|r| r.at <= now)
     };
@@ -575,10 +860,58 @@ fn schedule(state: &Arc<State>) {
         }
         l += 1;
     }
-    let slots = usize::from(state.cfg.read().jobs.max(1)).saturating_sub(live.running.len());
-    for key in candidates.into_iter().take(slots) {
+    let picked: Vec<(u8, u64)> = if state.compactor().local().is_some() {
+        // E9 / R2-1: a local compactor is one serial server, so the gate
+        // serialises the calls and orders them by priority. Per session, one
+        // level-0 job and one merge may wait there at once, so a queued merge
+        // never keeps the next frontier job from being spawned.
+        let level0 = live.running.iter().any(|k| k.0 == 0);
+        let merging = live.running.iter().any(|k| k.0 > 0);
+        let frontier = candidates.iter().find(|k| k.0 == 0 && !level0);
+        let merge = candidates.iter().find(|k| k.0 > 0 && !merging);
+        frontier.into_iter().chain(merge).copied().collect()
+    } else {
+        let slots = usize::from(state.cfg.read().jobs.max(1)).saturating_sub(live.running.len());
+        candidates.into_iter().take(slots).collect()
+    };
+    for key in picked {
         live.running.insert(key);
         spawn_build(state.clone(), key, &mut live);
+    }
+}
+
+/// E10: a job task that ends without reaching [`finish`] releases its
+/// `running` key and counts as a failure, so the node retries — unless its
+/// calls were cancelled (a switch, a retry, a detach: R1-3).
+struct JobGuard {
+    state: Arc<State>,
+    key: (u8, u64),
+    model: String,
+    cancel: CancellationToken,
+    armed: bool,
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        {
+            let mut live = self.state.live.lock();
+            live.running.remove(&self.key);
+            if !self.cancel.is_cancelled() {
+                record_failure(
+                    &self.state,
+                    &mut live,
+                    self.key,
+                    "compactor task ended unexpectedly",
+                    &self.model,
+                );
+            }
+            live.dirty = true;
+        }
+        self.state.built_tx.send_modify(|v| *v += 1);
+        self.state.wake.notify_one();
     }
 }
 
@@ -631,10 +964,23 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
             fold::render(&live.tree, &f, &live.units).text()
         }
     };
+    let (compactor, cancel) = {
+        let cur = state.current.read();
+        (cur.compactor.clone(), cur.cancel.clone())
+    };
+    // R1-8: a live session's next line goes before merges and backfill.
+    let priority = u8::from(l == 0 && live.backfill().is_none());
     tokio::spawn(async move {
+        let mut guard = JobGuard {
+            state: state.clone(),
+            key,
+            model: compactor.model_id().to_owned(),
+            cancel: cancel.clone(),
+            armed: true,
+        };
         let started = Instant::now();
         let outcome = match (free_text, step) {
-            (Some(text), _) => Ok(Node {
+            (Some(text), _) => Ok(Some(Node {
                 l,
                 i,
                 size: text.len() as u32,
@@ -642,17 +988,120 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
                 free: true,
                 model: None,
                 tries: 0,
-            }),
-            (None, Some(step)) => call(&state, l, i, &ctx, &step).await,
+            })),
+            (None, Some(step)) => {
+                let job = Job {
+                    l,
+                    i,
+                    priority,
+                    cancel: &cancel,
+                };
+                call(&state, &compactor, job, &ctx, &step).await
+            }
             (None, None) => Err("no step".to_owned()),
         };
-        finish(&state, key, outcome, started.elapsed()).await;
+        guard.armed = false;
+        finish(
+            &state,
+            key,
+            outcome,
+            started.elapsed(),
+            compactor.model_id(),
+            &cancel,
+        )
+        .await;
     });
 }
 
-/// One node's compactor build, with its `model_calls` row.
-async fn call(state: &State, l: u8, i: u64, ctx: &str, step: &Step) -> Result<Node, String> {
-    let c = state.compactor.as_ref();
+/// One model-built node's job parameters.
+struct Job<'a> {
+    l: u8,
+    i: u64,
+    /// E9 queue priority (R1-8).
+    priority: u8,
+    /// Cancelled by a switch, a retry or a detach.
+    cancel: &'a CancellationToken,
+}
+
+/// Bytes per token for prompt sizing (the 128 KB view ≈ 43k tokens).
+const BYTES_PER_TOKEN: usize = 3;
+/// Prompt bytes one more try adds (the refused reply + the correction).
+const RETRY_BYTES: usize = 3_072;
+
+/// E8: how many bytes of the `<chat>` view `c` may see — `local_ctx_bytes`
+/// for a local compactor; for a known window, what fits beside the system
+/// prompt, the step, the retries and the reply cap with a 10 % margin. The
+/// step (the unit itself) is never trimmed.
+fn ctx_budget(c: &dyn Compactor, step: &Step, cfg: &super::EndlessConfig, local: bool) -> usize {
+    let mut max = if local {
+        cfg.local_ctx_bytes.clamp(4_000, 256_000) as usize
+    } else {
+        usize::MAX
+    };
+    if let Some(window) = c.model().model.as_ref().map(|m| m.limit.context as usize)
+        && window > 0
+    {
+        let fixed = compactor::COMPACT.len()
+            + step.render(cfg.node_bytes).len()
+            + usize::from(cfg.tries.max(1) - 1) * RETRY_BYTES;
+        let room = (window * 9 / 10).saturating_sub(c.out_tokens() as usize) * BYTES_PER_TOKEN;
+        max = max.min(room.saturating_sub(fixed));
+    }
+    max
+}
+
+/// `ctx` cut to at most `max` bytes, keeping its newest lines under the `<chat>` opener.
+fn fit_ctx(ctx: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    const OPEN: &str = "<chat>\n";
+    if ctx.len() <= max {
+        return ctx.into();
+    }
+    let body = ctx.strip_prefix(OPEN).unwrap_or(ctx);
+    let from = body.len().saturating_sub(max.saturating_sub(OPEN.len()));
+    // Start at a line boundary (a byte after `\n` is a char boundary).
+    let from = body.as_bytes()[from..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .map_or(body.len(), |p| from + p + 1);
+    format!("{OPEN}{}", &body[from..]).into()
+}
+
+/// One node's compactor build, with its `model_calls` row. `Ok(None)`: the
+/// job's calls were cancelled (E3 switch, R1-9 detach, R1-10 retry) — not a
+/// failure, the node reschedules.
+async fn call(
+    state: &State,
+    c: &Arc<dyn Compactor>,
+    job: Job<'_>,
+    ctx: &str,
+    step: &Step,
+) -> Result<Option<Node>, String> {
+    let Job {
+        l,
+        i,
+        priority,
+        cancel,
+    } = job;
+    let local = c.local();
+    let cfg = state.cfg.read().clone();
+    // E9: a local endpoint's engine-wide queue; the wait is never timed.
+    let _permit = match &local {
+        Some(endpoint) => {
+            let gate = state.queues.get(endpoint, cfg.local_jobs);
+            tokio::select! {
+                p = gate.acquire(priority) => Some(p),
+                _ = cancel.cancelled() => return Ok(None),
+            }
+        }
+        None => None,
+    };
+    // E6: the attempt bound starts after the permit.
+    let attempt = Duration::from_secs(u64::from(if local.is_some() {
+        cfg.local_attempt_secs.clamp(30, 7_200)
+    } else {
+        cfg.attempt_secs.clamp(10, 3_600)
+    }));
+    let ctx = fit_ctx(ctx, ctx_budget(c.as_ref(), step, &cfg, local.is_some()));
     let model = c.model();
     let request_id = format!("endless:{l}:{i}:{}", uuid::Uuid::now_v7());
     let reserved = state
@@ -671,19 +1120,43 @@ async fn call(state: &State, l: u8, i: u64, ctx: &str, step: &Step) -> Result<No
     if let Err(e) = state.store.mark_dispatched(&reserved).await {
         tracing::warn!(error = %e, "endless: mark_dispatched");
     }
-    let (node_bytes, tries) = {
-        let cfg = state.cfg.read();
-        (cfg.node_bytes, cfg.tries)
+    // E10: the last-resort bound over the whole job; a panic is a failure
+    // whose ledger row still settles (R1-4).
+    let outer = attempt * u32::from(cfg.tries.max(1)) + Duration::from_secs(60);
+    let build = tokio::time::timeout(
+        outer,
+        std::panic::AssertUnwindSafe(compactor::build(
+            c.as_ref(),
+            &ctx,
+            step,
+            cfg.node_bytes,
+            cfg.tries,
+            attempt,
+        ))
+        .catch_unwind(),
+    );
+    let built = tokio::select! {
+        b = build => Some(match b {
+            Ok(Ok(built)) => built,
+            Ok(Err(_panic)) => Err("compactor panicked".to_owned()),
+            Err(_) => Err(format!("compactor job timed out after {}s", outer.as_secs())),
+        }),
+        _ = cancel.cancelled() => None,
     };
-    let built = compactor::build(c, ctx, step, node_bytes, tries).await;
+    // A failure that raced the switch is the old model's: not counted either.
+    let built = built.filter(|b| b.is_ok() || !cancel.is_cancelled());
     let (status, usage) = match &built {
-        Ok(b) => (CallStatus::Settled, b.usage()),
-        Err(_) => (CallStatus::Failed, None),
+        Some(Ok(b)) => (CallStatus::Settled, b.usage()),
+        Some(Err(_)) => (CallStatus::Failed, None),
+        None => (CallStatus::Cancelled, None),
     };
     let obs = compactor::observation(usage.as_ref(), model);
     if let Err(e) = state.store.settle_call(&reserved, status, obs).await {
         tracing::warn!(error = %e, "endless: settle_call");
     }
+    let Some(built) = built else {
+        return Ok(None);
+    };
     let built = built?;
     if let Err(e) = state
         .store
@@ -692,7 +1165,7 @@ async fn call(state: &State, l: u8, i: u64, ctx: &str, step: &Step) -> Result<No
     {
         tracing::warn!(error = %e, "endless: endless_calls");
     }
-    Ok(Node {
+    Ok(Some(Node {
         l,
         i,
         size: built.text.len() as u32,
@@ -700,22 +1173,60 @@ async fn call(state: &State, l: u8, i: u64, ctx: &str, step: &Step) -> Result<No
         free: false,
         model: Some(c.model_id().to_owned()),
         tries: built.tries,
-    })
+    }))
 }
 
-/// Persist and publish one job's outcome.
-async fn finish(state: &State, key: (u8, u64), outcome: Result<Node, String>, took: Duration) {
+/// One more consecutive failure of `key`, with its backoff (caller holds `live`).
+fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model: &str) {
+    let base = state.cfg.read().retry_secs;
+    let prev = live.failed.get(&key).map_or(0, |r| r.failures);
+    let failures = prev.saturating_add(1);
+    let delay = retry_delay(base, failures);
+    live.failed.insert(
+        key,
+        Retry {
+            at: Instant::now() + delay,
+            failures,
+            error: one_line(e, 300),
+            model: model.to_owned(),
+        },
+    );
+    if live.reported.insert(key) {
+        tracing::warn!(session = %state.session, l = key.0, i = key.1, error = %e, "endless: node failed (will retry)");
+        live.pending_error = Some(format!(
+            "{}+{}: {e}",
+            id_n(key.0, key.1).0,
+            id_n(key.0, key.1).1
+        ));
+    }
+    if delay >= RETRY_CAP && (prev == 0 || retry_delay(base, prev) < RETRY_CAP) {
+        tracing::warn!(session = %state.session, l = key.0, i = key.1, model, failures, error = %e, "endless: node keeps failing (retrying every 30 min)");
+    }
+}
+
+/// Persist and publish one job's outcome (`Ok(None)`: its calls were
+/// cancelled). A failure of a job whose `cancel` fired is the old
+/// compactor's (or a retried / detached call's) and is dropped under the
+/// `live` lock, so no stale backoff outlives a switch (R1-3).
+async fn finish(
+    state: &State,
+    key: (u8, u64),
+    outcome: Result<Option<Node>, String>,
+    took: Duration,
+    model: &str,
+    cancel: &CancellationToken,
+) {
     let outcome = match outcome {
-        Ok(node) => match state.store.endless_node_put(state.session, &node).await {
-            Ok(()) => Ok(node),
+        Ok(Some(node)) => match state.store.endless_node_put(state.session, &node).await {
+            Ok(()) => Ok(Some(node)),
             Err(e) => Err(format!("store: {e}")),
         },
-        Err(e) => Err(e),
+        other => other,
     };
     let mut live = state.live.lock();
     live.running.remove(&key);
     match outcome {
-        Ok(node) => {
+        Ok(Some(node)) => {
             if node.l == 0 && !node.free {
                 live.build_secs.0 += took.as_secs_f64();
                 live.build_secs.1 += 1;
@@ -723,45 +1234,29 @@ async fn finish(state: &State, key: (u8, u64), outcome: Result<Node, String>, to
             live.failed.remove(&key);
             live.tree.insert(node);
             live.invalidate();
-            state.built_tx.send_modify(|v| *v += 1);
         }
-        Err(e) => {
-            let base = state.cfg.read().retry_secs;
-            let prev = live.failed.get(&key).map_or(0, |r| r.failures);
-            let failures = prev.saturating_add(1);
-            let delay = retry_delay(base, failures);
-            live.failed.insert(
-                key,
-                Retry {
-                    at: Instant::now() + delay,
-                    failures,
-                },
-            );
-            if live.reported.insert(key) {
-                tracing::warn!(session = %state.session, l = key.0, i = key.1, error = %e, "endless: node failed (will retry)");
-                live.pending_error = Some(format!(
-                    "{}+{}: {e}",
-                    id_n(key.0, key.1).0,
-                    id_n(key.0, key.1).1
-                ));
-            }
-            if delay >= RETRY_CAP && (prev == 0 || retry_delay(base, prev) < RETRY_CAP) {
-                tracing::warn!(session = %state.session, l = key.0, i = key.1, model = %state.compactor.model_id(), failures, error = %e, "endless: node keeps failing (retrying every 30 min)");
-            }
-        }
+        Ok(None) => {}
+        Err(_) if cancel.is_cancelled() => {}
+        Err(e) => record_failure(state, &mut live, key, &e, model),
     }
     live.dirty = true;
     drop(live);
+    // `settle` re-checks on every outcome (a failure may stall the frontier, E4).
+    state.built_tx.send_modify(|v| *v += 1);
     state.wake.notify_one();
 }
 
 /// Publish `EndlessProgress` if due; returns how long the loop may sleep.
 fn emit_progress(state: &Arc<State>) -> Duration {
     let mut live = state.live.lock();
+    // R1-11: a failed node that is running or already due wakes the loop
+    // through `finish` / `schedule`; only future retries set the timer.
+    let now = Instant::now();
     let next_retry = live
         .failed
-        .values()
-        .map(|r| r.at.saturating_duration_since(Instant::now()))
+        .iter()
+        .filter(|(k, r)| r.at > now && !live.running.contains(*k))
+        .map(|(_, r)| r.at - now)
         .min()
         .unwrap_or(Duration::from_secs(60));
     if !live.dirty {
@@ -786,6 +1281,7 @@ fn emit_progress(state: &Arc<State>) -> Duration {
         settling: unbuilt > 0,
         error: live.pending_error.take(),
         backfill: live.backfill(),
+        stalled: live.stalled(cfg),
     };
     drop(live);
     let rt = state.rt.clone();
@@ -795,6 +1291,16 @@ fn emit_progress(state: &Arc<State>) -> Duration {
 
 fn state_of(inner: &Inner, session: SessionId) -> Option<Arc<State>> {
     inner.sessions.lock().get(&session).map(|h| h.state.clone())
+}
+
+/// `s` on one line (whitespace runs → one space), at most `max` chars.
+fn one_line(s: &str, max: usize) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect()
 }
 
 pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> bool {
@@ -808,13 +1314,20 @@ pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> 
     let mut rx = state.built_tx.subscribe();
     let deadline = Instant::now() + max;
     loop {
-        let unbuilt = {
+        let (unbuilt, stalled) = {
             let mut live = state.live.lock();
             let cfg = live.fold_cfg(&state.cfg.read());
-            live.fold(cfg).unbuilt(&live.tree)
+            (
+                live.fold(cfg).unbuilt(&live.tree),
+                live.frontier_stalled(cfg),
+            )
         };
         if unbuilt == 0 {
             return true;
+        }
+        // E4: a frontier that keeps failing will not land within this turn's wait.
+        if stalled {
+            return false;
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() || tokio::time::timeout(left, rx.changed()).await.is_err() {
@@ -1143,14 +1656,16 @@ pub(crate) async fn set_mode(
                         .session(session)
                         .await?
                         .ok_or_else(|| anyhow::anyhow!("no session {session}"))?;
+                    let model = inner
+                        .catalog
+                        .read()
+                        .resolve(
+                            &row.model,
+                            &*crate::supervisor::configured(inner.auth.clone()),
+                        )
+                        .map_err(anyhow::Error::msg)?;
                     Attached {
-                        model: inner
-                            .catalog
-                            .resolve(
-                                &row.model,
-                                &*crate::supervisor::configured(inner.auth.clone()),
-                            )
-                            .map_err(anyhow::Error::msg)?,
+                        model,
                         effort: row.effort.as_deref().and_then(crate::effort_of),
                         agent: row.desk.unwrap_or_else(|| "theuth".to_owned()),
                         store: None,
@@ -1227,10 +1742,41 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         unbuilt,
         units: live.t(),
         stats,
-        model: state.compactor.model_id().to_owned(),
+        model: state.compactor().model_id().to_owned(),
         view_bytes: cfg.view_bytes,
         backfill: live.backfill(),
+        stalled: if mode == MemoryMode::Endless {
+            live.stalled(cfg)
+        } else {
+            None
+        },
     })
+}
+
+/// RPC `endless_retry` (137F E5, R1-10): cancel the calls in flight (a hung
+/// call restarts; a cancel is no failure), re-resolve the compactor, let
+/// every failed node run now, wake the pump. A cancelled job keeps its
+/// `running` key until it settles, so `schedule` never starts a duplicate.
+pub(crate) async fn retry(inner: &Inner, session: SessionId) -> anyhow::Result<SessionMemory> {
+    if let Some(state) = state_of(inner, session) {
+        let endless = state.live.lock().mode == MemoryMode::Endless;
+        if endless {
+            state.cancel_calls();
+            reresolve(inner, Some(session));
+            state.reset_backoff();
+        }
+    }
+    memory(inner, session).await
+}
+
+/// R1-15: the frontier keeps failing — why `settle` returned early.
+pub(crate) fn frontier_failing(inner: &Inner, session: SessionId) -> bool {
+    let Some(state) = state_of(inner, session) else {
+        return false;
+    };
+    let mut live = state.live.lock();
+    let cfg = live.fold_cfg(&state.cfg.read());
+    live.frontier_stalled(cfg)
 }
 
 /// Test seam: a state over an in-memory store with a scripted compactor is
@@ -1271,7 +1817,38 @@ pub(crate) async fn finish_for_tests(
     outcome: Result<Node, String>,
 ) {
     let state = state_of(inner, session).expect("attached");
-    finish(&state, key, outcome, Duration::ZERO).await;
+    let model = state.compactor().model_id().to_owned();
+    let cancel = CancellationToken::new();
+    finish(
+        &state,
+        key,
+        outcome.map(Some),
+        Duration::ZERO,
+        &model,
+        &cancel,
+    )
+    .await;
+}
+
+/// Test seam: the key of the compactor in force (the resolved id in tests).
+#[cfg(test)]
+pub(crate) fn key_for_tests(state: &State) -> String {
+    state.current.read().key.clone()
+}
+
+/// Test seam: the engine-wide gate of a local endpoint.
+#[cfg(test)]
+pub(crate) fn gate_for_tests(inner: &Inner, endpoint: &str) -> Arc<Gate> {
+    inner.queues.get(endpoint, inner.cfg.read().local_jobs)
+}
+
+/// Test seam: the session's running job keys, sorted.
+#[cfg(test)]
+pub(crate) fn running_for_tests(inner: &Inner, session: SessionId) -> Vec<(u8, u64)> {
+    let state = state_of(inner, session).expect("attached");
+    let mut v: Vec<_> = state.live.lock().running.iter().copied().collect();
+    v.sort();
+    v
 }
 
 #[cfg(test)]
@@ -1295,5 +1872,152 @@ mod tests {
         assert_eq!(retry_delay(10, 64), RETRY_CAP);
         assert_eq!(retry_delay(10, u32::MAX), RETRY_CAP);
         assert_eq!(retry_delay(u32::MAX, u32::MAX), RETRY_CAP);
+    }
+
+    /// A compactor with a catalog entry (window, price) or none (local).
+    struct Sized(models::Resolved);
+
+    impl Compactor for Sized {
+        fn compress<'a>(
+            &'a self,
+            _ctx: &'a str,
+            _convo: &'a [genai::chat::ChatMessage],
+        ) -> futures::future::BoxFuture<'a, Result<compactor::Reply, String>> {
+            Box::pin(async { Err("unused".to_owned()) })
+        }
+        fn model(&self) -> &models::Resolved {
+            &self.0
+        }
+    }
+
+    fn view(lines: usize) -> String {
+        let body: String = (0..lines)
+            .map(|k| format!("line {k:05} of the view ✓\n"))
+            .collect();
+        format!("<chat>\n{body}</chat>")
+    }
+
+    /// 137F E8: a local compactor sees ≤ `local_ctx_bytes` of the view, the
+    /// newest lines kept whole; a known window fits prompt + reply with 10 % margin.
+    #[test]
+    fn prompt_view_fits_the_compactor() {
+        let cfg = super::super::EndlessConfig {
+            local_ctx_bytes: 4_000,
+            ..Default::default()
+        };
+        let step = Step::Unit {
+            kind: tree::Kind::User,
+            text: "x".repeat(cfg.cap_chars as usize),
+            earlier: vec![],
+        };
+        let ctx = view(2_000);
+        let local = Sized(resolved_for_tests("ollama/q"));
+        let max = ctx_budget(&local, &step, &cfg, true);
+        assert_eq!(max, 4_000);
+        let fit = fit_ctx(&ctx, max);
+        assert!(fit.len() <= 4_000, "{}", fit.len());
+        assert!(
+            fit.starts_with("<chat>\nline ") && fit.ends_with("line 01999 of the view ✓\n</chat>")
+        );
+        assert!(fit.len() > 3_900, "only whole lines dropped: {}", fit.len());
+        assert_eq!(fit_ctx(&ctx, usize::MAX), ctx, "under budget: untouched");
+
+        let window: models::Model = serde_json::from_value(serde_json::json!({
+            "id": "m", "name": "m", "limit": {"context": 32_000, "output": 4096},
+            "cost": {"input": 1.0, "output": 2.0}
+        }))
+        .unwrap();
+        let cloud = Sized(models::Resolved {
+            model: Some(window),
+            ..resolved_for_tests("p/m")
+        });
+        let max = ctx_budget(&cloud, &step, &cfg, false);
+        let prompt = compactor::COMPACT.len()
+            + step.render(cfg.node_bytes).len()
+            + 4 * RETRY_BYTES
+            + fit_ctx(&view(20_000), max).len();
+        let tokens = prompt / BYTES_PER_TOKEN + compactor::MAX_TOKENS as usize;
+        assert!(tokens <= 32_000 * 9 / 10, "{tokens}");
+        assert!(max > 30_000, "the window is used: {max}");
+        let big = Sized(models::Resolved {
+            model: None,
+            ..resolved_for_tests("p/m")
+        });
+        assert_eq!(
+            ctx_budget(&big, &step, &cfg, false),
+            usize::MAX,
+            "no window known"
+        );
+    }
+
+    /// R1-8: with the one permit held, a frontier waiter queued after a
+    /// merge waiter gets the permit first; a dropped wait gives up its place.
+    #[tokio::test]
+    async fn local_gate_serves_the_frontier_first() {
+        let gate = Gate::new(1);
+        let held = gate.acquire(0).await;
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let waiter = |name: &'static str, priority: u8| {
+            let (gate, order) = (gate.clone(), order.clone());
+            tokio::spawn(async move {
+                let _p = gate.acquire(priority).await;
+                order.lock().push(name);
+                tokio::task::yield_now().await;
+            })
+        };
+        let gone = {
+            let gate = gate.clone();
+            tokio::spawn(async move {
+                let _p = gate.acquire(1).await;
+                unreachable!("aborted before the permit");
+            })
+        };
+        let merge = waiter("merge", 0);
+        tokio::task::yield_now().await;
+        let frontier = waiter("frontier", 1);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        gone.abort();
+        let _ = gone.await;
+        assert_eq!(
+            gate.state.lock().waiting.len(),
+            2,
+            "the cancelled wait left the line"
+        );
+        drop(held);
+        frontier.await.unwrap();
+        merge.await.unwrap();
+        assert_eq!(*order.lock(), ["frontier", "merge"]);
+        assert_eq!(gate.state.lock().free, 1, "every permit came back");
+    }
+
+    /// R2-2: under steady frontier load every 4th grant goes to the oldest
+    /// waiter, so a merge queued first is not starved.
+    #[tokio::test]
+    async fn local_gate_ages_the_oldest_waiter_in() {
+        let gate = Gate::new(1);
+        let held = gate.acquire(1).await; // grant 1
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let waiter = |name: &'static str, priority: u8| {
+            let (gate, order) = (gate.clone(), order.clone());
+            tokio::spawn(async move {
+                let _p = gate.acquire(priority).await;
+                order.lock().push(name);
+                tokio::task::yield_now().await;
+            })
+        };
+        let mut tasks = vec![waiter("merge", 0)];
+        tokio::task::yield_now().await;
+        for name in ["f1", "f2", "f3", "f4"] {
+            tasks.push(waiter(name, 1));
+            tokio::task::yield_now().await;
+        }
+        drop(held);
+        for t in tasks {
+            t.await.unwrap();
+        }
+        // Grants 2 and 3 by priority, grant 4 to the oldest, then priority again.
+        assert_eq!(*order.lock(), ["f1", "f2", "merge", "f3", "f4"]);
     }
 }

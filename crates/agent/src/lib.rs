@@ -184,7 +184,7 @@ pub use dreaming_ledger::{
 };
 pub use endless::{
     Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
-    SessionMemory, SetMode, UnitFilter, ViewLine, resolved_compactor_model,
+    SessionMemory, SetMode, Stalled, UnitFilter, ViewLine, resolved_compactor_model,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
@@ -1048,6 +1048,15 @@ pub struct SessionMemoryQuery {
     pub session: SessionId,
 }
 
+/// `ask` → `Result<SessionMemory, String>` (137F `endless_retry`): reset the
+/// backoff of every failed node, wake the pump, return the fresh state; an
+/// epochs session's state comes back unchanged.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct EndlessRetry {
+    /// Target session.
+    pub session: SessionId,
+}
+
 /// `ask` → `Result<Vec<ViewLine>, String>` (137 §9 `zoom`): the two lines
 /// under `id+n`, or the whole unit when `n == 1`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -1119,8 +1128,9 @@ pub struct GetEndlessSettings;
 /// service's shared config (`view_bytes`/`slack` re-fold at the next render,
 /// `settle_secs` per turn), `default_chat` for the next created session, and
 /// [`EndlessConfigChanged`] on the bus for the roster (`default_desk`) and
-/// the meeting plugin. The compactor model applies to sessions attached after
-/// the change. Returns what was stored.
+/// the meeting plugin. A changed compactor model reaches every attached
+/// session at once (137F: its backoff resets, calls to the old model are
+/// cancelled). Returns what was stored.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetEndlessSettings {
     /// The whole section.

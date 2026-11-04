@@ -197,6 +197,7 @@ mod tests {
             model: "p/haiku".into(),
             view_bytes: 128_000,
             backfill,
+            stalled: None,
         }
     }
 

@@ -364,6 +364,10 @@ pub trait Api {
     /// for an epochs session.
     #[method(name = "session_memory", with_extensions)]
     async fn session_memory(&self, session: SessionId) -> RpcResult<SessionMemory>;
+    /// 137F: reset the backoff of every failed view part, re-resolve the
+    /// compactor, wake the pump; the fresh `SessionMemory` (an epochs session's unchanged).
+    #[method(name = "endless_retry", with_extensions)]
+    async fn endless_retry(&self, session: SessionId) -> RpcResult<SessionMemory>;
     /// 137 §9 `zoom`: the two children of line `id+n` (`n == 1`: the whole message).
     #[method(name = "endless_zoom", with_extensions)]
     async fn endless_zoom(&self, session: SessionId, id: u64, n: u64) -> RpcResult<Vec<ViewLine>>;
@@ -2332,8 +2336,8 @@ pub trait Api {
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig>;
     /// Persist the whole `agent.endless` block to config.yaml and apply it
     /// live (defaults for new chats/desks/meetings, view budget, slack,
-    /// settle). The compactor model applies to sessions attached after the
-    /// change. A failed write changes nothing.
+    /// settle). A changed compactor model applies to every attached session
+    /// at once (137F). A failed write changes nothing.
     #[method(name = "endless_settings_set")]
     async fn endless_settings_set(&self, config: EndlessConfig) -> RpcResult<EndlessConfig>;
     /// Settings › Search (16 §8): the four external providers (enabled, base
@@ -4188,6 +4192,18 @@ impl ApiServer for Server {
             return Ok(r);
         }
         ask::<Agents, _>(agent::AGENT_ACTOR, agent::SessionMemoryQuery { session }).await
+    }
+
+    async fn endless_retry(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "endless_retry", (session,)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::EndlessRetry { session }).await
     }
 
     async fn endless_zoom(

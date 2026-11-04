@@ -82,6 +82,8 @@ A unit is one part of one `messages` row, in row order then part order; `unit.i`
 ### 5.2 Pump (when a node is built)
 A background task per endless session scans levels and starts every node that (1) is unbuilt and not running, (2) has its sources, (3) has its whole context summarised — every view part before the node's end is built (rule 3). Up to `jobs` (8) run at once. A failed node is retried after `retry_secs` (10) for ever; only its first failure is reported (`warn!` once per node, an `EndlessProgress` event with `error`). The pump runs while the session is idle too (it is the compactor trailing the chat by seconds), and on engine start for every endless session with unbuilt nodes.
 
+137F: the retry delay doubles from `retry_secs` to a 30 min cap and is visible as `stalled` (the failing node that blocks most, frontier first); `endless_retry` (which also restarts calls in flight) or a compactor change resets it. `settle` returns at once while the frontier has failed ≥ 2 times in a row (waiting out its backoff or running its retry). The compactor is re-resolved whenever `agent.endless.model`, the title model, the session's model or the provider catalog changes; calls to the old model are cancelled (`model_calls.status = cancelled`, not a failure), as are a detached session's. A **local** compactor (local runtime provider; loopback / private / CGNAT / link-local / `*.local` / single-label base-URL host; or a catalog entry without a price — `compactor::is_local`; an id the catalog does not know is cloud) gets `local_attempt_secs` per attempt instead of `attempt_secs`, one job per session, one engine-wide queue per endpoint (`local_jobs`, a live session's frontier first) whose wait is not timed, and at most `local_ctx_bytes` of the `<chat>` view (newest kept); any compactor with a known window gets the view trimmed to fit. An attempt that times out after a candidate exists keeps the candidate (tries negative); a provider error fails the node. A whole job is bounded by attempt × tries + 60 s; a panicking compactor is a failure.
+
 ### 5.3 The call
 One request per node, no tools, model per D8, `max_tokens` 600 (+ the model's thinking budget if the session uses one).
 
@@ -268,11 +270,16 @@ agent:
     retry_secs: 10
     cap_chars: 30000
     model: null              # compactor model; null = the session's model
+    attempt_secs: 120        # 137F: one cloud attempt, 10..=3600
+    local_attempt_secs: 600  # 137F: one local attempt, 30..=7200
+    local_ctx_bytes: 24000   # 137F: <chat> bytes a local compactor sees, 4000..=256000
+    local_jobs: 1            # 137F: calls in flight per local endpoint, engine-wide, 1..=16
 ```
 
 ### 11.2 RPC (crates/rpc, ts-rs bindings)
 - `create_session(options)`: `CreateSessionOptions.memory: Option<MemoryMode>` (`epochs | endless`).
 - `session_memory(session) -> SessionMemory { mode, view: Vec<ViewLine{id, n, text, built, level}>, settling: bool, unbuilt: u32, units: u64, stats: EndlessStats{calls, guard_trips: {copy, grounding, status, format, empty, size}, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, usd_estimate}, model: String, backfill: Option<{done, total, eta_secs}> }`.
+- `endless_retry(session) -> SessionMemory` (137F): resets every failed node's backoff, re-resolves the compactor, wakes the pump; `SessionMemory.stalled` / `EndlessProgress.stalled: Option<Stalled{failures, error, next_retry_at, model, blocking}>` show the failing node that blocks most (the frontier first).
 - `endless_zoom(session, id, n) -> Vec<ViewLine>` (n = 1 → one line with the whole unit text).
 - `endless_recall(session, query, limit) -> Vec<ViewLine>`.
 - `set_session_memory(session, mode) -> SessionMemory` (the `/endless` semantics, idle only; error `busy` otherwise).
