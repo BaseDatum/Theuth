@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{CellsError, Result};
 use crate::kernel::{ExecuteRequest, Kernel, KernelCtx, KernelEvent, KernelSink};
-use crate::types::{CellOutput, ExitStatus, KernelPhase, KernelSpec, RunId, RunMode};
+use crate::types::{CellOutput, ExitStatus, KernelPhase, KernelSpec, RunId};
 
 /// §5.9: one run is one protocol turn, 60 s wall clock (`agent::repl::REQUEST_TIMEOUT`).
 pub const RUN_LIMIT: Duration = agent::repl::REQUEST_TIMEOUT;
@@ -535,7 +535,7 @@ pub async fn sufficient(code: &str) -> Option<Result<(), String>> {
 mod tests {
     use super::*;
     use crate::kernel::CellsPaths;
-    use crate::types::{KernelId, Scope, SessionId};
+    use crate::types::{KernelId, RunMode, Scope, SessionId};
     use tokio::sync::mpsc;
 
     fn ctx(dir: &std::path::Path) -> KernelCtx {
