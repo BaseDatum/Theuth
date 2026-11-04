@@ -556,8 +556,12 @@ mod tests {
                 },
             ]
         );
-        // Line mode never displays; an assignment last displays nothing; selection does.
-        let evs = run(&*k, req("r_2", "1 + 1", RunMode::Line { line: 1 })).await;
+        // 171F4 T2-6: a line of a bare expression echoes like a REPL; a statement line, or an
+        // assignment last, displays nothing; selection does.
+        let evs = run(&*k, req("r_2", "1 + 2", RunMode::Line { line: 1 })).await;
+        assert!(evs.iter().any(|e| matches!(e,
+            KernelEvent::Output(CellOutput::ExecuteResult { data, .. }) if data["text/plain"] == json!("3"))), "{evs:?}");
+        let evs = run(&*k, req("r_2b", "x = 1", RunMode::Line { line: 1 })).await;
         assert!(
             !evs.iter().any(|e| matches!(e, KernelEvent::Output(_))),
             "{evs:?}"

@@ -1,0 +1,95 @@
+# 171F4-E — notes (engine: Run all race, fragment results, repeated results, line echo)
+
+Worker E, branch `fix/171f4-e`, base `a76092c4`. Decisions where the brief left a choice.
+
+## T2-1 — Run all stopped on a spurious "failed step"
+
+- `Live.done` is one `oneshot::Sender<CellRun>` created in `enqueue` with the live entry;
+  `enqueue` returns `(CellRun, Receiver)`. `cell_run` drops the receiver; `drive_pass` awaits
+  it. The old "finished before we could wait" fallback (`find_run` on the stored row) is gone.
+- `finish()` no longer takes the live entry first: it snapshots record/expect/stop, writes the
+  files and `store.finish`, and only then removes the entry, publishes `RunFinished` and tells
+  the waiter. Only the executing run's owner (`execute_one`) removes an executing run, so no
+  other path races this. A reader (`find_run`, `run_get`, a second press) now sees the live
+  record until the row is final, never an ended run's unfinished row.
+- `end_unstarted()` keeps take-first: that take is the claim between a Stop and a kernel
+  close; its waiter already heard only the final record (sent after the row).
+- Test hook `State.race` (cfg(test)): `finish` sleeps 500 ms before `store.finish`; the pass
+  waits until the run has left the live set before it waits on it. On the old ordering both
+  new tests failed (`stopped at py0 "failed", 1/5` with the hook; `py1 "failed", 2/5` without
+  it — Sky's repro); with the fix both pass. `State.delivered` (cfg(test)) records every
+  `<cell_result>` handed over, built from the delivered record.
+
+## T2-2 — fragment runs
+
+- `finish()` judges `expect` only for `RunMode::Cell`; a line/selection run's state is by exit
+  (and Stop/timeout) only, no verdict.
+- `<cell_result>` gains `mode="line"` / `mode="selection"` after `secs`; whole-cell runs carry
+  no `mode` (unchanged).
+
+## T2-5 — repeats of one cell
+
+- Where: `agent::loop_::Session::join_quiet`, the one place parked results meet the turn
+  they join (the next user message, a pass-end wake, a review wake). `fold_cell_repeats`
+  keeps each cell's newest result at the newest's position and adds `runs="N"`.
+- Cell identity from the tag: `name`, else `cell` + `message`, plus `in` (the note). A result
+  naming no cell (no `name`/`cell`) is never folded. A ticketed result (Ask theuth, a review
+  wake) is owed and never dropped; it is folded into only as the newest.
+- `earlier="…"`: the earlier runs whose `exit` differs from the newest's, counted as
+  `k failed` (any exit but `0`) and `k ok` (exit `0`), e.g. `earlier="2 failed"`,
+  `earlier="1 ok"`, `earlier="2 failed, 1 ok"`. Same exit as the newest: not mentioned.
+  `exit` alone decides (a missed expect with exit 0 counts as ok) — simple, per the brief.
+- Consumption: the dropped runs' ids are not in the turn's text, so `Store::consumed` now
+  also consumes, for each named run, the earlier (lower rowid) parked runs of the same `cell`
+  or `lineage` in the scope; they would otherwise be re-parked at every engine start. Earlier
+  runs stay in `cell_runs`.
+- Not folded: results a running turn takes at a batch boundary (the passive steer queue,
+  `drain_steer`); the brief names parking and pass-end/review batching only.
+
+## T2-6 — line run of a bare expression
+
+- shim.py: the last bare expression is shown in every mode (the `mode` filter is gone); a
+  statement line prints nothing. Monty: the `Line` exclusion is gone; a statement's value is
+  `None`, which shows nothing. Selection and cell runs unchanged. `171-cells.md` §5.8 frame 1
+  updated.
+
+## T2-7 — a killed kernel's screen (security)
+
+- Boot side: 171F3 R1 (`JobRow::is_cell_kernel` in `reap` / `settle_transferred` /
+  `resume_calls`) already keeps a kernel out of `<job_result>`, screen and tail; the new test
+  `durability::jobs::tests::a_killed_kernels_private_screen_reaches_no_model_input` pins the
+  2.18.2 shape (`j24`, `/opt/homebrew/bin/bash (user cell kernel)`, `.cell.log`, killed at
+  shutdown, persisted screen + log with private output and `AKIAIOSFODNN7EXAMPLE`): nothing
+  delivered, and neither string in anything the jobs actor is told.
+- Shutdown side: `KillAll` (`Jobs::kill_lost`) wrote every PTY's screen to `pty_screens`,
+  a kernel's too (as did the snapshot timer and the exit path) — unmasked, private output
+  included — for readers that are all model-facing. Fix at the one shared function:
+  `PtyHandle.cell`; `snapshot_to_store` writes nothing for a kernel. Nothing reads a
+  kernel's stored screen (the cells actor renders lost runs from its own log range; the cell
+  view uses `cell_attach` / `out.ansi`). Test `pty::tests::cell_kernel_screen_never_stored_or_reported_at_shutdown`
+  (failed on the old code: the `pty_screens` row held `private-out\nAKIAIOSFODNN7EXAMPLE`).
+- The `Settle::Unknown` of a kernel at shutdown ("j24: killed at shutdown before it settled")
+  carries only the job id; the supervisor records it as an error row / `AgentEvent::Error`
+  (UI, not model input) and delivers nothing. Left as is.
+
+## N6 — note cwd `.` and note pass attributes
+
+- (a) `note::lexical` resolves `.` / `..` by the text (no symlink followed, as before);
+  `note::cell_cwd` applies it to every resolved note cwd, and the chat resolver
+  (`expand_home`) to chat cwds, so the run, its record and `<cell_result cwd=…>` carry
+  `/tmp/cells-test`, not `/tmp/cells-test/.`. `..` above the root stays at the root.
+- (b) `note::deliver` takes `pass_end` and builds the full result with it: the last result
+  of a note pass carries `pass="…" pass_end="true"` like chat. The body-less quiet line for
+  other bound notebook chats stays ids + exit (157), without pass attributes.
+- The test hook `State.delivered` now records the text actually handed over (chat:
+  `wrapped`; note: what `note::deliver` built), which the T2-1 and N6 pass tests read.
+
+## For the other worker (D)
+
+- `<cell_result>` may now carry `mode="line"|"selection"`, `runs="N"` and `earlier="…"`
+  (all after `run=`, which stays first). The transcript card / user-bubble row reads the
+  turn's text, so a folded result shows once; if the card wants to say "×5", read `runs`.
+- A line/selection run of a cell with `expect` is `done` on exit 0 with `expect: []` — the
+  gutter/fold should not show an expect verdict for it.
+- T2-6: a line run of a bare expression now has an `execute_result` output; a statement line
+  still has none (the "ran" mark is yours).

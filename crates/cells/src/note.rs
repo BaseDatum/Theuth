@@ -320,18 +320,39 @@ pub fn cell_cwd(
         p.starts_with('/').then(|| PathBuf::from(p))
     };
     let base = defaults.cwd.as_deref().and_then(abs);
-    match cell_cwd {
+    let cwd = match cell_cwd {
         Some(c) => abs(c).or_else(|| base.map(|b| b.join(c))),
         None => base,
+    };
+    cwd.map(|p| lexical(&p))
+}
+
+/// 171F4 N6: `.` and `..` resolved by the text alone (no symlink is followed, as before):
+/// `/tmp/t/.` → `/tmp/t`, `/tmp/t/a/..` → `/tmp/t`; `..` above the root stays at the root.
+pub(crate) fn lexical(p: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(c);
+                }
+            }
+            c => out.push(c),
+        }
     }
+    out
 }
 
 /// §9.6: deliver a finished note run: the full `<cell_result in="note …">` to the origin
 /// session and the body-less quiet line to every other bound notebook chat; then upsert
-/// `cell_latest` (§13.2).
-pub async fn deliver(run: &CellRun, cleaned: &str) -> Result<(), CellsError> {
+/// `cell_latest` (§13.2). `pass_end`: the last result of a Run-all pass, which carries
+/// `pass="…" pass_end="true"` as in chat (171F4 N6). Returns the full result's text.
+pub async fn deliver(run: &CellRun, cleaned: &str, pass_end: bool) -> Result<String, CellsError> {
     let CellRef::Note { doc, key } = &run.cell else {
-        return Ok(());
+        return Ok(String::new());
     };
     let cfg = config();
     let d = docs();
@@ -360,13 +381,17 @@ pub async fn deliver(run: &CellRun, cleaned: &str) -> Result<(), CellsError> {
     let title = d.title(doc).await.unwrap_or_default();
     let in_attr = format!("note {} \\\"{}\\\"", doc.0, title.replace('"', "\\\""));
     let origin = src.as_ref().and_then(|s| author_session(&s.last_author));
-    if let Some(session) = origin {
-        let full = crate::deliver::cell_result(run, cleaned, &cfg);
-        if let Err(e) =
-            crate::deliver::deliver(session, run, with_in(&full, &in_attr), review).await
-        {
-            tracing::warn!(%session, "note cell delivery failed: {e}");
-        }
+    let x = crate::deliver::Extra {
+        name: run.name.as_deref(),
+        private: run.private,
+        pass_end,
+        ..crate::deliver::Extra::default()
+    };
+    let full = with_in(&crate::deliver::build(run, cleaned, &cfg, &x), &in_attr);
+    if let Some(session) = origin
+        && let Err(e) = crate::deliver::deliver(session, run, full.clone(), review).await
+    {
+        tracing::warn!(%session, "note cell delivery failed: {e}");
     }
     let quiet = quiet_line(run, key, &in_attr);
     for session in d.bound_sessions(doc).await {
@@ -377,7 +402,7 @@ pub async fn deliver(run: &CellRun, cleaned: &str) -> Result<(), CellsError> {
             tracing::debug!(%session, "quiet note cell line failed: {e}");
         }
     }
-    Ok(())
+    Ok(full)
 }
 
 /// §13.2: the replicated latest runs of `doc` (any engine; membership is checked by the RPC).
@@ -792,6 +817,27 @@ mod tests {
         let none = NoteDefaults::default();
         assert_eq!(cell_cwd(Some("rel"), &none, Some(home)), None);
         assert_eq!(cell_cwd(None, &none, Some(home)), None);
+        // 171F4 N6: `.` / `..` under the default resolve lexically.
+        let tmp = NoteDefaults {
+            cwd: Some("/tmp/cells-test".into()),
+            ..NoteDefaults::default()
+        };
+        assert_eq!(
+            cell_cwd(Some("."), &tmp, Some(home)),
+            Some(PathBuf::from("/tmp/cells-test"))
+        );
+        assert_eq!(
+            cell_cwd(Some("./a/../b/."), &tmp, Some(home)),
+            Some(PathBuf::from("/tmp/cells-test/b"))
+        );
+        assert_eq!(
+            cell_cwd(Some(".."), &tmp, Some(home)),
+            Some(PathBuf::from("/tmp"))
+        );
+        assert_eq!(
+            cell_cwd(Some("~/x/.."), &none, Some(home)),
+            Some(PathBuf::from("/Users/sky"))
+        );
         assert_eq!(defaults_of("no block").0, NoteDefaults::default());
     }
 
@@ -917,7 +963,7 @@ mod tests {
 
         // A private cell replicates no text; the row id is "<doc>:<name>".
         let r = run("d-fake", NoteKey::Name("preview".into()), text);
-        deliver(&r, "secret output").await.unwrap();
+        deliver(&r, "secret output", false).await.unwrap();
         let rows = latest(&doc).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -943,7 +989,7 @@ mod tests {
             block: src(public, OWNER),
             puts: Mutex::default(),
         }));
-        deliver(&r, &"x".repeat(40_000)).await.unwrap();
+        deliver(&r, &"x".repeat(40_000), false).await.unwrap();
         let rows = latest(&doc).await.unwrap();
         assert!(rows[0].text.len() <= crate::CellsConfig::default().replicate_bytes);
         let ann = Annotations.note_cell(&doc, "b1", "bash", public).unwrap();

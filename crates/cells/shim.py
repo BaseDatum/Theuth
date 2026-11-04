@@ -206,8 +206,9 @@ def execute(frame):
         linecache.cache[name] = (len(code), None, code.splitlines(True), name)
         tree = ast.parse(code, name, "exec")
         last = None
-        if frame.get("mode", "cell") in ("cell", "selection") and tree.body \
-                and isinstance(tree.body[-1], ast.Expr):
+        # Every mode shows its last bare expression: a cell/selection like Jupyter, a line
+        # like a REPL (171F4 T2-6); a statement prints nothing.
+        if tree.body and isinstance(tree.body[-1], ast.Expr):
             last = ast.Expression(tree.body.pop().value)
         exec(compile(tree, name, "exec"), NS)
         if last is not None:

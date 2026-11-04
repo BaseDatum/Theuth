@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{CellsError, Result};
 use crate::kernel::{ExecuteRequest, Kernel, KernelCtx, KernelEvent, KernelSink};
-use crate::types::{CellOutput, ExitStatus, KernelPhase, KernelSpec, RunId, RunMode};
+use crate::types::{CellOutput, ExitStatus, KernelPhase, KernelSpec, RunId};
 
 /// §5.9: one run is one protocol turn, 60 s wall clock (`agent::repl::REQUEST_TIMEOUT`).
 pub const RUN_LIMIT: Duration = agent::repl::REQUEST_TIMEOUT;
@@ -316,7 +316,8 @@ async fn run(inner: Arc<Inner>, req: ExecuteRequest, sink: KernelSink, token: Ca
     }
     let (exit, dead) = match outcome {
         Outcome::Value(v) => {
-            if v.type_name() != "NoneType" && !matches!(req.mode, RunMode::Line { .. }) {
+            // Every mode shows a last bare expression, a line run too (171F4 T2-6).
+            if v.type_name() != "NoneType" {
                 let count = {
                     let mut c = inner.count.lock();
                     *c += 1;
@@ -534,7 +535,7 @@ pub async fn sufficient(code: &str) -> Option<Result<(), String>> {
 mod tests {
     use super::*;
     use crate::kernel::CellsPaths;
-    use crate::types::{KernelId, Scope, SessionId};
+    use crate::types::{KernelId, RunMode, Scope, SessionId};
     use tokio::sync::mpsc;
 
     fn ctx(dir: &std::path::Path) -> KernelCtx {
@@ -636,6 +637,17 @@ mod tests {
         let evs = run(&*k, "r_2", "x * 2", RunMode::Cell, None).await;
         assert!(evs.iter().any(|e| matches!(e,
             KernelEvent::Output(CellOutput::ExecuteResult { data, .. }) if data["text/plain"] == "40")));
+        // 171F4 T2-6: a line run of a bare expression echoes like a REPL; a statement line
+        // prints nothing.
+        let line = RunMode::Line { line: 1 };
+        let evs = run(&*k, "r_l1", "1 + 2", line.clone(), None).await;
+        assert!(evs.iter().any(|e| matches!(e,
+            KernelEvent::Output(CellOutput::ExecuteResult { data, .. }) if data["text/plain"] == "3")), "{evs:?}");
+        let evs = run(&*k, "r_l2", "y = 1", line, None).await;
+        assert!(
+            !evs.iter().any(|e| matches!(e, KernelEvent::Output(_))),
+            "{evs:?}"
+        );
         // An exception keeps the kernel; a host name is undefined (empty tool table).
         let evs = run(&*k, "r_3", "read_file('x')", RunMode::Cell, None).await;
         assert!(

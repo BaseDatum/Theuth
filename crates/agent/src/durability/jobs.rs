@@ -1008,4 +1008,56 @@ mod tests {
             );
         }
     }
+
+    /// 171F4 T2-7, the 2.18.2 shape: a bash kernel (`j24`, `.cell.log`) killed at shutdown
+    /// whose persisted last screen and log hold a `#| private` cell's output and an
+    /// AWS-key-shaped line; through the boot reaper nothing is delivered — no `<job_result>`
+    /// body, no screen, no log tail — and neither string is anywhere in what the jobs actor
+    /// is told (the only road to a model input from here).
+    #[tokio::test]
+    async fn a_killed_kernels_private_screen_reaches_no_model_input() {
+        let scratch = temp();
+        let dir = scratch.0.clone();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let s = session(&store).await;
+        const KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+        const PRIVATE: &str = "private cell output: hunter2";
+        let screen_text = format!("{PRIVATE}\n{KEY}\n$ ");
+        let log = dir.join("j24.cell.log");
+        std::fs::write(&log, &screen_text).unwrap();
+        let mut row = running(s, "j24", "", None);
+        row.kind = JobKind::Pty;
+        row.command = format!("/opt/homebrew/bin/bash{}", tools::jobs::CELL_COMMAND);
+        row.log = Some(log);
+        // `KillAll` wrote it `exit = lost` with the shutdown time (109 §5.5).
+        row.exit = Some(JobExit::Lost);
+        row.settled_ms = Some(5_000);
+        store.job_put(&row).await.unwrap();
+        store
+            .pty_screen_put(&tools::PtyScreenRow {
+                session: s,
+                job_id: row.id.clone(),
+                revision: 3,
+                rows: 30,
+                cols: 100,
+                cursor_row: 2,
+                cursor_col: 2,
+                text: screen_text.clone(),
+                at_ms: 4_000,
+            })
+            .await
+            .unwrap();
+
+        let (report, reaped) = reap(&store, &[]).await;
+        assert_eq!((report.lost, report.orphaned), (1, 0));
+        let [j] = reaped.jobs.as_slice() else {
+            panic!("{reaped:?}");
+        };
+        assert!(j.row.is_cell_kernel());
+        assert_eq!((&j.deliver, &j.screen, j.tail.as_str()), (&None, &None, ""));
+        let told = format!("{reaped:?}");
+        assert!(!told.contains(KEY) && !told.contains("hunter2"), "{told}");
+    }
 }

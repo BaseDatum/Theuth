@@ -150,7 +150,8 @@ struct Live {
     /// Live bytes since mark C (capped tail) for a late `cell_attach`.
     buf: Vec<u8>,
     tx: broadcast::Sender<Arc<[u8]>>,
-    done: Vec<oneshot::Sender<CellRun>>,
+    /// Told the final record once its files and finished row are written (171F4 T2-1).
+    done: oneshot::Sender<CellRun>,
 }
 
 /// One kernel slot (§5.1 key `(Scope, Spec)`).
@@ -177,6 +178,13 @@ struct State {
     stopped_passes: std::collections::HashSet<String>,
     /// The last finished pass of each scope (`json(scope)`), cleared when one starts.
     last_pass: HashMap<String, PassEnd>,
+    /// 171F4 T2-1 test hook: every run pauses between its end and its finished row, and a
+    /// pass waits until its run is no longer live before it waits on it.
+    #[cfg(test)]
+    race: bool,
+    /// Every `<cell_result>` handed over, built from the delivered record.
+    #[cfg(test)]
+    delivered: Vec<String>,
 }
 
 struct Inner {
@@ -268,11 +276,12 @@ fn apply_env_rules(vars: &mut BTreeMap<String, String>) {
 
 /// `~` / `~/x` against `home`.
 fn expand_home(p: &str, home: Option<&str>) -> PathBuf {
-    match (p, home) {
+    let p = match (p, home) {
         ("~", Some(h)) => PathBuf::from(h),
         (_, Some(h)) if p.starts_with("~/") => Path::new(h).join(&p[2..]),
         _ => PathBuf::from(p),
-    }
+    };
+    note::lexical(&p) // 171F4 N6
 }
 
 /// `[from, to)` in UTF-8 bytes of the code (U1's selection offsets, header excluded); `None`
@@ -834,6 +843,7 @@ impl Cells {
             p,
         )
         .await
+        .map(|(r, _)| r)
     }
 
     fn live_of_cell(&self, cell_key: &str) -> Option<CellRun> {
@@ -850,6 +860,8 @@ impl Cells {
     }
 
     /// Insert the queued row, write `code` + `meta.json`, hand the run to its kernel's FIFO.
+    /// The receiver gets the final record (files and finished row written); registered here,
+    /// before the run can start, so no end can slip past it (171F4 T2-1).
     #[allow(clippy::too_many_arguments)]
     async fn enqueue(
         &self,
@@ -861,7 +873,7 @@ impl Cells {
         seen: String,
         pressed_by: String,
         p: Prepared,
-    ) -> Result<CellRun> {
+    ) -> Result<(CellRun, oneshot::Receiver<CellRun>)> {
         let scope = cell.scope();
         let kid = KernelId {
             scope: scope.clone(),
@@ -921,7 +933,7 @@ impl Cells {
             .insert(&record, &scope.key(), p.inspected.lineage.as_deref())
             .await?;
         let cell_key = json(&cell);
-        let spawn_worker = {
+        let (spawn_worker, finished) = {
             let mut s = self.inner.state.lock();
             let mut new_rx = None;
             let slot = s.kernels.entry(key.clone()).or_insert_with(|| {
@@ -942,6 +954,7 @@ impl Cells {
             slot.label = label;
             slot.env_warning = env.warning.clone();
             let tx = slot.tx.clone();
+            let (done, finished) = oneshot::channel();
             s.runs.insert(
                 id.clone(),
                 Live {
@@ -956,12 +969,12 @@ impl Cells {
                     stop: None,
                     buf: Vec::new(),
                     tx: broadcast::channel(256).0,
-                    done: Vec::new(),
+                    done,
                 },
             );
             s.by_cell.insert(cell_key, id.clone());
             let _ = tx.send(id.clone());
-            new_rx
+            (new_rx, finished)
         };
         if let Some(rx) = spawn_worker {
             let me = self.clone();
@@ -974,7 +987,7 @@ impl Cells {
         })
         .await;
         self.publish(CellEvent::KernelChanged { kernel: kid }).await;
-        Ok(record)
+        Ok((record, finished))
     }
 
     /// §5.10 budget: a new kernel over `max_kernels` closes the oldest idle one, else refuses.
@@ -1286,6 +1299,18 @@ impl Cells {
         self.inner.state.lock().runs.contains_key(id)
     }
 
+    /// The T2-1 hook's pass side: hold until the run is no longer live (10 s at most).
+    #[cfg(test)]
+    async fn race_wait(&self, id: &RunId) {
+        if !self.inner.state.lock().race {
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.is_live(id) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     /// Record how a live run is being stopped (`stop_after`); `false` when the run is no
     /// longer live.
     fn mark_stop(&self, id: &RunId, how: Stop) -> bool {
@@ -1298,7 +1323,8 @@ impl Cells {
     }
 
     /// A run that never reached its kernel: `cancelled` or `failed` (with the reason as its
-    /// summary).
+    /// summary). Taking the live entry first is the claim (a Stop and a kernel close may race
+    /// here); the waiter still hears only the final record, after its row.
     async fn end_unstarted(&self, id: &RunId, state: RunState, why: Option<String>) {
         let Some(mut l) = self.take_live(id) else {
             return;
@@ -1315,9 +1341,7 @@ impl Cells {
             scope: rec.cell.scope(),
         })
         .await;
-        for d in l.done {
-            let _ = d.send(rec.clone());
-        }
+        let _ = l.done.send(rec.clone());
         if state == RunState::Failed && rec.pass.is_none() {
             self.deliver_run(&rec, false, None).await;
         }
@@ -1333,7 +1357,9 @@ impl Cells {
         Some(l)
     }
 
-    /// The run's end (§8.3, §8.7): files, then the finished row, then `RunFinished`.
+    /// The run's end (§8.3, §8.7): files, then the finished row, then `RunFinished`. The run
+    /// stays live until its row is final, so no reader ever sees the unfinished row of an
+    /// ended run (171F4 T2-1); only this, the executing run's owner, removes it.
     async fn finish(
         &self,
         id: &RunId,
@@ -1346,8 +1372,11 @@ impl Cells {
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return None; // the next start settles it `lost` (109 R1)
         }
-        let l = self.take_live(id)?;
-        let mut rec = l.record;
+        let (mut rec, expect, stop) = {
+            let s = self.inner.state.lock();
+            let l = s.runs.get(id)?;
+            (l.record.clone(), l.meta.expect.clone(), l.stop)
+        };
         let dir = self.inner.paths.run_dir(id);
         let cfg = &self.inner.config;
         let (ansi, text) = if outputs.is_empty() {
@@ -1370,8 +1399,12 @@ impl Cells {
         let text = tools::secrets::redact(&text).into_owned();
         let _ = std::fs::write(dir.join("out.ansi"), &ansi);
         let _ = std::fs::write(dir.join("out.txt"), &text);
-        let items = l.meta.expect.clone();
-        rec.expect = crate::run::check_expect(&text, &items);
+        // 171F4 T2-2: a line or selection is a fragment; its `expect` is not judged.
+        rec.expect = if rec.mode == RunMode::Cell {
+            crate::run::check_expect(&text, &expect)
+        } else {
+            Vec::new()
+        };
         rec.summary = crate::run::summary(&text, &rec.expect);
         rec.exit = exit;
         rec.ended_ms = Some(now_ms());
@@ -1381,26 +1414,32 @@ impl Cells {
         rec.output_bytes = Some(text.len() as u64);
         rec.masked = crate::redact::mask(&text, &[]).1;
         let ok = matches!(rec.exit, Some(ExitStatus::Code(0))) && rec.expect.iter().all(|e| e.met);
-        rec.state = match l.stop {
+        rec.state = match stop {
             Some(Stop::Timeout) => RunState::Timeout,
             Some(Stop::Killed) => RunState::Killed,
             Some(Stop::Stopped) => RunState::Stopped,
             None if ok => RunState::Done,
             None => RunState::Failed,
         };
+        #[cfg(test)]
+        {
+            let race = self.inner.state.lock().race;
+            if race {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
         if let Ok(store) = self.store()
             && let Err(e) = store.finish(&rec, Some(&sha(&text)), log_to).await
         {
             tracing::warn!(run = %id, error = %e, "cells: finished row not written");
         }
+        let l = self.take_live(id)?;
         self.publish(CellEvent::RunFinished {
             run: id.clone(),
             scope: rec.cell.scope(),
         })
         .await;
-        for d in l.done {
-            let _ = d.send(rec.clone());
-        }
+        let _ = l.done.send(rec.clone());
         Some(rec)
     }
 
@@ -1445,6 +1484,8 @@ impl Cells {
                 };
                 let (attrs, body) = crate::deliver::parts(rec, &cleaned, &self.inner.config, &x);
                 let wrapped = format!("<cell_result {attrs}>\n{body}</cell_result>");
+                #[cfg(test)]
+                self.inner.state.lock().delivered.push(wrapped.clone());
                 let running = turn_running(*session).await;
                 let (wake, how) = wake_rule(running, meta.review, force_wake);
                 let kind = format!(
@@ -1463,12 +1504,16 @@ impl Cells {
                     Err(e) => tracing::warn!(run = %rec.id, error = %e, "cells: not delivered"),
                 }
             }
-            CellRef::Note { .. } => {
-                if let Err(e) = note::deliver(rec, &cleaned).await {
-                    // 171:E2
-                    tracing::warn!(run = %rec.id, error = %e, "cells: note result not delivered");
+            CellRef::Note { .. } => match note::deliver(rec, &cleaned, pass_end).await {
+                Ok(_full) => {
+                    #[cfg(test)]
+                    self.inner.state.lock().delivered.push(_full);
                 }
-            }
+                // 171:E2
+                Err(e) => {
+                    tracing::warn!(run = %rec.id, error = %e, "cells: note result not delivered")
+                }
+            },
         }
     }
 
@@ -1673,7 +1718,7 @@ impl Cells {
             }
             review |= c.options.review;
             let id = RunId(format!("r_{}", crockford(uuid::Uuid::now_v7().as_u128())));
-            let rec = match self
+            let (_, finished) = match self
                 .enqueue(
                     id.clone(),
                     cell.clone(),
@@ -1695,24 +1740,10 @@ impl Cells {
             if let Some(prev) = pending.take() {
                 self.deliver_run(&prev, false, Some(false)).await;
             }
-            let (tx, rx) = oneshot::channel();
-            let waited = {
-                let mut s = self.inner.state.lock();
-                match s.runs.get_mut(&rec.id) {
-                    Some(l) => {
-                        l.done.push(tx);
-                        true
-                    }
-                    None => false,
-                }
-            };
-            let done = if waited {
-                rx.await.ok()
-            } else {
-                // Finished before we could wait: read the record.
-                self.find_run(&rec.id).await.ok().flatten()
-            };
-            let Some(done) = done else {
+            #[cfg(test)]
+            self.race_wait(&id).await;
+            // The waiter was registered with the run: it hears only the final record.
+            let Ok(done) = finished.await else {
                 stopped = stop(cell, "the run was lost".into(), false);
                 break;
             };

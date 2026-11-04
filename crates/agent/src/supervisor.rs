@@ -15702,6 +15702,45 @@ pub(crate) mod tests {
         assert!(no_turn_within(&mut rx, p, 300).await, "one turn only");
     }
 
+    /// 171F4 T2-5: five parked runs of one cell, then one of another, reach the next turn as
+    /// two results — the first is the cell's newest with `runs="5"` and the earlier exits that
+    /// differ from its own.
+    #[tokio::test]
+    async fn a_cells_repeats_fold_into_its_newest_result() {
+        let (_scratch, a) = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        let runs = [("r_1", "1", "1"), ("r_2", "1", "0"), ("r_3", "1", "1")];
+        let more = [("r_4", "1", "0"), ("r_5", "1", "0"), ("r_o", "2", "0")];
+        for (run, cell, exit) in runs.into_iter().chain(more) {
+            agents
+                .ask(HarnessDeliver {
+                    session: p,
+                    kind: format!("cell {cell}"),
+                    text: run.into(),
+                    wrapped: format!(
+                        "<cell_result run=\"{run}\" cell=\"{cell}\" message=\"4\" exit=\"{exit}\">\nok\n</cell_result>"
+                    ),
+                    wake: false,
+                })
+                .await
+                .unwrap();
+        }
+        assert!(no_turn_within(&mut rx, p, 300).await, "all parked");
+        human(&agents, p, "what now?").await;
+        let text = next_turn(&mut rx, p).await;
+        assert_eq!(text.matches("<cell_result ").count(), 2, "{text}");
+        assert!(
+            text.contains("<cell_result run=\"r_5\" cell=\"1\" message=\"4\" exit=\"0\" runs=\"5\" earlier=\"2 failed\">"),
+            "{text}"
+        );
+        assert!(text.find("run=\"r_5\"").unwrap() < text.find("run=\"r_o\"").unwrap());
+        assert!(
+            text.contains("run=\"r_o\" cell=\"2\" message=\"4\" exit=\"0\">"),
+            "{text}"
+        );
+    }
+
     /// 171 HANDOFF-Z-1: work admitted under an owner with no `sessions` row (a note cell
     /// kernel's session id) blocks only that owner, never an unrelated session.
     #[tokio::test]
