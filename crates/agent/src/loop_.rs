@@ -1963,20 +1963,24 @@ impl Message<QueuedInputs> for Session {
     type Reply = Vec<QueuedInput>;
 
     async fn handle(&mut self, _: QueuedInputs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.shared
-            .steer
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .filter_map(|(id, input)| {
-                Some(QueuedInput {
-                    id: (*id)?,
-                    text: input.text.clone(),
-                    channel: input.channel.clone(),
-                })
-            })
-            .collect()
+        queued_inputs(&self.shared.steer.lock().unwrap_or_else(|p| p.into_inner()))
     }
+}
+
+/// The queue as a client lists it (`ListQueued`): inputs with an id (harness inputs have none), each with its text,
+/// channel and attached files (171F4: a reloaded client shows the thumbnails before the steer is delivered).
+fn queued_inputs(steer: &[Queued]) -> Vec<QueuedInput> {
+    steer
+        .iter()
+        .filter_map(|(id, input)| {
+            Some(QueuedInput {
+                id: (*id)?,
+                text: input.text.clone(),
+                channel: input.channel.clone(),
+                files: input.files.clone(),
+            })
+        })
+        .collect()
 }
 
 impl Message<UndoTurn> for Session {

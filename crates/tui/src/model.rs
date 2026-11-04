@@ -6439,6 +6439,7 @@ impl Model {
                         id: *id,
                         text: text.clone(),
                         channel: None,
+                        files: Vec::new(),
                     });
                 }
                 return;
@@ -7340,6 +7341,7 @@ impl Model {
                     id,
                     text: text.clone(),
                     channel: None,
+                    files: Vec::new(),
                 });
                 send(
                     tx,

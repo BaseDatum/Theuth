@@ -63,12 +63,16 @@ CellEditor}.tsx`, `cells/{line-run,note-edit}.ts`, `cells/note-cells.css`, `comp
   `markSent`. `Composer.submit` puts them on its own `InputQueued` (client-side `files?`, `rpc/events.ts`, like
   `ToolCallFinished.files`); the reducer keeps them on the queued item (the engine's echo, same id, changes nothing);
   `QueuedChips` shows them with `Attachments` (thumbnails capped at `max-h-16`, file chips); `InputInjected` moves them
-  onto the `you` row, which `MessageUser` renders like a send's — no gap, the same paths. A reload while queued keeps
-  them by id (`list_queued` has none).
+  onto the `you` row, which `MessageUser` renders like a send's — no gap, the same paths.
 - Also fixed on the way: ⌘↩ "deliver now" withdrew the queued steers and re-sent them with `files: []`, so their
   attachments were lost for the model too; it re-sends each with its own files now.
-- Not fixed: clicking a queued chip to edit it (`withdraw` → composer) brings back the text only, not the
-  attachments (the composer's paste shelf is not rebuilt).
+- Editing a queued steer (chip click, the withdraw key) brings back its files with its text: both go through
+  `withdrawInto`, and the composer's `editQueued` holds the files again (`addFiles`, as an attach does).
+- After an app reload: the engine's `QueuedInput` (crates/agent, `ListQueued` via `queued_inputs`) now carries each
+  steer's `files` (the paths given to `Steer`; omitted when empty, TS `files?: string[]`), so `list_queued`'s chips
+  show their thumbnails and `InputInjected` carries them to the row. The client-side merge by id is gone. The TUI's
+  two `QueuedInput` literals take `files: Vec::new()` (type change only). Bindings regenerated (gitignored, not
+  committed).
 - Visual proof: throwaway harness `/tmp/171f4-n/fx/queue.tsx` (QueuedChips above an input + the store's user rows,
   fed the Composer's events); shots `{before,after}-n7-{1-queued,2-delivered}-{desktop,phone}.png`.
 
@@ -79,6 +83,4 @@ BEFORE = base, AFTER = branch; shots in `/tmp/171f4-n/shots/` (1280×900 and 390
 the N2 bug does not occur in Chromium.
 
 ## For the other worker (E)
-- Optional (N7): `QueuedInput` / `list_queued` carry no attachments, so after an app reload a queued steer's chip
-  shows no thumbnail until it is delivered. Adding its file paths there would close that; the UI reads `files` from
-  the queued item already.
+- Nothing required.

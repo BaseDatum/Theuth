@@ -8,6 +8,7 @@ import { useApi } from '@/lib/rpc'
 import { classify } from '@/lib/injected'
 import { touch } from '@/lib/platform'
 import { useShortcuts } from '@/lib/shortcuts'
+import type { Api } from '@/rpc/api'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import { useSessionField } from '@/store/sessions'
 import { Attachments } from './Attachments'
@@ -46,21 +47,29 @@ function label(q: QueuedInput) {
   )
 }
 
+/** A queued input taken back into the composer (`edit`). */
+export type QueuedEdit = (text: string, files: string[]) => void
+
+/**
+ * Withdraw queued input `q`; with `onEdit`, into the composer: its text and (171F4) its attached files, so editing a
+ * queued message loses neither. A refused withdraw (already delivered) toasts and edits nothing.
+ */
+export async function withdrawInto(api: Pick<Api, 'withdraw'>, session: string, q: { id: string; files?: string[] }, onEdit: QueuedEdit | null) {
+  try {
+    const text = await api.withdraw(session, q.id)
+    onEdit?.(text, q.files ?? [])
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : String(e))
+  }
+}
+
 /** Steers waiting for the current tool batch: click edits (withdraws into the composer), × withdraws. The last chip
  * names the interrupt gesture that delivers them now (item 8). */
-export function QueuedChips({ session, onEdit }: { session: string; onEdit(text: string): void }) {
+export function QueuedChips({ session, onEdit }: { session: string; onEdit: QueuedEdit }) {
   const api = useApi()
   const queued = useSessionField(session, 'queued')
   const interject = useShortcuts((s) => s.chords.interject)
   if (!queued?.length) return null
-  const withdraw = async (id: string) => {
-    try {
-      return await api.withdraw(session, id)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-      return null
-    }
-  }
   return (
     <div className="mb-2 flex flex-wrap gap-2">
       {queued.map((q) => (
@@ -72,10 +81,7 @@ export function QueuedChips({ session, onEdit }: { session: string; onEdit(text:
               type="button"
               className="truncate py-1 hover:text-foreground"
               title="Edit"
-              onClick={async () => {
-                const text = await withdraw(q.id)
-                if (text !== null) onEdit(text)
-              }}
+              onClick={() => void withdrawInto(api, session, q, onEdit)}
             >
               {label(q)}
               {q.defer && <span className="ml-1 text-xs text-fg-tertiary">next turn</span>}
@@ -87,7 +93,7 @@ export function QueuedChips({ session, onEdit }: { session: string; onEdit(text:
               type="button"
               aria-label="Withdraw"
               className="rounded-full p-1 hover:bg-layer-3"
-              onClick={() => void withdraw(q.id)}
+              onClick={() => void withdrawInto(api, session, q, null)}
             >
               <X className="size-3.5" />
             </button>

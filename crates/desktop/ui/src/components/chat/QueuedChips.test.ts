@@ -8,7 +8,7 @@ import type * as Rpc from '@/lib/rpc'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
 import { MessageUser } from './MessageUser'
-import { QueuedChips } from './QueuedChips'
+import { QueuedChips, withdrawInto } from './QueuedChips'
 import { FRESH } from './slash'
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
@@ -23,7 +23,7 @@ const render = (node: ReactNode) => {
   return renderToStaticMarkup(h(QueryClientProvider, { client: new QueryClient() }, h(TooltipProvider, null, node)))
 }
 
-test('171F4 N7: a steer queued with an image shows its thumbnail at once, through a reload, and on its bubble once delivered', () => {
+test('171F4 N7: a steer queued with an image shows its thumbnail at once and on its bubble once delivered', () => {
   const S = 'n7-session'
   const files = ['/tmp/n7/shot.png', '/tmp/n7/notes.pdf']
   const st = useSessions.getState()
@@ -34,8 +34,8 @@ test('171F4 N7: a steer queued with an image shows its thumbnail at once, throug
   const chips = () => render(h(QueuedChips, { session: S, onEdit: () => undefined }))
   expect(chips()).toContain('src="asset:///tmp/n7/shot.png"')
   expect(chips()).toContain('notes.pdf')
-  // A reload meanwhile: `list_queued` has the text only.
-  st.loadHistory(S, { ...FRESH, running: true, queued: [{ id: 'c1', text: 'and this one' }] }, 'replace')
+  // A reload meanwhile: the engine's listing carries the files too.
+  st.loadHistory(S, { ...FRESH, running: true, queued: [{ id: 'c1', text: 'and this one', files }] }, 'replace')
   expect(chips()).toContain('src="asset:///tmp/n7/shot.png"')
 
   st.applyEvents([{ type: 'InputInjected', session: S, id: 'c1', turn: 'T2' }])
@@ -45,4 +45,28 @@ test('171F4 N7: a steer queued with an image shows its thumbnail at once, throug
   const bubble = render(h(MessageUser, { text: 'and this one', files: you?.kind === 'user' ? you.files : undefined, session: S }))
   expect(bubble).toContain('src="asset:///tmp/n7/shot.png"')
   expect(bubble).toContain('notes.pdf')
+})
+
+test('171F4: after an app reload the queue from `list_queued` shows each steer’s attachments, and delivery keeps them', () => {
+  const S = 'n7-reloaded'
+  const st = useSessions.getState()
+  st.loadHistory(S, { ...FRESH, running: true, queued: [{ id: 'q1', text: 'look', files: ['/data/attachments/ab12.png'] }, { id: 'q2', text: 'plain' }] }, 'replace')
+  const html = render(h(QueuedChips, { session: S, onEdit: () => undefined }))
+  expect(html).toContain('src="asset:///data/attachments/ab12.png"')
+  expect(html.match(/<img /g)).toHaveLength(1)
+  st.applyEvents([{ type: 'InputInjected', session: S, id: 'q1', turn: 'T3' }])
+  expect(useSessions.getState().sessions[S]?.entries.at(-1)).toMatchObject({ kind: 'user', text: 'look', files: ['/data/attachments/ab12.png'] })
+})
+
+test('171F4: editing a queued steer brings back its text and its attachments; a refused withdraw edits nothing', async () => {
+  const edits: [string, string[]][] = []
+  const onEdit = (text: string, files: string[]) => void edits.push([text, files])
+  const api = { withdraw: async (_s: string, id: string) => (id === 'gone' ? Promise.reject(new Error('already delivered')) : 'and this one') }
+  await withdrawInto(api as never, 's', { id: 'c1', files: ['/tmp/n7/shot.png'] }, onEdit)
+  await withdrawInto(api as never, 's', { id: 'c2' }, onEdit)
+  await withdrawInto(api as never, 's', { id: 'gone', files: ['/tmp/x.png'] }, onEdit)
+  expect(edits).toEqual([
+    ['and this one', ['/tmp/n7/shot.png']],
+    ['and this one', []],
+  ])
 })

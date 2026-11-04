@@ -343,3 +343,39 @@ async fn session_head_forces_a_text_summary_without_a_model_call() {
     .unwrap();
     assert!(summary.contains(HEAD), "{summary}");
 }
+
+/// 171F4: `ListQueued` carries each steer's attached files beside its text and channel (a client that reloads while
+/// the steer waits shows its thumbnails); harness inputs (no id) stay out.
+#[test]
+fn listed_queue_carries_attached_files() {
+    let input = |text: &str, files: Vec<PathBuf>| Input {
+        channel: None,
+        text: text.into(),
+        files,
+        context: Vec::new(),
+        replay: None,
+        ticket: None,
+        scope: None,
+        peer: None,
+        defer: false,
+        advisory: None,
+        passive: false,
+    };
+    let (a, b) = (InputId::new(), InputId::new());
+    let shot = PathBuf::from("/Users/sky/Desktop/preview diff.png");
+    let listed = queued_inputs(&[
+        (Some(a), input(HUMAN, vec![shot.clone()])),
+        (None, input(JOB, Vec::new())),
+        (Some(b), input("plain", Vec::new())),
+    ]);
+    assert_eq!(
+        listed
+            .iter()
+            .map(|q| (q.id, q.text.as_str(), q.files.clone()))
+            .collect::<Vec<_>>(),
+        [(a, HUMAN, vec![shot]), (b, "plain", Vec::new())]
+    );
+    // An input without files serializes as before (no `files` key).
+    let plain = serde_json::to_value(&listed[1]).unwrap();
+    assert!(plain.get("files").is_none(), "{plain}");
+}

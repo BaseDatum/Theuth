@@ -78,7 +78,7 @@ import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
 import type { FrameSource, VisualFrame } from '@/lib/audio/types'
 import { analyserSource, tapOrLevels } from '@/lib/visual-source'
-import { QueuedChips } from './QueuedChips'
+import { QueuedChips, withdrawInto } from './QueuedChips'
 import { COMMANDS, type Ctx, FRESH, type HarnessMenu, type SlashItem, draftSkill, isCommand, run, sendRaw, slashMenu } from './slash'
 
 /** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory. */
@@ -552,6 +552,12 @@ export function Composer({
           ? `${info.name} does not accept images; ${visionModel.id} will inspect them`
           : `${info.name} does not accept images; they will be omitted unless a vision fallback is set (/vision)`,
       )
+  }
+
+  /** A queued steer taken back (chip click, the withdraw key): its text in the box, its files held again (171F4). */
+  const editQueued = (next: string, files: string[]) => {
+    edit(next)
+    if (files.length) addFiles(files)
   }
 
   /** 66 §7.6: attach a reference; its chip stands above the box until send expands it to the marker line. */
@@ -1125,7 +1131,7 @@ export function Composer({
     if (session && queued?.length && chord(keys.withdraw, k)) {
       e.preventDefault()
       const last = queued[queued.length - 1]
-      if (last) void api.withdraw(session, last.id).then(edit, (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)))
+      if (last) void withdrawInto(api, session, last, editQueued)
       return
     }
     if (e.nativeEvent.isComposing) return
@@ -1169,7 +1175,7 @@ export function Composer({
           </Button>
         </div>
       )}
-      {session && <QueuedChips session={session} onEdit={edit} />}
+      {session && <QueuedChips session={session} onEdit={editQueued} />}
       {skill && (
         <div className="flex justify-end pb-2">
           <span className="flex items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">
