@@ -404,7 +404,8 @@ pub(crate) struct Inner {
     pub(crate) rt: Runtime,
     pub(crate) client: genai::Client,
     pub(crate) auth: crate::supervisor::Auth,
-    pub(crate) catalog: Arc<models::Catalog>,
+    /// The model catalog; replaced live by [`Endless::set_catalog`] (R1-16).
+    pub(crate) catalog: RwLock<Arc<models::Catalog>>,
     /// `agent.endless` in force; replaced live by [`Endless::set_config`].
     pub(crate) cfg: Arc<RwLock<EndlessConfig>>,
     /// `agent.title_model` (R1-D3 chain); replaced live by [`Endless::set_title_model`].
@@ -442,7 +443,7 @@ impl Endless {
                 rt,
                 client,
                 auth,
-                catalog,
+                catalog: RwLock::new(catalog),
                 cfg: Arc::new(RwLock::new(cfg)),
                 title_model: RwLock::new(title_model),
                 sessions: Mutex::new(HashMap::new()),
@@ -487,6 +488,18 @@ impl Endless {
             h.attached.effort = effort;
         }
         pump::reresolve(&self.inner, Some(session));
+    }
+
+    /// A provider was added, refreshed or removed (the catalog and the
+    /// gateways changed): every session's compactor is re-resolved (R1-16).
+    pub fn set_catalog(&self, catalog: Arc<models::Catalog>) {
+        *self.inner.catalog.write() = catalog;
+        pump::reresolve(&self.inner, None);
+    }
+
+    /// `settle` returned early because the frontier keeps failing (R1-15).
+    pub fn frontier_failing(&self, session: SessionId) -> bool {
+        pump::frontier_failing(&self.inner, session)
     }
 
     /// Engine start (109): one pump per `sessions.memory = 'endless'` session.

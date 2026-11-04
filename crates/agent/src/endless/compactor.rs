@@ -30,10 +30,16 @@ pub fn prompt(agent: &str) -> String {
 
 /// Reply ceiling without thinking (§5.3).
 pub const MAX_TOKENS: u32 = 600;
-/// 137F E6: a cloud stream's header and between-chunk idle bound.
+/// 137F E6: a cloud stream's shortest between-chunk idle bound (R1-12:
+/// `max(60 s, attempt_secs / 2)`, so a silent reasoning model is not cut at 60 s).
 const CLOUD_IDLE: Duration = Duration::from_secs(60);
 /// 137F E6: a local stream's between-chunk idle bound (its header bound is the attempt's).
 const LOCAL_IDLE: Duration = Duration::from_secs(120);
+
+/// A timeout (ours or genai's stream header/read bound), not a provider error (R1-13).
+fn is_timeout(e: &str) -> bool {
+    e.contains("timed out")
+}
 
 /// Provider / adapter names of local model runtimes (E6).
 const LOCAL_RUNTIMES: [&str; 10] = [
@@ -49,10 +55,12 @@ const LOCAL_RUNTIMES: [&str; 10] = [
     "mlx",
 ];
 
-/// 137F E6: a local compactor — a local runtime provider, a loopback /
-/// private (RFC 1918, ULA) / `*.local` base URL, or a model the catalog
-/// prices nothing for. The one locality rule (attempt bound, E8 prompt
-/// cap, E9 queue).
+/// 137F E6: a local compactor — a local runtime provider; a loopback /
+/// private (RFC 1918, CGNAT 100.64/10, link-local, ULA) / `*.local` /
+/// single-label base-URL host; or a catalog entry without a price. An id
+/// the catalog does not know is cloud unless its provider or host says
+/// local (custom gateways, Azure deployments). The one locality rule
+/// (attempt bound, E8 prompt cap, E9 queue).
 pub fn is_local(model: &Resolved, base_url: Option<&str>) -> bool {
     let names = [
         model.provider.as_deref().unwrap_or(""),
@@ -71,7 +79,7 @@ pub fn is_local(model: &Resolved, base_url: Option<&str>) -> bool {
         let private = match host {
             url::Host::Domain(d) => {
                 let d = d.to_ascii_lowercase();
-                d == "localhost" || d.ends_with(".localhost") || d.ends_with(".local")
+                !d.contains('.') || d.ends_with(".localhost") || d.ends_with(".local")
             }
             url::Host::Ipv4(ip) => private_v4(ip),
             url::Host::Ipv6(ip) => {
@@ -86,11 +94,16 @@ pub fn is_local(model: &Resolved, base_url: Option<&str>) -> bool {
             return true;
         }
     }
-    model.model.as_ref().and_then(|m| m.cost).is_none()
+    model.model.as_ref().is_some_and(|m| m.cost.is_none())
 }
 
 fn private_v4(ip: std::net::Ipv4Addr) -> bool {
-    ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()
+    let [a, b, ..] = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || (a == 100 && b & 0xC0 == 64)
 }
 
 /// The E9 queue key of a local compactor (`None` = cloud): its base URL,
@@ -287,9 +300,11 @@ pub async fn build(
     let mut used = 0i32;
     for try_no in 0..tries.max(1) as u32 {
         used += 1;
+        // E7 (R1-13): a slow attempt after a candidate exists keeps the
+        // candidate; a provider/transport error fails the node as before.
         let reply = match tokio::time::timeout(attempt, c.compress(ctx, &convo)).await {
             Ok(Ok(reply)) => reply,
-            Ok(Err(e)) if shortest.is_none() => return Err(e),
+            Ok(Err(e)) if shortest.is_none() || !is_timeout(&e) => return Err(e),
             Err(_) if shortest.is_none() => {
                 return Err(format!("timed out after {}s", attempt.as_secs()));
             }
@@ -413,6 +428,8 @@ pub struct ModelCompactor {
     pub effort: Option<ReasoningEffort>,
     /// 137F E6: `Some(queue key)` for a local compactor ([`local_endpoint`]).
     pub local: Option<String>,
+    /// `agent.endless` in force (the cloud stream bounds follow `attempt_secs`, R1-12).
+    pub(crate) cfg: std::sync::Arc<parking_lot::RwLock<super::EndlessConfig>>,
 }
 
 impl ModelCompactor {
@@ -456,12 +473,15 @@ impl ModelCompactor {
             .with_capture_reasoning_content(true)
             .with_max_tokens(self.reply_tokens());
         // E6: idle bounds; a local stream's first token may take the whole
-        // attempt (prompt eval on slow hardware), which `build` bounds.
+        // attempt (prompt eval on slow hardware), which `build` bounds. A
+        // cloud stream's first byte may take the attempt bound too (R1-12).
         opts = if self.local.is_some() {
             opts.with_stream_read_timeout(LOCAL_IDLE)
         } else {
-            opts.with_stream_header_timeout(CLOUD_IDLE)
-                .with_stream_read_timeout(CLOUD_IDLE)
+            let attempt =
+                Duration::from_secs(u64::from(self.cfg.read().attempt_secs.clamp(10, 3_600)));
+            opts.with_stream_header_timeout(attempt)
+                .with_stream_read_timeout(CLOUD_IDLE.max(attempt / 2))
         };
         if t == Transport::OpenAiLike {
             opts = opts
@@ -652,6 +672,15 @@ mod tests {
             "timed out",
             "no candidate: the node fails"
         );
+        // R1-13: a provider error (429/5xx) is no slow model: the node fails and backs off.
+        let long = format!("user: rename the config loader {}", "x".repeat(600));
+        let fake = Fake::new(&[&long, "!err:429: rate limited"]);
+        assert_eq!(
+            build(&fake, "", &unit_step(), 512, 5, SECS)
+                .await
+                .unwrap_err(),
+            "429: rate limited"
+        );
     }
 
     /// 137F E6: the attempt bound fires at `attempt`, not later.
@@ -697,14 +726,33 @@ mod tests {
             "http://[::ffff:127.0.0.1]:8000/",
             "http://169.254.10.2/",
             "http://[fe80::1]/",
+            "http://100.101.102.103:8000/",
+            "http://gpu-box:8000/v1/",
         ] {
             assert!(is_local(&cloud, Some(url)), "{url}");
         }
+        for url in [
+            "http://172.32.0.1/",
+            "http://100.128.0.1/",
+            "https://my-rg.openai.azure.com/",
+        ] {
+            assert!(!is_local(&cloud, Some(url)), "{url}");
+        }
+        let unpriced: models::Model = serde_json::from_value(serde_json::json!({
+            "id": "m", "name": "m", "limit": {"context": 8192, "output": 1024}
+        }))
+        .unwrap();
         assert!(
-            !is_local(&cloud, Some("http://172.32.0.1/")),
-            "outside 172.16/12"
+            is_local(&m("x::y", Some("gw"), Some(&unpriced)), None),
+            "a catalog entry without a price"
         );
-        assert!(is_local(&m("x::y", Some("gw"), None), None), "no price");
+        assert!(
+            !is_local(
+                &m("x::y", Some("azure"), None),
+                Some("https://my-rg.openai.azure.com/")
+            ),
+            "an id the catalog does not know is cloud"
+        );
         assert_eq!(
             local_endpoint(&cloud, Some("http://127.0.0.1:1234/v1/")).as_deref(),
             Some("http://127.0.0.1:1234/v1/")
@@ -749,6 +797,10 @@ mod tests {
             system: prompt("theuth"),
             effort: None,
             local: None,
+            cfg: std::sync::Arc::new(parking_lot::RwLock::new(super::super::EndlessConfig {
+                attempt_secs: 300,
+                ..Default::default()
+            })),
         };
         let convo = vec![ChatMessage::user("step")];
         let (req, _) = c.request(Transport::Anthropic, "<chat>\n</chat>", &convo);
@@ -760,5 +812,8 @@ mod tests {
         assert_eq!(req.messages.len(), 2);
         assert!(req.system.is_some());
         assert_eq!(opts.max_tokens, Some(600));
+        // R1-12: cloud first byte = the attempt bound, idle = max(60 s, attempt / 2).
+        assert_eq!(opts.stream_header_timeout, Some(Duration::from_secs(300)));
+        assert_eq!(opts.stream_read_timeout, Some(Duration::from_secs(150)));
     }
 }

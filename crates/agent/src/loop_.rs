@@ -4498,7 +4498,11 @@ impl Turn {
             s = endless.settle(id, max) => s,
         };
         if !settled {
-            tracing::info!(session = %id, waited_ms = started.elapsed().as_millis() as u64, "endless settle: timed out; unbuilt parts render per D10");
+            if endless.frontier_failing(id) {
+                tracing::info!(session = %id, waited_ms = started.elapsed().as_millis() as u64, "endless settle: frontier failing; not waiting");
+            } else {
+                tracing::info!(session = %id, waited_ms = started.elapsed().as_millis() as u64, "endless settle: timed out; unbuilt parts render per D10");
+            }
         }
         match endless.render_for_turn(id).await {
             Ok(r) => Some(r),

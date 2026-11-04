@@ -8339,12 +8339,22 @@ impl Agents {
             }
             let actor = self.actor(id).await?.native()?.clone();
             let _ = actor.tell(SwitchModel(resolved.clone())).await;
-            // 137F E1: the compactor chain's last link, live (effort: `apply_effort` below may drop it).
-            self.endless.set_session_model(
-                id,
-                Some(resolved.clone()),
-                row.effort.as_deref().and_then(effort_of),
-            );
+            // An effort the new model does not take would 400 its next call: drop it.
+            let drop_effort = row.effort.as_ref().is_some_and(|e| {
+                resolved
+                    .model
+                    .as_ref()
+                    .is_some_and(|m| m.validate_effort(e).is_err())
+            });
+            // 137F E1 / R1-6: the compactor chain's last link, live — the final
+            // model and effort at once (the drop below then changes nothing).
+            let effort = if drop_effort {
+                None
+            } else {
+                row.effort.as_deref().and_then(effort_of)
+            };
+            self.endless
+                .set_session_model(id, Some(resolved.clone()), effort);
             if let Err(e) = self.store_for(id).set_model(id, &resolved.id).await {
                 tracing::warn!(session = %id, "set_model: {e:#}");
             }
@@ -8354,13 +8364,7 @@ impl Agents {
                     model: resolved.id.clone(),
                 })
                 .await;
-            // An effort the new model does not take would 400 its next call: drop it.
-            if let Some(e) = &row.effort
-                && resolved
-                    .model
-                    .as_ref()
-                    .is_some_and(|m| m.validate_effort(e).is_err())
-            {
+            if drop_effort {
                 self.apply_effort(id, &actor, None).await;
             }
         }
@@ -8927,6 +8931,7 @@ impl Agents {
             crate::providers::write_models(&self.rt.data_dir, name, &ids, listing)?;
         self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
         self.costs.set_catalog(self.catalog.clone());
+        self.endless.set_catalog(self.catalog.clone());
         let provider = self
             .provider_info(name)
             .ok_or_else(|| format!("no provider {name}"))?;
@@ -9014,6 +9019,7 @@ impl Message<AddProvider> for Agents {
         }
         self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
         self.costs.set_catalog(self.catalog.clone());
+        self.endless.set_catalog(self.catalog.clone());
         self.provider_info(&m.name)
             .ok_or_else(|| format!("no provider {}", m.name))
     }
@@ -9048,6 +9054,7 @@ impl Message<RemoveProvider> for Agents {
             .remove(&m.name);
         self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
         self.costs.set_catalog(self.catalog.clone());
+        self.endless.set_catalog(self.catalog.clone());
         Ok(())
     }
 }
@@ -12354,6 +12361,46 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(r.refused.as_deref(), Some("no session"));
         assert!(r.text.is_none());
+    }
+
+    /// 137F R1-17: a session's model pick and `SetTitleModel` reach the
+    /// endless compactor of an attached session, no re-attach.
+    #[tokio::test]
+    async fn model_and_title_picks_reach_the_compactor() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.set_model(SetModel {
+            session: Some(root),
+            model: "testvis/eyes".into(),
+            manual: true,
+        })
+        .await
+        .unwrap();
+        assert_eq!(a.endless.memory(root).await.unwrap().model, "testvis/eyes");
+        let agents = Agents::spawn(a);
+        agents
+            .ask(SetTitleModel {
+                model: Some("testvis/blind".into()),
+            })
+            .await
+            .unwrap();
+        let m = agents
+            .ask(SessionMemoryQuery { session: root })
+            .await
+            .unwrap();
+        assert_eq!(
+            m.model, "testvis/blind",
+            "the title model outranks the session's"
+        );
+        agents.ask(SetTitleModel { model: None }).await.unwrap();
+        let m = agents
+            .ask(SessionMemoryQuery { session: root })
+            .await
+            .unwrap();
+        assert_eq!(m.model, "testvis/eyes");
     }
 
     /// 148 R1: a pick with a session switches that session alone, manual or

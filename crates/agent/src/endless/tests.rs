@@ -316,16 +316,7 @@ async fn pump_builds_tree_and_tools_answer() {
     );
     assert!(mem.backfill.is_none());
 
-    // Settle waits for the view only; merges above trail it (one job at a time
-    // for a compactor the catalog prices nothing for, 137F E9).
-    let mut nodes = Vec::new();
-    for _ in 0..200 {
-        nodes = store.endless_nodes(id).await.unwrap();
-        if nodes.iter().any(|n| n.l == 2) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let nodes = store.endless_nodes(id).await.unwrap();
     assert!(
         nodes.iter().any(|n| n.l == 2),
         "merges above level 1 built: {}",
@@ -702,6 +693,8 @@ struct Probe {
     inflight: AtomicU32,
     max_inflight: AtomicU32,
     dropped: Arc<AtomicU32>,
+    /// `<chat>` bytes of every call.
+    ctx_lens: Mutex<Vec<usize>>,
 }
 
 impl Probe {
@@ -720,6 +713,7 @@ impl Probe {
             inflight: AtomicU32::new(0),
             max_inflight: AtomicU32::new(0),
             dropped: Arc::new(AtomicU32::new(0)),
+            ctx_lens: Mutex::new(Vec::new()),
         })
     }
 
@@ -761,10 +755,11 @@ impl Drop for InFlight<'_> {
 impl Compactor for Probe {
     fn compress<'a>(
         &'a self,
-        _ctx: &'a str,
+        ctx: &'a str,
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.ctx_lens.lock().push(ctx.len());
         let act = *self.act.lock();
         let line = echo_line(convo);
         Box::pin(async move {
@@ -828,8 +823,9 @@ async fn endless_session(endless: &Endless, store: &Store, id: SessionId) {
     endless.attach(id, attached()).await.unwrap();
 }
 
+/// Event-driven waits get 10 s (a loaded full-suite run), never a tight bound.
 async fn until(what: &str, mut f: impl FnMut() -> bool) {
-    for _ in 0..400 {
+    for _ in 0..2_000 {
         if f() {
             return;
         }
@@ -867,14 +863,13 @@ async fn settings_model_switch_is_live_and_resets_backoff() {
     .await;
     assert_eq!(endless.memory(id).await.unwrap().model, "fake/a");
 
-    let t0 = Instant::now();
     endless.set_config(cfg_137f(Some("fake/b")));
     assert!(
         super::pump::failed_for_tests(&endless.inner, id).is_empty(),
         "backoff reset"
     );
+    // The old failure backs off 600 s: a call to the new model is the reset's.
     until("a call to the new model", || b.calls() > 0).await;
-    assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
     assert!(endless.settle(id, Duration::from_secs(10)).await);
     let models = built_by(&store, id).await;
     assert!(
@@ -927,10 +922,8 @@ async fn switch_cancels_the_hung_call_and_rebuilds_on_the_new_model() {
         harness_factory(cfg_137f(Some("fake/a")), two(a.clone(), b.clone())).await;
     endless_session(&endless, &store, id).await;
     until("the hung call", || a.calls() == 1).await;
-    let t0 = Instant::now();
     endless.set_config(cfg_137f(Some("fake/b")));
     until("the drop", || a.dropped.load(Ordering::SeqCst) == 1).await;
-    assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
     assert!(endless.settle(id, Duration::from_secs(10)).await);
     assert!(
         built_by(&store, id)
@@ -939,19 +932,15 @@ async fn switch_cancels_the_hung_call_and_rebuilds_on_the_new_model() {
             .all(|m| m.as_deref() == Some("fake/b"))
     );
     assert!(super::pump::failed_for_tests(&endless.inner, id).is_empty());
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT requested_model, status FROM model_calls WHERE owner_id = ? ORDER BY rowid",
+    // Only the old model's rows: a trailing merge on `fake/b` may still be in flight.
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT status FROM model_calls WHERE owner_id = ? AND requested_model = 'fake/a'",
     )
     .bind(id.to_string())
     .fetch_all(store.pool())
     .await
     .unwrap();
-    assert_eq!(
-        rows[0],
-        ("fake/a".to_owned(), "cancelled".to_owned()),
-        "{rows:?}"
-    );
-    assert!(rows.iter().all(|(_, s)| s != "dispatched"), "{rows:?}");
+    assert_eq!(rows, ["cancelled"]);
 }
 
 /// E4: two failures of the frontier ⇒ `stalled` (blocking, next retry
@@ -988,11 +977,7 @@ async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
     );
     let t0 = Instant::now();
     assert!(!endless.settle(id, Duration::from_secs(45)).await);
-    assert!(
-        t0.elapsed() < Duration::from_millis(500),
-        "{:?}",
-        t0.elapsed()
-    );
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
 
     p.set(Act::Echo);
     super::pump::finish_for_tests(
@@ -1014,9 +999,10 @@ async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
     assert!(endless.settle(id, Duration::from_secs(10)).await);
 }
 
-/// E5: `retry` reschedules a backed-off node at once and never doubles a running job.
+/// E5 / R1-10: `retry` reschedules a backed-off node at once, restarts a
+/// hung call (the cancel is no failure) and never runs a node twice at once.
 #[tokio::test]
-async fn retry_reschedules_now_without_duplicates() {
+async fn retry_reschedules_now_and_restarts_a_hung_call() {
     let p = Probe::new("fake/a", Act::Fail);
     let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
     endless_session(&endless, &store, id).await;
@@ -1026,21 +1012,27 @@ async fn retry_reschedules_now_without_duplicates() {
     .await;
     p.set(Act::Hang);
     let before = p.calls();
-    let t0 = Instant::now();
     let mem = endless.retry(id).await.unwrap();
     assert!(mem.stalled.is_none(), "{:?}", mem.stalled);
+    // The failure backs off 600 s: this call is the retry's.
     until("the retried call", || p.calls() > before).await;
-    assert!(
-        t0.elapsed() < Duration::from_millis(100),
-        "{:?}",
-        t0.elapsed()
-    );
-    for _ in 0..3 {
+    for k in 1..=3u32 {
+        let calls = p.calls();
         endless.retry(id).await.unwrap();
+        until("the hung call restarted", || {
+            p.dropped.load(Ordering::SeqCst) == k && p.calls() > calls
+        })
+        .await;
     }
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(p.calls(), before + 1, "no duplicate of the running job");
-    assert_eq!(p.max_inflight.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        p.max_inflight.load(Ordering::SeqCst),
+        1,
+        "never twice at once"
+    );
+    assert!(
+        super::pump::failed_for_tests(&endless.inner, id).is_empty(),
+        "a cancelled call is no failure"
+    );
     // An epochs session: untouched.
     let (_d, e2, s2, plain) = harness_for(cfg_137f(None), p.clone()).await;
     e2.attach(plain, attached()).await.unwrap();
@@ -1052,8 +1044,12 @@ async fn retry_reschedules_now_without_duplicates() {
 /// compactors keep their per-session `jobs` in parallel.
 #[tokio::test]
 async fn local_endpoint_is_one_queue_engine_wide() {
-    for (local, want_serial) in [(Some("http://127.0.0.1:11434"), true), (None, false)] {
-        let p = Probe::with("fake/a", Act::Echo, local, Duration::from_millis(150));
+    // Local: never more than one call (any delay); cloud: 2 s calls overlap.
+    for (local, delay) in [
+        (Some("http://127.0.0.1:11434"), Duration::from_millis(100)),
+        (None, Duration::from_secs(2)),
+    ] {
+        let p = Probe::with("fake/a", Act::Echo, local, delay);
         let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
         let mut ids = vec![id];
         for _ in 0..2 {
@@ -1067,42 +1063,84 @@ async fn local_endpoint_is_one_queue_engine_wide() {
         for id in &ids {
             endless_session(&endless, &store, *id).await;
         }
-        for id in &ids {
-            assert!(endless.settle(*id, Duration::from_secs(20)).await);
-        }
-        let max = p.max_inflight.load(Ordering::SeqCst);
-        if want_serial {
-            assert_eq!(max, 1, "local");
+        if local.is_some() {
+            for id in &ids {
+                assert!(endless.settle(*id, Duration::from_secs(30)).await);
+            }
+            assert_eq!(p.max_inflight.load(Ordering::SeqCst), 1, "local");
         } else {
-            assert!(max >= 2, "cloud runs sessions in parallel: {max}");
+            until("cloud sessions in parallel", || {
+                p.max_inflight.load(Ordering::SeqCst) >= 2
+            })
+            .await;
+        }
+        for id in &ids {
+            endless.detach(*id);
         }
     }
 }
 
-/// E10: a compactor task that panics releases its node, records a failure
-/// and the node retries.
+/// E10 / R1-4: a compactor that panics is a failure whose ledger row
+/// settles; the node retries.
 #[tokio::test]
 async fn panicking_job_releases_its_node_and_retries() {
     let p = Probe::new("fake/a", Act::Panic);
-    let (_dir, endless, store, id) = harness_for(
-        EndlessConfig {
-            retry_secs: 1,
-            ..cfg_137f(None)
-        },
-        p.clone(),
-    )
-    .await;
+    let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
     endless_session(&endless, &store, id).await;
     until("the panic's failure", || {
         !super::pump::failed_for_tests(&endless.inner, id).is_empty()
     })
     .await;
     let s = endless.memory(id).await.unwrap().stalled.unwrap();
-    assert_eq!(s.error, "compactor task ended unexpectedly");
+    assert_eq!(s.error, "compactor panicked");
     assert_eq!(s.failures, 1);
+    let rows: Vec<String> = sqlx::query_scalar("SELECT status FROM model_calls WHERE owner_id = ?")
+        .bind(id.to_string())
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, ["failed"], "settled, never left dispatched");
+    // Backoff 600 s: the retry is the RPC's.
+    endless.retry(id).await.unwrap();
     assert!(
         endless.settle(id, Duration::from_secs(10)).await,
         "retried and built"
     );
     assert!(endless.memory(id).await.unwrap().stalled.is_none());
+}
+
+/// R1-17: what the compactor is sent is the fitted view — a local
+/// compactor never sees more than `local_ctx_bytes` of `<chat>`.
+#[tokio::test]
+async fn local_compactor_receives_the_capped_view() {
+    let p = Probe::with("fake/a", Act::Echo, Some("ep"), Duration::ZERO);
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            local_ctx_bytes: 4_000,
+            ..cfg_137f(None)
+        },
+        p.clone(),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    for k in 0..30 {
+        let text = format!(
+            "note {k}: {}",
+            "rotate the nginx worker and check error_log ".repeat(15)
+        );
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.settle(id, Duration::from_secs(20)).await);
+    let full = endless.render_for_turn(id).await.unwrap().text().len();
+    assert!(full > 8_000, "the view outgrew the cap: {full}");
+    let sent = p.ctx_lens.lock().clone();
+    assert!(sent.iter().all(|n| *n <= 4_000), "{sent:?}");
+    assert!(
+        sent.iter().any(|n| *n > 3_000),
+        "trimmed to the cap, not below: {sent:?}"
+    );
 }

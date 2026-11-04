@@ -4,14 +4,16 @@
 //! Also the home of the §9 tools and 8.6 `set_mode`, which read the same
 //! live state.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use futures::FutureExt as _;
 use parking_lot::{Mutex, RwLock};
 use runtime::SessionId;
-use tokio::sync::{Notify, Semaphore, watch};
+use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::compactor::{self, Compactor, ModelCompactor, Step};
@@ -91,25 +93,105 @@ impl Drop for Handle {
     }
 }
 
-/// 137F E9: one semaphore per local endpoint, engine-wide, sized by
-/// `local_jobs` (a changed size gets a fresh semaphore; calls on the old one finish there).
+/// 137F E9: one [`Gate`] per local endpoint, engine-wide, sized by
+/// `local_jobs` (a changed size gets a fresh gate; calls on the old one finish there).
 #[derive(Clone, Default)]
 pub(crate) struct Queues(Arc<Mutex<HashMap<String, Queue>>>);
 
-/// `(permits, semaphore)` of one endpoint.
-type Queue = (u8, Arc<Semaphore>);
+/// `(permits, gate)` of one endpoint.
+type Queue = (u8, Arc<Gate>);
 
 impl Queues {
-    fn get(&self, endpoint: &str, permits: u8) -> Arc<Semaphore> {
+    fn get(&self, endpoint: &str, permits: u8) -> Arc<Gate> {
         let permits = permits.clamp(1, 16);
         let mut map = self.0.lock();
         let slot = map
             .entry(endpoint.to_owned())
-            .or_insert_with(|| (permits, Arc::new(Semaphore::new(usize::from(permits)))));
+            .or_insert_with(|| (permits, Gate::new(usize::from(permits))));
         if slot.0 != permits {
-            *slot = (permits, Arc::new(Semaphore::new(usize::from(permits))));
+            *slot = (permits, Gate::new(usize::from(permits)));
         }
         slot.1.clone()
+    }
+}
+
+/// 137F R1-8: a local endpoint's permits, handed out by priority (a live
+/// session's frontier before merges and backfill), then by arrival.
+pub(crate) struct Gate {
+    state: Mutex<GateState>,
+    freed: Notify,
+}
+
+struct GateState {
+    free: usize,
+    next: u64,
+    /// `(priority, arrival)`; the first entry is served next.
+    waiting: BTreeSet<(Reverse<u8>, u64)>,
+}
+
+/// One held permit; dropping it frees the slot.
+pub(crate) struct Permit(Arc<Gate>);
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.state.lock().free += 1;
+        self.0.freed.notify_waiters();
+    }
+}
+
+/// A waiter's place in line; a dropped wait (cancel) gives it up.
+struct Ticket<'a> {
+    gate: &'a Gate,
+    key: (Reverse<u8>, u64),
+}
+
+impl Drop for Ticket<'_> {
+    fn drop(&mut self) {
+        if self.gate.state.lock().waiting.remove(&self.key) {
+            self.gate.freed.notify_waiters();
+        }
+    }
+}
+
+impl Gate {
+    fn new(permits: usize) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(GateState {
+                free: permits,
+                next: 0,
+                waiting: BTreeSet::new(),
+            }),
+            freed: Notify::new(),
+        })
+    }
+
+    /// Wait for a permit; higher `priority` is served first. Cancel-safe.
+    pub(crate) async fn acquire(self: &Arc<Self>, priority: u8) -> Permit {
+        let key = {
+            let mut s = self.state.lock();
+            let key = (Reverse(priority), s.next);
+            s.next += 1;
+            s.waiting.insert(key);
+            key
+        };
+        let _ticket = Ticket { gate: self, key };
+        loop {
+            let freed = self.freed.notified();
+            tokio::pin!(freed);
+            freed.as_mut().enable();
+            {
+                let mut s = self.state.lock();
+                if s.free > 0 && s.waiting.first() == Some(&key) {
+                    s.waiting.remove(&key);
+                    s.free -= 1;
+                    if s.free > 0 && !s.waiting.is_empty() {
+                        self.freed.notify_waiters();
+                    }
+                    return Permit(self.clone());
+                }
+            }
+            freed.await;
+        }
     }
 }
 
@@ -203,6 +285,14 @@ impl State {
             live.dirty = true;
         }
         self.wake.notify_one();
+    }
+
+    /// R1-9 / R1-10: cancel the calls in flight (not failures; their nodes
+    /// reschedule) and keep the compactor.
+    fn cancel_calls(&self) {
+        let mut cur = self.current.write();
+        cur.cancel.cancel();
+        cur.cancel = CancellationToken::new();
     }
 }
 
@@ -450,6 +540,7 @@ fn compactor_for(
     let (model, effort) = match chosen {
         Some(id) => match inner
             .catalog
+            .read()
             .resolve(&id, &*crate::supervisor::configured(inner.auth.clone()))
         {
             Ok(m) => {
@@ -466,8 +557,10 @@ fn compactor_for(
     let base =
         crate::backend::target_for(&model, &inner.auth).map(|t| t.endpoint.base_url().to_owned());
     let local = compactor::local_endpoint(&model, base.as_deref());
-    // E8: a local Ollama model must not spend the reply cap on thinking (`think: false`).
-    let effort = if local.is_some() && crate::loop_::ns(&model.genai) == "ollama" {
+    // E8: a local Ollama model must not spend the reply cap on thinking
+    // (`think: false`) — genai's own Ollama adapter only, not a gateway (R1-14).
+    let effort = if local.is_some() && base.is_none() && crate::loop_::ns(&model.genai) == "ollama"
+    {
         Some(genai::chat::ReasoningEffort::Zero)
     } else {
         effort
@@ -480,12 +573,14 @@ fn compactor_for(
         system: compactor::prompt(&attached.agent),
         effort,
         local,
+        cfg: inner.cfg.clone(),
     };
     (key, Arc::new(c))
 }
 
 /// E1/E2: re-resolve the compactor of `session` (`None` = every attached
-/// session); a changed one cancels its old calls, resets backoff, wakes the pump.
+/// session); a changed one cancels its old calls and resets backoff. Every
+/// target's pump wakes either way (a changed `jobs` applies now, R1-7).
 pub(crate) fn reresolve(inner: &Inner, session: Option<SessionId>) {
     let targets: Vec<(SessionId, Arc<State>, Attached)> = inner
         .sessions
@@ -495,7 +590,9 @@ pub(crate) fn reresolve(inner: &Inner, session: Option<SessionId>) {
         .map(|(id, h)| (*id, h.state.clone(), h.attached.clone()))
         .collect();
     for (id, state, attached) in targets {
-        state.switch(compactor_for(inner, id, &attached));
+        if !state.switch(compactor_for(inner, id, &attached)) {
+            state.wake.notify_one();
+        }
     }
 }
 
@@ -508,7 +605,7 @@ pub(crate) async fn resume_all(inner: &Inner) -> anyhow::Result<usize> {
         let Ok(session) = row.id.parse::<SessionId>() else {
             continue;
         };
-        let model = match inner.catalog.resolve(
+        let model = match inner.catalog.read().resolve(
             &row.model,
             &*crate::supervisor::configured(inner.auth.clone()),
         ) {
@@ -553,8 +650,6 @@ pub(crate) async fn attach(
             live.view_bytes = meta.view_bytes;
             live.invalidate();
             drop(live);
-            // The session's model may have moved since the last attach.
-            state.switch(compactor_for(inner, session, &attached));
             state
         }
         None => {
@@ -566,19 +661,26 @@ pub(crate) async fn attach(
     };
     let cancel = CancellationToken::new();
     let handle = Handle {
-        attached,
+        attached: attached.clone(),
         state: state.clone(),
         cancel: cancel.clone(),
     };
     inner.sessions.lock().insert(session, handle);
+    // R1-2: a link of the chain that changed while this attach ran (or the
+    // session's model since the last one) — idempotent when nothing moved.
+    state.switch(compactor_for(inner, session, &attached));
     if mode == MemoryMode::Endless {
         start_pump(state, cancel);
     }
     Ok(())
 }
 
+/// The actor stopped: stop the pump and cancel its calls in flight, so a
+/// local permit is not held for a whole attempt (R1-9).
 pub(crate) fn detach(inner: &Inner, session: SessionId) {
-    inner.sessions.lock().remove(&session);
+    if let Some(h) = inner.sessions.lock().remove(&session) {
+        h.state.cancel_calls();
+    }
 }
 
 /// Load units (cache + rows) and nodes from the store into a fresh state.
@@ -751,12 +853,14 @@ fn schedule(state: &Arc<State>) {
     }
 }
 
-/// E10: a job task that ends without reaching [`finish`] (a panic) releases
-/// its `running` key and counts as a failure, so the node retries.
+/// E10: a job task that ends without reaching [`finish`] releases its
+/// `running` key and counts as a failure, so the node retries — unless its
+/// calls were cancelled (a switch, a retry, a detach: R1-3).
 struct JobGuard {
     state: Arc<State>,
     key: (u8, u64),
     model: String,
+    cancel: CancellationToken,
     armed: bool,
 }
 
@@ -768,13 +872,15 @@ impl Drop for JobGuard {
         {
             let mut live = self.state.live.lock();
             live.running.remove(&self.key);
-            record_failure(
-                &self.state,
-                &mut live,
-                self.key,
-                "compactor task ended unexpectedly",
-                &self.model,
-            );
+            if !self.cancel.is_cancelled() {
+                record_failure(
+                    &self.state,
+                    &mut live,
+                    self.key,
+                    "compactor task ended unexpectedly",
+                    &self.model,
+                );
+            }
             live.dirty = true;
         }
         self.state.built_tx.send_modify(|v| *v += 1);
@@ -835,11 +941,14 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
         let cur = state.current.read();
         (cur.compactor.clone(), cur.cancel.clone())
     };
+    // R1-8: a live session's next line goes before merges and backfill.
+    let priority = u8::from(l == 0 && live.backfill().is_none());
     tokio::spawn(async move {
         let mut guard = JobGuard {
             state: state.clone(),
             key,
             model: compactor.model_id().to_owned(),
+            cancel: cancel.clone(),
             armed: true,
         };
         let started = Instant::now();
@@ -853,7 +962,15 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
                 model: None,
                 tries: 0,
             })),
-            (None, Some(step)) => call(&state, &compactor, &cancel, l, i, &ctx, &step).await,
+            (None, Some(step)) => {
+                let job = Job {
+                    l,
+                    i,
+                    priority,
+                    cancel: &cancel,
+                };
+                call(&state, &compactor, job, &ctx, &step).await
+            }
             (None, None) => Err("no step".to_owned()),
         };
         guard.armed = false;
@@ -863,9 +980,20 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
             outcome,
             started.elapsed(),
             compactor.model_id(),
+            &cancel,
         )
         .await;
     });
+}
+
+/// One model-built node's job parameters.
+struct Job<'a> {
+    l: u8,
+    i: u64,
+    /// E9 queue priority (R1-8).
+    priority: u8,
+    /// Cancelled by a switch, a retry or a detach.
+    cancel: &'a CancellationToken,
 }
 
 /// Bytes per token for prompt sizing (the 128 KB view ≈ 43k tokens).
@@ -912,24 +1040,29 @@ fn fit_ctx(ctx: &str, max: usize) -> std::borrow::Cow<'_, str> {
 }
 
 /// One node's compactor build, with its `model_calls` row. `Ok(None)`: the
-/// compactor was switched mid-call (E3) — not a failure, the node reschedules.
+/// job's calls were cancelled (E3 switch, R1-9 detach, R1-10 retry) — not a
+/// failure, the node reschedules.
 async fn call(
     state: &State,
     c: &Arc<dyn Compactor>,
-    cancel: &CancellationToken,
-    l: u8,
-    i: u64,
+    job: Job<'_>,
     ctx: &str,
     step: &Step,
 ) -> Result<Option<Node>, String> {
+    let Job {
+        l,
+        i,
+        priority,
+        cancel,
+    } = job;
     let local = c.local();
     let cfg = state.cfg.read().clone();
     // E9: a local endpoint's engine-wide queue; the wait is never timed.
     let _permit = match &local {
         Some(endpoint) => {
-            let queue = state.queues.get(endpoint, cfg.local_jobs);
+            let gate = state.queues.get(endpoint, cfg.local_jobs);
             tokio::select! {
-                p = queue.acquire_owned() => Some(p.map_err(|e| format!("queue: {e}"))?),
+                p = gate.acquire(priority) => Some(p),
                 _ = cancel.cancelled() => return Ok(None),
             }
         }
@@ -960,14 +1093,27 @@ async fn call(
     if let Err(e) = state.store.mark_dispatched(&reserved).await {
         tracing::warn!(error = %e, "endless: mark_dispatched");
     }
-    // E10: the last-resort bound over the whole job.
+    // E10: the last-resort bound over the whole job; a panic is a failure
+    // whose ledger row still settles (R1-4).
     let outer = attempt * u32::from(cfg.tries.max(1)) + Duration::from_secs(60);
     let build = tokio::time::timeout(
         outer,
-        compactor::build(c.as_ref(), &ctx, step, cfg.node_bytes, cfg.tries, attempt),
+        std::panic::AssertUnwindSafe(compactor::build(
+            c.as_ref(),
+            &ctx,
+            step,
+            cfg.node_bytes,
+            cfg.tries,
+            attempt,
+        ))
+        .catch_unwind(),
     );
     let built = tokio::select! {
-        b = build => Some(b.unwrap_or_else(|_| Err(format!("compactor job timed out after {}s", outer.as_secs())))),
+        b = build => Some(match b {
+            Ok(Ok(built)) => built,
+            Ok(Err(_panic)) => Err("compactor panicked".to_owned()),
+            Err(_) => Err(format!("compactor job timed out after {}s", outer.as_secs())),
+        }),
         _ = cancel.cancelled() => None,
     };
     // A failure that raced the switch is the old model's: not counted either.
@@ -1031,13 +1177,17 @@ fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model
     }
 }
 
-/// Persist and publish one job's outcome (`Ok(None)`: cancelled by a switch).
+/// Persist and publish one job's outcome (`Ok(None)`: its calls were
+/// cancelled). A failure of a job whose `cancel` fired is the old
+/// compactor's (or a retried / detached call's) and is dropped under the
+/// `live` lock, so no stale backoff outlives a switch (R1-3).
 async fn finish(
     state: &State,
     key: (u8, u64),
     outcome: Result<Option<Node>, String>,
     took: Duration,
     model: &str,
+    cancel: &CancellationToken,
 ) {
     let outcome = match outcome {
         Ok(Some(node)) => match state.store.endless_node_put(state.session, &node).await {
@@ -1059,6 +1209,7 @@ async fn finish(
             live.invalidate();
         }
         Ok(None) => {}
+        Err(_) if cancel.is_cancelled() => {}
         Err(e) => record_failure(state, &mut live, key, &e, model),
     }
     live.dirty = true;
@@ -1071,10 +1222,14 @@ async fn finish(
 /// Publish `EndlessProgress` if due; returns how long the loop may sleep.
 fn emit_progress(state: &Arc<State>) -> Duration {
     let mut live = state.live.lock();
+    // R1-11: a failed node that is running or already due wakes the loop
+    // through `finish` / `schedule`; only future retries set the timer.
+    let now = Instant::now();
     let next_retry = live
         .failed
-        .values()
-        .map(|r| r.at.saturating_duration_since(Instant::now()))
+        .iter()
+        .filter(|(k, r)| r.at > now && !live.running.contains(*k))
+        .map(|(_, r)| r.at - now)
         .min()
         .unwrap_or(Duration::from_secs(60));
     if !live.dirty {
@@ -1474,14 +1629,16 @@ pub(crate) async fn set_mode(
                         .session(session)
                         .await?
                         .ok_or_else(|| anyhow::anyhow!("no session {session}"))?;
+                    let model = inner
+                        .catalog
+                        .read()
+                        .resolve(
+                            &row.model,
+                            &*crate::supervisor::configured(inner.auth.clone()),
+                        )
+                        .map_err(anyhow::Error::msg)?;
                     Attached {
-                        model: inner
-                            .catalog
-                            .resolve(
-                                &row.model,
-                                &*crate::supervisor::configured(inner.auth.clone()),
-                            )
-                            .map_err(anyhow::Error::msg)?,
+                        model,
                         effort: row.effort.as_deref().and_then(crate::effort_of),
                         agent: row.desk.unwrap_or_else(|| "theuth".to_owned()),
                         store: None,
@@ -1569,18 +1726,30 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
     })
 }
 
-/// RPC `endless_retry` (137F E5): re-resolve the compactor, let every failed
-/// node run now, wake the pump. A running job keeps its `running` key, so
-/// `schedule` never starts a duplicate.
+/// RPC `endless_retry` (137F E5, R1-10): cancel the calls in flight (a hung
+/// call restarts; a cancel is no failure), re-resolve the compactor, let
+/// every failed node run now, wake the pump. A cancelled job keeps its
+/// `running` key until it settles, so `schedule` never starts a duplicate.
 pub(crate) async fn retry(inner: &Inner, session: SessionId) -> anyhow::Result<SessionMemory> {
     if let Some(state) = state_of(inner, session) {
         let endless = state.live.lock().mode == MemoryMode::Endless;
         if endless {
+            state.cancel_calls();
             reresolve(inner, Some(session));
             state.reset_backoff();
         }
     }
     memory(inner, session).await
+}
+
+/// R1-15: the frontier keeps failing — why `settle` returned early.
+pub(crate) fn frontier_failing(inner: &Inner, session: SessionId) -> bool {
+    let Some(state) = state_of(inner, session) else {
+        return false;
+    };
+    let mut live = state.live.lock();
+    let cfg = live.fold_cfg(&state.cfg.read());
+    live.frontier_stalled(cfg)
 }
 
 /// Test seam: a state over an in-memory store with a scripted compactor is
@@ -1622,7 +1791,16 @@ pub(crate) async fn finish_for_tests(
 ) {
     let state = state_of(inner, session).expect("attached");
     let model = state.compactor().model_id().to_owned();
-    finish(&state, key, outcome.map(Some), Duration::ZERO, &model).await;
+    let cancel = CancellationToken::new();
+    finish(
+        &state,
+        key,
+        outcome.map(Some),
+        Duration::ZERO,
+        &model,
+        &cancel,
+    )
+    .await;
 }
 
 /// Test seam: the key of the compactor in force (the resolved id in tests).
@@ -1728,5 +1906,47 @@ mod tests {
             usize::MAX,
             "no window known"
         );
+    }
+
+    /// R1-8: with the one permit held, a frontier waiter queued after a
+    /// merge waiter gets the permit first; a dropped wait gives up its place.
+    #[tokio::test]
+    async fn local_gate_serves_the_frontier_first() {
+        let gate = Gate::new(1);
+        let held = gate.acquire(0).await;
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let waiter = |name: &'static str, priority: u8| {
+            let (gate, order) = (gate.clone(), order.clone());
+            tokio::spawn(async move {
+                let _p = gate.acquire(priority).await;
+                order.lock().push(name);
+                tokio::task::yield_now().await;
+            })
+        };
+        let gone = {
+            let gate = gate.clone();
+            tokio::spawn(async move {
+                let _p = gate.acquire(1).await;
+                unreachable!("aborted before the permit");
+            })
+        };
+        let merge = waiter("merge", 0);
+        tokio::task::yield_now().await;
+        let frontier = waiter("frontier", 1);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        gone.abort();
+        let _ = gone.await;
+        assert_eq!(
+            gate.state.lock().waiting.len(),
+            2,
+            "the cancelled wait left the line"
+        );
+        drop(held);
+        frontier.await.unwrap();
+        merge.await.unwrap();
+        assert_eq!(*order.lock(), ["frontier", "merge"]);
+        assert_eq!(gate.state.lock().free, 1, "every permit came back");
     }
 }
