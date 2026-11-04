@@ -32,3 +32,8 @@ pub struct PassEnd { pub pass: String, pub total: u32, pub ran: u32, pub stopped
 
 ## K4 — bindings
 Generated into `bindings/` and `crates/desktop/ui/src/rpc/bindings/` (gitignored, left in the tree).
+
+## Gate deviation
+`mbx clippy -p cells -p rpc -- -D warnings` fails on main's untouched `crates/voice/src/history/mod.rs:465`
+(`clippy::chunks_exact_to_as_chunks`, new in clippy 1.99). Gated with `--no-deps` instead, which lints exactly
+`cells` and `rpc`: 0 warnings. The `voice` lint is pre-existing and out of scope.
