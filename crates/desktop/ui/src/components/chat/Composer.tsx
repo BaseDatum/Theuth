@@ -802,7 +802,8 @@ export function Composer({
       useDrafts.getState().sending(draftKey, clientId)
       if (session && running) {
         steered = true
-        applyEvents([{ type: 'InputQueued', session, id: clientId, text: body, defer: false }])
+        // 171F4 N7: the chip and then the `you` row show the attached files at once (the engine's echo has none).
+        applyEvents([{ type: 'InputQueued', session, id: clientId, text: body, defer: false, files }])
         mode(session)
         // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
         if (interject) await api.cancel(session)
@@ -889,14 +890,15 @@ export function Composer({
     if (!session || !queued?.length || busy) return
     setBusy(true)
     try {
-      const texts: string[] = []
-      for (const q of queued) texts.push(await api.withdraw(session, q.id))
+      // `withdraw` answers the text only: the files come from our queue (empty after a reload).
+      const inputs: { body: string; files: string[] }[] = []
+      for (const q of queued) inputs.push({ body: await api.withdraw(session, q.id), files: q.files ?? [] })
       await api.cancel(session)
       const { applyEvents } = useSessions.getState()
-      for (const body of texts) {
+      for (const { body, files } of inputs) {
         const id = crypto.randomUUID()
-        applyEvents([{ type: 'InputQueued', session, id, text: body, defer: false }])
-        await api.steer(session, body, id, [])
+        applyEvents([{ type: 'InputQueued', session, id, text: body, defer: false, files }])
+        await api.steer(session, body, id, files)
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
