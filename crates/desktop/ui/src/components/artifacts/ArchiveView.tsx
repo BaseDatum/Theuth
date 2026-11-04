@@ -6,6 +6,7 @@ import { saveAs } from '@/components/chat/ArtifactCard'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { fmtBytes, isLocal } from '@/lib/files'
+import { privateOwner } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
@@ -99,7 +100,7 @@ function Rows({ node, depth, closed, toggle }: { node: Node; depth: number; clos
 export function ArchiveView({ a }: { a: Artifact }) {
   const api = useApi()
   const active = useEngines((s) => s.active)
-  const listing = useQuery({ queryKey: ['artifact-listing', a.call_id], queryFn: () => api.get_artifact_listing(a.call_id), retry: false })
+  const listing = useQuery({ queryKey: ['artifact-listing', a.call_id], queryFn: () => api.get_artifact_listing(a.call_id, privateOwner(a.session)), retry: false })
   const [q, setQ] = useState('')
   const [closed, setClosed] = useState<Set<string>>(new Set())
   const toggle = (p: string) =>

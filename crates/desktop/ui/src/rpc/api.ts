@@ -565,12 +565,12 @@ export interface Api {
   notebook_overviews(notebook: DocId): Promise<Overview[]>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
-  /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
-  export_artifact(id: string, dest: string): Promise<string>
-  /** The artifact record of one `show` call (49 §4.2); a vanished record rejects. */
-  get_artifact(call_id: string): Promise<Artifact>
-  /** The member listing of an `archive` record (35 §3.2): header data only, at most 5,000 entries (`truncated`); rejects when there is no listing. */
-  get_artifact_listing(call_id: string): Promise<ArchiveListing>
+  /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). A private artifact needs its owning `session` (51 §4.2). */
+  export_artifact(id: string, dest: string, session?: SessionId | null): Promise<string>
+  /** The artifact record of one `show` call (49 §4.2); a vanished record rejects. A private record is served to its tree's owner naming `session` only (51 §4.2). */
+  get_artifact(call_id: string, session?: SessionId | null): Promise<Artifact>
+  /** The member listing of an `archive` record (35 §3.2): header data only, at most 5,000 entries (`truncated`); rejects when there is no listing. `session` as `get_artifact`. */
+  get_artifact_listing(call_id: string, session?: SessionId | null): Promise<ArchiveListing>
   /** Up to 2,000 chars of the artifact's indexed text around `query`'s match, with ranges and coverage (49 §7); failed extraction rejects. */
   artifact_search_match(call_id: string, query: string): Promise<ArtifactMatchContext>
   /** Fire a schedule now, ignoring `next` (34 §8); rejects with `busy` / `no such schedule` / the parse error. */
@@ -579,8 +579,8 @@ export interface Api {
   fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
   /** The escalation model (57 §0.9, tier 2 of the local decision oracle): what is set and what a tier-2 call resolves to (`effective === null` = the session's model). */
   escalate_model(): Promise<EscalateModel>
-  /** A committed app record: artifact, source, compatibility hash, pinned bindings, diagnostics (46 §6.3). `-32001` when apps are disabled — show the artifact's source instead. */
-  get_app(record_call_id: string): Promise<AppDoc>
+  /** A committed app record: artifact, source, compatibility hash, pinned bindings, diagnostics (46 §6.3). `-32001` when apps are disabled — show the artifact's source instead. `session` as `get_artifact`. */
+  get_app(record_call_id: string, session?: SessionId | null): Promise<AppDoc>
   /** Commit `source` as a new `app` artifact named `name` without a model turn (30 §8, the transcript's Open as app); the result is what `get_app` returns for its `record_call_id`. Located helper errors arrive as the RPC error message. */
   publish_app(session: SessionId, name: string, source: string): Promise<AppDoc>
   get_prompt(session: SessionId | null): Promise<string>

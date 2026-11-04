@@ -74,12 +74,13 @@ function useVisible(): boolean {
 }
 
 /** `get_app` for one record. Source/bindings are immutable once committed, but `recent_calls` is not: every mount
- * (reopen) refetches, and a reconnect invalidates (46 §6.4); cached data stays on screen meanwhile. */
-function useAppDoc(callId: string | undefined, enabled: boolean) {
+ * (reopen) refetches, and a reconnect invalidates (46 §6.4); cached data stays on screen meanwhile. `session` names
+ * a private owner (`privateOwner`, 51 §4.2). */
+function useAppDoc(callId: string | undefined, enabled: boolean, session: string | undefined) {
   const api = useApi();
   return useQuery({
     queryKey: ["app", callId],
-    queryFn: () => api.get_app(callId as string),
+    queryFn: () => api.get_app(callId as string, session),
     enabled: enabled && callId !== undefined,
     staleTime: 0,
     refetchOnMount: "always",
@@ -122,8 +123,10 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
   const visible = useVisible();
   const dark = useDark();
 
-  const docQ = useAppDoc(artifact?.call_id, enabled);
-  const baseQ = useAppDoc(draft?.edit ? draft.base : undefined, enabled);
+  // One tree: the shown record, its patch base and the file fallback all belong to the panel's session.
+  const owner = privateOwner(artifact?.session ?? session);
+  const docQ = useAppDoc(artifact?.call_id, enabled, owner);
+  const baseQ = useAppDoc(draft?.edit ? draft.base : undefined, enabled, owner);
   // A patch still arriving against the shown lineage previews over the committed view (46 §8.1): the runtime goes inert
   // (the wrapper defers the swap while an action runs) and the committed frame returns if the edit fails.
   const attached =
@@ -132,7 +135,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
     (draft.status === "streaming" || draft.status === "validating");
   // Without a usable `get_app` the bytes themselves are the fallback.
   const needFile = artifact !== undefined && (!enabled || docQ.isError);
-  const fileText = useText(needFile ? artifact.path : null, privateOwner(artifact?.session));
+  const fileText = useText(needFile ? artifact.path : null, owner);
 
   let program: Program;
   let banner: { tone: "error" | "info"; text: string } | undefined;

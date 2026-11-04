@@ -103,7 +103,8 @@ export async function openShow(
 ): Promise<void> {
   if (!useSessions.getState().sessions[session]?.artifacts.has(callId)) {
     try {
-      const artifact = await api.get_artifact(callId);
+      // A private chat's record is served to its owner naming the session only (51 §4.2).
+      const artifact = await api.get_artifact(callId, privateOwner(session));
       useSessions
         .getState()
         .applyEvents([{ type: "ArtifactShown", session, call_id: callId, artifact }]);
@@ -172,7 +173,7 @@ export async function saveAs(api: Api, a: Artifact, local: boolean) {
   if (local) {
     const dest = await save({ defaultPath: a.name });
     if (!dest) return;
-    await api.export_artifact(a.id, dest);
+    await api.export_artifact(a.id, dest, privateOwner(a.session));
     toast.success(`Saved ${a.name}`);
     return;
   }
