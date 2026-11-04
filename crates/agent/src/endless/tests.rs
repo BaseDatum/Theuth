@@ -762,6 +762,8 @@ impl Compactor for Probe {
         self.ctx_lens.lock().push(ctx.len());
         let act = *self.act.lock();
         let line = echo_line(convo);
+        // Armed now, so a call dropped before its first poll counts too.
+        let on_drop = (act == Act::Hang).then(|| OnDrop(self.dropped.clone()));
         Box::pin(async move {
             let _in = InFlight::enter(self);
             tokio::time::sleep(self.delay).await;
@@ -773,7 +775,7 @@ impl Compactor for Probe {
                 }),
                 Act::Fail => Err("400: model not loaded".to_owned()),
                 Act::Hang => {
-                    let _d = OnDrop(self.dropped.clone());
+                    let _d = on_drop;
                     futures::future::pending().await
                 }
                 Act::Panic => {
