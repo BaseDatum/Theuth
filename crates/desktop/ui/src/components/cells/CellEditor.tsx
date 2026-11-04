@@ -1,7 +1,7 @@
 // Owner: U1
-// 171 §11.1 editor + gutter, §7.1 modes, §11.7 keys: the chat cell's CodeMirror. Read-only until the user edits
-// (Enter or a double-click; Esc leaves while unedited); ► on the hovered line runs it; a selection shows the
-// "Run selection" pill. Danger cells run from their button only: the keys show a hint instead.
+// 171 §11.1 editor + gutter, §7.1 modes, §11.7 keys: the chat cell's CodeMirror. Click and type to edit (F4) unless
+// `locked`; Esc leaves the editor; ► on the hovered line runs it; a selection shows the "Run selection" pill. Danger
+// cells run from their button only: the keys show a hint instead.
 import { type Extension, StateEffect, StateField } from '@codemirror/state'
 import { langs } from '@uiw/codemirror-extensions-langs'
 import CodeMirror, { EditorView, GutterMarker, Prec, gutter, keymap, lineNumbers } from '@uiw/react-codemirror'
@@ -19,6 +19,21 @@ const LANGUAGE: Partial<Record<Lang, () => Extension>> = { bash: langs.bash, zsh
 const bytesBefore = (doc: string, pos: number) => new TextEncoder().encode(doc.slice(0, pos)).length
 
 const hover = StateEffect.define<number | null>()
+
+/**
+ * 171F B2: the hovered line after a pointer event. A move (text or the ► gutter) hovers its line; leaving the text
+ * for somewhere inside the editor (the ► itself) keeps it; only leaving the editor clears it.
+ */
+export function hoverAfter(current: number | null, e: HoverEvent): number | null {
+  if (e.kind === 'move') return e.line
+  return e.inEditor ? current : null
+}
+type HoverEvent = { kind: 'move'; line: number | null } | { kind: 'leave'; inEditor: boolean }
+const pointer = (v: EditorView, e: HoverEvent) => {
+  const next = hoverAfter(v.state.field(hovered), e)
+  if (next !== v.state.field(hovered)) v.dispatch({ effects: hover.of(next) })
+}
+
 const hovered = StateField.define<number | null>({
   create: () => null,
   update: (v, tr) => {
@@ -43,7 +58,7 @@ export type CellEditorProps = {
   runnable: boolean
   /** Keys and line/selection runs refuse; `onRefused` explains (§7.1). */
   danger: boolean
-  /** No edits (a run is queued or live, superseded, read-only view). */
+  /** No edits (not runnable, a run is queued or live, superseded, invalid). */
   locked: boolean
   onChange(code: string): void
   onRun(mode: CellRunMode, next?: boolean): void
@@ -60,11 +75,10 @@ export function keyRun(cell: Pick<CellEditorProps, 'runnable' | 'danger' | 'onRu
 
 /** The chat cell's editor; extensions are memoised on `lang`/`danger`, callbacks read through a ref. */
 export function CellEditor({ lang, code, runnable, danger, locked, onChange, onRun, onRefused }: CellEditorProps) {
-  const [editing, setEditing] = useState(false)
   const [selection, setSelection] = useState<{ from: number; to: number } | null>(null)
   const view = useRef<EditorView | null>(null)
-  const live = useRef({ runnable, danger, locked, onRun, onRefused, editing, setEditing, code })
-  live.current = { runnable, danger, locked, onRun, onRefused, editing, setEditing, code }
+  const live = useRef({ runnable, danger, onRun, onRefused })
+  live.current = { runnable, danger, onRun, onRefused }
 
   const extensions = useMemo(() => {
     const run = (mode: CellRunMode, next?: boolean) => keyRun(live.current, mode, next)
@@ -90,17 +104,18 @@ export function CellEditor({ lang, code, runnable, danger, locked, onChange, onR
               lineMarkerChange: (u) => u.transactions.some((tr) => tr.effects.some((e) => e.is(hover))),
               domEventHandlers: {
                 mousedown: (v, line) => run({ type: 'line', line: v.state.doc.lineAt(line.from).number }),
+                mousemove: (v, line) => {
+                  pointer(v, { kind: 'move', line: v.state.doc.lineAt(line.from).number })
+                  return false
+                },
               },
             }),
             EditorView.domEventHandlers({
               mousemove: (e, v) => {
                 const pos = v.posAtCoords({ x: e.clientX, y: e.clientY })
-                const n = pos === null ? null : v.state.doc.lineAt(pos).number
-                if (n !== v.state.field(hovered)) v.dispatch({ effects: hover.of(n) })
+                pointer(v, { kind: 'move', line: pos === null ? null : v.state.doc.lineAt(pos).number })
               },
-              mouseleave: (_e, v) => {
-                if (v.state.field(hovered) !== null) v.dispatch({ effects: hover.of(null) })
-              },
+              mouseleave: (e, v) => pointer(v, { kind: 'leave', inEditor: e.relatedTarget instanceof Node && v.dom.contains(e.relatedTarget) }),
             }),
           ]),
       Prec.highest(
@@ -108,19 +123,8 @@ export function CellEditor({ lang, code, runnable, danger, locked, onChange, onR
           { key: 'Shift-Enter', run: () => run({ type: 'cell' }, true) },
           { key: 'Mod-Enter', run: caret },
           {
-            key: 'Enter',
-            run: () => {
-              const l = live.current
-              if (l.editing || l.locked) return false
-              l.setEditing(true)
-              return true
-            },
-          },
-          {
             key: 'Escape',
             run: (v) => {
-              const l = live.current
-              if (v.state.doc.toString() === l.code) l.setEditing(false)
               v.contentDOM.blur()
               return true
             },
@@ -132,13 +136,14 @@ export function CellEditor({ lang, code, runnable, danger, locked, onChange, onR
 
   const mod = isApple() ? '⌘' : 'Ctrl'
   return (
-    <div className="relative" onDoubleClick={() => !locked && setEditing(true)}>
+    // Leaving the whole editor clears the ► (the line-number gutter has no handler of its own).
+    <div className="relative" onMouseLeave={() => view.current && pointer(view.current, { kind: 'leave', inEditor: false })}>
       <CodeMirror
         value={code}
         basicSetup={false}
         theme="none"
         editable
-        readOnly={locked || !editing}
+        readOnly={locked}
         extensions={extensions}
         onChange={onChange}
         onCreateEditor={(v) => (view.current = v)}
@@ -147,7 +152,7 @@ export function CellEditor({ lang, code, runnable, danger, locked, onChange, onR
           const s = u.state.selection.main
           setSelection(s.empty ? null : { from: s.from, to: s.to })
         }}
-        aria-label={editing ? 'Cell code, editing' : 'Cell code (Enter to edit)'}
+        aria-label={locked ? 'Cell code' : 'Cell code, editable'}
       />
       {selection && runnable && !danger && (
         <Button

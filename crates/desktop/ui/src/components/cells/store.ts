@@ -37,8 +37,10 @@ export function duration(secs: number): string {
   return secs < 10 ? `${Math.round(secs * 10) / 10} s` : `${Math.round(secs)} s`
 }
 
-/** `exit 0`, `exit 1`, `SIGKILL`, `lost`, … */
+/** `exit 0`, `exit 1`, `SIGKILL`, `timed out`, `killed`, `lost`, … — an ending state first, like the engine's `deliver::exit_word`. */
 export function exitText(run: CellRun): string {
+  if (run.state === 'timeout') return 'timed out'
+  if (run.state === 'killed' || run.state === 'lost' || run.state === 'cancelled') return run.state
   if (run.exit?.type === 'code') return `exit ${run.exit.value}`
   if (run.exit?.type === 'signal') return run.exit.value
   return run.state

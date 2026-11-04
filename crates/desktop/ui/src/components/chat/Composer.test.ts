@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { expect, test } from 'vitest'
 import { type Active, finish } from '@/lib/dictation'
 import { dictationCommands, spokenSend } from './Composer'
@@ -42,4 +43,14 @@ test('dictationCommands: theuth\'s slash commands plus the harness\'s, each with
   expect(names.slice(0, COMMANDS.length)).toEqual(COMMANDS.map((c) => c.name))
   expect(names.slice(COMMANDS.length)).toEqual(['/skill:ponytail', '/ponytail-review'])
   expect(dictationCommands(null)).toEqual(COMMANDS.map((c) => c.name))
+})
+
+test('171F B7: queued chips, then the kernel strip, then the input box (the strip sits on the box, the chips above it)', () => {
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  const at = (s: string) => src.indexOf(s)
+  expect(at('<QueuedChips')).toBeGreaterThan(0)
+  expect(at('<QueuedChips')).toBeLessThan(at('{strip}'))
+  expect(at('{strip}')).toBeLessThan(at('ref={box}'))
+  const route = readFileSync(new URL('../../routes/c.$session.tsx', import.meta.url), 'utf8')
+  expect(route).toContain('strip={<KernelStrip session={session} embedded />}')
 })

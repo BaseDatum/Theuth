@@ -41,6 +41,11 @@ const DEFAULT_COLS = 120
 /** A kernel PTY's fixed grid (171 §7.4): the cell viewer starts there and never resizes it. */
 const CELL_ROWS = 30
 const CELL_COLS = 100
+/** 171F B12: a cell terminal opens at this many rows and grows with the rows its program used, up to `CELL_ROWS`. */
+const CELL_MIN_ROWS = 12
+
+/** The rows a cell terminal shows: the rows in use, at least `min`, at most the `grid`. */
+export const liveRows = (used: number, min: number, grid: number) => Math.min(grid, Math.max(min, used))
 
 /** Mobile toolbar keys (55 §4.5): what a soft keyboard lacks. The daemon encodes them for the program's modes. */
 const TOOLBAR: [string, Key][] = [
@@ -197,6 +202,9 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
   const onExitRef = useRef(onExit)
   const [exit, setExit] = useState<JobExit | null>(null)
   const [size, setSize] = useState('')
+  // A cell source's height (171F B12): rows shown and the measured row height (px, 0 until xterm has rendered).
+  const [rows, setRows] = useState(CELL_MIN_ROWS)
+  const [rowH, setRowH] = useState(0)
   // The soft keyboard is up while xterm's textarea has focus (mobile toggle).
   const [keyboard, setKeyboard] = useState(false)
   // Stable by value, so an inline `source={{…}}` does not restart the stream every render.
@@ -216,6 +224,7 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
     if (!el || !client) return
     const ref = src.kind === 'pty' ? src : null
     setExit(null)
+    setRows(CELL_MIN_ROWS)
     const term = new Xterm({
       theme: { background: BG, foreground: FG, cursor: FG, selectionBackground: '#e8dcc855' },
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -271,6 +280,17 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
     if (ref) setSize(`${term.cols}×${term.rows}`)
     const ro = fit ? new ResizeObserver(() => fit.fit()) : null
     ro?.observe(el)
+    // Cell source: grow to the rows in use (a full-screen program or scrolled output takes the whole grid); the
+    // kernel PTY itself is never resized.
+    const grow = () => {
+      const b = term.buffer.active
+      const used = b.type === 'alternate' || b.baseY > 0 ? CELL_ROWS : b.cursorY + 1
+      setRows((r) => Math.max(r, liveRows(used, CELL_MIN_ROWS, CELL_ROWS)))
+      const screen = el.querySelector('.xterm-screen')?.getBoundingClientRect().height ?? 0
+      if (screen > 0) setRowH(screen / term.rows)
+    }
+    const parsed = ref ? null : term.onWriteParsed(grow)
+    if (!ref) grow()
     if (ref && popped) localStorage.setItem(mark(ref), '1')
     // Leaving: the popped window gives the grid back; the panel only when no popped window owns it.
     const leave = () => {
@@ -282,6 +302,7 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
     return () => {
       wire.dispose()
       ro?.disconnect()
+      parsed?.dispose()
       resized?.dispose()
       ta.removeEventListener('focus', focused)
       ta.removeEventListener('blur', blurred)
@@ -304,8 +325,13 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
   const keys = src.kind === 'pty' ? mobile : touch()
   return (
     <>
-      <div className={cn('relative min-h-0 flex-1 overflow-hidden rounded-md p-1', className)} style={{ backgroundColor: BG }}>
-        <div ref={host} className={cn('size-full', src.kind === 'cell' && 'overflow-auto')} />
+      <div
+        // A cell box's height is its flex basis (`flex-initial`; it still shrinks under the host's max-height).
+        className={cn('relative min-h-0 flex-1 overflow-hidden rounded-md p-1', src.kind === 'cell' && 'flex-initial', className)}
+        // p-1: 4 px above and below the rows; ~15 px a 12 px row until xterm has measured one.
+        style={{ backgroundColor: BG, height: src.kind === 'cell' ? rows * (rowH || 15) + 8 : undefined }}
+      >
+        <div ref={host} className={cn('size-full', src.kind === 'cell' && 'overflow-x-auto overflow-y-hidden')} />
       </div>
       {keys && !exit && (
         <div className="flex gap-1 overflow-x-auto" role="group" aria-label="Terminal keys">

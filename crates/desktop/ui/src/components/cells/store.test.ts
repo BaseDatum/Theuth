@@ -1,7 +1,7 @@
 import { expect, test, vi } from 'vitest'
 import type { PassEnd } from '@/rpc/bindings/PassEnd'
 import { RpcError } from '@/rpc/client'
-import { cells, duration, lastPass, mintId, press, refKey, register, registeredCells, scopeKey } from './store'
+import { cells, duration, exitText, lastPass, mintId, press, refKey, register, registeredCells, scopeKey } from './store'
 import { SESSION, chatRef, fakeApi, run, spec, state } from './test-fixtures'
 
 test('run ids are r_ + a 26-character Crockford ULID, time-ordered (§5.10)', () => {
@@ -67,4 +67,13 @@ test('a watch-only register (171F B8) asks cell_state for that ref and never hid
   expect(lastPass({ ...slice, states: running })).toBeNull()
   for (const off of [offMine, offNext, offAgain]) off()
   cells.setState({ scopes: {} })
+})
+
+test('171F B5: an ending state names itself before the exit code (timeout exits 130 too), like deliver::exit_word', () => {
+  expect(exitText(run({ state: 'timeout', exit: { type: 'code', value: 130 } }))).toBe('timed out')
+  expect(exitText(run({ state: 'killed', exit: { type: 'signal', value: 'SIGKILL' } }))).toBe('killed')
+  expect(exitText(run({ state: 'lost', exit: null }))).toBe('lost')
+  expect(exitText(run({ state: 'failed', exit: { type: 'code', value: 1 } }))).toBe('exit 1')
+  expect(exitText(run({ state: 'stopped', exit: { type: 'signal', value: 'SIGINT' } }))).toBe('SIGINT')
+  expect(exitText(run({ state: 'stopped', exit: null }))).toBe('stopped')
 })

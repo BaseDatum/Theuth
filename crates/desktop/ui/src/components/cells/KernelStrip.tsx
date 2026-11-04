@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { isDesktop } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
+import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/api'
 import type { KernelState } from '@/rpc/bindings/KernelState'
@@ -15,6 +16,8 @@ import { errorText, refresh, register, useScope } from './store'
 
 export type KernelStripProps = {
   session: string
+  /** Inside the composer's column (171F B7): the composer already centres and pads it. */
+  embedded?: boolean
 }
 
 /** Kernels the strip shows: a process exists (§5.3 `starting`/`ready`/`busy`). */
@@ -80,20 +83,20 @@ function KernelRow({ kernel, api, onError }: { kernel: KernelState; api: Api; on
   )
 }
 
-/** 171 §11.4: the session's live kernels on top of the composer; renders nothing without one. */
-export function KernelStrip({ session }: KernelStripProps) {
+/** 171 §11.4: the session's live kernels on top of the composer's box; renders nothing without one. */
+export function KernelStrip({ session, embedded = false }: KernelStripProps) {
   const api = useApi()
   const scope = { type: 'session', id: session } as const
   useEffect(() => register(api, { type: 'session', id: session }, null), [api, session])
   const kernels = liveKernels(useScope(scope).kernels)
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useDisclosure(disclosureKey(session, 'kernels'))
   const [envError, setEnvError] = useState<string | null>(null)
   if (kernels.length === 0) return null
   const [first] = kernels
   // §5.4: the engine's `env_warning`, else a failed Refresh environment.
   const warning = kernels.map((k) => k.env_warning).find(Boolean) ?? envError
   return (
-    <div className="mx-auto w-full shrink-0 px-4 md:max-w-[768px]" role="region" aria-label="Kernels">
+    <div className={cn('w-full shrink-0', !embedded && 'mx-auto px-4 md:max-w-[768px]')} role="region" aria-label="Kernels">
       <div className="flex flex-col gap-1 rounded-t-xl border border-b-0 border-border bg-layer-1 px-3 py-1.5">
         {warning && (
           <span className="self-start rounded-md border border-warning-border bg-warning-bg px-1.5 text-[11px] text-warning" title={warning}>

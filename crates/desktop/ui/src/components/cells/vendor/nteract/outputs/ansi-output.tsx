@@ -5,8 +5,15 @@
 import Anser from "anser";
 import { escapeCarriageReturn } from "escape-carriage";
 import { X } from "lucide-react";
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { createContext, useContext, useMemo, type CSSProperties, type ReactNode } from "react";
+import { disclosureKey, useDisclosure } from "@/lib/tool-runs";
 import { cn } from "@/lib/utils";
+
+/**
+ * 171F B13: the base `disclosureKey` of the outputs below (the cell's `refKey` and the run id), so a remount keeps
+ * what the reader expanded. Adapted for theuth.
+ */
+export const OutputDisclosure = createContext("");
 
 /**
  * Theme-aware ANSI color mapping.
@@ -354,7 +361,9 @@ function buildStreamPreview(text: string): {
  * AnsiStreamOutput component specifically for stdout/stderr rendering.
  */
 export function AnsiStreamOutput({ text, streamName, className = "" }: AnsiStreamOutputProps) {
-  const [expanded, setExpanded] = useState(false);
+  // ponytail: keyed by stream and length, not the output's index (OutputArea does not pass it); two same-length
+  // streams of one run would share the toggle.
+  const [expanded, setExpanded] = useDisclosure(disclosureKey(useContext(OutputDisclosure), "stream", streamName, text.length));
   const preview = useMemo(() => buildStreamPreview(text), [text]);
   const isStderr = streamName === "stderr";
   const streamClasses = isStderr ? "text-destructive" : "text-foreground";
