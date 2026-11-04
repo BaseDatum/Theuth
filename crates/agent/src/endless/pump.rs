@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use parking_lot::{Mutex, RwLock};
 use runtime::SessionId;
-use tokio::sync::{Notify, watch};
+use tokio::sync::{Notify, Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::compactor::{self, Compactor, ModelCompactor, Step};
@@ -91,6 +91,36 @@ impl Drop for Handle {
     }
 }
 
+/// 137F E9: one semaphore per local endpoint, engine-wide, sized by
+/// `local_jobs` (a changed size gets a fresh semaphore; calls on the old one finish there).
+#[derive(Clone, Default)]
+pub(crate) struct Queues(Arc<Mutex<HashMap<String, (u8, Arc<Semaphore>)>>>);
+
+impl Queues {
+    fn get(&self, endpoint: &str, permits: u8) -> Arc<Semaphore> {
+        let permits = permits.clamp(1, 16);
+        let mut map = self.0.lock();
+        let slot = map
+            .entry(endpoint.to_owned())
+            .or_insert_with(|| (permits, Arc::new(Semaphore::new(usize::from(permits)))));
+        if slot.0 != permits {
+            *slot = (permits, Arc::new(Semaphore::new(usize::from(permits))));
+        }
+        slot.1.clone()
+    }
+}
+
+/// Test seam: the scripted compactor for a resolved model id.
+pub(crate) type CompactorFactory = Arc<dyn Fn(&str) -> Arc<dyn Compactor> + Send + Sync>;
+
+/// The compactor in force and the token that cancels the calls made with it.
+struct Current {
+    /// Resolved model id + effort: equal keys mean the same compactor.
+    key: String,
+    compactor: Arc<dyn Compactor>,
+    cancel: CancellationToken,
+}
+
 /// Shared between the handle, the pump task and its jobs.
 pub(crate) struct State {
     session: SessionId,
@@ -98,11 +128,14 @@ pub(crate) struct State {
     rt: runtime::Runtime,
     /// Shared with [`Inner`]: Settings › Memory replaces it live.
     cfg: Arc<RwLock<super::EndlessConfig>>,
-    compactor: Arc<dyn Compactor>,
+    /// 137F E1: re-resolved whenever a link of the R1-D3 chain changes.
+    current: RwLock<Current>,
+    /// Shared with [`Inner`] (E9).
+    queues: Queues,
     live: Mutex<Live>,
     /// Pump loop wake-up (new rows, a finished job, a mode switch).
     wake: Notify,
-    /// Bumped whenever a node lands; `settle` waits on it.
+    /// Bumped whenever a job finishes (a node lands or fails); `settle` waits on it.
     built_tx: watch::Sender<u64>,
     /// Serialises row ingestion between the pump and the turn (`settle`, `render_for_turn`).
     ingest: tokio::sync::Mutex<()>,
@@ -113,7 +146,7 @@ impl State {
         session: SessionId,
         store: Store,
         inner: &Inner,
-        compactor: Arc<dyn Compactor>,
+        (key, compactor): (String, Arc<dyn Compactor>),
         meta: crate::store::endless::EndlessMeta,
     ) -> Self {
         Self {
@@ -121,12 +154,52 @@ impl State {
             store,
             rt: inner.rt.clone(),
             cfg: inner.cfg.clone(),
-            compactor,
+            current: RwLock::new(Current {
+                key,
+                compactor,
+                cancel: CancellationToken::new(),
+            }),
+            queues: inner.queues.clone(),
             live: Mutex::new(Live::new(meta)),
             wake: Notify::new(),
             built_tx: watch::channel(0).0,
             ingest: tokio::sync::Mutex::new(()),
         }
+    }
+
+    fn compactor(&self) -> Arc<dyn Compactor> {
+        self.current.read().compactor.clone()
+    }
+
+    /// E2/E3: install `compactor` when its key differs — cancel the calls
+    /// made with the old one, reset every backoff, wake the pump. `true` = changed.
+    fn switch(&self, (key, compactor): (String, Arc<dyn Compactor>)) -> bool {
+        {
+            let mut cur = self.current.write();
+            if cur.key == key {
+                return false;
+            }
+            tracing::info!(session = %self.session, from = %cur.key, to = %key, "endless: compactor switched");
+            cur.cancel.cancel();
+            *cur = Current {
+                key,
+                compactor,
+                cancel: CancellationToken::new(),
+            };
+        }
+        self.reset_backoff();
+        true
+    }
+
+    /// Every failed node may run now (E2, E5); running jobs keep their keys.
+    fn reset_backoff(&self) {
+        {
+            let mut live = self.live.lock();
+            live.failed.clear();
+            live.reported.clear();
+            live.dirty = true;
+        }
+        self.wake.notify_one();
     }
 }
 
@@ -312,6 +385,19 @@ impl Live {
             blocking: *key == front,
         })
     }
+
+    /// E4: the frontier failed at least twice and waits out its backoff.
+    fn frontier_stalled(&mut self, cfg: FoldCfg) -> bool {
+        if self.failed.is_empty() {
+            return false;
+        }
+        let front = (0u8, self.frontier(cfg));
+        !self.running.contains(&front)
+            && self
+                .failed
+                .get(&front)
+                .is_some_and(|r| r.failures >= 2 && r.at > Instant::now())
+    }
 }
 
 impl Live {
@@ -342,13 +428,28 @@ impl Live {
 }
 
 /// The compactor for a session (R1-D3): `agent.endless.model` → else
-/// `agent.title_model` → else the session's own model with its effort.
-fn compactor_for(inner: &Inner, session: SessionId, attached: &Attached) -> ModelCompactor {
-    let model = inner.cfg.read().model.clone();
-    let (model, effort) = match model.as_ref().or(inner.title_model.as_ref()) {
+/// `agent.title_model` → else the session's own model with its effort —
+/// every link read live (137F E1). Keyed by model id + effort.
+fn compactor_for(
+    inner: &Inner,
+    session: SessionId,
+    attached: &Attached,
+) -> (String, Arc<dyn Compactor>) {
+    let chosen = inner
+        .cfg
+        .read()
+        .model
+        .clone()
+        .or_else(|| inner.title_model.read().clone());
+    if let Some(f) = &inner.compactor_for_tests {
+        let id = chosen.unwrap_or_else(|| attached.model.id.clone());
+        let c = f(&id);
+        return (id, c);
+    }
+    let (model, effort) = match chosen {
         Some(id) => match inner
             .catalog
-            .resolve(id, &*crate::supervisor::configured(inner.auth.clone()))
+            .resolve(&id, &*crate::supervisor::configured(inner.auth.clone()))
         {
             Ok(m) => {
                 let effort = crate::frame::default_effort(&m);
@@ -361,12 +462,39 @@ fn compactor_for(inner: &Inner, session: SessionId, attached: &Attached) -> Mode
         },
         None => (attached.model.clone(), attached.effort.clone()),
     };
-    ModelCompactor {
+    let base =
+        crate::backend::target_for(&model, &inner.auth).map(|t| t.endpoint.base_url().to_owned());
+    let local = compactor::local_endpoint(&model, base.as_deref());
+    // E8: a local Ollama model must not spend the reply cap on thinking (`think: false`).
+    let effort = if local.is_some() && crate::loop_::ns(&model.genai) == "ollama" {
+        Some(genai::chat::ReasoningEffort::Zero)
+    } else {
+        effort
+    };
+    let key = format!("{}|{effort:?}", model.id);
+    let c = ModelCompactor {
         session,
         backend: Backend::for_model(&model, &inner.client, &inner.auth),
         model,
         system: compactor::prompt(&attached.agent),
         effort,
+        local,
+    };
+    (key, Arc::new(c))
+}
+
+/// E1/E2: re-resolve the compactor of `session` (`None` = every attached
+/// session); a changed one cancels its old calls, resets backoff, wakes the pump.
+pub(crate) fn reresolve(inner: &Inner, session: Option<SessionId>) {
+    let targets: Vec<(SessionId, Arc<State>, Attached)> = inner
+        .sessions
+        .lock()
+        .iter()
+        .filter(|(id, _)| session.is_none_or(|s| s == **id))
+        .map(|(id, h)| (*id, h.state.clone(), h.attached.clone()))
+        .collect();
+    for (id, state, attached) in targets {
+        state.switch(compactor_for(inner, id, &attached));
     }
 }
 
@@ -424,14 +552,13 @@ pub(crate) async fn attach(
             live.view_bytes = meta.view_bytes;
             live.invalidate();
             drop(live);
+            // The session's model may have moved since the last attach.
+            state.switch(compactor_for(inner, session, &attached));
             state
         }
         None => {
-            let compactor: Arc<dyn Compactor> = match inner.compactor_for_tests.clone() {
-                Some(c) => c,
-                None => Arc::new(compactor_for(inner, session, &attached)),
-            };
-            let state = Arc::new(State::new(session, store, inner, compactor, meta));
+            let current = compactor_for(inner, session, &attached);
+            let state = Arc::new(State::new(session, store, inner, current, meta));
             load(&state).await?;
             state
         }
@@ -609,10 +736,48 @@ fn schedule(state: &Arc<State>) {
         }
         l += 1;
     }
-    let slots = usize::from(state.cfg.read().jobs.max(1)).saturating_sub(live.running.len());
+    // E9: a local compactor is one serial server: one job per session (the
+    // frontier first — it heads `candidates`), the engine-wide queue does the rest.
+    let jobs = if state.compactor().local().is_some() {
+        1
+    } else {
+        usize::from(state.cfg.read().jobs.max(1))
+    };
+    let slots = jobs.saturating_sub(live.running.len());
     for key in candidates.into_iter().take(slots) {
         live.running.insert(key);
         spawn_build(state.clone(), key, &mut live);
+    }
+}
+
+/// E10: a job task that ends without reaching [`finish`] (a panic) releases
+/// its `running` key and counts as a failure, so the node retries.
+struct JobGuard {
+    state: Arc<State>,
+    key: (u8, u64),
+    model: String,
+    armed: bool,
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        {
+            let mut live = self.state.live.lock();
+            live.running.remove(&self.key);
+            record_failure(
+                &self.state,
+                &mut live,
+                self.key,
+                "compactor task ended unexpectedly",
+                &self.model,
+            );
+            live.dirty = true;
+        }
+        self.state.built_tx.send_modify(|v| *v += 1);
+        self.state.wake.notify_one();
     }
 }
 
@@ -665,10 +830,20 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
             fold::render(&live.tree, &f, &live.units).text()
         }
     };
+    let (compactor, cancel) = {
+        let cur = state.current.read();
+        (cur.compactor.clone(), cur.cancel.clone())
+    };
     tokio::spawn(async move {
+        let mut guard = JobGuard {
+            state: state.clone(),
+            key,
+            model: compactor.model_id().to_owned(),
+            armed: true,
+        };
         let started = Instant::now();
         let outcome = match (free_text, step) {
-            (Some(text), _) => Ok(Node {
+            (Some(text), _) => Ok(Some(Node {
                 l,
                 i,
                 size: text.len() as u32,
@@ -676,17 +851,96 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
                 free: true,
                 model: None,
                 tries: 0,
-            }),
-            (None, Some(step)) => call(&state, l, i, &ctx, &step).await,
+            })),
+            (None, Some(step)) => call(&state, &compactor, &cancel, l, i, &ctx, &step).await,
             (None, None) => Err("no step".to_owned()),
         };
-        finish(&state, key, outcome, started.elapsed()).await;
+        guard.armed = false;
+        finish(
+            &state,
+            key,
+            outcome,
+            started.elapsed(),
+            compactor.model_id(),
+        )
+        .await;
     });
 }
 
-/// One node's compactor build, with its `model_calls` row.
-async fn call(state: &State, l: u8, i: u64, ctx: &str, step: &Step) -> Result<Node, String> {
-    let c = state.compactor.as_ref();
+/// Bytes per token for prompt sizing (the 128 KB view ≈ 43k tokens).
+const BYTES_PER_TOKEN: usize = 3;
+/// Prompt bytes one more try adds (the refused reply + the correction).
+const RETRY_BYTES: usize = 3_072;
+
+/// E8: how many bytes of the `<chat>` view `c` may see — `local_ctx_bytes`
+/// for a local compactor; for a known window, what fits beside the system
+/// prompt, the step, the retries and the reply cap with a 10 % margin. The
+/// step (the unit itself) is never trimmed.
+fn ctx_budget(c: &dyn Compactor, step: &Step, cfg: &super::EndlessConfig, local: bool) -> usize {
+    let mut max = if local {
+        cfg.local_ctx_bytes.clamp(4_000, 256_000) as usize
+    } else {
+        usize::MAX
+    };
+    if let Some(window) = c.model().model.as_ref().map(|m| m.limit.context as usize)
+        && window > 0
+    {
+        let fixed = compactor::COMPACT.len()
+            + step.render(cfg.node_bytes).len()
+            + usize::from(cfg.tries.max(1) - 1) * RETRY_BYTES;
+        let room = (window * 9 / 10).saturating_sub(c.out_tokens() as usize) * BYTES_PER_TOKEN;
+        max = max.min(room.saturating_sub(fixed));
+    }
+    max
+}
+
+/// `ctx` cut to at most `max` bytes, keeping its newest lines under the `<chat>` opener.
+fn fit_ctx(ctx: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    const OPEN: &str = "<chat>\n";
+    if ctx.len() <= max {
+        return ctx.into();
+    }
+    let body = ctx.strip_prefix(OPEN).unwrap_or(ctx);
+    let from = body.len().saturating_sub(max.saturating_sub(OPEN.len()));
+    // Start at a line boundary (a byte after `\n` is a char boundary).
+    let from = body.as_bytes()[from..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .map_or(body.len(), |p| from + p + 1);
+    format!("{OPEN}{}", &body[from..]).into()
+}
+
+/// One node's compactor build, with its `model_calls` row. `Ok(None)`: the
+/// compactor was switched mid-call (E3) — not a failure, the node reschedules.
+async fn call(
+    state: &State,
+    c: &Arc<dyn Compactor>,
+    cancel: &CancellationToken,
+    l: u8,
+    i: u64,
+    ctx: &str,
+    step: &Step,
+) -> Result<Option<Node>, String> {
+    let local = c.local();
+    let cfg = state.cfg.read().clone();
+    // E9: a local endpoint's engine-wide queue; the wait is never timed.
+    let _permit = match &local {
+        Some(endpoint) => {
+            let queue = state.queues.get(endpoint, cfg.local_jobs);
+            tokio::select! {
+                p = queue.acquire_owned() => Some(p.map_err(|e| format!("queue: {e}"))?),
+                _ = cancel.cancelled() => return Ok(None),
+            }
+        }
+        None => None,
+    };
+    // E6: the attempt bound starts after the permit.
+    let attempt = Duration::from_secs(u64::from(if local.is_some() {
+        cfg.local_attempt_secs.clamp(30, 7_200)
+    } else {
+        cfg.attempt_secs.clamp(10, 3_600)
+    }));
+    let ctx = fit_ctx(ctx, ctx_budget(c.as_ref(), step, &cfg, local.is_some()));
     let model = c.model();
     let request_id = format!("endless:{l}:{i}:{}", uuid::Uuid::now_v7());
     let reserved = state
@@ -705,19 +959,30 @@ async fn call(state: &State, l: u8, i: u64, ctx: &str, step: &Step) -> Result<No
     if let Err(e) = state.store.mark_dispatched(&reserved).await {
         tracing::warn!(error = %e, "endless: mark_dispatched");
     }
-    let (node_bytes, tries) = {
-        let cfg = state.cfg.read();
-        (cfg.node_bytes, cfg.tries)
+    // E10: the last-resort bound over the whole job.
+    let outer = attempt * u32::from(cfg.tries.max(1)) + Duration::from_secs(60);
+    let build = tokio::time::timeout(
+        outer,
+        compactor::build(c.as_ref(), &ctx, step, cfg.node_bytes, cfg.tries, attempt),
+    );
+    let built = tokio::select! {
+        b = build => Some(b.unwrap_or_else(|_| Err(format!("compactor job timed out after {}s", outer.as_secs())))),
+        _ = cancel.cancelled() => None,
     };
-    let built = compactor::build(c, ctx, step, node_bytes, tries).await;
+    // A failure that raced the switch is the old model's: not counted either.
+    let built = built.filter(|b| b.is_ok() || !cancel.is_cancelled());
     let (status, usage) = match &built {
-        Ok(b) => (CallStatus::Settled, b.usage()),
-        Err(_) => (CallStatus::Failed, None),
+        Some(Ok(b)) => (CallStatus::Settled, b.usage()),
+        Some(Err(_)) => (CallStatus::Failed, None),
+        None => (CallStatus::Cancelled, None),
     };
     let obs = compactor::observation(usage.as_ref(), model);
     if let Err(e) = state.store.settle_call(&reserved, status, obs).await {
         tracing::warn!(error = %e, "endless: settle_call");
     }
+    let Some(built) = built else {
+        return Ok(None);
+    };
     let built = built?;
     if let Err(e) = state
         .store
@@ -726,7 +991,7 @@ async fn call(state: &State, l: u8, i: u64, ctx: &str, step: &Step) -> Result<No
     {
         tracing::warn!(error = %e, "endless: endless_calls");
     }
-    Ok(Node {
+    Ok(Some(Node {
         l,
         i,
         size: built.text.len() as u32,
@@ -734,22 +999,56 @@ async fn call(state: &State, l: u8, i: u64, ctx: &str, step: &Step) -> Result<No
         free: false,
         model: Some(c.model_id().to_owned()),
         tries: built.tries,
-    })
+    }))
 }
 
-/// Persist and publish one job's outcome.
-async fn finish(state: &State, key: (u8, u64), outcome: Result<Node, String>, took: Duration) {
+/// One more consecutive failure of `key`, with its backoff (caller holds `live`).
+fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model: &str) {
+    let base = state.cfg.read().retry_secs;
+    let prev = live.failed.get(&key).map_or(0, |r| r.failures);
+    let failures = prev.saturating_add(1);
+    let delay = retry_delay(base, failures);
+    live.failed.insert(
+        key,
+        Retry {
+            at: Instant::now() + delay,
+            failures,
+            error: one_line(e, 300),
+            model: model.to_owned(),
+        },
+    );
+    if live.reported.insert(key) {
+        tracing::warn!(session = %state.session, l = key.0, i = key.1, error = %e, "endless: node failed (will retry)");
+        live.pending_error = Some(format!(
+            "{}+{}: {e}",
+            id_n(key.0, key.1).0,
+            id_n(key.0, key.1).1
+        ));
+    }
+    if delay >= RETRY_CAP && (prev == 0 || retry_delay(base, prev) < RETRY_CAP) {
+        tracing::warn!(session = %state.session, l = key.0, i = key.1, model, failures, error = %e, "endless: node keeps failing (retrying every 30 min)");
+    }
+}
+
+/// Persist and publish one job's outcome (`Ok(None)`: cancelled by a switch).
+async fn finish(
+    state: &State,
+    key: (u8, u64),
+    outcome: Result<Option<Node>, String>,
+    took: Duration,
+    model: &str,
+) {
     let outcome = match outcome {
-        Ok(node) => match state.store.endless_node_put(state.session, &node).await {
-            Ok(()) => Ok(node),
+        Ok(Some(node)) => match state.store.endless_node_put(state.session, &node).await {
+            Ok(()) => Ok(Some(node)),
             Err(e) => Err(format!("store: {e}")),
         },
-        Err(e) => Err(e),
+        other => other,
     };
     let mut live = state.live.lock();
     live.running.remove(&key);
     match outcome {
-        Ok(node) => {
+        Ok(Some(node)) => {
             if node.l == 0 && !node.free {
                 live.build_secs.0 += took.as_secs_f64();
                 live.build_secs.1 += 1;
@@ -757,37 +1056,14 @@ async fn finish(state: &State, key: (u8, u64), outcome: Result<Node, String>, to
             live.failed.remove(&key);
             live.tree.insert(node);
             live.invalidate();
-            state.built_tx.send_modify(|v| *v += 1);
         }
-        Err(e) => {
-            let base = state.cfg.read().retry_secs;
-            let prev = live.failed.get(&key).map_or(0, |r| r.failures);
-            let failures = prev.saturating_add(1);
-            let delay = retry_delay(base, failures);
-            live.failed.insert(
-                key,
-                Retry {
-                    at: Instant::now() + delay,
-                    failures,
-                    error: one_line(&e, 300),
-                    model: state.compactor.model_id().to_owned(),
-                },
-            );
-            if live.reported.insert(key) {
-                tracing::warn!(session = %state.session, l = key.0, i = key.1, error = %e, "endless: node failed (will retry)");
-                live.pending_error = Some(format!(
-                    "{}+{}: {e}",
-                    id_n(key.0, key.1).0,
-                    id_n(key.0, key.1).1
-                ));
-            }
-            if delay >= RETRY_CAP && (prev == 0 || retry_delay(base, prev) < RETRY_CAP) {
-                tracing::warn!(session = %state.session, l = key.0, i = key.1, model = %state.compactor.model_id(), failures, error = %e, "endless: node keeps failing (retrying every 30 min)");
-            }
-        }
+        Ok(None) => {}
+        Err(e) => record_failure(state, &mut live, key, &e, model),
     }
     live.dirty = true;
     drop(live);
+    // `settle` re-checks on every outcome (a failure may stall the frontier, E4).
+    state.built_tx.send_modify(|v| *v += 1);
     state.wake.notify_one();
 }
 
@@ -855,13 +1131,20 @@ pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> 
     let mut rx = state.built_tx.subscribe();
     let deadline = Instant::now() + max;
     loop {
-        let unbuilt = {
+        let (unbuilt, stalled) = {
             let mut live = state.live.lock();
             let cfg = live.fold_cfg(&state.cfg.read());
-            live.fold(cfg).unbuilt(&live.tree)
+            (
+                live.fold(cfg).unbuilt(&live.tree),
+                live.frontier_stalled(cfg),
+            )
         };
         if unbuilt == 0 {
             return true;
+        }
+        // E4: a frontier that keeps failing will not land within this turn's wait.
+        if stalled {
+            return false;
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() || tokio::time::timeout(left, rx.changed()).await.is_err() {
@@ -1274,7 +1557,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         unbuilt,
         units: live.t(),
         stats,
-        model: state.compactor.model_id().to_owned(),
+        model: state.compactor().model_id().to_owned(),
         view_bytes: cfg.view_bytes,
         backfill: live.backfill(),
         stalled: if mode == MemoryMode::Endless {
@@ -1285,22 +1568,15 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
     })
 }
 
-/// RPC `endless_retry` (137F): every failed node may run now; a running
-/// job keeps its `running` key, so `schedule` never starts a duplicate.
+/// RPC `endless_retry` (137F E5): re-resolve the compactor, let every failed
+/// node run now, wake the pump. A running job keeps its `running` key, so
+/// `schedule` never starts a duplicate.
 pub(crate) async fn retry(inner: &Inner, session: SessionId) -> anyhow::Result<SessionMemory> {
     if let Some(state) = state_of(inner, session) {
-        let woke = {
-            let mut live = state.live.lock();
-            let endless = live.mode == MemoryMode::Endless;
-            if endless {
-                live.failed.clear();
-                live.reported.clear();
-                live.dirty = true;
-            }
-            endless
-        };
-        if woke {
-            state.wake.notify_one();
+        let endless = state.live.lock().mode == MemoryMode::Endless;
+        if endless {
+            reresolve(inner, Some(session));
+            state.reset_backoff();
         }
     }
     memory(inner, session).await
@@ -1344,7 +1620,14 @@ pub(crate) async fn finish_for_tests(
     outcome: Result<Node, String>,
 ) {
     let state = state_of(inner, session).expect("attached");
-    finish(&state, key, outcome, Duration::ZERO).await;
+    let model = state.compactor().model_id().to_owned();
+    finish(&state, key, outcome.map(Some), Duration::ZERO, &model).await;
+}
+
+/// Test seam: the key of the compactor in force (the resolved id in tests).
+#[cfg(test)]
+pub(crate) fn key_for_tests(state: &State) -> String {
+    state.current.read().key.clone()
 }
 
 #[cfg(test)]
@@ -1368,5 +1651,81 @@ mod tests {
         assert_eq!(retry_delay(10, 64), RETRY_CAP);
         assert_eq!(retry_delay(10, u32::MAX), RETRY_CAP);
         assert_eq!(retry_delay(u32::MAX, u32::MAX), RETRY_CAP);
+    }
+
+    /// A compactor with a catalog entry (window, price) or none (local).
+    struct Sized(models::Resolved);
+
+    impl Compactor for Sized {
+        fn compress<'a>(
+            &'a self,
+            _ctx: &'a str,
+            _convo: &'a [genai::chat::ChatMessage],
+        ) -> futures::future::BoxFuture<'a, Result<compactor::Reply, String>> {
+            Box::pin(async { Err("unused".to_owned()) })
+        }
+        fn model(&self) -> &models::Resolved {
+            &self.0
+        }
+    }
+
+    fn view(lines: usize) -> String {
+        let body: String = (0..lines)
+            .map(|k| format!("line {k:05} of the view ✓\n"))
+            .collect();
+        format!("<chat>\n{body}</chat>")
+    }
+
+    /// 137F E8: a local compactor sees ≤ `local_ctx_bytes` of the view, the
+    /// newest lines kept whole; a known window fits prompt + reply with 10 % margin.
+    #[test]
+    fn prompt_view_fits_the_compactor() {
+        let cfg = super::super::EndlessConfig {
+            local_ctx_bytes: 4_000,
+            ..Default::default()
+        };
+        let step = Step::Unit {
+            kind: tree::Kind::User,
+            text: "x".repeat(cfg.cap_chars as usize),
+            earlier: vec![],
+        };
+        let ctx = view(2_000);
+        let local = Sized(resolved_for_tests("ollama/q"));
+        let max = ctx_budget(&local, &step, &cfg, true);
+        assert_eq!(max, 4_000);
+        let fit = fit_ctx(&ctx, max);
+        assert!(fit.len() <= 4_000, "{}", fit.len());
+        assert!(
+            fit.starts_with("<chat>\nline ") && fit.ends_with("line 01999 of the view ✓\n</chat>")
+        );
+        assert!(fit.len() > 3_900, "only whole lines dropped: {}", fit.len());
+        assert_eq!(fit_ctx(&ctx, usize::MAX), ctx, "under budget: untouched");
+
+        let window: models::Model = serde_json::from_value(serde_json::json!({
+            "id": "m", "name": "m", "limit": {"context": 32_000, "output": 4096},
+            "cost": {"input": 1.0, "output": 2.0}
+        }))
+        .unwrap();
+        let cloud = Sized(models::Resolved {
+            model: Some(window),
+            ..resolved_for_tests("p/m")
+        });
+        let max = ctx_budget(&cloud, &step, &cfg, false);
+        let prompt = compactor::COMPACT.len()
+            + step.render(cfg.node_bytes).len()
+            + 4 * RETRY_BYTES
+            + fit_ctx(&view(20_000), max).len();
+        let tokens = prompt / BYTES_PER_TOKEN + compactor::MAX_TOKENS as usize;
+        assert!(tokens <= 32_000 * 9 / 10, "{tokens}");
+        assert!(max > 30_000, "the window is used: {max}");
+        let big = Sized(models::Resolved {
+            model: None,
+            ..resolved_for_tests("p/m")
+        });
+        assert_eq!(
+            ctx_budget(&big, &step, &cfg, false),
+            usize::MAX,
+            "no window known"
+        );
     }
 }

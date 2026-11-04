@@ -62,6 +62,18 @@ pub struct EndlessConfig {
     pub cap_chars: u32,
     /// Compactor model; `None` = the session's own model (D8).
     pub model: Option<String>,
+    /// 137F E6: one attempt's bound in seconds for a cloud compactor (10..=3600).
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub attempt_secs: u32,
+    /// 137F E6: one attempt's bound in seconds for a local compactor (30..=7200).
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub local_attempt_secs: u32,
+    /// 137F E8: a local compactor sees at most this many bytes of the `<chat>` view, newest kept (4_000..=256_000).
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub local_ctx_bytes: u32,
+    /// 137F E9: compactor calls in flight per local endpoint, engine-wide (1..=16).
+    #[cfg_attr(feature = "ts", ts(as = "Option<u8>", optional))]
+    pub local_jobs: u8,
 }
 
 impl Default for EndlessConfig {
@@ -81,6 +93,10 @@ impl Default for EndlessConfig {
             retry_secs: 10,
             cap_chars: 30_000,
             model: None,
+            attempt_secs: 120,
+            local_attempt_secs: 600,
+            local_ctx_bytes: 24_000,
+            local_jobs: 1,
         }
     }
 }
@@ -391,12 +407,14 @@ pub(crate) struct Inner {
     pub(crate) catalog: Arc<models::Catalog>,
     /// `agent.endless` in force; replaced live by [`Endless::set_config`].
     pub(crate) cfg: Arc<RwLock<EndlessConfig>>,
-    /// `agent.title_model` (R1-D3 chain).
-    pub(crate) title_model: Option<String>,
+    /// `agent.title_model` (R1-D3 chain); replaced live by [`Endless::set_title_model`].
+    pub(crate) title_model: RwLock<Option<String>>,
     /// Live sessions and their pumps.
     pub(crate) sessions: Mutex<HashMap<SessionId, pump::Handle>>,
-    /// Tests inject a scripted compactor here; `None` = the model (D8).
-    pub(crate) compactor_for_tests: Option<Arc<dyn compactor::Compactor>>,
+    /// 137F E9: one queue per local endpoint, engine-wide.
+    pub(crate) queues: pump::Queues,
+    /// Tests inject scripted compactors here, by resolved model id; `None` = the model (D8).
+    pub(crate) compactor_for_tests: Option<pump::CompactorFactory>,
 }
 
 /// The one handle for the endless mode (137-contract.md §4). Cheap to clone.
@@ -426,8 +444,9 @@ impl Endless {
                 auth,
                 catalog,
                 cfg: Arc::new(RwLock::new(cfg)),
-                title_model,
+                title_model: RwLock::new(title_model),
                 sessions: Mutex::new(HashMap::new()),
+                queues: pump::Queues::default(),
                 compactor_for_tests: None,
             }),
         }
@@ -441,9 +460,33 @@ impl Endless {
     /// Settings › Memory: the new `agent.endless`, in force from now on —
     /// every pump reads the shared config; a changed view budget or slack
     /// re-folds at the next render (the fold cache is keyed by its parameters).
-    /// The compactor model is fixed per attached session (`compactor_for`).
+    /// A session whose compactor changes with it is re-kicked (137F E2).
     pub fn set_config(&self, cfg: EndlessConfig) {
         *self.inner.cfg.write() = cfg;
+        pump::reresolve(&self.inner, None);
+    }
+
+    /// `SetTitleModel`: the R1-D3 chain's second link, live (137F E1).
+    pub fn set_title_model(&self, model: Option<String>) {
+        *self.inner.title_model.write() = model;
+        pump::reresolve(&self.inner, None);
+    }
+
+    /// `SetModel` / `SetEffort` on a session: the chain's last link, live
+    /// (137F E1). `model: None` keeps the session's model.
+    pub fn set_session_model(
+        &self,
+        session: SessionId,
+        model: Option<models::Resolved>,
+        effort: Option<genai::chat::ReasoningEffort>,
+    ) {
+        if let Some(h) = self.inner.sessions.lock().get_mut(&session) {
+            if let Some(m) = model {
+                h.attached.model = m;
+            }
+            h.attached.effort = effort;
+        }
+        pump::reresolve(&self.inner, Some(session));
     }
 
     /// Engine start (109): one pump per `sessions.memory = 'endless'` session.

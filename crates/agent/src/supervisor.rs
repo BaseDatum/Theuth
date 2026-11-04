@@ -4211,6 +4211,9 @@ impl Message<SetTitleModel> for Agents {
         };
         let info = resolved.as_ref().map(ModelInfo::from);
         *self.title_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        // 137F E1: the compactor chain's second link, live.
+        self.endless
+            .set_title_model(info.as_ref().map(|i| i.id.clone()));
         let path = self.rt.data_dir.join("config.yaml");
         let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
         if let Err(e) = runtime::write_config_value(&path, "agent", "title_model", value) {
@@ -7803,7 +7806,18 @@ impl Message<SetEndlessSettings> for Agents {
                 c.meeting_view_bytes
             ));
         }
-        let keys: [(&str, String); 14] = [
+        // 137F E6/E8/E9.
+        for (key, v, lo, hi) in [
+            ("attempt_secs", c.attempt_secs, 10, 3_600),
+            ("local_attempt_secs", c.local_attempt_secs, 30, 7_200),
+            ("local_ctx_bytes", c.local_ctx_bytes, 4_000, 256_000),
+            ("local_jobs", u32::from(c.local_jobs), 1, 16),
+        ] {
+            if !(lo..=hi).contains(&v) {
+                return Err(format!("{key} {v} out of range {lo}..={hi}"));
+            }
+        }
+        let keys: [(&str, String); 18] = [
             ("default_chat", c.default_chat.to_string()),
             ("default_desk", c.default_desk.to_string()),
             ("default_meeting", c.default_meeting.to_string()),
@@ -7817,6 +7831,10 @@ impl Message<SetEndlessSettings> for Agents {
             ("tries", c.tries.to_string()),
             ("retry_secs", c.retry_secs.to_string()),
             ("cap_chars", c.cap_chars.to_string()),
+            ("attempt_secs", c.attempt_secs.to_string()),
+            ("local_attempt_secs", c.local_attempt_secs.to_string()),
+            ("local_ctx_bytes", c.local_ctx_bytes.to_string()),
+            ("local_jobs", c.local_jobs.to_string()),
             (
                 "model",
                 c.model.clone().unwrap_or_else(|| "null".to_owned()),
@@ -8321,6 +8339,12 @@ impl Agents {
             }
             let actor = self.actor(id).await?.native()?.clone();
             let _ = actor.tell(SwitchModel(resolved.clone())).await;
+            // 137F E1: the compactor chain's last link, live (effort: `apply_effort` below may drop it).
+            self.endless.set_session_model(
+                id,
+                Some(resolved.clone()),
+                row.effort.as_deref().and_then(effort_of),
+            );
             if let Err(e) = self.store_for(id).set_model(id, &resolved.id).await {
                 tracing::warn!(session = %id, "set_model: {e:#}");
             }
@@ -8363,6 +8387,8 @@ impl Agents {
         let _ = actor
             .tell(SetPendingEffort(effort.as_deref().and_then(effort_of)))
             .await;
+        self.endless
+            .set_session_model(id, None, effort.as_deref().and_then(effort_of));
         if let Err(e) = self.store_for(id).set_effort(id, effort.as_deref()).await {
             tracing::warn!(session = %id, "set_effort: {e:#}");
         }
@@ -14064,6 +14090,105 @@ pub(crate) mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("view_bytes"), "{e}");
+    }
+
+    /// 137F: `endless_retry` answers like `session_memory` (refused for an
+    /// unknown session, an epochs session unchanged); the liveness keys are
+    /// range-checked and persisted.
+    #[tokio::test]
+    async fn endless_retry_and_liveness_settings() {
+        let (_scratch, a) = agents_with(false).await;
+        let dir = a.rt.data_dir.clone();
+        let agents = Agents::spawn(a);
+        let e = agents
+            .ask(EndlessRetry {
+                session: SessionId::new(),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unknown session"), "{e}");
+        let open = |memory| {
+            agents.ask(CreateSession {
+                options: crate::CreateSessionOptions {
+                    memory,
+                    ..Default::default()
+                },
+                peer: None,
+            })
+        };
+        let plain = open(None).await.unwrap().session;
+        let m = agents.ask(EndlessRetry { session: plain }).await.unwrap();
+        assert_eq!(m.mode, MemoryMode::Epochs);
+        assert!(m.view.is_empty() && m.stalled.is_none());
+        let endless = open(Some(MemoryMode::Endless)).await.unwrap().session;
+        let m = agents.ask(EndlessRetry { session: endless }).await.unwrap();
+        assert_eq!(m.mode, MemoryMode::Endless);
+        assert!(m.stalled.is_none());
+
+        let mut c = agents.ask(GetEndlessSettings).await.unwrap();
+        assert_eq!(
+            (
+                c.attempt_secs,
+                c.local_attempt_secs,
+                c.local_ctx_bytes,
+                c.local_jobs
+            ),
+            (120, 600, 24_000, 1)
+        );
+        c.local_attempt_secs = 900;
+        c.local_jobs = 2;
+        let got = agents
+            .ask(SetEndlessSettings { config: c.clone() })
+            .await
+            .unwrap();
+        assert_eq!((got.local_attempt_secs, got.local_jobs), (900, 2));
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        for needle in [
+            "attempt_secs: 120",
+            "local_attempt_secs: 900",
+            "local_ctx_bytes: 24000",
+            "local_jobs: 2",
+        ] {
+            assert!(yaml.contains(needle), "{needle} in {yaml}");
+        }
+        for (key, bad) in [
+            (
+                "attempt_secs",
+                EndlessConfig {
+                    attempt_secs: 5,
+                    ..c.clone()
+                },
+            ),
+            (
+                "local_attempt_secs",
+                EndlessConfig {
+                    local_attempt_secs: 8_000,
+                    ..c.clone()
+                },
+            ),
+            (
+                "local_ctx_bytes",
+                EndlessConfig {
+                    local_ctx_bytes: 100,
+                    ..c.clone()
+                },
+            ),
+            (
+                "local_jobs",
+                EndlessConfig {
+                    local_jobs: 0,
+                    ..c.clone()
+                },
+            ),
+        ] {
+            let e = agents
+                .ask(SetEndlessSettings { config: bad })
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(key), "{key}: {e}");
+        }
     }
 
     /// 137 §11.2 / §14: `session_memory` of an epochs session is `mode:

@@ -1128,8 +1128,9 @@ pub struct GetEndlessSettings;
 /// service's shared config (`view_bytes`/`slack` re-fold at the next render,
 /// `settle_secs` per turn), `default_chat` for the next created session, and
 /// [`EndlessConfigChanged`] on the bus for the roster (`default_desk`) and
-/// the meeting plugin. The compactor model applies to sessions attached after
-/// the change. Returns what was stored.
+/// the meeting plugin. A changed compactor model reaches every attached
+/// session at once (137F: its backoff resets, calls to the old model are
+/// cancelled). Returns what was stored.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetEndlessSettings {
     /// The whole section.

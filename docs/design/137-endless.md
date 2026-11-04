@@ -82,6 +82,8 @@ A unit is one part of one `messages` row, in row order then part order; `unit.i`
 ### 5.2 Pump (when a node is built)
 A background task per endless session scans levels and starts every node that (1) is unbuilt and not running, (2) has its sources, (3) has its whole context summarised — every view part before the node's end is built (rule 3). Up to `jobs` (8) run at once. A failed node is retried after `retry_secs` (10) for ever; only its first failure is reported (`warn!` once per node, an `EndlessProgress` event with `error`). The pump runs while the session is idle too (it is the compactor trailing the chat by seconds), and on engine start for every endless session with unbuilt nodes.
 
+137F: the retry delay doubles from `retry_secs` to a 30 min cap and is visible as `stalled` (the failing node that blocks most, frontier first); `endless_retry` or a compactor change resets it. `settle` returns at once while the frontier has failed ≥ 2 times and waits out its backoff. The compactor is re-resolved whenever `agent.endless.model`, the title model or the session's model changes; calls to the old model are cancelled (`model_calls.status = cancelled`, not a failure). A **local** compactor (local runtime provider, loopback/private/`*.local` base URL, or no catalog price — `compactor::is_local`) gets `local_attempt_secs` per attempt instead of `attempt_secs`, one job per session, one engine-wide queue per endpoint (`local_jobs`) whose wait is not timed, and at most `local_ctx_bytes` of the `<chat>` view (newest kept); any compactor with a known window gets the view trimmed to fit. An attempt that fails after a candidate exists keeps the candidate (tries negative). A whole job is bounded by attempt × tries + 60 s; a job task that dies counts as a failure.
+
 ### 5.3 The call
 One request per node, no tools, model per D8, `max_tokens` 600 (+ the model's thinking budget if the session uses one).
 
@@ -268,6 +270,10 @@ agent:
     retry_secs: 10
     cap_chars: 30000
     model: null              # compactor model; null = the session's model
+    attempt_secs: 120        # 137F: one cloud attempt, 10..=3600
+    local_attempt_secs: 600  # 137F: one local attempt, 30..=7200
+    local_ctx_bytes: 24000   # 137F: <chat> bytes a local compactor sees, 4000..=256000
+    local_jobs: 1            # 137F: calls in flight per local endpoint, engine-wide, 1..=16
 ```
 
 ### 11.2 RPC (crates/rpc, ts-rs bindings)
