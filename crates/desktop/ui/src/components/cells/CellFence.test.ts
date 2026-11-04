@@ -89,3 +89,13 @@ test('the host chip (§14.2, L11 `CellState.host`) shows only when the record na
   expect(render(assistant(md(REPLY, withCells)))).toContain('on Sky’s Mac mini')
   cells.setState({ scopes: {} })
 })
+
+test('the runbook bar sits in the transcript’s flow after the reply’s last cell, never sticky (171F B1)', () => {
+  const html = render(assistant(md(REPLY, withCells)))
+  const bar = html.indexOf('role="toolbar"')
+  expect(html.match(/role="toolbar"/g)).toHaveLength(1)
+  expect(bar).toBeGreaterThan(html.indexOf('data-cell-ordinal="3"'))
+  expect(html.slice(html.lastIndexOf('<div', bar), bar + 400)).not.toMatch(/sticky|backdrop-blur/)
+  // Archive views (no session): no bar.
+  expect(render(assistant(md(REPLY, withCells), { session: undefined }))).not.toContain('role="toolbar"')
+})

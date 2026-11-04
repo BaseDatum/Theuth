@@ -1,6 +1,8 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
+import type { PassEnd } from '@/rpc/bindings/PassEnd'
 import { RpcError } from '@/rpc/client'
-import { duration, mintId, press } from './store'
+import { cells, duration, lastPass, mintId, press, refKey, register, registeredCells, scopeKey } from './store'
+import { SESSION, chatRef, fakeApi, run, spec, state } from './test-fixtures'
 
 test('run ids are r_ + a 26-character Crockford ULID, time-ordered (§5.10)', () => {
   const a = mintId('r_', 1_762_180_000_000, new Uint8Array(10))
@@ -44,4 +46,25 @@ test('a transport failure retries the SAME run id; an engine answer is final', a
 
 test('durations read like the design: 2.1 s, 41 s, 2:14', () => {
   expect([duration(2.1), duration(41), duration(134)]).toEqual(['2.1 s', '41 s', '2:14'])
+})
+
+test('a watch-only register (171F B8) asks cell_state for that ref and never hides a mounted cell’s spec', async () => {
+  const scope = { type: 'session', id: SESSION } as const
+  const mine = chatRef(1, '7')
+  const next = chatRef(1, '99')
+  const pass: PassEnd = { pass: 'p_1', total: 2, ran: 1, stopped: { cell: next, why: 'exit 1', before: false } }
+  const { api, calls } = fakeApi({ cell_state: () => ({ cells: [state(next, { latest: run({ cell: next, pass: 'p_1', state: 'failed' }) })], kernels: [], pass }) })
+  const offMine = register(api, scope, { ref: mine, spec: spec(0), label: 'Export state' })
+  const offNext = register(api, scope, { ref: next, spec: null, label: 'Preview' })
+  const offAgain = register(api, scope, { ref: mine, spec: null, label: 'x' })
+  await vi.waitFor(() => expect(cells.getState().scopes[scopeKey(scope)]?.pass).toEqual(pass))
+  expect(calls.filter(([m]) => m === 'cell_state').at(-1)?.[1]).toEqual([scope, [mine, next]])
+  expect(registeredCells(scope).find((c) => refKey(c.ref) === refKey(mine))).toMatchObject({ spec: spec(0), label: 'Export state', mounts: 2 })
+  // The pass rides the record (171F B11) until a newer pass runs.
+  const slice = cells.getState().scopes[scopeKey(scope)]!
+  expect(lastPass(slice)).toEqual(pass)
+  const running = { ...slice.states, x: state(mine, { latest: run({ cell: mine, pass: 'p_2', state: 'running' }) }) }
+  expect(lastPass({ ...slice, states: running })).toBeNull()
+  for (const off of [offMine, offNext, offAgain]) off()
+  cells.setState({ scopes: {} })
 })

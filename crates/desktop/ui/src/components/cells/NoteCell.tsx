@@ -18,7 +18,7 @@ import { Cell, CellExtras, Chip, Notice } from './Cell'
 import { digest } from './grammar'
 import { lineDiff, memberName, modeOf, pythonValue, withPython } from './note-edit'
 import { NoteHost } from './note-context'
-import { clock, errorText, mintId, press, refKey, refresh, register, scopeOf, setNotice, useCellRecord } from './store'
+import { clock, errorText, lastPass, mintId, press, refKey, refresh, register, scopeKey, scopeOf, setNotice, useCellRecord, useCells } from './store'
 import { labelOf, titleOf, viewOf } from './view'
 import './note-cells.css'
 
@@ -299,6 +299,12 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const o = cell.options
   const cwd = o.cwd && /^[~/]/.test(o.cwd) ? o.cwd : (latest?.cwd ?? '~')
   const monty = o.python?.kind === 'monty' || interpreter?.kind === 'monty'
+  // 171F B11: the cell the scope's last Run all pass stopped at (its reason), until a new pass starts.
+  const passStop = useCells((st) => {
+    const s = st.scopes[scopeKey(scope)]
+    const stop = s && lastPass(s)?.stopped
+    return stop && refKey(stop.cell) === key ? stop.why : null
+  })
   const extras: CellExtras = {
     // A note cell never folds: the folded row has no editor slot, and BlockNote needs its content mounted.
     open: true,
@@ -319,6 +325,17 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
           </Notice>
         )}
         {member && review && <MemberReview run={latest?.id ?? null} code={cell.code} />}
+        {passStop !== null && <Notice tone="danger">Run all stopped here: {passStop}</Notice>}
+        {/* 171F B10: Monty refused the cell (the reason is its problem row); a regular Python may run it. */}
+        {editable && record?.problems.some((p) => p.code === 'monty_insufficient') && (
+          <Notice tone="info">
+            A regular Python can run it
+            <span aria-hidden>·</span>
+            <button type="button" className="underline underline-offset-2 pointer-coarse:min-h-12" onClick={() => blocknote.updateBlock(block, { content: withPython(code, 'auto') })}>
+              Use Python
+            </button>
+          </Notice>
+        )}
         {view === 'stale' && latest && (
           <Notice tone="muted">
             <button type="button" className="underline underline-offset-2 pointer-coarse:min-h-12" aria-expanded={ranCode} onClick={() => setRanCode(!ranCode)}>
@@ -332,7 +349,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   }
 
   return (
-    <div data-note-cell="" data-ref-key={key} data-block={block}>
+    <div data-note-cell="" data-ref-key={key} data-block={block} className={cn(passStop !== null && 'rounded-xl ring-2 ring-danger')}>
       <CellExtras value={extras}>
         <Cell
           cellRef={ref}
