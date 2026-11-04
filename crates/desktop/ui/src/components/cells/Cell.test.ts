@@ -131,6 +131,17 @@ test('every §11.2 state renders its look and button', () => {
   }
 })
 
+test('171F4 T2-4: a superseded danger cell shows no "armed by" line; the live cell replacing it keeps its own', () => {
+  const armed = { by: 'r_new', at_ms: Date.UTC(2026, 10, 4, 14, 37), summary: '~3 update · 0 replace · 0 delete' }
+  const old = cell(2, state(ref, { armed, superseded_by: chatRef(2, '43') }))
+  expect(old.view).toBe('superseded')
+  expect(old.html).toContain('Replaced by a newer version ↓')
+  expect(old.html).not.toContain('armed by')
+  const live = cell(2, state(chatRef(2, '43'), { armed }))
+  expect(live.view).toBe('armed')
+  expect(live.html).toMatch(/armed by preview-ir-prod1 ✓ \d\d:\d\d · ~3 update/)
+})
+
 test('danger is never colour-only and the Run button is named by the label (§11.9)', () => {
   const { html } = cell(2, state(ref, { armed: { by: 'r_x', at_ms: 0, summary: 's' } }))
   expect(html).toContain('>danger<')

@@ -2570,6 +2570,9 @@ async fn hub_gate_follows_the_lease() {
 /// run and the markdown form appends the `output` fence and the run line, everything else
 /// byte-identical; a `doc_insert` of an invalid `#|` fence is refused in the tool result. (The hook
 /// is process-global and stays installed for later tests of this binary: none of them holds a cell.)
+/// 171F4 T2-3: the history Open as note wrote after a cell (2.18.2 notes: an `output` fence, empty
+/// for a quiet cell, and the run line) gives way to the cell's own run: one output per cell, no
+/// empty fence, the run's own line.
 #[tokio::test]
 async fn doc_read_annotates_note_cells_through_the_hook() {
     struct Hook;
@@ -2582,11 +2585,19 @@ async fn doc_read_annotates_note_cells_through_the_hook() {
             text: &str,
         ) -> Option<document::CellAnnotation> {
             let c = surface::cell::parse(language, text)?;
-            (c.options.name.as_deref() == Some("preview")).then(|| document::CellAnnotation {
-                outline: "[cell:bash preview · ran 14:38 · exit 0]".into(),
-                output: Some("3 to update".into()),
-                run_line: "ran 14:38 · exit 0".into(),
-            })
+            match c.options.name.as_deref() {
+                Some("preview") => Some(document::CellAnnotation {
+                    outline: "[cell:bash preview · ran 14:38 · exit 0]".into(),
+                    output: Some("3 to update".into()),
+                    run_line: "ran 14:38 · exit 0".into(),
+                }),
+                Some("quiet") => Some(document::CellAnnotation {
+                    outline: "[cell:bash quiet · ran 14:38 · exit 0 · 0.1 s]".into(),
+                    output: None,
+                    run_line: "ran 14:38 · exit 0 · 0.1 s".into(),
+                }),
+                _ => None,
+            }
         }
     }
     let _serial = SERIAL.lock().await;
@@ -2595,7 +2606,7 @@ async fn doc_read_annotates_note_cells_through_the_hook() {
     let actor = start(dir.path(), &bin).await;
     let session = uuid::Uuid::now_v7();
     let docs = Docs::new(actor.clone(), dir.path().to_path_buf());
-    let md = "```cells\n#| cwd: /tmp\n```\n\n```bash\n#| name: preview\npulumi preview -s ir-prod1\n```\n\n```bash\nls\n```\n";
+    let md = "```cells\n#| cwd: /tmp\n```\n\n```bash\n#| name: preview\npulumi preview -s ir-prod1\n```\n\n```output\nchat said 3 to update\n```\nran 14:36 · exit 0 · 33 s\n\n```bash\n#| name: quiet\ntrue\n```\n\n```output\n```\nran 14:36 · exit 0 · 0.1 s\n\n```bash\n#| name: later\ntrue\n```\n\n```output\n```\nran 14:36 · exit 0 · 0.1 s\n\n```bash\nls\n```\n";
     let created = CreateTool(docs.clone())
         .call(
             serde_json::from_value(serde_json::json!({ "title": "Runbook", "markdown": md }))
@@ -2651,22 +2662,45 @@ async fn doc_read_annotates_note_cells_through_the_hook() {
         outline.contains(" [code:bash] #| name: preview … (2 lines)\n"),
         "{outline}"
     );
+    // The helper keeps Open as note's history as plain blocks.
+    assert_eq!(markdown.matches("ran 14:36").count(), 3, "{markdown}");
     document::set_run_annotations(std::sync::Arc::new(Hook));
     assert_eq!(
         read("outline").await,
-        outline.replace(
-            "[code:bash] #| name: preview … (2 lines)",
-            "[cell:bash preview · ran 14:38 · exit 0] pulumi preview -s ir-prod1 … (1 line)"
-        )
+        outline
+            .replace(
+                "[code:bash] #| name: preview … (2 lines)",
+                "[cell:bash preview · ran 14:38 · exit 0] pulumi preview -s ir-prod1 … (1 line)"
+            )
+            .replace(
+                "[code:bash] #| name: quiet … (2 lines)",
+                "[cell:bash quiet · ran 14:38 · exit 0 · 0.1 s] true … (1 line)"
+            )
+            .replace(
+                "[code:bash] #| name: later … (2 lines)",
+                "[cell:bash later] true … (1 line)"
+            )
     );
-    let fence = "pulumi preview -s ir-prod1\n```\n";
-    assert_eq!(markdown.matches(fence).count(), 1, "{markdown}");
-    assert_eq!(
-        read("markdown").await,
-        markdown.replace(
-            fence,
+    let after = read("markdown").await;
+    // One output per cell: the run's own; the chat run's history is gone where the cell ran.
+    assert_eq!(after.matches("output").count(), 1, "{after}");
+    assert!(
+        after.contains(
             "pulumi preview -s ir-prod1\n```\n```output\n3 to update\n```\nran 14:38 · exit 0\n"
-        )
+        ),
+        "{after}"
+    );
+    // Quiet: no fence, the run line only.
+    assert!(
+        after.contains("#| name: quiet\ntrue\n```\nran 14:38 · exit 0 · 0.1 s\n"),
+        "{after}"
+    );
+    // Not run in the note: its history line stays, its empty fence does not.
+    assert_eq!(after.matches("ran 14:36").count(), 1, "{after}");
+    let later = after.find("#| name: later").unwrap();
+    assert!(
+        after[later..].contains("ran 14:36 · exit 0 · 0.1 s"),
+        "{after}"
     );
 
     let refused = InsertTool(docs.clone())

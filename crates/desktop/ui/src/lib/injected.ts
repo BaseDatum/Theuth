@@ -43,6 +43,11 @@ export type Injected =
   | { kind: 'resume'; restored: boolean; clock: string; working?: string; previous?: string; sections: ResumeSection[]; omitted?: string[]; text: string }
   /** 152 D2: `<child_lost name session at why>` in a parent — a child not respawned after a restart (146 D4). */
   | { kind: 'lost'; name: string; session: string; clock: string; why: string; text: string }
+  /** 155 §4.1 / §5.3: `<child_stalled child session phase quiet_secs last? at>` (a child's activity monitor fired) or
+   * `<peer_state child session state since_secs at>` (a `wait_peer` settled) in a parent. `word` is the phase or the
+   * state as written (`no_first_update`, `not_running`), `secs` its seconds (quiet / waited), `last` the child's last
+   * activity; `text` the guidance sentence. */
+  | { kind: 'child'; event: 'stalled' | 'state'; child: string; session: string; word: string; secs: string; last?: string; clock: string; text: string }
   /** 151 R1 (D7): `<autoresearch slug event>` — a study's start / result / failure card delivered into its setup chat
    * when no messaging channel renders the session; `text` is the card markdown (a `json-render` fence or a line). */
   | { kind: 'autoresearch'; slug: string; event: string; text: string }
@@ -64,6 +69,16 @@ CARD.cell_result = 'run="'
 const HIDDEN: Record<string, true> = { context_summary: true, runtime: true, surface_error: true, notebook: true }
 // 171 §9.2: the `<cell_error>` correction round is quiet on the desktop, like `surface_error`; the cell shows its invalid state.
 HIDDEN.cell_error = true
+// 157 D2: `<notebook_changes notebook>` is the same volatile notebook context as `<notebook>` — what changed since the
+// block — summarised by the context line; it renders nothing either.
+HIDDEN.notebook_changes = true
+// 155 §4.1 / §5.3: a parent's activity wakes about one child, keyed on the child's name.
+CARD.child_stalled = 'child="'
+CARD.peer_state = 'child="'
+
+/** The wrapper names `classify` turns into a card or hides (the transcript never shows them as tags). */
+export const isClassified = (name: string): boolean =>
+  Object.hasOwn(CARD, name) || Object.hasOwn(HIDDEN, name) || Object.hasOwn(ENGINE_NOTICES, name) || name === 'budget' || name === 'resume_handoff' || name === 'skill'
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]
@@ -315,6 +330,20 @@ export function classify(text: string): Injected[] | null {
         out.push({ kind: 'advisory', severity: from === 'concern' || from === 'blocker' ? from : 'nit', text: unescape(body.trim()) })
       } else if (name === 'child_lost') {
         out.push({ kind: 'lost', name: unescape(from), session: attr(open, 'session="') ?? '', clock: attr(open, 'at="') ?? '', why: unescape(attr(open, 'why="') ?? ''), text: body.trim() })
+      } else if (name === 'child_stalled' || name === 'peer_state') {
+        const stalled = name === 'child_stalled'
+        const last = stalled ? attr(open, ' last="') : undefined
+        out.push({
+          kind: 'child',
+          event: stalled ? 'stalled' : 'state',
+          child: unescape(from),
+          session: attr(open, ' session="') ?? '',
+          word: attr(open, stalled ? ' phase="' : ' state="') ?? '',
+          secs: attr(open, stalled ? ' quiet_secs="' : ' since_secs="') ?? '',
+          ...(last ? { last: unescape(last) } : {}),
+          clock: attr(open, ' at="') ?? '',
+          text: body.trim(),
+        })
       } else if (name === 'autoresearch') {
         out.push({ kind: 'autoresearch', slug: unescape(from), event: unescape(attr(open, 'event="') ?? ''), text: body.trim() })
       } else if (name === 'cell_result') {

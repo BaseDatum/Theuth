@@ -154,16 +154,19 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     if (!cellRef) return
     const text = edited
     // `seen` (§3.4, D3): the digest of the text on screen; the engine refuses a mismatch with "this cell changed".
-    act(async () => {
+    const pressed = (async () => {
       const seen = await digest(code)
       return press(mintId('r_'), (id) => api.cell_run(cellRef, seen, mode, id, text, null))
-    })
+    })()
+    act(() => pressed)
     if (next) {
       // §11.7 Shift+Enter: focus moves to the next cell.
       const all = [...document.querySelectorAll<HTMLElement>('[data-cell] .cm-content')]
       const here = document.activeElement?.closest('[data-cell]')
       all[all.findIndex((el) => el.closest('[data-cell]') === here) + 1]?.focus()
     }
+    // 171F4 T2-6: the editor's line/selection mark settles on the run this resolves to.
+    return pressed
   }
   const callbacks = {
     // The edited text rides the component's own edit state (F4); the frozen `edited` argument is for hosts without one.
@@ -238,6 +241,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
               lang={spec.lang}
               code={edited ?? spec.code}
               runnable={runnable && view !== 'disarmed'}
+              latest={latest}
               danger={spec.options.danger}
               locked={locked}
               onChange={callbacks.onEdit}

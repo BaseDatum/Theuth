@@ -287,6 +287,29 @@ test('child_lost: attributes and body, one card per block, mixable with other wr
   expect(classify('<child_lost session="s" at="1">\nx\n</child_lost>')).toBeNull()
 })
 
+test('171F4 T2-8: child_stalled — a card with phase, quiet seconds, time and `last` when present, escapes undone; peer_state too', () => {
+  const S = '01999999-0000-7000-8000-000000000001'
+  // The Rust test's (supervisor.rs `child_stalled_and_peer_state_wrappers`) escaped wrapper, verbatim.
+  const silent = `<child_stalled child="w&lt;2&gt;" session="${S}" phase="silent" quiet_secs="184" last="shell: echo &quot;a&quot; &lt;b&gt;" at="14:03">\nw2 has sent no session update for 184 s.\n</child_stalled>`
+  expect(classify(silent)).toEqual([
+    { kind: 'child', event: 'stalled', child: 'w<2>', session: S, word: 'silent', secs: '184', last: 'shell: echo "a" <b>', clock: '14:03', text: 'w2 has sent no session update for 184 s.' },
+  ])
+  // No `last` before any update; the guidance sentence is the body.
+  const first = `<child_stalled child="w171f4-e" session="${S}" phase="no_first_update" quiet_secs="60" at="15:03">\nw171f4-e's prompt was delivered 60 s ago and nothing came back; Ask it what it is doing with send_message.\n</child_stalled>`
+  const [card] = classify(first) ?? []
+  expect(card).toMatchObject({ kind: 'child', event: 'stalled', child: 'w171f4-e', word: 'no_first_update', secs: '60', clock: '15:03' })
+  expect(card).not.toHaveProperty('last')
+  // A `last` that mentions ` at=` (escaped quotes) does not move the time.
+  expect(classify(silent.replace('&lt;b&gt;', 'at=&quot;9&quot;'))?.[0]).toMatchObject({ clock: '14:03', last: 'shell: echo "a" at="9"' })
+  // Mixed with other wrappers, one card per block.
+  expect(classify(`${first}\n<subagent_result name="k">\ndone\n</subagent_result>`)?.map((c) => c.kind)).toEqual(['child', 'subagent'])
+  expect(classify(`<peer_state child="w1" session="${S}" state="not_running" since_secs="3" at="14:03">\nw1 is gone.\n</peer_state>`)).toEqual([
+    { kind: 'child', event: 'state', child: 'w1', session: S, word: 'not_running', secs: '3', clock: '14:03', text: 'w1 is gone.' },
+  ])
+  // Without the child attribute it is not the engine's wrapper.
+  expect(classify('<child_stalled session="s" at="1">\nx\n</child_stalled>')).toBeNull()
+})
+
 test('autoresearch: the study card the engine delivered into its setup chat (151 R1) — slug, event and the fence body; never a bubble', () => {
   const card = '```json-render\n{"root":"r","elements":{}}\n```'
   expect(classify(`<autoresearch slug="sort-speed" event="started">\n${card}\n</autoresearch>`)).toEqual([{ kind: 'autoresearch', slug: 'sort-speed', event: 'started', text: card }])

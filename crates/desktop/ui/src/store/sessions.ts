@@ -141,7 +141,7 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       origin?: PeerOrigin;
       seq?: number;
     }
-  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'autoresearch' }>
+  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'child' | 'autoresearch' }>
   /** 171 §9.1: a cell result the agent read; `turn` when its stored row opened the turn (`foldCells` hands it on). */
   | (CellResultInput & { turn?: number })
   /** 152 D3: the view an endless parent handed a native child before its brief (137 R1-D1); folded, the lines render

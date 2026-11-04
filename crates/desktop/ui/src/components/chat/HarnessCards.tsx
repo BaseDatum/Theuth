@@ -4,12 +4,12 @@
 // 152: the same for a restart's `<resume_handoff>`, a parent's `<child_lost>` and the endless parent's view.
 
 import { Link } from '@tanstack/react-router'
-import { Bot, ChevronRight, FlaskConical, Infinity as InfinityIcon, Radio, RotateCcw, Unplug, Zap } from 'lucide-react'
+import { Activity, Bot, ChevronRight, FlaskConical, Hourglass, Infinity as InfinityIcon, Radio, RotateCcw, Unplug, Zap } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { shortId } from '@/components/tasks/helpers'
 import { Badge } from '@/components/ui/badge'
 import { fmtBytes } from '@/lib/files'
-import type { ResumeSection } from '@/lib/injected'
+import { humanSecs, type ResumeSection } from '@/lib/injected'
 import type { Entry } from '@/store/sessions'
 import { markdownComponents, plugins, shikiTheme } from './MessageAssistant'
 import { Details, FenceText } from './disclosure'
@@ -203,6 +203,58 @@ export function ChildLostCard({ name, session, clock, why, text }: Extract<Entry
     >
       <Streamdown mode="static" className="mt-2 border-t border-border-subtle pt-2 text-sm">
         {text}
+      </Streamdown>
+    </Details>
+  )
+}
+
+/** 155 §4.1 phases and §5.3 states as the card says them. */
+const CHILD_WORDS: Record<string, string> = { no_first_update: 'no first update', silent: 'gone quiet', not_running: 'not running' }
+const childWord = (word: string) => CHILD_WORDS[word] ?? word.replaceAll('_', ' ')
+const childSecs = ({ event, secs }: Pick<Extract<Entry, { kind: 'child' }>, 'event' | 'secs'>) => (secs === '' ? '' : `${event === 'stalled' ? 'quiet' : 'waited'} ${humanSecs(secs)}`)
+
+/** `w171f4-e · no first update · quiet 1 min · 15:03`: the card's one line (and its label). */
+export function childLine(c: Extract<Entry, { kind: 'child' }>): string {
+  return [c.child, childWord(c.word), childSecs(c), c.clock].filter(Boolean).join(' · ')
+}
+
+/** 155 §4.1 `<child_stalled>` / §5.3 `<peer_state>` in a parent: one line — the child (its chip opens the session, as
+ * on `ChildLostCard`), the phase or state, the seconds, the time — with the child's last activity below; the guidance
+ * sentence is the folded body. */
+export function ChildStateCard(c: Extract<Entry, { kind: 'child' }>) {
+  const Icon = c.event === 'stalled' ? Hourglass : Activity
+  const secs = childSecs(c)
+  return (
+    <Details
+      part="child"
+      className={`group/child ${SHELL}`}
+      triggerClassName={`${SUMMARY} text-xs text-fg-secondary`}
+      trigger={
+        <>
+          <span className="min-w-0 flex-1">
+            <span className={HEAD}>
+              <Icon className={`size-3.5 shrink-0 ${c.event === 'stalled' ? 'text-warning' : ''}`} aria-hidden="true" />
+              <Badge variant="secondary" className="max-w-full gap-1">
+                {c.session === '' ? (
+                  <span className="truncate">{c.child}</span>
+                ) : (
+                  <Link to="/c/$session" params={{ session: c.session }} className="truncate hover:underline" onClick={(e) => e.stopPropagation()}>
+                    {c.child}
+                  </Link>
+                )}
+              </Badge>
+              <span className="font-medium">{childWord(c.word)}</span>
+              {secs !== '' && <Badge variant="outline">{secs}</Badge>}
+              {c.clock !== '' && <Badge variant="outline">{c.clock}</Badge>}
+            </span>
+            {c.last !== undefined && <span className={`${MUTED} font-mono`}>last: {c.last}</span>}
+          </span>
+          <ChevronRight className="size-4 shrink-0 transition-transform group-data-[state=open]/child:rotate-90" aria-hidden="true" />
+        </>
+      }
+    >
+      <Streamdown mode="static" className="mt-2 border-t border-border-subtle pt-2 text-sm">
+        {c.text}
       </Streamdown>
     </Details>
   )

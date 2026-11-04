@@ -17,7 +17,9 @@ import type { DocId } from '@/rpc/bindings/DocId'
 import type { NoteKey } from '@/rpc/bindings/NoteKey'
 import { Cell, CellExtras, Chip, Notice } from './Cell'
 import { digest } from './grammar'
-import { lineDiff, memberName, modeOf, pythonValue, withPython } from './note-edit'
+import { MARK_LOOK, useLineRun } from './line-run'
+import { historyAfter } from './open-as-note'
+import { lineDiff, lineStart, memberName, modeOf, pythonValue, withPython } from './note-edit'
 import { NoteHost } from './note-context'
 import { clock, errorText, lastPass, mintId, press, refKey, refresh, register, scopeKey, scopeOf, setNotice, useCellRecord, useCells } from './store'
 import { interpreterText, labelOf, titleOf, viewOf } from './view'
@@ -84,6 +86,24 @@ function caretAt(x: number, y: number): { node: Node; offset: number } | null {
   }
   const p = document.caretPositionFromPoint?.(x, y)
   return p ? { node: p.offsetNode, offset: p.offset } : null
+}
+
+/** The top of the code-text character at `offset` in `slot`'s code element, relative to `slot` (0 when unknown). */
+function lineTop(slot: HTMLElement | null, offset: number): number {
+  const codeEl = slot?.querySelector('code')
+  if (!slot || !codeEl) return 0
+  const walk = document.createTreeWalker(codeEl, NodeFilter.SHOW_TEXT)
+  for (let n = walk.nextNode(), left = offset; n; n = walk.nextNode()) {
+    const len = n.textContent?.length ?? 0
+    if (left < len) {
+      const range = document.createRange()
+      range.setStart(n, left)
+      range.setEnd(n, left + 1)
+      return Math.round(range.getBoundingClientRect().top - slot.getBoundingClientRect().top)
+    }
+    left -= len
+  }
+  return 0
 }
 
 /** "Review diff" / "Review": the owner's last run's code against the member's text, or the text alone if never run. */
@@ -189,6 +209,14 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     const t = setTimeout(() => setHint(null), 4000)
     return () => clearTimeout(t)
   }, [hint])
+  // 171F4 T2-3: the chat run's history Open as note wrote after this cell gives way to the cell's own first run, so
+  // the note holds one output per cell (the owner's editor edits the note; members and `doc_read` read the result).
+  const hasRun = latest !== null
+  useEffect(() => {
+    if (!hasRun || !editable) return
+    const old = historyAfter(blocknote.document, block)
+    if (old.length) blocknote.removeBlocks(old)
+  }, [hasRun, editable, blocknote, block])
 
   const act = (f: () => Promise<unknown>) => {
     setNotice(ref, null)
@@ -200,7 +228,11 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
       },
     )
   }
-  const run = (mode: CellRunMode) => act(() => pressNote(api, ref, code, mode, pub8))
+  const run = (mode: CellRunMode) => {
+    const pressed = pressNote(api, ref, code, mode, pub8)
+    act(() => pressed)
+    return pressed
+  }
   const callbacks = {
     onRun: run,
     onStop: (kill: boolean) => latest && act(() => api.cell_stop(latest.id, kill)),
@@ -211,13 +243,23 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     onAttach: () => () => undefined,
   }
 
+  // 171F4 T2-6: a line/selection run marks its first code line in the gutter (running, then ✓/✗ when it printed
+  // nothing); a repeat press of a line whose run is in flight does nothing.
+  const slot = useRef<HTMLDivElement>(null)
+  const lineRun = useLineRun(latest)
+  const markTop = useRef(0)
+  const runAt = (line: number, mode: CellRunMode, top?: number) => {
+    markTop.current = top ?? lineTop(slot.current, lineStart(code, cell, line))
+    lineRun.run(line, () => run(mode))
+  }
+
   // §7.1/§11.7 keys inside the code block: Shift+Enter runs the cell and moves to the next one, Mod+Enter runs the
   // selection or the caret line, Mod+. stops. The caret is in BlockNote's root editable, so the listener sits on the
   // document (capture: before BlockNote's own code-block keys).
   // `editor` is null in a server render (BlockNote's snapshot before mount).
   const sel = useEditorState({ editor: blocknote, selector: ({ editor: e }) => (e ? selectionIn(e.prosemirrorState.selection, block) : null) })
-  const keys = useRef({ code, cell, run, view, latest, label, stop: callbacks.onStop })
-  keys.current = { code, cell, run, view, latest, label, stop: callbacks.onStop }
+  const keys = useRef({ code, cell, run, runAt, view, latest, label, stop: callbacks.onStop })
+  keys.current = { code, cell, run, runAt, view, latest, label, stop: callbacks.onStop }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = isApple() ? e.metaKey : e.ctrlKey
@@ -243,7 +285,8 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
       }
       const [from, to] = at.split(':').map(Number) as [number, number]
       const mode = modeOf(k.code, k.cell, from, to)
-      if (mode) k.run(mode)
+      const caret = modeOf(k.code, k.cell, from, from)
+      if (mode) k.runAt(caret?.type === 'line' ? caret.line : 1, mode)
       else setHint('put the caret on a code line to run it')
     }
     document.addEventListener('keydown', onKey, true)
@@ -252,7 +295,6 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   }, [blocknote, block])
 
   // The gutter ► (§11.1): a positioned overlay on the hovered code line, absent on danger cells.
-  const slot = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{ line: number; top: number } | null>(null)
   const onMove = (e: MouseEvent<HTMLDivElement>) => {
     if (danger || (e.target instanceof Element && e.target.closest('button'))) return
@@ -273,12 +315,26 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   }
   const [selFrom, selTo] = sel ? (sel.split(':').map(Number) as [number, number]) : [0, 0]
   const selMode = sel && selFrom !== selTo ? modeOf(code, cell, selFrom, selTo) : null
+  const selLine = modeOf(code, cell, Math.min(selFrom, selTo), Math.min(selFrom, selTo))
   const mod = isApple() ? '⌘' : 'Ctrl'
+  const mark = danger ? null : lineRun.mark
 
   const slotted = (
     <div ref={slot} className="relative" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
       {editor}
-      {hover && !danger && (
+      {mark && (
+        <span
+          contentEditable={false}
+          role="status"
+          aria-label={MARK_LOOK[mark.phase].text}
+          title={MARK_LOOK[mark.phase].text}
+          className={cn('pointer-events-none absolute left-1.5 flex size-5 items-center justify-center text-xs pointer-coarse:size-12', MARK_LOOK[mark.phase].tone)}
+          style={{ top: markTop.current }}
+        >
+          {MARK_LOOK[mark.phase].glyph}
+        </span>
+      )}
+      {hover && !danger && hover.line !== mark?.line && (
         <button
           type="button"
           contentEditable={false}
@@ -287,7 +343,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
           aria-label={`Run line ${hover.line}`}
           title={`Run line ${hover.line} · ${mod}↵`}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => run({ type: 'line', line: hover.line })}
+          onClick={() => runAt(hover.line, { type: 'line', line: hover.line }, hover.top)}
         >
           <Play className="size-3 fill-current" aria-hidden />
         </button>
@@ -298,7 +354,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
           contentEditable={false}
           className="absolute top-1 right-2 rounded-full border border-border bg-layer-1 px-2 py-0.5 text-[11px] text-fg-secondary shadow-sm hover:bg-layer-2 pointer-coarse:min-h-12"
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => run(selMode)}
+          onClick={() => runAt(selLine?.type === 'line' ? selLine.line : 1, selMode)}
         >
           Run selection {mod}↵
         </button>

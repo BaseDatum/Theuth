@@ -1,16 +1,18 @@
 // Owner: U1
 // 171 §11.1 editor + gutter, §7.1 modes, §11.7 keys: the chat cell's CodeMirror. Click and type to edit (F4) unless
 // `locked`; Esc leaves the editor; ► on the hovered line runs it; a selection shows the "Run selection" pill. Danger
-// cells run from their button only: the keys show a hint instead.
+// cells run from their button only: the keys show a hint instead. A line/selection run marks its line (`line-run.ts`).
 import { type Extension, StateEffect, StateField } from '@codemirror/state'
 import { langs } from '@uiw/codemirror-extensions-langs'
 import CodeMirror, { EditorView, GutterMarker, Prec, gutter, keymap, lineNumbers } from '@uiw/react-codemirror'
 import { Play } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { isApple } from '@/lib/chord'
+import type { CellRun } from '@/rpc/bindings/CellRun'
 import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
 import type { Lang } from '@/rpc/bindings/Lang'
+import { type LineMark, MARK_LOOK, useLineRun } from './line-run'
 import { cellTheme } from './theme'
 
 const LANGUAGE: Partial<Record<Lang, () => Extension>> = { bash: langs.bash, zsh: langs.sh, sh: langs.sh, pwsh: langs.ps1, python: langs.python }
@@ -41,15 +43,35 @@ const hovered = StateField.define<number | null>({
     return v
   },
 })
-class RunMarker extends GutterMarker {
+class TextMarker extends GutterMarker {
+  constructor(
+    readonly text: string,
+    readonly tip: string,
+    readonly tone = '',
+  ) {
+    super()
+  }
+  override eq(other: GutterMarker): boolean {
+    return other === this
+  }
   override toDOM() {
     const el = document.createElement('span')
-    el.textContent = '►'
-    el.title = 'Run this line'
+    el.textContent = this.text
+    el.title = this.tip
+    if (this.tone) el.className = this.tone
     return el
   }
 }
-const RUN = new RunMarker()
+const RUN = new TextMarker('►', 'Run this line')
+const MARKS = Object.fromEntries(Object.entries(MARK_LOOK).map(([k, l]) => [k, new TextMarker(l.glyph, l.text, l.tone)])) as Record<LineMark['phase'], TextMarker>
+const setMark = StateEffect.define<LineMark | null>()
+const marked = StateField.define<LineMark | null>({
+  create: () => null,
+  update: (v, tr) => {
+    for (const e of tr.effects) if (e.is(setMark)) return e.value
+    return v
+  },
+})
 
 export type CellEditorProps = {
   lang: Lang
@@ -61,12 +83,14 @@ export type CellEditorProps = {
   /** No edits (not runnable, a run is queued or live, superseded, invalid). */
   locked: boolean
   onChange(code: string): void
-  onRun(mode: CellRunMode, next?: boolean): void
+  /** The cell's latest run: settles a line/selection run's gutter mark. */
+  latest: CellRun | null
+  onRun(mode: CellRunMode, next?: boolean): Promise<CellRun> | undefined
   onRefused(): void
 }
 
 /** §7.1, §11.7: a keyboard or gutter run happens only on a runnable, non-danger cell; a danger cell explains instead ("press <label> to run this"). Always handled. */
-export function keyRun(cell: Pick<CellEditorProps, 'runnable' | 'danger' | 'onRun' | 'onRefused'>, mode: CellRunMode, next?: boolean): true {
+export function keyRun(cell: Pick<CellEditorProps, 'runnable' | 'danger' | 'onRefused'> & { onRun(mode: CellRunMode, next?: boolean): unknown }, mode: CellRunMode, next?: boolean): true {
   if (!cell.runnable) return true
   if (cell.danger) cell.onRefused()
   else cell.onRun(mode, next)
@@ -74,20 +98,25 @@ export function keyRun(cell: Pick<CellEditorProps, 'runnable' | 'danger' | 'onRu
 }
 
 /** The chat cell's editor; extensions are memoised on `lang`/`danger`, callbacks read through a ref. */
-export function CellEditor({ lang, code, runnable, danger, locked, onChange, onRun, onRefused }: CellEditorProps) {
+export function CellEditor({ lang, code, runnable, danger, locked, latest, onChange, onRun, onRefused }: CellEditorProps) {
   const [selection, setSelection] = useState<{ from: number; to: number } | null>(null)
   const view = useRef<EditorView | null>(null)
-  const live = useRef({ runnable, danger, onRun, onRefused })
-  live.current = { runnable, danger, onRun, onRefused }
+  const lineRun = useLineRun(latest)
+  const live = useRef({ runnable, danger, onRun, onRefused, lineRun })
+  live.current = { runnable, danger, onRun, onRefused, lineRun }
+  useEffect(() => view.current?.dispatch({ effects: setMark.of(lineRun.mark) }), [lineRun.mark])
+  /** A line/selection run marks `line`; a repeat press while it is in flight does nothing. Reads only `live`, so the memoised keymap may hold it. */
+  const runAt = (line: number, mode: CellRunMode) => keyRun({ ...live.current, onRun: (m) => void live.current.lineRun.run(line, () => live.current.onRun(m)) }, mode)
 
   const extensions = useMemo(() => {
     const run = (mode: CellRunMode, next?: boolean) => keyRun(live.current, mode, next)
     const caret = (v: EditorView) => {
       const s = v.state.selection.main
       const doc = v.state.doc.toString()
-      return s.empty
-        ? run({ type: 'line', line: v.state.doc.lineAt(s.head).number })
-        : run({ type: 'selection', from: bytesBefore(doc, s.from), to: bytesBefore(doc, s.to) })
+      return runAt(
+        v.state.doc.lineAt(s.from).number,
+        s.empty ? { type: 'line', line: v.state.doc.lineAt(s.head).number } : { type: 'selection', from: bytesBefore(doc, s.from), to: bytesBefore(doc, s.to) },
+      )
     }
     const support = LANGUAGE[lang]?.()
     return [
@@ -95,15 +124,24 @@ export function CellEditor({ lang, code, runnable, danger, locked, onChange, onR
       ...(support ? [support] : []),
       lineNumbers(),
       hovered,
+      marked,
       ...(danger
         ? []
         : [
             gutter({
               class: 'cm-run-gutter',
-              lineMarker: (v, line) => (live.current.runnable && v.state.field(hovered) === v.state.doc.lineAt(line.from).number ? RUN : null),
-              lineMarkerChange: (u) => u.transactions.some((tr) => tr.effects.some((e) => e.is(hover))),
+              lineMarker: (v, line) => {
+                const n = v.state.doc.lineAt(line.from).number
+                const m = v.state.field(marked)
+                if (m?.line === n) return MARKS[m.phase]
+                return live.current.runnable && v.state.field(hovered) === n ? RUN : null
+              },
+              lineMarkerChange: (u) => u.transactions.some((tr) => tr.effects.some((e) => e.is(hover) || e.is(setMark))),
               domEventHandlers: {
-                mousedown: (v, line) => run({ type: 'line', line: v.state.doc.lineAt(line.from).number }),
+                mousedown: (v, line) => {
+                  const n = v.state.doc.lineAt(line.from).number
+                  return runAt(n, { type: 'line', line: n })
+                },
                 mousemove: (v, line) => {
                   pointer(v, { kind: 'move', line: v.state.doc.lineAt(line.from).number })
                   return false
@@ -163,7 +201,7 @@ export function CellEditor({ lang, code, runnable, danger, locked, onChange, onR
           onClick={() => {
             const v = view.current
             const doc = v?.state.doc.toString() ?? code
-            onRun({ type: 'selection', from: bytesBefore(doc, selection.from), to: bytesBefore(doc, selection.to) })
+            runAt(v?.state.doc.lineAt(selection.from).number ?? 1, { type: 'selection', from: bytesBefore(doc, selection.from), to: bytesBefore(doc, selection.to) })
           }}
         >
           <Play className="size-3" aria-hidden />

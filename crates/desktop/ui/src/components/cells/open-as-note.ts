@@ -1,6 +1,7 @@
 // Owner: U1
-// 171 §4.5 Open as note: the reply's prose and cells, each cell followed by its latest run as an ```output block and
-// the run line (§4.4), created with `doc_create`. The note's cells start with no runs and their own kernel.
+// 171 §4.5 Open as note: the reply's prose and cells, each cell followed by its latest run as an ```output block (none
+// when the run printed nothing) and the run line (§4.4), created with `doc_create`. The note's cells start with no
+// runs and their own kernel; a cell's first run in the note replaces that history (`historyAfter`, 171F4 T2-3).
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { queryKeys } from '@/lib/rpc'
@@ -8,17 +9,24 @@ import type { Api } from '@/rpc/api'
 import type { CellRun } from '@/rpc/bindings/CellRun'
 import type { CellState } from '@/rpc/bindings/CellState'
 import type { CellOrdinals } from './CellFence'
-import { clock, duration, ended, errorText, exitText } from './store'
+import { clock, ended, errorText } from './store'
 
 /** `cells.export_output_bytes` (§4.4): head + tail of the cleaned text. */
 const EXPORT_BYTES = 8192
 const HEAD = 6144
 
-/** `ran 14:38 · exit 0 · 33 s · expect ✓` (§4.4). */
+/**
+ * `ran 14:38 · exit 0 · 33 s · expect ✓` (§4.4), character for character the engine's `doc_read` run line
+ * (`crates/cells/src/note.rs` `run_line`): the end time to the minute, `exit` + code/signal/`timeout`/…, seconds to
+ * one decimal under 10 s.
+ */
 export function runLine(run: CellRun): string {
-  const at = clock(run.ended_ms ?? run.queued_ms)
+  const t = run.ended_ms ?? run.started_ms
+  const exit = ['timeout', 'killed', 'lost', 'cancelled'].includes(run.state) ? run.state : (run.exit?.value ?? '?')
+  // ponytail: toFixed rounds an exact binary tie (0.25 s) up where Rust's `{:.1}` rounds it to even; port Rust's rule if a tie ever shows.
+  const secs = run.secs == null ? '' : ` · ${run.secs.toFixed(run.secs < 10 ? 1 : 0)} s`
   const expect = run.expect.length ? ` · expect ${run.expect.every((e) => e.met) ? '✓' : '✗'}` : ''
-  return `ran ${at} · ${exitText(run)}${run.secs == null ? '' : ` · ${duration(run.secs)}`}${expect}`
+  return `ran ${t == null ? '—' : clock(t)} · exit ${exit}${secs}${expect}`
 }
 
 async function outputText(api: Api, run: CellRun): Promise<string> {
@@ -36,11 +44,33 @@ export async function noteMarkdown(api: Api, ordinals: CellOrdinals, states: (Ce
   for (const [i, c] of ordinals.cells.entries()) {
     const run = states[i]?.latest
     if (!run || !ended(run)) continue
-    const text = c.spec.options.private ? 'output kept from theuth (private)' : await outputText(api, run)
+    const text = (c.spec.options.private ? 'output kept from theuth (private)' : await outputText(api, run)).replace(/\n+$/, '')
     const fence = '`'.repeat(Math.max(3, ...[...text.matchAll(/`{3,}/g)].map((m) => m[0].length + 1)))
-    after.set(c.end, `${fence}output\n${text.replace(/\n$/, '')}\n${fence}\n${runLine(run)}`)
+    after.set(c.end, text.trim() ? `${fence}output\n${text}\n${fence}\n${runLine(run)}` : runLine(run))
   }
   return lines.flatMap((l, i) => (after.has(i) ? [l, '', after.get(i) as string] : [l])).join('\n')
+}
+
+/** The slice of a BlockNote block `historyAfter` reads. */
+type NoteBlock = { id: string; type: string; props?: { language?: string }; content?: unknown; children?: NoteBlock[] }
+
+/**
+ * 171F4 T2-3: the ids of the history Open as note wrote right after cell block `id` (an `output` code block, then the
+ * `ran …` paragraph; either may be alone), searched at any depth; `[]` when none follows. A cell's own run replaces it,
+ * so the note shows one output per cell, the newest.
+ */
+export function historyAfter(blocks: NoteBlock[], id: string): string[] {
+  const at = blocks.findIndex((b) => b.id === id)
+  if (at < 0) return blocks.flatMap((b) => historyAfter(b.children ?? [], id))
+  const out: string[] = []
+  let next = blocks[at + 1]
+  if (next?.type === 'codeBlock' && next.props?.language === 'output') {
+    out.push(next.id)
+    next = blocks[at + 2]
+  }
+  const text = next?.type === 'paragraph' && Array.isArray(next.content) ? next.content.map((c: { text?: string }) => c.text ?? '').join('') : ''
+  if (next && /^ran (\d\d:\d\d|—) · /.test(text)) out.push(next.id)
+  return out
 }
 
 /** Presses of Open as note in flight, by `session/entry`: a double click makes one note. */

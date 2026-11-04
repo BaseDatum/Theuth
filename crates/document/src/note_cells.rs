@@ -292,6 +292,10 @@ fn cell_row(cell: &Cell, ann: Option<&CellAnnotation>) -> String {
 
 /// `markdown` with each cell fence the hook has a run for followed by its `output` fence and run
 /// line. Fences are matched to `cells` in document order by language and exact text.
+///
+/// 171F4 T2-3: Open as note writes the chat run's history after each cell as plain blocks (an
+/// `output` fence, the `ran …` line). Once the cell has a run of its own, that history gives way
+/// to it: the reader sees one output, the newest. An empty history fence is never shown.
 pub(crate) fn with_runs(
     markdown: &str,
     doc: &DocId,
@@ -300,7 +304,8 @@ pub(crate) fn with_runs(
 ) -> String {
     let mut out = String::with_capacity(markdown.len());
     let (mut copied, mut next) = (0, 0);
-    for f in fences(markdown) {
+    let all = fences(markdown);
+    for (k, f) in all.iter().enumerate() {
         let body = f.body.strip_suffix('\n').unwrap_or(f.body);
         let Some(i) = cells[next..].iter().position(|b| {
             b.text == body && f.info.split_whitespace().next() == Some(b.language.trim())
@@ -312,11 +317,25 @@ pub(crate) fn with_runs(
         if cell::parse(&b.language, &b.text).is_none() {
             continue;
         }
+        let old = all
+            .get(k + 1)
+            .filter(|o| o.info == "output" && o.start == next_block(markdown, f.end));
         let Some(a) = hook.note_cell(doc, &b.block, &b.language, &b.text) else {
+            if let Some(o) = old.filter(|o| o.body.trim().is_empty()) {
+                out.push_str(&markdown[copied..f.end]);
+                copied = o.end;
+            }
             continue;
         };
         out.push_str(&markdown[copied..f.end]);
-        copied = f.end;
+        let after = old.map_or(f.end, |o| o.end);
+        let at = next_block(markdown, after);
+        let line = markdown[at..].lines().next().unwrap_or("");
+        copied = if is_run_line(line) {
+            at + line.len()
+        } else {
+            after
+        };
         if let Some(text) = &a.output {
             let fence = "`".repeat(longest_backticks(text).max(2) + 1);
             out.push('\n');
@@ -331,6 +350,36 @@ pub(crate) fn with_runs(
     }
     out.push_str(&markdown[copied..]);
     out
+}
+
+/// Start of the next block after `from`: past blank lines and one `<!-- id -->` line.
+fn next_block(markdown: &str, from: usize) -> usize {
+    let rest = markdown[from..].trim_start_matches(['\n', '\r']);
+    let rest = match rest
+        .strip_prefix("<!--")
+        .and_then(|r| r.split_once("-->\n"))
+    {
+        Some((_, r)) => r.trim_start_matches(['\n', '\r']),
+        None => rest,
+    };
+    markdown.len() - rest.len()
+}
+
+/// `ran 14:38 · …` or `ran — · …` (§4.4), the run line Open as note and the hook write.
+fn is_run_line(line: &str) -> bool {
+    line.strip_prefix("ran ")
+        .and_then(|r| r.split_once(" · "))
+        .is_some_and(|(at, _)| {
+            at == "—"
+                || (at.len() == 5
+                    && at.bytes().enumerate().all(|(i, c)| {
+                        if i == 2 {
+                            c == b':'
+                        } else {
+                            c.is_ascii_digit()
+                        }
+                    }))
+        })
 }
 
 fn longest_backticks(text: &str) -> usize {
@@ -411,9 +460,10 @@ pub(crate) async fn cell_problems(
         .then(|| format!("nothing changed: a cell does not validate — fix it and retry\n{s}"))
 }
 
-/// One closed fenced block: trimmed info string, body (its last newline included), end of the
-/// closing line (newline excluded).
+/// One closed fenced block: start of the opening line, trimmed info string, body (its last
+/// newline included), end of the closing line (newline excluded).
 struct Fence<'a> {
+    start: usize,
     info: &'a str,
     body: &'a str,
     end: usize,
@@ -441,6 +491,7 @@ fn fences(text: &str) -> Vec<Fence<'_>> {
         };
         let (cstart, cline) = lines[j];
         out.push(Fence {
+            start,
             info,
             body: &text[start + line.len()..cstart],
             end: cstart + cline.trim_end_matches(['\n', '\r']).len(),
@@ -583,6 +634,45 @@ mod tests {
         assert_eq!(
             r.outline, "b3 [code:cells] #| cwd: /tmp",
             "defaults stay as they are"
+        );
+    }
+
+    #[test]
+    fn open_as_note_history_gives_way_to_the_cells_own_run() {
+        // 171F4 T2-3: a 2.18.2 Open as note note, its `preview` cell run in the note with output
+        // and its quiet `apply` cell not run here (the hook knows `preview` only).
+        let doc = DocId("d".into());
+        let cells = [
+            reply("b1", "bash", PREVIEW),
+            reply("b4", "output", "chat said 3 to update"),
+            reply("b2", "bash", APPLY),
+            reply("b6", "output", ""),
+        ];
+        let md = format!(
+            "<!-- b1 -->\n```bash\n{PREVIEW}\n```\n\n<!-- b4 -->\n```output\nchat said 3 to update\n```\n\n<!-- b5 -->\nran 14:36 · exit 0 · 33 s · expect ✓\n\n<!-- b2 -->\n```bash\n{APPLY}\n```\n\n<!-- b6 -->\n```output\n```\n\n<!-- b7 -->\nran 14:36 · exit 0 · 0.1 s\n"
+        );
+        assert_eq!(
+            with_runs(&md, &doc, &cells, &Hook),
+            format!(
+                "<!-- b1 -->\n```bash\n{PREVIEW}\n```\n````output\n3 to update\n```\n````\nran 14:38 · exit 0 · 33 s · expect ✓\n\n<!-- b2 -->\n```bash\n{APPLY}\n```\n\n<!-- b7 -->\nran 14:36 · exit 0 · 0.1 s\n"
+            )
+        );
+        // The same without block comments, and a history line alone (a quiet cell composed by
+        // 171F4's Open as note) also gives way.
+        let md = format!(
+            "```bash\n{PREVIEW}\n```\n\nran 14:36 · exit 0 · 0.1 s\n\n```bash\n{APPLY}\n```\n"
+        );
+        let cells = [reply("b1", "bash", PREVIEW), reply("b2", "bash", APPLY)];
+        assert_eq!(
+            with_runs(&md, &doc, &cells, &Hook),
+            format!(
+                "```bash\n{PREVIEW}\n```\n````output\n3 to update\n```\n````\nran 14:38 · exit 0 · 33 s · expect ✓\n\n```bash\n{APPLY}\n```\n"
+            )
+        );
+        // A paragraph that is not a run line stays.
+        let md = format!("```bash\n{PREVIEW}\n```\n\nran out of time\n");
+        assert!(
+            with_runs(&md, &doc, &cells[..1], &Hook).ends_with("expect ✓\n\nran out of time\n")
         );
     }
 

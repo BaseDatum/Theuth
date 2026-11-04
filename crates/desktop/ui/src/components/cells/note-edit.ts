@@ -127,6 +127,12 @@ export function modeOf(text: string, spec: CellSpec, from: number, to: number): 
   return { type: 'line', line: code.slice(0, a).split('\n').length }
 }
 
+/** The inverse of `modeOf` for a line: the offset (UTF-16, header included) where 1-based code line `line` starts. */
+export function lineStart(text: string, spec: CellSpec, line: number): number {
+  const lines = text.replaceAll('\r\n', '\n').split('\n')
+  return lines.slice(0, spec.header_lines + line - 1).reduce((n, l) => n + l.length + 1, 0)
+}
+
 export type DiffRow = { op: ' ' | '+' | '-'; line: string }
 
 /**
