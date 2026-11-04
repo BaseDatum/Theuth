@@ -44,6 +44,7 @@ import {
 import { fmtBytes, isLocal, readText, readTextOnline, resolveFile } from "@/lib/files";
 import { resultLine } from "@/lib/describe";
 import { canPopout, openPopout } from "@/lib/popout";
+import { isPrivate, privateOwner } from "@/lib/private";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 import { useEngines } from "@/link/engines";
@@ -129,8 +130,9 @@ export const relistArtifacts = (
     () => undefined,
   );
 
-/** Text of an engine file, `null` while loading (including the wait for a down socket to reopen), `''` on failure. */
-export function useText(path: string | null): string | null {
+/** Text of an engine file, `null` while loading (including the wait for a down socket to reopen), `''` on failure.
+ * `session` names a private owner (`privateOwner`, 51 §4.2); durable reads leave it out. */
+export function useText(path: string | null, session?: string): string | null {
   const api = useApi();
   const client = useConnection((s) => s.client);
   const [text, setText] = useState<string | null>(null);
@@ -138,14 +140,14 @@ export function useText(path: string | null): string | null {
     if (!path) return;
     let live = true;
     setText(null);
-    readTextOnline(api, client, path).then(
+    readTextOnline(api, client, path, session).then(
       (t) => live && setText(t),
       () => live && setText(""),
     );
     return () => {
       live = false;
     };
-  }, [api, client, path]);
+  }, [api, client, path, session]);
   return text;
 }
 
@@ -174,7 +176,7 @@ export async function saveAs(api: Api, a: Artifact, local: boolean) {
     toast.success(`Saved ${a.name}`);
     return;
   }
-  const url = await resolveFile(api, a.path, useEngines.getState().active);
+  const url = await resolveFile(api, a.path, useEngines.getState().active, privateOwner(a.session));
   const el = document.createElement("a");
   el.href = url;
   el.download = a.name;
@@ -215,7 +217,7 @@ export function ArtifactMenu({
         {TEXT_KINDS[a.kind] && (
           <DropdownMenuItem
             onSelect={() =>
-              readText(api, a.path).then(
+              readText(api, a.path, privateOwner(a.session)).then(
                 (t) => navigator.clipboard.writeText(t),
                 fail,
               )
@@ -294,7 +296,8 @@ export function PopoutButton({
   artifact: Artifact;
   className?: string;
 }) {
-  if (!canPopout()) return null;
+  // A second window is another peer: a private tree's bytes are served to its owner only (51 §4.2).
+  if (!canPopout() || isPrivate(a.session)) return null;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -355,12 +358,13 @@ export function Progress({
 /** The 56×72 slot: preview PNG, the image itself, the first 6 lines, or a kind glyph. */
 function Preview({ a, text }: { a: Artifact; text: string | null }) {
   const box = "h-[72px] w-14 shrink-0 overflow-hidden rounded-lg bg-layer-2";
+  const owner = privateOwner(a.session);
   if (a.preview)
     return (
-      <Img path={a.preview} className={cn(box, "object-cover object-top")} />
+      <Img path={a.preview} session={owner} className={cn(box, "object-cover object-top")} />
     );
   if (a.kind === "image" || a.kind === "svg")
-    return <Img path={a.path} className={cn(box, "object-cover")} />;
+    return <Img path={a.path} session={owner} className={cn(box, "object-cover")} />;
   if (TEXT_KINDS[a.kind] && a.kind !== "html" && text) {
     return (
       <pre
@@ -481,7 +485,7 @@ export const ArtifactCard = memo(function ArtifactCard({
   useMarkShown(artifact ? tool.callId : null);
   // Text kinds fetch their bytes: the 6-line preview slot, or the page itself for `html`.
   const preview = artifact && TEXT_KINDS[artifact.kind] ? artifact.path : null;
-  const text = useText(preview);
+  const text = useText(preview, privateOwner(artifact?.session));
   const { result } = tool;
   const api = useApi();
   const open = () =>

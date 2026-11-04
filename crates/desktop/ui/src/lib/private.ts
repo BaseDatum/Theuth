@@ -9,6 +9,7 @@ import { useEffect } from 'react'
 import { toast } from 'sonner'
 import { queryKeys } from '@/lib/rpc'
 import { useEngines } from '@/link/engines'
+import { forgetPrivate } from '@/lib/files'
 import type { AgentEvent } from '@/rpc/bindings/AgentEvent'
 import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
 import type { ConnState } from '@/rpc/client'
@@ -119,10 +120,15 @@ export const isPrivate = (session: string): boolean => {
   return p !== null && inTree(p.root, session, scope(p.engine).sessions.getState().sessions)
 }
 
-/** Forget the tree locally (51 §4.2): every slice, query and the owner record; children before root. */
+/** The session a body fetch names (`lib/files.ts`): `session` when it is in the owned tree, else none — a durable read stays session-less. */
+export const privateOwner = (session: string | undefined): string | undefined =>
+  session !== undefined && isPrivate(session) ? session : undefined
+
+/** Forget the tree locally (51 §4.2): every slice, query, cached body and the owner record; children before root. */
 function discard(st: Stores, p: Private): void {
   const ids = [...members(p)].filter((id) => id !== p.root).concat(p.root)
   usePrivate.getState().clear()
+  forgetPrivate()
   st.sessions.getState().applyEvents(ids.map((session) => ({ type: 'SessionDeleted', session })))
   for (const id of ids) {
     for (const queryKey of [

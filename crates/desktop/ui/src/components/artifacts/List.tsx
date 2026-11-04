@@ -10,6 +10,7 @@ import { ago } from '@/components/sidebar/AgentTree'
 import { UNGROUPED } from '@/components/sidebar/SessionList'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Skeleton } from '@/components/ui/skeleton'
+import { privateOwner } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -194,8 +195,9 @@ function reveal(el: HTMLAnchorElement | null) {
 /** The 40×52 slot: preview PNG, the image itself, or a kind glyph. */
 function Thumb({ a }: { a: Artifact }) {
   const box = 'h-[52px] w-10 shrink-0 overflow-hidden rounded-md bg-layer-2'
-  if (a.preview) return <Img path={a.preview} className={cn(box, 'object-cover object-top')} />
-  if (a.kind === 'image' || a.kind === 'svg') return <Img path={a.path} className={cn(box, 'object-cover')} />
+  const owner = privateOwner(a.session)
+  if (a.preview) return <Img path={a.preview} session={owner} className={cn(box, 'object-cover object-top')} />
+  if (a.kind === 'image' || a.kind === 'svg') return <Img path={a.path} session={owner} className={cn(box, 'object-cover')} />
   const Glyph = GLYPH[a.kind]
   return (
     <div className={cn(box, 'flex items-center justify-center text-fg-tertiary')}>

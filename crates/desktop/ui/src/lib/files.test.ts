@@ -2,7 +2,8 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 import { type ConnState, RpcError } from '@/rpc/client'
-import { readTextOnline, resolveDocument, resolveFile } from './files'
+import { forgetPrivate, readText, readTextOnline, resolveDocument, resolveFile } from './files'
+import { usePrivate } from './private'
 
 // A local desktop shell: the one configuration where `resolveFile` hands out `asset://` URLs.
 const convertFileSrc = vi.hoisted(() => vi.fn((p: string) => `asset://localhost${p}`))
@@ -83,4 +84,47 @@ test('readTextOnline: an already-open client retries at once; any other failure 
   const idle = fakeClient('reconnecting')
   await expect(readTextOnline(missing, idle, '/a/missing.md')).rejects.toThrow('no such file')
   expect(idle.subs.size).toBe(0)
+})
+
+test('private paths: get_attachment names the owning session and never asset://; the cache goes with the tree', async () => {
+  const ROOT = 'root-session'
+  const CHILD = 'child-session'
+  const scratch = `/var/folders/x/T/theuth-private-${'0a'.repeat(16)}`
+  // The engine's rule (51 §4.2): a scratch path is served only when its session is named; a durable one session-less.
+  const get_attachment = vi.fn(async (path: string, session?: string) => {
+    if (path.startsWith(scratch) !== (session !== undefined)) throw new RpcError(-32000, `${path}: not an attachment`)
+    return btoa(`bytes of ${path}`)
+  })
+  const api = { get_attachment } as unknown as Api
+  usePrivate.setState({ current: { engine: LOCAL, root: ROOT, session: ROOT, secret: '' } })
+
+  // A renderer without a session (held strip, queued chips): the owned tree's root, over RPC even on the local daemon.
+  const page = `${scratch}/artifacts/abc.html`
+  const url = resolveFile(api, page, LOCAL)
+  expect(typeof url).not.toBe('string')
+  expect(await url).toMatch(/^blob:/)
+  expect(get_attachment).toHaveBeenLastCalledWith(page, ROOT)
+  expect(convertFileSrc).not.toHaveBeenCalledWith(page)
+
+  // An explicit session (the artifact's own, a child of the tree) wins.
+  const md = `${scratch}/artifacts/def.md`
+  await expect(readText(api, md, CHILD)).resolves.toBe(`bytes of ${md}`)
+  expect(get_attachment).toHaveBeenLastCalledWith(md, CHILD)
+  await readText(api, md, CHILD)
+  expect(get_attachment).toHaveBeenCalledTimes(2)
+
+  // A durable artifact keeps the one-argument call.
+  const durable = '/data/artifacts/ghi.md'
+  await expect(readText(api, durable)).resolves.toBe(`bytes of ${durable}`)
+  expect(get_attachment.mock.lastCall).toEqual([durable])
+
+  // Leaving the tree: its cached bodies are gone (the next read refetches), the durable one stays cached.
+  usePrivate.getState().clear()
+  forgetPrivate()
+  await expect(readText(api, md, CHILD)).resolves.toBe(`bytes of ${md}`)
+  expect(get_attachment).toHaveBeenCalledTimes(4)
+  await readText(api, durable)
+  expect(get_attachment).toHaveBeenCalledTimes(4)
+  // No owned tree any more: a session-less scratch read is session-less, and the engine refuses it.
+  await expect(readText(api, `${scratch}/artifacts/jkl.md`)).rejects.toThrow('not an attachment')
 })

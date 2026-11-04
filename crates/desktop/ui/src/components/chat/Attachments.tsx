@@ -3,6 +3,7 @@ import { memo, type ReactNode, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { resolveDocument, resolveFile } from '@/lib/files'
+import { privateOwner } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
@@ -13,17 +14,18 @@ import { useDisclosed, useScopeKey } from './disclosure'
 
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
-/** A URL for an engine path via `resolveFile` (31 §9): immediate on macOS local; elsewhere `null` until the bytes arrive, `''` on failure. */
-export function useFileUrl(path: string): string | null {
+/** A URL for an engine path via `resolveFile` (31 §9): immediate on macOS local; elsewhere `null` until the bytes arrive, `''` on failure.
+ * `session` names a private owner (`privateOwner`, 51 §4.2): always over RPC, never `asset://`. */
+export function useFileUrl(path: string, session?: string): string | null {
   const api = useApi()
   const active = useEngines((s) => s.active)
   // The local case is synchronous, so the first paint already has the URL; the RPC case is cached, so the effect's call is the same promise.
   const [src, setSrc] = useState<string | null>(() => {
-    const r = resolveFile(api, path, active)
+    const r = resolveFile(api, path, active, session)
     return typeof r === 'string' ? r : null
   })
   useEffect(() => {
-    const r = resolveFile(api, path, active)
+    const r = resolveFile(api, path, active, session)
     if (typeof r === 'string') {
       setSrc(r)
       return
@@ -37,19 +39,19 @@ export function useFileUrl(path: string): string | null {
     return () => {
       live = false
     }
-  }, [api, path, active])
+  }, [api, path, active, session])
   return src
 }
 
 /** A typed `blob:` URL for a document (PDF) frame via `resolveDocument` (120 §9b): `null` until the bytes arrive, `''` on failure; revoked on unmount. */
-export function useDocumentUrl(path: string): string | null {
+export function useDocumentUrl(path: string, session?: string): string | null {
   const api = useApi()
   const [src, setSrc] = useState<string | null>(null)
   useEffect(() => {
     let live = true
     let url = ''
     setSrc(null)
-    resolveDocument(api, path).then(
+    resolveDocument(api, path, session).then(
       (u) => {
         if (!live) return URL.revokeObjectURL(u)
         url = u
@@ -61,13 +63,13 @@ export function useDocumentUrl(path: string): string | null {
       live = false
       if (url) URL.revokeObjectURL(url)
     }
-  }, [api, path])
+  }, [api, path, session])
   return src
 }
 
 /** `<img>` for an engine path: a dim block until the URL resolves, nothing on failure. */
-export function Img({ path, className }: { path: string; className: string }) {
-  const src = useFileUrl(path)
+export function Img({ path, session, className }: { path: string; session?: string; className: string }) {
+  const src = useFileUrl(path, session)
   if (src === null) return <div className={cn('h-24 w-32 animate-pulse bg-layer-2', className)} />
   if (src === '') return null
   return <img src={src} alt="" className={className} />
@@ -118,8 +120,8 @@ function Chip({ item, removed, onOpen, control }: { item: Item; removed: boolean
 }
 
 /** Image thumbnail with the zoom button and the sibling corner `X`; a preview that fails to load falls back to the named chip, so the occurrence stays removable. */
-function Thumb({ item, onOpen, control, chipControl }: { item: Item; onOpen: () => void; control: ReactNode; chipControl: ReactNode }) {
-  const src = useFileUrl(item.path ?? '')
+function Thumb({ item, session, onOpen, control, chipControl }: { item: Item; session?: string; onOpen: () => void; control: ReactNode; chipControl: ReactNode }) {
+  const src = useFileUrl(item.path ?? '', session)
   if (src === '') return <Chip item={item} removed={false} onOpen={onOpen} control={chipControl} />
   return (
     <div className="group relative">
@@ -133,20 +135,20 @@ function Thumb({ item, onOpen, control, chipControl }: { item: Item; onOpen: () 
 
 /** The media: the image, or the PDF in a frame (WKWebView's own viewer; iOS draws page 1 — ponytail: reuse the artifact panel's pdf.js pages if that matters).
  * Both are sized to the viewport minus room for the close button above and the toolbar below, inside the safe area; `dvh`, so iPad's URL bar never hides the bottom. */
-function Original({ item }: { item: Item }) {
-  return item.image ? <OriginalImage item={item} /> : <OriginalDocument item={item} />
+function Original({ item, session }: { item: Item; session?: string }) {
+  return item.image ? <OriginalImage item={item} session={session} /> : <OriginalDocument item={item} session={session} />
 }
 
-function OriginalImage({ item }: { item: Item }) {
-  const src = useFileUrl(item.path ?? '')
+function OriginalImage({ item, session }: { item: Item; session?: string }) {
+  const src = useFileUrl(item.path ?? '', session)
   if (src === null) return <div className="h-64 w-96 animate-pulse rounded-xl bg-layer-2" />
   if (src === '') return <div className="rounded-xl bg-layer-1 px-4 py-3 text-sm text-fg-secondary">Preview unavailable: {item.name}</div>
   return <img src={src} alt={item.name} className="max-h-[calc(100dvh_-_8rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-auto max-w-[calc(100vw_-_2rem_-_env(safe-area-inset-left)_-_env(safe-area-inset-right))] rounded-xl object-contain" />
 }
 
 /** 120 §9b: a document never loads from `asset:` — a typed `blob:` of the RPC bytes, locally too. */
-function OriginalDocument({ item }: { item: Item }) {
-  const src = useDocumentUrl(item.path ?? '')
+function OriginalDocument({ item, session }: { item: Item; session?: string }) {
+  const src = useDocumentUrl(item.path ?? '', session)
   if (src === null) return <div className="h-64 w-96 animate-pulse rounded-xl bg-layer-2" />
   if (src === '') return <div className="rounded-xl bg-layer-1 px-4 py-3 text-sm text-fg-secondary">Preview unavailable: {item.name}</div>
   return <iframe src={src} title={item.name} className="h-[calc(100dvh_-_8rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-[min(90vw,1100px)] rounded-xl border-0 bg-white" />
@@ -170,7 +172,7 @@ export function Lightbox({ item, session, active }: { item: Item; session?: stri
         </Button>
       </DialogClose>
       <div className="relative">
-        <Original item={item} />
+        <Original item={item} session={privateOwner(session)} />
         {item.occurrence && (
           <div className="absolute inset-x-0 top-full mt-2 flex justify-center text-xs text-fg-secondary">
             {item.occurrence.removed ? (
@@ -233,7 +235,7 @@ export const Attachments = memo(function Attachments({
     <div className={cn('flex flex-wrap gap-2', className)}>
       {list.map((item) =>
         !item.occurrence?.removed && item.image && item.path ? (
-          <Thumb key={item.key} item={item} onOpen={() => setOpen(item)} control={control(item, true)} chipControl={control(item, false)} />
+          <Thumb key={item.key} item={item} session={privateOwner(session)} onOpen={() => setOpen(item)} control={control(item, true)} chipControl={control(item, false)} />
         ) : (
           <Chip key={item.key} item={item} removed={!!item.occurrence?.removed} onOpen={() => setOpen(item)} control={control(item, false)} />
         ),
