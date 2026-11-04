@@ -72,6 +72,18 @@ Worker E, branch `fix/171f4-e`, base `a76092c4`. Decisions where the brief left 
   carries only the job id; the supervisor records it as an error row / `AgentEvent::Error`
   (UI, not model input) and delivers nothing. Left as is.
 
+## N6 — note cwd `.` and note pass attributes
+
+- (a) `note::lexical` resolves `.` / `..` by the text (no symlink followed, as before);
+  `note::cell_cwd` applies it to every resolved note cwd, and the chat resolver
+  (`expand_home`) to chat cwds, so the run, its record and `<cell_result cwd=…>` carry
+  `/tmp/cells-test`, not `/tmp/cells-test/.`. `..` above the root stays at the root.
+- (b) `note::deliver` takes `pass_end` and builds the full result with it: the last result
+  of a note pass carries `pass="…" pass_end="true"` like chat. The body-less quiet line for
+  other bound notebook chats stays ids + exit (157), without pass attributes.
+- The test hook `State.delivered` now records the text actually handed over (chat:
+  `wrapped`; note: what `note::deliver` built), which the T2-1 and N6 pass tests read.
+
 ## For the other worker (D)
 
 - `<cell_result>` may now carry `mode="line"|"selection"`, `runs="N"` and `earlier="…"`

@@ -276,11 +276,12 @@ fn apply_env_rules(vars: &mut BTreeMap<String, String>) {
 
 /// `~` / `~/x` against `home`.
 fn expand_home(p: &str, home: Option<&str>) -> PathBuf {
-    match (p, home) {
+    let p = match (p, home) {
         ("~", Some(h)) => PathBuf::from(h),
         (_, Some(h)) if p.starts_with("~/") => Path::new(h).join(&p[2..]),
         _ => PathBuf::from(p),
-    }
+    };
+    note::lexical(&p) // 171F4 N6
 }
 
 /// `[from, to)` in UTF-8 bytes of the code (U1's selection offsets, header excluded); `None`
@@ -1454,11 +1455,6 @@ impl Cells {
     /// Build and hand over the `<cell_result>` of a finished run. `force_wake`: Ask theuth
     /// (`Some(true)`) or a pass end (`Some(review)`); else the §9.3 rule.
     async fn deliver_run(&self, rec: &CellRun, pass_end: bool, force_wake: Option<bool>) {
-        #[cfg(test)]
-        {
-            let r = crate::deliver::cell_result(rec, "", &self.inner.config);
-            self.inner.state.lock().delivered.push(r);
-        }
         if rec.state == RunState::Cancelled {
             if let Ok(s) = self.store() {
                 let _ = s.delivery(&rec.id, "none").await;
@@ -1488,6 +1484,8 @@ impl Cells {
                 };
                 let (attrs, body) = crate::deliver::parts(rec, &cleaned, &self.inner.config, &x);
                 let wrapped = format!("<cell_result {attrs}>\n{body}</cell_result>");
+                #[cfg(test)]
+                self.inner.state.lock().delivered.push(wrapped.clone());
                 let running = turn_running(*session).await;
                 let (wake, how) = wake_rule(running, meta.review, force_wake);
                 let kind = format!(
@@ -1506,12 +1504,16 @@ impl Cells {
                     Err(e) => tracing::warn!(run = %rec.id, error = %e, "cells: not delivered"),
                 }
             }
-            CellRef::Note { .. } => {
-                if let Err(e) = note::deliver(rec, &cleaned).await {
-                    // 171:E2
-                    tracing::warn!(run = %rec.id, error = %e, "cells: note result not delivered");
+            CellRef::Note { .. } => match note::deliver(rec, &cleaned, pass_end).await {
+                Ok(_full) => {
+                    #[cfg(test)]
+                    self.inner.state.lock().delivered.push(_full);
                 }
-            }
+                // 171:E2
+                Err(e) => {
+                    tracing::warn!(run = %rec.id, error = %e, "cells: note result not delivered")
+                }
+            },
         }
     }
 

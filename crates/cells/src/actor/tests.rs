@@ -1196,15 +1196,17 @@ async fn py_passes(cells: &Cells, list: &[(CellRef, String)], doc: &DocId, n: us
             pressed_by: "desktop · test".into(),
         };
         let p = pass_end(cells.clone(), req).await;
-        assert_eq!((p.stopped, p.ran, p.total), (None, 5, 5), "pass {i}");
+        let k = list.len() as u32;
+        assert_eq!((p.stopped, p.ran, p.total), (None, k, k), "pass {i}");
     }
     let deadline = Instant::now() + Duration::from_secs(10);
-    while cells.inner.state.lock().delivered.len() < 5 * n {
+    let total = list.len() * n;
+    while cells.inner.state.lock().delivered.len() < total {
         assert!(Instant::now() < deadline, "results never all delivered");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let delivered = cells.inner.state.lock().delivered.clone();
-    assert_eq!(delivered.len(), 5 * n);
+    assert_eq!(delivered.len(), total);
     for r in &delivered {
         assert!(
             r.contains(" exit=\"0\"") && r.contains(" secs=\"") && r.contains(" at=\""),
@@ -1212,6 +1214,28 @@ async fn py_passes(cells: &Cells, list: &[(CellRef, String)], doc: &DocId, n: us
         );
         assert!(!r.contains("exit=\"?\""), "{r}");
     }
+    // 171F4 N6: each pass's last result — and only it — carries the pass attributes, as in
+    // chat; it is the last cell's.
+    let last = match &list.last().unwrap().0 {
+        CellRef::Note {
+            key: NoteKey::Block(b),
+            ..
+        } => format!(" cell=\"{b}\""),
+        c => panic!("{c:?}"),
+    };
+    for i in 0..n {
+        let attrs = format!(" pass=\"p_{i}\" pass_end=\"true\">");
+        let ends: Vec<&String> = delivered.iter().filter(|r| r.contains(&attrs)).collect();
+        assert_eq!(ends.len(), 1, "pass {i}: {ends:?}");
+        assert!(ends[0].contains(&last), "{}", ends[0]);
+    }
+    assert_eq!(
+        delivered
+            .iter()
+            .filter(|r| r.contains(" pass_end="))
+            .count(),
+        n
+    );
     for k in cells.kernels_of(&Scope::Doc(doc.clone())) {
         cells.kernel_close(k.id).await.unwrap();
     }
@@ -1239,6 +1263,18 @@ async fn fifty_python_passes_end_five_of_five() {
         return;
     };
     py_passes(&cells, &list, &doc, 50).await;
+}
+
+/// 171F4 N6: a 3-step note pass — its last result carries `pass="…" pass_end="true"`, as a
+/// chat pass's does; the two before it carry neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn note_pass_end_carries_the_pass_attributes() {
+    let _one = note::DOCS_TEST.lock().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((cells, list, doc)) = py_pass(tmp.path()).await else {
+        return;
+    };
+    py_passes(&cells, &list[..3], &doc, 1).await;
 }
 
 /// B19: a cell whose interpreter is missing is invalid on `cell_state`, with the reason —
