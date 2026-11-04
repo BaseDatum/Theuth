@@ -76,3 +76,7 @@ model_calls kind=endless: slow/m failed 3 · slow/m cancelled 2 (retry + switch)
 Earlier runs:
 - Run 1 (`/tmp/137f-e/proof-run1.txt`), before the E4 change: turn 2 took 24.7 s, because it waited for the running third attempt.
 - Run 2 (`/tmp/137f-e/proof-run2.txt`), phase B binary: same results as run 3, without the retry step.
+- Run 4 (`/tmp/137f-e/proof.txt`, R2 binary, switch scenario only, engine4):
+  - 23:55:09 `stalled` failures 1, blocking: true.
+  - `endless_settings_set` model=fast/m, no restart; 0.3 s later `settling` false, `stalled` null, model fast/m, both lines built.
+  - model_calls: slow/m failed 1 · cancelled 1 · fast/m settled 1.
