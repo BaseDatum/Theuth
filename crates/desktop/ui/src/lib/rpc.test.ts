@@ -31,3 +31,10 @@ test('EndlessProgress writes `stalled` into the cached memory before the refetch
   expect(seen).toEqual([failing, null])
   off()
 })
+
+test('EndlessProgress with no cached memory writes nothing: the panel fetches the whole memory when it opens', () => {
+  const qc = new QueryClient()
+  applyEndlessProgress(qc, progress(failing))
+  expect(qc.getQueryData(queryKeys.sessionMemory('s1'))).toBeUndefined()
+  expect(qc.getQueryCache().find({ queryKey: queryKeys.sessionMemory('s1') })?.state.data).toBeUndefined()
+})
