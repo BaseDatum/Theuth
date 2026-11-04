@@ -22,6 +22,7 @@ import { toast } from "sonner";
 import { useText } from "@/components/chat/ArtifactCard";
 import { registerDiagramHosts } from "@/components/chat/surface/diagram-hosts";
 import { Button } from "@/components/ui/button";
+import { privateOwner } from "@/lib/private";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 import { RpcError } from "@/rpc/client";
@@ -131,7 +132,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
     (draft.status === "streaming" || draft.status === "validating");
   // Without a usable `get_app` the bytes themselves are the fallback.
   const needFile = artifact !== undefined && (!enabled || docQ.isError);
-  const fileText = useText(needFile ? artifact.path : null);
+  const fileText = useText(needFile ? artifact.path : null, privateOwner(artifact?.session));
 
   let program: Program;
   let banner: { tone: "error" | "info"; text: string } | undefined;

@@ -29,6 +29,7 @@ import { extOf, fmtBytes, isLocal, readBytes } from '@/lib/files'
 import { touch } from '@/lib/platform'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { isPopout, openPopout } from '@/lib/popout'
+import { privateOwner } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
@@ -238,7 +239,7 @@ const Page = memo(function Page({ page, scale }: { page: PDFPageProxy; scale: nu
  * inline viewer at all. Bytes over RPC, not a blob URL: pdf.js loads non-http
  * URLs by XHR, which WKWebView answers with status 0 for `blob:tauri://`.
  */
-function PdfPages({ path }: { path: string }) {
+function PdfPages({ path, session }: { path: string; session?: string }) {
   const api = useApi()
   const [pages, setPages] = useState<PDFPageProxy[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -247,7 +248,7 @@ function PdfPages({ path }: { path: string }) {
     let live = true
     setPages(null)
     setError(null)
-    Promise.all([import('pdfjs-dist'), readBytes(api, path)])
+    Promise.all([import('pdfjs-dist'), readBytes(api, path, session)])
       .then(async ([pdfjs, data]) => {
         if (!live) return
         pdfjs.GlobalWorkerOptions.workerSrc ||= new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href
@@ -261,7 +262,7 @@ function PdfPages({ path }: { path: string }) {
       live = false
       void task?.destroy()
     }
-  }, [api, path])
+  }, [api, path, session])
   if (error) return <div className="p-6 text-sm text-danger">{error}</div>
   if (!pages) return <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
   return (
@@ -279,14 +280,14 @@ function PdfPages({ path }: { path: string }) {
 
 /** `<iframe src={url}>` of the blob — WKWebView's own PDF viewer — where a mouse drives it. 120 §9b: a typed `blob:`, never `asset:`. */
 function PdfFrame({ a }: { a: Artifact }) {
-  const url = useDocumentUrl(a.path)
+  const url = useDocumentUrl(a.path, privateOwner(a.session))
   if (url === null) return <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
   if (url === '') return <div className="p-6 text-sm text-danger">could not load {a.name}</div>
   return <iframe src={url} title={a.name} className="h-full w-full border-0" />
 }
 
 /** pdf.js pages under a finger, the native viewer under a mouse. */
-const Pdf = ({ a }: { a: Artifact }) => (touch() ? <PdfPages path={a.path} /> : <PdfFrame a={a} />)
+const Pdf = ({ a }: { a: Artifact }) => (touch() ? <PdfPages path={a.path} session={privateOwner(a.session)} /> : <PdfFrame a={a} />)
 
 /** The viewer for one artifact by kind (35 §3.2); the panel and the explorer both render through it. */
 export function ArtifactView({ artifact, className }: { artifact: Artifact; className?: string }) {
@@ -308,7 +309,7 @@ const Fenced = ({ text, lang }: { text: string; lang: string }) => (
 
 /** 144 §10: `<audio controls>` over the bytes (`asset://` locally, else `get_attachment` → blob, 31 §9); the name and size under it. */
 function AudioBody({ a }: { a: Artifact }) {
-  const src = useFileUrl(a.path)
+  const src = useFileUrl(a.path, privateOwner(a.session))
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-fg-secondary">
       {src === null ? <div className="h-10 w-full max-w-xl animate-pulse rounded-full bg-layer-2" /> : src === '' ? <span className="text-sm text-danger">could not load {a.name}</span> : <audio controls preload="metadata" src={src} className="w-full max-w-xl" />}
@@ -348,7 +349,8 @@ function HtmlBody({ a, text }: { a: Artifact; text: string | null }) {
 function Body({ a }: { a: Artifact }) {
   const api = useApi()
   const active = useEngines((s) => s.active)
-  const text = useText(TEXT_KINDS[a.kind] && a.kind !== 'app' ? a.path : null)
+  const owner = privateOwner(a.session)
+  const text = useText(TEXT_KINDS[a.kind] && a.kind !== 'app' ? a.path : null, owner)
   // The explorer addresses one version: the view is pinned to it (46 §3.3), unlike the chat panel's latest mode.
   if (a.kind === 'app') return <AppView session={a.session} artifact={a} className="h-full" />
   if (a.kind === 'image' || a.kind === 'svg') {
@@ -356,7 +358,7 @@ function Body({ a }: { a: Artifact }) {
       <Zoom>
         {(scale) => (
           <div className="flex items-start justify-center p-6" style={scale > 1 ? { width: `${scale * 100}%` } : undefined}>
-            <Img path={a.path} className={scale > 1 ? 'w-full rounded-lg' : 'max-w-full rounded-lg'} />
+            <Img path={a.path} session={owner} className={scale > 1 ? 'w-full rounded-lg' : 'max-w-full rounded-lg'} />
           </div>
         )}
       </Zoom>
