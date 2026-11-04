@@ -22475,6 +22475,36 @@
         "protocol": "anthropic",
         "canonical": "anthropic/claude-sonnet-5-5"
       },
+      "crouton-alpha-free": {
+        "id": "crouton-alpha-free",
+        "name": "Crouton Alpha Free",
+        "limit": {
+          "context": 1048576,
+          "output": 270000
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0,
+          "cache_read": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
+      },
       "deepseek-v4-flash": {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
@@ -25483,7 +25513,7 @@
       },
       "deepseek-v4-pro": {
         "id": "deepseek-v4-pro",
-        "name": "DeepSeek V4 Pro (New)",
+        "name": "DeepSeek V4 Pro",
         "limit": {
           "context": 1000000,
           "output": 384000
@@ -27571,9 +27601,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.119,
-          "output": 0.238,
-          "cache_read": 0.0238
+          "input": 0.059,
+          "output": 0.3,
+          "cache_read": 0.035
         },
         "reasoning": true,
         "tool_call": true,
@@ -27688,7 +27718,7 @@
         "cost": {
           "input": 0.045,
           "output": 0.5,
-          "cache_read": 0.006
+          "cache_read": 0.012
         },
         "reasoning": true,
         "tool_call": true,
@@ -28482,12 +28512,12 @@
         "name": "Gemma 4 26B A4B IT",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 32768
         },
         "cost": {
-          "input": 0.0765,
-          "output": 0.255,
-          "cache_read": 0.0425
+          "input": 0.077,
+          "output": 0.23,
+          "cache_read": 0.038
         },
         "reasoning": true,
         "tool_call": true,
@@ -28944,14 +28974,14 @@
         "name": "Llama-3.1-70B-Instruct",
         "limit": {
           "context": 131072,
-          "output": 16384
+          "output": 8192
         },
         "cost": {
-          "input": 0.4,
-          "output": 0.4
+          "input": 0.72,
+          "output": 0.72
         },
         "reasoning": false,
-        "tool_call": true,
+        "tool_call": false,
         "image": false,
         "reasoning_options": [],
         "protocol": "openai_chat",
@@ -29017,11 +29047,12 @@
         "name": "Llama-3.3-70B-Instruct",
         "limit": {
           "context": 131072,
-          "output": 16384
+          "output": 128000
         },
         "cost": {
-          "input": 0.1,
-          "output": 0.32
+          "input": 0.2,
+          "output": 0.52,
+          "cache_read": 0.1
         },
         "reasoning": false,
         "tool_call": true,
@@ -30095,9 +30126,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.192,
+          "input": 0.2,
           "output": 15.0,
-          "cache_read": 0.182
+          "cache_read": 0.19
         },
         "reasoning": true,
         "tool_call": true,
@@ -31906,9 +31937,9 @@
           "output": 65536
         },
         "cost": {
-          "input": 0.023,
-          "output": 0.087,
-          "cache_read": 0.021
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.075
         },
         "reasoning": true,
         "tool_call": true,
@@ -32436,11 +32467,12 @@
         "name": "Qwen3 235B A22B Instruct 2507",
         "limit": {
           "context": 262144,
-          "output": 16384
+          "output": 117964
         },
         "cost": {
-          "input": 0.09,
-          "output": 0.55
+          "input": 0.14,
+          "output": 0.8,
+          "cache_read": 0.05
         },
         "reasoning": false,
         "tool_call": true,
@@ -32557,8 +32589,8 @@
           "output": 235929
         },
         "cost": {
-          "input": 0.07,
-          "output": 0.28
+          "input": 0.15,
+          "output": 0.6
         },
         "reasoning": false,
         "tool_call": true,
@@ -32611,11 +32643,12 @@
         "name": "Qwen3-Next 80B-A3B Instruct",
         "limit": {
           "context": 262144,
-          "output": 16384
+          "output": 235929
         },
         "cost": {
-          "input": 0.09,
-          "output": 1.1
+          "input": 0.1,
+          "output": 1.1,
+          "cache_read": 0.07
         },
         "reasoning": false,
         "tool_call": true,
@@ -34670,9 +34703,9 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.0285,
-          "output": 0.0923,
-          "cache_read": 0.0285
+          "input": 0.0313,
+          "output": 0.0846,
+          "cache_read": 0.03
         },
         "reasoning": true,
         "tool_call": true,
@@ -34924,8 +34957,8 @@
         },
         "cost": {
           "input": 0.035,
-          "output": 0.5,
-          "cache_read": 0.005
+          "output": 0.315,
+          "cache_read": 0.006
         },
         "reasoning": true,
         "tool_call": true,
@@ -34979,7 +35012,7 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.0434,
+          "input": 0.059,
           "output": 0.3,
           "cache_read": 0.035
         },
@@ -35063,9 +35096,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.1495,
-          "output": 7.15,
-          "cache_read": 0.07475
+          "input": 0.2,
+          "output": 15.0,
+          "cache_read": 0.19
         },
         "reasoning": true,
         "tool_call": true,
@@ -35289,9 +35322,9 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.0285,
-          "output": 0.0923,
-          "cache_read": 0.0285
+          "input": 0.0313,
+          "output": 0.0846,
+          "cache_read": 0.03
         },
         "reasoning": true,
         "tool_call": true,
@@ -36310,20 +36343,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat",
         "canonical": "xai/grok-imagine-image"
-      },
-      "grok-imagine-image-quality": {
-        "id": "grok-imagine-image-quality",
-        "name": "Grok Imagine Image Quality",
-        "limit": {
-          "context": 16000,
-          "output": 0
-        },
-        "reasoning": false,
-        "tool_call": false,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat",
-        "canonical": "xai/grok-imagine-image-quality"
       },
       "grok-imagine-video": {
         "id": "grok-imagine-video",
