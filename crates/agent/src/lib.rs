@@ -329,6 +329,11 @@ pub struct QueuedInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub channel: Option<ChannelOrigin>,
+    /// 171F4: the files attached to the steer (as given to [`Steer`]), so a client that reloads while it waits still
+    /// shows them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub files: Vec<PathBuf>,
 }
 
 /// `ask` → `Result<String, String>`: hide the last turn (a user message and
