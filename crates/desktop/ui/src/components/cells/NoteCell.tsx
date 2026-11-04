@@ -421,7 +421,8 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     hint: hint ?? (monty && latest?.state === 'running' ? 'Monty shows output when the run ends' : null),
     runText: member ? `Run ${member}'s edit` : undefined,
     chip: cell.lang === 'python' && editable ? <PythonChip text={chipText} cwd={cwd} at={key} onPick={(v) => blocknote.updateBlock(block, { content: withPython(code, v) })} /> : undefined,
-    // 171F4 N1: the stale mark as `doc_read` writes it (`ran 15:08 · … · ran an earlier version`).
+    // 171F4 N1: the stale mark as `doc_read` writes it (`ran 15:08 · … · ran an earlier version`), once: the footer
+    // replaces the cell's notice row whenever it shows.
     footer:
       latest?.ended_ms != null ? (
         <span className="tabular-nums">
@@ -429,6 +430,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
           {record?.stale && ' · ran an earlier version'}
         </span>
       ) : undefined,
+    staleInFooter: latest?.ended_ms != null,
     rows: (
       <>
         {member && (

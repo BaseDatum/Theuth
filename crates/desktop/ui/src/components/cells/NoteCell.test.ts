@@ -105,14 +105,15 @@ test('member text never run: "Written by Alice · Review", still acknowledged on
   expect(html).toContain('Run Alice&#x27;s edit')
 })
 
-test('stale: "ran an earlier version" with the code that ran one click away, and the "ran 14:02" footer', () => {
+test('stale: "ran an earlier version" once, in the "ran 14:02" footer, with the code that ran one click away', () => {
   const latest = run({ cell: ref, ended_ms: new Date(2026, 10, 3, 14, 2).getTime() })
   const s = state(ref as CellRef, { stale: true, latest })
   expect(viewOf(s, spec, false)).toBe('stale')
   const html = renderNote(s)
-  expect(html).toContain('ran an earlier version')
+  // 171F4: the footer says it as `doc_read` does; no notice row repeats it (chat cells keep the row).
+  expect(html).toContain('ran 14:02 · ran an earlier version</span>')
+  expect(html.match(/ran an earlier version/g)).toHaveLength(1)
   expect(html).toContain('show the code that ran')
-  expect(html).toContain('ran 14:02')
   // Plain owner cell: the label is the button, no member row.
   expect(html).toContain('>Run</button>')
   expect(html).not.toContain('since your last run')

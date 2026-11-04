@@ -8,8 +8,9 @@ CellEditor}.tsx`, `cells/{line-run,note-edit}.ts`, `cells/note-cells.css`, `comp
 - `NoteCell` re-reads the scope's record 800 ms after the last change of the block's text, code or header
   (`rereadAfterEdit`: each change restarts the wait; one `cell_state` per settled edit). It replaces 171F B10's
   header-only re-read.
-- The footer writes the engine's stale mark as `doc_read` does: `ran 15:13 · ran an earlier version`. The cell's
-  existing muted "ran an earlier version" notice (shared `Cell`, chat too) stays as it is.
+- The footer writes the engine's stale mark as `doc_read` does: `ran 15:13 · ran an earlier version`. It is said
+  once: with the footer shown, the shared `Cell`'s muted notice row is skipped (`CellExtras.staleInFooter`); chat
+  cells keep the row.
 
 ## N2 line ▶ hover grace in notes
 - Cause (reproduced in Playwright WebKit = Sky's WKWebView; Chromium is fine): over the padding band left of the
