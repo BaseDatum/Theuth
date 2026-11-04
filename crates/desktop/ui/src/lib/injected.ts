@@ -46,8 +46,10 @@ export type Injected =
   /** 151 R1 (D7): `<autoresearch slug event>` — a study's start / result / failure card delivered into its setup chat
    * when no messaging channel renders the session; `text` is the card markdown (a `json-render` fence or a line). */
   | { kind: 'autoresearch'; slug: string; event: string; text: string }
-  /** 171 §9.1: `<cell_result run=… name=…|cell=… message=… exit secs …>` — a user cell's run the agent read; one quiet line. */
-  | { kind: 'cell_result'; run: string; name?: string; cell?: string; message?: string; exit: string; secs: string; text: string }
+  /** 171 §9.1: `<cell_result run=… name=…|cell=… label=… message=… exit secs …>` — a user cell's run the agent read; one quiet line. */
+  | { kind: 'cell_result'; run: string; name?: string; label?: string; cell?: string; message?: string; exit: string; secs: string; text: string }
+
+export type CellResultInput = Extract<Injected, { kind: 'cell_result' }>
 
 export type ResumeSection = { title: string; text: string; count?: number }
 
@@ -316,19 +318,7 @@ export function classify(text: string): Injected[] | null {
       } else if (name === 'autoresearch') {
         out.push({ kind: 'autoresearch', slug: unescape(from), event: unescape(attr(open, 'event="') ?? ''), text: body.trim() })
       } else if (name === 'cell_result') {
-        const cellName = attr(open, ' name="')
-        const ordinal = attr(open, ' cell="')
-        const entry = attr(open, ' message="')
-        out.push({
-          kind: 'cell_result',
-          run: from,
-          ...(cellName === undefined ? {} : { name: unescape(cellName) }),
-          ...(ordinal === undefined ? {} : { cell: ordinal }),
-          ...(entry === undefined ? {} : { message: entry }),
-          exit: attr(open, ' exit="') ?? '',
-          secs: attr(open, ' secs="') ?? '',
-          text: body,
-        })
+        out.push(cellResult(open, from, body))
       } else if (name === 'desk') {
         const j = body.indexOf('</journal>')
         out.push({ kind: 'desk', agent: from, charter: inner(body, 'charter'), journal: inner(body, 'journal'), manual: j < 0 ? '' : body.slice(j + '</journal>'.length).trim() })
@@ -339,4 +329,46 @@ export function classify(text: string): Injected[] | null {
     rest = rest.slice(end + close.length).trimStart()
   }
   return out
+}
+
+/** One `<cell_result>` card from its open tag (sans `<`), its `run` and its trimmed body. */
+function cellResult(open: string, run: string, text: string): CellResultInput {
+  const cellName = attr(open, ' name="')
+  const label = attr(open, ' label="')
+  const ordinal = attr(open, ' cell="')
+  const entry = attr(open, ' message="')
+  return {
+    kind: 'cell_result',
+    run,
+    ...(cellName === undefined ? {} : { name: unescape(cellName) }),
+    ...(label === undefined ? {} : { label: unescape(label) }),
+    ...(ordinal === undefined ? {} : { cell: ordinal }),
+    ...(entry === undefined ? {} : { message: entry }),
+    exit: attr(open, ' exit="') ?? '',
+    secs: attr(open, ' secs="') ?? '',
+    text,
+  }
+}
+
+/**
+ * 171F B4: a turn's text is its parked cell results joined with the user's words (`loop_.rs` `texts.join("\n")`). Peel
+ * ONLY the leading `<cell_result>` blocks; `rest` is everything after them (left-trimmed), or `text` itself when none lead.
+ * A block typed mid-message and every other wrapper stay in `rest`.
+ */
+export function splitLeading(text: string): { cells: CellResultInput[]; rest: string } {
+  const cells: CellResultInput[] = []
+  const close = '</cell_result>'
+  let rest = text
+  for (;;) {
+    const s = rest.trimStart()
+    if (!s.startsWith('<cell_result ')) break
+    const gt = s.indexOf('>')
+    const end = gt < 0 ? -1 : s.indexOf(close, gt)
+    const run = end < 0 ? undefined : attr(s.slice(1, gt), CARD.cell_result as string)
+    if (run === undefined) break
+    const body = s.slice(gt + 1, end)
+    cells.push(cellResult(s.slice(1, gt), run, (body.startsWith('\n') ? body.slice(1) : body).trimEnd()))
+    rest = s.slice(end + close.length)
+  }
+  return { cells, rest: cells.length ? rest.trimStart() : text }
 }

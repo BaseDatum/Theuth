@@ -1,7 +1,7 @@
 import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
 import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
-import { classify, humanSecs, type Injected, splitParentView } from "@/lib/injected";
+import { classify, type CellResultInput, humanSecs, type Injected, splitLeading, splitParentView } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitTime } from "@/lib/time";
 import { live, observedState } from "@/lib/session-tree";
@@ -318,8 +318,10 @@ function userEntries(
       case "resume":
       case "lost":
       case "autoresearch":
-      case "cell_result": // 171:U1-ADD
         return { id: nextId(), ...c, context };
+      // 171F B4: `turn` when this row opened the turn, so `foldCells` can hand it to the user's words that follow.
+      case "cell_result":
+        return { id: nextId(), ...c, turn, context };
     }
   }).concat(card);
 }
@@ -363,11 +365,12 @@ function addAdvisory(s: SessionSlice, entry: Advisory): SessionSlice {
     : s;
 }
 
-/** The newest `you` row stamped with the turn it opened: an own send or an injected steer whose `TurnStarted` echo was skipped. */
-function stampUser(entries: Entry[], turn: number): Entry[] {
+/** The newest `you` row stamped with the turn it opened: an own send or an injected steer whose `TurnStarted` echo was
+ * skipped. It carries the turn's parked cell results when there are any (171F B4). */
+function stampUser(entries: Entry[], turn: number, cells: CellResultInput[] = []): Entry[] {
   const at = entries.findLastIndex((u) => u.kind === "user");
   const u = entries[at];
-  return u?.kind === "user" ? replaceAt(entries, at, { ...u, turn }) : entries;
+  return u?.kind === "user" ? replaceAt(entries, at, { ...u, turn, ...(cells.length ? { cells } : {}) }) : entries;
 }
 
 /** The body of a stored peer row: the `<message>` wrapper's content when the row is exactly one wrapper (50 §9 stores
@@ -684,6 +687,8 @@ export function apply(
         : { ...slice, queued };
     }
     case "MessageDelivered":
+      // 171F B4: a quiet cell run's result (`from: "cell <name>"`) shows in the cell itself, then with the message it joins.
+      if (e.from.startsWith("cell ")) return slice;
       // Shown now, stored only once a turn injects it: a settled snapshot read meanwhile lacks the card.
       return interject(
         { ...slice, live: slice.live + 1 },
@@ -904,19 +909,27 @@ function turn(
     // moved up on `InputInjected`, or the engine injected it
     // (`MessageDelivered`/`PeerDelivered` show those; a wrapper never renders
     // as a plain `you` row). Own sends and injected steers are already on
-    // screen: stamp them with the turn instead.
+    // screen: stamp them with the turn instead. 171F B4: parked cell results
+    // lead the text; they ride on the user's entry, or show as result cards
+    // when no words follow them (a review wake), as the reload does.
     case "TurnStarted": {
-      const { view, text } = userText(e.text);
+      const { view, text: raw } = userText(e.text);
+      const { cells, rest: text } = splitLeading(raw);
       const cls = classify(text);
       // 152 D1: a `<resume_handoff>` has no delivery event of its own, so its card is echoed here.
       const wrapped = cls !== null && cls[0]?.kind !== "skill" && cls[0]?.kind !== "resume";
       const own =
         !wrapped && (s.lastInjected === e.turn || ctx.sent.delete(text));
+      const now = Date.now();
       const entries = own
-        ? stampUser(s.entries, e.turn_seq)
+        ? stampUser(s.entries, e.turn_seq, cells)
         : wrapped
-          ? s.entries
-          : [...s.entries, ...(view ? [view] : []), ...userEntries(text, cls, undefined, e.turn_seq, undefined, e.channel).map((x) => ({ ...x, at: Date.now() }))];
+          ? cells.length ? [...s.entries, ...cells.map((c): Entry => ({ id: nextId(), ...c, at: now }))] : s.entries
+          : [
+              ...s.entries,
+              ...(view ? [view] : []),
+              ...userEntries(text, cls, undefined, e.turn_seq, undefined, e.channel).map((x): Entry => ({ ...x, at: now, ...(cells.length && x.kind === "user" ? { cells } : {}) })),
+            ];
       return {
         ...s,
         entries,

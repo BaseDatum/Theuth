@@ -36,7 +36,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       // 46 §6.3: an app's `@ToAssistant` action is app data with provenance, not a `you` bubble.
       const app = parseAppInput(entry.text)
       if (app) return <AppInputCard input={app} />
-      return <MessageUser text={entry.text} skill={entry.skill} files={entry.files} session={session} turn={entry.turn} context={entry.context} channel={entry.channel} at={entry.at} readOnly={readOnly} />
+      return <MessageUser id={entry.id} text={entry.text} skill={entry.skill} files={entry.files} cells={entry.cells} session={session} turn={entry.turn} context={entry.context} channel={entry.channel} at={entry.at} readOnly={readOnly} />
     }
     case 'assistant':
       return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} context={entry.context} at={entry.at} readOnly={readOnly} />
@@ -59,7 +59,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
     case 'autoresearch':
       return <AutoresearchCard {...entry} />
     case 'cell_result': // 171:U1-ADD
-      return <ResultCard run={entry.run} session={session} name={entry.name} cell={entry.cell} exit={entry.exit} secs={entry.secs} />
+      return <ResultCard run={entry.run} name={entry.name} label={entry.label} cell={entry.cell} exit={entry.exit} secs={entry.secs} />
     case 'parentView':
       return <ParentViewCard {...entry} />
     case 'vision':

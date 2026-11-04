@@ -2,7 +2,7 @@ import { createElement as h } from 'react'
 import { expect, test } from 'vitest'
 import { classify } from '@/lib/injected'
 import { ResultCard } from './ResultCard'
-import { SESSION, render } from './test-fixtures'
+import { render } from './test-fixtures'
 
 test('<cell_result run=… name=…> is one cell_result card (§9.1, L2)', () => {
   const text = `<cell_result run="r_01JC7Q2M8V" name="preview-ir-prod1" exit="0" secs="41" cwd="~/dr-t6/frp-integration/stacks/sa-frp-integration" interpreter="bash 5.2 (Homebrew)" expect="met 1/1" edited="false" pressed="desktop · Sky&apos;s MacBook" at="14:31">
@@ -23,8 +23,9 @@ test('<cell_error> renders nothing, like <surface_error> (§9.2)', () => {
   expect(classify('<cell_error>\nYour reply presents 1 user cell the user cannot run.\n- cell 3 "apply-ir-prod1": after_unknown\n</cell_error>')).toEqual([])
 })
 
-test('the card is one quiet line: theuth read · <name> · exit · secs', () => {
-  const html = render(h(ResultCard, { run: 'r_1', session: SESSION, name: 'preview-ir-prod1', exit: '0', secs: '41' }))
+test('the card is one quiet line: theuth read · <label|name|cell N> · exit · secs (171F B20: the tag\'s own label)', () => {
+  const html = render(h(ResultCard, { run: 'r_1', name: 'preview-ir-prod1', exit: '0', secs: '41' }))
   expect(html).toContain('theuth read · preview-ir-prod1 · exit 0 · 41 s')
-  expect(render(h(ResultCard, { run: 'r_2', session: SESSION, cell: '2', exit: 'lost', secs: '' }))).toContain('theuth read · cell 2 · lost')
+  expect(render(h(ResultCard, { run: 'r_1', name: 'say-hello', label: 'Say hello', exit: '0', secs: '1' }))).toContain('theuth read · Say hello · exit 0 · 1 s')
+  expect(render(h(ResultCard, { run: 'r_2', cell: '2', exit: 'lost', secs: '' }))).toContain('theuth read · cell 2 · lost')
 })
