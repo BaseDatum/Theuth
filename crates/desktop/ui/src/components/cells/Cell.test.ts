@@ -169,7 +169,7 @@ test('171F B3: a stored screen loses its trailing blank rows, keeping the colour
 })
 
 test('171F B27: an auto (or unset) python pick says so; an explicit pick and shell cells do not', () => {
-  const py = (header: string) => cellOf('python', `${header}print(1)`) as CellSpec
+  const py = (header: string) => cellOf('python', `#| label: Sum\n${header}print(1)`) as CellSpec
   const system: Interpreter = { kind: 'python', source: 'system', path: '/usr/bin/python3', version: '3.14.8', why: '', auto: true }
   expect(interpreterText(py(''), system)).toBe('auto → python 3.14.8 (system)')
   expect(interpreterText(py('#| python: auto\n'), system)).toBe('auto → python 3.14.8 (system)')
