@@ -12,6 +12,7 @@ import { createRenderQueue, type RenderQueue } from '@/lib/render-queue'
 import { type SnapshotMode, useSnapshot } from '@/lib/snapshot-mode'
 import { subscribeDark } from '@/lib/theme'
 import { DiagramFrame } from './DiagramFrame'
+import { FenceScope } from './disclosure'
 import { ErrorCard } from './surface/JsonRenderFence'
 
 /** 65 §4.2. `layout` unset: ELK is 12's default; a diagram's frontmatter may still say `layout: dagre`. */
@@ -138,6 +139,13 @@ function useRender(chart: string, incomplete: boolean): { svg: string | null; er
  */
 export function MermaidFence({ code, isIncomplete, fill }: CustomRendererProps & { fill?: boolean }) {
   const { svg, error } = useRender(code, isIncomplete)
-  if (error && !svg) return <ErrorCard title="Diagram unavailable" error={error} source={code} />
-  return <DiagramFrame svg={svg} name={diagramName(code)} label="mermaid" kind="mermaid-block" title={error ?? undefined} fill={fill} />
+  return (
+    <FenceScope code={code}>
+      {error && !svg ? (
+        <ErrorCard title="Diagram unavailable" error={error} source={code} />
+      ) : (
+        <DiagramFrame svg={svg} name={diagramName(code)} label="mermaid" kind="mermaid-block" title={error ?? undefined} fill={fill} />
+      )}
+    </FenceScope>
+  )
 }

@@ -1,7 +1,8 @@
 import { useQueries } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
+import { useDisclosure } from '@/lib/tool-runs'
 import { describe } from '@/lib/describe'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { detailOf, observedLabel, watchCost } from '@/lib/session-tree'
@@ -11,6 +12,7 @@ import type { AgentInfo } from '@/rpc/extra'
 import type { Entry } from '@/store/sessions'
 import { k } from './CostPill'
 import { EyeMark, WatchDot } from './ObservedBar'
+import { toolKey } from './disclosure'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
@@ -95,7 +97,7 @@ export function RosterRows({ rows, costs }: { rows: readonly AgentInfo[]; costs?
  */
 export function RosterCard({ tool, rows }: { tool: Tool; rows: readonly AgentInfo[] }) {
   const api = useApi()
-  const [raw, setRaw] = useState(false)
+  const [raw, setRaw] = useDisclosure(toolKey(tool.callId))
   const lines = useMemo(() => describe(tool.name, tool.args), [tool.name, tool.args])
   const costs = useQueries({
     queries: rows.map((r) => ({ queryKey: queryKeys.sessionCost(r.id), queryFn: () => api.session_cost(r.id) })),

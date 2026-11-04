@@ -1,13 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronRight, Info, Timer } from 'lucide-react'
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import { Streamdown } from 'streamdown'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { PeerOrigin } from '@/rpc/bindings/PeerOrigin'
 import type { PeerRecord } from '@/rpc/bindings/PeerRecord'
+import { useScopedDisclosure } from './disclosure'
 
 /** One participant's durable record of exchange `id`; nothing is fetched while `enabled` is false. */
 function useRecord(session: string, id: string | null | undefined, enabled = true) {
@@ -54,7 +55,7 @@ function answeredBy(r: PeerRecord | undefined): string | undefined {
  * parsed from the body.
  */
 function Provenance({ origin, seq, session }: { origin: PeerOrigin; seq?: number; session: string }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useScopedDisclosure('provenance')
   const awaiting = useAwaitingAnswer(session).data?.includes(origin.id) ?? false
   const record = useRecord(session, origin.id, open)
   // A reply's request is this session's own sent message; its receipt says whether the owner, not the peer, answered.
@@ -145,7 +146,7 @@ export const MessagePeer = memo(function MessagePeer({
   seq?: number
   session: string
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useScopedDisclosure('peer')
   const first = text.split('\n', 1)[0] ?? ''
   const more = text.length > first.length
   // A job result is raw command output (14 §3): markdown would fold its lines into one paragraph.

@@ -541,7 +541,9 @@ function signature(e: Entry): string {
     case "compacted":
       return `c${e.epoch}`;
     case "peer":
-      return e.origin ? `p${e.origin.id}` : `p${e.from}\n${e.text}`;
+      // 171F B13: an origin-less card's `from` differs live (`job j4`, `session:<id>`) and stored (`j4 · cmd · exit 0 · 3s`,
+      // the subagent's name), so only the body pairs them: the live card keeps its id, and its open state, after the reload.
+      return e.origin ? `p${e.origin.id}` : `p\n${e.text.trimEnd()}`;
     case "engine":
       return `h${e.notice}\n${e.text}`;
     case "desk":

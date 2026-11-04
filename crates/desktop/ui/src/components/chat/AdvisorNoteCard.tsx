@@ -1,10 +1,10 @@
 import { ChevronRight, CircleX, Info, TriangleAlert } from 'lucide-react'
-import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { NOTES_SHOWN, TONE, cardTitle, worstSeverity } from '@/lib/advisor-format'
 import { formatAt, fullAt } from '@/lib/time'
 import type { AdvisorSeverity } from '@/rpc/bindings/AdvisorSeverity'
 import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
+import { Details, useScopedDisclosure } from './disclosure'
 
 const ICON: Record<AdvisorSeverity, typeof Info> = { advice: Info, nit: Info, concern: TriangleAlert, blocker: CircleX }
 
@@ -21,33 +21,39 @@ export function collapseNotes(notes: readonly AdvisoryNote[], expanded: boolean)
  * R1.2 consultation variant (`question` set): a `Consulted` badge and the question as the title, the answer in the body.
  */
 export function AdvisorNoteCard({ notes, at, question }: { notes: AdvisoryNote[]; at?: number; question?: string }) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useScopedDisclosure('advisory-more')
   const worst = worstSeverity(notes)
   const tone = TONE[worst]
   const Icon = ICON[worst]
   const { shown, hidden } = collapseNotes(notes, expanded)
   return (
-    <details className={`group/advisory my-2 min-w-0 rounded-xl border px-4 py-3 text-sm ${tone.shell}`}>
-      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden">
-        <Icon className={`size-4 shrink-0 ${tone.fg}`} aria-hidden="true" />
-        <span className="min-w-0 flex-1">
-          <span className={`flex items-center gap-2 font-medium ${tone.fg}`}>
-            {question !== undefined && (
-              <Badge variant="outline" className={`shrink-0 ${tone.fg}`}>
-                Consulted
-              </Badge>
-            )}
-            <span className="min-w-0 truncate">{cardTitle(notes.length, question)}</span>
+    <Details
+      part="advisory"
+      className={`group/advisory my-2 min-w-0 rounded-xl border px-4 py-3 text-sm ${tone.shell}`}
+      triggerClassName="flex min-h-11 items-center gap-3 rounded-sm focus-visible:outline-2"
+      trigger={
+        <>
+          <Icon className={`size-4 shrink-0 ${tone.fg}`} aria-hidden="true" />
+          <span className="min-w-0 flex-1">
+            <span className={`flex items-center gap-2 font-medium ${tone.fg}`}>
+              {question !== undefined && (
+                <Badge variant="outline" className={`shrink-0 ${tone.fg}`}>
+                  Consulted
+                </Badge>
+              )}
+              <span className="min-w-0 truncate">{cardTitle(notes.length, question)}</span>
+            </span>
+            <span className="block truncate text-xs text-fg-secondary">{notes[0]?.note}</span>
           </span>
-          <span className="block truncate text-xs text-fg-secondary">{notes[0]?.note}</span>
-        </span>
-        {at !== undefined && (
-          <span className="shrink-0 text-xs text-fg-tertiary tabular-nums" title={fullAt(at)}>
-            {formatAt(at)}
-          </span>
-        )}
-        <ChevronRight className={`size-4 shrink-0 transition-transform group-open/advisory:rotate-90 ${tone.fg}`} aria-hidden="true" />
-      </summary>
+          {at !== undefined && (
+            <span className="shrink-0 text-xs text-fg-tertiary tabular-nums" title={fullAt(at)}>
+              {formatAt(at)}
+            </span>
+          )}
+          <ChevronRight className={`size-4 shrink-0 transition-transform group-data-[state=open]/advisory:rotate-90 ${tone.fg}`} aria-hidden="true" />
+        </>
+      }
+    >
       <ul className={`mt-3 flex flex-col gap-2 border-t pt-3 leading-6 ${tone.border}`}>
         {shown.map((n, i) => (
           <li key={i} className="flex min-w-0 items-start gap-2">
@@ -65,6 +71,6 @@ export function AdvisorNoteCard({ notes, at, question }: { notes: AdvisoryNote[]
           {expanded ? 'Show less' : `Show more (${hidden})`}
         </button>
       )}
-    </details>
+    </Details>
   )
 }

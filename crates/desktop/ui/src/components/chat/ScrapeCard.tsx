@@ -1,5 +1,7 @@
 import { ChevronDown, Wrench } from 'lucide-react'
-import { memo, useMemo, useState } from 'react'
+import { memo, useMemo } from 'react'
+import { useDisclosure } from '@/lib/tool-runs'
+import { toolKey } from './disclosure'
 import { BrowserIndicator, ToolSpinner } from './Indicators'
 import { type Source, domainOf, sourcesFromResult, uniqueDomains, urlsFromResult } from '@/lib/scrape'
 import { describe, resultLine } from '@/lib/describe'
@@ -90,7 +92,7 @@ function SourceRow({ source, first }: { source: Source; first: boolean }) {
  * expanded, read ones first, above the raw result text.
  */
 export const ScrapeCard = memo(function ScrapeCard({ tool, session }: { tool: Tool; session: string }) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useDisclosure(toolKey(tool.callId))
   const live = useSessions((s) => s.sessions[session]?.scrape.get(tool.callId))
   const lines = useMemo(() => describe(tool.name, tool.args), [tool.name, tool.args])
   const { result } = tool

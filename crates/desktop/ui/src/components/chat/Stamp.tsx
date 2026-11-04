@@ -1,7 +1,8 @@
-import { type MouseEvent, useState } from 'react'
+import type { MouseEvent } from 'react'
 import { usePointerCoarse } from '@/lib/mobile'
 import { formatAt, fullAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { useScopedDisclosure } from './disclosure'
 
 /**
  * A message's wall-clock time (74 §5), shown while the `group` ancestor is hovered on a fine pointer; on a coarse
@@ -28,7 +29,7 @@ export function Stamp({ at, shown, className }: { at?: number; shown: boolean; c
 /** Coarse-pointer toggle for {@link Stamp}: a tap on the message (not on its controls) shows or hides the time. */
 export function useStampToggle(): { shown: boolean; onClick?: (e: MouseEvent) => void } {
   const coarse = usePointerCoarse()
-  const [shown, setShown] = useState(false)
+  const [shown, setShown] = useScopedDisclosure('stamp')
   if (!coarse) return { shown }
   return {
     shown,

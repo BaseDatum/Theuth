@@ -11,6 +11,7 @@ import type { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { useSnapshot } from '@/lib/snapshot-mode'
 import { cn } from '@/lib/utils'
+import { useScopedDisclosure } from '../disclosure'
 import type { excerptProps } from './catalog'
 import { excerptLines } from './parse'
 
@@ -29,7 +30,7 @@ export function Excerpt({ path, text, start = 1, lang, caption, mark, symbol, ac
   const lines = excerptLines(text)
   const end = start + lines.length - 1
   const [tokens, setTokens] = useState<TokensResult | null>(null)
-  const [all, setAll] = useState(false)
+  const [all, setAll] = useScopedDisclosure(`excerpt|${path}|${start}`)
   useEffect(() => {
     // Highlight after mount (shiki loads its grammar async); the plain rows are already on screen. Unknown `lang`
     // falls back to plain text inside the plugin.

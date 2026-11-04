@@ -14,6 +14,7 @@ import { formatAt } from '@/lib/time'
 import type { Api } from '@/rpc/api'
 import type { DoublePredicted } from '@/rpc/bindings/DoublePredicted'
 import { doubleStore, useAnswered, useDouble, usePrediction } from '@/store/double'
+import { useScopedDisclosure } from './disclosure'
 
 /** ○ L0 · ◐ L1 · ● L2 · ●● L3 (§10). */
 export const rungGlyph = (rung: number): string => (rung <= 0 ? '○' : rung === 1 ? '◐' : rung === 2 ? '●' : '●●')
@@ -105,6 +106,7 @@ export function useDoubleCard(ids: readonly (string | null | undefined)[]) {
 export function DoubleChip({ ids, recommended, className }: { ids: readonly (string | null | undefined)[]; recommended?: string; className?: string }) {
   const api = useApi()
   const card = useDoubleCard(ids)
+  const [shown, setShown] = useScopedDisclosure(`double|${ids.join('|')}`)
   const p = card.prediction
   if (!p) return null
   const stop = (e: MouseEvent) => e.stopPropagation()
@@ -122,7 +124,7 @@ export function DoubleChip({ ids, recommended, className }: { ids: readonly (str
   }
   const text = card.grace !== null ? countdownText(p.choice, card.grace) : chipText(p)
   return (
-    <Popover>
+    <Popover open={shown} onOpenChange={setShown}>
       <PopoverTrigger asChild>
         <button
           type="button"
