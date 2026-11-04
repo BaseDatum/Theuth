@@ -15683,6 +15683,21 @@ pub(crate) mod tests {
         assert!(no_turn_within(&mut rx, p, 300).await, "one turn only");
     }
 
+    /// 171F B22: Ask theuth on a parked run (the same run again, with a wake) opens one turn
+    /// that carries the run once.
+    #[tokio::test]
+    async fn asking_about_a_parked_run_delivers_it_once() {
+        let (_scratch, a) = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        cell_done(&agents, p, "cell ", "r_x", false).await;
+        assert!(no_turn_within(&mut rx, p, 300).await, "parked");
+        cell_done(&agents, p, "cell ", "r_x", true).await;
+        let text = next_turn(&mut rx, p).await;
+        assert_eq!(text.matches("<cell_result run=\"r_x\"").count(), 1, "{text}");
+        assert!(no_turn_within(&mut rx, p, 300).await, "one turn only");
+    }
+
     /// 171 HANDOFF-Z-1: work admitted under an owner with no `sessions` row (a note cell
     /// kernel's session id) blocks only that owner, never an unrelated session.
     #[tokio::test]

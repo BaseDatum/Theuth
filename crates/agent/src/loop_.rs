@@ -1362,18 +1362,51 @@ impl Session {
     /// 171 §9.3: the quiet results parked here join the turn `inputs` opens, ahead of them
     /// (arrival order) — when its opener is a private input: a human's, or a harness input
     /// without a request scope. A peer exchange or a scoped opener keeps them parked for
-    /// the next private turn (50 §6.3).
+    /// the next private turn (50 §6.3). 171F B22: a parked copy of a run the batch also
+    /// carries with a ticket (Ask theuth, a review) is dropped — the run comes once.
     fn join_quiet(&mut self, inputs: Vec<Queued>) -> Vec<Queued> {
         let private = inputs
             .first()
             .is_some_and(|(_, i)| i.scope.is_none() && i.peer.is_none());
-        if !private || self.quiet.is_empty() {
-            return inputs;
-        }
-        let mut joined = std::mem::take(&mut self.quiet);
+        let mut joined = if private {
+            std::mem::take(&mut self.quiet)
+        } else {
+            Vec::new()
+        };
         joined.extend(inputs);
+        let owed: HashSet<String> = joined
+            .iter()
+            .filter(|(_, i)| i.ticket.is_some())
+            .filter_map(|(_, i)| cell_run(&i.text).map(str::to_owned))
+            .collect();
+        if !owed.is_empty() {
+            joined.retain(|(_, i)| {
+                i.ticket.is_some() || cell_run(&i.text).is_none_or(|r| !owed.contains(r))
+            });
+        }
         joined
     }
+
+    /// 171F B22: a run delivered with a wake is un-parked — its quiet copy, parked here or
+    /// waiting as a passive steer, never reaches a turn beside it.
+    fn unpark_run(&mut self, text: &str) {
+        let Some(run) = cell_run(text) else {
+            return;
+        };
+        let parked = |i: &Input| i.ticket.is_none() && cell_run(&i.text) == Some(run);
+        self.quiet.retain(|(_, i)| !parked(i));
+        self.shared
+            .steer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(_, i)| !(i.passive && parked(i)));
+    }
+}
+
+/// The run id of a `<cell_result run="…">` input (171 §9.1: `run` is its first attribute).
+fn cell_run(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once("<cell_result run=\"")?;
+    rest.split_once('"').map(|(id, _)| id)
 }
 
 /// `ask` → the address of the child-work semaphore this session's bounded
@@ -1427,6 +1460,9 @@ impl Message<UserInput> for Session {
         }: UserInput,
         ctx: &mut Context<Self, Self::Reply>,
     ) {
+        if ticket.is_some() {
+            self.unpark_run(&text);
+        }
         let input = Input {
             text,
             channel,
