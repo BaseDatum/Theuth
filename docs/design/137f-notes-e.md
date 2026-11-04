@@ -50,24 +50,27 @@
 - **Ollama `num_ctx`:** genai's Ollama adapter builds `options` only from temperature/top_p/max_tokens/seed/stop and ignores `extra_body`. There is no way to pass `num_ctx` without changing genai (rust-genai `src/adapter/adapters/ollama/adapter_impl.rs` ~L70-98). With the default `num_ctx`, Ollama silently truncates long prompts from the front. `local_ctx_bytes` (24 KB ≈ 8k tokens) mitigates this. A genai change (an `options` passthrough) would let the engine set `num_ctx = prompt + 600`, rounded up to 1024.
 - **Reasoning on OpenAI-compatible local servers:** no portable "off" switch in genai; see E8 above.
 
-## Live proof (scratch engine; binary = final code except the later is_local mapped/link-local host cases)
+## Live proof (scratch engine, final R1 binary)
 Setup:
-- `target/debug/t --headless --data-dir /tmp/137f-e/engine2`, started with `env -i HOME=/tmp/137f-e/home …`.
+- `target/debug/t --headless --data-dir /tmp/137f-e/engine3`, started with `env -i HOME=/tmp/137f-e/home …`.
 - RPC on 127.0.0.1:7963; mesh relay/discovery off; slack/signal/telegram/meeting/link off; `secrets.key_store: file`.
 - Two stdlib fakes, `/tmp/137f-e/fake_oai.py`: `slowlocal` (:7961, never answers a POST) and `fastcloud` (:7962, streams an echo of the step).
 - Both registered with `add_provider` (fake keys) as `slow/m` and `fast/m`.
 - Compactor `slow/m` (`endless_settings_set`: `retry_secs 1`, `local_attempt_secs 30`); session model `fast/m`.
-- Driver: `/tmp/137f-e/proof.py`; full log: `/tmp/137f-e/proof.txt`. No screenshots (engine only).
+- Driver: `/tmp/137f-e/proof.py`; full log: `/tmp/137f-e/proof.txt`; fake request logs `/tmp/137f-e/{slowlocal,fastcloud}.log`. No screenshots (engine only).
 
-Both fakes are on 127.0.0.1, so by the E6 rule both count as local. They have different base URLs, so they use separate E9 queues. Making `fastcloud` cloud would need a public DNS name; a catalog price does not override the host rule. The switch itself does not depend on locality.
+Both fakes are on 127.0.0.1, so by the host rule both count as local. They have different base URLs, so they use separate E9 queues. The switch does not depend on locality.
 
 ```
-22:28:32 create_session{memory: endless, model: fast/m}; turn 1 (2256 B) 0.5s
-22:29:07 session_memory stalled {"failures": 1, "error": "timed out after 30s", "next_retry_at": null, "model": "slow/m", "blocking": true}
-22:29:37 session_memory stalled {"failures": 2, "error": "timed out after 30s", "next_retry_at": null, "model": "slow/m", "blocking": true}   (3rd attempt in flight since 22:29:35)
-         turn 2 took 0.5s (settle_secs 45)
-22:29:38 endless_settings_set model=fast/m (no restart)
+23:31:17 create_session{memory: endless, model: fast/m}; turn 1 (2256 B) 0.5s; slowlocal POST 23:31:17
+23:31:52 stalled {"failures": 1, "error": "timed out after 30s", "next_retry_at": null, "model": "slow/m", "blocking": true}   (retry in flight since 23:31:48)
+23:31:52 endless_retry -> stalled null; slowlocal POST 23:31:52 (the 23:31:48 call cancelled, R1-10)
+23:32:25 stalled failures 1 · 23:32:56 stalled failures 2 (blocking: true)
+23:32:56 turn 2 took 0.5s (settle_secs 45); engine log "endless settle: frontier failing; not waiting"
+23:32:57 endless_settings_set model=fast/m (no restart); log "endless: compactor switched … from=slow…"
 after 0.3s session_memory {"settling": false, "unbuilt": 0, "units": 4, "model": "fast/m", "stalled": null, lines 0..3 all built}
-model_calls kind=endless: slow/m failed 2 · slow/m cancelled 1 · fast/m settled 1;  endless_nodes (0,0) model fast/m tries 1
+model_calls kind=endless: slow/m failed 3 · slow/m cancelled 2 (retry + switch) · fast/m settled 1; endless_nodes (0,0) model fast/m tries 1
 ```
-First run (same recipe, before the E4 change above): turn 2 took 24.7 s because it waited for the running third attempt (`/tmp/137f-e/proof-run1.txt`).
+Earlier runs:
+- Run 1 (`/tmp/137f-e/proof-run1.txt`), before the E4 change: turn 2 took 24.7 s, because it waited for the running third attempt.
+- Run 2 (`/tmp/137f-e/proof-run2.txt`), phase B binary: same results as run 3, without the retry step.
