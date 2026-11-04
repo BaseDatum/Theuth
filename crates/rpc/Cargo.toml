@@ -79,6 +79,7 @@ figment = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 serde_yaml = { workspace = true }  # 170: `slack_manifest` parses as YAML
+agent = { workspace = true, features = ["test-support"] }  # 51 §4.2: a model-less live engine for `tests/private_get_attachment.rs`
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "document/ts", "knowledge/ts", "codeindex/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "telegram/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "mesh/ts", "sessionsync/ts", "roster/ts", "tasks/ts", "sandbox/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "search-providers/ts", "update/ts", "voice/ts", "talk/ts", "meeting/ts", "mcp-server/ts", "decision/ts", "double/ts", "dreaming/ts", "autoresearch/ts", "cells/ts"]
