@@ -1,12 +1,25 @@
 import { useQuery } from '@tanstack/react-query'
+import { ChevronRight } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Switch } from '@/components/ui/switch'
 import { tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 
+/** 137F: the compactor's timeout and local-model keys; optional on the wire, so an engine before them omits them. */
+type Advanced = { attempt_secs: number; local_attempt_secs: number; local_ctx_bytes: number; local_jobs: number }
+type EndlessConfigX = EndlessConfig & Partial<Advanced>
+
+/** Key, label, help, the engine's validated range and its default (the placeholder while the key is absent). */
+const ADVANCED: readonly (readonly [keyof Advanced, string, string, number, number, number])[] = [
+  ['attempt_secs', 'Attempt seconds', 'How long one summary call to a cloud model may run before it is cancelled and retried. 10–3600, default 120.', 10, 3600, 120],
+  ['local_attempt_secs', 'Local attempt seconds', 'The same for a local model, which is slower to start and to answer. 30–7200, default 600.', 30, 7200, 600],
+  ['local_ctx_bytes', 'Local context bytes', 'How much text a local model is given per summary call. 4000–256000, default 24000.', 4_000, 256_000, 24_000],
+  ['local_jobs', 'Local jobs', 'Summary calls a local model runs at once. 1–16, default 1.', 1, 16, 1],
+]
 
 /** A native range: `onChange` follows the pointer (the label beside it previews), `onCommit` fires on release so a drag is one write. */
 function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-label': ariaLabel }: { value: number; min: number; max: number; step: number; onChange(v: number): void; onCommit(v: number): void; disabled: boolean; 'aria-label': string }) {
@@ -33,9 +46,9 @@ export function Memory({ focusModel = false }: { focusModel?: boolean }) {
   const settings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const save = useAction((next: EndlessConfig) => api.endless_settings_set(next), { keys: [queryKeys.endlessSettings] })
-  const s = settings.data
+  const s = settings.data as EndlessConfigX | undefined
   const busy = !s || save.isPending
-  const patch = (p: Partial<EndlessConfig>) => s && save.mutate({ ...s, ...p })
+  const patch = (p: Partial<EndlessConfigX>) => s && save.mutate({ ...s, ...p })
   // Live preview while the slider moves: the label and the token estimate follow the thumb before the write.
   const [viewKb, setViewKb] = useState<number | null>(null)
   const [slackPct, setSlackPct] = useState<number | null>(null)
@@ -134,6 +147,19 @@ export function Memory({ focusModel = false }: { focusModel?: boolean }) {
         <Row label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
           <span className="text-sm text-fg-secondary">copy · grounding · status · format — always on</span>
         </Row>
+        <Collapsible>
+          <CollapsibleTrigger className="mt-3 flex items-center gap-1 text-[13px] text-fg-secondary [&[data-state=open]>svg]:rotate-90">
+            <ChevronRight className="size-3.5 transition-transform" /> Advanced
+          </CollapsibleTrigger>
+          {/* Mounted while closed (hidden by `data-state`, as `forceMount` keeps Radix from hiding it), so the fields render statically. */}
+          <CollapsibleContent forceMount className="pt-1 data-[state=closed]:hidden">
+            {ADVANCED.map(([key, label, help, min, max, fallback]) => (
+              <Row key={key} label={label} description={help}>
+                <Count aria-label={label} value={s?.[key]} min={min} max={max} placeholder={s && fallback} action={{ mutate: (n) => patch({ [key]: n }), isPending: save.isPending }} />
+              </Row>
+            ))}
+          </CollapsibleContent>
+        </Collapsible>
       </Section>
     </>
   )
