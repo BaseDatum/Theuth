@@ -36,8 +36,9 @@ use crate::store::Store;
 use crate::types::{
     Armed, Cell, CellEvent, CellLatest, CellOutput, CellRef, CellRun, CellState, Chip, DocId,
     ExitStatus, Interpreter, KernelId, KernelPhase, KernelSpec, KernelState, Lang, NoteDefaults,
-    NoteKey, OutputPage, Problem, PtyChunk, PythonChoice, RunAllRequest, RunGet, RunId, RunMode,
-    RunRequest, RunState, Scope, SessionId, Severity, ShellKind, StateReply, ValidateCtx,
+    NoteKey, OutputPage, PassEnd, PassStop, Problem, PtyChunk, PythonChoice, RunAllRequest, RunGet,
+    RunId, RunMode, RunRequest, RunState, Scope, SessionId, Severity, ShellKind, StateReply,
+    ValidateCtx,
 };
 
 /// Registry name of the [`CellsActor`].
@@ -125,6 +126,16 @@ enum Stop {
     Timeout,
 }
 
+/// The stop that sticks: the first reason wins over a later timeout (a user Stop stays
+/// "stopped"), a Kill overrides a Stop, nothing overrides a timeout.
+fn stop_after(prev: Option<Stop>, how: Stop) -> Option<Stop> {
+    match (prev, how) {
+        (Some(Stop::Timeout), _) => Some(Stop::Timeout),
+        (Some(s), Stop::Timeout) => Some(s),
+        (_, h) => Some(h),
+    }
+}
+
 /// A queued or running run.
 struct Live {
     record: CellRun,
@@ -164,6 +175,8 @@ struct State {
     by_cell: HashMap<String, RunId>,
     /// Run-all passes the user stopped.
     stopped_passes: std::collections::HashSet<String>,
+    /// The last finished pass of each scope (`json(scope)`), cleared when one starts.
+    last_pass: HashMap<String, PassEnd>,
 }
 
 struct Inner {
@@ -318,7 +331,7 @@ fn refuse(i: &Inspected, seen: &str, mode: &RunMode) -> Result<PathBuf> {
         return Err(CellsError::Changed);
     }
     if let Some(p) = i.problems.iter().find(|p| p.severity == Severity::Error) {
-        return Err(CellsError::Invalid(p.code.clone()));
+        return Err(CellsError::Invalid(p.message.clone()));
     }
     let o = &i.presented.cell.options;
     if o.danger && *mode != RunMode::Cell {
@@ -340,9 +353,44 @@ fn refuse(i: &Inspected, seen: &str, mode: &RunMode) -> Result<PathBuf> {
     Ok(cwd)
 }
 
-/// Run all stops BEFORE a `danger` cell or one with a blocking lint chip (§7.2, inv. 7, 12).
-fn stops_pass(cell: &Cell, chips: &[Chip]) -> bool {
-    cell.options.danger || chips.iter().any(|c| c.stops_run_all)
+/// Run all stops BEFORE a `danger` cell or one with a blocking lint chip (§7.2, inv. 7, 12):
+/// the reason it shows, `None` when the pass may run the cell.
+fn pass_boundary(cell: &Cell, chips: &[Chip]) -> Option<String> {
+    if cell.options.danger {
+        return Some("danger — runs from its button only".into());
+    }
+    chips
+        .iter()
+        .find(|c| c.stops_run_all)
+        .map(|c| c.text.clone())
+}
+
+/// Why a pass stopped AT a run that did not succeed: its end, or the missed `expect`.
+fn ran_why(r: &CellRun) -> String {
+    let missed = r.expect.iter().filter(|e| !e.met).count();
+    match (r.state, &r.exit) {
+        (RunState::Timeout, _) => "timed out".into(),
+        (RunState::Killed, _) => "killed".into(),
+        (RunState::Stopped, _) => "stopped".into(),
+        (RunState::Cancelled, _) => "cancelled".into(),
+        (RunState::Lost, _) => "lost".into(),
+        (_, Some(ExitStatus::Code(0))) if missed > 0 => {
+            format!("expect missed {missed}/{}", r.expect.len())
+        }
+        (_, Some(ExitStatus::Code(c))) => format!("exit {c}"),
+        (_, Some(ExitStatus::Signal(s))) => format!("signal {s}"),
+        (_, None) => "failed".into(),
+    }
+}
+
+/// 128 bits as 26 Crockford base32 chars, most significant first: a UUIDv7 keeps its time
+/// order and gets the shape of the clients' `r_` + ULID ids (B18).
+fn crockford(n: u128) -> String {
+    const B32: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    (0..26)
+        .rev()
+        .map(|i| char::from(B32[((n >> (i * 5)) & 31) as usize]))
+        .collect()
 }
 
 /// §9.3: `(wake, delivery word)` from whether a turn is running, the cell's (or pass's)
@@ -390,7 +438,7 @@ impl Cells {
         self.inner.rt.publish(event).await;
     }
 
-    fn store(&self) -> Result<&Store> {
+    pub(crate) fn store(&self) -> Result<&Store> {
         self.inner
             .store
             .as_ref()
@@ -459,6 +507,7 @@ impl Cells {
             secrets: None,
             defaults: None,
             monty_ok: None,
+            monty_why: None,
             cwd_exists: cwd.as_ref().map(|_| cwd_exists),
             second_defaults: false,
         };
@@ -546,11 +595,9 @@ impl Cells {
         let cwd = note::cell_cwd(opts.cwd.as_deref(), &defaults, home.as_deref());
         let cwd_exists = cwd.as_deref().is_some_and(Path::is_dir);
         let python = opts.python.as_ref().or(defaults.python.as_ref());
-        let monty_ok = match (presented.cell.lang, python) {
+        let monty = match (presented.cell.lang, python) {
             (Lang::Python, Some(PythonChoice::Monty)) => {
-                crate::monty::sufficient(&presented.cell.code)
-                    .await
-                    .map(|r| r.is_ok())
+                crate::monty::sufficient(&presented.cell.code).await
             }
             _ => None,
         };
@@ -560,7 +607,8 @@ impl Cells {
             after_edges,
             secrets: None,
             defaults: Some(defaults.clone()),
-            monty_ok,
+            monty_ok: monty.as_ref().map(Result::is_ok),
+            monty_why: monty.and_then(Result::err),
             cwd_exists: cwd.as_ref().map(|_| cwd_exists),
             second_defaults,
         };
@@ -1223,17 +1271,14 @@ impl Cells {
         self.inner.state.lock().runs.contains_key(id)
     }
 
-    /// Record how a live run is being stopped (the first reason sticks, Kill overrides
-    /// Stop); `false` when the run is no longer live.
+    /// Record how a live run is being stopped (`stop_after`); `false` when the run is no
+    /// longer live.
     fn mark_stop(&self, id: &RunId, how: Stop) -> bool {
         let mut s = self.inner.state.lock();
         let Some(l) = s.runs.get_mut(id) else {
             return false;
         };
-        l.stop = match (l.stop, how) {
-            (Some(Stop::Timeout), _) => Some(Stop::Timeout),
-            (_, h) => Some(h),
-        };
+        l.stop = stop_after(l.stop, how);
         true
     }
 
@@ -1376,6 +1421,7 @@ impl Cells {
                 let env = self.login_env().await;
                 let x = crate::deliver::Extra {
                     name: meta.name.as_deref(),
+                    label: meta.label.as_deref(),
                     private: rec.private || meta.private,
                     edited_code: meta.edited_code.as_deref(),
                     outputs: &outputs,
@@ -1565,10 +1611,27 @@ impl Cells {
     /// an invalid cell, a missing cwd or an unarmed `after`; stops AT anything but success;
     /// skips superseded cells (§7.2, inv. 7, 12). Survives the client going away.
     async fn drive_pass(self, req: RunAllRequest) {
+        let scope = json(&req.scope);
+        if self.inner.state.lock().last_pass.remove(&scope).is_some() {
+            self.publish(CellEvent::CellsChanged {
+                scope: req.scope.clone(),
+            })
+            .await;
+        }
         let mut pending: Option<CellRun> = None;
         let mut review = false;
+        let mut ran = 0u32;
+        let mut stopped = None;
+        let stop = |cell: &CellRef, why: String, before: bool| {
+            Some(PassStop {
+                cell: cell.clone(),
+                why,
+                before,
+            })
+        };
         for (cell, seen) in &req.cells {
             if self.inner.state.lock().stopped_passes.contains(&req.pass) {
+                stopped = stop(cell, "stopped by you".into(), true);
                 break;
             }
             // Superseded cells are skipped, not a boundary.
@@ -1584,16 +1647,17 @@ impl Cells {
             let p = match self.prepare(cell, seen, &RunMode::Cell, None, None).await {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::info!(pass = %req.pass, error = %e, "run all stops before a cell");
+                    stopped = stop(cell, e.to_string(), true);
                     break;
                 }
             };
             let c = &p.inspected.presented.cell;
-            if stops_pass(c, &p.inspected.chips) {
+            if let Some(why) = pass_boundary(c, &p.inspected.chips) {
+                stopped = stop(cell, why, true);
                 break;
             }
             review |= c.options.review;
-            let id = RunId(format!("r_{}", uuid::Uuid::now_v7().simple()));
+            let id = RunId(format!("r_{}", crockford(uuid::Uuid::now_v7().as_u128())));
             let rec = match self
                 .enqueue(
                     id.clone(),
@@ -1608,7 +1672,10 @@ impl Cells {
                 .await
             {
                 Ok(r) => r,
-                Err(_) => break,
+                Err(e) => {
+                    stopped = stop(cell, e.to_string(), true);
+                    break;
+                }
             };
             if let Some(prev) = pending.take() {
                 self.deliver_run(&prev, false, Some(false)).await;
@@ -1631,15 +1698,34 @@ impl Cells {
                 self.find_run(&rec.id).await.ok().flatten()
             };
             let Some(done) = done else {
+                stopped = stop(cell, "the run was lost".into(), false);
                 break;
             };
+            ran += 1;
             let ok = done.state == RunState::Done;
+            if !ok {
+                stopped = stop(cell, ran_why(&done), false);
+            }
             pending = Some(done);
             if !ok {
                 break;
             }
         }
-        self.inner.state.lock().stopped_passes.remove(&req.pass);
+        {
+            let mut s = self.inner.state.lock();
+            s.stopped_passes.remove(&req.pass);
+            s.last_pass.insert(
+                scope,
+                PassEnd {
+                    pass: req.pass.clone(),
+                    total: req.cells.len() as u32,
+                    ran,
+                    stopped,
+                },
+            );
+        }
+        self.publish(CellEvent::CellsChanged { scope: req.scope })
+            .await;
         if let Some(last) = pending {
             self.deliver_run(&last, true, Some(review)).await;
         }
@@ -1676,17 +1762,7 @@ impl Cells {
             return Ok(()); // still starting: the worker sees the stop before executing
         };
         if kill {
-            kernel.kill().await?;
-            // A kill that leaves the run going (the shell itself is busy) closes the kernel.
-            let me = self.clone();
-            let grace = Duration::from_secs(self.inner.config.kill_after_secs.max(1));
-            tokio::spawn(async move {
-                tokio::time::sleep(grace).await;
-                if me.is_live(&run) {
-                    let _ = kernel.shutdown().await;
-                }
-            });
-            Ok(())
+            kernel.kill().await
         } else {
             kernel.interrupt().await
         }
@@ -1769,11 +1845,23 @@ impl Cells {
             self.arm(&scope, &mut i).await?;
             let latest = self.store()?.latest_of_cell(&json(c)).await?.map(|r| r.run);
             let interpreter = match i.cwd.as_deref() {
-                Some(cwd) => self
+                Some(cwd) => match self
                     .resolve(&i.presented.cell, cwd, &env, i.defaults.as_ref())
                     .await
-                    .ok()
-                    .map(|(_, i)| i),
+                {
+                    Ok((_, interp)) => Some(interp),
+                    // B19: no program to run it → invalid, with the reason (Run all stops).
+                    Err(CellsError::NoInterpreter(m)) => {
+                        i.problems.push(Problem {
+                            code: "no_interpreter".into(),
+                            severity: Severity::Error,
+                            message: m,
+                            key: None,
+                        });
+                        None
+                    }
+                    Err(_) => None,
+                },
                 None => None,
             };
             // A note's text can change under its runs; a chat reply cannot.
@@ -1804,6 +1892,13 @@ impl Cells {
         Ok(StateReply {
             cells: out,
             kernels: self.kernels_of(&scope),
+            pass: self
+                .inner
+                .state
+                .lock()
+                .last_pass
+                .get(&json(&scope))
+                .cloned(),
         })
     }
 

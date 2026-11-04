@@ -604,6 +604,7 @@ impl Tool for Edit {
 
     async fn call(&self, a: EditArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let path = crate::seat::writable(cx.session, &a.path)?;
+        crate::seat::refuse_cell_record(&cx.resources.root, &path)?;
         let ops = a.ops()?;
         edit_file(&path, &ops).await
     }

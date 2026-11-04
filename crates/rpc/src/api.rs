@@ -2312,6 +2312,21 @@ pub trait Api {
     /// 171: a note's replicated latest runs (§13.2); owner, member or guest.
     #[method(name = "cell_latest", with_extensions)]
     async fn cell_latest(&self, doc: document::DocId) -> RpcResult<Vec<cells::CellLatest>>;
+    /// 171F B9: the note a chat reply was opened as, if any; owner, not guest.
+    #[method(name = "cell_reply_note_get", with_extensions)]
+    async fn cell_reply_note_get(
+        &self,
+        session: cells::SessionId,
+        entry: String,
+    ) -> RpcResult<Option<cells::DocId>>;
+    /// 171F B9: remember that reply `entry` of `session` was opened as note `doc`.
+    #[method(name = "cell_reply_note_set", with_extensions)]
+    async fn cell_reply_note_set(
+        &self,
+        session: cells::SessionId,
+        entry: String,
+        doc: cells::DocId,
+    ) -> RpcResult<()>;
     /// 137 §11.1 `agent.endless` as in force (Settings › Memory).
     #[method(name = "endless_settings_get")]
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig>;
@@ -7752,6 +7767,25 @@ impl ApiServer for Server {
         doc: document::DocId,
     ) -> RpcResult<Vec<cells::CellLatest>> {
         crate::cells_latest::latest(self, ext, doc).await
+    }
+
+    async fn cell_reply_note_get(
+        &self,
+        ext: &Extensions,
+        session: cells::SessionId,
+        entry: String,
+    ) -> RpcResult<Option<cells::DocId>> {
+        crate::cells::reply_note_get(self, ext, session, entry).await
+    }
+
+    async fn cell_reply_note_set(
+        &self,
+        ext: &Extensions,
+        session: cells::SessionId,
+        entry: String,
+        doc: cells::DocId,
+    ) -> RpcResult<()> {
+        crate::cells::reply_note_set(self, ext, session, entry, doc).await
     }
 
     async fn autoresearch_settings_get(&self) -> RpcResult<autoresearch::AutoresearchConfig> {

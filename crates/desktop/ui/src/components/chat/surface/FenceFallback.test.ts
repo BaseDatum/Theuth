@@ -22,9 +22,9 @@ test('a later reply carries the fix: nothing', () => {
 test('last reply of the turn: one dim line with the source behind a disclosure and the message as tooltip', () => {
   const html = render({ running: false, hasLaterAssistant: false })
   expect(html).toContain('◌ diagram omitted ·')
-  expect(html).toContain('<summary class="inline cursor-pointer">show source</summary>')
-  expect(html).toContain('<pre')
-  expect(html).toContain('graph TD')
+  // Closed until the reader opens it (171F B13: the open state lives in the disclosure store), so no source yet.
+  expect(html).toMatch(/<button[^>]*aria-expanded="false"[^>]*>show source<\/button>/)
+  expect(html).not.toContain('graph TD')
   expect(html).toContain('title="Diagram unavailable · bad arrow"')
   expect(html).not.toContain('danger')
   expect(html).not.toContain('role="alert"')

@@ -5,16 +5,18 @@ import { createContext, useContext, useEffect, useId, useMemo, useState } from '
 import { CodeBlock, CodeBlockCopyButton, CodeBlockDownloadButton, type CustomRendererProps, StreamdownContext } from 'streamdown'
 import { FenceContext } from '@/components/chat/surface/JsonRenderFence'
 import { useApi } from '@/lib/rpc'
+import { disclosureKey } from '@/lib/tool-runs'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
 import { Cell, CellExtras } from './Cell'
 import { CellEditor } from './CellEditor'
+import { setEdit, useEdit } from './edits'
 import { bodyKey, type ReplyCell, replyCells } from './fences'
 import { cellOf, digest } from './grammar'
 import { openAsNote } from './open-as-note'
-import { RunbookBar } from './RunbookBar'
-import { errorText, mintId, press, refresh, register, registeredCells, scopeOf, setNotice, useCellRecord, useScope, useStates } from './store'
-import { labelOf, titleOf, viewOf } from './view'
+import { followSuperseded, RunbookBar, runAllPairs } from './RunbookBar'
+import { errorText, lastPass, mintId, press, refKey, refresh, register, registeredCells, scopeKey, scopeOf, setNotice, useCellRecord, useScope, useStates } from './store'
+import { chatEditable, labelOf, titleOf, viewOf } from './view'
 
 /** 171 §4.1: the fence languages `CellFence` registers for. */
 export const CELL_LANGUAGES = ['bash', 'zsh', 'sh', 'pwsh', 'powershell', 'python', 'py']
@@ -90,7 +92,9 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     [session, ordinals.entry, ordinal],
   )
   const pending = !!session && (isIncomplete || ordinals.turnRunning || !ordinals.entry)
-  const [edited, setEdited] = useState<string | null>(null)
+  // F4: the user's edit outlives a remount (`edits`, by `refKey`); a cell without a ref cannot be edited.
+  const editKey = cellRef ? refKey(cellRef) : ''
+  const edited = useEdit(editKey)
   const [hint, setHint] = useState<string | null>(null)
   const label = spec ? labelOf(spec) : 'Run'
   const title = spec ? titleOf(spec, ordinal) : ''
@@ -105,6 +109,16 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
   const scope = useScope(cellRef ? scopeOf(cellRef) : { type: 'session', id: '' })
   const replyRefs = useMemo(() => (session && ordinals.entry ? ordinals.cells.map((c): CellRef => ({ type: 'chat', session, entry: ordinals.entry as string, ordinal: c.ordinal })) : []), [session, ordinals])
   const replyStates = useStates(replyRefs)
+  // 171F B1: the bar sits after the reply's last cell; B8: it follows replacements, watching them when nothing mounts them.
+  const barCell = ordinal === ordinals.cells.length && ordinals.cells.length >= 2 && !!cellRef
+  const nextRefs = useMemo(() => (barCell ? replyStates.map((s) => s?.superseded_by ?? null) : []), [barCell, replyStates])
+  const nextStates = useStates(nextRefs)
+  const nextKey = nextRefs.map((r) => (r ? refKey(r) : '')).join(' ')
+  useEffect(() => {
+    const offs = nextRefs.flatMap((r, i) => (r ? [register(api, scopeOf(r), { ref: r, spec: null, label: titleOf((ordinals.cells[i] as ReplyCell).spec, i + 1) })] : []))
+    return () => offs.forEach((off) => off())
+    // `nextKey` names the refs; the ref objects are new on every read.
+  }, [api, nextKey])
   if (!spec) return null
   const latest = state?.latest ?? null
   const host = state?.host ?? null
@@ -116,7 +130,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
   const after = spec.options.after
   const afterLabel = after
     ? (ordinals.cells.find((c) => c.spec.options.name === after)?.spec.options.label ??
-      (cellRef && registeredCells(scopeOf(cellRef)).find((c) => c.spec.options.name === after)?.label) ??
+      (cellRef && registeredCells(scopeOf(cellRef)).find((c) => c.spec?.options.name === after)?.label) ??
       undefined)
     : undefined
   const queued = Object.values(scope.states)
@@ -163,11 +177,11 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     onAsk: () => {
       if (latest) act(() => api.cell_ask(latest.id))
     },
-    onEdit: (next: string) => setEdited(next === spec.code ? null : next),
+    onEdit: (next: string) => cellRef && setEdit(editKey, next, spec.code),
     // `Terminal`'s cell source attaches itself (one attach path for chat and notes); kept for the frozen `CellCallbacks`.
     onAttach: () => () => undefined,
   }
-  const locked = !cellRef || view === 'running' || view === 'queued' || view === 'superseded' || view === 'invalid'
+  const locked = !chatEditable(view, runnable)
   const extras: CellExtras = {
     open: lastRun === ordinal || view === 'failed',
     afterLabel,
@@ -176,30 +190,37 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     hint,
     pending,
   }
+  const steps = barCell
+    ? followSuperseded(
+        ordinals.cells.map((c, i) => ({ ref: replyRefs[i] as CellRef, state: replyStates[i] ?? null, spec: c.spec })),
+        nextStates,
+        (r) => registeredCells(scopeOf(r)).find((c) => refKey(c.ref) === refKey(r))?.spec ?? null,
+      )
+    : []
   const bar =
-    ordinal === 1 && ordinals.cells.length >= 2 && cellRef ? (
+    barCell && cellRef ? (
       <RunbookBar
-        cells={ordinals.cells.map((c, i) => ({ ref: replyRefs[i] as CellRef, state: replyStates[i] ?? null, spec: c.spec }))}
-        kernel={scope.kernels.find((k) => k.id.spec.type === (spec.lang === 'python' ? 'python' : 'shell')) ?? scope.kernels[0] ?? null}
+        cells={steps}
+        kernels={scope.kernels}
+        pass={lastPass(scope)}
+        whyKey={disclosureKey(scopeKey(scopeOf(cellRef)), ordinals.entry, 'runbook-why')}
         runnable={!pending}
         onRunAll={() => {
           const ref = cellRef
           // W-r: one engine pass over the reply's cells in order; the engine stops before its boundaries (§7.2).
           void (async () => {
-            const pairs: [CellRef, string][] = []
-            for (const [i, c] of ordinals.cells.entries()) pairs.push([replyRefs[i] as CellRef, await digest(c.body)])
+            const pairs = await runAllPairs(steps, ordinals.cells.map((c) => c.body))
             await press(mintId('p_'), (id) => api.cell_run_all(scopeOf(ref), pairs, id))
           })().then(
             () => refresh(scopeOf(ref)),
             (e: unknown) => setNotice(ref, errorText(e)),
           )
         }}
-        onOpenAsNote={() => void openAsNote(api, qc, ordinals, replyStates, (id) => void navigate({ to: '/notes/$id', params: { id } }))}
+        onOpenAsNote={() => void openAsNote(api, qc, session as string, ordinals, replyStates, (id) => void navigate({ to: '/notes/$id', params: { id } }))}
       />
     ) : null
   return (
     <>
-      {bar}
       <CellExtras value={extras}>
         <Cell
           cellRef={cellRef ?? { type: 'chat', session: session ?? '', entry: ordinals.entry ?? '', ordinal }}
@@ -226,6 +247,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
           }
         />
       </CellExtras>
+      {bar}
     </>
   )
 }

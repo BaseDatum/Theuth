@@ -213,6 +213,9 @@ pub struct ValidateCtx {
     pub defaults: Option<NoteDefaults>,
     /// Monty's sufficiency check for this cell; `None` = not checked.
     pub monty_ok: Option<bool>,
+    /// Why Monty can't run it (with `monty_ok: Some(false)`); `None` = no reason known.
+    #[serde(default)]
+    pub monty_why: Option<String>,
     /// Whether the cwd exists; `None` = unknown.
     pub cwd_exists: Option<bool>,
     /// The note has a second `cells` block.
@@ -603,13 +606,7 @@ pub fn validate(cell: &Cell, ctx: &ValidateCtx) -> Vec<Problem> {
                 Some("after"),
             ));
         } else if !ctx.names.iter().any(|n| n == a) {
-            let list = ctx.names.join(", ");
-            let msg = if list.is_empty() {
-                format!("`after: {a}` names no cell in scope")
-            } else {
-                format!("`after: {a}` names no cell in scope; cells here: {list}")
-            };
-            out.push(err("after_unknown", msg, Some("after")));
+            out.push(err("after_unknown", after_unknown(a, ctx), Some("after")));
         } else if own.is_some_and(|me| reaches(&ctx.after_edges, a, me)) {
             out.push(err(
                 "after_cycle",
@@ -650,12 +647,16 @@ pub fn validate(cell: &Cell, ctx: &ValidateCtx) -> Vec<Problem> {
         ));
     }
 
-    if o.python == Some(PythonChoice::Monty) && ctx.monty_ok == Some(false) {
-        out.push(err(
-            "monty_insufficient",
-            "Monty can't run this cell".to_string(),
-            Some("python"),
-        ));
+    let monty = o
+        .python
+        .as_ref()
+        .or(ctx.defaults.as_ref().and_then(|d| d.python.as_ref()));
+    if monty == Some(&PythonChoice::Monty) && ctx.monty_ok == Some(false) {
+        let msg = match &ctx.monty_why {
+            Some(why) => format!("Monty can't run this cell: {why}"),
+            None => "Monty can't run this cell".to_string(),
+        };
+        out.push(err("monty_insufficient", msg, Some("python")));
     }
 
     if cell.code.trim().is_empty() {
@@ -880,12 +881,16 @@ static MONTY_BANNED: LazyLock<Regex> = LazyLock::new(|| {
 
 /// The static half of Monty sufficiency (§6.2 a): `Err(reason)` when an import is outside
 /// Monty's stdlib or the code opens files, runs processes, touches the network or evals.
+/// The reason names its line (`line N: …`) and the way out.
 pub fn monty_scan(code: &str) -> Result<(), String> {
+    let line_of = |at: usize| code[..at].matches('\n').count() + 1;
     for c in IMPORT.captures_iter(code) {
-        let modules: Vec<&str> = match (c.get(1), c.get(2)) {
-            (Some(m), _) => vec![m.as_str()],
-            (None, Some(list)) => list.as_str().split(',').collect(),
-            (None, None) => Vec::new(),
+        let Some(g) = c.get(1).or_else(|| c.get(2)) else {
+            continue;
+        };
+        let modules: Vec<&str> = match c.get(1) {
+            Some(m) => vec![m.as_str()],
+            None => g.as_str().split(',').collect(),
         };
         for m in modules {
             let root = m.trim().split([' ', '.']).next().unwrap_or("");
@@ -893,12 +898,119 @@ pub fn monty_scan(code: &str) -> Result<(), String> {
                 continue;
             }
             if !MONTY_STDLIB.contains(&root) {
-                return Err(format!("no module named {root}"));
+                return Err(format!(
+                    "line {}: no module named {root} — Monty runs the standard library only; \
+                     use a local python",
+                    line_of(g.start())
+                ));
             }
         }
     }
     if let Some(m) = MONTY_BANNED.find(code) {
-        return Err(format!("uses `{}`", m.as_str()));
+        return Err(format!(
+            "line {}: uses `{}` — Monty has no files, processes or network; use a local python",
+            line_of(m.start()),
+            m.as_str()
+        ));
     }
     Ok(())
+}
+
+/// The reason in a Monty type-check `diagnostics` text (§6.2 b) for a cell whose code starts
+/// `line_offset` lines into the checked file: the first error that is not an
+/// `unresolved-reference` (a name an earlier cell may have bound in the kernel) as
+/// `line N: <message>`, `None` when nothing else remains (sufficient). Reads the full
+/// (`error[rule]: msg` + ` --> file:L:C`) and the concise (`file:L:C: error[rule] msg`)
+/// renderings; text with no recognisable diagnostic is its own reason (first line).
+pub fn monty_reason(diagnostics: &str, line_offset: usize) -> Option<String> {
+    let lines: Vec<&str> = diagnostics.lines().map(str::trim).collect();
+    // `path:L:C` → L.
+    let line_no = |loc: &str| -> Option<usize> {
+        let mut it = loc.trim().rsplitn(3, ':');
+        let _col = it.next()?;
+        it.next()?.parse().ok()
+    };
+    let mut found = false;
+    for (i, l) in lines.iter().enumerate() {
+        let (loc, rest) = if let Some(rest) = l.strip_prefix("error[") {
+            let loc = lines[i + 1..]
+                .iter()
+                .take_while(|n| !n.starts_with("error[") && !n.starts_with("warning["))
+                .find_map(|n| n.strip_prefix("-->"));
+            (loc, rest)
+        } else if let Some((loc, rest)) = l.split_once(": error[") {
+            (Some(loc), rest)
+        } else {
+            continue;
+        };
+        let Some((rule, msg)) = rest.split_once(']') else {
+            continue;
+        };
+        found = true;
+        if rule == "unresolved-reference" {
+            continue;
+        }
+        let msg = msg.trim_start_matches(':').trim();
+        return Some(match loc.and_then(line_no) {
+            Some(n) if n > line_offset => format!("line {}: {msg}", n - line_offset),
+            _ => msg.to_string(),
+        });
+    }
+    if found {
+        return None;
+    }
+    Some(
+        lines
+            .into_iter()
+            .find(|l| !l.is_empty())
+            .unwrap_or("Monty's type check failed")
+            .to_string(),
+    )
+}
+
+/// B30: the `after_unknown` text — at most 5 of the scope's names, closest to `a` first,
+/// or "no cell named" when none is close.
+fn after_unknown(a: &str, ctx: &ValidateCtx) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    for n in &ctx.names {
+        if !names.contains(&n.as_str()) {
+            names.push(n);
+        }
+    }
+    let want = a.to_lowercase();
+    let rank = |n: &str| {
+        let n = n.to_lowercase();
+        let prefix = n.starts_with(&want) || want.starts_with(&n);
+        (edit_distance(&n, &want), !prefix)
+    };
+    let close = |n: &str| {
+        let (d, far) = rank(n);
+        !far || d <= (want.chars().count() / 3).max(2)
+    };
+    if !names.iter().any(|n| close(n)) {
+        let place = if ctx.chat { "chat" } else { "note" };
+        return format!("`after: {a}`: no cell named `{a}` in this {place}");
+    }
+    names.sort_by_key(|n| rank(n)); // stable: equals keep the scope's order
+    let mut list = names.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+    if names.len() > 5 {
+        list.push_str(&format!(" … and {} more", names.len() - 5));
+    }
+    format!("`after: {a}` names no cell in scope; cells here: {list}")
+}
+
+/// Levenshtein distance over chars.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
 }

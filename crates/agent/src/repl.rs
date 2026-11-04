@@ -218,8 +218,12 @@ pub async fn monty_sufficient(pool: Option<&Pool>, code: &str) -> Result<(), Str
     };
     match tokio::time::timeout(SUFFICIENT_CHECK, check).await {
         Ok(Ok(())) => Ok(()),
-        // Defining the function ran nothing: a typing or compile error is Monty's "no".
-        Ok(Err(PoolError::Typing(why))) => Err(why),
+        // Defining the function ran nothing: a typing or compile error is Monty's "no" —
+        // except names an earlier cell bound (the wrapper's one line comes first).
+        Ok(Err(PoolError::Typing(why))) => match surface::cell::monty_reason(&why, 1) {
+            Some(why) => Err(why),
+            None => Ok(()),
+        },
         Ok(Err(PoolError::Runtime(e))) => Err(e.to_string()),
         Ok(Err(e)) => {
             tracing::debug!("monty sufficiency check skipped: {e}");
@@ -2375,6 +2379,19 @@ mod tests {
         assert!(monty_sufficient(Some(&pool), "x: int = 'a'").await.is_err());
         assert_eq!(
             monty_sufficient(Some(&pool), "raise ValueError('ran')").await,
+            Ok(())
+        );
+        // 171F B10: the reason is Monty's own error on the user's line; B10b: a name an
+        // earlier cell bound is not a refusal.
+        let rows = "rows: list[dict[str, str | float]] = [{\"usd\": 1.0, \"k\": \"a\"}]\n\
+                    total = sum(r[\"usd\"] for r in rows)";
+        let why = monty_sufficient(Some(&pool), rows).await.unwrap_err();
+        assert!(
+            why.contains("No overload") && why.starts_with("line 2: "),
+            "{why}"
+        );
+        assert_eq!(
+            monty_sufficient(Some(&pool), "print(rows_from_before)").await,
             Ok(())
         );
     }

@@ -78,14 +78,14 @@ The mode is sticky: once asked, every changing step of that work stays a cell un
 - Anything else uses the project's interpreter: `auto` (nearest `.venv` → uv project → pyenv/conda → `python3` on the login PATH), `.venv`, `uv` or an absolute path.
 - `interpreters(cwd)` lists what can run in a folder, with `why` and the one `auto` picks; read it before choosing.
 - Keep one python interpreter per note: cells that name different ones run in different kernels and do not share variables.
-- "Monty can't run this: no module named pandas" means the cell needs the project's interpreter: re-present it with `#| python: .venv` (or `auto`).
+- "Monty can't run this cell: line 1: no module named pandas — Monty runs the standard library only; use a local python" means the cell needs the project's interpreter: re-present it with `#| python: .venv` (or `auto`).
 
 ## 5. Chat or note
 
 - Up to five one-off steps go in chat, in one reply, in run order.
 - Longer or repeatable procedures go in a note (`doc_insert` the same fences) with one line in chat linking it.
 - A run sheet as a note: a heading per step, one cell per action under it, "You should see: …" becomes `#| expect:`, a stop line ("if it doesn't say exit 0, stop") becomes the next step's `#| after:` — Run all stops at a failed step and before every danger cell. A ```` ```cells ```` block under the title holds the shared folder and shell.
-- Errors in note cells come back in the `doc_insert` result ("cell 2: after_unknown …"); fix them with `doc_replace`.
+- `doc_insert` refuses the whole insert when a cell does not validate and names each problem ("cell 2: after_unknown …"); fix the cells and retry.
 
 ## 6. After a result
 
@@ -215,4 +215,4 @@ df = pd.read_csv("costs.csv")
 df.groupby("service")["usd"].sum().sort_values(ascending=False).head(10)
 ```
 
-The first needs nothing but the standard library, so Monty runs it. The second imports pandas: written as `python: monty` it would fail with "Monty can't run this: no module named pandas", so it names the project's `.venv`, and its result arrives as a DataFrame table.
+The first needs nothing but the standard library, so Monty runs it. The second imports pandas: written as `python: monty` it would fail with "Monty can't run this cell: line 1: no module named pandas — Monty runs the standard library only; use a local python", so it names the project's `.venv`, and its result arrives as a DataFrame table.

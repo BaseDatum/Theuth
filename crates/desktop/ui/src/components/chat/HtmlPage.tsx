@@ -20,6 +20,7 @@ import { type PageTheme, useHtmlPageTheme } from '@/lib/page-theme'
 import { pageDrop, pagePut } from '@/lib/pages'
 import { isTauri } from '@/lib/tauri'
 import { cn } from '@/lib/utils'
+import { useScopedDisclosure } from './disclosure'
 
 export const MIN_HEIGHT = 80
 export const MAX_HEIGHT = 2000
@@ -105,7 +106,7 @@ export function HtmlPage({
   const [loaded, setLoaded] = useState(false)
   const [report, setReport] = useState<number | null>(() => reported.get(callId) ?? null)
   const [errors, setErrors] = useState<string[]>([])
-  const [showErrors, setShowErrors] = useState(false)
+  const [showErrors, setShowErrors] = useScopedDisclosure(`page-errors|${callId}`)
 
   // Publish: `page_put` in the shell, `srcdoc` elsewhere; dropped on unmount or when the bytes change. First paint is
   // themed from the embedded context and the URL fragment; later flips arrive by `postMessage`.

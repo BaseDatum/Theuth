@@ -151,8 +151,8 @@ pub trait Kernel: Send + Sync {
     async fn input(&self, run: &RunId, bytes: Vec<u8>) -> Result<()>;
     /// Stop: Ctrl-C into the PTY / SIGINT to the python group / cancel the Monty checkout.
     async fn interrupt(&self) -> Result<()>;
-    /// Kill: SIGKILL to the PTY's foreground group (the shell survives) / kill the python or
-    /// Monty process (→ `dead`).
+    /// Kill: close the shell kernel (171F B16: the next run starts a fresh shell) / kill the
+    /// python or Monty process (→ `dead`).
     async fn kill(&self) -> Result<()>;
     /// Close: stop any run, kill the process group, release the PTY.
     async fn shutdown(&self) -> Result<()>;

@@ -343,7 +343,7 @@ fn run_file_text(kind: ShellKind, req: &ExecuteRequest) -> String {
 }
 
 /// The one run line (§5.5).
-fn run_line(kind: ShellKind, file: &Path) -> String {
+pub(crate) fn run_line(kind: ShellKind, file: &Path) -> String {
     let f = file.to_string_lossy();
     if kind == ShellKind::Pwsh {
         format!(
@@ -359,7 +359,7 @@ fn run_line(kind: ShellKind, file: &Path) -> String {
 }
 
 /// After a Stop/Kill, a line that prints the `D` mark the aborted run line never reached.
-fn probe_line(kind: ShellKind, exit: i32) -> String {
+pub(crate) fn probe_line(kind: ShellKind, exit: i32) -> String {
     if kind == ShellKind::Pwsh {
         format!("[Console]::Write(\"`e]133;D;{exit}`a`e]7;file://localhost/$($PWD.Path)`a\")")
     } else {
@@ -494,6 +494,9 @@ impl Kernel for ShellKernel {
         self.type_text("\x03".into(), false).await
     }
 
+    /// Kill closes the kernel (171F B16): a `SIGKILL` to the foreground group alone lets
+    /// bash go on with the rest of the sourced run file. `died` then ends the run `killed`
+    /// and the next press starts a fresh shell.
     async fn kill(&self) -> Result<()> {
         if let Some(c) = self.shared.run.lock().as_mut() {
             c.stopping = Some(137);
@@ -502,7 +505,7 @@ impl Kernel for ShellKernel {
             .ask(CellKill {
                 session: self.session,
                 id: self.job.clone(),
-                close: false,
+                close: true,
             })
             .await
             .map_err(|e| CellsError::Failed(format!("kill: {e}")))

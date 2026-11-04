@@ -7,11 +7,12 @@ import { type AttachRef, compose, parse } from '@/lib/attach'
 import { type Segment, type SharedMessage, originLabel, originOf, parseMrkdwn, parseShared, shownText } from '@/lib/channel-origin'
 import { parseAsk } from '@/lib/board-ask'
 import { type Edit, useDrafts } from '@/lib/drafts'
-import { parseSpoken } from '@/lib/injected'
+import { type CellResultInput, parseSpoken } from '@/lib/injected'
 import { useApi } from '@/lib/rpc'
 import { parseScreenLines } from '@/lib/screen-context'
 import { openExternal } from '@/lib/platform'
 import { parseNote } from '@/lib/voice-note'
+import { disclosureKey } from '@/lib/tool-runs'
 import type { ChannelOrigin } from '@/rpc/bindings/ChannelOrigin'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import { useConnection } from '@/store/connection'
@@ -19,9 +20,11 @@ import { useSessionField } from '@/store/sessions'
 import { AttachChip } from './AttachChip'
 import { BoardQuoteCard } from './BoardQuoteCard'
 import { Attachments } from './Attachments'
+import { LongText } from './LongText'
 import { ActionButton, RemoveButton, rewind, useFork } from './MessageAssistant'
 import { ScreenContextCard } from './ScreenContextCard'
 import { SkillCard } from './SkillCard'
+import { SentResults } from './SentResults'
 import { Stamp, useStampToggle } from './Stamp'
 
 /** The message's references as a chip row above the bubble (66 §7.9); `onDrop` (editing) adds a `×` per chip. */
@@ -114,7 +117,7 @@ function SharedCard({ message: m }: { message: SharedMessage }) {
 }
 
 /** One segment of a Slack message body: the user's words as a bubble, a shared message as a card, an attachment as one muted line. */
-function SlackSegment({ segment: s }: { segment: Segment }) {
+function SlackSegment({ segment: s, disclosure }: { segment: Segment; disclosure: string }) {
   if (s.kind === 'shared') return <SharedCard message={s.message} />
   if (s.kind === 'attachment')
     return (
@@ -126,7 +129,7 @@ function SlackSegment({ segment: s }: { segment: Segment }) {
         </span>
       </span>
     )
-  return s.text.trim() ? <div className={BUBBLE}>{s.text}</div> : null
+  return s.text.trim() ? <LongText text={s.text} className={BUBBLE} disclosure={disclosure} /> : null
 }
 
 /** The bubble as a textarea: Enter sends, Shift+Enter breaks the line, Escape cancels. Its state is the store's `edit`
@@ -193,8 +196,11 @@ export function imagesFor<T>(xs: T[] | undefined, i: number, n: number): T[] | u
  * `channel` (172 D4) — or, for a row stored before 172, a leading `[slack dm]`/`[slack channel]` line — shows as an origin chip
  * and the marker line comes off; a Slack body's forwarded/linked/attachment blocks render as cards (172 D5).
  * `[screen …]` lines (96 §6.6) render as one `ScreenContextCard` per display under the words, carrying the message's images;
- * `[image: …]`/`[document: …]` tokens (a send from another webview, or history before `context` lands) resolve under `<data_dir>/attachments/`. */
+ * `[image: …]`/`[document: …]` tokens (a send from another webview, or history before `context` lands) resolve under `<data_dir>/attachments/`.
+ * 171F: `cells` (the parked cell results sent with it) fold into one row above the bubble; long words fold (`LongText`);
+ * both keep their open state under the entry `id`. */
 export const MessageUser = memo(function MessageUser({
+  id,
   text,
   skill,
   files,
@@ -204,7 +210,9 @@ export const MessageUser = memo(function MessageUser({
   channel,
   at,
   readOnly,
+  cells,
 }: {
+  id?: string
   text: string
   skill?: string
   files?: string[]
@@ -214,6 +222,7 @@ export const MessageUser = memo(function MessageUser({
   channel?: ChannelOrigin
   at?: number
   readOnly?: boolean
+  cells?: CellResultInput[]
 }) {
   const api = useApi()
   const running = useSessionField(session, 'running')
@@ -242,6 +251,7 @@ export const MessageUser = memo(function MessageUser({
     <div className="group flex flex-col items-end gap-2 py-2" onClick={stamp.onClick}>
       {origin && <OriginChip origin={origin} />}
       {skill && <SkillCard name={skill} />}
+      {cells?.length ? <SentResults cells={cells} disclosure={disclosureKey(session, id, 'cells')} /> : null}
       {screens.length === 0 && <Attachments files={paths} occurrences={occurrences} session={readOnly ? undefined : session} active={context?.active} className="justify-end" />}
       {!editing && <ChipRow refs={refs} session={readOnly ? undefined : session} />}
       {note && (
@@ -267,9 +277,9 @@ export const MessageUser = memo(function MessageUser({
       ) : ask ? (
         <BoardQuoteCard ask={ask} />
       ) : segments ? (
-        segments.map((s, i) => <SlackSegment key={i} segment={s} />)
+        segments.map((s, i) => <SlackSegment key={i} segment={s} disclosure={disclosureKey(session, id, 'text', i)} />)
       ) : (
-        words && <div className={BUBBLE}>{words}</div>
+        words && <LongText text={words} className={BUBBLE} disclosure={disclosureKey(session, id, 'text')} />
       )}
       {!editing &&
         screens.map((s, i) => (

@@ -1,6 +1,7 @@
 // Owner: U1
 // 171 §11.2: the one state a cell shows, derived from the engine's record, the parsed cell and the local edit.
 import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import type { Interpreter } from '@/rpc/bindings/Interpreter'
 import type { CellState } from '@/rpc/bindings/CellState'
 import type { CellViewState } from './types'
 
@@ -33,3 +34,15 @@ export const labelOf = (cell: CellSpec) => cell.options.label ?? 'Run'
 
 /** The header's title: the label, else the name, else `cell <ordinal>`. */
 export const titleOf = (cell: CellSpec, ordinal?: number) => cell.options.label ?? cell.options.name ?? (ordinal ? `cell ${ordinal}` : 'cell')
+
+/** F4 (171F B21): a chat cell's code takes edits whenever it could be pressed and no run, newer version or error holds it. */
+export const chatEditable = (view: CellViewState, runnable: boolean) =>
+  runnable && view !== 'running' && view !== 'queued' && view !== 'superseded' && view !== 'invalid' && view !== 'guest'
+
+/** §6.3 (171F B27): the interpreter chip — `auto → python 3.14.8 (system)` when the cell left the pick to `auto`. */
+export function interpreterText(cell: CellSpec, interpreter: Interpreter | null): string {
+  if (!interpreter) return cell.lang
+  const text = [interpreter.kind, interpreter.version, `(${interpreter.source})`].filter(Boolean).join(' ')
+  const auto = cell.lang === 'python' && (cell.options.python === null || cell.options.python.kind === 'auto')
+  return auto ? `auto → ${text}` : text
+}

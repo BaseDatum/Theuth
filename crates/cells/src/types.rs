@@ -433,12 +433,41 @@ wire! {
 }
 
 wire! {
+    /// 171:C-ADD (171F B11) — why a Run all pass stopped early.
+    pub struct PassStop {
+        /// The cell the pass stopped at.
+        pub cell: CellRef,
+        /// The reason, as the cell shows it.
+        pub why: String,
+        /// `true`: stopped before running `cell`; `false`: `cell` ran and failed.
+        pub before: bool,
+    }
+}
+
+wire! {
+    /// 171:C-ADD (171F B11) — the end of a Run all pass, reported on `cell_state`.
+    pub struct PassEnd {
+        /// The pass id (`cell_run_all`'s reply).
+        pub pass: String,
+        /// Cells the pass was given.
+        pub total: u32,
+        /// Cells it ran.
+        pub ran: u32,
+        /// Why it stopped early; `None` when it went through.
+        pub stopped: Option<PassStop>,
+    }
+}
+
+wire! {
     /// `cell_state` reply.
     pub struct StateReply {
         /// One per requested cell.
         pub cells: Vec<CellState>,
         /// The scope's live kernels.
         pub kernels: Vec<KernelState>,
+        /// 171:C-ADD (171F B11) — the scope's last finished Run all pass.
+        #[serde(default)]
+        pub pass: Option<PassEnd>,
     }
 }
 

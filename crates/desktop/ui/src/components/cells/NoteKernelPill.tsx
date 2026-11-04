@@ -8,14 +8,16 @@ import { isApple } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/api'
+import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellScope } from '@/rpc/bindings/CellScope'
 import type { DocId } from '@/rpc/bindings/DocId'
 import type { KernelState } from '@/rpc/bindings/KernelState'
+import type { PassEnd } from '@/rpc/bindings/PassEnd'
 import { liveKernels } from './KernelStrip'
 import { mountedCells } from './NoteCell'
 import { digest } from './grammar'
 import type { MountedCell } from './note-edit'
-import { errorText, mintId, press, refresh, register, useScope } from './store'
+import { errorText, labelFor, lastPass, mintId, press, refKey, refresh, register, useScope } from './store'
 
 export type NoteKernelPillProps = {
   doc: DocId
@@ -34,6 +36,18 @@ export async function runAllNote(api: Pick<Api, 'cell_run_all'>, scope: CellScop
 }
 
 /**
+ * 171F B11: `Run all stopped before "Deploy" (2/5): <why>` when the last pass stopped early, `null` when it went
+ * through or there is none. `cells`: the note's cells top to bottom (the position); the title is the cell's.
+ */
+export function passLine(pass: PassEnd | null, cells: CellRef[]): string | null {
+  const stop = pass?.stopped
+  if (!pass || !stop) return null
+  const i = cells.findIndex((c) => refKey(c) === refKey(stop.cell))
+  const at = i >= 0 ? i + 1 : pass.ran + (stop.before ? 1 : 0)
+  return `Run all stopped ${stop.before ? 'before' : 'at'} "${labelFor(stop.cell)}" (${at}/${pass.total}): ${stop.why}`
+}
+
+/**
  * 171 §11.5: `python · .venv 3.12 · idle · Run all` beside the note's breadcrumb, one pill per live kernel; Restart
  * and Close in its menu; with no live kernel and cells on the page, one quiet `cells · Run all`. Mod+Shift+Enter
  * while the pill row is focused runs all (§11.7).
@@ -46,6 +60,10 @@ export function NoteKernelPill({ doc }: NoteKernelPillProps) {
   const kernels = liveKernels(slice.kernels)
   const cells = Object.keys(slice.states).length
   if (kernels.length === 0 && cells === 0) return null
+  const pass = lastPass(slice)
+  // `mountedCells` reads the DOM: none in a server render.
+  const line = passLine(pass, typeof document === 'undefined' ? [] : mountedCells(doc).map((c) => c.ref))
+  const stopKey = pass?.stopped ? refKey(pass.stopped.cell) : ''
   const act = (f: () => Promise<unknown>) =>
     f().then(
       () => refresh(scope),
@@ -95,6 +113,16 @@ export function NoteKernelPill({ doc }: NoteKernelPillProps) {
             </span>
           )
         })
+      )}
+      {line && (
+        <button
+          type="button"
+          className="min-w-0 truncate rounded px-1 text-left text-[11px] text-danger hover:underline pointer-coarse:min-h-12"
+          title={line}
+          onClick={() => document.querySelector(`[data-ref-key="${CSS.escape(stopKey)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })}
+        >
+          {line}
+        </button>
       )}
     </div>
   )

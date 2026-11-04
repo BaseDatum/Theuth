@@ -1,6 +1,7 @@
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import { Streamdown } from 'streamdown'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
+import { useScopedDisclosure } from './disclosure'
 
 /** Centred `── context compacted (epoch n · style) ──` divider; click shows the summary when history carries one. */
 export const MessageCompacted = memo(function MessageCompacted({
@@ -12,7 +13,7 @@ export const MessageCompacted = memo(function MessageCompacted({
   style: CompactStyle
   summary?: string
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useScopedDisclosure('summary')
   const label = style === 'clear' ? `context cleared (epoch ${epoch})` : `context compacted (epoch ${epoch} · ${style})`
   return (
     <div className="my-3 text-sm text-fg-tertiary">

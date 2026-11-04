@@ -27,6 +27,7 @@ import { OpenUIFence } from './surface/OpenUIFence'
 import { MarkdownTd } from './surface/registry'
 import { Stamp, useStampToggle } from './Stamp'
 import { CELL_LANGUAGES, CellFence, CellOrdinals, cellOrdinals } from '@/components/cells/CellFence'
+import { FenceText } from './disclosure'
 
 // Module scope: a new object per render would re-initialise the highlighter.
 // `json-render`, `mermaid` and `openui` fences use streamdown's `plugins.renderers` (matched by language before the
@@ -323,23 +324,29 @@ export const MessageAssistant = memo(function MessageAssistant({
   }
   const stamp = useStampToggle()
   const nbc = useNotebookChat()
+  // 171F B13 (T4): streamdown's static and streaming modes are different trees, so switching when the stream closes (the
+  // first tool call) would remount every fence and cell in the reply mid-turn. Decided once per mount: a reply mounted
+  // while it streams stays in streaming mode (settled, it renders the same); one mounted settled (a reload) is static.
+  const [mode] = useState(open ? undefined : ('static' as const))
   return (
     <div className="group py-2" onClick={stamp.onClick}>
       <CitationsProvider text={text}>
         <FenceContext value={fence}>
-          <CellOrdinals value={ordinals}>
-            <Streamdown
-              mode={open ? undefined : 'static'}
-              isAnimating={open}
-              plugins={assistantPlugins}
-              rehypePlugins={rehypePlugins}
-              components={markdownComponents}
-              shikiTheme={shikiTheme}
-              className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
-            >
-              {text}
-            </Streamdown>
-          </CellOrdinals>
+          <FenceText value={text}>
+            <CellOrdinals value={ordinals}>
+              <Streamdown
+                mode={mode}
+                isAnimating={open}
+                plugins={assistantPlugins}
+                rehypePlugins={rehypePlugins}
+                components={markdownComponents}
+                shikiTheme={shikiTheme}
+                className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
+              >
+                {text}
+              </Streamdown>
+            </CellOrdinals>
+          </FenceText>
         </FenceContext>
         <References />
       </CitationsProvider>

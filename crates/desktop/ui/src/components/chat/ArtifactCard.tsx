@@ -34,6 +34,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useMarkShown } from "@/components/hud/queries";
 import { ArtifactWriting, ToolSpinner } from "./Indicators";
+import { toolKey } from "./disclosure";
+import { disclosureKey, useDisclosure } from "@/lib/tool-runs";
 import {
   Tooltip,
   TooltipContent,
@@ -474,7 +476,7 @@ export const ArtifactCard = memo(function ArtifactCard({
   const draft = useSessions((s) =>
     s.sessions[session]?.appDrafts.get(tool.callId),
   );
-  const [errors, setErrors] = useState(false);
+  const [errors, setErrors] = useDisclosure(disclosureKey(toolKey(tool.callId), "errors"));
   // 104 A2: the card on screen in the open session is the user seeing the shown artifact.
   useMarkShown(artifact ? tool.callId : null);
   // Text kinds fetch their bytes: the 6-line preview slot, or the page itself for `html`.

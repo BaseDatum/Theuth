@@ -14,6 +14,8 @@ import { ScrapeCard } from './ScrapeCard'
 import { RosterCard, rosterRows } from './RosterCard'
 import { Attachments } from './Attachments'
 import { fenced, plugins, shikiTheme } from './MessageAssistant'
+import { toolKey } from './disclosure'
+import { useDisclosure } from '@/lib/tool-runs'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
@@ -154,7 +156,7 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
 })
 
 function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useDisclosure(toolKey(tool.callId))
   const source = useMemo(() => codeDetails(tool.name, tool.args), [tool.name, tool.args])
   const lines = useMemo(() => describe(tool.name, source?.args ?? tool.args), [tool.name, tool.args, source])
   const progress = useSessions((s) => (tool.pending ? s.sessions[session]?.progress.get(tool.callId) : undefined))

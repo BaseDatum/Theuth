@@ -3,8 +3,10 @@
 // TracebackOutput / AnsiErrorOutput). Dropped: iframe isolation and the sift handoff (HTML goes through the host's
 // `renderers`, 171 §8.2), widgets, search highlighting, output wells and focus modes, runtimed anchors, the
 // error boundary (nteract's own module), and the rich `output.rich` sibling (our outputs never carry one).
+import { useContext } from "react";
+import { disclosureKey } from "@/lib/tool-runs";
 import { cn } from "@/lib/utils";
-import { AnsiErrorOutput, AnsiStreamOutput } from "../outputs/ansi-output";
+import { AnsiErrorOutput, AnsiStreamOutput, OutputDisclosure } from "../outputs/ansi-output";
 import { type CustomRenderer, DEFAULT_PRIORITY, MediaRouter } from "../outputs/media-router";
 import { classicTracebackToPayload, TracebackOutput } from "../outputs/traceback-output";
 import { cellOutputInnerInset } from "./cell-layout";
@@ -112,6 +114,7 @@ export function OutputArea({
   renderersFor,
   priority = DEFAULT_PRIORITY,
 }: OutputAreaProps) {
+  const base = useContext(OutputDisclosure);
   if (outputs.length === 0) return null;
 
   return (
@@ -122,7 +125,10 @@ export function OutputArea({
       <div className="space-y-2">
         {outputs.map((output, index) => (
           <div key={index} data-slot="output-item" data-output-index={index}>
-            {renderOutput(output, index, renderersFor?.(index), priority)}
+            {/* 171F B13: each output's toggles are keyed by its index under the run's key. */}
+            <OutputDisclosure.Provider value={disclosureKey(base, index)}>
+              {renderOutput(output, index, renderersFor?.(index), priority)}
+            </OutputDisclosure.Provider>
           </div>
         ))}
       </div>

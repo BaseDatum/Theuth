@@ -19,6 +19,7 @@ import { useApi } from '@/lib/rpc'
 import { useSnapshot } from '@/lib/snapshot-mode'
 import type { Api } from '@/rpc/api'
 import { useSessions } from '@/store/sessions'
+import { FenceScope, useScopedDisclosure } from '../disclosure'
 import { FenceContext, FenceFallback } from './JsonRenderFence'
 import { registerDiagramHosts } from './diagram-hosts'
 
@@ -64,14 +65,23 @@ export async function openAsApp(api: Pick<Api, 'publish_app'>, session: string, 
   }
 }
 
-export function OpenUIFence({ code, isIncomplete }: CustomRendererProps) {
+/** The fence's disclosures (`Show source`) are scoped by the fence (`FenceScope`, 171F B13). */
+export function OpenUIFence(props: CustomRendererProps) {
+  return (
+    <FenceScope code={props.code}>
+      <OpenUI {...props} />
+    </FenceScope>
+  )
+}
+
+function OpenUI({ code, isIncomplete }: CustomRendererProps) {
   const { session } = useContext(FenceContext)
   const api = useApi()
   const dark = useDark()
   // 164 D3: a channel picture: no toolbar, the requested palette.
   const snap = useSnapshot()
   const [busy, setBusy] = useState(false)
-  const [source, setSource] = useState(false)
+  const [source, setSource] = useScopedDisclosure('source')
   // The closed program's first failure; tool availability is the engine's business (the transcript has no snapshot).
   const error = useMemo(
     () => (isIncomplete ? undefined : check(code, []).diagnostics.find((d) => d.code !== 'tool-unknown')?.message),

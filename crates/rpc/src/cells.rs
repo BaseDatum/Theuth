@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use ::cells::{
-    CellLatest, CellRef, CellRun, CellsError, Interpreter, KernelId, OutputPage, RunAllRequest,
-    RunGet, RunId, RunMode, RunRequest, Scope, StateReply,
+    CellLatest, CellRef, CellRun, CellsError, DocId, Interpreter, KernelId, OutputPage,
+    RunAllRequest, RunGet, RunId, RunMode, RunRequest, Scope, SessionId, StateReply,
 };
 use base64::Engine as _;
 use jsonrpsee::Extensions;
@@ -325,6 +325,7 @@ pub(crate) async fn state(
         None => Ok(StateReply {
             cells: Vec::new(),
             kernels: Vec::new(),
+            pass: None,
         }),
     }
 }
@@ -541,6 +542,60 @@ pub(crate) async fn live(server: &Server, ext: &Extensions) -> RpcResult<Vec<Cel
     }
 }
 
+/// `cell_reply_note_get` (171F B9): the note reply `entry` was opened as.
+pub(crate) async fn reply_note_get(
+    server: &Server,
+    ext: &Extensions,
+    session: SessionId,
+    entry: String,
+) -> RpcResult<Option<DocId>> {
+    cells_guard::read(ext)?;
+    let scope = Scope::Session(session);
+    if let Some(r) = route_scope(
+        server,
+        ext,
+        &scope,
+        "cell_reply_note_get",
+        (&session, &entry),
+    )
+    .await?
+    {
+        return Ok(r);
+    }
+    match ::cells::Cells::lookup().await {
+        Some(c) => c.reply_note_get(session, &entry).await.map_err(cells_err),
+        None => Ok(None),
+    }
+}
+
+/// `cell_reply_note_set` (171F B9): remember that reply `entry` was opened as `doc`.
+pub(crate) async fn reply_note_set(
+    server: &Server,
+    ext: &Extensions,
+    session: SessionId,
+    entry: String,
+    doc: DocId,
+) -> RpcResult<()> {
+    cells_guard::press(ext)?;
+    let scope = Scope::Session(session);
+    if let Some(()) = route_scope(
+        server,
+        ext,
+        &scope,
+        "cell_reply_note_set",
+        (&session, &entry, &doc),
+    )
+    .await?
+    {
+        return Ok(());
+    }
+    handle()
+        .await?
+        .reply_note_set(session, &entry, &doc)
+        .await
+        .map_err(cells_err)
+}
+
 /// Re-exported for `cells_latest` (E2).
 pub(crate) type Latest = Vec<CellLatest>;
 
@@ -610,6 +665,16 @@ mod tests {
             code(kernel_restart(server, ext, kernel()).await),
             code(kernel_close(server, ext, kernel()).await),
             code(env_refresh(server, ext).await),
+            code(
+                reply_note_set(
+                    server,
+                    ext,
+                    runtime::SessionId::new(),
+                    "e1".into(),
+                    DocId("d1".into()),
+                )
+                .await,
+            ),
         ]
     }
 
@@ -638,6 +703,11 @@ mod tests {
             ),
             code(interpreters(server, ext, ".".into(), None).await.map(drop)),
             code(live(server, ext).await.map(drop)),
+            code(
+                reply_note_get(server, ext, runtime::SessionId::new(), "e1".into())
+                    .await
+                    .map(drop),
+            ),
         ]
     }
 
@@ -656,7 +726,7 @@ mod tests {
     async fn internal_peer_is_refused_for_every_press_method() {
         let server = server();
         let ext = with(link::RpcPeer::internal());
-        assert_eq!(press_codes(&server, &ext).await, [UNAUTHORIZED; 8]);
+        assert_eq!(press_codes(&server, &ext).await, [UNAUTHORIZED; 9]);
     }
 
     /// §12.1 invariant 1: a guest is not a press.
@@ -665,7 +735,7 @@ mod tests {
         let server = server();
         let (peer, _g) = link::RpcPeer::open_guest([1; 32], [2; 32]);
         let ext = with(peer);
-        assert_eq!(press_codes(&server, &ext).await, [UNAUTHORIZED; 8]);
+        assert_eq!(press_codes(&server, &ext).await, [UNAUTHORIZED; 9]);
     }
 
     /// A forwarded request (the forwarder already applied the guard) passes as internal.
@@ -688,7 +758,7 @@ mod tests {
         let server = server();
         let (peer, _g) = link::RpcPeer::open_guest([1; 32], [2; 32]);
         let ext = with(peer);
-        assert_eq!(read_codes(&server, &ext).await, [UNAUTHORIZED; 7]);
+        assert_eq!(read_codes(&server, &ext).await, [UNAUTHORIZED; 8]);
     }
 
     /// No authenticated connection is never "local".
@@ -696,8 +766,8 @@ mod tests {
     async fn no_peer_is_unauthorized() {
         let server = server();
         let ext = Extensions::new();
-        assert_eq!(press_codes(&server, &ext).await, [UNAUTHORIZED; 8]);
-        assert_eq!(read_codes(&server, &ext).await, [UNAUTHORIZED; 7]);
+        assert_eq!(press_codes(&server, &ext).await, [UNAUTHORIZED; 9]);
+        assert_eq!(read_codes(&server, &ext).await, [UNAUTHORIZED; 8]);
     }
 
     #[test]

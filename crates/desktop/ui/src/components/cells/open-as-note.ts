@@ -43,14 +43,31 @@ export async function noteMarkdown(api: Api, ordinals: CellOrdinals, states: (Ce
   return lines.flatMap((l, i) => (after.has(i) ? [l, '', after.get(i) as string] : [l])).join('\n')
 }
 
-export async function openAsNote(api: Api, qc: QueryClient, ordinals: CellOrdinals, states: (CellState | null)[], open: (doc: string) => void): Promise<void> {
+/** Presses of Open as note in flight, by `session/entry`: a double click makes one note. */
+const inflight = new Set<string>()
+
+/**
+ * 171F B9: one note per reply (`cell_reply_note_get/set`, keyed by session and entry). A second press opens the note
+ * the first made; a note since trashed or deleted is made again and replaces the remembered one.
+ */
+export async function openAsNote(api: Api, qc: QueryClient, session: string, ordinals: CellOrdinals, states: (CellState | null)[], open: (doc: string) => void): Promise<void> {
+  const entry = ordinals.entry
+  const key = `${session}/${entry}`
+  if (!entry || inflight.has(key)) return
+  inflight.add(key)
   try {
+    const known = await api.cell_reply_note_get(session, entry)
+    // limit: the 500 newest notes (the notes list's own window); an older remembered note is made again.
+    if (known && (await api.doc_list('note', 500)).some((d) => d.id === known)) return open(known)
     const md = await noteMarkdown(api, ordinals, states)
     const title = ordinals.cells[0]?.spec.options.label ?? 'Runbook'
     const note = await api.doc_create(title, md)
+    await api.cell_reply_note_set(session, entry, note.id)
     void qc.invalidateQueries({ queryKey: queryKeys.notes })
-    toast('Opened as a note', { action: { label: 'Open', onClick: () => open(note.id) } })
+    open(note.id)
   } catch (e) {
     toast.error(errorText(e))
+  } finally {
+    inflight.delete(key)
   }
 }

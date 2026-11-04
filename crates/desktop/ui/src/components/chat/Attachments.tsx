@@ -4,10 +4,12 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { resolveDocument, resolveFile } from '@/lib/files'
 import { useApi } from '@/lib/rpc'
+import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
 import type { ContextAttachment } from '@/rpc/bindings/ContextAttachment'
 import { RemoveButton } from './MessageAssistant'
+import { useDisclosed, useScopeKey } from './disclosure'
 
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
@@ -201,8 +203,16 @@ export const Attachments = memo(function Attachments({
   active?: boolean
   className?: string
 }) {
-  const [open, setOpen] = useState<Item | null>(null)
   const list = items(files, occurrences)
+  // 171F B13: the item in the lightbox is a disclosure per item, so a remount of the card does not close it.
+  const lightbox = useScopeKey('lightbox')
+  const shown = useDisclosed((d) => list.find((i) => d[disclosureKey(lightbox, i.key)])?.key ?? '')
+  const open = list.find((i) => i.key === shown) ?? null
+  const setOpen = (item: Item | null) => {
+    const { setDisclosed } = useToolRuns.getState()
+    if (open) setDisclosed(disclosureKey(lightbox, open.key), false)
+    if (item) setDisclosed(disclosureKey(lightbox, item.key), true)
+  }
   if (list.length === 0) return null
   const control = (item: Item, corner: boolean) =>
     session && item.occurrence && !item.occurrence.removed ? (

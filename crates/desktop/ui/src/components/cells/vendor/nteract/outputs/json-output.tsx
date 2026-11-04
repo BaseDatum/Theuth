@@ -1,21 +1,29 @@
 // Vendored from nteract nteract/nteract:src/components/outputs/json-output.tsx (adapted for theuth 171 §16)
 // 171 §11.8: primitive colours follow the CodeMirror mapping — strings `--chart-4`, numbers `--chart-3`, keywords `--chart-5`.
 import { ChevronRightIcon } from "lucide-react";
-import { createContext, type HTMLAttributes, useContext, useState } from "react";
+import { createContext, type HTMLAttributes, useContext, useMemo } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { disclosureKey, useDisclosure } from "@/lib/tool-runs";
 import { cn } from "@/lib/utils";
+import { OutputDisclosure } from "./ansi-output";
 
+// 171F B13 (adapted): each path's open state lives in the disclosure store under the run's `OutputDisclosure` key;
+// `initial` is the `collapsed` prop's starting set.
 interface JsonViewerContextType {
-  expandedPaths: Set<string>;
-  togglePath: (path: string) => void;
+  initial: Set<string>;
   displayDataTypes: boolean;
 }
 
 const JsonViewerContext = createContext<JsonViewerContextType>({
-  expandedPaths: new Set(),
-  togglePath: () => undefined,
+  initial: new Set(),
   displayDataTypes: false,
 });
+
+/** A path's open state, under the output's own `OutputDisclosure` key (run + output index). */
+function usePathOpen(path: string) {
+  const { initial } = useContext(JsonViewerContext);
+  return useDisclosure(disclosureKey(useContext(OutputDisclosure), "json", path), initial.has(path));
+}
 
 interface JsonOutputProps {
   /**
@@ -66,17 +74,7 @@ export function JsonOutput({
     return collectPathsToDepth(data, "$", collapsed);
   };
 
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(getInitialExpanded);
-
-  const togglePath = (path: string) => {
-    const newExpanded = new Set(expandedPaths);
-    if (newExpanded.has(path)) {
-      newExpanded.delete(path);
-    } else {
-      newExpanded.add(path);
-    }
-    setExpandedPaths(newExpanded);
-  };
+  const initial = useMemo(getInitialExpanded, [data, collapsed]);
 
   if (data === undefined || data === null) {
     return (
@@ -90,7 +88,7 @@ export function JsonOutput({
   }
 
   return (
-    <JsonViewerContext.Provider value={{ expandedPaths, togglePath, displayDataTypes }}>
+    <JsonViewerContext.Provider value={{ initial, displayDataTypes }}>
       <div data-slot="json-output" className={cn("not-prose py-2", className)}>
         <div className="rounded-lg border bg-background p-3 font-mono text-sm">
           <JsonValue value={data} path="$" keyName={null} isLast />
@@ -216,8 +214,8 @@ interface JsonObjectProps {
 }
 
 function JsonObject({ value, path, keyName, isLast }: JsonObjectProps) {
-  const { expandedPaths, togglePath, displayDataTypes } = useContext(JsonViewerContext);
-  const isExpanded = expandedPaths.has(path);
+  const { displayDataTypes } = useContext(JsonViewerContext);
+  const [isExpanded, setExpanded] = usePathOpen(path);
   const entries = Object.entries(value);
   const isEmpty = entries.length === 0;
 
@@ -231,7 +229,7 @@ function JsonObject({ value, path, keyName, isLast }: JsonObjectProps) {
   }
 
   return (
-    <Collapsible open={isExpanded} onOpenChange={() => togglePath(path)}>
+    <Collapsible open={isExpanded} onOpenChange={setExpanded}>
       <div>
         <CollapsibleTrigger asChild>
           <button
@@ -295,8 +293,8 @@ interface JsonArrayProps {
 }
 
 function JsonArray({ value, path, keyName, isLast }: JsonArrayProps) {
-  const { expandedPaths, togglePath, displayDataTypes } = useContext(JsonViewerContext);
-  const isExpanded = expandedPaths.has(path);
+  const { displayDataTypes } = useContext(JsonViewerContext);
+  const [isExpanded, setExpanded] = usePathOpen(path);
   const isEmpty = value.length === 0;
 
   if (isEmpty) {
@@ -309,7 +307,7 @@ function JsonArray({ value, path, keyName, isLast }: JsonArrayProps) {
   }
 
   return (
-    <Collapsible open={isExpanded} onOpenChange={() => togglePath(path)}>
+    <Collapsible open={isExpanded} onOpenChange={setExpanded}>
       <div>
         <CollapsibleTrigger asChild>
           <button

@@ -588,6 +588,7 @@ impl runtime::Plugin for ToolsPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        seat::set_data_dir(&rt.data_dir);
         let registry = registry::start(rt).await?;
         let _ = registry
             .ask(RegisterPrompt {

@@ -6,10 +6,11 @@ import type { EngineProvider } from '@/lib/doc/provider'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import type { CellState } from '@/rpc/bindings/CellState'
+import type { PassEnd } from '@/rpc/bindings/PassEnd'
 import { cellOf, digest } from './grammar'
 import { NoteCell, pressNote } from './NoteCell'
 import { NoteHost } from './note-context'
-import { noteRef } from './note-edit'
+import { noteRef, withPython } from './note-edit'
 import { cells, refKey, scopeKey, scopeOf } from './store'
 import { fakeApi, render, run, state } from './test-fixtures'
 import { viewOf } from './view'
@@ -20,9 +21,9 @@ const spec = cellOf('bash', TEXT) as CellSpec
 const ref = noteRef(DOC, spec, 'blk1')
 const provider = { id: DOC, meta: { members: [{ pub: 'AbCdEf12rest', name: 'Alice' }] } } as unknown as EngineProvider
 
-/** NoteCell's static markup with `record` as the engine's state for its ref. */
-function renderNote(record: CellState | null) {
-  cells.setState({ scopes: { [scopeKey(scopeOf(ref))]: { states: record ? { [refKey(ref)]: record } : {}, kernels: [], error: null, notices: {} } } })
+/** NoteCell's static markup with `record` as the engine's state for its ref and `pass` as the scope's last pass. */
+function renderNote(record: CellState | null, pass: PassEnd | null = null) {
+  cells.setState({ scopes: { [scopeKey(scopeOf(ref))]: { states: record ? { [refKey(ref)]: record } : {}, kernels: [], error: null, notices: {}, pass } } })
   const editor = BlockNoteEditor.create({ schema })
   return render(
     h(
@@ -83,4 +84,24 @@ test('a note cell never folds (BlockNote needs its content mounted) and marks it
   expect(html).toContain(`<pre>${TEXT}</pre>`)
   expect(html).toMatch(/contenteditable="false"/i)
   expect(html).toContain('data-note-cell=""')
+})
+
+test('Monty refused the cell (171F B10): its reason, and Use Python rewrites the header to `python: auto`', () => {
+  const monty = { code: 'monty_insufficient', severity: 'error' as const, message: "Monty can't run this cell: line 2: open() is not available", key: 'python' }
+  const html = renderNote(state(ref as CellRef, { problems: [monty] }))
+  expect(html).toContain('Monty can&#x27;t run this cell: line 2: open() is not available')
+  expect(html).toMatch(/>Use Python<\/button>/)
+  expect(renderNote(state(ref as CellRef, { problems: [{ ...monty, code: 'empty', message: 'no code after the header' }] }))).not.toContain('Use Python')
+  expect(withPython('#| name: t\n#| python: monty\nopen("x")', 'auto')).toBe('#| name: t\n#| python: auto\nopen("x")')
+})
+
+test('the cell a Run all pass stopped at says so and is ringed (171F B11), until a newer pass runs', () => {
+  const pass: PassEnd = { pass: 'p_1', total: 3, ran: 1, stopped: { cell: ref, why: 'exit 1', before: false } }
+  const failed = state(ref as CellRef, { latest: run({ cell: ref, pass: 'p_1', state: 'failed', exit: { type: 'code', value: 1 } }) })
+  const html = renderNote(failed, pass)
+  expect(html).toContain('Run all stopped here: exit 1')
+  expect(html).toContain('ring-danger')
+  expect(renderNote(failed, { ...pass, stopped: null })).not.toContain('Run all stopped here')
+  const rerun = state(ref as CellRef, { latest: run({ cell: ref, pass: 'p_2', state: 'running', exit: null }) })
+  expect(renderNote(rerun, pass)).not.toContain('Run all stopped here')
 })

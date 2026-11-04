@@ -4,6 +4,8 @@ Status: BUILT on integrate/171 2026-11-03 — see 171-as-built.md (W1 + W2 merge
 
 Status: design v0 · 2026-11-03 · proposed — Sky asked for the design and ruled R1 (no licence gate; least code, highest quality); the forks F1–F7 in §0/§18 are open with their recommended defaults applied · extends 59, 109, 120, 126, 143, 144/157, 155, 163, 164, 167 (§19 lists the amendments) · recon: 171-recon-ours.md, 171-recon-theirs.md, 171-recon-field.md · mock: docs/design/assets/171-cells.html
 
+Status: 171F fix wave (2026-11-04): see 171f-as-built.md
+
 Every `path:line` below was re-opened in `~/Develop/theuth-171` (branch `docs/171-cells`, base origin/main 6eba65b1) on 2026-11-03. nteract cites are `~/Develop/spike-171/nteract-nteract/<path>:<line>` (short form `nteract:` below) or the elements clone `nteract-elements:`. The calls this design implements are `docs/design/171-calls.md` D1–D20; the ask and the evidence are `docs/design/171-axes.md`.
 
 ## 0. Decisions in one screen
@@ -491,11 +493,11 @@ No discovery runs anything but `uv python find`/`pyenv which` and each candidate
 
 ### 6.2 Monty sufficiency (checked at presentation)
 
-A cell is Monty-sufficient when (a) a static scan finds only imports from Monty's stdlib list (the list the runtime block teaches, `crates/agent/src/repl.rs:82-84`) and no `open(`, `subprocess`, `socket`, `urllib`, `requests`, `os.system`, `os.popen`, `exec(`, `eval(`; and (b) Monty's type check passes (§5.9). The check runs in the engine when the cell is first seen (a finished reply, an opened note), cached by digest, and its result rides `cell_state` (§15.2). A failing check on an explicit `python: monty` shows "Monty can't run this: no module named pandas — use Python 3.12 (.venv)" with one press that rewrites the header to `#| python: .venv` (a chat edit, F4, or a note text edit).
+A cell is Monty-sufficient when (a) a static scan finds only imports from Monty's stdlib list (the list the runtime block teaches, `crates/agent/src/repl.rs:82-84`) and no `open(`, `subprocess`, `socket`, `urllib`, `requests`, `os.system`, `os.popen`, `exec(`, `eval(`; and (b) Monty's type check passes (§5.9). The check runs in the engine when the cell is first seen (a finished reply, an opened note), cached by digest, and its result rides `cell_state` (§15.2). A failing check on an explicit `python: monty` shows the reason, "Monty can't run this cell: line 1: no module named pandas — Monty runs the standard library only; use a local python", with a **Use Python** press that rewrites the header to `#| python: auto` (a chat edit, F4, or a note text edit). Names defined by earlier Monty cells do not fail the check (171F B10).
 
 ### 6.3 The chip and its menu
 
-- Python chip text: `Python 3.12 · .venv (~/Develop/costs)`, `Python 3.13 · uv:costs`, `Python 3.11 · conda:base`, `Python 3.12.4 · pyenv:3.12.4`, `Python 3.9 · system`, `Monty · sandboxed` — nteract's env-source vocabulary (`nteract:crates/notebook-protocol/src/connection.rs:995-1041` per 171-recon-theirs.md §3.5). `auto` shows as `auto → .venv`.
+- Python chip text: `Python 3.12 · .venv (~/Develop/costs)`, `Python 3.13 · uv:costs`, `Python 3.11 · conda:base`, `Python 3.12.4 · pyenv:3.12.4`, `Python 3.9 · system`, `Monty · sandboxed` — nteract's env-source vocabulary (`nteract:crates/notebook-protocol/src/connection.rs:995-1041` per 171-recon-theirs.md §3.5). A cell with `python: auto` or no `python:` shows the chip label `auto → <the picked interpreter>` (e.g. `auto → python 3.14.8 (system)`), in chat and in notes (171F B27).
 - Shell chip text: `bash 5.2 (Homebrew)`, `bash 3.2 (macOS)`, `zsh 5.9`, `sh (dash)`, `pwsh 7.4`.
 - The chip is a menu of `interpreters(cwd)` with each entry's `why`; choosing one writes the `#| python:` header (python) or the note default `shell:` (shells). The agent reads the same list (§9.5).
 
@@ -563,12 +565,12 @@ sequenceDiagram
 
 ### 7.2 Run all and its stop rules
 
-The engine pass (`cell_run_all{scope, cells, pass}`, §5.10) runs the scope's cells in order and **stops before** a `danger` cell, a cell with a blocking lint chip (§3.7), an invalid cell, a cell whose cwd is missing, or an unarmed `after` cell; it **stops at** a non-zero exit, a missed expect, Stop, a timeout or a lost kernel. Superseded cells are skipped. The bar's label names the first boundary it can see in advance: "Run all · stops before Apply to ir-prod1"; afterwards it reads "Run all · stopped at a failed step (2/3)" with the reason one click away. A pass that contains a `review: true` cell wakes the agent once, when the pass ends (F1).
+The engine pass (`cell_run_all{scope, cells, pass}`, §5.10) runs the scope's cells in order and **stops before** a `danger` cell, a cell with a blocking lint chip (§3.7), an invalid cell, a cell whose cwd is missing, or an unarmed `after` cell; it **stops at** a non-zero exit, a missed expect, Stop, a timeout or a lost kernel. Superseded cells are skipped. The bar's label names the first boundary it can see in advance: "Run all · stops before Apply to ir-prod1"; afterwards it reads "Run all · stopped at a failed step (2/3)" with the reason one click away. A pass that contains a `review: true` cell wakes the agent once, when the pass ends (F1). The pass's end rides `cell_state.pass` (`PassEnd{pass, total, ran, stopped}`; `stopped.before` tells a boundary from a failed run) and the note header and the bar read it (171F B11).
 
 ### 7.3 Stop and Kill (writer's call W-p)
 
 - **Stop**: Ctrl-C into the shell PTY; SIGINT to the python group (`interrupt` frame on Windows); cancel the Monty checkout. A queued run is removed.
-- **Kill** is enabled 5 s after Stop (mock panel B): for a shell, SIGKILL to the PTY's foreground process group (`tcgetpgrp` on the master, the call 155 §6.2 already uses), so the kernel shell survives; on Windows, and for python, the kernel is killed (`dead`).
+- **Kill** is enabled 5 s after Stop (mock panel B) and closes the cell's kernel (the process group and the shell); the run ends `killed`, and the next run starts a fresh kernel — variables and cwd reset (171F B16). Python and Windows kernels are killed (`dead`) as before.
 - Stop and Kill travel on their own lane: `cell_stop` is handled by the cells actor ahead of output work and the output reader never holds a lock Stop needs — nteract's interrupt took 2–5 s under a chatty progress bar until lifecycle got its own channel (`nteract:docs/adr/execution-pipeline.md:60-98`, 171-recon-theirs.md App. C).
 
 ### 7.4 stdin and live terminals
@@ -628,7 +630,7 @@ At the D mark the cells actor copies the log range `[C, D)` to `runs/<run>/term.
 - `out.ansi` — rows with SGR attributes (`rows_formatted`) for the static view (`ansi-output`, colours as theuth tokens, §11.8);
 - `out.txt` — plain text (`contents`), trailing blanks trimmed: carriage returns resolved, spinner frames collapsed to their last state, every escape gone. This is the record's text, the input to `expect`, the agent's copy (after §9.4) and the replicated text (F2).
 
-Output past 10 000 rows keeps its last 10 000 in the render and says "first N lines are in the log". The agent never strips escapes again (§1).
+Rows scrolled past the 10 000-row scrollback are kept in front of the render (up to 8 MiB; past that "N more lines are in term.log"), so `out.txt`, `expect` and `cell_output` reach line 1; agent-copy cuts are line-aligned (171F B17). The agent never strips escapes again (§1).
 
 ### 8.4 The run store (writer's call W-f)
 
@@ -878,7 +880,9 @@ One `Cell` component (`crates/desktop/ui/src/components/cells/Cell.tsx`) serves 
 | running | accent spinner, live xterm, elapsed `0:41` | Stop (Ctrl-C); Kill after 5 s | between marks C and D |
 | done | ✓ green dot, folded | label ("Run again" when `after`-gated cells follow) | exit 0, every expect met |
 | failed | ✗ red dot, output open | label | non-zero exit or a missed expect |
-| stopped | ■ dot, "stopped by you" | label | Stop/Kill/timeout |
+| stopped | ■ dot, "stopped by you" | label | Stop |
+| timeout | ■ dot, "timed out after 5.3 s"; footer "timed out" | label | the run's timeout (§7.7); a later timeout never overwrites a Stop/Kill |
+| killed | ■ dot, "killed — the kernel was closed; the next run starts fresh"; footer "killed" | label | Kill (§7.3) |
 | lost | ⚠ "lost — engine restarted" with last screen and log path | **Run again** | 109 R1 (§5.3) |
 | superseded | dimmed, "Replaced by a newer version ↓" | disabled | a later reply re-presented the name |
 | stale | "ran an earlier version" on the last run | label | note text changed since the run |
@@ -892,7 +896,7 @@ A read-only rendering (archive, search) shows code and chips with no button (fac
 
 ### 11.3 Runbook bar (chat, ≥ 2 cells)
 
-Above the first cell: **Run all · stops before Apply to ir-prod1** (primary button; label from §7.2), progress segments (green done, red failed, outlined danger next) with "2/3", the kernel state ("bash · idle"), and a ⋯ menu with **Open as note** (§4.5). It sticks to the top of the reply while it scrolls.
+In the message flow, right after the reply's last cell (a solid row, not sticky; 171F B1): **Run all · stops before Apply to ir-prod1** (primary button; label from §7.2), progress segments (green done, red failed, outlined danger next) with "2/3", the kernel state of the reply's own cells' kernels ("bash · idle", "bash + python · busy"), and a ⋯ menu with **Open as note** (§4.5; a second press opens the same note). A step whose cell was replaced follows `superseded_by`: the bar counts and runs the newest version (171F B8).
 
 ### 11.4 Kernel strip (chat; writer's call W-j)
 
