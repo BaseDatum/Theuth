@@ -53,6 +53,7 @@ impl Tool for Glob {
             Some(p) => crate::seat::resolve(cx.session, &p),
             None => crate::seat::cwd(cx.session)?,
         };
+        crate::seat::refuse_cell_record(&cx.resources.root, &root)?;
         let limit = a.limit.unwrap_or(GLOB_LIMIT).max(1) as usize;
         let shown = root.display().to_string();
         let pattern = a.pattern;

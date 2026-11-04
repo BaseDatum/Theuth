@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use runtime::SessionId;
 
@@ -125,6 +125,69 @@ fn real(path: &Path) -> Option<PathBuf> {
         let name = cur.file_name()?;
         tail.push(name.to_owned());
         cur = cur.parent()?;
+    }
+}
+
+/// 171F B24: what `read_file`, `grep`, `glob`, `edit` and `write_file` answer
+/// on a user cell's run record — `private` and the credential masks apply
+/// only through the cell tools.
+pub const CELL_RECORD: &str =
+    "this file belongs to a user cell's run record — read results with cell_runs / cell_output";
+
+/// The engine's data dir (set at plugin start): a private session's
+/// resource root is a scratch dir, while cell records live in the data dir.
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Record the engine's data dir for [`refuse_cell_record`].
+pub fn set_data_dir(dir: &Path) {
+    let _ = DATA_DIR.set(dir.to_path_buf());
+}
+
+/// `root` (the session's resource root) and the engine's data dir, canonical.
+fn data_dirs(root: &Path) -> Vec<PathBuf> {
+    std::iter::once(root)
+        .chain(DATA_DIR.get().map(PathBuf::as_path))
+        .filter_map(|d| d.canonicalize().ok())
+        .collect()
+}
+
+/// A canonical `path` is a cell record: under `<data dir>/cells/` (the cells
+/// crate's dir) or a kernel job's log under `<data dir>/jobs/`.
+fn held(dirs: &[PathBuf], path: &Path) -> bool {
+    let kernel_log = || {
+        path.file_name()
+            .is_some_and(|n| n.to_string_lossy().ends_with(crate::jobs::CELL_LOG))
+    };
+    dirs.iter().any(|d| {
+        path.starts_with(d.join("cells")) || (path.starts_with(d.join("jobs")) && kernel_log())
+    })
+}
+
+/// Refuse `path` (`..` and symlinks followed) when it is a user cell's run
+/// record ([`CELL_RECORD`]).
+pub fn refuse_cell_record(root: &Path, path: &Path) -> anyhow::Result<()> {
+    match real(path) {
+        Some(p) if held(&data_dirs(root), &p) => {
+            anyhow::bail!("{}: {CELL_RECORD}", path.display())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// For a walk of `walk_root` (not itself a record): is entry `path` (under
+/// `walk_root`, symlinks not followed by the walk) a cell record?
+pub fn cell_record_filter(
+    root: &Path,
+    walk_root: &Path,
+) -> impl Fn(&Path) -> bool + Send + Sync + use<> {
+    let dirs = data_dirs(root);
+    let walk_root = walk_root.to_path_buf();
+    let real_root = real(&walk_root);
+    move |path| {
+        let (Some(real_root), Ok(rel)) = (&real_root, path.strip_prefix(&walk_root)) else {
+            return false;
+        };
+        held(&dirs, &real_root.join(rel))
     }
 }
 

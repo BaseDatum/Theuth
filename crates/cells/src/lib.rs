@@ -20,6 +20,7 @@ pub mod interp;
 pub mod kernel;
 pub mod monty;
 pub mod note;
+mod notes;
 pub mod prompt;
 pub mod python;
 pub mod redact;

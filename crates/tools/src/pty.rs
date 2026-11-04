@@ -1212,6 +1212,17 @@ impl Live {
 }
 
 impl Jobs {
+    /// 171 §9.7, 171F B23: `id` (a job id or name, live, finished or lost)
+    /// is a user-cell kernel — the model neither types into nor reads one.
+    fn kernel(&self, session: SessionId, id: &str) -> bool {
+        jobs::is_cell(Some(id))
+            || self.sessions.get(&session).is_some_and(|s| {
+                s.jobs
+                    .iter()
+                    .any(|j| j.id.0 == id && jobs::is_cell(j.name.as_deref()))
+            })
+    }
+
     /// `id` resolution (22 §4.8): exact `j{n}`, else a running job named `id`,
     /// else a finished one for the error text.
     fn pty(&self, session: SessionId, id: &str) -> Result<Live, String> {
@@ -1493,7 +1504,11 @@ impl Message<Launch<StartPty>> for Jobs {
             ));
         }
         let dir = m.root.join("jobs").join(m.session.to_string());
-        let log_path = dir.join(format!("{id}.log"));
+        let log_path = if m.cell.is_some() {
+            dir.join(format!("{id}{}", jobs::CELL_LOG))
+        } else {
+            dir.join(format!("{id}.log"))
+        };
         // 51 §7.4: the retained-terminal budget admits before anything spawns;
         // exited terminals go first, oldest across every session.
         self.make_room(RESERVE);
@@ -1618,6 +1633,12 @@ impl Message<SendInput> for Jobs {
     async fn handle(&mut self, m: SendInput, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        // 171 §9.7: the model never types into a kernel (nor reads a lost
+        // one's last screen).
+        if self.kernel(m.session, &m.args.id) {
+            tx.send(Err(jobs::CELL_REFUSED.to_owned()));
+            return reply;
+        }
         // 109 §5.3: typing into a terminal a previous engine lost.
         if let Some(out) = self.lost(m.session, &m.args.id).and_then(|j| {
             let lost = j.lost.as_ref()?;
@@ -1639,12 +1660,7 @@ impl Message<SendInput> for Jobs {
             tx.send(Ok(out));
             return reply;
         }
-        // 171 §9.7: the model never types into a kernel. `pty` resolves names
-        // too, so `cell:<label>` is caught either way.
         match self.pty(m.session, &m.args.id) {
-            Ok(live) if jobs::is_cell(live.name.as_deref()) => {
-                tx.send(Err(jobs::CELL_REFUSED.to_owned()));
-            }
             Ok(live) => {
                 // Under the caller's guard: the settle wait is its work until
                 // it ends, whether or not the asker is still there (47 §3.2).
@@ -1668,6 +1684,9 @@ impl Message<Screen> for Jobs {
     type Reply = Result<ToolOutput, String>;
 
     async fn handle(&mut self, m: Screen, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if self.kernel(m.session, &m.id) {
+            return Err(jobs::CELL_REFUSED.to_owned());
+        }
         if let Some(out) = self.lost_page(m.session, &m.id, None) {
             return Ok(out);
         }
@@ -1685,6 +1704,10 @@ impl Message<Wait> for Jobs {
     async fn handle(&mut self, m: Wait, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        if self.kernel(m.session, &m.args.id) {
+            tx.send(Err(jobs::CELL_REFUSED.to_owned()));
+            return reply;
+        }
         match self.pty(m.session, &m.args.id) {
             Ok(live) => {
                 let tracked = Tracked {
@@ -5118,6 +5141,75 @@ mod tests {
         assert!(inline);
     }
 
+    /// 171F B23: `screen` and `wait` refuse a kernel (by id or name) as `send`
+    /// does, while an agent PTY still answers; B15: the counts behind the
+    /// session's terminal glyph skip kernels; B24: a kernel's log is
+    /// `<id>.cell.log`.
+    #[tokio::test]
+    async fn cell_kernel_unreadable_and_uncounted() {
+        let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (tx, _rx) = mpsc::channel(4);
+        let out = fx
+            .jobs
+            .ask(cell_start(&fx, &["-c", "sleep 30"], None, tx))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let log = out.structured.as_ref().unwrap()["log"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(log.ends_with("/j1.cell.log"), "{log}");
+        let (start, _, screen, wait) = tools(&fx);
+        let waits = |id: &str| WaitArgs {
+            id: id.into(),
+            pattern: Some(String::new()),
+            timeout: Some(1),
+        };
+        for id in ["j1", "cell:test"] {
+            let out = Tool::call(&screen, ScreenArgs { id: id.into() }, cx(&fx))
+                .await
+                .unwrap();
+            assert!(
+                out.is_error && out.content == jobs::CELL_REFUSED,
+                "{}",
+                out.content
+            );
+            let out = Tool::call(&wait, waits(id), cx(&fx)).await.unwrap();
+            assert!(
+                out.is_error && out.content == jobs::CELL_REFUSED,
+                "{}",
+                out.content
+            );
+        }
+        let counts = crate::jobs::JobCounts(vec![fx.session]);
+        assert!(fx.jobs.ask(counts.clone()).await.unwrap().is_empty());
+        assert!(
+            fx.jobs
+                .ask(crate::jobs::LiveCounts)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // An agent PTY reads and counts as before.
+        let out = Tool::call(&start, start_args("sleep 30"), cx(&fx))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let out = Tool::call(&screen, ScreenArgs { id: "j2".into() }, cx(&fx))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let out = Tool::call(&wait, waits("j2"), cx(&fx)).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let n = fx.jobs.ask(counts).await.unwrap();
+        assert_eq!(n[&fx.session], (0, 1));
+        let rows = fx.jobs.ask(crate::jobs::LiveCounts).await.unwrap();
+        assert_eq!(rows[0].ptys, [JobId("j2".into())]);
+        cell_close(&fx).await;
+        cancel_from(&fx, "j2", CancelOrigin::Shutdown).await;
+    }
+
     #[tokio::test]
     async fn cell_kill_spares_shell_group() {
         let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
@@ -5193,7 +5285,7 @@ mod tests {
             .dir
             .join("jobs")
             .join(fx.session.to_string())
-            .join("j1.log");
+            .join("j1.cell.log");
         let log = std::fs::read_to_string(&log).unwrap();
         assert!(log.contains("bar-"), "{log:?}");
         assert!(

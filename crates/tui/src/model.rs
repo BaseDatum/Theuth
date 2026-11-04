@@ -6555,17 +6555,22 @@ impl Model {
                 if self.advisory_seqs.contains(&turn_seq) || injected(&text).is_some() {
                     return;
                 }
+                // 171F B4: parked cell results ride in front of the words typed here.
+                let (cells, said) = cell_results(&text);
                 let shown = self.last_injected_turn.take() == Some(turn)
-                    || self.sent.take().as_deref() == Some(&*text);
+                    || self.sent.take().as_deref() == Some(said);
                 if !shown {
                     self.entries.extend(user_entries(text, Some(turn_seq)));
-                } else if let Some(Entry::User { turn, .. }) = self
+                } else if let Some(at) = self
                     .entries
-                    .iter_mut()
-                    .rev()
-                    .find(|e| matches!(e, Entry::User { turn: None, .. }))
+                    .iter()
+                    .rposition(|e| matches!(e, Entry::User { turn: None, .. }))
                 {
-                    *turn = Some(turn_seq);
+                    if let Entry::User { turn, .. } = &mut self.entries[at] {
+                        *turn = Some(turn_seq);
+                    }
+                    self.entries
+                        .splice(at..at, cells.into_iter().map(Entry::Info));
                 }
             }
             // The steer enters the context now: its card moves from the queue
@@ -11079,6 +11084,15 @@ fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
     }
     // 74 §3: the model's `<time …/>` line is never a `you` row.
     let text = agent::clock::strip_owned(text);
+    // 171F B4: parked cell results joined in front of the user's words.
+    let (cells, said) = cell_results(&text);
+    if !cells.is_empty() {
+        let mut out: Vec<Entry> = cells.into_iter().map(Entry::Info).collect();
+        if !said.is_empty() {
+            out.extend(user_entries(said.to_owned(), turn));
+        }
+        return out;
+    }
     if let Some((name, body, rest)) = agent::skills::injected(&text) {
         let mut out = vec![card(CardKind::Skill, name.to_owned(), body)];
         if !rest.is_empty() {
@@ -11095,6 +11109,38 @@ fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
             .into_iter()
             .map(|(kind, title, body)| card(kind, title, &body))
             .collect(),
+    }
+}
+
+/// 171F B4: the parked `<cell_result …>…</cell_result>` blocks the engine
+/// joins in front of the user's words, as one `↳ cell <label or name> · exit
+/// <n> · expect <…>` line each, and the rest (the user's own text). Only
+/// leading blocks peel: one the user typed mid-message stays text.
+fn cell_results(text: &str) -> (Vec<String>, &str) {
+    let mut lines = Vec::new();
+    let mut rest = text;
+    while let Some(after) = rest.trim_start().strip_prefix("<cell_result ")
+        && let Some((open, after)) = after.split_once('>')
+        && let Some((_, tail)) = after.split_once("</cell_result>")
+    {
+        let who = attr(open, "label=\"")
+            .or_else(|| attr(open, " name=\""))
+            .or_else(|| attr(open, " cell=\""))
+            .unwrap_or_default();
+        let mut line = format!("↳ cell {}", unescape(who));
+        if let Some(exit) = attr(open, " exit=\"") {
+            let _ = write!(line, " · exit {exit}");
+        }
+        if let Some(expect) = attr(open, " expect=\"") {
+            let _ = write!(line, " · expect {expect}");
+        }
+        lines.push(line);
+        rest = tail;
+    }
+    if lines.is_empty() {
+        (lines, text)
+    } else {
+        (lines, rest.trim_start())
     }
 }
 
@@ -15703,6 +15749,34 @@ mod tests {
             [Entry::User { .. }]
         ));
         assert_eq!(parent_view("<chat>\n3+1|x\n"), None);
+    }
+
+    /// 171F B4: leading parked `<cell_result>` blocks are one `↳ cell` line
+    /// each and the user's words stay the `you` row; a block typed mid-message
+    /// is the user's text.
+    #[test]
+    fn parked_cell_results_peel_off_the_users_words() {
+        let parked = concat!(
+            "<cell_result run=\"r_1\" name=\"preview\" label=\"Preview &amp; plan\" exit=\"0\" secs=\"4\" expect=\"met 1/1\">\nexpect ✓ ok\noutput 2 B, complete:\nok\n</cell_result>\n",
+            "<cell_result run=\"r_2\" cell=\"2\" message=\"12\" exit=\"timeout\">\nno output\n</cell_result>\n",
+        );
+        let out = user_entries(format!("{parked}thanks, apply it"), Some(4));
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!(
+            matches!(&out[0], Entry::Info(t) if t == "↳ cell Preview & plan · exit 0 · expect met 1/1")
+        );
+        assert!(matches!(&out[1], Entry::Info(t) if t == "↳ cell 2 · exit timeout"));
+        assert!(
+            matches!(&out[2], Entry::User { text, turn: Some(4) } if text == "thanks, apply it")
+        );
+        // Results alone: no `you` row.
+        assert_eq!(user_entries(parked.to_owned(), None).len(), 2);
+        // Typed mid-message: untouched.
+        let typed = format!("look at this: {parked}");
+        assert!(matches!(
+            user_entries(typed.clone(), None).as_slice(),
+            [Entry::User { text, .. }] if *text == typed
+        ));
     }
 
     #[test]

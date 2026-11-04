@@ -343,7 +343,7 @@ fn run_file_text(kind: ShellKind, req: &ExecuteRequest) -> String {
 }
 
 /// The one run line (§5.5).
-fn run_line(kind: ShellKind, file: &Path) -> String {
+pub(crate) fn run_line(kind: ShellKind, file: &Path) -> String {
     let f = file.to_string_lossy();
     if kind == ShellKind::Pwsh {
         format!(
@@ -359,7 +359,7 @@ fn run_line(kind: ShellKind, file: &Path) -> String {
 }
 
 /// After a Stop/Kill, a line that prints the `D` mark the aborted run line never reached.
-fn probe_line(kind: ShellKind, exit: i32) -> String {
+pub(crate) fn probe_line(kind: ShellKind, exit: i32) -> String {
     if kind == ShellKind::Pwsh {
         format!("[Console]::Write(\"`e]133;D;{exit}`a`e]7;file://localhost/$($PWD.Path)`a\")")
     } else {

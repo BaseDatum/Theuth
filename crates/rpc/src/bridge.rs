@@ -2,6 +2,7 @@
 //! type serializes each into a JSON value; every RPC subscription task owns a
 //! `broadcast::Receiver` and filters by session.
 
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -75,6 +76,10 @@ impl Message<Feed> for Bridge {
 /// The bridge actor.
 pub struct Bridge {
     tx: broadcast::Sender<Event>,
+    /// 171F B15: live user-cell kernel jobs. Their `JobEvent`s stay off the
+    /// client feed (a kernel is not the session's terminal); the bus still
+    /// carries them to the supervisor's cell watch.
+    cells: HashSet<(runtime::SessionId, tools::JobId)>,
 }
 
 impl Actor for Bridge {
@@ -82,7 +87,36 @@ impl Actor for Bridge {
     type Error = Infallible;
 
     async fn on_start(tx: Self::Args, _: ActorRef<Self>) -> Result<Self, Infallible> {
-        Ok(Self { tx })
+        Ok(Self {
+            tx,
+            cells: HashSet::new(),
+        })
+    }
+}
+
+impl Message<JobEvent> for Bridge {
+    type Reply = ();
+    async fn handle(&mut self, ev: JobEvent, _: &mut Context<Self, ()>) {
+        let cell = match &ev {
+            JobEvent::Started {
+                session, id, name, ..
+            } => {
+                let cell = name
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with(tools::jobs::CELL_PREFIX));
+                if cell {
+                    self.cells.insert((*session, id.clone()));
+                }
+                cell
+            }
+            JobEvent::Output { session, id, .. }
+            | JobEvent::Screen { session, id, .. }
+            | JobEvent::Idle { session, id, .. } => self.cells.contains(&(*session, id.clone())),
+            JobEvent::Finished { session, id, .. } => self.cells.remove(&(*session, id.clone())),
+        };
+        if !cell {
+            self.forward(&ev);
+        }
     }
 }
 
@@ -118,7 +152,6 @@ forward!(
     AskRequested,
     AskResolved,
     McpProgress,
-    JobEvent,
     SignalEvent,
     SlackEvent,
     TelegramEvent,
@@ -235,4 +268,81 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, EndlessProgress>(&actor).await;
     rt.subscribe::<Bridge, CostCubeChanged>(&actor).await;
     tx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tools::{JobExit, JobId, JobKind};
+
+    /// 171F B15: a user-cell kernel's `JobEvent`s never reach clients (no
+    /// terminal glyph); an agent PTY's pass, and a reused id after the
+    /// kernel's `Finished` passes again.
+    #[tokio::test]
+    async fn cell_kernel_job_events_stay_off_the_client_feed() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let b = Bridge::spawn(tx);
+        let s = runtime::SessionId::new();
+        let job = |id: &str| JobId(id.into());
+        let started = |id: &str, name: &str| JobEvent::Started {
+            session: s,
+            id: job(id),
+            command: String::new(),
+            call_id: String::new(),
+            log: "x.log".into(),
+            name: Some(name.into()),
+            pty: true,
+            kind: JobKind::default(),
+        };
+        for (id, name) in [("j1", "cell:bash 5.2"), ("j2", "dev")] {
+            b.ask(started(id, name)).await.unwrap();
+            b.ask(JobEvent::Screen {
+                session: s,
+                id: job(id),
+                rows: Vec::new(),
+                cursor: (0, 0),
+            })
+            .await
+            .unwrap();
+            b.ask(JobEvent::Output {
+                session: s,
+                id: job(id),
+                chunk: "x".into(),
+            })
+            .await
+            .unwrap();
+            b.ask(JobEvent::Finished {
+                session: s,
+                id: job(id),
+                command: String::new(),
+                exit: JobExit::Killed,
+                secs: 0,
+                output: String::new(),
+                inline: true,
+                pty: true,
+                kind: JobKind::default(),
+            })
+            .await
+            .unwrap();
+        }
+        b.ask(started("j1", "later")).await.unwrap();
+        let mut seen = Vec::new();
+        while let Ok(v) = rx.try_recv() {
+            seen.push(format!(
+                "{} {}",
+                v["type"].as_str().unwrap(),
+                v["id"].as_str().unwrap()
+            ));
+        }
+        assert_eq!(
+            seen,
+            [
+                "JobStarted j2",
+                "JobScreen j2",
+                "JobOutput j2",
+                "JobFinished j2",
+                "JobStarted j1"
+            ]
+        );
+    }
 }
