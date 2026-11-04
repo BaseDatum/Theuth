@@ -46,16 +46,6 @@ const CHROME: Record<string, true> = {
   'chat/ModelMenu.tsx': true,
   'chat/OrphansBanner.tsx': true,
 }
-/** Sites in other 171F workers' files, converted on their branches; Z empties this list after the merge. */
-const ALLOWED = new Set([
-  'cells/Cell.tsx:useState:open', // U1b
-  'cells/Cell.tsx:useState:raw', // U1b
-  'cells/KernelStrip.tsx:useState:open', // U1b
-  'cells/NoteCell.tsx:useState:open', // U1b
-  'cells/NoteCell.tsx:useState:review', // U1b
-  'cells/RunbookBar.tsx:useState:why', // U1a
-  'cells/vendor/nteract/outputs/ansi-output.tsx:useState:expanded', // U1b
-])
 
 function sources(dir: string): string[] {
   return readdirSync(`${ROOT}${dir}`, { recursive: true, encoding: 'utf8' })
@@ -71,9 +61,7 @@ test('ratchet: no transcript disclosure keeps its open state in useState, <detai
     for (const m of text.matchAll(STATE)) if (NAME.test(m[1] as string)) hits.add(`${file}:useState:${m[1]}`)
     for (const token of ['<details', 'defaultOpen', 'defaultValue']) if (text.includes(token)) hits.add(`${file}:${token}`)
   }
-  expect([...hits].filter((h) => !ALLOWED.has(h))).toEqual([])
-  // A converted site leaves the list too, so it can only shrink.
-  expect([...ALLOWED].filter((a) => !hits.has(a))).toEqual([])
+  expect([...hits]).toEqual([])
 })
 
 // ---------------------------------------------------------------------------------------------------------------- (b)
