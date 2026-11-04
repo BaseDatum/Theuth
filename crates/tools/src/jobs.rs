@@ -66,6 +66,9 @@ pub(crate) const PTY_BUDGET: usize = 512 << 20;
 pub const CELL_PREFIX: &str = "cell:";
 /// 171 §9.7: what `send` / `cancel_job` answer on a kernel job.
 pub const CELL_REFUSED: &str = "this terminal belongs to a user cell — ask the user to press Run";
+/// 171F B24: a kernel job's log is `<root>/jobs/<session>/<id>.cell.log`, so
+/// the file tools can refuse it from the path alone, across engine restarts.
+pub(crate) const CELL_LOG: &str = ".cell.log";
 /// 171 §5.5: a mark sequence split across chunks is completed from this
 /// much carried tail; OSC 7 carries a path, so it gets [`OSC7_CARRY`].
 const MARK_CARRY: usize = 32;
@@ -1510,7 +1513,12 @@ impl Message<JobCounts> for Jobs {
             .filter_map(|id| {
                 let s = self.sessions.get(&id)?;
                 let (mut jobs, mut ptys) = (0u16, 0u16);
-                for j in s.jobs.iter().filter(|j| j.exit.is_none()) {
+                // 171F B15: a user-cell kernel is not the session's terminal.
+                for j in s
+                    .jobs
+                    .iter()
+                    .filter(|j| j.exit.is_none() && !is_cell(j.name.as_deref()))
+                {
                     if j.on_pty {
                         ptys = ptys.saturating_add(1);
                     } else {
@@ -1540,7 +1548,11 @@ impl Message<LiveCounts> for Jobs {
         }
         let mut rows: HashMap<SessionId, LiveCountsRow> = HashMap::new();
         for (session, s) in &self.sessions {
-            for j in s.jobs.iter().filter(|j| j.exit.is_none()) {
+            for j in s
+                .jobs
+                .iter()
+                .filter(|j| j.exit.is_none() && !is_cell(j.name.as_deref()))
+            {
                 let r = row(&mut rows, *session);
                 if j.on_pty {
                     r.ptys.push(j.id.clone());

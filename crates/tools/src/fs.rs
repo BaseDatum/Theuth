@@ -129,6 +129,7 @@ impl Tool for ReadFile {
     async fn call(&self, a: ReadFileArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let shown = a.path.display().to_string();
         let path = crate::seat::resolve(cx.session, &a.path);
+        crate::seat::refuse_cell_record(&cx.resources.root, &path)?;
         let bytes = tokio::fs::read(&path)
             .await
             .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
@@ -457,6 +458,7 @@ impl Tool for WriteFile {
         refuse_read_output(&a.content)?;
         let shown = a.path.display().to_string();
         let path = crate::seat::writable(cx.session, &a.path)?;
+        crate::seat::refuse_cell_record(&cx.resources.root, &path)?;
         let existing = match tokio::fs::read(&path).await {
             Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -601,10 +603,13 @@ impl Tool for Grep {
             Some(p) => crate::seat::resolve(cx.session, &p),
             None => crate::seat::cwd(cx.session)?,
         };
+        crate::seat::refuse_cell_record(&cx.resources.root, &root)?;
         let limit = a.limit.unwrap_or(GREP_LIMIT).max(1) as usize;
-        let out =
-            tokio::task::spawn_blocking(move || grep(&root, &a.pattern, a.glob.as_deref(), limit))
-                .await??;
+        let data = cx.resources.root.clone();
+        let out = tokio::task::spawn_blocking(move || {
+            grep(&root, &data, &a.pattern, a.glob.as_deref(), limit)
+        })
+        .await??;
         Ok(ToolOutput::ok(out))
     }
 }
@@ -614,10 +619,17 @@ const GREP_LIMIT: u32 = 200;
 /// Longest match line echoed back; longer lines are cut with `…`.
 const GREP_LINE_CHARS: usize = 400;
 
-/// Walk `root` in parallel (gitignore, hidden and binary files skipped) and
-/// collect `path:line: text` matches for `pattern`, sorted by path then line,
-/// up to `limit`. Which matches survive the cap depends on thread timing.
-fn grep(root: &Path, pattern: &str, glob: Option<&str>, limit: usize) -> anyhow::Result<String> {
+/// Walk `root` in parallel (gitignore, hidden and binary files skipped, cell
+/// records under the data dir `data` pruned) and collect `path:line: text`
+/// matches for `pattern`, sorted by path then line, up to `limit`. Which
+/// matches survive the cap depends on thread timing.
+fn grep(
+    root: &Path,
+    data: &Path,
+    pattern: &str,
+    glob: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<String> {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
@@ -634,6 +646,7 @@ fn grep(root: &Path, pattern: &str, glob: Option<&str>, limit: usize) -> anyhow:
         None => None,
     };
     let is_dir = root.is_dir();
+    let skip = std::sync::Arc::new(crate::seat::cell_record_filter(data, root));
     // One walk; returns (path, line, text) hits and the number of entries
     // yielded below the root.
     let walk = |parents: bool| {
@@ -642,6 +655,8 @@ fn grep(root: &Path, pattern: &str, glob: Option<&str>, limit: usize) -> anyhow:
         if let Some(ov) = &overrides {
             walk.overrides(ov.clone());
         }
+        let skip = skip.clone();
+        walk.filter_entry(move |e| !skip(e.path()));
         let hits: Mutex<Vec<(String, u64, String)>> = Mutex::new(Vec::new());
         let count = AtomicUsize::new(0);
         let visited = AtomicUsize::new(0);
@@ -1354,18 +1369,18 @@ mod tests {
             ("a.rs", "hit\n"),
             ("b/y.rs", "hit\n"),
         ]);
-        let out = grep(&root, "hit", None, 200).unwrap();
+        let out = grep(&root, &root, "hit", None, 200).unwrap();
         assert_eq!(
             out,
             "a.rs:1: hit\nb/y.rs:1: hit\nb/z.rs:1: hit\nb/z.rs:3: hit"
         );
-        let out = grep(&root, "hit", Some("*.rs"), 2).unwrap();
+        let out = grep(&root, &root, "hit", Some("*.rs"), 2).unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3, "{out}");
         assert_eq!(lines[2], "[… limit 2 reached]");
         assert!(lines[0] < lines[1], "{out}");
         assert_eq!(
-            grep(&root, "nothing_here", None, 200).unwrap(),
+            grep(&root, &root, "nothing_here", None, 200).unwrap(),
             "no matches"
         );
     }
@@ -1374,7 +1389,7 @@ mod tests {
     fn grep_bypasses_an_ancestor_gitignore_that_hides_the_root() {
         let (_g, outer) = grep_tree(&[(".gitignore", "*\n"), ("inner/a.rs", "needle\n")]);
         let inner = outer.join("inner");
-        let out = grep(&inner, "needle", None, 200).unwrap();
+        let out = grep(&inner, &outer, "needle", None, 200).unwrap();
         assert_eq!(
             out,
             format!(
@@ -1383,6 +1398,88 @@ mod tests {
             )
         );
         // The root's own .gitignore is not an ancestor rule: plain no-match.
-        assert_eq!(grep(&outer, "needle", None, 200).unwrap(), "no matches");
+        assert_eq!(
+            grep(&outer, &outer, "needle", None, 200).unwrap(),
+            "no matches"
+        );
+    }
+
+    /// 171F B24: a user cell's run record (under `<data>/cells/`, or a kernel
+    /// job's log) is refused to the file tools, through `..` and symlinks;
+    /// the rest of the data dir is not.
+    #[tokio::test]
+    async fn cell_records_are_refused_to_the_file_tools() {
+        let guard = crate::TestDir::new("cell-records");
+        let data = guard.0.clone();
+        let run = data.join("cells/runs/r_1");
+        let jobs = data.join("jobs/s1");
+        for d in [&run, &jobs, &data.join("briefs")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(run.join("out.txt"), "SECRET\n").unwrap();
+        std::fs::write(jobs.join("j1.cell.log"), "SECRET\n").unwrap();
+        std::fs::write(jobs.join("j2.log"), "agent SECRET\n").unwrap();
+        std::fs::write(data.join("briefs/x.md"), "brief SECRET\n").unwrap();
+        std::os::unix::fs::symlink(run.join("out.txt"), data.join("briefs/link.txt")).unwrap();
+        let mut cx = cx();
+        cx.resources = crate::SessionResources::durable_arc(&data);
+        let refused = |r: anyhow::Result<ToolOutput>| {
+            r.err()
+                .is_some_and(|e| e.to_string().contains(crate::seat::CELL_RECORD))
+        };
+        for p in [
+            run.join("out.txt"),
+            data.join("briefs/../cells/runs/r_1/out.txt"),
+            jobs.join("j1.cell.log"),
+            data.join("briefs/link.txt"),
+        ] {
+            let r = Tool::call(&ReadFile, args(&p, None, None), cx.clone()).await;
+            assert!(refused(r), "{}", p.display());
+        }
+        let write = |path: PathBuf| WriteFileArgs {
+            path,
+            content: "x".into(),
+        };
+        let r = Tool::call(&WriteFile, write(run.join("new.txt")), cx.clone()).await;
+        assert!(refused(r));
+        let edit: crate::edit::EditArgs = serde_json::from_value(serde_json::json!({
+            "path": run.join("out.txt"), "old": "SECRET", "new": "x"
+        }))
+        .unwrap();
+        assert!(refused(
+            Tool::call(&crate::edit::Edit, edit, cx.clone()).await
+        ));
+        let grep_in = |path: PathBuf| GrepArgs {
+            pattern: "SECRET".into(),
+            path: Some(path),
+            glob: None,
+            limit: None,
+        };
+        assert!(refused(
+            Tool::call(&Grep, grep_in(run.clone()), cx.clone()).await
+        ));
+        let glob: crate::glob::GlobArgs = serde_json::from_value(serde_json::json!({
+            "pattern": "*", "path": data.join("cells")
+        }))
+        .unwrap();
+        assert!(refused(
+            Tool::call(&crate::glob::Glob, glob, cx.clone()).await
+        ));
+        // A walk of the data dir skips the records and finds the rest.
+        let out = Tool::call(&Grep, grep_in(data.clone()), cx.clone())
+            .await
+            .unwrap()
+            .content;
+        assert_eq!(
+            out,
+            "briefs/x.md:1: brief SECRET\njobs/s1/j2.log:1: agent SECRET"
+        );
+        // Neighbours read and write as before.
+        for p in [data.join("briefs/x.md"), jobs.join("j2.log")] {
+            let r = Tool::call(&ReadFile, args(&p, None, None), cx.clone()).await;
+            assert!(r.is_ok(), "{}", p.display());
+        }
+        let r = Tool::call(&WriteFile, write(data.join("briefs/y.md")), cx.clone()).await;
+        assert!(r.is_ok());
     }
 }

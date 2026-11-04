@@ -390,6 +390,37 @@ impl Store {
         Ok(())
     }
 
+    /// 171F B9: the note `entry` of `session` was opened as.
+    pub(crate) async fn reply_note(&self, session: &str, entry: &str) -> Result<Option<String>> {
+        sqlx::query_scalar("SELECT doc FROM reply_notes WHERE session = ? AND entry = ?")
+            .bind(session)
+            .bind(entry)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)
+    }
+
+    /// 171F B9: remember (or replace) the note `entry` of `session` was opened as.
+    pub(crate) async fn set_reply_note(
+        &self,
+        session: &str,
+        entry: &str,
+        doc: &str,
+        at_ms: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO reply_notes(session, entry, doc, created_ms) VALUES (?, ?, ?, ?)",
+        )
+        .bind(session)
+        .bind(entry)
+        .bind(doc)
+        .bind(at_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
     /// §8.4 retention: runs older than `retention_days` go, except the latest run of every
     /// cell (by lineage when named, else by `CellRef`); then, over `max_bytes` of run files,
     /// the oldest non-latest runs go first. Returns the deleted ids (the caller removes
@@ -546,7 +577,7 @@ mod tests {
         ] {
             assert!(cols.contains(&c), "{c} missing from {cols:?}");
         }
-        assert_eq!(MIGRATOR.iter().count(), 3);
+        assert_eq!(MIGRATOR.iter().count(), 4);
     }
 
     /// Every D17 audit field round-trips; env stores names only.
@@ -634,5 +665,25 @@ mod tests {
         s.finish(&r, None, None).await.unwrap();
         let gone = s.expired(41 * day, 30, &|_| 10, 0).await.unwrap();
         assert_eq!(gone, vec![RunId("r_a2".into())]);
+    }
+
+    /// 171F B9: one note per reply; a second set replaces it; other replies are apart.
+    #[tokio::test]
+    async fn reply_note_round_trips_and_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("c.sqlite")).await.unwrap();
+        assert_eq!(s.reply_note("s1", "e1").await.unwrap(), None);
+        s.set_reply_note("s1", "e1", "d1", 1).await.unwrap();
+        assert_eq!(
+            s.reply_note("s1", "e1").await.unwrap().as_deref(),
+            Some("d1")
+        );
+        s.set_reply_note("s1", "e1", "d2", 2).await.unwrap();
+        assert_eq!(
+            s.reply_note("s1", "e1").await.unwrap().as_deref(),
+            Some("d2")
+        );
+        assert_eq!(s.reply_note("s1", "e2").await.unwrap(), None);
+        assert_eq!(s.reply_note("s2", "e1").await.unwrap(), None);
     }
 }

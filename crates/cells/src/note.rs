@@ -489,27 +489,27 @@ fn latest_row(
     }
 }
 
-/// Head (¾) + tail (¼) of `text` within `cap` bytes, the middle replaced by a cut line.
+/// Head (¾) + tail (¼) of `text` within `cap` bytes, the middle replaced by a cut line; the
+/// cuts fall on line starts when the windows have newlines.
 pub fn head_tail(text: &str, cap: usize) -> String {
     if text.len() <= cap {
         return text.to_owned();
     }
-    let marker = |n: usize| format!("\n… {n} bytes cut …\n");
-    let budget = cap.saturating_sub(marker(text.len()).len());
-    let floor = |i: usize| {
-        (0..=i)
-            .rev()
-            .find(|&i| text.is_char_boundary(i))
-            .unwrap_or(0)
+    let marker = |n: usize| format!("… {n} bytes cut …\n");
+    let budget = cap.saturating_sub(marker(text.len()).len() + 1);
+    let (head, tail) =
+        crate::deliver::line_cuts(text, budget * 3 / 4, text.len() - (budget - budget * 3 / 4));
+    let nl = if text[..head].ends_with('\n') {
+        ""
+    } else {
+        "\n"
     };
-    let ceil = |i: usize| {
-        (i..=text.len())
-            .find(|&i| text.is_char_boundary(i))
-            .unwrap_or(text.len())
-    };
-    let head = floor(budget * 3 / 4);
-    let tail = ceil(text.len() - (budget - budget * 3 / 4));
-    format!("{}{}{}", &text[..head], marker(tail - head), &text[tail..])
+    format!(
+        "{}{nl}{}{}",
+        &text[..head],
+        marker(tail - head),
+        &text[tail..]
+    )
 }
 
 // ---- doc_read run annotations (§4.4, §9.6) ------------------------------------------------------
@@ -803,6 +803,19 @@ mod tests {
         assert!(out.len() <= 1000, "{}", out.len());
         assert!(out.ends_with("END"));
         assert!(out.contains("bytes cut"));
+    }
+
+    /// 171F B17: cuts fall on line starts.
+    #[test]
+    fn head_tail_cuts_on_lines() {
+        let long: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+        let out = head_tail(&long, 1000);
+        assert!(out.len() <= 1000, "{}", out.len());
+        assert!(out.starts_with("line 0\n"));
+        assert!(out.ends_with("line 1999\n"));
+        for l in out.lines() {
+            assert!(l.starts_with("line ") || l.contains("bytes cut"), "{l:?}");
+        }
     }
 
     #[test]

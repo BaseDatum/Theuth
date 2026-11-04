@@ -390,7 +390,7 @@ impl Cells {
         self.inner.rt.publish(event).await;
     }
 
-    fn store(&self) -> Result<&Store> {
+    pub(crate) fn store(&self) -> Result<&Store> {
         self.inner
             .store
             .as_ref()
@@ -1376,6 +1376,7 @@ impl Cells {
                 let env = self.login_env().await;
                 let x = crate::deliver::Extra {
                     name: meta.name.as_deref(),
+                    label: meta.label.as_deref(),
                     private: rec.private || meta.private,
                     edited_code: meta.edited_code.as_deref(),
                     outputs: &outputs,

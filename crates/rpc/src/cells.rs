@@ -543,7 +543,6 @@ pub(crate) async fn live(server: &Server, ext: &Extensions) -> RpcResult<Vec<Cel
 }
 
 /// `cell_reply_note_get` (171F B9): the note reply `entry` was opened as.
-// 171:E2 stub — the cells-store table answers it.
 pub(crate) async fn reply_note_get(
     server: &Server,
     ext: &Extensions,
@@ -563,11 +562,13 @@ pub(crate) async fn reply_note_get(
     {
         return Ok(r);
     }
-    Ok(None)
+    match ::cells::Cells::lookup().await {
+        Some(c) => c.reply_note_get(session, &entry).await.map_err(cells_err),
+        None => Ok(None),
+    }
 }
 
 /// `cell_reply_note_set` (171F B9): remember that reply `entry` was opened as `doc`.
-// 171:E2 stub — the cells-store table keeps it.
 pub(crate) async fn reply_note_set(
     server: &Server,
     ext: &Extensions,
@@ -588,7 +589,11 @@ pub(crate) async fn reply_note_set(
     {
         return Ok(());
     }
-    Ok(())
+    handle()
+        .await?
+        .reply_note_set(session, &entry, &doc)
+        .await
+        .map_err(cells_err)
 }
 
 /// Re-exported for `cells_latest` (E2).

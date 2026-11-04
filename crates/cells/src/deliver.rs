@@ -15,6 +15,8 @@ use crate::types::{CellOutput, CellRef, CellRun, ExitStatus, Expect, RunState, S
 pub(crate) struct Extra<'a> {
     /// The cell's `name`.
     pub name: Option<&'a str>,
+    /// The cell's `label` (171F B20: the card's "theuth read" line names a run by it).
+    pub label: Option<&'a str>,
     /// `private: true`: attributes and expect lines only.
     pub private: bool,
     /// The code that ran when the user edited it (F4).
@@ -65,6 +67,10 @@ pub(crate) fn parts(
             };
             let _ = write!(a, " cell=\"{}\"", esc(k));
         }
+    }
+    if let Some(l) = x.label.filter(|l| !l.is_empty()) {
+        let l: String = l.chars().take(40).collect();
+        let _ = write!(a, " label=\"{}\"", esc(&l));
     }
     let _ = write!(a, " exit=\"{}\"", exit_word(run));
     if let Some(s) = run.secs {
@@ -261,17 +267,33 @@ fn cut(s: &str, max: usize) -> (&str, bool) {
     (&s[..end], false)
 }
 
+/// Line-aligned cuts for a head of at most `head_max` bytes and a tail from byte `tail_from`
+/// on (171F B17): the head ends after its last `\n`, the tail starts at the next line start; a
+/// window without a newline is cut at the byte (on a char boundary). `(head_end, tail_start)`.
+pub(crate) fn line_cuts(text: &str, head_max: usize, tail_from: usize) -> (usize, usize) {
+    let (head, _) = cut(text, head_max);
+    let head_end = head.rfind('\n').map_or(head.len(), |i| i + 1);
+    let mut tail = tail_from.min(text.len());
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    let at_line_start = tail == 0 || text.as_bytes()[tail - 1] == b'\n';
+    let tail_start = text[tail..]
+        .find('\n')
+        .map(|i| tail + i + 1)
+        .filter(|&t| !at_line_start && t < text.len())
+        .unwrap_or(tail);
+    (head_end, tail_start.max(head_end))
+}
+
 /// §9.1: head + tail at `cap` bytes (¾ head, ¼ tail) with the exact cut line.
 pub(crate) fn head_tail(text: &str, cap: usize, run: &str) -> (String, bool) {
     if text.len() <= cap {
         return (text.to_owned(), true);
     }
     let head_max = cap * 3 / 4;
-    let (head, _) = cut(text, head_max);
-    let mut tail_start = text.len() - (cap - head_max);
-    while !text.is_char_boundary(tail_start) {
-        tail_start += 1;
-    }
+    let (head_end, tail_start) = line_cuts(text, head_max, text.len() - (cap - head_max));
+    let head = &text[..head_end];
     let cut_bytes = tail_start - head.len();
     let mut out = head.to_owned();
     if !out.ends_with('\n') {
@@ -445,6 +467,55 @@ mod tests {
             .map(str::len)
             .sum();
         assert_eq!(kept, 8192);
+    }
+
+    /// 171F B20: `label` rides on the tag when the cell has one (escaped, ≤ 40 chars).
+    #[test]
+    fn label_attribute_only_when_labelled() {
+        let cfg = CellsConfig::default();
+        let t = build(&run(), "x", &cfg, &Extra::default());
+        assert!(!t.lines().next().unwrap().contains(" label="), "{t}");
+        let x = Extra {
+            label: Some("Preview \"prod\""),
+            ..Extra::default()
+        };
+        let t = build(&run(), "x", &cfg, &x);
+        assert!(
+            t.starts_with("<cell_result run=\"r_01JC7Q2M8V\" cell=\"2\" message=\"12\" label=\"Preview &quot;prod&quot;\" exit=\"0\""),
+            "{t}"
+        );
+        let long = "L".repeat(60);
+        let x = Extra {
+            label: Some(&long),
+            ..Extra::default()
+        };
+        let t = build(&run(), "x", &cfg, &x);
+        assert!(
+            t.contains(&format!(" label=\"{}\" ", "L".repeat(40))),
+            "{t}"
+        );
+    }
+
+    /// 171F B17: with newlines the head ends at a line end, the tail starts at a line start,
+    /// and `offset` is the head's length.
+    #[test]
+    fn head_and_tail_cut_on_lines() {
+        let text: String = (0..3000).map(|i| format!("row {i:04}\n")).collect();
+        let (shown, complete) = head_tail(&text, 8192, "r_x");
+        assert!(!complete);
+        let (head, rest) = shown.split_once("… ").unwrap();
+        assert!(head.ends_with('\n'));
+        let (cut_line, tail) = rest.split_once('\n').unwrap();
+        assert!(
+            cut_line.contains(&format!("offset={})", head.len())),
+            "{cut_line}"
+        );
+        assert!(text.starts_with(head));
+        assert!(text.ends_with(tail));
+        assert!(tail.starts_with("row "));
+        let tail_start = text.len() - tail.len();
+        assert_eq!(&text.as_bytes()[tail_start - 1..tail_start], b"\n");
+        assert!(head.len() <= 6144 && tail.len() <= 2048);
     }
 
     #[test]
