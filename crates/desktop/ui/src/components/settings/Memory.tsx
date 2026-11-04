@@ -15,10 +15,10 @@ type EndlessConfigX = EndlessConfig & Partial<Advanced>
 
 /** Key, label, help, the engine's validated range and its default (the placeholder while the key is absent). */
 const ADVANCED: readonly (readonly [keyof Advanced, string, string, number, number, number])[] = [
-  ['attempt_secs', 'Attempt seconds', 'How long one summary call to a cloud model may run before it is cancelled and retried. 10–3600, default 120.', 10, 3600, 120],
-  ['local_attempt_secs', 'Local attempt seconds', 'The same for a local model, which is slower to start and to answer. 30–7200, default 600.', 30, 7200, 600],
-  ['local_ctx_bytes', 'Local context bytes', 'How much text a local model is given per summary call. 4000–256000, default 24000.', 4_000, 256_000, 24_000],
-  ['local_jobs', 'Local jobs', 'Summary calls a local model runs at once. 1–16, default 1.', 1, 16, 1],
+  ['attempt_secs', 'Attempt seconds', 'Cloud attempt limit: how long one summary call to a cloud model may run before it is cancelled and retried. 10–3600, default 120.', 10, 3600, 120],
+  ['local_attempt_secs', 'Local attempt seconds', 'Local attempt limit: the same for a local model, which is slower to load and to answer. 30–7200, default 600.', 30, 7200, 600],
+  ['local_ctx_bytes', 'Local context bytes', 'Local prompt history size: how much of the chat a local model reads per summary call. 4000–256000, default 24000.', 4_000, 256_000, 24_000],
+  ['local_jobs', 'Local jobs', 'Local summaries at once: calls a local model runs in parallel. 1–16, default 1.', 1, 16, 1],
 ]
 
 /** A native range: `onChange` follows the pointer (the label beside it previews), `onCommit` fires on release so a drag is one write. */
