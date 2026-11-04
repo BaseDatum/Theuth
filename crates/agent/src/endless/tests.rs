@@ -316,7 +316,16 @@ async fn pump_builds_tree_and_tools_answer() {
     );
     assert!(mem.backfill.is_none());
 
-    let nodes = store.endless_nodes(id).await.unwrap();
+    // Settle waits for the view only; merges above trail it (one job at a time
+    // for a compactor the catalog prices nothing for, 137F E9).
+    let mut nodes = Vec::new();
+    for _ in 0..200 {
+        nodes = store.endless_nodes(id).await.unwrap();
+        if nodes.iter().any(|n| n.l == 2) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert!(
         nodes.iter().any(|n| n.l == 2),
         "merges above level 1 built: {}",

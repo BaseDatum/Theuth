@@ -94,7 +94,10 @@ impl Drop for Handle {
 /// 137F E9: one semaphore per local endpoint, engine-wide, sized by
 /// `local_jobs` (a changed size gets a fresh semaphore; calls on the old one finish there).
 #[derive(Clone, Default)]
-pub(crate) struct Queues(Arc<Mutex<HashMap<String, (u8, Arc<Semaphore>)>>>);
+pub(crate) struct Queues(Arc<Mutex<HashMap<String, Queue>>>);
+
+/// `(permits, semaphore)` of one endpoint.
+type Queue = (u8, Arc<Semaphore>);
 
 impl Queues {
     fn get(&self, endpoint: &str, permits: u8) -> Arc<Semaphore> {
