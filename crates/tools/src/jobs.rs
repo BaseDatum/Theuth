@@ -82,6 +82,42 @@ pub(crate) fn is_cell(name: Option<&str>) -> bool {
     name.is_some_and(|n| n.starts_with(CELL_PREFIX))
 }
 
+/// 171F3 R4: why no program would run a user cell of language word `lang`
+/// (`bash`, `pwsh`, …; a note's `shell:` default second) on this engine —
+/// `Some("no pwsh on this machine")` — or `None` when one resolves or `lang`
+/// is not a shell. The cells plugin installs it at start (it owns the login
+/// PATH and the resolver); the agent's reply check and the note-write check
+/// ask it ([`program_missing`]). Before an install nothing is flagged.
+type ProgramCheck = Arc<
+    dyn Fn(String, Option<String>) -> futures::future::BoxFuture<'static, Option<String>>
+        + Send
+        + Sync,
+>;
+
+static PROGRAM_CHECK: std::sync::RwLock<Option<ProgramCheck>> = std::sync::RwLock::new(None);
+
+/// Install (replace) the program check (see [`program_missing`]).
+pub fn set_program_check<F, Fut>(check: F)
+where
+    F: Fn(String, Option<String>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Option<String>> + Send + 'static,
+{
+    let check: ProgramCheck = Arc::new(move |lang, shell| Box::pin(check(lang, shell)));
+    *PROGRAM_CHECK
+        .write()
+        .unwrap_or_else(PoisonError::into_inner) = Some(check);
+}
+
+/// 171F3 R4: ask the installed program check why no program would run a `lang`
+/// cell here; `None` when one resolves, `lang` is no shell, or none is installed.
+pub async fn program_missing(lang: &str, note_shell: Option<&str>) -> Option<String> {
+    let check = PROGRAM_CHECK
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()?;
+    check(lang.to_owned(), note_shell.map(str::to_owned)).await
+}
+
 /// `j{n}`, `n` per session starting at 1.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]

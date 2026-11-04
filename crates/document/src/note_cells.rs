@@ -58,7 +58,7 @@ impl Message<CheckCells> for DocumentActor {
             .store
             .vault()
             .map(|v| v.list().into_iter().map(|s| s.name).collect());
-        match cell_problems(&existing, &m.markdown, secrets) {
+        match cell_problems(&existing, &m.markdown, secrets).await {
             Some(text) => Err(text),
             None => Ok(()),
         }
@@ -342,7 +342,9 @@ fn longest_backticks(text: &str) -> usize {
 /// The §3.6 errors of the cells in `markdown`, as `cell <n>: <code> — <message>` lines under a
 /// refusal; `None` when every cell is valid (or there is none). Warnings are the editor's.
 /// `secrets: None` = no vault, `secret_unknown` is skipped. Monty sufficiency is not checked here.
-pub(crate) fn cell_problems(
+/// 171F3 R4: a shell cell no program on this engine would run (the note's `shell:` default
+/// applies) is `no_interpreter`, as in the cell state — resolved once per language.
+pub(crate) async fn cell_problems(
     existing: &[CodeBlockTextReply],
     markdown: &str,
     secrets: Option<Vec<String>>,
@@ -369,6 +371,7 @@ pub(crate) fn cell_problems(
     let all: Vec<&Cell> = old.iter().chain(&new).collect();
     let names: Vec<String> = all.iter().filter_map(|c| c.options.name.clone()).collect();
     let mut s = String::new();
+    let mut missing: Vec<(cell::Lang, Option<String>)> = Vec::new();
     for (i, c) in new.iter().enumerate() {
         let me = old.len() + i;
         let after_edges = all
@@ -390,6 +393,18 @@ pub(crate) fn cell_problems(
             .filter(|p| p.severity == Severity::Error)
         {
             s.push_str(&format!("cell {}: {} — {}\n", i + 1, p.code, p.message));
+        }
+        let why = match missing.iter().find(|(l, _)| *l == c.lang) {
+            Some((_, why)) => why.clone(),
+            None => {
+                let shell = defaults.as_ref().and_then(|d| d.shell.as_deref());
+                let why = tools::jobs::program_missing(c.lang.word(), shell).await;
+                missing.push((c.lang, why.clone()));
+                why
+            }
+        };
+        if let Some(why) = why {
+            s.push_str(&format!("cell {}: no_interpreter — {why}\n", i + 1));
         }
     }
     (!s.is_empty())
@@ -571,17 +586,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn inserted_cells_are_validated_against_the_note() {
+    #[tokio::test]
+    async fn inserted_cells_are_validated_against_the_note() {
         let existing = [reply("b1", "bash", PREVIEW), reply("b9", "bash", "echo")];
         // Valid: `after` names an existing cell.
         let ok =
             "intro\n\n```bash\n#| name: apply\n#| cwd: /tmp\n#| after: preview\npulumi up\n```\n";
-        assert_eq!(cell_problems(&existing, ok, None), None);
+        assert_eq!(cell_problems(&existing, ok, None).await, None);
         // Plain code and `cells` blocks are never validated.
-        assert_eq!(cell_problems(&[], "```bash\nls\n```\n", None), None);
+        assert_eq!(cell_problems(&[], "```bash\nls\n```\n", None).await, None);
         let bad = "```bash\n#| name: one\n#| cwd: /tmp\necho\n```\n\n```bash\n#| name: preview\n#| after: nope\n#| env: T={{secret:NOPE}}\necho\n```\n";
-        let text = cell_problems(&existing, bad, Some(vec!["KEY".into()])).expect("refused");
+        let text = cell_problems(&existing, bad, Some(vec!["KEY".into()]))
+            .await
+            .expect("refused");
         assert_eq!(
             text,
             "nothing changed: a cell does not validate — fix it and retry\n\
@@ -593,9 +610,40 @@ mod tests {
         // A note default supplies the cwd; no vault → no secret check.
         let defaults = [reply("b0", "cells", "#| cwd: /srv")];
         let md = "```bash\n#| name: x\n#| env: T={{secret:NOPE}}\necho\n```\n";
-        assert_eq!(cell_problems(&defaults, md, None), None);
+        assert_eq!(cell_problems(&defaults, md, None).await, None);
         let md = format!("```cells\n#| cwd: /srv\n```\n\n{md}");
-        assert_eq!(cell_problems(&[], &md, None), None);
+        assert_eq!(cell_problems(&[], &md, None).await, None);
+    }
+
+    /// 171F3 R4: an agent write whose shell cell no program on this engine would run is
+    /// refused with the cell state's reason; the note's `shell:` default reaches the resolver.
+    #[tokio::test]
+    async fn inserted_cells_with_no_program_are_refused() {
+        tools::jobs::set_program_check(|lang, shell| async move {
+            match (lang.as_str(), shell) {
+                ("pwsh", None) => Some("no pwsh on this machine".to_owned()),
+                ("bash", Some(s)) => Some(format!("the note's shell `{s}` was not found")),
+                _ => None,
+            }
+        });
+        let md = "```pwsh\n#| cwd: /tmp\nGet-Date\n```\n\n```bash\n#| cwd: /tmp\nls\n```\n";
+        assert_eq!(
+            cell_problems(&[], md, None).await.as_deref(),
+            Some(
+                "nothing changed: a cell does not validate — fix it and retry\n\
+                 cell 1: no_interpreter — no pwsh on this machine\n"
+            )
+        );
+        let defaults = [reply("b0", "cells", "#| shell: /opt/nope/bash")];
+        let text = cell_problems(&defaults, "```bash\n#| cwd: /tmp\nls\n```\n", None)
+            .await
+            .expect("refused");
+        assert!(
+            text.ends_with(
+                "cell 1: no_interpreter — the note's shell `/opt/nope/bash` was not found\n"
+            ),
+            "{text}"
+        );
     }
 
     #[test]

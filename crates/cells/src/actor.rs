@@ -228,6 +228,11 @@ pub async fn start(rt: &Runtime, config: CellsConfig) -> Cells {
     }
     rt.subscribe::<CellsActor, agent::AgentEvent>(&actor).await;
     let c = cells.clone();
+    tools::jobs::set_program_check(move |lang, note_shell| {
+        let c = c.clone();
+        async move { c.program_missing(&lang, note_shell.as_deref()).await }
+    });
+    let c = cells.clone();
     tokio::spawn(async move { c.boot().await });
     let c = cells.clone();
     tokio::spawn(async move {
@@ -455,6 +460,17 @@ impl Cells {
         let e = capture_env(self.inner.config.login_env_timeout_secs).await;
         *g = Some(e.clone());
         e
+    }
+
+    /// 171F3 R4: [`tools::jobs::ProgramCheck`] — why no program would run a `lang` cell here
+    /// (the B19 `no_interpreter` reason), `None` when one resolves or `lang` is not a shell.
+    /// The login PATH is the cached one; no process is spawned past its first capture.
+    async fn program_missing(&self, lang: &str, note_shell: Option<&str>) -> Option<String> {
+        let kind = shell_kind(surface::cell::lang_of(lang)?)?;
+        let env = self.login_env().await;
+        crate::shell::program(kind, note_shell, &env.vars)
+            .err()
+            .map(|e| e.to_string())
     }
 
     // ---- reading the record (§3.4, §3.5, §12.1 inv. 5) ----

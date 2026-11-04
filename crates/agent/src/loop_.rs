@@ -3298,12 +3298,14 @@ type InvalidCell = (usize, Option<String>, Vec<surface::cell::Problem>);
 /// assistant cells of the session (a re-presented name supersedes, so it is no duplicate);
 /// `name_duplicate` is within the reply. `secrets` are vault names (never values); `monty`
 /// holds, per cell, the sufficiency verdict of a `python: monty` cell with its reason
-/// (`None` = unchecked).
+/// (`None` = unchecked); `programs`, per cell, why no program would run it on this engine
+/// (171F3 R4, the cell state's B19 `no_interpreter`; `None` = it resolves or unchecked).
 fn invalid_cells(
     cells: &[surface::cell::Cell],
     earlier: &[surface::cell::Cell],
     secrets: Option<&[String]>,
     monty: &[Option<Result<(), String>>],
+    programs: &[Option<String>],
 ) -> Vec<InvalidCell> {
     // This reply's names once per occurrence; an earlier name once, unless re-presented here.
     let mut names: Vec<String> = cells
@@ -3344,10 +3346,18 @@ fn invalid_cells(
                 monty_why: monty.get(i).and_then(|m| m.clone()?.err()),
                 ..surface::cell::ValidateCtx::default()
             };
-            let errors: Vec<_> = surface::cell::validate(cell, &ctx)
+            let mut errors: Vec<_> = surface::cell::validate(cell, &ctx)
                 .into_iter()
                 .filter(|p| p.severity == surface::cell::Severity::Error)
                 .collect();
+            if let Some(Some(why)) = programs.get(i) {
+                errors.push(surface::cell::Problem {
+                    code: "no_interpreter".into(),
+                    severity: surface::cell::Severity::Error,
+                    message: why.clone(),
+                    key: None,
+                });
+            }
             (!errors.is_empty()).then(|| (i + 1, cell.options.name.clone(), errors))
         })
         .collect()
@@ -3387,6 +3397,9 @@ impl Turn {
             .as_deref()
             .map(|v| v.list().into_iter().map(|s| s.name).collect());
         let mut monty = Vec::with_capacity(cells.len());
+        // 171F3 R4: resolved once per language for this check.
+        let mut missing: HashMap<surface::cell::Lang, Option<String>> = HashMap::new();
+        let mut programs = Vec::with_capacity(cells.len());
         for c in &cells {
             monty.push(
                 if c.options.python == Some(surface::cell::PythonChoice::Monty) {
@@ -3395,8 +3408,17 @@ impl Turn {
                     None
                 },
             );
+            let why = match missing.get(&c.lang) {
+                Some(why) => why.clone(),
+                None => {
+                    let why = tools::jobs::program_missing(c.lang.word(), None).await;
+                    missing.insert(c.lang, why.clone());
+                    why
+                }
+            };
+            programs.push(why);
         }
-        let invalid = invalid_cells(&cells, &earlier, secrets.as_deref(), &monty);
+        let invalid = invalid_cells(&cells, &earlier, secrets.as_deref(), &monty, &programs);
         if invalid.is_empty() {
             return None;
         }
@@ -8570,11 +8592,11 @@ mod tests {
 ```bash\n#| name: preview-ir-prod1\n#| cwd: ~/s\n#| unknownkey: x\npulumi preview\n```\n\
 ```bash\n#| name: apply-ir-prod1\n#| danger\n#| after: preview-ir-prod1\n#| cwd: ~/s\npulumi up\n```\n\
 ```bash\necho a snippet, never checked\n```\n";
-        assert!(invalid_cells(&cells_of(runbook), &[], None, &[]).is_empty());
+        assert!(invalid_cells(&cells_of(runbook), &[], None, &[], &[]).is_empty());
 
         let broken =
             "```bash\n#| name: apply-ir-prod1\n#| after: preview\n#| cwd: ~/s\npulumi up\n```\n";
-        let invalid = invalid_cells(&cells_of(broken), &cells_of(runbook), None, &[]);
+        let invalid = invalid_cells(&cells_of(broken), &cells_of(runbook), None, &[], &[]);
         let msg = surface::cell_error(&invalid);
         assert!(
             msg.starts_with("<cell_error>\nYour reply presents 1 user cell the user cannot run."),
@@ -8588,11 +8610,11 @@ mod tests {
 
         // A later reply's `after` names an earlier reply's cell.
         let later = "```bash\n#| name: verify\n#| after: apply-ir-prod1\n#| cwd: /tmp\ntrue\n```\n";
-        assert!(invalid_cells(&cells_of(later), &cells_of(runbook), None, &[]).is_empty());
+        assert!(invalid_cells(&cells_of(later), &cells_of(runbook), None, &[], &[]).is_empty());
         // Two cells with one name in one reply are a duplicate.
         let twice =
             "```sh\n#| name: x\n#| cwd: /tmp\nls\n```\n```sh\n#| name: x\n#| cwd: /tmp\npwd\n```\n";
-        let dup = invalid_cells(&cells_of(twice), &[], None, &[]);
+        let dup = invalid_cells(&cells_of(twice), &[], None, &[], &[]);
         assert_eq!(dup.len(), 2);
         assert!(
             dup.iter()
@@ -8606,6 +8628,7 @@ mod tests {
             &[],
             Some(&["TOKEN".to_owned()]),
             &[Some(Err("line 1: no module named pandas".into()))],
+            &[],
         );
         let codes: Vec<&str> = got[0].2.iter().map(|p| p.code.as_str()).collect();
         assert_eq!(codes, ["secret_unknown", "monty_insufficient"]);
@@ -8632,6 +8655,42 @@ mod tests {
         let first = turn.check_cells(bad).await.expect("one round");
         assert!(first.contains("after_unknown"), "{first}");
         assert!(turn.check_cells(bad).await.is_none(), "the round is spent");
+    }
+
+    /// 171F3 R4: a reply whose pwsh cells no program on this engine would run gets one
+    /// `<cell_error>` naming each with the cell state's B19 reason, the resolver asked once
+    /// per language; a bash cell beside them is runnable. (The installed check stands in for
+    /// the cells plugin's, which `cells::shell::program` answers "no pwsh on this machine".)
+    #[tokio::test]
+    async fn cell_error_names_a_cell_with_no_program() {
+        use super::vision_fallback_tests::{Fake, Harness};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ASKED: AtomicUsize = AtomicUsize::new(0);
+        tools::jobs::set_program_check(|lang, _| async move {
+            (lang == "pwsh").then(|| {
+                ASKED.fetch_add(1, Ordering::SeqCst);
+                "no pwsh on this machine".to_owned()
+            })
+        });
+        let h = Harness::new(Fake::harvest_held(Duration::ZERO)).await;
+        let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
+        turn.cells_on = true;
+        let reply = "```pwsh\n#| name: list\n#| cwd: /tmp\nGet-ChildItem\n```\n\
+```bash\n#| name: ok\n#| cwd: /tmp\nls\n```\n\
+```pwsh\n#| name: where\n#| cwd: /tmp\nGet-Location\n```\n";
+        let msg = turn.check_cells(reply).await.expect("a <cell_error>");
+        assert_eq!(ASKED.load(Ordering::SeqCst), 1, "once per language");
+        assert!(
+            msg.starts_with("<cell_error>\nYour reply presents 2 user cells the user cannot run."),
+            "{msg}"
+        );
+        for line in [
+            "- cell 1 \"list\": no_interpreter — no pwsh on this machine\n",
+            "- cell 3 \"where\": no_interpreter — no pwsh on this machine\n",
+        ] {
+            assert!(msg.contains(line), "{msg}");
+        }
+        assert!(!msg.contains("\"ok\""), "{msg}");
     }
 
     /// 48 §4.3: a context edit swaps the frame but not the run-local state,

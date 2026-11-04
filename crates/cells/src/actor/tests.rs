@@ -1091,7 +1091,9 @@ impl note::Docs for Blocks {
     }
 }
 
-/// B19: a cell whose interpreter is missing is invalid on `cell_state`, with the reason.
+/// B19: a cell whose interpreter is missing is invalid on `cell_state`, with the reason —
+/// and 171F3 R4: the agent's reply / note-write check ([`Cells::program_missing`]) gives the
+/// same reason, nothing for a shell that resolves or a non-shell language.
 #[tokio::test]
 async fn missing_interpreter_is_an_error_problem() {
     let _one = note::DOCS_TEST.lock().await;
@@ -1120,6 +1122,12 @@ async fn missing_interpreter_is_an_error_problem() {
         .expect("no_interpreter");
     assert_eq!(p.severity, Severity::Error);
     assert_eq!(p.message, "no pwsh on this machine");
+    assert_eq!(
+        cells.program_missing("pwsh", None).await.as_deref(),
+        Some("no pwsh on this machine")
+    );
+    assert_eq!(cells.program_missing("sh", None).await, None);
+    assert_eq!(cells.program_missing("python", None).await, None);
 }
 
 /// The document side of note scope: one block, any key, no markdown.

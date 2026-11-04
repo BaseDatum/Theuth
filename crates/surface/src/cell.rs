@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Runnable fence languages (§3.1); every other language is never a cell.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Lang {
@@ -41,6 +41,19 @@ impl Lang {
         match self {
             Lang::Javascript | Lang::Typescript => "//|",
             _ => "#|",
+        }
+    }
+
+    /// The canonical language word (`bash`, `pwsh`, …): [`lang_of`] reads it back.
+    pub fn word(self) -> &'static str {
+        match self {
+            Lang::Bash => "bash",
+            Lang::Zsh => "zsh",
+            Lang::Sh => "sh",
+            Lang::Pwsh => "pwsh",
+            Lang::Python => "python",
+            Lang::Javascript => "javascript",
+            Lang::Typescript => "typescript",
         }
     }
 }
