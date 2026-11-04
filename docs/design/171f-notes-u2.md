@@ -15,7 +15,8 @@
   for `prepend`, to the joined list, so a page boundary between the parked rows and the user's row still folds.
   The folded user entry takes `run[0].turn` (`cell_result` history entries now carry `turn`), so `adopt` pairs it with
   the live entry by `u<turn>\n<text>` and Edit/Fork return. The cards' own `context` (removal targets of the result
-  rows) is dropped on fold; the user row's context stays.
+  rows) is dropped on fold; the user row's context stays. Only a turnless user row folds (in the parked case only the
+  first result row opens the turn); results followed by a row that opens its own turn stay as cards.
 - UI: `MessageUser` takes `id` (optional; tests render without it) and `cells`; `SentResults` is one collapsed row
   ("N cell results sent with this message", singular for 1) keyed `disclosureKey(session, id, 'cells')`, expanding to
   `ResultCard` lines (attributes only, so a private cell's output never shows).

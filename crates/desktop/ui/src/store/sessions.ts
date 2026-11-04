@@ -399,9 +399,10 @@ type SessionsStore = {
 export type SessionsApi = StoreApi<SessionsStore>;
 
 /** 171F B4: parked cell results reload as their own rows ahead of the user's words (one row per input; the first row
- * opens the turn). A run of `cell_result` entries immediately followed by a `user` entry folds into that entry's
- * `cells`, and the entry takes the run's turn: the card a live `TurnStarted` builds, so `adopt` pairs the two and the
- * message keeps Edit/Fork. A run followed by anything else (a review wake) stays as result cards. */
+ * opens the turn). A run of `cell_result` entries immediately followed by a turnless `user` entry folds into that
+ * entry's `cells`, and the entry takes the run's turn: the card a live `TurnStarted` builds, so `adopt` pairs the two
+ * and the message keeps Edit/Fork. A run followed by anything else (a review wake, a message opening its own turn)
+ * stays as result cards. */
 export function foldCells(entries: Entry[]): Entry[] {
   const out: Entry[] = [];
   let run: Extract<Entry, { kind: "cell_result" }>[] = [];
@@ -410,9 +411,9 @@ export function foldCells(entries: Entry[]): Entry[] {
       run.push(e);
       continue;
     }
-    if (e.kind === "user" && run.length) {
+    if (e.kind === "user" && e.turn === undefined && run.length) {
       const cells = run.map(({ id: _id, context: _context, at: _at, turn: _turn, ...c }) => c);
-      out.push({ ...e, turn: run[0]?.turn ?? e.turn, cells: [...(e.cells ?? []), ...cells] });
+      out.push({ ...e, turn: run[0]?.turn, cells });
     } else out.push(...run, e);
     run = [];
   }

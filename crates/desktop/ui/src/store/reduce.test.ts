@@ -1447,8 +1447,8 @@ test('171F B4: reload folds the parked rows into the user entry — same shape a
       ...loaded(),
       history: [
         { role: 'user', text: CELL_A, turn: 5 },
-        { role: 'user', text: CELL_B },
-        { role: 'user', text: 'ok done' },
+        { role: 'user', text: CELL_B, turn: null },
+        { role: 'user', text: 'ok done', turn: null },
         { role: 'assistant', text: 'thanks', turn: 5 },
       ],
       first_seq: 5,
@@ -1461,6 +1461,8 @@ test('171F B4: reload folds the parked rows into the user entry — same shape a
   expect(back[0]).toMatchObject({ id: live[0]?.id, text: 'ok done', turn: 5 })
   const strip = (e: Entry | undefined) => (e?.kind === 'user' ? e.cells : undefined)
   expect(strip(back[0])).toEqual(strip(live[0]))
-  // A run followed by no user words (a review wake) stays as result cards.
+  // A run followed by no user words (a review wake), or by a message opening its own turn, stays as result cards.
   expect(foldCells(fromHistory({ role: 'user', text: CELL_A, turn: 7 })).map((e) => e.kind)).toEqual(['cell_result'])
+  const next = [{ role: 'user' as const, text: CELL_A, turn: 7 }, { role: 'user' as const, text: 'next', turn: 8 }].flatMap(fromHistory)
+  expect(foldCells(next).map((e) => e.kind)).toEqual(['cell_result', 'user'])
 })
