@@ -83,7 +83,7 @@ pub(crate) async fn launch(
             session: ctx.owner,
             call_id: String::new(),
             args: StartArgs {
-                command: format!("{} (user cell kernel)", path.display()),
+                command: format!("{}{}", path.display(), tools::jobs::CELL_COMMAND),
                 name: Some(format!(
                     "{}{} {kid}",
                     tools::jobs::CELL_PREFIX,

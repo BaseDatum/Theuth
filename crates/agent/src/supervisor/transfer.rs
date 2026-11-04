@@ -294,7 +294,13 @@ pub async fn on_resume_here(
         from.unwrap_or("another engine"),
     )
     .await;
-    reaped.jobs.into_iter().map(|j| j.row.id).collect()
+    // 171F3 R1: a user-cell kernel is the cells actor's to report, never the agent's.
+    reaped
+        .jobs
+        .into_iter()
+        .filter(|j| !j.row.is_cell_kernel())
+        .map(|j| j.row.id)
+        .collect()
 }
 
 #[cfg(test)]

@@ -375,6 +375,21 @@ pub struct JobRow {
     pub engine: String,
 }
 
+impl JobRow {
+    /// 171F3 R1: a user-cell kernel's row — `cell:` name, the kernel command
+    /// marker, or a `.cell.log` log (any one: rows of older engines may lack
+    /// a newer marker). Its end is never a `<job_result>` and its screen is
+    /// never model input.
+    pub fn is_cell_kernel(&self) -> bool {
+        crate::jobs::is_cell(self.name.as_deref())
+            || self.command.ends_with(crate::jobs::CELL_COMMAND)
+            || self.log.as_deref().is_some_and(|l| {
+                l.file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with(crate::jobs::CELL_LOG))
+            })
+    }
+}
+
 /// One `pty_screens` row (§3.1, §5.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PtyScreenRow {

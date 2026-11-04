@@ -128,16 +128,22 @@ pub async fn settle_transferred(store: &Store, session: SessionId, from: &str) -
             row.id,
             row.engine
         );
+        // 171F3 R1: a user-cell kernel is never a `<job_result>`; its screen and
+        // log are never model input (the cells actor reports its lost run).
+        let cell = row.is_cell_kernel();
         let screen = match row.kind {
-            JobKind::Pty => store.pty_screen(session, &row.id).await.ok().flatten(),
-            JobKind::Shell | JobKind::Promoted => None,
+            JobKind::Pty if !cell => store.pty_screen(session, &row.id).await.ok().flatten(),
+            _ => None,
         };
         // The log lives on the engine that ran it: empty here.
-        let tail = row.log.as_deref().map(log_tail).unwrap_or_default();
+        let tail = match &row.log {
+            Some(log) if !cell => log_tail(log),
+            _ => String::new(),
+        };
         let reason = LostReason::OwnerChanged {
             engine: row.engine.clone(),
         };
-        let deliver = (!in_batch.iter().any(|c| job_of_call(&row.call_id, c)))
+        let deliver = (!cell && !in_batch.iter().any(|c| job_of_call(&row.call_id, c)))
             .then(|| lost_body(&row, screen.as_ref(), &tail, now, &reason));
         reaped.jobs.push(LostJob {
             row,
@@ -212,15 +218,21 @@ pub(crate) async fn reap(store: &Store, open: &[OpenTurnRow]) -> (ReapReport, Re
             report.orphaned += 1;
             continue;
         }
+        // 171F3 R1: a user-cell kernel is never a `<job_result>`; its screen and
+        // log are never model input (the cells actor reports its lost run).
+        let cell = row.is_cell_kernel();
         let screen = match row.kind {
-            JobKind::Pty => store.pty_screen(row.session, &row.id).await.ok().flatten(),
-            JobKind::Shell | JobKind::Promoted => None,
+            JobKind::Pty if !cell => store.pty_screen(row.session, &row.id).await.ok().flatten(),
+            _ => None,
         };
-        let tail = row.log.as_deref().map(log_tail).unwrap_or_default();
+        let tail = match &row.log {
+            Some(log) if !cell => log_tail(log),
+            _ => String::new(),
+        };
         let in_turn = in_batch
             .iter()
             .any(|(s, c)| *s == row.session && job_of_call(&row.call_id, c));
-        let deliver = (!in_turn).then(|| {
+        let deliver = (!cell && !in_turn).then(|| {
             lost_body(
                 &row,
                 screen.as_ref(),
@@ -894,5 +906,106 @@ mod tests {
             "{}",
             send.content
         );
+    }
+
+    /// 171F3 R1: an agent PTY and two user-cell kernels — one marked by its
+    /// `cell:` name, one (an older row) by its command only — all alive at a
+    /// shutdown, through the boot reaper: exactly one `<job_result>` body (the
+    /// agent PTY, with its screen), none for the kernels, no kernel screen or
+    /// log in any of it, and a resumed `wait` / `send` on a kernel is refused.
+    #[tokio::test]
+    async fn reaper_never_reports_a_cell_kernel() {
+        let scratch = temp();
+        let dir = scratch.0.clone();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let s = session(&store).await;
+        const SECRET: &str = "Identity added: /home/u/.ssh/id_ed25519";
+        let screen = |id: &str, text: &str| tools::PtyScreenRow {
+            session: s,
+            job_id: tools::JobId(id.into()),
+            revision: 9,
+            rows: 40,
+            cols: 120,
+            cursor_row: 0,
+            cursor_col: 0,
+            text: text.into(),
+            at_ms: 2_000,
+        };
+        let stamped = |mut row: JobRow| {
+            row.kind = JobKind::Pty;
+            row.exit = Some(JobExit::Lost);
+            row.settled_ms = Some(5_000);
+            row
+        };
+        let mut agent = stamped(running(s, "j1", "c1", None));
+        agent.command = "bash -l".into();
+        let kernel_log = dir.join("j2.log");
+        std::fs::write(&kernel_log, format!("{SECRET}\n")).unwrap();
+        let mut named = stamped(running(s, "j2", "", None));
+        named.name = Some("cell:zsh kd71fefe799f4".into());
+        named.command = format!("/bin/zsh{}", tools::jobs::CELL_COMMAND);
+        named.log = Some(kernel_log);
+        let mut unnamed = stamped(running(s, "j3", "", None));
+        unnamed.command = format!("/bin/sh{}", tools::jobs::CELL_COMMAND);
+        for (row, text) in [(&agent, "$ make"), (&named, SECRET), (&unnamed, SECRET)] {
+            store.job_put(row).await.unwrap();
+            store
+                .pty_screen_put(&screen(&row.id.0, text))
+                .await
+                .unwrap();
+        }
+
+        let (report, reaped) = reap(&store, &[]).await;
+        assert_eq!((report.lost, report.orphaned), (3, 0));
+        let bodies: Vec<(&str, &str)> = reaped
+            .jobs
+            .iter()
+            .filter_map(|j| Some((j.row.id.0.as_str(), j.deliver.as_deref()?)))
+            .collect();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert_eq!(bodies[0].0, "j1");
+        assert!(bodies[0].1.ends_with("\n$ make"), "{}", bodies[0].1);
+        for j in reaped.jobs.iter().filter(|j| j.row.id.0 != "j1") {
+            assert!(j.row.is_cell_kernel(), "{}", j.row.id);
+            assert_eq!((&j.screen, j.tail.as_str()), (&None, ""), "{}", j.row.id);
+        }
+
+        let plan = ResumePlan {
+            turn: TurnId::new(),
+            kind: ResumeKind::Interrupted,
+            cause: crate::durability::ResumeCause::Crash,
+            interrupted_at: Utc::now(),
+            last: LastStep::ToolBatch {
+                all_finished: false,
+            },
+            calls: Vec::new(),
+            partial: None,
+        };
+        for (name, id) in [
+            ("wait", "j2"),
+            ("wait", "j3"),
+            ("send", "cell:zsh kd71fefe799f4"),
+        ] {
+            let call = JournaledCall {
+                call_id: format!("c-{name}-{id}"),
+                name: name.into(),
+                args: json!({ "id": id }),
+                risk: Risk::Destructive,
+                state: crate::durability::CallState::Started,
+                attempt: 1,
+                started_at: None,
+                output: None,
+                is_error: false,
+                files: Vec::new(),
+            };
+            let out = resume_job_call(&store, s, &call, &plan).await.unwrap();
+            assert!(
+                out.is_error && out.content == tools::jobs::CELL_REFUSED,
+                "{name} {id}: {}",
+                out.content
+            );
+        }
     }
 }

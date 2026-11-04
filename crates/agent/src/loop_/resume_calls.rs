@@ -76,13 +76,28 @@ pub(crate) async fn resume_job_call(
         }
     };
     // `job_of_call`: a bridged `shell` / `start` spawns under `<call_id>.<n>`.
-    let by_call = || rows.iter().find(|j| job_of_call(&j.call_id, &call.call_id));
+    let by_call = || {
+        rows.iter()
+            .find(|j| !j.is_cell_kernel() && job_of_call(&j.call_id, &call.call_id))
+    };
     let by_arg = || {
         let id = call.args.get("id").and_then(|v| v.as_str())?;
         rows.iter()
             .rev()
             .find(|j| j.id.0 == id || j.name.as_deref() == Some(id))
     };
+    // 171F3 R1 (171 §9.7, 171F B23): a user-cell kernel is neither typed into
+    // nor read by the model, lost or live — no last screen through the resume.
+    let refused = || {
+        let id = call.args.get("id").and_then(|v| v.as_str())?;
+        (id.starts_with(tools::jobs::CELL_PREFIX) || by_arg().is_some_and(JobRow::is_cell_kernel))
+            .then(|| ToolOutput::err(tools::jobs::CELL_REFUSED))
+    };
+    if matches!(call.name.as_str(), "send" | "wait")
+        && let Some(out) = refused()
+    {
+        return Some(out);
+    }
     let (job, what) = match call.name.as_str() {
         "shell" => (by_call()?, "command"),
         "start" => (by_call()?, "terminal"),
