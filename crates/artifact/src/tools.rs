@@ -426,15 +426,9 @@ impl Tool for DocExportTool {
             })
             .await
             .map_err(anyhow::Error::msg)?;
-        let markdown = docs
-            .actor()
-            .ask(document::Markdown {
-                doc,
-                blocks: None,
-                annotate: format == ExportFormat::Pdf,
-            })
-            .await
-            .map_err(anyhow::Error::msg)?;
+        // 171 §4.4 (171F4 N4): each cell's last output and run line, as `doc_read` and the app's export.
+        let markdown =
+            document::reader_markdown(docs.actor(), doc, None, format == ExportFormat::Pdf).await?;
         let r = self
             .state
             .export_doc(ExportDoc {

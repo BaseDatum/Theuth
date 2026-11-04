@@ -41,6 +41,25 @@ export function settled(m: LineMark | null, latest: CellRun | null): LineMark | 
   return { ...m, phase: latest.exit?.type === 'code' && latest.exit.value === 0 ? 'ok' : 'fail' }
 }
 
+export type HoverEvent = { kind: 'move'; line: number | null } | { kind: 'leave'; inEditor: boolean }
+
+/**
+ * 171F B2: the hovered line after a pointer event. A move (text or the ► gutter) hovers its line; leaving the text
+ * for somewhere inside the editor (the ► itself) keeps it; only leaving the editor clears it.
+ */
+export function hoverAfter(current: number | null, e: HoverEvent): number | null {
+  if (e.kind === 'move') return e.line
+  return e.inEditor ? current : null
+}
+
+/**
+ * 171F4 N2: the note overlay's hovered line after a move at `x`. The band left of the code text (`textLeft`), where
+ * the ► sits, is the chat gutter's grace: it keeps the line (WebKit's `caretRangeFromPoint` there answers a header
+ * offset, which used to clear the ►). Over the text it follows `line` (`null` on a header line).
+ */
+export const noteHover = (current: number | null, x: number, textLeft: number, line: number | null) =>
+  hoverAfter(current, x < textLeft ? { kind: 'leave', inEditor: true } : { kind: 'move', line })
+
 /**
  * The gutter mark of one cell. `run(line, start)` presses `line` (`start` sends it) unless that line's run is in
  * flight; returns whether it pressed.

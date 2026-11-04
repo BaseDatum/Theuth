@@ -1,17 +1,18 @@
 import { BlockNoteEditor } from '@blocknote/core'
 import { schema } from '@theuth/documents/schema'
 import { createElement as h } from 'react'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import type { EngineProvider } from '@/lib/doc/provider'
+import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import type { CellState } from '@/rpc/bindings/CellState'
 import type { PassEnd } from '@/rpc/bindings/PassEnd'
 import { cellOf, digest } from './grammar'
-import { NoteCell, pressNote } from './NoteCell'
+import { NoteCell, pressNote, rereadAfterEdit } from './NoteCell'
 import { NoteHost } from './note-context'
 import { noteRef, withPython } from './note-edit'
-import { cells, refKey, scopeKey, scopeOf } from './store'
+import { cells, refKey, register, scopeKey, scopeOf } from './store'
 import { fakeApi, render, run, state } from './test-fixtures'
 import { viewOf } from './view'
 
@@ -24,6 +25,11 @@ const provider = { id: DOC, meta: { members: [{ pub: 'AbCdEf12rest', name: 'Alic
 /** NoteCell's static markup with `record` as the engine's state for its ref and `pass` as the scope's last pass. */
 function renderNote(record: CellState | null, pass: PassEnd | null = null) {
   cells.setState({ scopes: { [scopeKey(scopeOf(ref))]: { states: record ? { [refKey(ref)]: record } : {}, kernels: [], error: null, notices: {}, pass } } })
+  return mountNote()
+}
+
+/** NoteCell's static markup over the cells store as it is. */
+function mountNote() {
   const editor = BlockNoteEditor.create({ schema })
   return render(
     h(
@@ -33,6 +39,40 @@ function renderNote(record: CellState | null, pass: PassEnd | null = null) {
     ),
   )
 }
+
+test('171F4 N1: an edit re-reads the record once it settles; the footer then says "ran an earlier version", a revert clears it', async () => {
+  vi.useFakeTimers()
+  try {
+    const latest = run({ cell: ref, ended_ms: new Date(2026, 10, 4, 15, 13).getTime() })
+    let onScreen = TEXT
+    // The engine: stale while the note's text is not the code the run ran.
+    const { api, calls } = fakeApi({ cell_state: () => ({ cells: [state(ref as CellRef, { latest, stale: onScreen !== TEXT })], kernels: [] }) })
+    const reads = () => calls.filter(([m]) => m === 'cell_state').length
+    const off = register(api, scopeOf(ref), { ref, spec, label: 'rotate-key' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reads()).toBe(1)
+    expect(mountNote()).toContain('ran 15:13</span>')
+    const reread = rereadAfterEdit(scopeOf(ref))
+    // A trailing space, a new line, a comment: typed 300 ms apart, no read per keystroke.
+    for (const typed of [`${TEXT} `, `${TEXT} \n`, `${TEXT} \n# why`]) {
+      onScreen = typed
+      reread.edit()
+      await vi.advanceTimersByTimeAsync(300)
+    }
+    expect(reads()).toBe(1)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(reads()).toBe(2)
+    expect(mountNote()).toContain('ran 15:13 · ran an earlier version</span>')
+    onScreen = TEXT
+    reread.edit()
+    await vi.advanceTimersByTimeAsync(800)
+    expect(reads()).toBe(3)
+    expect(mountNote()).not.toContain('ran an earlier version')
+    off()
+  } finally {
+    vi.useRealTimers()
+  }
+})
 
 test('a press sends the Note ref, the digest of the text on screen, no edit, and member_ack only when given', async () => {
   const { api, calls } = fakeApi()
@@ -104,4 +144,16 @@ test('the cell a Run all pass stopped at says so and is ringed (171F B11), until
   expect(renderNote(failed, { ...pass, stopped: null })).not.toContain('Run all stopped here')
   const rerun = state(ref as CellRef, { latest: run({ cell: ref, pass: 'p_2', state: 'running', exit: null }) })
   expect(renderNote(rerun, pass)).not.toContain('Run all stopped here')
+})
+
+test('171F4 N3: in a note the "#|" pill unfolds the header in the editor — no read-only copy of it as in chat', () => {
+  const pill = disclosureKey(refKey(ref), 'raw')
+  useToolRuns.getState().setDisclosed(pill, true)
+  try {
+    const html = renderNote(state(ref as CellRef, { latest: run({ cell: ref }) }))
+    expect(html).toContain('aria-pressed="true"')
+    expect(html).not.toContain('#| name: rotate-key</pre>')
+  } finally {
+    useToolRuns.getState().setDisclosed(pill, false)
+  }
 })

@@ -48,14 +48,42 @@ export function passLine(pass: PassEnd | null, cells: CellRef[]): string | null 
 }
 
 /**
+ * 171F4 N5: whether a keydown is Run all for note `doc` from inside its editor — the chord with the focus anywhere in
+ * the BlockNote editor (`.bn-editor`: body text or a cell's chrome) that holds `doc`'s cells. The note editor binds
+ * no other action to the chord (BlockNote, the window shortcuts, the cell keys: Shift+Enter / Mod+Enter only).
+ */
+export function runAllChord(e: Pick<globalThis.KeyboardEvent, 'key' | 'shiftKey' | 'metaKey' | 'ctrlKey' | 'target'>, doc: string): boolean {
+  if (e.key !== 'Enter' || !e.shiftKey || !(isApple() ? e.metaKey : e.ctrlKey)) return false
+  const editor = (e.target as Element | null)?.closest?.('.bn-editor')
+  return !!editor?.querySelector(`[data-note-cell][data-doc="${doc}"]`)
+}
+
+/**
  * 171 §11.5: `python · .venv 3.12 · idle · Run all` beside the note's breadcrumb, one pill per live kernel; Restart
  * and Close in its menu; with no live kernel and cells on the page, one quiet `cells · Run all`. Mod+Shift+Enter
- * while the pill row is focused runs all (§11.7).
+ * while the pill row is focused, or anywhere in the note's editor (171F4 N5), runs all (§11.7).
  */
 export function NoteKernelPill({ doc }: NoteKernelPillProps) {
   const api = useApi()
   const scope: CellScope = { type: 'doc', id: doc }
   useEffect(() => register(api, { type: 'doc', id: doc }, null), [api, doc])
+  const act = (f: () => Promise<unknown>) =>
+    f().then(
+      () => refresh(scope),
+      (e: unknown) => toast.error(errorText(e)),
+    )
+  const runAll = () => act(() => runAllNote(api, scope, mountedCells(doc)))
+  // 171F4 N5: ⌘⇧↵ anywhere in the note's editor (body or a cell) is this Run all, as on the pill row.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (!runAllChord(e, doc)) return
+      e.preventDefault()
+      e.stopPropagation()
+      void runAll()
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [api, doc])
   const slice = useScope(scope)
   const kernels = liveKernels(slice.kernels)
   const cells = Object.keys(slice.states).length
@@ -64,12 +92,6 @@ export function NoteKernelPill({ doc }: NoteKernelPillProps) {
   // `mountedCells` reads the DOM: none in a server render.
   const line = passLine(pass, typeof document === 'undefined' ? [] : mountedCells(doc).map((c) => c.ref))
   const stopKey = pass?.stopped ? refKey(pass.stopped.cell) : ''
-  const act = (f: () => Promise<unknown>) =>
-    f().then(
-      () => refresh(scope),
-      (e: unknown) => toast.error(errorText(e)),
-    )
-  const runAll = () => act(() => runAllNote(api, scope, mountedCells(doc)))
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && e.shiftKey && (isApple() ? e.metaKey : e.ctrlKey)) {
       e.preventDefault()

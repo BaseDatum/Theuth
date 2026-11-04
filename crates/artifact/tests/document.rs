@@ -16,6 +16,9 @@ use document::{
 use kameo::actor::{ActorRef, Spawn};
 use runtime::SessionId;
 
+/// The document actor registers under one global name: one test at a time.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn start_documents(rt: &runtime::Runtime, bin: &std::path::Path) -> ActorRef<DocumentActor> {
     let store = store::Store::open(&rt.data_dir).await.unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -53,6 +56,7 @@ async fn versions(state: &State, session: SessionId) -> Vec<artifact::Artifact> 
 
 #[tokio::test]
 async fn show_twice_then_edit_is_three_versions_of_one_document() {
+    let _serial = SERIAL.lock().await;
     let bin = helper::helper_path();
     if !bin.is_file() {
         eprintln!("skipped: documents helper not built at {}", bin.display());
@@ -193,6 +197,116 @@ async fn show_twice_then_edit_is_three_versions_of_one_document() {
     // Exporting an unchanged document again records nothing.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(versions(&state, session).await.len(), 3);
+
+    docs.stop_gracefully().await.unwrap();
+    docs.wait_for_shutdown().await;
+}
+
+/// 171 §4.4 (171F4 N4): the agent's `doc_export(format=markdown)` carries each cell's latest output
+/// and run line, as `doc_read` does through the run hook: a cell whose run printed gets its
+/// `output` fence and run line, a quiet cell its run line and no empty fence, a private cell its
+/// run line and no output (the cells hook withholds a private run's text).
+#[tokio::test]
+async fn markdown_export_carries_cell_outputs_and_run_lines() {
+    use tools::Tool as _;
+    struct Hook;
+    impl document::RunAnnotations for Hook {
+        fn note_cell(
+            &self,
+            _: &document::DocId,
+            _: &str,
+            _: &str,
+            text: &str,
+        ) -> Option<document::CellAnnotation> {
+            let run = |output: Option<&str>| document::CellAnnotation {
+                outline: String::new(),
+                output: output.map(str::to_owned),
+                run_line: "ran 14:38 · exit 0 · 0.1 s".into(),
+            };
+            let name = text.lines().next()?.strip_prefix("#| name: ")?;
+            match name {
+                "loud" => Some(run(Some("3 to update"))),
+                "quiet" | "secret" => Some(run(None)),
+                _ => None,
+            }
+        }
+    }
+    let _serial = SERIAL.lock().await;
+    let bin = helper::helper_path();
+    if !bin.is_file() {
+        eprintln!("skipped: documents helper not built at {}", bin.display());
+        return;
+    }
+    document::set_run_annotations(Arc::new(Hook));
+    let dir = tempfile::tempdir().unwrap();
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let docs = start_documents(&rt, &bin).await;
+    let state = Arc::new(
+        State::open(dir.path(), rt.clone(), Vec::new())
+            .await
+            .unwrap(),
+    );
+    let session = SessionId::new();
+    let fence = |body: &str| format!("```bash\n{body}\n```\n\n");
+    let markdown = [
+        "#| name: loud\npulumi preview",
+        "#| name: quiet\ntrue",
+        "#| name: secret\n#| private\ncat token",
+    ]
+    .map(fence)
+    .concat();
+    let doc = docs
+        .ask(document::CreateNote {
+            title: "Runbook".into(),
+            markdown,
+            by: Principal::Agent { session: session.0 },
+        })
+        .await
+        .unwrap()
+        .id;
+    let out = artifact::tools::DocExportTool {
+        state: state.clone(),
+    }
+    .call(
+        serde_json::from_value(serde_json::json!({ "doc": doc.to_string(), "format": "markdown" }))
+            .unwrap(),
+        tools::ToolCx {
+            session,
+            call_id: "c1".into(),
+            quiet: false,
+            resources: Arc::new(tools::SessionResources {
+                root: dir.path().to_path_buf(),
+                retention: tools::Retention::Durable,
+                generation: 1,
+            }),
+            cancel: tools::CancellationToken::new(),
+            promote_after: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let id = out.structured.unwrap()["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let text = std::fs::read_to_string(
+        state
+            .export(&id, &dir.path().join("note.md"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let line = "ran 14:38 · exit 0 · 0.1 s";
+    assert!(
+        text.contains(&format!(
+            "pulumi preview\n```\n```output\n3 to update\n```\n{line}"
+        )),
+        "{text}"
+    );
+    assert!(text.contains(&format!("true\n```\n{line}")), "{text}");
+    assert!(text.contains(&format!("cat token\n```\n{line}")), "{text}");
+    assert_eq!(text.matches("```output").count(), 1, "{text}");
 
     docs.stop_gracefully().await.unwrap();
     docs.wait_for_shutdown().await;
