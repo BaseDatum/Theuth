@@ -1363,9 +1363,8 @@ impl Message<StartPty> for Jobs {
             }));
             return reply;
         }
-        let sj = self.sessions.entry(m.session).or_default();
-        sj.next += 1;
-        let id = JobId(format!("j{}", sj.next));
+        let dir = m.root.join("jobs").join(m.session.to_string());
+        let id = self.sessions.entry(m.session).or_default().alloc(&dir);
         let sink = self.activity.clone();
         let me = ctx.actor_ref().clone();
         let grace = self.grace;
@@ -1995,7 +1994,11 @@ fn spawn(
     cell: bool,
 ) -> anyhow::Result<Spawned> {
     std::fs::create_dir_all(dir)?;
-    let file = std::fs::File::create(log_path)?;
+    // 171F3 R2: never truncate an existing log (the id skips them).
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(log_path)?;
     let pair = native_pty_system().openpty(PtySize {
         rows: ROWS,
         cols: COLS,

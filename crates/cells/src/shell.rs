@@ -83,7 +83,7 @@ pub(crate) async fn launch(
             session: ctx.owner,
             call_id: String::new(),
             args: StartArgs {
-                command: format!("{} (user cell kernel)", path.display()),
+                command: format!("{}{}", path.display(), tools::jobs::CELL_COMMAND),
                 name: Some(format!(
                     "{}{} {kid}",
                     tools::jobs::CELL_PREFIX,
@@ -721,13 +721,40 @@ pub async fn resolve(
     note_shell: Option<&str>,
     login_env: &BTreeMap<String, String>,
 ) -> Result<(PathBuf, Interpreter), CellsError> {
+    let (path, why) = program(kind, note_shell, login_env)?;
+    let version = version_of(kind, &path).await;
+    let source = source_of(&path);
+    let mut why = why;
+    if kind == ShellKind::Bash && version.as_deref().is_some_and(|v| v.starts_with("3.")) {
+        why.push_str(" · bash 3.2 — no associative arrays, no `${x,,}`");
+    }
+    Ok((
+        path.clone(),
+        Interpreter {
+            kind: interpreter_kind(kind),
+            source,
+            path: Some(path),
+            version,
+            why,
+            auto: true,
+        },
+    ))
+}
+
+/// [`resolve`]'s binary and its reason, without the version probe (no process spawned);
+/// `NoInterpreter` with the user's words when nothing would run the cell (171F B19).
+pub(crate) fn program(
+    kind: ShellKind,
+    note_shell: Option<&str>,
+    login_env: &BTreeMap<String, String>,
+) -> Result<(PathBuf, String), CellsError> {
     let path_var = login_env
         .get("PATH")
         .cloned()
         .or_else(|| std::env::var("PATH").ok())
         .unwrap_or_default();
     let home = login_env.get("HOME").map(String::as_str);
-    let (path, why) = match note_shell.filter(|s| !s.trim().is_empty()) {
+    Ok(match note_shell.filter(|s| !s.trim().is_empty()) {
         Some(s) => {
             let p = expand_home(s.trim(), home);
             let p = if p.is_absolute() {
@@ -777,24 +804,7 @@ pub async fn resolve(
                 }
             }
         }
-    };
-    let version = version_of(kind, &path).await;
-    let source = source_of(&path);
-    let mut why = why;
-    if kind == ShellKind::Bash && version.as_deref().is_some_and(|v| v.starts_with("3.")) {
-        why.push_str(" · bash 3.2 — no associative arrays, no `${x,,}`");
-    }
-    Ok((
-        path.clone(),
-        Interpreter {
-            kind: interpreter_kind(kind),
-            source,
-            path: Some(path),
-            version,
-            why,
-            auto: true,
-        },
-    ))
+    })
 }
 
 /// The chip text (§6.3): `bash 5.2 (Homebrew)`, `bash 3.2 (macOS)`, `zsh 5.9`, `sh (dash)`.

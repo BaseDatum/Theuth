@@ -148,7 +148,64 @@ impl Store {
             .run(&pool)
             .await
             .map_err(|e| CellsError::Failed(format!("cells.sqlite migrate: {e}")))?;
-        Ok(Self { pool })
+        let store = Self { pool };
+        if let Err(e) = store.migrate_kernel_logs().await {
+            tracing::warn!(error = %e, "171F3: kernel log migration");
+        }
+        Ok(store)
+    }
+
+    /// 171F3 R3: kernels of 2.18.0 logged to `<id>.log`, which the file tools
+    /// cannot tell from an agent job's log (171F B24 refuses `<id>.cell.log`).
+    /// Every such path the run records name is renamed to `<id>.cell.log` and
+    /// the rows repointed, in one transaction; idempotent (a path already
+    /// moved is just repointed). A missing file, or one shorter than the runs
+    /// recorded (a later job of the same id overwrote it: not the kernel's any
+    /// more), is logged and left.
+    async fn migrate_kernel_logs(&self) -> Result<()> {
+        let old: Vec<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT log, MAX(COALESCE(log_to, log_from)) FROM cell_runs \
+             WHERE log LIKE '%.log' AND log NOT LIKE '%.cell.log' GROUP BY log",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        if old.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        for (from, end) in old {
+            let to = format!(
+                "{}{}",
+                from.strip_suffix(".log").unwrap_or(&from),
+                ".cell.log"
+            );
+            match std::fs::metadata(&from) {
+                Ok(m) if end.is_some_and(|e| m.len() < e.max(0).unsigned_abs()) => {
+                    tracing::warn!(log = %from, "171F3: shorter than its runs recorded; left");
+                    continue;
+                }
+                Ok(_) => {
+                    if let Err(e) = std::fs::rename(&from, &to) {
+                        tracing::warn!(log = %from, error = %e, "171F3: kernel log not renamed");
+                        continue;
+                    }
+                }
+                Err(_) if Path::new(&to).exists() => {}
+                Err(_) => {
+                    tracing::warn!(log = %from, "171F3: kernel log missing; rows left");
+                    continue;
+                }
+            }
+            sqlx::query("UPDATE cell_runs SET log = ? WHERE log = ?")
+                .bind(&to)
+                .bind(&from)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            tracing::info!(from = %from, to = %to, "171F3: kernel log renamed");
+        }
+        tx.commit().await.map_err(db)
     }
 
     /// Insert a new (queued) run.
@@ -613,6 +670,62 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(typed.0.as_deref(), Some(r#"{"desktop":5}"#));
+    }
+
+    /// 171F3 R3: a 2.18.0 kernel's `<id>.log`, named by two runs, is renamed to
+    /// `<id>.cell.log` at the next start, both rows point at it, and the file
+    /// tools refuse it (they did not before); a missing log, and one shorter
+    /// than its runs recorded (since overwritten by another job), are left.
+    #[tokio::test]
+    async fn old_kernel_logs_become_cell_logs_at_start() {
+        let root = tempfile::tempdir().unwrap();
+        let jobs = root.path().join("jobs").join("s1");
+        std::fs::create_dir_all(&jobs).unwrap();
+        let (old, gone, reused) = (
+            jobs.join("j6.log"),
+            jobs.join("j7.log"),
+            jobs.join("j4.log"),
+        );
+        std::fs::write(&old, "0123456789").unwrap();
+        std::fs::write(&reused, "").unwrap();
+        let db = root.path().join("cells").join("cells.sqlite");
+        let s = Store::open(&db).await.unwrap();
+        for (id, log, to) in [
+            ("r_a", &old, 4),
+            ("r_b", &old, 10),
+            ("r_c", &gone, 3),
+            ("r_d", &reused, 8),
+        ] {
+            let mut r = run(id, 1, 1);
+            s.insert(&r, "session:x", None).await.unwrap();
+            s.started(&r.id, 2, log.to_str(), Some(0)).await.unwrap();
+            r.state = RunState::Done;
+            s.finish(&r, None, Some(to)).await.unwrap();
+        }
+        tools::seat::refuse_cell_record(root.path(), &old).unwrap();
+        drop(s);
+
+        let s = Store::open(&db).await.unwrap();
+        let new = jobs.join("j6.cell.log");
+        assert!(!old.exists());
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "0123456789");
+        let mut logs = Vec::new();
+        for id in ["r_a", "r_b", "r_c", "r_d"] {
+            logs.push(s.get(&RunId(id.into())).await.unwrap().unwrap().log);
+        }
+        let path = |p: &Path| p.to_str().map(str::to_owned);
+        assert_eq!(logs, [path(&new), path(&new), path(&gone), path(&reused)]);
+        assert!(reused.exists());
+        let refused = tools::seat::refuse_cell_record(root.path(), &new).unwrap_err();
+        assert!(
+            refused.to_string().ends_with(tools::seat::CELL_RECORD),
+            "{refused}"
+        );
+        // Idempotent: a second start changes nothing.
+        drop(s);
+        let s = Store::open(&db).await.unwrap();
+        let again = s.get(&RunId("r_b".into())).await.unwrap().unwrap().log;
+        assert_eq!(again, path(&new));
     }
 
     /// §9.3 (A1): a turn consumes exactly the parked runs its text carries, in its own scope.

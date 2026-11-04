@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -69,6 +69,9 @@ pub const CELL_REFUSED: &str = "this terminal belongs to a user cell — ask the
 /// 171F B24: a kernel job's log is `<root>/jobs/<session>/<id>.cell.log`, so
 /// the file tools can refuse it from the path alone, across engine restarts.
 pub(crate) const CELL_LOG: &str = ".cell.log";
+/// 171F3 R1: the `command` suffix of a user-cell kernel job (`cells::shell`),
+/// the second marker a persisted row carries besides its `cell:` name.
+pub const CELL_COMMAND: &str = " (user cell kernel)";
 /// 171 §5.5: a mark sequence split across chunks is completed from this
 /// much carried tail; OSC 7 carries a path, so it gets [`OSC7_CARRY`].
 const MARK_CARRY: usize = 32;
@@ -77,6 +80,42 @@ const OSC7_CARRY: usize = 1024;
 /// Is `name` a user-cell kernel job's (`cell:<label>`)?
 pub(crate) fn is_cell(name: Option<&str>) -> bool {
     name.is_some_and(|n| n.starts_with(CELL_PREFIX))
+}
+
+/// 171F3 R4: why no program would run a user cell of language word `lang`
+/// (`bash`, `pwsh`, …; a note's `shell:` default second) on this engine —
+/// `Some("no pwsh on this machine")` — or `None` when one resolves or `lang`
+/// is not a shell. The cells plugin installs it at start (it owns the login
+/// PATH and the resolver); the agent's reply check and the note-write check
+/// ask it ([`program_missing`]). Before an install nothing is flagged.
+type ProgramCheck = Arc<
+    dyn Fn(String, Option<String>) -> futures::future::BoxFuture<'static, Option<String>>
+        + Send
+        + Sync,
+>;
+
+static PROGRAM_CHECK: std::sync::RwLock<Option<ProgramCheck>> = std::sync::RwLock::new(None);
+
+/// Install (replace) the program check (see [`program_missing`]).
+pub fn set_program_check<F, Fut>(check: F)
+where
+    F: Fn(String, Option<String>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Option<String>> + Send + 'static,
+{
+    let check: ProgramCheck = Arc::new(move |lang, shell| Box::pin(check(lang, shell)));
+    *PROGRAM_CHECK
+        .write()
+        .unwrap_or_else(PoisonError::into_inner) = Some(check);
+}
+
+/// 171F3 R4: ask the installed program check why no program would run a `lang`
+/// cell here; `None` when one resolves, `lang` is no shell, or none is installed.
+pub async fn program_missing(lang: &str, note_shell: Option<&str>) -> Option<String> {
+    let check = PROGRAM_CHECK
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()?;
+    check(lang.to_owned(), note_shell.map(str::to_owned)).await
 }
 
 /// `j{n}`, `n` per session starting at 1.
@@ -939,6 +978,8 @@ impl Job {
 #[derive(Default)]
 pub(crate) struct SessionJobs {
     pub(crate) next: u32,
+    /// 171F3 R2: `next` has been raised past the logs already on disk.
+    seeded: bool,
     pub(crate) jobs: Vec<Job>,
 }
 
@@ -956,6 +997,49 @@ impl SessionJobs {
         }
         evicted
     }
+
+    /// 171F3 R2: the next `j<n>`, never one the session used before. After an
+    /// engine restart (or a closed tree) the counter starts past the highest
+    /// `j<n>.log` / `j<n>.cell.log` in `dir` (`<root>/jobs/<session>`), and an
+    /// id whose log still exists is skipped: a new job never truncates an old
+    /// job's log, which cell run records and lost-job screens point at.
+    // ponytail: a settled promoted job (no log file) as the session's last
+    // job before a restart can still have its id reused; seed from the
+    // `jobs` rows if that matters.
+    pub(crate) fn alloc(&mut self, dir: &Path) -> JobId {
+        if !self.seeded {
+            self.seeded = true;
+            self.next = self.next.max(highest_logged(dir));
+        }
+        loop {
+            self.next += 1;
+            let id = format!("j{}", self.next);
+            if !dir.join(format!("{id}.log")).exists()
+                && !dir.join(format!("{id}{CELL_LOG}")).exists()
+            {
+                return JobId(id);
+            }
+        }
+    }
+}
+
+/// The highest `n` of a `j<n>.log` / `j<n>.cell.log` in `dir`; 0 when none.
+fn highest_logged(dir: &Path) -> u32 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name();
+            let name = name.to_str()?;
+            let stem = name
+                .strip_suffix(CELL_LOG)
+                .or_else(|| name.strip_suffix(".log"))?;
+            stem.strip_prefix('j')?.parse().ok()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The jobs actor. Look up with `ActorRef::<Jobs>::lookup(JOBS_ACTOR)`.
@@ -1096,13 +1180,15 @@ impl Message<Start> for Jobs {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let quiet = m.quiet;
+        let dir = m.root.join("jobs").join(m.session.to_string());
         let sj = self.sessions.entry(m.session).or_default();
         // A quiet job takes no row and no id: it reuses the last number, which
         // nothing publishes or lists.
-        if !quiet {
-            sj.next += 1;
-        }
-        let id = JobId(format!("j{}", sj.next));
+        let id = if quiet {
+            JobId(format!("j{}", sj.next))
+        } else {
+            sj.alloc(&dir)
+        };
         let sink = self.activity.clone();
         let me = ctx.actor_ref().clone();
         let grace = self.grace;
@@ -1318,9 +1404,8 @@ impl Message<Adopt> for Jobs {
     async fn handle(&mut self, m: Adopt, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let sj = self.sessions.entry(m.session).or_default();
-        sj.next += 1;
-        let id = JobId(format!("j{}", sj.next));
+        let dir = self.rt.data_dir.join("jobs").join(m.session.to_string());
+        let id = self.sessions.entry(m.session).or_default().alloc(&dir);
         let sink = self.activity.clone();
         let me = ctx.actor_ref().clone();
         // Admission awaits the supervisor: off the mailbox. The invocation
@@ -1927,7 +2012,13 @@ fn setup(
     let file = match log_path {
         Some(p) => {
             std::fs::create_dir_all(dir)?;
-            Some(std::fs::File::create(p)?)
+            // 171F3 R2: never truncate an existing log (the id skips them).
+            Some(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(p)?,
+            )
         }
         None => None,
     };
@@ -3034,6 +3125,43 @@ pub(crate) mod tests {
             finished(&fx).await,
             (JobExit::Exited(0), "late\n".to_owned(), false)
         );
+    }
+
+    /// 171F3 R2: a new jobs actor over the same root and session (an engine
+    /// restart) numbers past every log already there — `j<n>.log` and a
+    /// kernel's `j<n>.cell.log` alike — skips an id whose log appears later,
+    /// and never rewrites an earlier log.
+    #[tokio::test]
+    async fn ids_are_never_reused_across_a_restart() {
+        let mut fx = fixture(Duration::ZERO, Duration::from_secs(60)).await;
+        // Each job outlives the zero grace, so the reply is the `Running` stub with its id.
+        let StartReply::Running { id, log, .. } = spawn_job(&fx, "sleep 0.3; echo first").await
+        else {
+            panic!("expected Running");
+        };
+        assert_eq!(id.0, "j1");
+        assert_eq!(settled(&fx, Duration::from_secs(5)).await.state, "exited 0");
+        let kernel = log.with_file_name("j3.cell.log");
+        std::fs::write(&kernel, "kernel output\n").unwrap();
+
+        let rt = Runtime::new(figment::Figment::new(), fx.dir.clone());
+        fx.jobs = Jobs::spawn_with_mailbox(
+            Jobs::new(rt, Duration::ZERO, Duration::from_secs(60)),
+            runtime::subscriber_mailbox(),
+        );
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 0.3; echo second").await else {
+            panic!("expected Running");
+        };
+        assert_eq!(id.0, "j4");
+        let stray = log.with_file_name("j5.log");
+        std::fs::write(&stray, "not mine\n").unwrap();
+        let StartReply::Running { id, .. } = spawn_job(&fx, "sleep 0.3; echo third").await else {
+            panic!("expected Running");
+        };
+        assert_eq!(id.0, "j6");
+        assert!(std::fs::read_to_string(&log).unwrap().contains("first"));
+        assert_eq!(std::fs::read_to_string(&kernel).unwrap(), "kernel output\n");
+        assert_eq!(std::fs::read_to_string(&stray).unwrap(), "not mine\n");
     }
 
     #[tokio::test]
