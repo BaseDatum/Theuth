@@ -287,6 +287,23 @@ pub struct Backfill {
     pub usd_estimate: f64,
 }
 
+/// A view part that keeps failing to build (137F). Engine → UI.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Stalled {
+    /// Consecutive failed attempts of the failing node that blocks most (the frontier first).
+    pub failures: u32,
+    /// The last error, one line, ≤ 300 chars (secrets never appear: it is the provider's message).
+    pub error: String,
+    /// RFC 3339 UTC time of the pump's own next retry; `None` while a retry is running.
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub next_retry_at: Option<String>,
+    /// The compactor model id that failed.
+    pub model: String,
+    /// The failing node is the level-0 frontier: newer lines wait behind it.
+    pub blocking: bool,
+}
+
 /// RPC `session_memory` (§11.2).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -311,6 +328,10 @@ pub struct SessionMemory {
     /// D14 progress while history is being covered.
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub backfill: Option<Backfill>,
+    /// 137F: the failing node that blocks most; `None` when nothing is failing.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub stalled: Option<Stalled>,
 }
 
 /// Bus event on the session stream, ≤ 1 per 500 ms per session (§11.2).
@@ -333,6 +354,10 @@ pub struct EndlessProgress {
     /// D14 progress while history is being covered.
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub backfill: Option<Backfill>,
+    /// 137F: as [`SessionMemory::stalled`]; emitted whenever it appears, its count changes or it clears.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub stalled: Option<Stalled>,
 }
 
 /// Reply of [`Endless::set_mode`].
@@ -547,6 +572,12 @@ impl Endless {
     /// RPC `session_memory` body data.
     pub async fn memory(&self, session: SessionId) -> anyhow::Result<SessionMemory> {
         pump::memory(&self.inner, session).await
+    }
+
+    /// RPC `endless_retry` (137F): reset every failed node's backoff, wake
+    /// the pump, return the fresh state. An epochs session is untouched.
+    pub async fn retry(&self, session: SessionId) -> anyhow::Result<SessionMemory> {
+        pump::retry(&self.inner, session).await
     }
 
     /// The constant VIEW_DOC appended to the system prompt in endless sessions (§9).

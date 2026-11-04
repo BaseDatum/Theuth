@@ -273,6 +273,7 @@ agent:
 ### 11.2 RPC (crates/rpc, ts-rs bindings)
 - `create_session(options)`: `CreateSessionOptions.memory: Option<MemoryMode>` (`epochs | endless`).
 - `session_memory(session) -> SessionMemory { mode, view: Vec<ViewLine{id, n, text, built, level}>, settling: bool, unbuilt: u32, units: u64, stats: EndlessStats{calls, guard_trips: {copy, grounding, status, format, empty, size}, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, usd_estimate}, model: String, backfill: Option<{done, total, eta_secs}> }`.
+- `endless_retry(session) -> SessionMemory` (137F): resets every failed node's backoff, re-resolves the compactor, wakes the pump; `SessionMemory.stalled` / `EndlessProgress.stalled: Option<Stalled{failures, error, next_retry_at, model, blocking}>` show the failing node that blocks most (the frontier first).
 - `endless_zoom(session, id, n) -> Vec<ViewLine>` (n = 1 → one line with the whole unit text).
 - `endless_recall(session, query, limit) -> Vec<ViewLine>`.
 - `set_session_memory(session, mode) -> SessionMemory` (the `/endless` semantics, idle only; error `busy` otherwise).

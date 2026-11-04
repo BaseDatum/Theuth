@@ -429,6 +429,13 @@ fn wire_types_round_trip() {
         settling: true,
         error: None,
         backfill: None,
+        stalled: Some(super::Stalled {
+            failures: 2,
+            error: "timed out".into(),
+            next_retry_at: Some("2026-11-04T21:30:00Z".into()),
+            model: "ollama/qwen".into(),
+            blocking: true,
+        }),
     };
     let v = serde_json::to_value(&ev).unwrap();
     assert_eq!(v["type"], "EndlessProgress");

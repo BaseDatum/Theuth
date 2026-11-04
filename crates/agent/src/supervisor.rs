@@ -110,8 +110,9 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
-    EndlessConfigChanged, EndlessRecall, EndlessZoom, GetEndlessSettings, RenderMemoryView,
-    SessionMemoryQuery, SetEndlessSettings, SetSessionMemory, SetSessionViewBytes,
+    EndlessConfigChanged, EndlessRecall, EndlessRetry, EndlessZoom, GetEndlessSettings,
+    RenderMemoryView, SessionMemoryQuery, SetEndlessSettings, SetSessionMemory,
+    SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
@@ -7627,6 +7628,19 @@ impl Message<SessionMemoryQuery> for Agents {
         self.stored(m.session).await?;
         self.endless
             .memory(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<EndlessRetry> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137F: any session this engine knows, like [`SessionMemoryQuery`].
+    async fn handle(&mut self, m: EndlessRetry, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .retry(m.session)
             .await
             .map_err(|e| format!("{e:#}"))
     }

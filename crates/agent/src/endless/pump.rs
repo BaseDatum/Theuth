@@ -19,8 +19,8 @@ use super::fold::ViewBlock;
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
 use super::tree::{self, Node, Tree, Unit, exists, id_n};
 use super::{
-    Attached, Backfill, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode, UnitFilter,
-    ViewLine, units,
+    Attached, Backfill, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode, Stalled,
+    UnitFilter, ViewLine, units,
 };
 use crate::backend::Backend;
 use crate::cost::{CallKind, CallStatus};
@@ -50,10 +50,14 @@ fn retry_delay(base_secs: u32, failures: u32) -> Duration {
     Duration::from_secs(secs).min(RETRY_CAP)
 }
 
-/// A failed node: when it may retry and how many times in a row it failed.
+/// A failed node: when it may retry, how many times in a row it failed, and why.
 struct Retry {
     at: Instant,
     failures: u32,
+    /// Last error, one line, ≤ 300 chars.
+    error: String,
+    /// The compactor model id that failed.
+    model: String,
 }
 
 /// One attached session's live state.
@@ -268,6 +272,45 @@ impl Live {
             .map(|u| u.i + 1)
             .max()
             .unwrap_or(0)
+    }
+
+    /// Rule 3 frontier: the start of the first unbuilt view part (T when all built).
+    fn frontier(&mut self, cfg: FoldCfg) -> u64 {
+        self.ensure_fold(cfg);
+        let t = self.t();
+        self.fold
+            .as_ref()
+            .expect("ensured")
+            .parts
+            .iter()
+            .find(|p| !self.tree.built(p.l, p.i))
+            .map_or(t, |p| p.start())
+    }
+
+    /// 137F: the failing node that blocks most — the level-0 frontier, else
+    /// the one with the most consecutive failures.
+    fn stalled(&mut self, cfg: FoldCfg) -> Option<Stalled> {
+        if self.failed.is_empty() {
+            return None;
+        }
+        let front = (0u8, self.frontier(cfg));
+        let (key, r) = self.failed.get_key_value(&front).or_else(|| {
+            self.failed
+                .iter()
+                .max_by(|a, b| a.1.failures.cmp(&b.1.failures).then(b.0.cmp(a.0)))
+        })?;
+        let next_retry_at = (!self.running.contains(key)).then(|| {
+            let left = r.at.saturating_duration_since(Instant::now());
+            (Utc::now() + chrono::Duration::from_std(left).unwrap_or_default())
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        });
+        Some(Stalled {
+            failures: r.failures,
+            error: r.error.clone(),
+            next_retry_at,
+            model: r.model.clone(),
+            blocking: *key == front,
+        })
     }
 }
 
@@ -541,16 +584,7 @@ fn schedule(state: &Arc<State>) {
     let t = live.t();
     let base = live.base;
     let now = Instant::now();
-    // Rule 3 frontier: the start of the first unbuilt view part (T when all built).
-    live.ensure_fold(cfg);
-    let frontier = live
-        .fold
-        .as_ref()
-        .expect("ensured")
-        .parts
-        .iter()
-        .find(|p| !live.tree.built(p.l, p.i))
-        .map_or(t, |p| p.start());
+    let frontier = live.frontier(cfg);
     let free = |live: &Live, key: &(u8, u64)| {
         !live.running.contains(key) && live.failed.get(key).is_none_or(|r| r.at <= now)
     };
@@ -735,6 +769,8 @@ async fn finish(state: &State, key: (u8, u64), outcome: Result<Node, String>, to
                 Retry {
                     at: Instant::now() + delay,
                     failures,
+                    error: one_line(&e, 300),
+                    model: state.compactor.model_id().to_owned(),
                 },
             );
             if live.reported.insert(key) {
@@ -786,6 +822,7 @@ fn emit_progress(state: &Arc<State>) -> Duration {
         settling: unbuilt > 0,
         error: live.pending_error.take(),
         backfill: live.backfill(),
+        stalled: live.stalled(cfg),
     };
     drop(live);
     let rt = state.rt.clone();
@@ -795,6 +832,16 @@ fn emit_progress(state: &Arc<State>) -> Duration {
 
 fn state_of(inner: &Inner, session: SessionId) -> Option<Arc<State>> {
     inner.sessions.lock().get(&session).map(|h| h.state.clone())
+}
+
+/// `s` on one line (whitespace runs → one space), at most `max` chars.
+fn one_line(s: &str, max: usize) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect()
 }
 
 pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> bool {
@@ -1230,7 +1277,33 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         model: state.compactor.model_id().to_owned(),
         view_bytes: cfg.view_bytes,
         backfill: live.backfill(),
+        stalled: if mode == MemoryMode::Endless {
+            live.stalled(cfg)
+        } else {
+            None
+        },
     })
+}
+
+/// RPC `endless_retry` (137F): every failed node may run now; a running
+/// job keeps its `running` key, so `schedule` never starts a duplicate.
+pub(crate) async fn retry(inner: &Inner, session: SessionId) -> anyhow::Result<SessionMemory> {
+    if let Some(state) = state_of(inner, session) {
+        let woke = {
+            let mut live = state.live.lock();
+            let endless = live.mode == MemoryMode::Endless;
+            if endless {
+                live.failed.clear();
+                live.reported.clear();
+                live.dirty = true;
+            }
+            endless
+        };
+        if woke {
+            state.wake.notify_one();
+        }
+    }
+    memory(inner, session).await
 }
 
 /// Test seam: a state over an in-memory store with a scripted compactor is

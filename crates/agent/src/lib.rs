@@ -184,7 +184,7 @@ pub use dreaming_ledger::{
 };
 pub use endless::{
     Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
-    SessionMemory, SetMode, UnitFilter, ViewLine, resolved_compactor_model,
+    SessionMemory, SetMode, Stalled, UnitFilter, ViewLine, resolved_compactor_model,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
@@ -1044,6 +1044,15 @@ pub struct SessionContextBreakdown {
 /// epochs session.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SessionMemoryQuery {
+    /// Target session.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137F `endless_retry`): reset the
+/// backoff of every failed node, wake the pump, return the fresh state; an
+/// epochs session's state comes back unchanged.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct EndlessRetry {
     /// Target session.
     pub session: SessionId,
 }
