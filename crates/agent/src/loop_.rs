@@ -8611,7 +8611,9 @@ mod tests {
         assert_eq!(codes, ["secret_unknown", "monty_insufficient"]);
         let msg = surface::cell_error(&got);
         assert!(
-            msg.contains("monty_insufficient — Monty can't run this cell: line 1: no module named pandas"),
+            msg.contains(
+                "monty_insufficient — Monty can't run this cell: line 1: no module named pandas"
+            ),
             "{msg}"
         );
     }

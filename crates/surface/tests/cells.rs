@@ -61,7 +61,10 @@ fn ctx_of(fixture: &Value, cell: &Cell) -> ValidateCtx {
             .filter(|v| !v.is_null())
             .map(|v| serde_json::from_value::<NoteDefaults>(v.clone()).expect("defaults")),
         monty_ok: c.get("monty_ok").and_then(Value::as_bool),
-        monty_why: c.get("monty_why").and_then(Value::as_str).map(str::to_string),
+        monty_why: c
+            .get("monty_why")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         cwd_exists: c.get("cwd_exists").and_then(Value::as_bool),
         second_defaults: c
             .get("second_defaults")
@@ -258,7 +261,10 @@ fn monty_scanning() {
     // The line is the import's own, after blank lines too.
     assert_eq!(monty_scan("x = 1\n\n  import typing"), pkg(3, "typing"));
     assert_eq!(monty_scan("data = open('x').read()"), uses(1, "open("));
-    assert_eq!(monty_scan("import os\nos.system('ls')"), uses(2, "os.system"));
+    assert_eq!(
+        monty_scan("import os\nos.system('ls')"),
+        uses(2, "os.system")
+    );
     assert_eq!(monty_scan("import subprocess"), pkg(1, "subprocess"));
     assert_eq!(monty_scan("eval(x)"), uses(1, "eval("));
     assert_eq!(
@@ -288,13 +294,19 @@ fn monty_reasons() {
     );
     // Import resolution stays a reason.
     assert_eq!(
-        monty_reason("cell.py:3:8: error[unresolved-import] Cannot resolve imported module `pandas`", 2)
-            .as_deref(),
+        monty_reason(
+            "cell.py:3:8: error[unresolved-import] Cannot resolve imported module `pandas`",
+            2
+        )
+        .as_deref(),
         Some("line 1: Cannot resolve imported module `pandas`")
     );
     // Only unknown names: sufficient.
     assert_eq!(
-        monty_reason("error[unresolved-reference]: Name `x` used when not defined\n --> cell.py:3:5\n", 2),
+        monty_reason(
+            "error[unresolved-reference]: Name `x` used when not defined\n --> cell.py:3:5\n",
+            2
+        ),
         None
     );
     // Text that is no diagnostic is its own reason.
@@ -312,7 +324,10 @@ fn monty_reasons() {
     };
     let p = validate(&cell, &ctx);
     assert_eq!(p[0].code, "monty_insufficient");
-    assert_eq!(p[0].message, "Monty can't run this cell: line 1: No overload");
+    assert_eq!(
+        p[0].message,
+        "Monty can't run this cell: line 1: No overload"
+    );
 }
 
 #[test]

@@ -15694,7 +15694,11 @@ pub(crate) mod tests {
         assert!(no_turn_within(&mut rx, p, 300).await, "parked");
         cell_done(&agents, p, "cell ", "r_x", true).await;
         let text = next_turn(&mut rx, p).await;
-        assert_eq!(text.matches("<cell_result run=\"r_x\"").count(), 1, "{text}");
+        assert_eq!(
+            text.matches("<cell_result run=\"r_x\"").count(),
+            1,
+            "{text}"
+        );
         assert!(no_turn_within(&mut rx, p, 300).await, "one turn only");
     }
 

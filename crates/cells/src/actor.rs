@@ -36,9 +36,9 @@ use crate::store::Store;
 use crate::types::{
     Armed, Cell, CellEvent, CellLatest, CellOutput, CellRef, CellRun, CellState, Chip, DocId,
     ExitStatus, Interpreter, KernelId, KernelPhase, KernelSpec, KernelState, Lang, NoteDefaults,
-    NoteKey, OutputPage, PassEnd, PassStop, Problem, PtyChunk, PythonChoice, RunAllRequest,
-    RunGet, RunId, RunMode, RunRequest, RunState, Scope, SessionId, Severity, ShellKind,
-    StateReply, ValidateCtx,
+    NoteKey, OutputPage, PassEnd, PassStop, Problem, PtyChunk, PythonChoice, RunAllRequest, RunGet,
+    RunId, RunMode, RunRequest, RunState, Scope, SessionId, Severity, ShellKind, StateReply,
+    ValidateCtx,
 };
 
 /// Registry name of the [`CellsActor`].
@@ -1723,7 +1723,8 @@ impl Cells {
                 },
             );
         }
-        self.publish(CellEvent::CellsChanged { scope: req.scope }).await;
+        self.publish(CellEvent::CellsChanged { scope: req.scope })
+            .await;
         if let Some(last) = pending {
             self.deliver_run(&last, true, Some(review)).await;
         }
@@ -1890,7 +1891,13 @@ impl Cells {
         Ok(StateReply {
             cells: out,
             kernels: self.kernels_of(&scope),
-            pass: self.inner.state.lock().last_pass.get(&json(&scope)).cloned(),
+            pass: self
+                .inner
+                .state
+                .lock()
+                .last_pass
+                .get(&json(&scope))
+                .cloned(),
         })
     }
 

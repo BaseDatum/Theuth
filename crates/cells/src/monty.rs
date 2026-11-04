@@ -730,7 +730,10 @@ mod tests {
         let rows = "rows: list[dict[str, str | float]] = [{\"usd\": 1.0, \"k\": \"a\"}]\n\
                     total = sum(r[\"usd\"] for r in rows)";
         let why = sufficient(rows).await.unwrap().unwrap_err();
-        assert!(why.contains("No overload") && why.starts_with("line 2: "), "{why}");
+        assert!(
+            why.contains("No overload") && why.starts_with("line 2: "),
+            "{why}"
+        );
         // B10b: a name an earlier cell bound in the kernel is not a refusal.
         assert_eq!(sufficient("print(rows_from_before)").await, Some(Ok(())));
     }
