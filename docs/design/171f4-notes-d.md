@@ -42,6 +42,24 @@ Base: 3 presses on a running line → 3 `cell_run`s, no gutter mark; superseded 
 1 `cell_run`, ◌ on the running line, ✓ on the quiet line clearing after 1.5 s; superseded apply shows only
 "Replaced by a newer version ↓". The note-cell overlay was not screenshotted (same hook; unit-tested).
 
+## T2-8 `<child_stalled>` card (added 15:05)
+- `injected.ts`: `CARD.child_stalled` and `CARD.peer_state` (key `child="`) → one `child` kind (`event: stalled|state`,
+  child, session, word, secs, `last?`, clock, text); attributes read with a leading space (`quiet_secs` never matches
+  `secs`), escapes undone. `HarnessCards.ChildStateCard` follows `ChildLostCard`: hourglass (stalled) or activity
+  (state) icon, the child chip linking to its session, the phase/state in words (`no first update`, `gone quiet`,
+  `done`, `not running`), `quiet 1 min` / `waited 6 min`, the time; `last: …` as the muted line; the guidance
+  sentence is the folded body. `childLine` is the label.
+- `<peer_state>` (155 §5.3, a `wait_peer` settled) rendered raw the same way: same card.
+- `<notebook_changes>` (157 D2) rendered raw: hidden like its sibling `<notebook>` (the context line summarises).
+- Ratchet `lib/injected-wrappers.test.ts`: scans `crates/{agent,acp,autoresearch,cells,decision,double,dreaming,
+  knowledge,meeting,roster,schedule,surface,talk,tasks,tools}/src` (test modules and `tests.rs` excluded) for a string
+  literal opening `"<name` whose `</name>` closes in a string literal of the same file. Each must be
+  `isClassified` (CARD/HIDDEN/notices/skill/resume) or in `NOT_A_ROW` with its reason; stale entries fail too.
+  Ceiling: wrappers built with `format!("<{name}>")` (loop notes) or piecewise `push_str` are invisible to it.
+- **Not fixed**: `<study …>` — an autoresearch experiment session's opening brief followed by instructions; a card
+  needs the brief's shape split from the instructions (a user prompt, not an injected wake). Listed in `NOT_A_ROW`.
+- The TUI's own classifier (`crates/tui/src/model.rs`) still shows these as text: not in my file set.
+
 ## For the other worker (E)
 - Nothing required. If `run_line` in `crates/cells/src/note.rs` ever changes, `open-as-note.ts` `runLine` must follow.
 - `CellRun.output_bytes` 0/None is how the UI decides "quiet"; keep it accurate for bare-expression echoes.
