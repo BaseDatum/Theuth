@@ -326,7 +326,8 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
   return (
     <>
       <div
-        className={cn('relative min-h-0 flex-1 overflow-hidden rounded-md p-1', className)}
+        // A cell box's height is its flex basis (`flex-initial`; it still shrinks under the host's max-height).
+        className={cn('relative min-h-0 flex-1 overflow-hidden rounded-md p-1', src.kind === 'cell' && 'flex-initial', className)}
         // p-1: 4 px above and below the rows; ~15 px a 12 px row until xterm has measured one.
         style={{ backgroundColor: BG, height: src.kind === 'cell' ? rows * (rowH || 15) + 8 : undefined }}
       >

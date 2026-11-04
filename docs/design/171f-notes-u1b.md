@@ -29,6 +29,9 @@
   `baseY > 0` → 30, else `cursorY + 1`), row height measured from `.xterm-screen` (15 px until measured). The PTY is
   never resized; pty sources are unchanged. The cell host scrolls only sideways (the unused grid rows are not
   scrollable into view).
+- The box is `flex-initial` for a cell source: under the column parent `flex-1`'s 0% basis ignored `height` (seen in
+  the first AFTER shot: 440 px instead of 181 px).
+- Proof (fixture, 1280×900): two-line run 181 px box (12 rows) vs 440 px before; 20 rows of output → 296 px.
 
 ## B5 — timeout text
 - Notice keys on `latest.state`: stopped → "stopped by you", timeout → "timed out after 5.3 s" (`duration`), killed →
