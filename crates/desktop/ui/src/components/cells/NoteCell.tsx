@@ -164,6 +164,16 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   useEffect(() => register(api, scopeOf(ref), { ref, spec: cell, label: title }), [api, key, title])
   mounted.set(key, { ref, text: code })
   useEffect(() => () => void mounted.delete(key), [key])
+  // 171F (B10 proof): a header edit (Use Python, the chip menu, typed `#|` lines) changes validation; re-read the
+  // record once the engine has the new text. Header only: code keystrokes still never re-read.
+  const header = code.match(/^(?:#\|.*(?:\n|$))*/)?.[0] ?? ''
+  const seenHeader = useRef(header)
+  useEffect(() => {
+    if (seenHeader.current === header) return
+    seenHeader.current = header
+    const t = setTimeout(() => void refresh(scope), 800)
+    return () => clearTimeout(t)
+  }, [header])
 
   const { state: record, notice } = useCellRecord(ref)
   const latest = record?.latest ?? null
