@@ -1,5 +1,5 @@
 import { BookOpen, Sparkles } from 'lucide-react'
-import { useState } from 'react'
+import { useScopedDisclosure } from './disclosure'
 import { SkillBody } from '@/components/library/Skills'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ActionButton } from './MessageAssistant'
@@ -7,7 +7,7 @@ import { ActionButton } from './MessageAssistant'
 /** A skill injection in the transcript: a tool-card-width row (settings' Sparkles icon, "Skill … added") whose
  * open button shows the skill's markdown in a side panel for a quick read. */
 export function SkillCard({ name }: { name: string }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useScopedDisclosure(`skill|${name}`)
   return (
     <div className="my-2 flex w-full min-w-0 items-center gap-2 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
       <Sparkles className="size-4 shrink-0 text-fg-secondary" />

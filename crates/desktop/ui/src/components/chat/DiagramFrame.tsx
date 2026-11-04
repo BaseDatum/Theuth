@@ -12,6 +12,7 @@ import { useSnapshot } from '@/lib/snapshot-mode'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
 import { Reserve } from './Reserve'
+import { useScopedDisclosure } from './disclosure'
 import { FenceContext } from './surface/JsonRenderFence'
 
 // Design 30 §8.3, 65 §3.4: the frame every diagram card shares — pan/zoom surface, hover toolbar (Copy PNG · Save PNG… ·
@@ -242,7 +243,8 @@ export function DiagramFrame({
   fill?: boolean
 }) {
   const [view, setView] = useState(HOME)
-  const [full, setFull] = useState(false)
+  // ponytail: keyed by `kind` — two same-kind diagrams in one fence share it (both open); an element id would split them.
+  const [full, setFull] = useScopedDisclosure(`fullscreen|${kind}`)
   const inline = useRef<HTMLDivElement>(null)
   const { entry } = useContext(FenceContext)
   // 164 D3: a channel picture carries no toolbar; its placeholder tells the snapshot the layout is still pending.

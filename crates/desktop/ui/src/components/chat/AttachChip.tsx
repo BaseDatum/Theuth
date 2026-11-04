@@ -8,6 +8,7 @@ import { type AttachRef, DRAG_TYPE, KIND_LABEL, type Kind, attachTo } from '@/li
 import { touch } from '@/lib/platform'
 import { type PopoutTarget, canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
+import { useScopedDisclosure } from './disclosure'
 
 /** §7.5 icons; an artifact chip has no record, so it takes the generic file glyph (picker rows refine by artifact kind). */
 export const KIND_ICON: Record<Kind, LucideIcon> = {
@@ -88,8 +89,9 @@ export function AttachChip({ item: ref, again, onRemove, className }: { item: At
   const open = useOpenRef()
   const Icon = KIND_ICON[ref.kind] ?? Paperclip
   const label = KIND_LABEL[ref.kind] ?? ref.kind
+  const [shown, setShown] = useScopedDisclosure(`attach|${ref.kind}|${ref.id}`)
   return (
-    <Popover>
+    <Popover open={shown} onOpenChange={setShown}>
       <PopoverTrigger asChild>
         <button
           type="button"

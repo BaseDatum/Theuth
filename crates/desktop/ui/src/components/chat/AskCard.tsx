@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from 'cn'
 import { useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
+import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { AskRequested } from '@/rpc/bindings/AskRequested'
 import type { Packet } from '@/rpc/bindings/Packet'
@@ -201,7 +202,7 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
   const api = useApi()
   const voice = speech.useVoice()
   const packet = usePacket(decisionKey(ask)).data ?? null
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useDisclosure(disclosureKey('ask', ask.id))
   const [busy, setBusy] = useState(false)
   // After Send the card keeps what went on the wire and the store entry is dropped (138).
   const [sent, setSent] = useState<Answer[] | null>(null)

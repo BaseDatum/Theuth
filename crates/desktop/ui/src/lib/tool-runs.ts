@@ -1,6 +1,6 @@
 // Settings › Chat › Collapse tool calls by default (70 TOOL-COLLAPSE): a client-only display preference, persisted
-// like the theme, plus the in-memory set of runs and thinking blocks the user has opened. Nothing here changes the
-// session or its context.
+// like the theme, plus the in-memory open state of thinking blocks and every other disclosure (runs included). Nothing
+// here changes the session or its context.
 
 import { useSyncExternalStore } from 'react'
 import { create } from 'zustand'
@@ -11,9 +11,6 @@ type ToolRunStore = {
   /** Consecutive tool cards fold into one `ToolRunCard`; on unless the user opted out. */
   collapse: boolean
   setCollapse(on: boolean): void
-  /** Runs the user expanded, keyed by the run's first call id. Not persisted. */
-  open: Record<string, boolean>
-  toggle(id: string): void
   /** Thinking blocks the user opened, keyed by entry id, so a remount (fold, virtualizer slot move) cannot close
    * one (fix/thinking-open-while-streaming). Not persisted. */
   thinking: Record<string, boolean>
@@ -33,10 +30,6 @@ export const useToolRuns = create<ToolRunStore>()((set) => ({
   setCollapse(on) {
     localStorage.setItem(KEY, String(on))
     set({ collapse: on })
-  },
-  open: {},
-  toggle(id) {
-    set((s) => ({ open: { ...s.open, [id]: !s.open[id] } }))
   },
   thinking: {},
   pinned: new Set(),

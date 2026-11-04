@@ -1,7 +1,9 @@
 import { JSONUIProvider, Renderer, type Spec } from '@json-render/react'
 import { Component, createContext, type ReactNode, useContext, useEffect, useMemo } from 'react'
 import type { CustomRendererProps } from 'streamdown'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { useSnapshot } from '@/lib/snapshot-mode'
+import { FenceScope, useScopedDisclosure } from '../disclosure'
 import { type ParseResult, parsePartial, parseSpec } from './parse'
 import { registry } from './registry'
 
@@ -24,6 +26,7 @@ export const FenceContext = createContext<FenceContext>({ running: false, hasLat
  */
 export function FenceFallback({ error, source, title }: { error: string; source: string; title?: string }) {
   const { running, hasLaterAssistant } = useContext(FenceContext)
+  const [open, setOpen] = useScopedDisclosure('source')
   // 164 D3: a channel picture of a broken fence is no picture; the snapshot answers `failed`.
   const snap = useSnapshot()
   useEffect(() => {
@@ -34,10 +37,12 @@ export function FenceFallback({ error, source, title }: { error: string; source:
   return (
     <div className="my-2 text-xs text-fg-tertiary" title={title ? `${title} · ${error}` : error}>
       ◌ diagram omitted ·{' '}
-      <details className="inline">
-        <summary className="inline cursor-pointer">show source</summary>
-        <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">{source}</pre>
-      </details>
+      <Collapsible open={open} onOpenChange={setOpen} className="inline">
+        <CollapsibleTrigger className="inline cursor-pointer">show source</CollapsibleTrigger>
+        <CollapsibleContent>
+          <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">{source}</pre>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   )
 }
@@ -67,19 +72,28 @@ function Surface({ spec, loading, title }: { spec: Spec; loading: boolean; title
 /**
  * Streamdown custom renderer for ```` ```json-render ```` fences (design 30 §4 R3/R4, §8).
  * Open fence: repair + partial spec, progressive render, nothing on failure. Closed fence: strict parse
- * (repair on failure, flagged in the tooltip), the quiet `FenceFallback` on failure.
+ * (repair on failure, flagged in the tooltip), the quiet `FenceFallback` on failure. Disclosures inside are scoped by
+ * the fence (`FenceScope`, 171F B13).
  */
 export function JsonRenderFence({ code, isIncomplete }: CustomRendererProps) {
   const parsed = useMemo<ParseResult | { spec: Spec | null }>(
     () => (isIncomplete ? { spec: parsePartial(code) } : parseSpec(code)),
     [code, isIncomplete],
   )
-  if ('error' in parsed) return <FenceFallback error={parsed.error} source={code} title="Interactive view unavailable" />
+  if ('error' in parsed)
+    return (
+      <FenceScope code={code}>
+        <FenceFallback error={parsed.error} source={code} title="Interactive view unavailable" />
+      </FenceScope>
+    )
   if (!parsed.spec) return null
   return (
-    // Mid-stream a component throw shows nothing for that frame; the boundary remounts when the fence closes.
-    <Boundary key={isIncomplete ? 'open' : code} render={(m) => (isIncomplete ? null : <FenceFallback error={m} source={code} title="Interactive view unavailable" />)}>
-      <Surface spec={parsed.spec} loading={isIncomplete} title={'repaired' in parsed && parsed.repaired ? 'JSON repaired' : undefined} />
-    </Boundary>
+    // Mid-stream a component throw shows nothing for that frame; the boundary resets once, when the fence closes. Not
+    // keyed by `code`: a new key per delta would remount the surface (and whatever the reader opened in it) each time.
+    <FenceScope code={code}>
+      <Boundary key={isIncomplete ? 'open' : 'closed'} render={(m) => (isIncomplete ? null : <FenceFallback error={m} source={code} title="Interactive view unavailable" />)}>
+        <Surface spec={parsed.spec} loading={isIncomplete} title={'repaired' in parsed && parsed.repaired ? 'JSON repaired' : undefined} />
+      </Boundary>
+    </FenceScope>
   )
 }

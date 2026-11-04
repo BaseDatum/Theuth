@@ -4,6 +4,8 @@ import { expect, test } from 'vitest'
 import type { AdvisoryNote } from '@/rpc/bindings/AdvisoryNote'
 import type { Entry } from '@/store/sessions'
 import { AdvisorNoteCard, collapseNotes } from './AdvisorNoteCard'
+import { DisclosureScope } from './disclosure'
+import { useToolRuns } from '@/lib/tool-runs'
 import { foldRuns } from './ToolRunCard'
 
 const notes: AdvisoryNote[] = ['a', 'b', 'c', 'd', 'e'].map((note, i) => ({ severity: i === 3 ? 'blocker' : 'nit', note }))
@@ -22,13 +24,16 @@ test('an advisory card splits a tool run and never folds into one', () => {
 })
 
 test('R1: a consultation card titles by its question, wears a Consulted badge and bodies the answer without a severity chip', () => {
-  const html = renderToStaticMarkup(createElement(AdvisorNoteCard, { notes: [{ severity: 'advice', note: 'No: the column is gone.' }], question: 'Retry the migration?', at: 1_700_000_000_000 }))
+  // The body mounts only while the card is open (171F B13: a store-backed disclosure); open it in the store.
+  useToolRuns.setState({ disclosed: { 'a|advisory': true } })
+  const card = (props: Parameters<typeof AdvisorNoteCard>[0]) => renderToStaticMarkup(createElement(DisclosureScope, { value: 'a' }, createElement(AdvisorNoteCard, props)))
+  const html = card({ notes: [{ severity: 'advice', note: 'No: the column is gone.' }], question: 'Retry the migration?', at: 1_700_000_000_000 })
   expect(html).toContain('>Consulted</span>')
   expect(html).toContain('>Retry the migration?</span>')
   expect(html).not.toContain('Advisor · 1 note')
   expect(html).not.toContain('>advice</span>')
   expect(html).toMatch(/<li[^>]*><span[^>]*>No: the column is gone\.<\/span><\/li>/)
-  const review = renderToStaticMarkup(createElement(AdvisorNoteCard, { notes: [{ severity: 'nit', note: 'prefer let' }] }))
+  const review = card({ notes: [{ severity: 'nit', note: 'prefer let' }] })
   expect(review).toContain('Advisor · 1 note')
   expect(review).not.toContain('Consulted')
   expect(review).toContain('>nit</span>')

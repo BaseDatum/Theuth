@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { AppWindow, BellRing, Bot, ChevronRight, Trash2 } from 'lucide-react'
-import { memo, type ReactNode, useState } from 'react'
+import { memo, type ReactNode } from 'react'
 import { type AppInput, parseAppInput } from '@/components/apps/lifecycle'
 import { ENGINE_NOTICES, parseBroadcast } from '@/lib/injected'
 import { parseMeetingLine } from '@/lib/meeting-line'
@@ -21,6 +21,7 @@ import { MeetingCard } from './MeetingCard'
 import { MessageUser } from './MessageUser'
 import { MessageVision } from './MessageVision'
 import { SecretRequestCard } from './SecretRequestCard'
+import { Details, DisclosureScope, useScopedDisclosure } from './disclosure'
 import { ResultCard } from '@/components/cells/ResultCard'
 
 /** `readOnly`: an archive/inspection rendering (search's Earlier messages page): no turn, fork or context-removal controls. */
@@ -81,17 +82,23 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
 function EngineNotice({ notice, text }: Pick<Extract<Entry, { kind: 'engine' }>, 'notice' | 'text'>) {
   const { title, description } = ENGINE_NOTICES[notice]
   return (
-    <details className="group/notice my-2 min-w-0 rounded-xl border border-info-border/30 bg-info-bg/40 px-4 py-3 text-sm">
-      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden">
-        <BellRing className="size-4 shrink-0 text-info" aria-hidden="true" />
-        <span className="min-w-0 flex-1">
-          <span className="block font-medium text-info">{title}</span>
-          <span className="block text-xs text-fg-secondary">{description}</span>
-        </span>
-        <ChevronRight className="size-4 shrink-0 text-info transition-transform group-open/notice:rotate-90" aria-hidden="true" />
-      </summary>
+    <Details
+      part="notice"
+      className="group/notice my-2 min-w-0 rounded-xl border border-info-border/30 bg-info-bg/40 px-4 py-3 text-sm"
+      triggerClassName="flex min-h-11 items-center gap-3 rounded-sm focus-visible:outline-2"
+      trigger={
+        <>
+          <BellRing className="size-4 shrink-0 text-info" aria-hidden="true" />
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium text-info">{title}</span>
+            <span className="block text-xs text-fg-secondary">{description}</span>
+          </span>
+          <ChevronRight className="size-4 shrink-0 text-info transition-transform group-data-[state=open]/notice:rotate-90" aria-hidden="true" />
+        </>
+      }
+    >
       <div className="mt-3 border-t border-info-border/20 pt-3 leading-6 wrap-anywhere whitespace-pre-wrap text-fg-secondary">{text}</div>
-    </details>
+    </Details>
   )
 }
 
@@ -168,7 +175,7 @@ function describe(entry: Entry): string {
 /** Collapsed `Removed from context` marker (48 §2.2). `View original` shows the archived card: its text and files stay
  * readable, its turn/context controls are gone, and nothing re-enters the model's context. `reveal` starts it open (a search target). */
 function Tombstone({ entry, session, readOnly, reveal }: { entry: Entry; session: string; readOnly?: boolean; reveal?: boolean }) {
-  const [open, setOpen] = useState(!!reveal)
+  const [open, setOpen] = useScopedDisclosure('tombstone', !!reveal)
   return (
     <div className="my-1 flex flex-col text-xs text-fg-tertiary">
       <div className="flex items-center gap-2">
@@ -196,19 +203,21 @@ function Tombstone({ entry, session, readOnly, reveal }: { entry: Entry; session
 
 /** Tool, peer and engine cards keep their own layout (`show`/scrape cards included); the remove control sits over the card's
  * top-right corner as a sibling, with the card padded so no text hides under it. Cards without stored membership
- * (live, unsaved rows) get nothing: a button without an authoritative target would only be guessing. */
+ * (live, unsaved rows) get no control: a button without an authoritative target would only be guessing. The wrapper is
+ * the same element either way, so the settled reload adding `context` never remounts the card (171F B13). */
 function Card({ entry, session, children }: { entry: Entry; session: string; children: ReactNode }) {
   const ctx = entry.context
-  if (!ctx) return children
   return (
-    <div className="group relative [&>:first-child]:pr-12">
+    <div className={ctx ? 'group relative [&>:first-child]:pr-12' : 'group relative'}>
       {children}
-      <RemoveButton
-        session={session}
-        target={ctx.target}
-        active={ctx.active}
-        className="absolute top-1 right-1 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
-      />
+      {ctx && (
+        <RemoveButton
+          session={session}
+          target={ctx.target}
+          active={ctx.active}
+          className="absolute top-1 right-1 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+        />
+      )}
     </div>
   )
 }
@@ -243,7 +252,8 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
 
 /** One transcript row: the entry's card plus the prompts waiting on it. Entries are immutable and `session` is stable, so `memo` skips untouched rows.
  * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool/peer/engine cards get it from `Card`.
- * `readOnly` drops every control that would edit the session or its context; `reveal` opens a removed row's archive at once. */
+ * `readOnly` drops every control that would edit the session or its context; `reveal` opens a removed row's archive at once.
+ * Every disclosure inside is scoped by the entry id (`DisclosureScope`, 171F B13). */
 export const Message = memo(function Message({
   entry,
   prompts,
@@ -268,9 +278,9 @@ export const Message = memo(function Message({
       body(entry, session, readOnly)
     )
   return (
-    <>
+    <DisclosureScope value={entry.id}>
       {card}
       {prompts?.map((p) => <PromptCard key={p.id} prompt={p} />)}
-    </>
+    </DisclosureScope>
   )
 })

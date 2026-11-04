@@ -15,6 +15,7 @@ import type { Citation } from '@/rpc/bindings/Citation'
 import type { CiteKind } from '@/rpc/bindings/CiteKind'
 import { cn } from '@/lib/utils'
 import { useConnection } from '@/store/connection'
+import { useScopedDisclosure } from './disclosure'
 
 type Resolved = { hrefs: string[]; byHref: Map<string, Citation> }
 
@@ -62,11 +63,13 @@ const KIND_WORD: Record<CiteKind, string> = { notes: 'note', sources: 'source', 
 const driftNote = (c: Citation | undefined): string | null =>
   c?.status === 'changed' ? 'source changed since this was cited' : c?.status === 'moved' ? 'passage moved — opens the document' : null
 
-/** Markdown `a`: a `theuth://` href becomes a chip; anything else stays a plain anchor. */
+/** Markdown `a`: a `theuth://` href becomes a chip; anything else stays a plain anchor. A dangling chip's card is a
+ * disclosure of the message, keyed by the href (171F B13). */
 export function CitationLink({ node: _node, href, children, ...rest }: ComponentProps<'a'> & { node?: unknown }) {
   const cite = href ? parseTheuthHref(href) : null
   const ctx = useContext(Context)
   const open = useOpenCite()
+  const [shown, setShown] = useScopedDisclosure(`cite|${href ?? ''}`)
   if (!cite) {
     return (
       <a href={href} {...rest}>
@@ -99,7 +102,7 @@ export function CitationLink({ node: _node, href, children, ...rest }: Component
   // §6.4: a dangling target gets the card, not a dead pulse.
   const unavailable = c !== undefined && !c.available
   return (
-    <Popover>
+    <Popover open={shown} onOpenChange={setShown}>
       <PopoverTrigger asChild>{chip}</PopoverTrigger>
       <PopoverContent align="start" className="w-72 p-3 text-xs" data-testid="dangling-ref">
         <p className="font-medium">{unavailable ? `This ${KIND_WORD[cite.kind]} is unavailable` : 'This passage changed or was removed'}</p>

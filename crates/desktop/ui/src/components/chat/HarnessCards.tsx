@@ -5,7 +5,6 @@
 
 import { Link } from '@tanstack/react-router'
 import { Bot, ChevronRight, FlaskConical, Infinity as InfinityIcon, Radio, RotateCcw, Unplug, Zap } from 'lucide-react'
-import { useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { shortId } from '@/components/tasks/helpers'
 import { Badge } from '@/components/ui/badge'
@@ -13,10 +12,11 @@ import { fmtBytes } from '@/lib/files'
 import type { ResumeSection } from '@/lib/injected'
 import type { Entry } from '@/store/sessions'
 import { markdownComponents, plugins, shikiTheme } from './MessageAssistant'
+import { Details, FenceText } from './disclosure'
 import { FenceContext } from './surface/JsonRenderFence'
 
 const SHELL = 'my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm'
-const SUMMARY = 'flex cursor-pointer list-none items-center gap-2 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden'
+const SUMMARY = 'flex items-center gap-2 rounded-sm focus-visible:outline-2'
 const CODE = 'mt-2 overflow-x-auto rounded-md bg-layer-2 px-3 py-2 font-mono text-xs leading-5 whitespace-pre text-fg-secondary'
 /** 152: a card header — chips wrap on their own rows while the chevron stays at the right; the muted line sits below,
  * one line on a phone and two on a desktop (`md` is `useIsMobile`'s 768 px). */
@@ -26,11 +26,17 @@ const MUTED = 'mt-1 line-clamp-1 text-fg-tertiary md:line-clamp-2'
 /** `code`: the body is machine output (git status / diff), shown verbatim instead of as markdown. */
 function Section({ title, text, code }: { title: string; text: string; code?: boolean }) {
   return (
-    <details className="group/section mt-2 border-t border-border-subtle pt-2">
-      <summary className={`${SUMMARY} text-xs font-medium text-fg-secondary`}>
-        <ChevronRight className="size-3.5 shrink-0 transition-transform group-open/section:rotate-90" aria-hidden="true" />
-        {title}
-      </summary>
+    <Details
+      part={`section|${title}`}
+      className="group/section mt-2 border-t border-border-subtle pt-2"
+      triggerClassName={`${SUMMARY} text-xs font-medium text-fg-secondary`}
+      trigger={
+        <>
+          <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/section:rotate-90" aria-hidden="true" />
+          {title}
+        </>
+      }
+    >
       {code ? (
         <pre className={CODE}>{text}</pre>
       ) : (
@@ -38,23 +44,29 @@ function Section({ title, text, code }: { title: string; text: string; code?: bo
           {text}
         </Streamdown>
       )}
-    </details>
+    </Details>
   )
 }
 
 export function DeskCard({ agent, charter, journal, manual }: Extract<Entry, { kind: 'desk' }>) {
   return (
-    <details className={`group/desk ${SHELL}`}>
-      <summary className={`${SUMMARY} text-xs text-fg-secondary`}>
-        <Bot className="size-3.5 shrink-0" aria-hidden="true" />
-        <span className="font-medium">desk</span>
-        <span className="rounded-full bg-layer-2 px-2 leading-5">{agent}</span>
-        <ChevronRight className="ml-auto size-4 shrink-0 transition-transform group-open/desk:rotate-90" aria-hidden="true" />
-      </summary>
+    <Details
+      part="desk"
+      className={`group/desk ${SHELL}`}
+      triggerClassName={`${SUMMARY} text-xs text-fg-secondary`}
+      trigger={
+        <>
+          <Bot className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="font-medium">desk</span>
+          <span className="rounded-full bg-layer-2 px-2 leading-5">{agent}</span>
+          <ChevronRight className="ml-auto size-4 shrink-0 transition-transform group-data-[state=open]/desk:rotate-90" aria-hidden="true" />
+        </>
+      }
+    >
       <Section title="Charter" text={charter} />
       <Section title="Journal" text={journal} />
       <Section title="Manual" text={manual} />
-    </details>
+    </Details>
   )
 }
 
@@ -117,22 +129,28 @@ function sectionTitle(s: ResumeSection): string {
 /** 152 D4: `<resume_handoff>` — restored (the harness kept its context) or fresh (a new process got the handoff's sections). */
 export function ResumeCard({ restored, clock, working, previous, sections, omitted, text }: Extract<Entry, { kind: 'resume' }>) {
   return (
-    <details className={`group/resume ${SHELL}`}>
-      <summary className={`${SUMMARY} text-xs text-fg-secondary`}>
-        <span className="min-w-0 flex-1">
-          <span className={HEAD}>
-            <RotateCcw className={`size-3.5 shrink-0 ${restored ? '' : 'text-warning'}`} aria-hidden="true" />
-            <span className="font-medium">{restored ? 'resumed after restart' : 'restarted fresh'}</span>
-            {clock !== '' && <Badge variant="outline">{clock}</Badge>}
+    <Details
+      part="resume"
+      className={`group/resume ${SHELL}`}
+      triggerClassName={`${SUMMARY} text-xs text-fg-secondary`}
+      trigger={
+        <>
+          <span className="min-w-0 flex-1">
+            <span className={HEAD}>
+              <RotateCcw className={`size-3.5 shrink-0 ${restored ? '' : 'text-warning'}`} aria-hidden="true" />
+              <span className="font-medium">{restored ? 'resumed after restart' : 'restarted fresh'}</span>
+              {clock !== '' && <Badge variant="outline">{clock}</Badge>}
+            </span>
+            {restored ? (
+              working !== undefined && <span className={MUTED}>Working on: {working}</span>
+            ) : (
+              <span className={MUTED}>previous harness session{previous === undefined ? '' : ` ${shortId(previous)}`} could not be loaded — context not restored</span>
+            )}
           </span>
-          {restored ? (
-            working !== undefined && <span className={MUTED}>Working on: {working}</span>
-          ) : (
-            <span className={MUTED}>previous harness session{previous === undefined ? '' : ` ${shortId(previous)}`} could not be loaded — context not restored</span>
-          )}
-        </span>
-        <ChevronRight className="size-4 shrink-0 transition-transform group-open/resume:rotate-90" aria-hidden="true" />
-      </summary>
+          <ChevronRight className="size-4 shrink-0 transition-transform group-data-[state=open]/resume:rotate-90" aria-hidden="true" />
+        </>
+      }
+    >
       {restored ? (
         <Streamdown mode="static" className="mt-2 border-t border-border-subtle pt-2 text-sm">
           {text}
@@ -145,75 +163,85 @@ export function ResumeCard({ restored, clock, working, previous, sections, omitt
           {omitted !== undefined && <p className="mt-2 text-xs text-fg-tertiary">omitted for the handoff budget: {omitted.join(', ')}</p>}
         </>
       )}
-    </details>
+    </Details>
   )
 }
 
-/** 152 D4: `<child_lost>` in a parent — a subagent the restart could not respawn; the chip opens the child's session. */
+/** 152 D4: `<child_lost>` in a parent — a subagent the restart could not respawn; the chip opens the child's session
+ * (its click does not also toggle the card). */
 export function ChildLostCard({ name, session, clock, why, text }: Extract<Entry, { kind: 'lost' }>) {
   return (
-    <details className={`group/lost ${SHELL}`}>
-      <summary className={`${SUMMARY} text-xs text-fg-secondary`}>
-        <span className="min-w-0 flex-1">
-          <span className={HEAD}>
-            <Unplug className="size-3.5 shrink-0 text-danger" aria-hidden="true" />
-            <span className="font-medium">subagent lost</span>
-            <Badge variant="secondary" className="max-w-full gap-1">
-              {session === '' ? (
-                <span className="truncate">{name}</span>
-              ) : (
-                <>
-                  <Link to="/c/$session" params={{ session }} className="truncate hover:underline">
-                    {name}
-                  </Link>
-                  <span className="text-fg-tertiary">{shortId(session)}</span>
-                </>
-              )}
-            </Badge>
-            {clock !== '' && <Badge variant="outline">{clock}</Badge>}
+    <Details
+      part="lost"
+      className={`group/lost ${SHELL}`}
+      triggerClassName={`${SUMMARY} text-xs text-fg-secondary`}
+      trigger={
+        <>
+          <span className="min-w-0 flex-1">
+            <span className={HEAD}>
+              <Unplug className="size-3.5 shrink-0 text-danger" aria-hidden="true" />
+              <span className="font-medium">subagent lost</span>
+              <Badge variant="secondary" className="max-w-full gap-1">
+                {session === '' ? (
+                  <span className="truncate">{name}</span>
+                ) : (
+                  <>
+                    <Link to="/c/$session" params={{ session }} className="truncate hover:underline" onClick={(e) => e.stopPropagation()}>
+                      {name}
+                    </Link>
+                    <span className="text-fg-tertiary">{shortId(session)}</span>
+                  </>
+                )}
+              </Badge>
+              {clock !== '' && <Badge variant="outline">{clock}</Badge>}
+            </span>
+            {why !== '' && <span className={MUTED}>{why}</span>}
           </span>
-          {why !== '' && <span className={MUTED}>{why}</span>}
-        </span>
-        <ChevronRight className="size-4 shrink-0 transition-transform group-open/lost:rotate-90" aria-hidden="true" />
-      </summary>
+          <ChevronRight className="size-4 shrink-0 transition-transform group-data-[state=open]/lost:rotate-90" aria-hidden="true" />
+        </>
+      }
+    >
       <Streamdown mode="static" className="mt-2 border-t border-border-subtle pt-2 text-sm">
         {text}
       </Streamdown>
-    </details>
+    </Details>
   )
 }
 
 /** 152 D4: the view an endless parent handed a native child (137 R1-D1). The lines mount only while open, inside their
  * own scroll box, so a 128 KB view costs nothing folded and never shifts the transcript (135 STEADY-SCROLL). */
 export function ParentViewCard({ lines, bytes }: Extract<Entry, { kind: 'parentView' }>) {
-  const [open, setOpen] = useState(false)
   return (
-    <details className={`group/view ${SHELL}`} onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary className={`${SUMMARY} text-xs text-fg-secondary`}>
-        <span className="min-w-0 flex-1">
-          <span className={HEAD}>
-            <InfinityIcon className="size-3.5 shrink-0" aria-hidden="true" />
-            <span className="font-medium">parent's memory</span>
-            <Badge variant="outline">{lines.length} lines</Badge>
-            <Badge variant="outline">≈ {fmtBytes(bytes)}</Badge>
+    <Details
+      part="view"
+      className={`group/view ${SHELL}`}
+      triggerClassName={`${SUMMARY} text-xs text-fg-secondary`}
+      trigger={
+        <>
+          <span className="min-w-0 flex-1">
+            <span className={HEAD}>
+              <InfinityIcon className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="font-medium">parent's memory</span>
+              <Badge variant="outline">{lines.length} lines</Badge>
+              <Badge variant="outline">≈ {fmtBytes(bytes)}</Badge>
+            </span>
+            <span className={MUTED}>What the parent knew when it handed this task over.</span>
           </span>
-          <span className={MUTED}>What the parent knew when it handed this task over.</span>
-        </span>
-        <ChevronRight className="size-4 shrink-0 transition-transform group-open/view:rotate-90" aria-hidden="true" />
-      </summary>
-      {open && (
-        <div className="mt-2 max-h-80 overflow-y-auto border-t border-border-subtle pt-2">
-          {lines.map((l) => (
-            <div key={`${l.id}+${l.n}`} className={`flex gap-2 px-2 py-1 text-sm leading-5 ${l.earlier ? 'text-xs text-fg-tertiary italic' : ''}`} role={l.earlier ? 'note' : undefined}>
-              <span className="w-16 shrink-0 text-right font-mono text-[11px] leading-5 text-fg-tertiary not-italic tabular-nums">
-                {l.id}+{l.n}
-              </span>
-              <span className="min-w-0 flex-1 wrap-anywhere">{l.text}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </details>
+          <ChevronRight className="size-4 shrink-0 transition-transform group-data-[state=open]/view:rotate-90" aria-hidden="true" />
+        </>
+      }
+    >
+      <div className="mt-2 max-h-80 overflow-y-auto border-t border-border-subtle pt-2">
+        {lines.map((l) => (
+          <div key={`${l.id}+${l.n}`} className={`flex gap-2 px-2 py-1 text-sm leading-5 ${l.earlier ? 'text-xs text-fg-tertiary italic' : ''}`} role={l.earlier ? 'note' : undefined}>
+            <span className="w-16 shrink-0 text-right font-mono text-[11px] leading-5 text-fg-tertiary not-italic tabular-nums">
+              {l.id}+{l.n}
+            </span>
+            <span className="min-w-0 flex-1 wrap-anywhere">{l.text}</span>
+          </div>
+        ))}
+      </div>
+    </Details>
   )
 }
 
@@ -237,9 +265,11 @@ export function AutoresearchCard({ slug, event, text }: Extract<Entry, { kind: '
         </Link>
       </div>
       <FenceContext value={SETTLED}>
-        <Streamdown mode="static" plugins={plugins} components={markdownComponents} shikiTheme={shikiTheme} linkSafety={{ enabled: false }} className="mt-2 text-sm [&_p]:my-1">
-          {text}
-        </Streamdown>
+        <FenceText value={text}>
+          <Streamdown mode="static" plugins={plugins} components={markdownComponents} shikiTheme={shikiTheme} linkSafety={{ enabled: false }} className="mt-2 text-sm [&_p]:my-1">
+            {text}
+          </Streamdown>
+        </FenceText>
       </FenceContext>
     </div>
   )

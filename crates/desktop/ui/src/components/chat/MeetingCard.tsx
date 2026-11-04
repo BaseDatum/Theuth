@@ -9,6 +9,7 @@ import { type MeetingLine, batchStamps, oracleRow } from '@/lib/meeting-line'
 import { cn } from '@/lib/utils'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
 import { useMeeting } from '@/store/meeting'
+import { Details } from './disclosure'
 
 /** One `them:`/`me:` row of a batch, or the `live:/dismissed:` header. */
 function BatchRow({ line }: { line: string }) {
@@ -26,12 +27,18 @@ function BatchRow({ line }: { line: string }) {
 /** 57 §3.4: Zap + `topic 0.12 · skip · 78 ms`; open for every label's probability. */
 export function OracleRow({ decision }: { decision: OracleDecision }) {
   return (
-    <details className="mt-1 text-[11px] leading-5 text-fg-tertiary">
-      <summary className="cursor-pointer list-none truncate [&::-webkit-details-marker]:hidden" title={`${decision.mode} · ${decision.family}`}>
-        <Zap className="mr-1 inline size-3" />
-        {decision.batch_id !== '' && <span className="mr-1 tabular-nums">{decision.batch_id}</span>}
-        {oracleRow(decision)}
-      </summary>
+    <Details
+      part={`oracle|${decision.batch_id}`}
+      className="mt-1 text-[11px] leading-5 text-fg-tertiary"
+      triggerClassName="truncate"
+      trigger={
+        <span title={`${decision.mode} · ${decision.family}`}>
+          <Zap className="mr-1 inline size-3" />
+          {decision.batch_id !== '' && <span className="mr-1 tabular-nums">{decision.batch_id}</span>}
+          {oracleRow(decision)}
+        </span>
+      }
+    >
       <ul className="ml-4 list-disc font-mono text-[11px]">
         {decision.top.map(([label, prob]) => (
           <li key={label}>
@@ -39,7 +46,7 @@ export function OracleRow({ decision }: { decision: OracleDecision }) {
           </li>
         ))}
       </ul>
-    </details>
+    </Details>
   )
 }
 
