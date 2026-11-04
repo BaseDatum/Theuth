@@ -526,6 +526,9 @@ pub(crate) struct PtyHandle {
     /// 155 §6.4: when the model last `send`-wrote, until the screen or the
     /// process tree moved (then `None`); the reaction check's clock.
     sent_at: Mutex<Option<Instant>>,
+    /// 171 user-cell kernel: its screen is the user's terminal, never stored for a
+    /// reader that could hand it to the model (171F4 T2-7).
+    cell: bool,
 }
 
 /// One item of [`PtyHandle::stream`].
@@ -673,13 +676,19 @@ impl PtyHandle {
 
     /// 109 §5.3: write the live screen as the job's `pty_screens` row when
     /// the revision moved since the last write. Called as `screen` / `send`
-    /// / `wait` return, on the snapshot timer, and at exit.
+    /// / `wait` return, on the snapshot timer, at exit and at shutdown. A
+    /// user-cell kernel's screen is never written (171F4 T2-7): it may hold
+    /// private output and unmasked credentials, and every reader of the row
+    /// (the reaper, a transfer, a resumed `wait`) is model-facing.
     pub(crate) async fn snapshot_to_store(
         &self,
         journal: &dyn Journal,
         session: SessionId,
         id: &JobId,
     ) {
+        if self.cell {
+            return;
+        }
         let snap = self.snapshot(PtyViewport::Live);
         if self.snapshotted.load(SeqCst) == snap.revision {
             return;
@@ -1547,6 +1556,7 @@ impl Message<Launch<StartPty>> for Jobs {
             cursor: AtomicU64::new(0),
             snapshotted: AtomicU64::new(u64::MAX),
             sent_at: Mutex::new(None),
+            cell,
         });
         let mut log = Log::new(Some(s.file));
         if let Some(tx) = m.cell {
@@ -3821,6 +3831,7 @@ mod tests {
             cursor: AtomicU64::new(0),
             snapshotted: AtomicU64::new(u64::MAX),
             sent_at: Mutex::new(None),
+            cell: false,
         }
     }
 
@@ -5408,5 +5419,60 @@ mod tests {
         let (exit, _, inline) = finished(&fx).await;
         assert_eq!(exit, JobExit::Killed);
         assert!(inline);
+    }
+
+    /// 171F4 T2-7: a kernel whose screen holds private output and an AWS-key-shaped line,
+    /// alive at shutdown (`KillAll`): its row still goes to disk `exit = lost` (the reaper
+    /// settles it), but no screen row is stored for any reader, and the shutdown settle
+    /// carries no result and none of the screen — only the job id.
+    #[tokio::test]
+    async fn cell_kernel_screen_never_stored_or_reported_at_shutdown() {
+        use crate::activity::test_sink::Seen;
+        const KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+        let (fx, ledger, seen) =
+            crate::jobs::tests::certified(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let journal = Arc::new(crate::jobs::tests::RecJournal::default());
+        fx.jobs
+            .ask(crate::InstallJournal(journal.clone()))
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(8);
+        let code = format!("printf 'private-out\\n{KEY}\\n'; sleep 30");
+        fx.jobs
+            .ask(cell_start(&fx, &["-c", &code], None, tx))
+            .await
+            .unwrap();
+        let log = fx
+            .dir
+            .join("jobs")
+            .join(fx.session.to_string())
+            .join("j1.cell.log");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !std::fs::read_to_string(&log).is_ok_and(|l| l.contains(KEY)) {
+            assert!(Instant::now() < deadline, "the kernel never printed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        fx.jobs.ask(crate::jobs::KillAll).await.unwrap();
+        let rows = lock(&journal.jobs).clone();
+        assert!(
+            rows.iter()
+                .any(|(j, _)| j.id.0 == "j1" && j.exit == Some(JobExit::Lost)),
+            "{rows:?}"
+        );
+        let screens = lock(&journal.screens).clone();
+        assert!(screens.is_empty(), "{screens:?}");
+        let v = crate::activity::test_sink::drained(&ledger, &seen).await;
+        assert!(!v.iter().any(|s| matches!(s, Seen::Result(_))), "{v:?}");
+        for s in &v {
+            if let Seen::Unknown(_, why) = s {
+                assert!(!why.contains(KEY) && !why.contains("private-out"), "{why}");
+            }
+        }
+        for e in lock(&fx.events).iter() {
+            if let JobEvent::Finished { output, .. } = e {
+                assert!(!output.contains(KEY), "{output}");
+            }
+        }
     }
 }

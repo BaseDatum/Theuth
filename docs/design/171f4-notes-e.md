@@ -53,6 +53,25 @@ Worker E, branch `fix/171f4-e`, base `a76092c4`. Decisions where the brief left 
   `None`, which shows nothing. Selection and cell runs unchanged. `171-cells.md` §5.8 frame 1
   updated.
 
+## T2-7 — a killed kernel's screen (security)
+
+- Boot side: 171F3 R1 (`JobRow::is_cell_kernel` in `reap` / `settle_transferred` /
+  `resume_calls`) already keeps a kernel out of `<job_result>`, screen and tail; the new test
+  `durability::jobs::tests::a_killed_kernels_private_screen_reaches_no_model_input` pins the
+  2.18.2 shape (`j24`, `/opt/homebrew/bin/bash (user cell kernel)`, `.cell.log`, killed at
+  shutdown, persisted screen + log with private output and `AKIAIOSFODNN7EXAMPLE`): nothing
+  delivered, and neither string in anything the jobs actor is told.
+- Shutdown side: `KillAll` (`Jobs::kill_lost`) wrote every PTY's screen to `pty_screens`,
+  a kernel's too (as did the snapshot timer and the exit path) — unmasked, private output
+  included — for readers that are all model-facing. Fix at the one shared function:
+  `PtyHandle.cell`; `snapshot_to_store` writes nothing for a kernel. Nothing reads a
+  kernel's stored screen (the cells actor renders lost runs from its own log range; the cell
+  view uses `cell_attach` / `out.ansi`). Test `pty::tests::cell_kernel_screen_never_stored_or_reported_at_shutdown`
+  (failed on the old code: the `pty_screens` row held `private-out\nAKIAIOSFODNN7EXAMPLE`).
+- The `Settle::Unknown` of a kernel at shutdown ("j24: killed at shutdown before it settled")
+  carries only the job id; the supervisor records it as an error row / `AgentEvent::Error`
+  (UI, not model input) and delivers nothing. Left as is.
+
 ## For the other worker (D)
 
 - `<cell_result>` may now carry `mode="line"|"selection"`, `runs="N"` and `earlier="…"`
