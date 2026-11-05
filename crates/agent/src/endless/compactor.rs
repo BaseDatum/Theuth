@@ -378,6 +378,88 @@ pub trait Compactor: Send + Sync {
     }
 }
 
+/// R2-11: `inner`, recording every answered attempt as it lands — so a job
+/// dropped by its outer bound (or a panic) still settles the usage of the
+/// attempts that were answered, which [`build`] can no longer return.
+pub struct Tally<'a> {
+    inner: &'a dyn Compactor,
+    rows: parking_lot::Mutex<Vec<CallRow>>,
+}
+
+impl<'a> Tally<'a> {
+    /// `inner` with no attempt recorded yet.
+    pub fn new(inner: &'a dyn Compactor) -> Self {
+        Self {
+            inner,
+            rows: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The answered attempts so far (guard unknown: the build never judged them).
+    pub fn rows(&self) -> Vec<CallRow> {
+        self.rows.lock().clone()
+    }
+
+    fn record(&self, reply: &Result<Reply, String>) {
+        if let Ok(r) = reply {
+            let mut rows = self.rows.lock();
+            let try_no = rows.len() as u32;
+            rows.push(CallRow {
+                try_no,
+                bytes: Some(r.text.trim().len() as u32),
+                guard: None,
+                usage: r.usage.clone(),
+                usd_estimate: r
+                    .usage
+                    .as_ref()
+                    .and_then(|u| self.inner.rates().map(|c| estimate_usd(u, &c))),
+                latency_ms: r.latency.as_millis() as u64,
+            });
+        }
+    }
+}
+
+impl Compactor for Tally<'_> {
+    fn compress<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(async move {
+            let r = self.inner.compress(ctx, convo).await;
+            self.record(&r);
+            r
+        })
+    }
+    fn model(&self) -> &Resolved {
+        self.inner.model()
+    }
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+    fn rates(&self) -> Option<models::Cost> {
+        self.inner.rates()
+    }
+    fn local(&self) -> Option<String> {
+        self.inner.local()
+    }
+    fn out_tokens(&self) -> u32 {
+        self.inner.out_tokens()
+    }
+    fn compress_lines<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+        lines: u32,
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(async move {
+            let r = self.inner.compress_lines(ctx, convo, lines).await;
+            self.record(&r);
+            r
+        })
+    }
+}
+
 /// 137G G6: the reply cap of a batch of `lines` (the single cap per line,
 /// at most 16k tokens).
 pub fn batch_reply_tokens(single: u32, lines: u32) -> u32 {
@@ -1262,6 +1344,24 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!((f.error.as_str(), f.calls.len()), ("429: rate limited", 1));
+    }
+
+    /// R2-11: a build dropped by an outer bound (the job timeout) cannot
+    /// return its answered attempts; [`Tally`] still has them for the ledger.
+    #[tokio::test(start_paused = true)]
+    async fn tally_keeps_answered_attempts_of_a_dropped_build() {
+        let ungrounded = format!("user: {}", "deploy the website tonight ".repeat(30));
+        let fake = Fake::new(&[&ungrounded, "!hang"]);
+        let tally = Tally::new(&fake);
+        let dropped = tokio::time::timeout(
+            Duration::from_secs(5),
+            build(&tally, "", &unit_step(), 512, 5, Duration::from_secs(60)),
+        )
+        .await;
+        assert!(dropped.is_err(), "the outer bound fired first");
+        let rows = tally.rows();
+        assert_eq!(rows.len(), 1, "the answered attempt");
+        assert_eq!(rows[0].bytes, Some(ungrounded.trim().len() as u32));
     }
 
     /// 137F E6: the attempt bound fires at `attempt`, not later.

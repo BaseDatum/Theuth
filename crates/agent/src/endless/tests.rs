@@ -1796,12 +1796,12 @@ async fn transient_failures_never_fold_a_unit() {
     assert!(mechanical(&store, id).await.is_empty());
 }
 
-/// R2-6: a folded-run line whose range happens to be a tree address
-/// (`0+512`: id % n == 0, n = 2^k) refuses zoom like an unaligned one.
-#[tokio::test]
-async fn zoom_refuses_an_aligned_folded_run() {
-    let s = Script::new(Duration::ZERO);
-    let (_dir, endless, store, id) = harness_for(cfg_137f(None), s).await;
+/// A paused endless session holding the same-size units `message k` for
+/// `ks` (three-digit `k`: every unit the same size), attached, none built.
+async fn unbuilt_session(
+    ks: std::ops::Range<usize>,
+) -> (crate::TestDir, Endless, Store, SessionId) {
+    let (dir, endless, store, id) = harness_for(cfg_137f(None), Script::new(Duration::ZERO)).await;
     store
         .set_session_memory(id, MemoryMode::Endless)
         .await
@@ -1810,34 +1810,42 @@ async fn zoom_refuses_an_aligned_folded_run() {
         .set_endless_paused(id, Some("user"), None)
         .await
         .unwrap();
-    let append = |from: usize, to: usize| {
-        let store = store.clone();
-        async move {
-            for k in from..to {
-                let text = format!(
-                    "message {k}: deploy step {k} touched /srv/app/config_{k}.yaml and {}",
-                    "the rollout notes repeat here ".repeat(19)
-                );
-                store.append(id, &ChatMessage::user(text)).await.unwrap();
-            }
-        }
-    };
-    append(100, 400).await;
+    for k in ks {
+        let text = format!(
+            "message {k}: deploy step {k} touched /srv/app/config_{k}.yaml and {}",
+            "the rollout notes repeat here ".repeat(19)
+        );
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
     endless.attach(id, attached()).await.unwrap();
-    let first = endless.memory(id).await.unwrap().view[0].clone();
-    let shown = 300 - first.n as usize;
-    // Same-size units: the raw budget shows `shown` of them; make the run 512.
-    append(400, 100 + 512 + shown).await;
-    endless.on_rows_committed(id);
-    eventually("the new units", || async {
-        endless.memory(id).await.unwrap().units == (512 + shown) as u64
-    })
-    .await;
+    (dir, endless, store, id)
+}
+
+/// R2-6: a folded-run line whose range happens to be a tree address
+/// (`0+512`: id % n == 0, n = 2^k) refuses zoom like an unaligned one.
+/// R2-10: a run of one unit (`0+1`) still zooms to the unit's raw text.
+#[tokio::test]
+async fn zoom_refuses_an_aligned_folded_run_but_opens_a_lone_unit() {
+    let (_d, endless, _s, id) = unbuilt_session(100..400).await;
+    let shown = 300 - endless.memory(id).await.unwrap().view[0].n as usize;
+
+    let (_d, endless, _s, id) = unbuilt_session(100..100 + 512 + shown).await;
     let run = endless.memory(id).await.unwrap().view[0].clone();
     assert_eq!((run.id, run.n, run.built), (0, 512, false), "{}", run.text);
     assert!(super::tree::addr(0, 512).is_some(), "aligned");
     let e = endless.zoom(id, 0, 512).await.unwrap_err();
     assert!(e.contains("recall"), "{e}");
+
+    let (_d, endless, _s, id) = unbuilt_session(100..100 + 1 + shown).await;
+    let run = endless.memory(id).await.unwrap().view[0].clone();
+    assert_eq!((run.id, run.n, run.built), (0, 1, false), "{}", run.text);
+    assert!(
+        run.text.contains("lines not yet summarized"),
+        "a folded run: {}",
+        run.text
+    );
+    let lines = endless.zoom(id, 0, 1).await.unwrap();
+    assert!(lines[0].text.contains("message 100:"), "{}", lines[0].text);
 }
 
 /// R1-3: at $10/M input a batch over `max_usd_per_call` splits into solo
@@ -1967,10 +1975,12 @@ async fn spend_guard_folds_over_cost_units_and_pauses_at_the_day_cap() {
     .await;
     assert_eq!(s.count("batch") + s.count("unit"), 0, "never sent");
 
-    // R2-3: each call reports 5,000 tokens at $10/M = $0.05 = `max_usd_per_call`
-    // (its ~2k-token estimate passes the per-call check); the day cap is
-    // $0.60. Below $0.60 − 4 jobs × $0.05 calls run in parallel, then one at
-    // a time, so the cap is overshot by at most one call.
+    // R2-3 / R2-9: each call reports 5,000 tokens at $10/M = $0.05 =
+    // `max_usd_per_call` (its ~2k-token estimate passes the per-call check);
+    // the day cap is $0.60. Below $0.60 − 4 jobs × $0.05 calls run in
+    // parallel, then one at a time. `near_cap` is read from the settled spend
+    // at call start, so one tick may start all 4 slots: the overshoot is at
+    // most jobs × call = $0.20.
     let s = Script::priced(Duration::from_millis(30), Some(10.0), 4_950);
     let (_dir2, endless, store, id) = harness_for(
         EndlessConfig {
@@ -2000,7 +2010,7 @@ async fn spend_guard_folds_over_cost_units_and_pauses_at_the_day_cap() {
     .await;
     let m = endless.memory(id).await.unwrap();
     assert!(
-        (0.6..=0.65 + 1e-9).contains(&m.spend_today_usd),
+        (0.6..=0.6 + 4.0 * 0.05 + 1e-9).contains(&m.spend_today_usd),
         "{}",
         m.spend_today_usd
     );

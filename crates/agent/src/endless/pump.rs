@@ -1448,7 +1448,9 @@ async fn spend_capped(state: &State, cfg: &super::EndlessConfig) -> bool {
             return false;
         }
     };
-    // R1-4 / R2-3: once every slot's call could cross the cap, one call at a time.
+    // R1-4 / R2-3 / R2-9: once every slot's call could cross the cap, one call
+    // at a time. The flag is set at call start from the settled spend, so one
+    // tick may still start `jobs` calls: the overshoot is at most jobs × call.
     state.live.lock().near_cap = spent + f64::from(cfg.jobs.max(1)) * cfg.max_usd_per_call >= cap;
     if spent < cap {
         return false;
@@ -1570,9 +1572,10 @@ async fn call(
         _ => 1,
     };
     let outer = attempt * u32::from(cfg.tries.max(1)) * parts * 2 + Duration::from_secs(60);
+    // R2-11: the answered attempts, kept even if the outer bound drops the build.
+    let tally = compactor::Tally::new(c.as_ref());
     let run = async {
-        let first =
-            compactor::build(c.as_ref(), &ctx, step, cfg.node_bytes, cfg.tries, attempt).await;
+        let first = compactor::build(&tally, &ctx, step, cfg.node_bytes, cfg.tries, attempt).await;
         let Err(f) = &first else { return first };
         // G5: the provider's (or preflight's) counts; a shape without numbers
         // (Bedrock's "input is too long") halves the context.
@@ -1590,16 +1593,7 @@ async fn call(
         }
         tracing::warn!(session = %state.session, l, i, ctx = ctx.len(), retry_ctx = retry_ctx.len(), error = %f.error, "endless: context-length refusal; retrying once with a smaller context");
         let earlier = first.err().map(|f| f.calls).unwrap_or_default();
-        match compactor::build(
-            c.as_ref(),
-            &retry_ctx,
-            step,
-            cfg.node_bytes,
-            cfg.tries,
-            attempt,
-        )
-        .await
-        {
+        match compactor::build(&tally, &retry_ctx, step, cfg.node_bytes, cfg.tries, attempt).await {
             Ok(mut b) => {
                 b.calls.splice(0..0, earlier);
                 Ok(b)
@@ -1614,8 +1608,14 @@ async fn call(
     let built: Option<Result<compactor::Built, compactor::Failed>> = tokio::select! {
         b = build => Some(match b {
             Ok(Ok(built)) => built,
-            Ok(Err(_panic)) => Err("compactor panicked".to_owned().into()),
-            Err(_) => Err(format!("compactor job timed out after {}s", outer.as_secs()).into()),
+            Ok(Err(_panic)) => Err(compactor::Failed {
+                error: "compactor panicked".to_owned(),
+                calls: tally.rows(),
+            }),
+            Err(_) => Err(compactor::Failed {
+                error: format!("compactor job timed out after {}s", outer.as_secs()),
+                calls: tally.rows(),
+            }),
         }),
         _ = cancel.cancelled() => None,
     };
@@ -2164,9 +2164,10 @@ pub(crate) async fn zoom(
         return Err("this session has no endless memory".into());
     };
     let mut live = state.live.lock();
-    // R2-6: a folded-run line is no node even when its range is aligned.
+    // R2-6 / R2-10: a folded run of several units is no node even when its
+    // range is aligned; a lone unit (n = 1) still zooms to its raw text.
     let cfg = live.fold_cfg(&state.cfg.read());
-    if live.fold(cfg).is_folded_line(id, n) {
+    if n > 1 && live.fold(cfg).is_folded_line(id, n) {
         return Err(format!(
             "{id}+{n} is a folded run, not a summary line; recall searches it."
         ));
