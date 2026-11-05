@@ -12,6 +12,8 @@ use super::tree::{Kind, Unit};
 pub const WORK_MARKER: &str = "<message from=\"session:";
 
 /// Units of one row (§4 table). `excluded` rows are skipped by the caller.
+/// 137G G4: every text kind is capped at `cap_chars` like a tool result (the
+/// row keeps the full text; `zoom` shows the capped unit).
 pub fn derive(
     seq: i64,
     at: Option<DateTime<Utc>>,
@@ -28,13 +30,13 @@ pub fn derive(
                 } else {
                     Kind::User
                 };
-                (kind, t.clone())
+                (kind, cap(t, cap_chars))
             }
-            (ContentPart::Text(t), ChatRole::Assistant) => (Kind::Talk, t.clone()),
-            (ContentPart::Text(t), _) => (Kind::Echo, t.clone()),
+            (ContentPart::Text(t), ChatRole::Assistant) => (Kind::Talk, cap(t, cap_chars)),
+            (ContentPart::Text(t), _) => (Kind::Echo, cap(t, cap_chars)),
             (ContentPart::ToolCall(c), _) => {
                 let args = serde_json::to_string(&c.fn_arguments).unwrap_or_default();
-                (Kind::Tool, format!("{} {args}", c.fn_name))
+                (Kind::Tool, cap(&format!("{} {args}", c.fn_name), cap_chars))
             }
             (ContentPart::ToolResponse(r), _) => (Kind::Echo, cap(&r.content, cap_chars)),
             (ContentPart::Binary(_), _) => (

@@ -30,6 +30,7 @@ fn view() -> ViewRender {
         ],
         settled: true,
         unbuilt: 0,
+        folded: 0,
     }
 }
 

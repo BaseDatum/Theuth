@@ -74,6 +74,21 @@ pub struct EndlessConfig {
     /// 137F E9: compactor calls in flight per local endpoint, engine-wide (1..=16).
     #[cfg_attr(feature = "ts", ts(as = "Option<u8>", optional))]
     pub local_jobs: u8,
+    /// 137G G2: unsummarized lines the view shows verbatim, newest first, in bytes (4_000..=128_000); older ones fold into one placeholder line.
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub raw_bytes: u32,
+    /// 137G G3: the compactor's `<chat>` context cap in bytes for every model (8_000..=256_000); a local one takes the smaller of this and `local_ctx_bytes`.
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub compactor_ctx_bytes: u32,
+    /// 137G G6: consecutive unsummarized units one compactor call summarizes (1..=64).
+    #[cfg_attr(feature = "ts", ts(as = "Option<u8>", optional))]
+    pub batch_units: u8,
+    /// 137G G11: USD one compactor call's prompt may cost (0.001..=10); over it the context shrinks, else the line folds mechanically.
+    #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
+    pub max_usd_per_call: f64,
+    /// 137G G11: USD a chat's compactor may spend per UTC day (0..=1000, 0 = no cap); reaching it pauses settling (`paused_by: "spend"`).
+    #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
+    pub max_usd_per_session_day: f64,
 }
 
 impl Default for EndlessConfig {
@@ -97,6 +112,11 @@ impl Default for EndlessConfig {
             local_attempt_secs: 600,
             local_ctx_bytes: 24_000,
             local_jobs: 1,
+            raw_bytes: 32_000,
+            compactor_ctx_bytes: 48_000,
+            batch_units: 16,
+            max_usd_per_call: 0.10,
+            max_usd_per_session_day: 5.0,
         }
     }
 }
@@ -112,6 +132,7 @@ impl EndlessConfig {
         fold::FoldCfg {
             view_bytes: view_bytes.clamp(16_000, 256_000),
             slack: self.slack.clamp(0.0, 0.5),
+            raw_bytes: self.raw_bytes.clamp(4_000, 128_000),
         }
     }
 }
@@ -603,7 +624,20 @@ impl Endless {
     /// units the turn commits (D6). Once per turn, after `settle`, before the
     /// input row is logged.
     pub async fn render_for_turn(&self, session: SessionId) -> anyhow::Result<ViewRender> {
-        pump::render_for_turn(&self.inner, session).await
+        pump::render_for_turn(&self.inner, session, None, false).await
+    }
+
+    /// 137G G1/G5: [`Endless::render_for_turn`] scaled to at most
+    /// `max_bytes` of view budget (`view_bytes + raw_bytes` shrink together);
+    /// `again` re-renders the current turn's view (a refused request) instead
+    /// of opening a new turn.
+    pub async fn render_for_turn_within(
+        &self,
+        session: SessionId,
+        max_bytes: usize,
+        again: bool,
+    ) -> anyhow::Result<ViewRender> {
+        pump::render_for_turn(&self.inner, session, Some(max_bytes), again).await
     }
 
     /// 8.3: rows reached `messages`; the pump derives the units itself.

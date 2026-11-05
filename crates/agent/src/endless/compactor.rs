@@ -149,21 +149,42 @@ pub enum Step {
         /// Lines already written for earlier units of this stretch (text only).
         earlier: Vec<String>,
     },
+    /// 137G G6: `node(0, i)` for several units in one call — one numbered
+    /// reply line per unit, each checked by the guards on its own.
+    Batch {
+        /// `(kind, text)` per unit, in unit order.
+        units: Vec<(Kind, String)>,
+        /// Lines already written for earlier units of this stretch (text only).
+        earlier: Vec<String>,
+    },
 }
 
+/// 137G G4: a unit step over this many bytes is summarised map-reduce.
+pub const MAP_REDUCE_OVER: usize = 24_000;
+/// 137G G4: one map chunk's bytes at most.
+pub const CHUNK_BYTES: usize = 16_000;
+
 impl Step {
-    /// What G2/G3 compare against: the unit as `kind: text`, or the two child lines.
+    /// What G2/G3 compare against: the unit as `kind: text`, or the two child
+    /// lines (a batch: every unit, one per line).
     pub fn input(&self) -> String {
         match self {
             Self::Unit { kind, text, .. } => format!("{}: {text}", kind.as_str()),
             Self::Merge { a, b, .. } => format!("{a}\n{b}"),
+            Self::Batch { units, .. } => units
+                .iter()
+                .map(|(k, t)| format!("{}: {t}", k.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n"),
         }
     }
 
     /// Block 2 of the first user turn (§5.3).
     pub fn render(&self, node_bytes: u32) -> String {
         let earlier = match self {
-            Self::Unit { earlier, .. } | Self::Merge { earlier, .. } => earlier,
+            Self::Unit { earlier, .. }
+            | Self::Merge { earlier, .. }
+            | Self::Batch { earlier, .. } => earlier,
         };
         let mut s = String::from(
             "Lines already written for earlier messages of this stretch (text only, newest last):\n",
@@ -188,9 +209,40 @@ impl Step {
             Self::Merge { a, b, .. } => s.push_str(&format!(
                 "Merge these two lines into one, in at most {node_bytes} bytes:\n{a}\n{b}"
             )),
+            Self::Batch { units, .. } => {
+                let n = units.len();
+                s.push_str(&format!(
+                    "Compress each of these {n} messages into one line each, in at most {node_bytes} bytes per line. \
+                     Reply with exactly {n} lines, numbered in order as `1| …`, `2| …`, one per message, nothing else:"
+                ));
+                for (k, (kind, text)) in units.iter().enumerate() {
+                    s.push_str(&format!("\n\n[{}] {}: {text}", k + 1, kind.as_str()));
+                }
+            }
         }
         s
     }
+}
+
+/// 137G G6: the batch reply's line for each of `n` units (`k| text`, also
+/// `k.` `k:` `k)`); `None` for a number the reply lacks.
+pub fn batch_lines(reply: &str, n: usize) -> Vec<Option<String>> {
+    let mut out = vec![None; n];
+    for line in reply.lines() {
+        let l = line.trim_start();
+        let digits = l.bytes().take_while(u8::is_ascii_digit).count();
+        let Ok(k) = l[..digits].parse::<usize>() else {
+            continue;
+        };
+        let rest = l[digits..].trim_start();
+        let Some(rest) = rest.strip_prefix(['|', '.', ':', ')']) else {
+            continue;
+        };
+        if (1..=n).contains(&k) && out[k - 1].is_none() {
+            out[k - 1] = Some(rest.trim().to_owned());
+        }
+    }
+    out
 }
 
 /// One model reply.
@@ -232,6 +284,23 @@ pub trait Compactor: Send + Sync {
     fn out_tokens(&self) -> u32 {
         MAX_TOKENS
     }
+    /// 137G G6: [`Compactor::compress`] for a reply of `lines` lines (a
+    /// batch): the real compactor raises its reply cap to match.
+    fn compress_lines<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+        lines: u32,
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        let _ = lines;
+        self.compress(ctx, convo)
+    }
+}
+
+/// 137G G6: the reply cap of a batch of `lines` (the single cap per line,
+/// at most 16k tokens).
+pub fn batch_reply_tokens(single: u32, lines: u32) -> u32 {
+    (single + MAX_TOKENS * lines.saturating_sub(1)).min(16_000)
 }
 
 /// One attempt's ledger row (`endless_calls`).
@@ -254,12 +323,15 @@ pub struct CallRow {
 /// The result of [`build`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Built {
-    /// The unit's text (newlines kept).
+    /// The unit's text (newlines kept); empty for a batch.
     pub text: String,
     /// Attempts used; negative when no candidate passed (§6).
     pub tries: i32,
     /// Every attempt, in order.
     pub calls: Vec<CallRow>,
+    /// 137G G6, a batch only: each unit's guard-checked line, or the guard
+    /// its line tripped (that unit is retried alone).
+    pub lines: Vec<Result<String, &'static str>>,
 }
 
 impl Built {
@@ -286,12 +358,150 @@ impl Built {
     }
 }
 
+/// One node's build: a batch (G6), a long unit map-reduced (G4), else the
+/// single-call retry loop ([`build_one`]).
+pub async fn build(
+    c: &dyn Compactor,
+    ctx: &str,
+    step: &Step,
+    node_bytes: u32,
+    tries: u8,
+    attempt: Duration,
+) -> Result<Built, String> {
+    match step {
+        Step::Batch { units, .. } => build_batch(c, ctx, step, units, node_bytes, attempt).await,
+        Step::Unit {
+            kind,
+            text,
+            earlier,
+        } if text.len() > MAP_REDUCE_OVER => {
+            // G4: chunks of ≤ CHUNK_BYTES summarised alone, then one reduce
+            // call over their lines gives the node; every call is bounded by
+            // the same ctx and the backend preflight.
+            let mut lines = Vec::new();
+            let mut calls = Vec::new();
+            let mut tries_used = 0i32;
+            let mut failed_guard = false;
+            for chunk in chunks(text, CHUNK_BYTES) {
+                let part = Step::Unit {
+                    kind: *kind,
+                    text: chunk.to_owned(),
+                    earlier: earlier.clone(),
+                };
+                let b = build_one(c, ctx, &part, node_bytes, tries, attempt).await?;
+                tries_used += b.tries.abs();
+                failed_guard |= b.tries < 0;
+                calls.extend(b.calls);
+                lines.push(b.text);
+            }
+            let reduce = Step::Unit {
+                kind: *kind,
+                text: lines.join("\n"),
+                earlier: earlier.clone(),
+            };
+            let b = build_one(c, ctx, &reduce, node_bytes, tries, attempt).await?;
+            tries_used += b.tries.abs();
+            failed_guard |= b.tries < 0;
+            calls.extend(b.calls);
+            Ok(Built {
+                text: b.text,
+                tries: if failed_guard {
+                    -tries_used
+                } else {
+                    tries_used
+                },
+                calls,
+                lines: Vec::new(),
+            })
+        }
+        _ => build_one(c, ctx, step, node_bytes, tries, attempt).await,
+    }
+}
+
+/// `text` cut into pieces of at most `max` bytes, at a line end when one
+/// falls in the second half of the piece, else at a char boundary.
+pub fn chunks(text: &str, max: usize) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while rest.len() > max {
+        let head = guards::cut_utf8(rest, max);
+        let at = head
+            .rfind('\n')
+            .filter(|p| *p >= max / 2)
+            .map_or(head.len(), |p| p + 1);
+        out.push(&rest[..at]);
+        rest = &rest[at..];
+    }
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
+/// 137G G6: one call for a batch; each unit's numbered line passes the same
+/// guards as a single build, or names the guard it tripped. No in-call
+/// retries: a failing unit is retried alone with the single-unit prompt.
+async fn build_batch(
+    c: &dyn Compactor,
+    ctx: &str,
+    step: &Step,
+    units: &[(Kind, String)],
+    node_bytes: u32,
+    attempt: Duration,
+) -> Result<Built, String> {
+    let convo = vec![ChatMessage::user(step.render(node_bytes))];
+    let reply = match tokio::time::timeout(
+        attempt,
+        c.compress_lines(ctx, &convo, units.len() as u32),
+    )
+    .await
+    {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(format!("timed out after {}s", attempt.as_secs())),
+    };
+    let raw = reply.text.trim();
+    let ruler = guards::ruler(node_bytes);
+    let lines = units
+        .iter()
+        .zip(batch_lines(raw, units.len()))
+        .map(|((kind, text), line)| match line {
+            None => Err(guards::Trip::Format.as_str()),
+            Some(l) => guards::check(
+                &l,
+                &format!("{}: {text}", kind.as_str()),
+                &ruler,
+                guards::PROMPT_PHRASES,
+                node_bytes,
+            )
+            .map_err(guards::Trip::as_str),
+        })
+        .collect();
+    let usd = reply
+        .usage
+        .as_ref()
+        .and_then(|u| c.rates().map(|r| estimate_usd(u, &r)));
+    Ok(Built {
+        text: String::new(),
+        tries: 1,
+        calls: vec![CallRow {
+            try_no: 0,
+            bytes: Some(raw.len() as u32),
+            guard: None,
+            usage: reply.usage,
+            usd_estimate: usd,
+            latency_ms: reply.latency.as_millis() as u64,
+        }],
+        lines,
+    })
+}
+
 /// Run the retry loop for one node: up to `tries` attempts, each guard or
 /// size failure answered in the same conversation; keep the shortest passing
 /// candidate, else the shortest of all. Each attempt is bounded by `attempt`
 /// (137F E6); an attempt that fails or times out after a candidate exists
 /// ends the loop on that candidate (E7) instead of failing the node.
-pub async fn build(
+async fn build_one(
     c: &dyn Compactor,
     ctx: &str,
     step: &Step,
@@ -356,11 +566,13 @@ pub async fn build(
             text,
             tries: used,
             calls,
+            lines: Vec::new(),
         }),
         (None, Some(text)) => Ok(Built {
             text,
             tries: -used,
             calls,
+            lines: Vec::new(),
         }),
         (None, None) => Err("compactor returned nothing".into()),
     }
@@ -461,6 +673,17 @@ impl ModelCompactor {
         ctx: &str,
         convo: &[ChatMessage],
     ) -> (ChatRequest, ChatOptions) {
+        self.request_lines(t, ctx, convo, 1)
+    }
+
+    /// [`ModelCompactor::request`] for a reply of `lines` lines (G6 batch).
+    pub fn request_lines(
+        &self,
+        t: Transport,
+        ctx: &str,
+        convo: &[ChatMessage],
+        lines: u32,
+    ) -> (ChatRequest, ChatOptions) {
         let mut messages = Vec::with_capacity(convo.len() + 2);
         if t == Transport::Anthropic {
             messages.push(
@@ -479,7 +702,7 @@ impl ModelCompactor {
             .with_capture_usage(true)
             .with_capture_content(true)
             .with_capture_reasoning_content(true)
-            .with_max_tokens(self.reply_tokens());
+            .with_max_tokens(batch_reply_tokens(self.reply_tokens(), lines));
         // E6: idle bounds; a local stream's first token may take the whole
         // attempt (prompt eval on slow hardware), which `build` bounds. A
         // cloud stream's first byte and every silence between chunks may
@@ -510,7 +733,16 @@ impl Compactor for ModelCompactor {
         ctx: &'a str,
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
-        Box::pin(self.compress_inner(ctx, convo))
+        Box::pin(self.compress_inner(ctx, convo, 1))
+    }
+
+    fn compress_lines<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+        lines: u32,
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(self.compress_inner(ctx, convo, lines))
     }
 
     fn model(&self) -> &Resolved {
@@ -528,9 +760,14 @@ impl Compactor for ModelCompactor {
 
 impl ModelCompactor {
     /// One attempt; [`build`] bounds it whole (auth resolution included, E6).
-    async fn compress_inner(&self, ctx: &str, convo: &[ChatMessage]) -> Result<Reply, String> {
+    async fn compress_inner(
+        &self,
+        ctx: &str,
+        convo: &[ChatMessage],
+        lines: u32,
+    ) -> Result<Reply, String> {
         let transport = self.backend.transport(&self.model).await?;
-        let (req, opts) = self.request(transport, ctx, convo);
+        let (req, opts) = self.request_lines(transport, ctx, convo, lines);
         let started = Instant::now();
         let mut stream = self
             .backend
@@ -538,10 +775,21 @@ impl ModelCompactor {
             .await?;
         while let Some(ev) = stream.next().await {
             if let ChatStreamEvent::End(end) = ev? {
+                let latency = started.elapsed();
+                // G1 latency limb: a local endpoint's measured prompt-eval rate.
+                if self.local.is_some()
+                    && let Some(p) = end.captured_usage.as_ref().and_then(|u| u.prompt_tokens)
+                {
+                    crate::tokens::learn_eval(
+                        &self.model.id,
+                        u64::try_from(p).unwrap_or(0),
+                        latency.as_secs_f64(),
+                    );
+                }
                 return Ok(Reply {
                     text: end.captured_texts().map(|t| t.concat()).unwrap_or_default(),
                     usage: end.captured_usage,
-                    latency: started.elapsed(),
+                    latency,
                 });
             }
         }

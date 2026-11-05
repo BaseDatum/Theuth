@@ -317,12 +317,17 @@ async fn pump_builds_tree_and_tools_answer() {
     );
     assert!(mem.backfill.is_none());
 
+    // Merges run behind the view (they are not what `settle` waits for).
+    eventually("a level-2 merge", || async {
+        store
+            .endless_nodes(id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|n| n.l == 2)
+    })
+    .await;
     let nodes = store.endless_nodes(id).await.unwrap();
-    assert!(
-        nodes.iter().any(|n| n.l == 2),
-        "merges above level 1 built: {}",
-        nodes.len()
-    );
     assert!(nodes.iter().any(|n| n.l == 0 && n.free) && nodes.iter().any(|n| n.l == 0 && !n.free));
     let kinds: Vec<String> = sqlx::query_scalar("SELECT kind FROM model_calls WHERE owner_id = ?")
         .bind(id.to_string())
@@ -998,22 +1003,25 @@ async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
 
     p.set(Act::Echo);
-    super::pump::finish_for_tests(
-        &endless.inner,
-        id,
-        key,
-        Ok(super::tree::Node {
-            l: key.0,
-            i: key.1,
-            text: "built".into(),
-            size: 5,
-            free: false,
-            model: Some("fake/a".into()),
-            tries: 1,
-            mechanical: false,
-        }),
-    )
-    .await;
+    // 137G G6: the two long units failed together in one batch; both land.
+    for (key, ..) in super::pump::failed_for_tests(&endless.inner, id) {
+        super::pump::finish_for_tests(
+            &endless.inner,
+            id,
+            key,
+            Ok(super::tree::Node {
+                l: key.0,
+                i: key.1,
+                text: "built".into(),
+                size: 5,
+                free: false,
+                model: Some("fake/a".into()),
+                tries: 1,
+                mechanical: false,
+            }),
+        )
+        .await;
+    }
     assert!(endless.memory(id).await.unwrap().stalled.is_none());
     assert!(endless.settle(id, Duration::from_secs(10)).await);
 }
@@ -1224,8 +1232,8 @@ async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
     until("a call in flight", || p.calls() >= 1).await;
     let before = endless.memory(id).await.unwrap();
     let backlog = before.backlog.expect("a backlog");
-    // Level 0 is serial: the hung frontier and both units behind it wait.
-    assert_eq!((backlog.lines, backlog.paused), (3, false), "{backlog:?}");
+    // The two long units wait in the hung batch; the short ones are free lines.
+    assert_eq!((backlog.lines, backlog.paused), (2, false), "{backlog:?}");
 
     let mem = endless.fold(id).await.unwrap();
     assert!(mem.backlog.is_none(), "{:?}", mem.backlog);
@@ -1288,7 +1296,7 @@ async fn pause_stops_calls_survives_reattach_and_resume_restarts() {
 
     let mem = endless.pause(id, true).await.unwrap();
     let b = mem.backlog.expect("paused shows a backlog");
-    assert_eq!((b.lines, b.paused, b.eta_secs), (3, true, 0), "{b:?}");
+    assert_eq!((b.lines, b.paused, b.eta_secs), (2, true, 0), "{b:?}");
     assert_eq!(b.paused_by.as_deref(), Some("user"));
     until("the hung call cancelled", || {
         p.dropped.load(Ordering::SeqCst) == 1
@@ -1385,4 +1393,436 @@ async fn compactor_chain_chat_agent_settings_title_session() {
     assert_eq!(source(&m), ("fake/desk".into(), "agent".into()));
     assert!(m.model_override.is_none());
     assert_eq!(m.spend_today_usd, 0.0);
+}
+
+/// 137G: a compactor that answers batches line by line (`k| …`, a unit
+/// whose text holds `BAD` gets no line), single units and merges by echo;
+/// optionally refuses its first call as too long, or prices its calls.
+struct Script {
+    model: models::Resolved,
+    delay: Duration,
+    /// Refuse the first call with Anthropic's "prompt is too long".
+    overflow_first: std::sync::atomic::AtomicBool,
+    /// `(kind, ctx bytes, step bytes)` of every call: `batch` | `unit` | `merge`.
+    calls: Mutex<Vec<(&'static str, usize, usize)>>,
+    inflight: AtomicU32,
+    max_inflight: AtomicU32,
+    /// `prompt_tokens` reported per call (the G11 spend).
+    prompt_tokens: u32,
+}
+
+impl Script {
+    fn new(delay: Duration) -> Arc<Self> {
+        Self::priced(delay, None, 1_000)
+    }
+
+    /// With catalog rates (USD per million input tokens) and the prompt size each call reports.
+    fn priced(delay: Duration, input_usd: Option<f64>, prompt_tokens: u32) -> Arc<Self> {
+        let model = input_usd.map(|p| {
+            serde_json::from_value(serde_json::json!({
+                "id": "s", "name": "s", "limit": {"context": 200_000, "output": 4096},
+                "cost": {"input": p, "output": p}
+            }))
+            .unwrap()
+        });
+        Arc::new(Self {
+            model: models::Resolved {
+                model,
+                ..super::pump::resolved_for_tests("fake/script")
+            },
+            delay,
+            overflow_first: std::sync::atomic::AtomicBool::new(false),
+            calls: Mutex::new(Vec::new()),
+            inflight: AtomicU32::new(0),
+            max_inflight: AtomicU32::new(0),
+            prompt_tokens,
+        })
+    }
+
+    fn count(&self, kind: &str) -> usize {
+        self.calls.lock().iter().filter(|c| c.0 == kind).count()
+    }
+}
+
+/// The step text of a call (its first user block).
+fn step_text(convo: &[ChatMessage]) -> String {
+    convo
+        .first()
+        .and_then(|m| m.content.iter().next())
+        .and_then(|p| match p {
+            ContentPart::Text(t) => Some(t.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+impl Compactor for Script {
+    fn compress<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        let step = step_text(convo);
+        let (kind, text) = if step.contains("Compress each of these") {
+            let lines: Vec<String> = step
+                .split("\n\n[")
+                .skip(1)
+                .filter_map(|seg| {
+                    let (k, rest) = seg.split_once("] ")?;
+                    let body = rest.split_once(": ").map_or(rest, |(_, b)| b);
+                    (!body.contains("BAD")).then(|| {
+                        format!(
+                            "{k}| {}",
+                            super::guards::cut_utf8(body, 300).replace('\n', " ")
+                        )
+                    })
+                })
+                .collect();
+            ("batch", lines.join("\n"))
+        } else if step.contains("Merge these two lines") {
+            ("merge", echo_line(convo))
+        } else {
+            ("unit", echo_line(convo))
+        };
+        self.calls.lock().push((kind, ctx.len(), step.len()));
+        let overflow = self
+            .overflow_first
+            .swap(false, std::sync::atomic::Ordering::SeqCst);
+        let usage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": self.prompt_tokens, "completion_tokens": 50
+        }))
+        .ok();
+        Box::pin(async move {
+            let now = self.inflight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_inflight.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.inflight.fetch_sub(1, Ordering::SeqCst);
+            if overflow {
+                return Err(
+                    "400 Bad Request: prompt is too long: 1204913 tokens > 1000000 maximum".into(),
+                );
+            }
+            Ok(Reply {
+                text,
+                usage,
+                latency: self.delay,
+            })
+        })
+    }
+
+    fn model(&self) -> &models::Resolved {
+        &self.model
+    }
+}
+
+/// [`until`] for an async condition.
+async fn eventually<F, Fut>(what: &str, mut f: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..2_000 {
+        if f().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// `n` user rows of ~600 bytes (non-free units), the ones in `bad` marked `BAD`.
+async fn seed_many(store: &Store, id: SessionId, n: usize, bad: &[usize]) {
+    for k in 0..n {
+        let mark = if bad.contains(&k) { "BAD " } else { "" };
+        let text = format!(
+            "{mark}message {k}: deploy step {k} touched /srv/app/config_{k}.yaml and {}",
+            "the rollout notes repeat here ".repeat(19)
+        );
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
+}
+
+/// Level-0 nodes in the store.
+async fn level0(store: &Store, id: SessionId) -> Vec<super::tree::Node> {
+    store
+        .endless_nodes(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.l == 0)
+        .collect()
+}
+
+/// 137G G6 + G2: 200 unbuilt units settle in batches of 16 — at most
+/// ceil(200/16) batch calls plus one solo call for the unit whose batch
+/// line failed; batches run in parallel on a cloud compactor; while paused
+/// the backlog shows how many lines the view folds.
+#[tokio::test]
+async fn batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone() {
+    let s = Script::new(Duration::from_millis(40));
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 16_000,
+            raw_bytes: 4_000,
+            retry_secs: 600,
+            ..EndlessConfig::default()
+        },
+        s.clone(),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 200, &[37]).await;
+    store
+        .set_endless_paused(id, Some("user"), None)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    let m = endless.memory(id).await.unwrap();
+    let b = m.backlog.expect("a backlog");
+    let shown = m.view.iter().filter(|l| !l.built && l.n == 1).count() as u32;
+    assert_eq!((b.lines, b.paused, b.eta_secs), (200, true, 0), "{b:?}");
+    assert!(shown > 0 && b.folded == 200 - shown, "{b:?} shown {shown}");
+    let folded_line = m
+        .view
+        .iter()
+        .find(|l| l.n > 1 && !l.built)
+        .expect("one folded line");
+    assert!(
+        folded_line
+            .text
+            .contains(&format!("({} lines not yet summarized", b.folded))
+    );
+
+    endless.pause(id, false).await.unwrap();
+    eventually("200 level-0 nodes", || async {
+        level0(&store, id).await.len() == 200
+    })
+    .await;
+    let batches = s.count("batch");
+    assert!(batches <= 200usize.div_ceil(16), "{batches} batch calls");
+    assert_eq!(s.count("unit"), 1, "only the bad line ran alone");
+    assert!(
+        s.max_inflight.load(Ordering::SeqCst) > 1,
+        "cloud batches run in parallel"
+    );
+    let nodes = level0(&store, id).await;
+    assert!(
+        nodes
+            .iter()
+            .all(|n| n.model.as_deref() == Some("fake/script"))
+    );
+    assert!(
+        nodes
+            .iter()
+            .find(|n| n.i == 37)
+            .unwrap()
+            .text
+            .contains("BAD")
+    );
+    assert!(endless.memory(id).await.unwrap().backlog.is_none());
+}
+
+/// 137G G7: a unit that fails three times in a row folds mechanically and
+/// the frontier moves on; nothing stays failed.
+#[tokio::test]
+async fn three_failures_fold_the_unit_mechanically() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 16_000,
+            retry_secs: 0,
+            ..EndlessConfig::default()
+        },
+        p.clone(),
+    )
+    .await;
+    endless_session(&endless, &store, id).await;
+    eventually("two mechanical units", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .filter(|n| n.mechanical)
+            .count()
+            == 2
+    })
+    .await;
+    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(
+        super::pump::failed_for_tests(&endless.inner, id)
+            .iter()
+            .all(|(k, ..)| k.0 > 0),
+        "no level-0 failure left"
+    );
+    assert!(p.calls() >= 3);
+}
+
+/// 137G G5: a compactor call refused as too long ("1204913 tokens > 1000000
+/// maximum") is retried once with a smaller context — never the same size.
+#[tokio::test]
+async fn context_length_refusal_retries_once_smaller() {
+    let s = Script::new(Duration::ZERO);
+    s.overflow_first
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (_dir, endless, store, id) = harness_for(cfg_137f(None), s.clone()).await;
+    endless_session(&endless, &store, id).await;
+    eventually("every unit built", || async {
+        level0(&store, id).await.len() == 6
+    })
+    .await;
+    let calls = s.calls.lock().clone();
+    let (first, second) = (calls[0].1, calls[1].1);
+    assert_eq!(calls[0].0, calls[1].0, "the same step again");
+    assert!(second < first, "smaller, never equal: {first} → {second}");
+    assert!(
+        second <= (first as f64 * 1_000_000.0 / 1_204_913.0 * 0.85) as usize,
+        "{first} → {second}"
+    );
+}
+
+/// 137G G4: a 100 KB user unit is summarised map-reduce — chunks of ≤ 16 KB,
+/// then one reduce call — and lands as one node.
+#[tokio::test]
+async fn long_unit_is_map_reduced_into_one_node() {
+    let s = Script::new(Duration::ZERO);
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 16_000,
+            cap_chars: 120_000,
+            ..EndlessConfig::default()
+        },
+        s.clone(),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let long: String = (0..10_000).map(|k| format!("w{k:04}_x ")).collect();
+    assert!(long.len() >= 80_000);
+    store
+        .append(id, &ChatMessage::user(long.clone()))
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    let chunks = super::compactor::chunks(&long, super::compactor::CHUNK_BYTES).len();
+    assert!(chunks >= 5, "{chunks}");
+    let calls = s.calls.lock().clone();
+    assert_eq!(calls.len(), chunks + 1, "map calls + one reduce");
+    assert!(
+        calls
+            .iter()
+            .all(|c| c.2 <= super::compactor::CHUNK_BYTES + 2_000),
+        "every step under the chunk budget: {calls:?}"
+    );
+    let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 1);
+    assert!(!nodes[0].free && !nodes[0].mechanical && nodes[0].text.len() <= 512);
+}
+
+/// 137G G11: a call whose prompt alone costs over `max_usd_per_call` is
+/// never sent (the unit folds mechanically); reaching the day cap pauses
+/// settling (`paused_by: "spend"`); resuming overrides it for the day.
+#[tokio::test]
+async fn spend_guard_folds_over_cost_units_and_pauses_at_the_day_cap() {
+    // $100/M input: the ~2.5k-token unit prompt is ≈ $0.25 > $0.10.
+    let s = Script::priced(Duration::ZERO, Some(100.0), 10_000);
+    let (_dir, endless, store, id) = harness_for(cfg_137f(None), s.clone()).await;
+    endless_session(&endless, &store, id).await;
+    eventually("over-cost units folded", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .filter(|n| n.mechanical)
+            .count()
+            == 2
+    })
+    .await;
+    assert_eq!(s.count("batch") + s.count("unit"), 0, "never sent");
+
+    // Each call now reports 10k prompt tokens = $1; the day cap is $1.5.
+    let s = Script::priced(Duration::ZERO, Some(100.0), 10_000);
+    let (_dir2, endless, store, id) = harness_for(
+        EndlessConfig {
+            max_usd_per_call: 10.0,
+            max_usd_per_session_day: 1.5,
+            batch_units: 1,
+            jobs: 1,
+            ..cfg_137f(None)
+        },
+        s.clone(),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 6, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    eventually("the spend pause", || async {
+        endless
+            .memory(id)
+            .await
+            .unwrap()
+            .backlog
+            .is_some_and(|b| b.paused_by.as_deref() == Some("spend"))
+    })
+    .await;
+    let m = endless.memory(id).await.unwrap();
+    assert!(m.spend_today_usd >= 1.5, "{}", m.spend_today_usd);
+    let calls = s.calls.lock().len();
+    assert_eq!(calls, 2, "two $1 calls reach the $1.5 cap");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(s.calls.lock().len(), calls, "no call while spend-paused");
+    endless.pause(id, false).await.unwrap();
+    until("calls resume past the cap (user override)", || {
+        s.calls.lock().len() > calls
+    })
+    .await;
+    assert!(
+        store
+            .endless_meta(id)
+            .await
+            .unwrap()
+            .spend_override
+            .is_some()
+    );
+}
+
+/// 137G G9: `/endless off` with 5,000 unbuilt lines writes a bounded head
+/// (the G2 raw budget), never the whole raw view.
+#[tokio::test]
+async fn endless_off_with_5000_unbuilt_writes_a_bounded_head() {
+    let s = Script::new(Duration::ZERO);
+    let (_dir, endless, store, id) = harness_for(cfg_137f(None), s.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 5_000, &[]).await;
+    store
+        .set_endless_paused(id, Some("user"), None)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    let off = endless
+        .set_mode(id, MemoryMode::Epochs, 1, UnitFilter::All)
+        .await
+        .unwrap();
+    let head = off.head.expect("a head");
+    let cfg = cfg_137f(None).fold_cfg();
+    assert!(
+        head.len() <= (cfg.high() + cfg.raw_bytes as usize) + 4_096,
+        "{} bytes",
+        head.len()
+    );
+    assert!(
+        head.contains("lines not yet summarized"),
+        "{}",
+        &head[..300]
+    );
+    assert_eq!(s.calls.lock().len(), 0);
 }

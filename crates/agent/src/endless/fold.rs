@@ -12,6 +12,8 @@ pub struct FoldCfg {
     pub view_bytes: u32,
     /// Fold band half-width as a fraction of `view_bytes`.
     pub slack: f32,
+    /// 137G G2: bytes of unsummarized lines shown, newest first; older ones fold into one line per run.
+    pub raw_bytes: u32,
 }
 
 impl FoldCfg {
@@ -92,12 +94,20 @@ fn part_len(tree: &Tree, part: Part, units: &[Unit]) -> usize {
 /// R1-D4: the view's first line when `base > 0` (without the `0+base|` prefix).
 pub const EARLIER: &str = "(earlier history, not summarized; recall searches it)";
 
+/// 137G G2: the line an older run of `n` unsummarized units folds into
+/// (without the `id+n|` prefix).
+pub fn folded_text(n: u64) -> String {
+    format!("({n} lines not yet summarized — recall searches them)")
+}
+
 /// The view: parts tiling `[base, T)` with their rendered byte sizes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fold {
     /// The parts, oldest first; they tile `[base, T)`.
     pub parts: Vec<Part>,
     sizes: Vec<usize>,
+    /// Per part: not built (a level-0 unit rendered per D10).
+    open: Vec<bool>,
     /// First unit the tree covers (R1-D4 backfill base); 0 = everything.
     pub base: u64,
     /// Units so far.
@@ -112,6 +122,7 @@ impl Fold {
         Self {
             parts: Vec::new(),
             sizes: Vec::new(),
+            open: Vec::new(),
             base,
             t: base,
             cfg,
@@ -136,13 +147,60 @@ impl Fold {
         let part = Part { l: 0, i };
         self.parts.push(part);
         self.sizes.push(part_len(tree, part, units));
+        self.open.push(!tree.built(0, i));
         self.t = i + 1;
         self.fit(tree, units);
     }
 
-    /// Σ bytes of every part's rendered line (D10 placeholders counted).
+    /// G2: parts before this index that are not built fold into run lines;
+    /// the unbuilt parts from it on (newest) fit `raw_bytes`.
+    fn raw_cut(&self) -> usize {
+        let budget = self.cfg.raw_bytes as usize;
+        let mut used = 0;
+        for k in (0..self.parts.len()).rev() {
+            if self.open[k] {
+                used += self.sizes[k];
+                if used > budget {
+                    return k + 1;
+                }
+            }
+        }
+        0
+    }
+
+    /// G2: the runs of folded parts (index ranges into `parts`), oldest first.
+    pub fn folded_runs(&self) -> Vec<std::ops::Range<usize>> {
+        let cut = self.raw_cut();
+        let mut out = Vec::new();
+        let mut k = 0;
+        while k < cut {
+            if self.open[k] {
+                let s = k;
+                while k < cut && self.open[k] {
+                    k += 1;
+                }
+                out.push(s..k);
+            } else {
+                k += 1;
+            }
+        }
+        out
+    }
+
+    /// G2: unsummarized units the view shows folded (`Backlog.folded`).
+    pub fn folded(&self) -> u32 {
+        self.folded_runs().iter().map(|r| r.len() as u32).sum()
+    }
+
+    /// Σ bytes of every rendered line (D10 placeholders counted; G2 folded
+    /// runs as their one line each).
     pub fn size(&self) -> usize {
-        self.sizes.iter().sum::<usize>() + if self.base > 0 { EARLIER.len() } else { 0 }
+        let mut size = self.sizes.iter().sum::<usize>();
+        for r in self.folded_runs() {
+            size -= self.sizes[r.clone()].iter().sum::<usize>();
+            size += folded_text(r.len() as u64).len();
+        }
+        size + if self.base > 0 { EARLIER.len() } else { 0 }
     }
 
     /// §7.1 `fit()`. Returns how many pairs were merged.
@@ -163,6 +221,8 @@ impl Fold {
             size = size - self.sizes[k] - self.sizes[k + 1] + len;
             self.parts.splice(k..k + 2, [parent]);
             self.sizes.splice(k..k + 2, [len]);
+            self.open
+                .splice(k..k + 2, [!tree.built(parent.l, parent.i)]);
             merged += 1;
         }
         merged
@@ -213,6 +273,8 @@ pub struct ViewRender {
     pub settled: bool,
     /// Parts rendered per D10.
     pub unbuilt: u32,
+    /// 137G G2: unsummarized units folded into run lines (not shown verbatim).
+    pub folded: u32,
 }
 
 impl ViewRender {
@@ -228,6 +290,39 @@ pub fn line(part: Part, text: &str) -> String {
     format!("{id}+{n}|{}", text.replace('\n', " "))
 }
 
+/// One rendered line of the view: a part, or a G2 folded run `(id, n)`.
+enum Entry {
+    Part(Part),
+    Folded(u64, u64),
+}
+
+impl Entry {
+    fn level(&self) -> u8 {
+        match self {
+            Self::Part(p) => p.l,
+            Self::Folded(..) => 0,
+        }
+    }
+}
+
+/// The view's lines in order: parts, with every G2 folded run as one entry.
+fn entries(fold: &Fold) -> Vec<Entry> {
+    let runs = fold.folded_runs();
+    let mut out = Vec::with_capacity(fold.parts.len());
+    let mut runs = runs.into_iter().peekable();
+    let mut k = 0;
+    while k < fold.parts.len() {
+        if let Some(r) = runs.next_if(|r| r.start == k) {
+            out.push(Entry::Folded(fold.parts[k].start(), r.len() as u64));
+            k = r.end;
+        } else {
+            out.push(Entry::Part(fold.parts[k]));
+            k += 1;
+        }
+    }
+    out
+}
+
 /// The view as lines for the panel.
 pub fn render_lines(tree: &Tree, fold: &Fold, units: &[Unit]) -> Vec<ViewLine> {
     let head = (fold.base > 0).then(|| ViewLine {
@@ -240,19 +335,30 @@ pub fn render_lines(tree: &Tree, fold: &Fold, units: &[Unit]) -> Vec<ViewLine> {
         mechanical: false,
     });
     head.into_iter()
-        .chain(fold.parts.iter().map(|p| {
-            let (text, built) = part_text(tree, *p, units);
-            let (id, n) = p.id_n();
-            ViewLine {
+        .chain(entries(fold).into_iter().map(|e| match e {
+            Entry::Folded(id, n) => ViewLine {
                 id,
                 n,
-                level: p.l,
-                text: text.replace('\n', " "),
-                built,
-                at: (n == 1)
-                    .then(|| units.get(id as usize).and_then(|u| u.at))
-                    .flatten(),
-                mechanical: tree.get(p.l, p.i).is_some_and(|n| n.mechanical),
+                level: 0,
+                text: folded_text(n),
+                built: false,
+                at: None,
+                mechanical: false,
+            },
+            Entry::Part(p) => {
+                let (text, built) = part_text(tree, p, units);
+                let (id, n) = p.id_n();
+                ViewLine {
+                    id,
+                    n,
+                    level: p.l,
+                    text: text.replace('\n', " "),
+                    built,
+                    at: (n == 1)
+                        .then(|| units.get(id as usize).and_then(|u| u.at))
+                        .flatten(),
+                    mechanical: tree.get(p.l, p.i).is_some_and(|n| n.mechanical),
+                }
             }
         }))
         .collect()
@@ -262,16 +368,18 @@ pub fn render_lines(tree: &Tree, fold: &Fold, units: &[Unit]) -> Vec<ViewLine> {
 /// deepest band boundaries (a line whose `n` is smaller than the previous
 /// line's, taken from the oldest end) plus the end; every block marked.
 pub fn render(tree: &Tree, fold: &Fold, units: &[Unit]) -> ViewRender {
-    let lines: Vec<String> = fold
-        .parts
+    let entries = entries(fold);
+    let lines: Vec<String> = entries
         .iter()
-        .map(|p| line(*p, &part_text(tree, *p, units).0))
+        .map(|e| match e {
+            Entry::Part(p) => line(*p, &part_text(tree, *p, units).0),
+            Entry::Folded(id, n) => format!("{id}+{n}|{}", folded_text(*n)),
+        })
         .collect();
-    let mut cuts: Vec<usize> = fold
-        .parts
+    let mut cuts: Vec<usize> = entries
         .windows(2)
         .enumerate()
-        .filter(|(_, w)| w[1].l < w[0].l)
+        .filter(|(_, w)| w[1].level() < w[0].level())
         .map(|(k, _)| k + 1)
         .take(3)
         .collect();
@@ -300,6 +408,7 @@ pub fn render(tree: &Tree, fold: &Fold, units: &[Unit]) -> ViewRender {
         blocks,
         settled: fold.unbuilt(tree) == 0,
         unbuilt: fold.unbuilt(tree),
+        folded: fold.folded(),
     }
 }
 
@@ -313,7 +422,69 @@ mod tests {
     const CFG: FoldCfg = FoldCfg {
         view_bytes: 32_000,
         slack: 0.125,
+        raw_bytes: u32::MAX,
     };
+
+    /// 137G G2: 5,000 unbuilt units render within view + raw budget: the
+    /// newest fit `raw_bytes` verbatim, the rest fold into one run line that
+    /// counts them, `Fold::size` and the render agree, and `folded` is right.
+    #[test]
+    fn unbuilt_backlog_folds_beyond_the_raw_budget() {
+        let units: Vec<Unit> = (0..5_000u64)
+            .map(|i| {
+                let text = format!("message {i}: {}", "x".repeat(600));
+                Unit {
+                    i,
+                    seq: i as i64,
+                    part: 0,
+                    kind: Kind::User,
+                    size: (6 + text.len()) as u32,
+                    text,
+                    at: None,
+                }
+            })
+            .collect();
+        let cfg = FoldCfg {
+            view_bytes: 128_000,
+            slack: 0.125,
+            raw_bytes: 32_000,
+        };
+        let tree = Tree::default();
+        let f = Fold::rebuild(&tree, 0, 5_000, cfg, &units);
+        let r = render(&tree, &f, &units);
+        let text = r.text();
+        let shown = 32_000 / units[4_999].size as usize;
+        assert_eq!(f.folded(), 5_000 - shown as u32);
+        assert_eq!(r.folded, f.folded());
+        assert!(
+            text.contains(&format!(
+                "0+{}|({} lines not yet summarized",
+                5_000 - shown,
+                5_000 - shown
+            )),
+            "{}",
+            &text[..200]
+        );
+        assert!(text.contains("user: message 4999:") && !text.contains("user: message 0:"));
+        // Fixed parts: `<chat>` tags and an `id+n|` prefix per line.
+        let fixed = 16 + (shown + 1) * 12;
+        assert!(
+            text.len() <= f.size() + fixed,
+            "{} vs {}",
+            text.len(),
+            f.size()
+        );
+        assert!(text.len() <= 32_000 + 128 + fixed, "{}", text.len());
+        let lines = render_lines(&tree, &f, &units);
+        assert_eq!(lines.len(), shown + 1);
+        assert_eq!(
+            (lines[0].id, lines[0].n, lines[0].built),
+            (0, (5_000 - shown) as u64, false)
+        );
+        // A raw budget large enough shows everything verbatim (unbuilt parts are never merged).
+        let all = Fold::rebuild(&tree, 0, 50, cfg, &units);
+        assert_eq!(all.folded(), 0);
+    }
 
     /// The lab fixture: nodes in build order, units with kind/text/size.
     fn fixture() -> (Vec<Node>, Vec<Unit>) {
