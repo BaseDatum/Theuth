@@ -409,6 +409,8 @@ impl Roster {
         // the watcher saw). `PutAgent` updates the read model before this
         // runs, so it applies its own change (F1).
         let mut remodelled = Vec::new();
+        // 137G: the same for `memory_model:` (the desk's compactor default).
+        let mut rememory = Vec::new();
         for (stem, parsed) in file::load_dir(&self.dir) {
             if let Err(e) = AgentName::new(&stem) {
                 tracing::warn!("{}/{stem}.md ignored: {e}", self.dir.display());
@@ -436,6 +438,9 @@ impl Roster {
                         if old.is_some_and(|o| o.model != f.model) {
                             remodelled.push((stem.clone(), f.model.clone()));
                         }
+                        if old.is_some_and(|o| o.memory_model != f.memory_model) {
+                            rememory.push((stem.clone(), f.memory_model.clone()));
+                        }
                         push_charter(old.map(|f| f.body.as_str()), f);
                     }
                     Err(e) => tracing::warn!("{}/{stem}.md: {e}", self.dir.display()),
@@ -455,6 +460,9 @@ impl Roster {
         self.sync_desks().await;
         for (name, model) in remodelled {
             self.apply_desk_model(&name, model).await;
+        }
+        for (name, model) in rememory {
+            self.apply_desk_memory_model(&name, model).await;
         }
     }
 
@@ -650,6 +658,17 @@ impl Roster {
         {
             tracing::warn!(agent = %name, bytes, "desk view_bytes not applied: {e}");
         }
+        // 137G: the agent's `memory_model:` is its desk's compactor default
+        // (below a chat's own pick); written every open, so a cleared key clears.
+        if let Err(e) = agents
+            .ask(agent::SetAgentCompactorModel {
+                session,
+                model: f.memory_model.clone(),
+            })
+            .await
+        {
+            tracing::warn!(agent = %name, model = ?f.memory_model, "desk memory_model not applied: {e}");
+        }
         self.shared.set_desk(name, session);
         self.desks.insert(
             name.to_owned(),
@@ -727,6 +746,23 @@ impl Roster {
             && let Some(d) = self.desks.get_mut(name)
         {
             d.model = Some(id);
+        }
+    }
+
+    /// 137G: the agent's `memory_model` changed (a [`PutAgent`] or an on-disk
+    /// edit): its open desk's compactor default follows, live.
+    async fn apply_desk_memory_model(&self, name: &str, model: Option<String>) {
+        let Some(session) = self.desks.get(name).map(|d| d.session) else {
+            return;
+        };
+        let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+            return;
+        };
+        if let Err(e) = agents
+            .ask(agent::SetAgentCompactorModel { session, model })
+            .await
+        {
+            tracing::warn!(agent = %name, "desk memory_model not applied: {e}");
         }
     }
 
@@ -1956,6 +1992,7 @@ impl Message<ListAgents> for Roster {
                             runs_in: Default::default(),
                             memory: None,
                             view_bytes: None,
+                            memory_model: None,
                             body: String::new(),
                         },
                         status: AgentStatus::Invalid,
@@ -2060,10 +2097,16 @@ impl Message<PutAgent> for Roster {
         file::parse(m.0.name.as_str(), &file::render(&m.0))?;
         // 148 F1: `write_file` updates the read model, so the reconcile below
         // cannot see the `model:` change — apply it here.
-        let old_model = self.shared.file(m.0.name.as_str()).and_then(|f| f.model);
+        let old = self.shared.file(m.0.name.as_str());
+        let old_model = old.as_ref().and_then(|f| f.model.clone());
+        let old_memory_model = old.and_then(|f| f.memory_model);
         self.write_file(&m.0).await?;
         if old_model != m.0.model {
             self.apply_desk_model(m.0.name.as_str(), m.0.model.clone())
+                .await;
+        }
+        if old_memory_model != m.0.memory_model {
+            self.apply_desk_memory_model(m.0.name.as_str(), m.0.memory_model.clone())
                 .await;
         }
         let _ = ctx.actor_ref().tell(Reconcile).await;

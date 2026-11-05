@@ -14,8 +14,8 @@ use crate::endless::compactor::CallRow;
 use crate::endless::tree::{Kind, Node};
 use crate::endless::{EndlessStats, GuardTrips, MemoryMode, UnitFilter};
 
-/// The session's endless columns (R1-D4 base, R1-D6 filter).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The session's endless columns (R1-D4 base, R1-D6 filter, 137G pause and models).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EndlessMeta {
     /// `sessions.memory`.
     pub mode: MemoryMode,
@@ -25,8 +25,14 @@ pub struct EndlessMeta {
     pub base: u64,
     /// `sessions.endless_view_bytes`: the user's per-session view budget (R1b).
     pub view_bytes: Option<u32>,
-    /// `sessions.endless_paused` (137G `endless_pause`).
-    pub paused: bool,
+    /// `sessions.endless_paused` (137G): `user` | `spend`; `None` = running.
+    pub paused_by: Option<String>,
+    /// `sessions.endless_spend_override` (137G G11): the UTC day the user resumed past the cap.
+    pub spend_override: Option<String>,
+    /// `sessions.endless_model` (137G): this chat's own compactor pick.
+    pub model_override: Option<String>,
+    /// `sessions.endless_agent_model` (137G): the desk agent's `memory_model`.
+    pub agent_model: Option<String>,
 }
 
 /// One `endless_units` row (the unit without its text).
@@ -106,37 +112,98 @@ impl Store {
         Ok(s.and_then(|s| s.parse().ok()).unwrap_or_default())
     }
 
-    /// `sessions.{memory, endless_filter, endless_base, endless_view_bytes, endless_paused}`;
-    /// defaults for an unknown session.
+    /// The session's endless columns; defaults for an unknown session.
     pub async fn endless_meta(&self, id: SessionId) -> anyhow::Result<EndlessMeta> {
-        type Row = (String, String, i64, Option<i64>, Option<bool>);
+        type Row = (
+            String,
+            String,
+            i64,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
         let row: Option<Row> = sqlx::query_as(
-            "SELECT memory, endless_filter, endless_base, endless_view_bytes, endless_paused \
-             FROM sessions WHERE id = ?",
+            "SELECT memory, endless_filter, endless_base, endless_view_bytes, endless_paused, \
+             endless_spend_override, endless_model, endless_agent_model FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.read)
         .await?;
         Ok(row
-            .map(|(m, f, b, v, p)| EndlessMeta {
+            .map(|(m, f, b, v, p, o, cm, am)| EndlessMeta {
                 mode: m.parse().unwrap_or_default(),
                 filter: f.parse().unwrap_or_default(),
                 base: u64::try_from(b).unwrap_or(0),
                 view_bytes: v.and_then(|v| u32::try_from(v).ok()),
-                paused: p.unwrap_or(false),
+                paused_by: p.filter(|p| !p.is_empty()),
+                spend_override: o,
+                model_override: cm.filter(|m| !m.is_empty()),
+                agent_model: am.filter(|m| !m.is_empty()),
             })
             .unwrap_or_default())
     }
 
-    /// 137G `endless_pause`: persist the session's pause flag.
-    pub async fn set_endless_paused(&self, id: SessionId, paused: bool) -> anyhow::Result<()> {
+    /// 137G `endless_pause`: who paused (`user` | `spend`), `None` = running;
+    /// `spend_override` = the UTC day the user resumed past the day cap.
+    pub async fn set_endless_paused(
+        &self,
+        id: SessionId,
+        paused_by: Option<&str>,
+        spend_override: Option<&str>,
+    ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
-        sqlx::query("UPDATE sessions SET endless_paused = ? WHERE id = ?")
-            .bind(paused)
+        sqlx::query(
+            "UPDATE sessions SET endless_paused = ?, \
+             endless_spend_override = COALESCE(?, endless_spend_override) WHERE id = ?",
+        )
+        .bind(paused_by)
+        .bind(spend_override)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
+    /// 137G: this chat's compactor model (`None` clears) or, with `agent`,
+    /// the desk agent's `memory_model`.
+    pub async fn set_endless_model(
+        &self,
+        id: SessionId,
+        model: Option<&str>,
+        agent: bool,
+    ) -> anyhow::Result<()> {
+        let sql = if agent {
+            "UPDATE sessions SET endless_agent_model = ? WHERE id = ?"
+        } else {
+            "UPDATE sessions SET endless_model = ? WHERE id = ?"
+        };
+        let mut tx = self.begin_write().await?;
+        sqlx::query(sql)
+            .bind(model)
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;
         tx.commit().await
+    }
+
+    /// 137G G11: USD this session's compactor calls (`model_calls.kind =
+    /// 'endless'`) cost at or after `since` (RFC 3339): the returned cost
+    /// else the estimate, USD rows only.
+    pub async fn endless_spend_since(&self, id: SessionId, since: &str) -> anyhow::Result<f64> {
+        let nanos: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(CASE \
+                WHEN returned_nanos IS NOT NULL THEN IIF(returned_currency = 'USD', returned_nanos, 0) \
+                WHEN estimated_currency = 'USD' THEN estimated_nanos ELSE 0 END), 0) \
+             FROM model_calls WHERE owner_id = ? AND kind = ? AND created_at >= ?",
+        )
+        .bind(id.to_string())
+        .bind(crate::cost::CallKind::Endless.as_str())
+        .bind(since)
+        .fetch_one(&self.read)
+        .await?;
+        Ok(nanos as f64 / 1e9)
     }
 
     /// Fix the filter and base at switch-on (R1-D4, R1-D6).
@@ -541,7 +608,22 @@ mod tests {
             .set_endless_view_bytes(id, Some(48_000))
             .await
             .unwrap();
-        store.set_endless_paused(id, true).await.unwrap();
+        store
+            .set_endless_paused(id, Some("spend"), Some("2026-11-05"))
+            .await
+            .unwrap();
+        store
+            .set_endless_paused(id, Some("user"), None)
+            .await
+            .unwrap();
+        store
+            .set_endless_model(id, Some("p/chat"), false)
+            .await
+            .unwrap();
+        store
+            .set_endless_model(id, Some("p/desk"), true)
+            .await
+            .unwrap();
         assert_eq!(
             store.endless_meta(id).await.unwrap(),
             EndlessMeta {
@@ -549,9 +631,14 @@ mod tests {
                 filter: UnitFilter::Meeting,
                 base: 40,
                 view_bytes: Some(48_000),
-                paused: true,
+                paused_by: Some("user".into()),
+                spend_override: Some("2026-11-05".into()),
+                model_override: Some("p/chat".into()),
+                agent_model: Some("p/desk".into()),
             }
         );
+        store.set_endless_model(id, None, false).await.unwrap();
+        assert_eq!(store.endless_meta(id).await.unwrap().model_override, None);
         assert_eq!(store.endless_sessions().await.unwrap().len(), 1);
         assert_eq!(
             store.session(id).await.unwrap().unwrap().memory,

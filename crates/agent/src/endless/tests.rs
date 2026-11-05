@@ -456,6 +456,7 @@ fn wire_types_round_trip() {
             folded: 4_900,
             eta_secs: 600,
             paused: false,
+            paused_by: None,
         }),
     };
     let v = serde_json::to_value(&ev).unwrap();
@@ -1288,6 +1289,7 @@ async fn pause_stops_calls_survives_reattach_and_resume_restarts() {
     let mem = endless.pause(id, true).await.unwrap();
     let b = mem.backlog.expect("paused shows a backlog");
     assert_eq!((b.lines, b.paused, b.eta_secs), (3, true, 0), "{b:?}");
+    assert_eq!(b.paused_by.as_deref(), Some("user"));
     until("the hung call cancelled", || {
         p.dropped.load(Ordering::SeqCst) == 1
     })
@@ -1302,17 +1304,85 @@ async fn pause_stops_calls_survives_reattach_and_resume_restarts() {
         t0.elapsed() < Duration::from_secs(5),
         "settle does not wait"
     );
-    assert!(store.endless_meta(id).await.unwrap().paused);
+    assert_eq!(
+        store.endless_meta(id).await.unwrap().paused_by.as_deref(),
+        Some("user")
+    );
 
     // A restart: the state reloads from the store, still paused.
     endless.detach(id);
     endless.attach(id, attached()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(p.calls(), calls, "no call after a restart either");
-    assert!(endless.memory(id).await.unwrap().backlog.unwrap().paused);
+    let b = endless.memory(id).await.unwrap().backlog.unwrap();
+    assert_eq!(
+        b.paused_by.as_deref(),
+        Some("user"),
+        "still paused after a restart"
+    );
 
     let mem = endless.pause(id, false).await.unwrap();
     assert!(!mem.backlog.unwrap().paused);
     until("calls resume", || p.calls() > calls).await;
-    assert!(!store.endless_meta(id).await.unwrap().paused);
+    let meta = store.endless_meta(id).await.unwrap();
+    assert_eq!((meta.paused_by, meta.spend_override), (None, None));
+
+    // G11: resuming a spend pause is recorded as the user's override for today.
+    store
+        .set_endless_paused(id, Some("spend"), None)
+        .await
+        .unwrap();
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    let b = endless.memory(id).await.unwrap().backlog.unwrap();
+    assert_eq!(b.paused_by.as_deref(), Some("spend"));
+    endless.pause(id, false).await.unwrap();
+    let meta = store.endless_meta(id).await.unwrap();
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    assert_eq!((meta.paused_by, meta.spend_override), (None, Some(today)));
+}
+
+/// 137G chain: chat override → agent default → `agent.endless.model` →
+/// title model → session model; each pick persists, is live (the compactor
+/// switches without a re-attach) and reports its source.
+#[tokio::test]
+async fn compactor_chain_chat_agent_settings_title_session() {
+    // One echoing compactor per resolved id, so `memory.model` names the link's pick.
+    let factory: super::pump::CompactorFactory =
+        Arc::new(|id: &str| -> Arc<dyn Compactor> { Probe::new(id, Act::Echo) });
+    let (_dir, endless, store, id) = harness_factory(cfg_137f(None), factory).await;
+    endless_session(&endless, &store, id).await;
+    let source = |m: &super::SessionMemory| (m.model.clone(), m.model_source.clone());
+    let m = endless.memory(id).await.unwrap();
+    assert_eq!(source(&m), ("fake/session".into(), "session".into()));
+    endless.set_title_model(Some("fake/title".into()));
+    let m = endless.memory(id).await.unwrap();
+    assert_eq!(source(&m), ("fake/title".into(), "title".into()));
+    endless.set_config(cfg_137f(Some("fake/settings")));
+    let m = endless.memory(id).await.unwrap();
+    assert_eq!(source(&m), ("fake/settings".into(), "settings".into()));
+    let m = endless
+        .set_agent_model(id, Some("fake/desk".into()))
+        .await
+        .unwrap();
+    assert_eq!(source(&m), ("fake/desk".into(), "agent".into()));
+    let m = endless
+        .set_model(id, Some(" fake/b ".into()))
+        .await
+        .unwrap();
+    assert_eq!(source(&m), ("fake/b".into(), "chat".into()));
+    assert_eq!(m.model_override.as_deref(), Some("fake/b"));
+    let meta = store.endless_meta(id).await.unwrap();
+    assert_eq!(
+        (meta.model_override.as_deref(), meta.agent_model.as_deref()),
+        (Some("fake/b"), Some("fake/desk"))
+    );
+    // A restart reloads both picks.
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(source(&endless.memory(id).await.unwrap()).1, "chat");
+    let m = endless.set_model(id, None).await.unwrap();
+    assert_eq!(source(&m), ("fake/desk".into(), "agent".into()));
+    assert!(m.model_override.is_none());
+    assert_eq!(m.spend_today_usd, 0.0);
 }

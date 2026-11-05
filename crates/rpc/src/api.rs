@@ -376,6 +376,15 @@ pub trait Api {
     /// cancelled, the backlog kept; persisted), `false` resumes; the fresh `SessionMemory`.
     #[method(name = "endless_pause", with_extensions)]
     async fn endless_pause(&self, session: SessionId, paused: bool) -> RpcResult<SessionMemory>;
+    /// 137G: this chat's own compactor model (`None` = inherit the chain: agent
+    /// default → `agent.endless.model` → title model → session model); the id
+    /// must resolve; persisted, live; the fresh `SessionMemory`.
+    #[method(name = "set_session_compactor_model", with_extensions)]
+    async fn set_session_compactor_model(
+        &self,
+        session: SessionId,
+        model: Option<String>,
+    ) -> RpcResult<SessionMemory>;
     /// 137 §9 `zoom`: the two children of line `id+n` (`n == 1`: the whole message).
     #[method(name = "endless_zoom", with_extensions)]
     async fn endless_zoom(&self, session: SessionId, id: u64, n: u64) -> RpcResult<Vec<ViewLine>>;
@@ -4233,6 +4242,30 @@ impl ApiServer for Server {
             return Ok(r);
         }
         ask::<Agents, _>(agent::AGENT_ACTOR, agent::EndlessPause { session, paused }).await
+    }
+
+    async fn set_session_compactor_model(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        model: Option<String>,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "set_session_compactor_model",
+            (session, model.clone()),
+        )
+        .await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetSessionCompactorModel { session, model },
+        )
+        .await
     }
 
     async fn endless_zoom(

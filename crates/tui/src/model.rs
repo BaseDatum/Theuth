@@ -464,6 +464,13 @@ pub enum Command {
         /// Pause (`true`) or resume.
         paused: bool,
     },
+    /// `set_session_compactor_model` (137G `/endless model <id|clear>`).
+    EndlessModel {
+        /// Target.
+        session: SessionId,
+        /// The model id; `None` clears this chat's pick.
+        model: Option<String>,
+    },
     /// `compact_style`.
     GetCompactStyle,
     /// `set_compact_style`.
@@ -1826,8 +1833,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "/endless",
-        "[on|off|fold|pause|resume]",
-        "endless memory: switch it, fold the unsummarized backlog, pause/resume settling, or show the view state",
+        "[on|off|fold|pause|resume|model <id>|model clear]",
+        "endless memory: switch it, fold the unsummarized backlog, pause/resume settling, pick this chat's compactor, or show the view state",
     ),
     (
         "/shake",
@@ -9263,9 +9270,17 @@ impl Model {
                 session,
                 paused: false,
             },
+            "model clear" => Command::EndlessModel {
+                session,
+                model: None,
+            },
+            a if a.starts_with("model ") => Command::EndlessModel {
+                session,
+                model: Some(a["model ".len()..].trim().to_owned()),
+            },
             _ => {
                 self.entries.push(Entry::Error(
-                    "usage: /endless [on|off|fold|pause|resume]".into(),
+                    "usage: /endless [on|off|fold|pause|resume|model <id>|model clear]".into(),
                 ));
                 return;
             }

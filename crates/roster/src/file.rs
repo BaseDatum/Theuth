@@ -27,6 +27,7 @@ struct FrontMatter {
     runs_in: Option<String>,
     memory: Option<String>,
     view_bytes: Option<u32>,
+    memory_model: Option<String>,
 }
 
 /// Parse one file's text as the agent `name`. `Err` is the user-facing reason
@@ -94,6 +95,7 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         runs_in: fm.runs_in.as_deref().map_or(Ok(RunsIn::Any), str::parse)?,
         memory,
         view_bytes: fm.view_bytes,
+        memory_model: trimmed(fm.memory_model),
         body: body.to_owned(),
     })
 }
@@ -146,6 +148,9 @@ pub fn render(f: &AgentFile) -> String {
     }
     if let Some(b) = f.view_bytes {
         s.push_str(&format!("view_bytes: {b}\n"));
+    }
+    if let Some(m) = &f.memory_model {
+        s.push_str(&format!("memory_model: {}\n", m.trim()));
     }
     if !s.is_empty() {
         s.insert_str(0, "---\n");
@@ -240,6 +245,7 @@ pub fn default_agent(data_dir: &Path, model: Option<String>) -> AgentFile {
         runs_in: RunsIn::Any,
         memory: None,
         view_bytes: None,
+        memory_model: None,
         body: body.to_owned(),
     }
 }
@@ -430,6 +436,7 @@ mod tests {
             runs_in: RunsIn::Vm("lab".into()),
             memory: Some(agent::MemoryMode::Endless),
             view_bytes: Some(96_000),
+            memory_model: Some("anthropic/claude-haiku-5-5".into()),
             body: "You are Ops.\n\nYour charter is production.".into(),
         };
         assert_eq!(parse("ops", &render(&f)).unwrap(), f);

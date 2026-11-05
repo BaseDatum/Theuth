@@ -663,6 +663,13 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 agent::endless_ext::status(&m)
             ))
         }
+        Command::EndlessModel { session, model } => {
+            let m = msg(api.set_session_compactor_model(session, model).await)?;
+            UiEvent::Info(format!(
+                "Compactor for this chat: {} ({}).",
+                m.model, m.model_source
+            ))
+        }
         Command::GetCompactStyle => UiEvent::CompactStyle(msg(api.compact_style().await)?),
         Command::SetCompactStyle(style) => {
             msg(api.set_compact_style(style).await)?;

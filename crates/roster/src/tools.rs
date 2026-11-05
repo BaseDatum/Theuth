@@ -64,6 +64,9 @@ pub struct AgentProposeArgs {
     /// One paragraph on when this agent is the right one to hand off to.
     #[serde(default)]
     pub capabilities: Option<String>,
+    /// Compactor model of its endless desk sessions (137G); default: the engine's chain.
+    #[serde(default)]
+    pub memory_model: Option<String>,
 }
 
 /// The file `a` describes, active and unproposed (the caller sets `paused` /
@@ -104,6 +107,7 @@ fn file_of(
         runs_in: Default::default(),
         memory: None,
         view_bytes: None,
+        memory_model: a.memory_model,
         body: a.charter,
     })
 }
@@ -337,6 +341,7 @@ mod tests {
             tools: Some("mutating".into()),
             mcp: None,
             capabilities: None,
+            memory_model: Some("anthropic/claude-haiku-5-5".into()),
         }
     }
 
@@ -351,6 +356,10 @@ mod tests {
                 cto.model.as_deref()
             ),
             ("theuth", "Ops", Some("gpt-5"))
+        );
+        assert_eq!(
+            cto.memory_model.as_deref(),
+            Some("anthropic/claude-haiku-5-5")
         );
         assert_eq!(
             cto.budget,

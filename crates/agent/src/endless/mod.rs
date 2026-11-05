@@ -326,7 +326,7 @@ pub struct Stalled {
 
 /// Unsummarized lines waiting for the compactor (137G). Engine → UI. TS name
 /// `EndlessBacklog`: `dreaming::Backlog` owns `Backlog.ts`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
@@ -342,6 +342,10 @@ pub struct Backlog {
     pub eta_secs: u64,
     /// Settling is paused for this session (no compactor calls).
     pub paused: bool,
+    /// Who paused: `"user"` (`endless_pause`) or `"spend"` (the G11 day cap); `None` while running.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub paused_by: Option<String>,
 }
 
 /// RPC `session_memory` (§11.2).
@@ -376,6 +380,19 @@ pub struct SessionMemory {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub backlog: Option<Backlog>,
+    /// 137G: this chat's own compactor pick (`set_session_compactor_model`); `None` = inherit.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub model_override: Option<String>,
+    /// 137G: which link chose `model`: `"chat"` | `"agent"` | `"settings"` | `"title"` | `"session"`;
+    /// `""` for an epochs session.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<String>", optional))]
+    pub model_source: String,
+    /// 137G G11: this chat's compactor spend in the current UTC day (USD, `model_calls` kind `endless`).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
+    pub spend_today_usd: f64,
 }
 
 /// Bus event on the session stream, ≤ 1 per 500 ms per session (§11.2).
@@ -680,6 +697,27 @@ impl Endless {
     /// resumes. Persisted in `sessions.endless_paused`.
     pub async fn pause(&self, session: SessionId, paused: bool) -> anyhow::Result<SessionMemory> {
         pump::pause(&self.inner, session, paused).await
+    }
+
+    /// RPC `set_session_compactor_model` (137G): this chat's own compactor
+    /// (`None` clears = inherit); refused when the id does not resolve;
+    /// persisted in `sessions.endless_model`; live (re-resolve + kick, 137F).
+    pub async fn set_model(
+        &self,
+        session: SessionId,
+        model: Option<String>,
+    ) -> anyhow::Result<SessionMemory> {
+        pump::set_model(&self.inner, session, model, false).await
+    }
+
+    /// The roster at desk open (137G): the agent's `memory_model` default
+    /// for this desk session (`None` clears); persisted, live.
+    pub async fn set_agent_model(
+        &self,
+        session: SessionId,
+        model: Option<String>,
+    ) -> anyhow::Result<SessionMemory> {
+        pump::set_model(&self.inner, session, model, true).await
     }
 
     /// The constant VIEW_DOC appended to the system prompt in endless sessions (§9).

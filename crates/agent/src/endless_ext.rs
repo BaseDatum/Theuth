@@ -165,7 +165,7 @@ pub fn status(m: &SessionMemory) -> String {
     } else {
         s.push_str(" · up to date");
     }
-    if let Some(b) = m.backlog.filter(|b| b.paused) {
+    if let Some(b) = m.backlog.as_ref().filter(|b| b.paused) {
         s.push_str(&format!(" · settling paused ({} lines wait)", b.lines));
     }
     if m.stats.calls > 0 {
@@ -203,6 +203,9 @@ mod tests {
             backfill,
             stalled: None,
             backlog: None,
+            model_override: None,
+            model_source: "settings".into(),
+            spend_today_usd: 0.0,
         }
     }
 

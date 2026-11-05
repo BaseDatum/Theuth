@@ -325,8 +325,10 @@ struct Live {
     base: u64,
     /// R1-D2: per-session view budget override.
     view_bytes: Option<u32>,
-    /// 137G `endless_pause`: no compactor calls while set (persisted).
-    paused: bool,
+    /// 137G `endless_pause`: `user` | `spend`; no compactor calls while set (persisted).
+    paused_by: Option<String>,
+    /// 137G: the compactor chain's first two links — this chat's pick, the desk agent's default.
+    picks: Picks,
     /// Every unit, dense by `i`.
     // ponytail: whole-session unit text in memory; page from the store if a session outgrows RAM.
     units: Vec<Unit>,
@@ -516,18 +518,20 @@ impl Live {
     /// 137G: the unsettled level-0 backlog; `None` when empty and not paused.
     fn backlog(&self) -> Option<Backlog> {
         let lines = u32::try_from(self.unbuilt_level0()).unwrap_or(u32::MAX);
-        if lines == 0 && !self.paused {
+        let paused = self.paused_by.is_some();
+        if lines == 0 && !paused {
             return None;
         }
         Some(Backlog {
             lines,
             folded: 0,
-            eta_secs: if self.paused {
+            eta_secs: if paused {
                 0
             } else {
                 (f64::from(lines) * self.secs_per_unit()) as u64
             },
-            paused: self.paused,
+            paused,
+            paused_by: self.paused_by.clone(),
         })
     }
 }
@@ -539,7 +543,11 @@ impl Live {
             filter: meta.filter,
             base: meta.base,
             view_bytes: meta.view_bytes,
-            paused: meta.paused,
+            paused_by: meta.paused_by,
+            picks: Picks {
+                chat: meta.model_override,
+                agent: meta.agent_model,
+            },
             units: Vec::new(),
             tree: Tree::default(),
             fold: None,
@@ -560,20 +568,43 @@ impl Live {
     }
 }
 
-/// The compactor for a session (R1-D3): `agent.endless.model` → else
-/// `agent.title_model` → else the session's own model with its effort —
-/// every link read live (137F E1). Keyed by model id + effort.
+/// 137G: the compactor chain's per-session links.
+#[derive(Clone, Debug, Default)]
+struct Picks {
+    /// This chat's own pick (`sessions.endless_model`).
+    chat: Option<String>,
+    /// The desk agent's `memory_model` (`sessions.endless_agent_model`).
+    agent: Option<String>,
+}
+
+/// 137G chain: chat override → agent default → `agent.endless.model` →
+/// `agent.title_model` → the session's model (`None`), with the link's name.
+fn chosen(inner: &Inner, picks: &Picks) -> (Option<String>, &'static str) {
+    if let Some(m) = &picks.chat {
+        return (Some(m.clone()), "chat");
+    }
+    if let Some(m) = &picks.agent {
+        return (Some(m.clone()), "agent");
+    }
+    if let Some(m) = inner.cfg.read().model.clone() {
+        return (Some(m), "settings");
+    }
+    match inner.title_model.read().clone() {
+        Some(m) => (Some(m), "title"),
+        None => (None, "session"),
+    }
+}
+
+/// The compactor for a session ([`chosen`]; R1-D3 + 137G) with the session's
+/// effort when it is the session's own model — every link read live (137F
+/// E1). Keyed by model id + effort.
 fn compactor_for(
     inner: &Inner,
     session: SessionId,
     attached: &Attached,
+    picks: &Picks,
 ) -> (String, Arc<dyn Compactor>) {
-    let chosen = inner
-        .cfg
-        .read()
-        .model
-        .clone()
-        .or_else(|| inner.title_model.read().clone());
+    let (chosen, source) = chosen(inner, picks);
     if let Some(f) = &inner.compactor_for_tests {
         let id = chosen.unwrap_or_else(|| attached.model.id.clone());
         let c = f(&id);
@@ -590,7 +621,7 @@ fn compactor_for(
                 (m, effort)
             }
             Err(e) => {
-                tracing::warn!(model = %id, error = %e, "agent.endless.model: falling back to the session model");
+                tracing::warn!(model = %id, source, error = %e, "endless compactor: falling back to the session model");
                 (attached.model.clone(), attached.effort.clone())
             }
         },
@@ -632,7 +663,8 @@ pub(crate) fn reresolve(inner: &Inner, session: Option<SessionId>) {
         .map(|(id, h)| (*id, h.state.clone(), h.attached.clone()))
         .collect();
     for (id, state, attached) in targets {
-        if !state.switch(compactor_for(inner, id, &attached)) {
+        let picks = state.live.lock().picks.clone();
+        if !state.switch(compactor_for(inner, id, &attached, &picks)) {
             state.wake.notify_one();
         }
     }
@@ -690,13 +722,21 @@ pub(crate) async fn attach(
             live.filter = meta.filter;
             live.base = meta.base;
             live.view_bytes = meta.view_bytes;
-            live.paused = meta.paused;
+            live.paused_by = meta.paused_by.clone();
+            live.picks = Picks {
+                chat: meta.model_override.clone(),
+                agent: meta.agent_model.clone(),
+            };
             live.invalidate();
             drop(live);
             state
         }
         None => {
-            let current = compactor_for(inner, session, &attached);
+            let picks = Picks {
+                chat: meta.model_override.clone(),
+                agent: meta.agent_model.clone(),
+            };
+            let current = compactor_for(inner, session, &attached, &picks);
             let state = Arc::new(State::new(session, store, inner, current, meta));
             load(&state).await?;
             state
@@ -711,7 +751,8 @@ pub(crate) async fn attach(
     inner.sessions.lock().insert(session, handle);
     // R1-2: a link of the chain that changed while this attach ran (or the
     // session's model since the last one) — idempotent when nothing moved.
-    state.switch(compactor_for(inner, session, &attached));
+    let picks = state.live.lock().picks.clone();
+    state.switch(compactor_for(inner, session, &attached, &picks));
     if mode == MemoryMode::Endless {
         start_pump(state, cancel);
     }
@@ -850,7 +891,7 @@ fn start_pump(state: Arc<State>, cancel: CancellationToken) {
 /// Start every eligible node up to `jobs` (§5.2 rules 1–3).
 fn schedule(state: &Arc<State>) {
     let mut live = state.live.lock();
-    if live.mode != MemoryMode::Endless || live.paused {
+    if live.mode != MemoryMode::Endless || live.paused_by.is_some() {
         return;
     }
     let cfg = live.fold_cfg(&state.cfg.read());
@@ -1352,7 +1393,7 @@ pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> 
         }
         // E4: a frontier that keeps failing will not land within this turn's
         // wait; 137G: nor will anything while settling is paused.
-        if stalled || state.live.lock().paused {
+        if stalled || state.live.lock().paused_by.is_some() {
             return false;
         }
         let left = deadline.saturating_duration_since(Instant::now());
@@ -1754,6 +1795,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         });
     };
     let stats = store.endless_stats(session).await?;
+    let spend_today_usd = store.endless_spend_since(session, &utc_day_start()).await?;
     let mut live = state.live.lock();
     let cfg = live.fold_cfg(&state.cfg.read());
     let f = live.fold(cfg);
@@ -1783,7 +1825,19 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         } else {
             None
         },
+        model_override: live.picks.chat.clone(),
+        model_source: if mode == MemoryMode::Endless {
+            chosen(inner, &live.picks).1.to_owned()
+        } else {
+            String::new()
+        },
+        spend_today_usd,
     })
+}
+
+/// RFC 3339 start of the current UTC day (`model_calls.created_at` is UTC RFC 3339).
+fn utc_day_start() -> String {
+    format!("{}T00:00:00+00:00", Utc::now().format("%Y-%m-%d"))
 }
 
 /// RPC `endless_retry` (137F E5, R1-10): cancel the calls in flight (a hung
@@ -1876,23 +1930,71 @@ pub(crate) async fn pause(
     paused: bool,
 ) -> anyhow::Result<SessionMemory> {
     let store = inner.store_for(session);
-    if store.session_memory(session).await? != MemoryMode::Endless {
+    let meta = store.endless_meta(session).await?;
+    if meta.mode != MemoryMode::Endless {
         return memory(inner, session).await;
     }
-    store.set_endless_paused(session, paused).await?;
+    let by = paused.then_some("user");
+    // G11: resuming a spend pause is the user's override for the rest of the UTC day.
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let override_day = (!paused && meta.paused_by.as_deref() == Some("spend")).then_some(today);
+    store
+        .set_endless_paused(session, by, override_day.as_deref())
+        .await?;
     if let Some(state) = state_of(inner, session) {
         {
             let mut live = state.live.lock();
-            live.paused = paused;
+            live.paused_by = by.map(str::to_owned);
             live.dirty = true;
         }
         if paused {
             state.cancel_calls();
         }
-        tracing::info!(%session, paused, "endless: settling paused/resumed");
+        tracing::info!(%session, paused, spend_override = ?override_day, "endless: settling paused/resumed");
         state.built_tx.send_modify(|v| *v += 1);
         state.wake.notify_one();
     }
+    memory(inner, session).await
+}
+
+/// RPC `set_session_compactor_model` (`agent = false`) and the roster's
+/// desk default (`agent = true`), 137G: an id must resolve (`None` clears);
+/// persisted, then live — re-resolve, cancel the old model's calls, reset
+/// backoff, kick the pump (137F E2).
+pub(crate) async fn set_model(
+    inner: &Inner,
+    session: SessionId,
+    model: Option<String>,
+    agent: bool,
+) -> anyhow::Result<SessionMemory> {
+    let model = model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+    if let Some(id) = &model
+        && inner.compactor_for_tests.is_none()
+    {
+        inner
+            .catalog
+            .read()
+            .resolve(id, &*crate::supervisor::configured(inner.auth.clone()))
+            .map_err(|e| anyhow::anyhow!("compactor model {id:?}: {e}"))?;
+    }
+    inner
+        .store_for(session)
+        .set_endless_model(session, model.as_deref(), agent)
+        .await?;
+    if let Some(state) = state_of(inner, session) {
+        {
+            let mut live = state.live.lock();
+            let slot = if agent {
+                &mut live.picks.agent
+            } else {
+                &mut live.picks.chat
+            };
+            *slot = model.clone();
+            live.dirty = true;
+        }
+        reresolve(inner, Some(session));
+    }
+    tracing::info!(%session, model = ?model, agent, "endless: compactor pick set");
     memory(inner, session).await
 }
 

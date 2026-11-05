@@ -2015,6 +2015,7 @@ mod tests {
                 runs_in: Default::default(),
                 memory: None,
                 view_bytes: None,
+                memory_model: None,
                 body: "x".into(),
             },
             status,

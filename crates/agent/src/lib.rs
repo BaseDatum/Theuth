@@ -1076,6 +1076,27 @@ pub struct EndlessPause {
     pub paused: bool,
 }
 
+/// `ask` → `Result<SessionMemory, String>` (137G `set_session_compactor_model`):
+/// this chat's own compactor (`None` = inherit); refused when the id does
+/// not resolve; persisted and live.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSessionCompactorModel {
+    /// Target session.
+    pub session: SessionId,
+    /// The model id; `None` clears the override.
+    pub model: Option<String>,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137G): the desk agent's
+/// `memory_model` for its desk session — the roster sends it at desk open.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetAgentCompactorModel {
+    /// The desk session.
+    pub session: SessionId,
+    /// The agent file's `memory_model`; `None` clears it.
+    pub model: Option<String>,
+}
+
 /// `ask` → `Result<Vec<ViewLine>, String>` (137 §9 `zoom`): the two lines
 /// under `id+n`, or the whole unit when `n == 1`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]

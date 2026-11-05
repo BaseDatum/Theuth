@@ -111,8 +111,8 @@ use crate::{
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
     EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
-    GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetEndlessSettings, SetSessionMemory,
-    SetSessionViewBytes,
+    GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetAgentCompactorModel,
+    SetEndlessSettings, SetSessionCompactorModel, SetSessionMemory, SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
@@ -7670,6 +7670,40 @@ impl Message<EndlessPause> for Agents {
         self.stored(m.session).await?;
         self.endless
             .pause(m.session, m.paused)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<SetSessionCompactorModel> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137G: any session this engine knows, like [`EndlessRetry`].
+    async fn handle(
+        &mut self,
+        m: SetSessionCompactorModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .set_model(m.session, m.model)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<SetAgentCompactorModel> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137G: the roster's desk default, like [`SetSessionCompactorModel`].
+    async fn handle(
+        &mut self,
+        m: SetAgentCompactorModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .set_agent_model(m.session, m.model)
             .await
             .map_err(|e| format!("{e:#}"))
     }
