@@ -111,11 +111,13 @@ export function Empty({ children }: { children: ReactNode }) {
 /**
  * A whole-number `Info` field edited on blur/Enter (Agent loop, Advisor); values outside `[min, max]` are ignored.
  * `placeholder`: a key the engine may not send (an optional one); the field stays editable and shows the engine default.
+ * `step` below 1: a decimal field (USD amounts), not floored.
  */
 export function Count({
   value,
   min,
   max,
+  step,
   placeholder,
   action,
   'aria-label': ariaLabel,
@@ -123,6 +125,7 @@ export function Count({
   value: number | undefined
   min: number
   max?: number
+  step?: number
   placeholder?: number
   action: { mutate: (n: number) => void; isPending: boolean }
   'aria-label'?: string
@@ -134,12 +137,13 @@ export function Count({
       aria-label={ariaLabel}
       min={min}
       max={max}
+      step={step}
       defaultValue={value}
       placeholder={placeholder?.toString()}
       disabled={(value === undefined && placeholder === undefined) || action.isPending}
       className="w-28 text-right"
       onBlur={(e) => {
-        const n = bounded(e.currentTarget.value, min, max)
+        const n = bounded(e.currentTarget.value, min, max, step)
         if (n !== undefined && n !== value) action.mutate(n)
       }}
       onKeyDown={(e) => {
@@ -149,9 +153,10 @@ export function Count({
   )
 }
 
-/** The whole number a count field accepts from `raw`: floored, within `[min, max]`; `undefined` otherwise (the field is left alone). */
-export function bounded(raw: string | number, min: number, max = Number.POSITIVE_INFINITY): number | undefined {
-  const n = Math.floor(Number(raw))
+/** The number a count field accepts from `raw`: floored (unless `step` < 1), within `[min, max]`; `undefined` otherwise, an empty field included (the field is left alone). */
+export function bounded(raw: string | number, min: number, max = Number.POSITIVE_INFINITY, step = 1): number | undefined {
+  if (String(raw).trim() === '') return undefined
+  const n = step < 1 ? Number(raw) : Math.floor(Number(raw))
   return Number.isFinite(n) && n >= min && n <= max ? n : undefined
 }
 

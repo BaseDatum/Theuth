@@ -41,6 +41,18 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
       <Field label="Model" id="rt-model" hint="Every session this agent opens; default = the node's model.">
         <ModelCombobox id="rt-model" size="sm" className="w-full" models={models.data ?? []} value={d.model} none={{ label: 'Node default' }} onChange={(v) => set('model', v)} />
       </Field>
+      <Field label="Memory summary model" id="rt-memory-model" hint="Writes the endless memory summaries of its desk; a chat's own pick wins. Default = Settings › Memory.">
+        <ModelCombobox
+          id="rt-memory-model"
+          aria-label="Memory summary model"
+          size="sm"
+          className="w-full"
+          models={models.data ?? []}
+          value={d.memory_model}
+          none={{ label: 'Use default' }}
+          onChange={(v) => set('memory_model', v ?? undefined)}
+        />
+      </Field>
       <Field label="Thinking effort" id="rt-effort" hint="Reasoning depth for its sessions.">
         <Select value={d.effort ?? NONE} onValueChange={(v) => set('effort', v === NONE ? null : v)}>
           <SelectTrigger id="rt-effort" size="sm" className="w-full">

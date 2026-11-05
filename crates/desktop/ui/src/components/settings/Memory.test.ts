@@ -5,6 +5,7 @@ import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import { tokenEstimate } from '@/lib/endless'
+import { bounded } from './shared'
 import { Memory } from './Memory'
 
 const config: EndlessConfig = { default_chat: true, default_desk: true, default_meeting: false, view_bytes: 128_000, meeting_view_bytes: 32_000, node_bytes: 512, slack: 0.25, settle_secs: 60, jobs: 8, tries: 5, retry_secs: 10, cap_chars: 30_000, backfill_max_units: 2_000, model: null }
@@ -69,4 +70,23 @@ test('137F Advanced: the four compactor keys carry the engine ranges; absent (ol
   expect(field(present, 'Local attempt seconds')).toContain('value="1200"')
   expect(field(present, 'Local context bytes')).toContain('value="32000"')
   expect(field(present, 'Local jobs')).toContain('value="2"')
+})
+
+test('137G Advanced: request size and speed & spend rows carry the engine ranges and defaults; the USD fields take decimals, an empty field writes nothing', async () => {
+  const field = (html: string, label: string) => html.match(new RegExp(`<input[^>]*aria-label="${label.replace(/[()]/g, '\\$&')}"[^>]*>`))?.[0] ?? ''
+  const html = await render()
+  expect(html).toContain('>Request size</h4>')
+  expect(html).toContain('>Speed &amp; spend</h4>')
+  expect(field(html, 'Unsummarized lines in full')).toMatch(/min="4000" max="128000"[^>]*placeholder="32000"/)
+  expect(field(html, 'Summary context')).toMatch(/min="8000" max="256000"[^>]*placeholder="48000"/)
+  expect(field(html, 'Lines per summary call')).toMatch(/min="1" max="64"[^>]*placeholder="16"/)
+  expect(field(html, 'Summaries at once (cloud)')).toMatch(/min="1" max="32"[^>]*value="8"/)
+  expect(field(html, 'Spend per call (USD)')).toMatch(/min="0.001" max="10" step="0.001"[^>]*placeholder="0.1"/)
+  expect(field(html, 'Daily spend per chat (USD)')).toMatch(/min="0" max="1000" step="0.01"[^>]*placeholder="5"/)
+  expect(html.indexOf('Request size')).toBeLessThan(html.indexOf('Speed &amp; spend'))
+  expect(bounded('0.25', 0, 1000, 0.01)).toBe(0.25)
+  expect(bounded('0.25', 0, 1000)).toBe(0)
+  // An emptied day cap must not write 0 (= no cap).
+  expect(bounded('', 0, 1000, 0.01)).toBeUndefined()
+  expect(bounded('  ', 0, 1000)).toBeUndefined()
 })

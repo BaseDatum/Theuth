@@ -12,16 +12,18 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ago } from '@/lib/costs/format'
 import { fmtBytes } from '@/lib/files'
-import { EARLIER_HISTORY, tokenEstimate } from '@/lib/endless'
+import { ENDLESS_DEFAULTS, EARLIER_HISTORY, isFoldedNote, tokenEstimate } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/api'
+import type { EndlessBacklog } from '@/rpc/bindings/EndlessBacklog'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { GuardTrips } from '@/rpc/bindings/GuardTrips'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
 import type { Stalled } from '@/rpc/bindings/Stalled'
 import type { ViewLine } from '@/rpc/bindings/ViewLine'
 import { MenuRow } from './HeaderMenu'
+import { ModelCombobox } from './ModelCombobox'
 import { settings } from './slash'
 
 /** `id+n`, the line's address in the view (137 §5.1); `prefix` keeps a recall hit apart from the same line in the view. */
@@ -30,15 +32,18 @@ export const lineKey = (l: ViewLine, prefix = ''): string => `${prefix}${l.id}+$
 /** Bytes of the view as rendered (`id+n|text\n` per line, 137 §7.2). */
 export const viewBytes = (view: readonly ViewLine[]): number => view.reduce((n, l) => n + new TextEncoder().encode(l.text).length + lineKey(l).length + 2, 0)
 
-/** The badge's tooltip (137 §11.3): `Endless memory · view 61 KB · 71 lines · up to date` / `… settling 3 lines` / `… backfill 12/80` / `… summaries failing` (137F). */
+/** The badge's tooltip (137 §11.3): `Endless memory · view 61 KB · 71 lines · up to date` / `… settling 3 lines` / `… backfill 12/80` / `… summaries failing` (137F) / `… settling paused` (137G). */
 export function badgeTip(m: SessionMemory): string {
+  const waiting = m.backlog?.lines ?? m.unbuilt
   const state = m.stalled
     ? 'summaries failing'
-    : m.backfill
-      ? `backfill ${m.backfill.done}/${m.backfill.total}`
-      : m.settling
-        ? `settling ${m.unbuilt} line${m.unbuilt === 1 ? '' : 's'}`
-        : 'up to date'
+    : m.backlog?.paused
+      ? 'settling paused'
+      : m.backfill
+        ? `backfill ${m.backfill.done}/${m.backfill.total}`
+        : m.settling
+          ? `settling ${waiting.toLocaleString('en-US')} line${waiting === 1 ? '' : 's'}`
+          : 'up to date'
   return `Endless memory · view ${fmtBytes(viewBytes(m.view))} · ${m.view.length} line${m.view.length === 1 ? '' : 's'} · ${state}`
 }
 
@@ -126,7 +131,7 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
   if (!endless) return null
   const m = memory.data
   const failing = !!m?.stalled
-  const busy = !!m && !failing && (m.settling || m.backfill !== null)
+  const busy = !!m && !failing && !m.backlog?.paused && (m.settling || m.backfill !== null)
   if (row)
     return (
       <MenuRow
@@ -161,15 +166,54 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
 /** R1b: the view budgets the compact control offers; a stored value outside the list is shown as its own row. */
 export const VIEW_SIZES_KB = [32, 64, 128, 192, 256] as const
 
-/** Mode · compactor model · view size (per-session, R1b) · calls · guard trips (hover: per guard) · cost estimate. */
+/** `SessionMemory.model_source` as the picker's hint: which link of the chain chose the summary model (137G). */
+export const SOURCE_HINT: Record<string, string> = { chat: 'this chat', agent: 'agent default', settings: 'Settings', title: 'title model', session: 'chat model' }
+
+/** The summary model picker's trigger id: the failing block's and the backlog row's "Change model" open it. */
+export const SUMMARY_MODEL_ID = 'memory-summary-model'
+const openSummaryModel = () => document.getElementById(SUMMARY_MODEL_ID)?.click()
+
+/** Mutation options for the RPCs that answer the fresh `SessionMemory` (137F/137G): the reply replaces the cached memory; an error toasts and changes nothing. */
+export const memoryMutation = <V = void,>(qc: QueryClient, session: string, mutationFn: (v: V) => Promise<SessionMemory>) => ({
+  mutationFn,
+  onSuccess: (next: SessionMemory) => qc.setQueryData(queryKeys.sessionMemory(session), next),
+  onError: (e: Error) => void toast.error(e.message),
+})
+export const retryMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, () => api.endless_retry(session))
+export const foldMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, () => api.endless_fold(session))
+export const pauseMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, (paused: boolean) => api.endless_pause(session, paused))
+export const modelMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, (model: string | null) => api.set_session_compactor_model(session, model))
+
+/** 137G: this chat's summary model on the regular picker (124 §5); "Use default" clears the chat's own pick. */
+export function SummaryModel({ session, m }: { session: string; m: SessionMemory }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const setModel = useMutation(modelMutation(api, qc, session))
+  const hint = m.model_source ? SOURCE_HINT[m.model_source] : undefined
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <ModelCombobox
+        id={SUMMARY_MODEL_ID}
+        aria-label="Summary model"
+        size="sm"
+        className="h-6 max-w-56 gap-1 px-2 text-xs text-fg-secondary"
+        models={models.data ?? []}
+        value={m.model}
+        none={{ label: 'Use default' }}
+        disabled={setModel.isPending}
+        onChange={(id) => setModel.mutate(id)}
+      />
+      {hint && <span className="shrink-0 text-fg-tertiary">{hint}</span>}
+    </span>
+  )
+}
+
+/** Mode · summary model (137G picker) · view size (per-session, R1b) · calls · guard trips (hover: per guard) · cost estimate. */
 function Stats({ session, m }: { session: string; m: SessionMemory }) {
   const api = useApi()
   const qc = useQueryClient()
-  const setViewBytes = useMutation({
-    mutationFn: (bytes: number) => api.set_session_view_bytes(session, bytes),
-    onSuccess: (next) => qc.setQueryData(queryKeys.sessionMemory(session), next),
-    onError: (e) => toast.error(e.message),
-  })
+  const setViewBytes = useMutation(memoryMutation(qc, session, (bytes: number) => api.set_session_view_bytes(session, bytes)))
   const g = m.stats.guard_trips
   const trips = guardTotal(g)
   const usd = m.stats.usd_estimate
@@ -180,9 +224,7 @@ function Stats({ session, m }: { session: string; m: SessionMemory }) {
       <Badge variant="outline" className="text-fg-secondary">
         {m.mode}
       </Badge>
-      <span className="truncate" title="Compactor model">
-        {m.model}
-      </span>
+      <SummaryModel session={session} m={m} />
       <Select value={String(kb)} disabled={setViewBytes.isPending} onValueChange={(v) => setViewBytes.mutate(Number(v) * 1000)}>
         <SelectTrigger size="sm" className="h-6 gap-1 px-2 text-xs text-fg-secondary" aria-label="View size" title={tokenEstimate(m.view_bytes)}>
           <SelectValue>view {kb} KB</SelectValue>
@@ -224,8 +266,10 @@ type NodeProps = {
   onToggle(line: ViewLine, key: string): void
 }
 
-/** One view line and, below it, its two children (or the whole message for `n = 1`) in an animated-height well. */
-function LineNode({ line, prefix, depth, kids, open, cursorKey, query, onToggle }: NodeProps) {
+const EXCERPT_TIP = 'Excerpt — not a model summary; recall finds the original'
+
+/** One view line and, below it, its two children (or the whole message for `n = 1`) in an animated-height well. 137G: a mechanical line carries an "excerpt" tag. */
+export function LineNode({ line, prefix, depth, kids, open, cursorKey, query, onToggle }: NodeProps) {
   const key = lineKey(line, prefix)
   const below = kids[key]
   const isOpen = open.has(key)
@@ -248,7 +292,19 @@ function LineNode({ line, prefix, depth, kids, open, cursorKey, query, onToggle 
         <span className="w-16 shrink-0 text-right font-mono text-[11px] leading-5 text-fg-tertiary tabular-nums">
           {line.id}+{line.n}
         </span>
-        <span className={cn('min-w-0 flex-1 wrap-anywhere', !line.built && 'text-fg-tertiary italic')}>{highlight(line.text, query)}</span>
+        <span className={cn('min-w-0 flex-1 wrap-anywhere', !line.built && 'text-fg-tertiary italic')}>
+          {highlight(line.text, query)}
+          {line.mechanical && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="outline" className="ml-1.5 h-4 px-1 align-middle text-[10px] font-normal text-fg-tertiary" aria-label={EXCERPT_TIP}>
+                  excerpt
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent side="top">{EXCERPT_TIP}</TooltipContent>
+            </Tooltip>
+          )}
+        </span>
       </div>
       <div className={cn('grid transition-[grid-template-rows] ease-out motion-safe:duration-200', isOpen && below ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}>
         <div className="min-h-0 overflow-hidden" inert={!isOpen || !below} aria-hidden={!isOpen}>
@@ -268,15 +324,8 @@ function LineNode({ line, prefix, depth, kids, open, cursorKey, query, onToggle 
   )
 }
 
-/** `~4 min` / `~40 s` for the backfill's ETA. */
+/** `~4 min` / `~40 s` for the backfill's and the backlog's ETA. */
 const eta = (secs: number): string => (secs >= 90 ? `~${Math.round(secs / 60)} min` : `~${Math.round(secs)} s`)
-
-/** `endless_retry` (137F) as mutation options: the reply replaces the cached memory like the view-size Select's; an error toasts and changes nothing. */
-export const retryMutation = (api: Api, qc: QueryClient, session: string) => ({
-  mutationFn: () => api.endless_retry(session),
-  onSuccess: (next: SessionMemory) => qc.setQueryData(queryKeys.sessionMemory(session), next),
-  onError: (e: Error) => void toast.error(e.message),
-})
 
 /** `Next try in 40 s` (`in a moment` once due); `Retrying now…` while the retry runs (`next_retry_at` null). */
 export function nextTry(s: Stalled, now: number): string {
@@ -285,11 +334,30 @@ export function nextTry(s: Stalled, now: number): string {
   return `Next try ${at - now >= 5_000 ? ago(at, now) : 'in a moment'}`
 }
 
-/** 137F: a view part keeps failing — what fails (full error on hover), when the summariser tries again, Retry now and Change model. */
-function Failing({ session, s }: { session: string; s: Stalled }) {
+/** 137G Fold now, shared by the failing block and the backlog row; the footer owns the mutation. */
+type Fold = { run(): void; pending: boolean }
+
+function FoldButton({ fold }: { fold: Fold }) {
+  return (
+    <Button size="xs" variant="outline" disabled={fold.pending} onClick={fold.run}>
+      {fold.pending && <LoaderCircle className="animate-spin" />}
+      Fold now
+    </Button>
+  )
+}
+
+function ChangeModel() {
+  return (
+    <Button size="xs" variant="ghost" onClick={openSummaryModel}>
+      Change model
+    </Button>
+  )
+}
+
+/** 137F: a view part keeps failing — what fails (full error on hover), when the summariser tries again, Retry now, Fold now (137G) and Change model (the header's picker). */
+function Failing({ session, s, fold }: { session: string; s: Stalled; fold: Fold }) {
   const api = useApi()
   const qc = useQueryClient()
-  const navigate = useNavigate()
   const retry = useMutation(retryMutation(api, qc, session))
   const [now, setNow] = useState(Date.now)
   // The countdown ticks while the panel shows it; no timer while the retry runs.
@@ -318,16 +386,33 @@ function Failing({ session, s }: { session: string; s: Stalled }) {
         {`${nextTry(s, now)} · model ${s.model}`}
       </p>
       {s.blocking && <p className="text-fg-secondary">Newer lines wait behind this one.</p>}
-      <div className="mt-1 flex gap-2">
+      <p className="text-fg-secondary">Lines that fail 3 times are folded as excerpts automatically.</p>
+      <div className="mt-1 flex flex-wrap gap-2">
         <Button size="xs" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate()}>
           {retry.isPending && <LoaderCircle className="animate-spin" />}
           Retry now
         </Button>
-        <Button size="xs" variant="ghost" onClick={() => void settings(navigate, 'memory', session, 'model')}>
-          Change model
-        </Button>
+        <FoldButton fold={fold} />
+        <ChangeModel />
       </div>
     </div>
+  )
+}
+
+/** Label left, detail right, then a determinate bar (`pct` 0–100) when given. */
+function Bar({ label, detail, pct, strong }: { label: string; detail: string; pct?: number; strong?: boolean }) {
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2 text-xs text-fg-secondary">
+        <span className={cn(strong && 'font-medium text-foreground')}>{label}</span>
+        <span className="shrink-0 tabular-nums">{detail}</span>
+      </div>
+      {pct !== undefined && (
+        <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={label} className="h-1 w-full overflow-hidden rounded-full bg-muted">
+          <div className="h-full rounded-full bg-primary transition-[width] motion-safe:duration-500" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </>
   )
 }
 
@@ -338,31 +423,120 @@ function Progress({ m }: { m: SessionMemory }) {
     ? [`Building memory · ${b.done}/${b.total}${b.eta_secs !== null ? ` · ${eta(b.eta_secs)}` : ''} · ≈ $${b.usd_estimate < 1 ? b.usd_estimate.toFixed(3) : b.usd_estimate.toFixed(2)}`, b.done, b.total]
     : [`Settling ${m.unbuilt} line${m.unbuilt === 1 ? '' : 's'}`, m.view.length - m.unbuilt, m.view.length]
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
+  return <Bar label={label} detail={`${pct}%`} pct={pct} />
+}
+
+const help = 'text-[11px] leading-4 text-fg-tertiary'
+const count = (n: number, one: string) => `${n.toLocaleString('en-US')} ${one}${n === 1 ? '' : 's'}`
+
+/**
+ * 137G: the waiting lines. Settling: count, ETA, batch size and a bar of the chat's lines summarized so far; Fold now,
+ * Pause settling. Paused by the user: Resume settling. Paused by the day's spend cap: the cap, today's spend, Resume for today.
+ */
+function BacklogRow({ session, m, b, fold }: { session: string; m: SessionMemory; b: EndlessBacklog; fold: Fold }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const cfg = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data
+  const pause = useMutation(pauseMutation(api, qc, session))
+  const toggle = (paused: boolean, label: string, primary = false) => (
+    <Button size="xs" variant={primary ? 'default' : 'outline'} disabled={pause.isPending} onClick={() => pause.mutate(paused)}>
+      {pause.isPending && <LoaderCircle className="animate-spin" />}
+      {label}
+    </Button>
+  )
+  if (b.paused_by === 'spend') {
+    const cap = cfg?.max_usd_per_session_day ?? ENDLESS_DEFAULTS.max_usd_per_session_day
+    return (
+      <>
+        <Bar strong label={`Paused: today's summary spend limit ($${cap.toFixed(2)}) reached`} detail={`$${(m.spend_today_usd ?? 0).toFixed(2)} spent`} />
+        <p className={help}>{count(b.lines, 'line')} waiting. Resuming lifts the limit for this chat until midnight UTC.</p>
+        <div className="flex flex-wrap items-center gap-2">
+          {toggle(false, 'Resume for today', true)}
+          <FoldButton fold={fold} />
+          <Button size="xs" variant="link" className="px-1" onClick={() => void settings(navigate, 'memory', session, 'spend')}>
+            Spend limit settings
+          </Button>
+        </div>
+      </>
+    )
+  }
+  if (b.paused)
+    return (
+      <>
+        <Bar strong label="Settling paused" detail={`${count(b.lines, 'line')} waiting`} />
+        <p className={help}>No summary calls run for this chat. Turns still fit: older waiting lines stay folded.</p>
+        <div className="flex flex-wrap gap-2">
+          {toggle(false, 'Resume settling', true)}
+          <FoldButton fold={fold} />
+          <ChangeModel />
+        </div>
+      </>
+    )
+  const batch = cfg?.batch_units ?? ENDLESS_DEFAULTS.batch_units
+  const shown = count(b.lines - b.folded, 'line')
   return (
     <>
-      <div className="flex items-center justify-between text-xs text-fg-secondary">
-        <span>{label}</span>
-        <span className="tabular-nums">{pct}%</span>
+      <Bar
+        strong
+        label={`Settling ${count(b.lines, 'line')}`}
+        detail={`${b.eta_secs > 0 ? `${eta(b.eta_secs)} · ` : ''}batches of ${batch}`}
+        pct={m.units > 0 ? Math.round((Math.max(0, m.units - b.lines) / m.units) * 100) : 0}
+      />
+      <p className={help}>
+        {b.folded > 0 ? `Newest ${shown} shown in full; older ones are folded until summarized.` : 'Waiting lines are shown in full until summarized.'} Model {m.model}.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <FoldButton fold={fold} />
+        {toggle(true, 'Pause settling')}
+        <ChangeModel />
       </div>
-      <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={label} className="h-1 w-full overflow-hidden rounded-full bg-muted">
-        <div className="h-full rounded-full bg-primary transition-[width] motion-safe:duration-500" style={{ width: `${pct}%` }} />
-      </div>
+      <p className={help}>Fold now: turns every waiting line into a short excerpt at once, at no cost. Recall still finds the originals.</p>
     </>
   )
 }
 
-/** The panel's footer: the failing settle (137F) above the settle/backfill bar; nothing once both are done. */
+/** The panel's footer: the failing settle (137F) above the backlog row (137G) or the settle/backfill bar; with no backlog, the view's excerpt lines (Fold now or the automatic fold); nothing once all are done. */
 export function MemoryFooter({ session, m }: { session: string; m: SessionMemory }) {
-  if (m.mode !== 'endless' || !(m.stalled || m.settling || m.backfill)) return null
+  const api = useApi()
+  const qc = useQueryClient()
+  const foldRpc = useMutation(foldMutation(api, qc, session))
+  const fold: Fold = { pending: foldRpc.isPending, run: () => foldRpc.mutate() }
+  const b = m.backlog
+  // Units the view shows as mechanical excerpts; they merge into model summaries as the pump goes on.
+  const excerpts = m.view.reduce((n, l) => (l.mechanical ? n + l.n : n), 0)
+  if (m.mode !== 'endless' || !(m.stalled || m.settling || m.backfill || b || excerpts)) return null
   return (
     <SheetFooter className="gap-1.5 border-t border-border-subtle">
-      {m.stalled && <Failing session={session} s={m.stalled} />}
-      {(m.settling || m.backfill) && <Progress m={m} />}
+      {m.stalled && <Failing session={session} s={m.stalled} fold={fold} />}
+      {b && <BacklogRow session={session} m={m} b={b} fold={fold} />}
+      {(m.backfill || (m.settling && !b)) && <Progress m={m} />}
+      {excerpts > 0 && !b && (
+        <>
+          <Bar strong label={m.settling ? 'Folded' : 'Up to date'} detail={`${count(excerpts, 'line')} shown as excerpts`} />
+          <p className={help}>Excerpts merge into summaries as usual from here.</p>
+          <div className="flex gap-2">
+            <ChangeModel />
+          </div>
+        </>
+      )}
     </SheetFooter>
   )
 }
 
 const HIT = 'hit:'
+
+/** A view line that is a note, not a zoomable band line: the capped backfill's `(earlier history …)` (R1-D4) and the two 137G placeholders (`isFoldedNote`). */
+export function ViewNote({ line, className }: { line: ViewLine; className?: string }) {
+  return (
+    <p role="note" className={cn('mb-1 flex gap-2 px-2 py-1 text-xs text-fg-tertiary italic', className)}>
+      <span className="w-16 shrink-0 text-right font-mono text-[11px] not-italic tabular-nums">
+        {line.id}+{line.n}
+      </span>
+      {line.text}
+    </p>
+  )
+}
 
 /**
  * Right-side sheet over an endless session's memory (137 §11.3): stats, recall search, the view grouped by band with
@@ -383,7 +557,8 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
   // R1-D4: a capped backfill leads the view with the `(earlier history …)` sentinel — a note, not a zoomable band line.
   const earlier = memory.data?.view[0]?.text === EARLIER_HISTORY ? memory.data.view[0] : undefined
   const view = useMemo(() => (earlier ? memory.data?.view.slice(1) : memory.data?.view), [memory.data, earlier])
-  const rows = useMemo(() => [...(hits ? flatten(hits.lines, kids, opened, HIT) : []), ...(view ? flatten(view, kids, opened) : [])], [hits, view, kids, opened])
+  // 137G: the view's folded placeholder is a note too; neither is in the keyboard order.
+  const rows = useMemo(() => [...(hits ? flatten(hits.lines, kids, opened, HIT) : []), ...(view ? flatten(view.filter((l) => !isFoldedNote(l.text)), kids, opened) : [])], [hits, view, kids, opened])
   const cursorKey = rows[cursor]?.key
 
   useEffect(() => {
@@ -515,24 +690,21 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
               {hits.lines.map((l) => node(l, HIT))}
             </section>
           )}
-          {earlier && (
-            <p role="note" className="mb-1 flex gap-2 px-2 py-1 text-xs text-fg-tertiary italic">
-              <span className="w-16 shrink-0 text-right font-mono text-[11px] not-italic tabular-nums">
-                {earlier.id}+{earlier.n}
-              </span>
-              {earlier.text}
-            </p>
+          {earlier && <ViewNote line={earlier} />}
+          {view?.map((line, i) =>
+            isFoldedNote(line.text) ? (
+              <ViewNote key={lineKey(line)} line={line} className="my-1 rounded-md bg-muted/50" />
+            ) : (
+              <Fragment key={lineKey(line)}>
+                {(i === 0 || view[i - 1]?.n !== line.n) && (
+                  <div role="presentation" className={cn('mb-0.5 px-2 text-[10px] font-medium tracking-wide text-fg-tertiary uppercase tabular-nums', i > 0 && 'mt-2')}>
+                    ×{line.n}
+                  </div>
+                )}
+                {node(line, '')}
+              </Fragment>
+            ),
           )}
-          {view?.map((line, i) => (
-            <Fragment key={lineKey(line)}>
-              {(i === 0 || view[i - 1]?.n !== line.n) && (
-                <div role="presentation" className={cn('mb-0.5 px-2 text-[10px] font-medium tracking-wide text-fg-tertiary uppercase tabular-nums', i > 0 && 'mt-2')}>
-                  ×{line.n}
-                </div>
-              )}
-              {node(line, '')}
-            </Fragment>
-          ))}
           {m && m.mode === 'endless' && m.view.length === 0 && <p className="px-2 py-4 text-sm text-fg-tertiary">Nothing in the view yet: it fills as the chat goes.</p>}
         </div>
         {m && <MemoryFooter session={session} m={m} />}

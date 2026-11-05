@@ -11,7 +11,9 @@ import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
 import type { Stalled } from '@/rpc/bindings/Stalled'
 import type { ViewLine } from '@/rpc/bindings/ViewLine'
-import { INITIAL, MemoryBadge, MemoryFooter, badgeTip, flatten, highlight, nextTry, reduce, retryMutation } from './MemoryPanel'
+import { INITIAL, LineNode, MemoryBadge, MemoryFooter, SummaryModel, ViewNote, badgeTip, flatten, foldMutation, highlight, modelMutation, nextTry, pauseMutation, reduce, retryMutation } from './MemoryPanel'
+import { isFoldedNote } from '@/lib/endless'
+import type { EndlessBacklog } from '@/rpc/bindings/EndlessBacklog'
 
 const line = (id: number, n: number, text: string, built = true): ViewLine => ({ id, n, text, built, level: Math.log2(n) })
 
@@ -171,4 +173,126 @@ test('Retry now: the reply replaces the cached memory; an error toasts and leave
   await expect(new MutationObserver(qc, retryMutation(broken, qc, 's1')).mutate()).rejects.toThrow('not allowed')
   expect(toast.error).toHaveBeenCalledWith('not allowed')
   expect(qc.getQueryData(queryKeys.sessionMemory('s1'))).toBe(cached)
+})
+
+// ---------------------------------------------------------------------------------------------------------------- 137G
+
+const waiting: EndlessBacklog = { lines: 4_812, folded: 4_512, eta_secs: 660, paused: false, paused_by: null }
+const backlogged: SessionMemory = { ...memory, units: 5_868, settling: true, unbuilt: 4_812, backlog: waiting, spend_today_usd: 5.12 }
+
+/** The footer over a cache that may hold the endless settings (batch size, day cap). */
+const footerWith = (data: SessionMemory, settings?: object) => {
+  const qc = new QueryClient()
+  if (settings) qc.setQueryData(queryKeys.endlessSettings, settings)
+  return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(TooltipProvider, null, createElement(MemoryFooter, { session: 's1', m: data })) as ReactNode }))
+}
+
+test('backlog row: count, ETA, batch size, the share of lines summarized, what the view shows, Fold now and Pause settling; it replaces the settle bar', () => {
+  const html = footerWith(backlogged)
+  expect(html).toContain('Settling 4,812 lines')
+  expect(html).toContain('~11 min · batches of 16')
+  expect(html).toContain('aria-valuenow="18"')
+  expect(html).toContain('Newest 300 lines shown in full; older ones are folded until summarized. Model anthropic/claude-haiku-4-5.')
+  expect(html).toContain('>Fold now</button>')
+  expect(html).toContain('>Pause settling</button>')
+  expect(html).toContain('Fold now: turns every waiting line into a short excerpt at once, at no cost. Recall still finds the originals.')
+  expect(html).not.toContain('Settling 4812 lines')
+  expect(html).not.toContain('%</span>')
+  // The batch size is the setting's; no ETA while unknown.
+  expect(footerWith({ ...backlogged, backlog: { ...waiting, eta_secs: 0 } }, { batch_units: 8 })).toContain('>batches of 8</span>')
+  // Failing and waiting: the failing block keeps its place above, now with Fold now too.
+  const both = footerWith({ ...backlogged, stalled: failing })
+  expect(both.indexOf('Summaries are failing')).toBeLessThan(both.indexOf('Settling 4,812 lines'))
+  expect(both.match(/>Fold now<\/button>/g)).toHaveLength(2)
+  expect(both).toContain('Lines that fail 3 times are folded as excerpts automatically.')
+})
+
+test('paused by the user: "Settling paused", the waiting count, Resume settling; the badge says so and stops pulsing', () => {
+  const m = { ...backlogged, settling: false, backlog: { ...waiting, eta_secs: 0, paused: true, paused_by: 'user' } }
+  const html = footerWith(m)
+  expect(html).toContain('Settling paused')
+  expect(html).toContain('4,812 lines waiting')
+  expect(html).toContain('No summary calls run for this chat. Turns still fit: older waiting lines stay folded.')
+  expect(html).toContain('>Resume settling</button>')
+  expect(html).toContain('>Fold now</button>')
+  expect(html).not.toContain('Pause settling')
+  expect(badgeTip(m)).toMatch(/· settling paused$/)
+  expect(render(summary('endless'), { ...m, settling: true })).not.toContain('animate-pulse')
+})
+
+test("paused by spend: the day's limit (the setting, else $5) and today's spend, Resume for today, the link to the setting", () => {
+  const m = { ...backlogged, settling: false, backlog: { ...waiting, eta_secs: 0, paused: true, paused_by: 'spend' } }
+  const html = footerWith(m)
+  expect(html).toContain('Paused: today&#x27;s summary spend limit ($5.00) reached')
+  expect(html).toContain('$5.12 spent')
+  expect(html).toContain('>Resume for today</button>')
+  expect(html).toContain('>Spend limit settings</button>')
+  expect(html).not.toContain('Settling paused')
+  expect(footerWith(m, { max_usd_per_session_day: 2.5 })).toContain('($2.50) reached')
+})
+
+test('Fold now, Pause/Resume and the summary model call their RPC and write the reply into the cache ("Use default" sends null)', async () => {
+  const qc = new QueryClient()
+  const key = queryKeys.sessionMemory('s1')
+  const reply = (patch: Partial<SessionMemory>) => vi.fn(async () => ({ ...backlogged, ...patch }))
+  const api = {
+    endless_fold: reply({ backlog: null, settling: false }),
+    endless_pause: reply({ backlog: { ...waiting, paused: true, paused_by: 'user' } }),
+    set_session_compactor_model: reply({ model: 'openai/gpt-5-mini', model_override: 'openai/gpt-5-mini', model_source: 'chat' }),
+  }
+  qc.setQueryData(key, backlogged)
+  await new MutationObserver(qc, foldMutation(api as unknown as Api, qc, 's1')).mutate()
+  expect(api.endless_fold).toHaveBeenCalledWith('s1')
+  expect(qc.getQueryData<SessionMemory>(key)?.backlog).toBeNull()
+  await new MutationObserver(qc, pauseMutation(api as unknown as Api, qc, 's1')).mutate(true)
+  expect(api.endless_pause).toHaveBeenCalledWith('s1', true)
+  expect(qc.getQueryData<SessionMemory>(key)?.backlog?.paused_by).toBe('user')
+  await new MutationObserver(qc, pauseMutation(api as unknown as Api, qc, 's1')).mutate(false)
+  expect(api.endless_pause).toHaveBeenLastCalledWith('s1', false)
+  await new MutationObserver(qc, modelMutation(api as unknown as Api, qc, 's1')).mutate('openai/gpt-5-mini')
+  expect(api.set_session_compactor_model).toHaveBeenCalledWith('s1', 'openai/gpt-5-mini')
+  expect(qc.getQueryData<SessionMemory>(key)?.model_source).toBe('chat')
+  await new MutationObserver(qc, modelMutation(api as unknown as Api, qc, 's1')).mutate(null)
+  expect(api.set_session_compactor_model).toHaveBeenLastCalledWith('s1', null)
+})
+
+test('the summary model picker shows the model in force and which link chose it', () => {
+  const paint = (m: SessionMemory) => {
+    const qc = new QueryClient()
+    qc.setQueryData(queryKeys.models, [{ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5', provider: 'anthropic', context: 200_000, efforts: [] }])
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(SummaryModel, { session: 's1', m }) as ReactNode }))
+  }
+  const html = paint({ ...memory, model_source: 'agent' })
+  expect(html).toMatch(/<button[^>]*id="memory-summary-model"[^>]*aria-label="Summary model"/)
+  expect(html).toContain('Claude Haiku 4.5</span>')
+  expect(html).toContain('agent default')
+  expect(paint({ ...memory, model_source: 'chat' })).toContain('this chat')
+  expect(paint({ ...memory, model_source: 'session' })).toContain('chat model')
+})
+
+test('both placeholder kinds are muted italic notes; a mechanical line carries the excerpt tag, a model line none', () => {
+  // `fold.rs` `folded_text` / `prefix_text` (no thousands separator from the engine; the fixture's commas match too).
+  expect(isFoldedNote('(4512 lines not yet summarized — recall searches them)')).toBe(true)
+  expect(isFoldedNote('(4,512 lines not yet summarized — recall searches them)')).toBe(true)
+  expect(isFoldedNote('(1 lines not yet summarized — recall searches them)')).toBe(true)
+  expect(isFoldedNote('(300 older lines folded to fit the view — zoom or recall reach them)')).toBe(true)
+  expect(isFoldedNote('user: why are 3 lines not yet summarized?')).toBe(false)
+  expect(isFoldedNote('(3 older lines were discussed)')).toBe(false)
+  const note = renderToStaticMarkup(createElement(ViewNote, { line: line(1_056, 4_512, '(4,512 lines not yet summarized — recall searches them)', false) }))
+  expect(note).toMatch(/^<p role="note" class="[^"]*text-fg-tertiary italic/)
+  const node = (l: ViewLine) =>
+    renderToStaticMarkup(createElement(TooltipProvider, null, createElement(LineNode, { line: l, prefix: '', depth: 0, kids: {}, open: new Set<string>(), cursorKey: undefined, query: '', onToggle() {} })))
+  const excerpt = node({ ...line(2, 1, '…desk wake loop: 3 retries …'), mechanical: true })
+  expect(excerpt).toContain('aria-label="Excerpt — not a model summary; recall finds the original"')
+  expect(excerpt).toContain('>excerpt</span>')
+  expect(node(line(2, 1, 'a model summary'))).not.toContain('excerpt')
+})
+
+test('after a fold the footer counts the excerpt units from the view itself; none left, no row', () => {
+  const folded = { ...memory, units: 70, view: [line(0, 64, 'the beginning'), { ...line(64, 1, '…a … b'), mechanical: true }, { ...line(65, 1, '…c … d'), mechanical: true }, line(66, 1, 'merged')] }
+  const html = footerWith(folded)
+  expect(html).toContain('Up to date')
+  expect(html).toContain('2 lines shown as excerpts')
+  expect(footerWith({ ...folded, settling: true, backlog: waiting })).not.toContain('shown as excerpts')
+  expect(footerWith(memory)).toBe('')
 })
