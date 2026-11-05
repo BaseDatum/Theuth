@@ -426,7 +426,7 @@ function Progress({ m }: { m: SessionMemory }) {
   return <Bar label={label} detail={`${pct}%`} pct={pct} />
 }
 
-const help = 'text-[11px] text-fg-tertiary'
+const help = 'text-[11px] leading-4 text-fg-tertiary'
 const count = (n: number, one: string) => `${n.toLocaleString('en-US')} ${one}${n === 1 ? '' : 's'}`
 
 /**
