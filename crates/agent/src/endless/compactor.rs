@@ -1197,6 +1197,16 @@ mod tests {
         let (_, opts) = haiku.request(Transport::Anthropic, "<chat>\n</chat>", &[]);
         assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::Zero)));
         assert_eq!(opts.max_tokens, Some(MAX_TOKENS));
+        // R2-8: Fable rejects `disabled` — its request opts carry `Low`
+        // (genai: adaptive thinking + `output_config.effort: "low"`; wire
+        // body pinned in `endless_compactor_turns_thinking_off_per_model`).
+        let fable = compactor(r(
+            "anthropic::claude-fable-5-1",
+            Some(&["low", "medium", "high"]),
+        ));
+        let (_, opts) = fable.request(Transport::Anthropic, "<chat>\n</chat>", &[]);
+        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::Low)));
+        assert_eq!(opts.max_tokens, Some(MAX_TOKENS));
         // A claude id on an OpenAI-compatible gateway: the catalog's lowest effort …
         let listed = compactor(r(
             "github_copilot::claude-sonnet-5",
