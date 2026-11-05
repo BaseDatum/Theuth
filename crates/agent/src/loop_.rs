@@ -4499,7 +4499,8 @@ impl Turn {
 
     /// 137G G1: what the turn's budget leaves for the view — the turn target
     /// (half the window, ≤ the ceiling) at the model's learned bytes/token,
-    /// less the system prompt and [`VIEW_RESERVE`].
+    /// less the system prompt and a reserve for tools and input
+    /// ([`VIEW_RESERVE`], at most a quarter of the target on small windows).
     fn view_allowance(&self) -> usize {
         let model = self.model().model;
         let reply = model
@@ -4514,8 +4515,8 @@ impl Turn {
                 ..Default::default()
             },
         );
-        crate::tokens::bytes_of(&model.id, b.target_tokens)
-            .saturating_sub(self.state.baseline.len() + VIEW_RESERVE)
+        let target = crate::tokens::bytes_of(&model.id, b.target_tokens);
+        target.saturating_sub(self.state.baseline.len() + VIEW_RESERVE.min(target / 4))
     }
 
     /// `view_bytes + raw_bytes` in force (the unscaled view budget).

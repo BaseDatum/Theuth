@@ -100,6 +100,12 @@ pub fn folded_text(n: u64) -> String {
     format!("({n} lines not yet summarized — recall searches them)")
 }
 
+/// 137G G2 hard cap: the line the oldest `n` units fold into when the view
+/// cannot fit otherwise (merges not built yet).
+pub fn prefix_text(n: u64) -> String {
+    format!("({n} older lines folded to fit the view — zoom or recall reach them)")
+}
+
 /// The view: parts tiling `[base, T)` with their rendered byte sizes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fold {
@@ -168,8 +174,8 @@ impl Fold {
         0
     }
 
-    /// G2: the runs of folded parts (index ranges into `parts`), oldest first.
-    pub fn folded_runs(&self) -> Vec<std::ops::Range<usize>> {
+    /// G2: runs of unbuilt parts older than the raw window (index ranges).
+    fn raw_runs(&self) -> Vec<std::ops::Range<usize>> {
         let cut = self.raw_cut();
         let mut out = Vec::new();
         let mut k = 0;
@@ -187,25 +193,81 @@ impl Fold {
         out
     }
 
-    /// G2: unsummarized units the view shows folded (`Backlog.folded`).
-    pub fn folded(&self) -> u32 {
-        self.folded_runs().iter().map(|r| r.len() as u32).sum()
+    /// Units a run of parts covers.
+    fn span(&self, r: &std::ops::Range<usize>) -> u64 {
+        self.parts[r.end - 1].end() - self.parts[r.start].start()
     }
 
-    /// Σ bytes of every rendered line (D10 placeholders counted; G2 folded
-    /// runs as their one line each).
-    pub fn size(&self) -> usize {
+    /// The view's folded runs, oldest first, and whether the first is the
+    /// hard-cap prefix: the G2 raw runs, then — while the view is still over
+    /// `high() + raw_bytes` (a tree whose merges are not built cannot fit) —
+    /// the oldest parts, built or not, folded into one prefix run.
+    pub fn folded_runs(&self) -> (Vec<std::ops::Range<usize>>, bool) {
+        let raw = self.raw_runs();
+        let mut rest = self.size_with(&raw, false);
+        let cap = self.cfg.high() + self.cfg.raw_bytes as usize;
+        if rest <= cap || self.parts.is_empty() {
+            return (raw, false);
+        }
+        let (mut end, mut ri) = (0, 0);
+        while end < self.parts.len() {
+            if ri < raw.len() && raw[ri].start == end {
+                rest -= folded_text(self.span(&raw[ri])).len();
+                end = raw[ri].end;
+                ri += 1;
+            } else {
+                rest -= self.sizes[end];
+                end += 1;
+            }
+            if rest + prefix_text(self.span(&(0..end))).len() <= cap {
+                break;
+            }
+        }
+        let mut runs = vec![0..end];
+        runs.extend(raw.into_iter().skip(ri));
+        (runs, true)
+    }
+
+    /// G2: unsummarized units the view shows folded (`Backlog.folded`).
+    pub fn folded(&self) -> u32 {
+        let (runs, _) = self.folded_runs();
+        runs.iter()
+            .flat_map(|r| r.clone())
+            .filter(|k| self.open[*k])
+            .count() as u32
+    }
+
+    /// Σ bytes of the lines when `runs` render as one line each (`prefix`:
+    /// the first is the hard-cap prefix).
+    fn size_with(&self, runs: &[std::ops::Range<usize>], prefix: bool) -> usize {
         let mut size = self.sizes.iter().sum::<usize>();
-        for r in self.folded_runs() {
+        for (k, r) in runs.iter().enumerate() {
             size -= self.sizes[r.clone()].iter().sum::<usize>();
-            size += folded_text(r.len() as u64).len();
+            size += if k == 0 && prefix {
+                prefix_text(self.span(r)).len()
+            } else {
+                folded_text(self.span(r)).len()
+            };
         }
         size + if self.base > 0 { EARLIER.len() } else { 0 }
     }
 
+    /// What `fit()` folds against: every line, the G2 raw runs as one line
+    /// each (merging cannot shrink the unbuilt backlog).
+    fn fit_size(&self) -> usize {
+        self.size_with(&self.raw_runs(), false)
+    }
+
+    /// Σ bytes of every rendered line (D10 placeholders counted; G2 folded
+    /// runs as their one line each): at most `high() + raw_bytes` plus one line.
+    pub fn size(&self) -> usize {
+        let (runs, prefix) = self.folded_runs();
+        self.size_with(&runs, prefix)
+    }
+
     /// §7.1 `fit()`. Returns how many pairs were merged.
     pub fn fit(&mut self, tree: &Tree, units: &[Unit]) -> usize {
-        let mut size = self.size();
+        let mut size = self.fit_size();
         if size <= self.cfg.high() {
             return 0;
         }
@@ -293,7 +355,8 @@ pub fn line(part: Part, text: &str) -> String {
 /// One rendered line of the view: a part, or a G2 folded run `(id, n)`.
 enum Entry {
     Part(Part),
-    Folded(u64, u64),
+    /// `(id, n, text)` of a folded run.
+    Folded(u64, u64, String),
 }
 
 impl Entry {
@@ -307,13 +370,19 @@ impl Entry {
 
 /// The view's lines in order: parts, with every G2 folded run as one entry.
 fn entries(fold: &Fold) -> Vec<Entry> {
-    let runs = fold.folded_runs();
+    let (runs, prefix) = fold.folded_runs();
     let mut out = Vec::with_capacity(fold.parts.len());
-    let mut runs = runs.into_iter().peekable();
+    let mut runs = runs.into_iter().enumerate().peekable();
     let mut k = 0;
     while k < fold.parts.len() {
-        if let Some(r) = runs.next_if(|r| r.start == k) {
-            out.push(Entry::Folded(fold.parts[k].start(), r.len() as u64));
+        if let Some((j, r)) = runs.next_if(|(_, r)| r.start == k) {
+            let n = fold.span(&r);
+            let text = if j == 0 && prefix {
+                prefix_text(n)
+            } else {
+                folded_text(n)
+            };
+            out.push(Entry::Folded(fold.parts[k].start(), n, text));
             k = r.end;
         } else {
             out.push(Entry::Part(fold.parts[k]));
@@ -336,11 +405,11 @@ pub fn render_lines(tree: &Tree, fold: &Fold, units: &[Unit]) -> Vec<ViewLine> {
     });
     head.into_iter()
         .chain(entries(fold).into_iter().map(|e| match e {
-            Entry::Folded(id, n) => ViewLine {
+            Entry::Folded(id, n, text) => ViewLine {
                 id,
                 n,
                 level: 0,
-                text: folded_text(n),
+                text,
                 built: false,
                 at: None,
                 mechanical: false,
@@ -373,7 +442,7 @@ pub fn render(tree: &Tree, fold: &Fold, units: &[Unit]) -> ViewRender {
         .iter()
         .map(|e| match e {
             Entry::Part(p) => line(*p, &part_text(tree, *p, units).0),
-            Entry::Folded(id, n) => format!("{id}+{n}|{}", folded_text(*n)),
+            Entry::Folded(id, n, text) => format!("{id}+{n}|{text}"),
         })
         .collect();
     let mut cuts: Vec<usize> = entries
@@ -424,6 +493,56 @@ mod tests {
         slack: 0.125,
         raw_bytes: u32::MAX,
     };
+
+    /// 137G G2 hard cap: 5,000 built level-0 lines whose merges are not
+    /// built yet (a mechanical fold, settling paused) still render within
+    /// `high() + raw_bytes`: the oldest fold into one prefix line.
+    #[test]
+    fn built_lines_without_merges_fold_to_the_cap() {
+        let cfg = FoldCfg {
+            view_bytes: 128_000,
+            slack: 0.125,
+            raw_bytes: 32_000,
+        };
+        let mut tree = Tree::default();
+        let units: Vec<Unit> = (0..5_000u64)
+            .map(|i| {
+                tree.insert(Node {
+                    l: 0,
+                    i,
+                    text: format!("user: excerpt {i} {}", "y".repeat(460)),
+                    size: 480,
+                    free: false,
+                    model: None,
+                    tries: 0,
+                    mechanical: true,
+                });
+                Unit {
+                    i,
+                    seq: i as i64,
+                    part: 0,
+                    kind: Kind::User,
+                    text: "x".repeat(900),
+                    size: 906,
+                    at: None,
+                }
+            })
+            .collect();
+        let f = Fold::rebuild(&tree, 0, 5_000, cfg, &units);
+        let cap = cfg.high() + cfg.raw_bytes as usize;
+        assert!(f.size() <= cap, "{} > {cap}", f.size());
+        let lines = render_lines(&tree, &f, &units);
+        assert!(
+            lines[0].text.contains("older lines folded to fit the view"),
+            "{}",
+            lines[0].text
+        );
+        assert_eq!(lines[0].id, 0);
+        assert_eq!(lines.last().unwrap().id, 4_999, "the newest stay");
+        let text = render(&tree, &f, &units).text();
+        assert!(text.len() <= cap + 16 + lines.len() * 12, "{}", text.len());
+        assert_eq!(f.folded(), 0, "nothing unsummarized is folded");
+    }
 
     /// 137G G2: 5,000 unbuilt units render within view + raw budget: the
     /// newest fit `raw_bytes` verbatim, the rest fold into one run line that
