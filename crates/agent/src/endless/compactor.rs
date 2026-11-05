@@ -132,12 +132,11 @@ pub fn local_endpoint(model: &Resolved, base_url: Option<&str>) -> Option<String
 /// leaves no text (Haiku 5.5 and Fable 5.1 think adaptively when no config
 /// is sent). R2-7: on the Anthropic transport
 /// [`ModelCompactor::request_lines`] sends [`anthropic_off`] whatever this
-/// returns. Bedrock's Anthropic models go through the same genai mapping
-/// (`bedrock/converse.rs` → `insert_anthropic_reasoning`) and get
-/// [`anthropic_off`] here. For the other transports — a `claude-*` id on an
-/// OpenAI-compatible gateway included — this is the setting: `Zero` for an
-/// Ollama model (`think: false`), else the model's lowest listed effort
-/// (`none` → `minimal` → `low`), else no reasoning setting.
+/// returns. Bedrock's Anthropic models get [`bedrock_off`]. For the other
+/// transports — a `claude-*` id on an OpenAI-compatible gateway included —
+/// this is the setting: `Zero` for an Ollama model (`think: false`), else
+/// the model's lowest listed effort (`none` → `minimal` → `low`), else no
+/// reasoning setting.
 pub fn thinking_off(model: &Resolved) -> Option<ReasoningEffort> {
     let ns = crate::loop_::ns(&model.genai);
     let slug = model
@@ -148,7 +147,7 @@ pub fn thinking_off(model: &Resolved) -> Option<ReasoningEffort> {
         return Some(ReasoningEffort::Zero);
     }
     if ns.starts_with("bedrock") && slug.split('.').any(|seg| seg == "anthropic") {
-        return Some(anthropic_off(slug));
+        return Some(bedrock_off(slug));
     }
     let values: Vec<&str> = model
         .model
@@ -182,6 +181,28 @@ pub fn thinking_off(model: &Resolved) -> Option<ReasoningEffort> {
 pub fn anthropic_off(slug: &str) -> ReasoningEffort {
     // genai's own family test for these two (`legacy_is_fable_or_mythos`).
     if slug.contains("fable") || slug.contains("mythos") {
+        ReasoningEffort::Low
+    } else {
+        ReasoningEffort::Zero
+    }
+}
+
+/// R3-1: Bedrock rejects `thinking: disabled`, so genai's Converse adapter
+/// returns before `insert_anthropic_reasoning` on `Zero` and sends nothing
+/// (`bedrock/converse.rs` `publisher_additional_fields`). That leaves every
+/// model that thinks unasked — genai's thinking-on-by-default set (Haiku 5+,
+/// Sonnet 5, Opus 5) and the adaptive-only Fable and Mythos — thinking, so
+/// they get `Low` (adaptive thinking at `output_config.effort: "low"`).
+/// Older models (4.x and before) think only when asked: `Zero`.
+pub fn bedrock_off(slug: &str) -> ReasoningEffort {
+    let thinks_unasked = slug.split_once("claude-").is_some_and(|(_, rest)| {
+        let mut seg = rest.split('-');
+        let family = seg.next().unwrap_or_default();
+        let major = seg.next().and_then(|m| m.parse::<u32>().ok());
+        matches!(family, "fable" | "mythos")
+            || matches!(family, "haiku" | "sonnet" | "opus") && major.is_some_and(|m| m >= 5)
+    });
+    if thinks_unasked {
         ReasoningEffort::Low
     } else {
         ReasoningEffort::Zero
@@ -407,7 +428,8 @@ impl<'a> Tally<'a> {
             rows.push(CallRow {
                 try_no,
                 bytes: Some(r.text.trim().len() as u32),
-                guard: None,
+                // R3-3: the build never judged it (dropped or panicked).
+                guard: Some("unknown"),
                 usage: r.usage.clone(),
                 usd_estimate: r
                     .usage
@@ -949,7 +971,7 @@ impl ModelCompactor {
         let mut opts = ChatOptions::default()
             .with_capture_usage(true)
             .with_capture_content(true)
-            .with_capture_reasoning_content(true)
+            // R3-2: no `with_capture_reasoning_content` — only text parts are read.
             .with_max_tokens(batch_reply_tokens(
                 if anthropic {
                     MAX_TOKENS
@@ -1237,19 +1259,8 @@ mod tests {
             Some(ReasoningEffort::Zero)
         ));
         assert!(thinking_off(&r("openai::gpt-4.1", None)).is_none());
-        // R2-8: Bedrock's Anthropic models take genai's Anthropic mapping;
-        // Fable and Mythos reject `disabled`, so they get adaptive at `low`.
-        assert!(matches!(
-            thinking_off(&r(
-                "bedrock_sigv4::us.anthropic.claude-haiku-5-5-v1:0",
-                None
-            )),
-            Some(ReasoningEffort::Zero)
-        ));
-        assert!(matches!(
-            thinking_off(&r("bedrock_sigv4::anthropic.claude-fable-5-1-v1:0", None)),
-            Some(ReasoningEffort::Low)
-        ));
+        // R2-8: on the Anthropic API Fable and Mythos reject `disabled`, so
+        // they get adaptive at `low`; Haiku/Sonnet/Opus 5 take `disabled`.
         assert!(matches!(
             anthropic_off("claude-mythos-5"),
             ReasoningEffort::Low
@@ -1258,6 +1269,36 @@ mod tests {
             anthropic_off("claude-opus-5"),
             ReasoningEffort::Zero
         ));
+        // R3-1: Bedrock has no `disabled` (Zero sends nothing), so every model
+        // that thinks unasked gets `Low`; 4.x models think only when asked.
+        for (id, low) in [
+            ("bedrock_sigv4::anthropic.claude-haiku-5-5", true),
+            ("bedrock_sigv4::us.anthropic.claude-haiku-5-5-v1:0", true),
+            ("bedrock_sigv4::anthropic.claude-sonnet-5-v1:0", true),
+            ("bedrock_sigv4::global.anthropic.claude-opus-5-1-v1:0", true),
+            ("bedrock_sigv4::anthropic.claude-fable-5-1-v1:0", true),
+            ("bedrock_sigv4::anthropic.claude-mythos-5-v1:0", true),
+            (
+                "bedrock_sigv4::anthropic.claude-sonnet-4-5-20250929-v1:0",
+                false,
+            ),
+            (
+                "bedrock_sigv4::anthropic.claude-haiku-4-5-20251001-v1:0",
+                false,
+            ),
+            (
+                "bedrock_sigv4::anthropic.claude-3-5-sonnet-20240620-v1:0",
+                false,
+            ),
+        ] {
+            let want = if low {
+                ReasoningEffort::Low
+            } else {
+                ReasoningEffort::Zero
+            };
+            let got = thinking_off(&r(id, None));
+            assert_eq!(format!("{got:?}"), format!("{:?}", Some(want)), "{id}");
+        }
         let dir = crate::TestDir::new("compactor-thinking");
         let compactor = |model: Resolved| ModelCompactor {
             session: runtime::SessionId::new(),
@@ -1362,6 +1403,7 @@ mod tests {
         let rows = tally.rows();
         assert_eq!(rows.len(), 1, "the answered attempt");
         assert_eq!(rows[0].bytes, Some(ungrounded.trim().len() as u32));
+        assert_eq!(rows[0].guard, Some("unknown"), "never judged, not accepted");
     }
 
     /// 137F E6: the attempt bound fires at `attempt`, not later.

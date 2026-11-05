@@ -510,7 +510,8 @@ async fn endless_compactor_turns_thinking_off_per_model() {
             .is_none_or(|o| o.get("effort").is_none()),
         "{haiku}"
     );
-    assert_eq!(fable["thinking"]["type"], "adaptive", "{fable}");
+    // R3-2: no reasoning capture, so no `display: "summarized"`.
+    assert_eq!(fable["thinking"], json!({"type": "adaptive"}), "{fable}");
     assert_eq!(fable["output_config"]["effort"], "low", "{fable}");
     for b in [haiku, fable] {
         assert_eq!(b["max_tokens"], MAX_TOKENS, "{b}");

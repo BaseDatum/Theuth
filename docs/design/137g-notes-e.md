@@ -89,6 +89,11 @@ fast.log: 23 batch + 26 merge calls, largest compactor request 46,598 B
 - **R2-11**: `compactor::Tally` wraps the compactor of a job and records every answered attempt as it lands. A build dropped by the outer job bound, or one that panicked, still settles those attempts' real usage (`Failed { calls: tally.rows() }`; guard unknown) instead of `calls: []`.
 - No new live run: R2-2 changes when a failing unit folds, which run 3 did not exercise (its only fold was over cost, unchanged).
 
+## Fix round R3 (Theuth's last look, 20:44)
+- **R3-1 Bedrock**: genai's Converse adapter returns before `insert_anthropic_reasoning` on `Zero` and sends nothing, because Bedrock rejects `disabled` (`bedrock/converse.rs` `publisher_additional_fields`). Models that think unasked would keep thinking. `compactor::bedrock_off(slug)` therefore returns Low (adaptive at effort low) for `claude-{haiku,sonnet,opus}-N` with N ≥ 5 and for `claude-fable`/`claude-mythos`, and Zero otherwise (4.x and older, which think only when asked). `anthropic_off` stays the Anthropic-API rule.
+- **R3-2**: compactor requests no longer set `capture_reasoning_content`; `compress_inner` reads only text parts. The wire test now pins Fable's `thinking` as exactly `{"type": "adaptive"}` (no `display`).
+- **R3-3**: `Tally` rows store `guard = "unknown"`, not `NULL` (accepted). `endless_calls.guard` is free TEXT; stats count only the six named trips, so "unknown" counts as a call but not as a trip.
+
 ## Live proof R1 (run 3, `target/debug/t` at the R1 tip, `/tmp/137g-e/proof-r1.txt`)
 - R1-1: `dense/m` (96k window, no `token_ratios.json`), epochs session, 148,525 B message → a 268,914 B request (122k tokens at the 2.2 guess, over the 87,308 ceiling) was sent: dense fake `POST kind=turn bytes=268914 tokens=67228 -> 200`; `token_ratios.json` then held `"dense/m": 3.81`. A 247 KB message (366 KB frame, 91,610 tokens even at 4.0) is still refused locally with the models.json hint.
 - R1-3: compactor `pricey/m` ($10/M), `max_usd_per_call` 0.03; four ~650 B notes + one 12.8 KB note, paused, then resumed: log `batch from=0 units=5 built=0` (never sent), fast fake 4 `unit` + 4 `merge` calls and no `batch`, unit 8 mechanical (510 B) with one warn "summary model too expensive for max_usd_per_call; lines folded as excerpts", spend $0.14.
