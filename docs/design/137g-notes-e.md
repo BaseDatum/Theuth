@@ -22,3 +22,37 @@
 - **Fold and calls in flight**: if a level-0 call runs, the State's token is cancelled (no failure; a merge in flight restarts with it). A model reply that raced the cancel and landed first wins over the excerpt (better text); the fold only fills nodes that are still unbuilt.
 - **Pause on an epochs session**: unchanged, like fold (nothing is persisted).
 - **Pause and settle**: `settle` returns `false` at once while paused (no call can land).
+
+## Decisions (phase B)
+- **G1 one policy** (`agent::tokens`): `budget(kind, model, Limits) -> Budget { target_tokens, ceiling_tokens }`; `preflight` at `Backend::stream` (the one choke point; turn, side calls and compactor all pass it). Its refusal text is Anthropic's "prompt is too long: N tokens > M maximum (theuth preflight, not sent: …)", so `compact::is_overflow` / `overflow_numbers` and every existing overflow path read it; the degrade hooks are the callers' overflow paths (turn: G5 re-render; compactor: G5 ctx shrink). Learner: per-model EWMA (α 0.3) of request bytes ÷ provider `prompt_tokens`, clamped 1.8..=4.0, fed by every usage and by a provider's overflow count. In memory only (a restart starts at 2.2 again).
+- **Side calls** get the preflight ceiling only; they cap their own inputs already (recon c/d). No side-call sizing was changed.
+- **Turn budget**: allowance = target bytes − last system prompt − min(48 KB, target/4) (tools and input reserve). `view_bytes` and `raw_bytes` scale by the same factor when they exceed it (floors 2 KB / 1 KB); the live fold is untouched (a scaled fold is rebuilt for that render).
+- **G2 hard cap (beyond the brief)**: the raw budget alone does not bound a tree whose *built* lines cannot merge (merges not built, e.g. after `endless_fold` with settling paused: the live run showed 1.17 MB of built excerpts). `Fold::size` therefore also folds the oldest lines, built or not, into one prefix line `(N older lines folded to fit the view — zoom or recall reach them)` while the view is over `high + raw_bytes`. `fit()` still decides merges on the raw-folded size (D5 unchanged).
+- **G3**: E8's window trim is now the G1 target (it uses the learned bytes/token, not 3 B/token); `ctx_budget` = min(`compactor_ctx_bytes`, local: `local_ctx_bytes`, target − fixed).
+- **G4**: all text kinds capped at `cap_chars`; map-reduce chunks split at a newline in the second half of 16 KB, else a char boundary; the reduce input is the chunk lines joined. The job's outer bound grows with the chunk count.
+- **G5**: compactor: one retry at ctx × M/N × 0.85 (strictly smaller). Turn: once per turn (`EndlessView.shrunk`), before the D11 compaction.
+- **G6 batching**: the scan walks from the frontier; built, running or backed-off units are skipped (they do not break a batch, units are independent); free units and G7 units are instant jobs (no slot). A batch is one call slot. The reply cap is 600 tokens per line (+ thinking), ≤ 16k. A batch writes one `endless_calls` row (under its first unit); a refused line is not a failure, the unit goes solo (`Live.solo`) and runs the single-unit prompt with the in-call retries. A failed batch call is a failure of each unit. Merges are unchanged. ETA = lines × measured call-seconds per built unit ÷ parallel calls (cloud `jobs`, local 1).
+- **G6 numbers**: 5,000 unbuilt non-free units = ⌈5000/16⌉ = 313 batch calls (+ solo retries), not ~2,600 serial calls. Measured live (local fake, one batch at a time, 0.4 s/call): 16 units per batch, ~19 units/s, 432 units in 24 s, so 5,000 ≈ 4.4 min at 0.4 s/call; at 5 s/call ≈ 26 min serial local, ≈ 3.3 min with 8 cloud jobs. Batch prompts ≤ 46.6 KB (ctx ≤ 24 KB local + 16 units).
+- **G7**: `failures ≥ 3` makes a level-0 unit due at once whatever its backoff, and `spawn_build` writes the mechanical node instead of calling.
+- **G11**: the day check runs before every call (one `model_calls` sum + one meta read). The cost check uses the prompt without its context (`COMPACT` + step) at the learned bytes/token; over `max_usd_per_call` the unit folds mechanically (a merge over it backs off as a failure). Resuming a spend pause records the UTC day in `sessions.endless_spend_override`.
+- **G9**: `/compact` in an endless session folds before the tool-registry rebase (no model, no registry needed) and persists a `<memory>` note; the epoch is unchanged (the RPC returns the current epoch).
+- **Mechanical flag**: not set on free merges of mechanical children.
+- **`set_session_compactor_model`**: the catalog accepts any `provider/model` id, so the RPC also requires a reachable provider (a configured gateway, or a catalog model of a configured provider). The agent default (from its file) is not validated; it falls back at run time.
+
+## Live proof (scratch engine, `target/debug/t` at the phase-B tip)
+Setup: `env -i HOME=/tmp/137g-e/home THEUTH_RPC__LISTEN=127.0.0.1:7973 t --headless --data-dir /tmp/137g-e/engine`; `models.json` gives `small/m` a 96k window, `fast/m` 1M. Fakes `/tmp/137g-e/fake137g.py`: `small` (:7971, counts 1.43 B/token — denser than theuth's estimate — and returns a 400 "prompt is too long: N tokens > 96000 maximum" above it), `fast` (:7972, 0.4 s per call, answers batches line by line). Compactor `fast/m`; sessions A and B on `small/m`, paused, then 2,500 user rows (~705 B, 1.76 MB) appended to each with the engine stopped. Driver `/tmp/137g-e/proof137g.py`, log `/tmp/137g-e/proof.txt`, fake logs `/tmp/137g-e/{small,fast}.log`, engine log `/tmp/137g-e/engine/logs/`. Run 1 (`*-run1.*`) found the hard-cap gap above.
+```
+17:57:06 A backlog {"lines": 2500, "folded": 2453, "paused": true, "paused_by": "user"}, view 50 lines 31,965 B
+turn: POST 139,008 B (97,208 tok by the fake) -> 400 too long; "endless: turn refused as too long; view re-rendered smaller
+      prompt=97208 window=96000 from_bytes=79200 to_bytes=66483 bytes=13397 folded=2481"; POST 136,599 B -> 200 (turn 0.6 s)
+      (first render: "turn view scaled down to the turn budget max_bytes=79200 view_bytes=63360 raw_bytes=15840 bytes=15935")
+17:57:26 endless_pause(false) -> lines 2504, eta 12520 s (default 5 s/unit)
+ +2.0s lines 2472 eta 101 · +6.1s 2392 eta 117 · +12.1s 2280 eta 116 · +20.3s 2136 eta 110 (batches of 16, one at a time)
+17:57:46 endless_pause(true) -> {"lines": 2136, "eta_secs": 0, "paused": true, "paused_by": "user"}
+17:57:47 endless_fold took 0.82 s -> unbuilt 0, backlog lines 0, 343 mechanical lines in view, view 175,301 B
+      (≤ high 144,000 + raw 32,000), first line "0+2159|(2159 older lines folded to fit the view …)"
+17:57:47 endless_pause(false) -> backlog null; merges resume (fast.log)
+17:57:58 B (2,500 unbuilt, paused) set_session_memory(epochs): epoch 1 head 32,534 B, folded line present, "message 0:" absent
+set_session_compactor_model A "small/m" -> model small/m, source chat; None -> fast/m, source settings
+fast.log: 23 batch + 26 merge calls, largest compactor request 46,598 B
+```

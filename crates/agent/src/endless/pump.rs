@@ -2396,14 +2396,29 @@ pub(crate) async fn set_model(
     agent: bool,
 ) -> anyhow::Result<SessionMemory> {
     let model = model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+    // The chat's pick must resolve to a model this engine can reach: a
+    // configured gateway, or a catalog model of a configured provider (the
+    // catalog itself accepts any `provider/model` id). The agent default
+    // comes from its file and falls back at run time like `agent.endless.model`.
     if let Some(id) = &model
+        && !agent
         && inner.compactor_for_tests.is_none()
     {
-        inner
+        let configured = crate::supervisor::configured(inner.auth.clone());
+        let m = inner
             .catalog
             .read()
-            .resolve(id, &*crate::supervisor::configured(inner.auth.clone()))
+            .resolve(id, &*configured)
             .map_err(|e| anyhow::anyhow!("compactor model {id:?}: {e}"))?;
+        let reachable = crate::backend::target_for(&m, &inner.auth).is_some()
+            || (m.model.is_some()
+                && m.provider
+                    .as_deref()
+                    .is_some_and(|p| configured(models::Catalog::adapter(p))));
+        anyhow::ensure!(
+            reachable,
+            "compactor model {id:?}: no configured provider serves it"
+        );
     }
     inner
         .store_for(session)

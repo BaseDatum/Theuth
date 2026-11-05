@@ -223,7 +223,8 @@ impl Fold {
                 break;
             }
         }
-        let mut runs = vec![0..end];
+        let mut runs = Vec::with_capacity(raw.len() + 1);
+        runs.push(0..end);
         runs.extend(raw.into_iter().skip(ri));
         (runs, true)
     }
