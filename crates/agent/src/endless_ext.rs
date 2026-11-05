@@ -165,6 +165,9 @@ pub fn status(m: &SessionMemory) -> String {
     } else {
         s.push_str(" · up to date");
     }
+    if let Some(b) = m.backlog.filter(|b| b.paused) {
+        s.push_str(&format!(" · settling paused ({} lines wait)", b.lines));
+    }
     if m.stats.calls > 0 {
         s.push_str(&format!(
             " · {} compactor calls, ≈ ${:.2}",
@@ -189,6 +192,7 @@ mod tests {
                 text: "user: a\nb".into(),
                 built: true,
                 at: None,
+                mechanical: false,
             }],
             settling: false,
             unbuilt: 0,
@@ -198,6 +202,7 @@ mod tests {
             view_bytes: 128_000,
             backfill,
             stalled: None,
+            backlog: None,
         }
     }
 

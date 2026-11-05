@@ -238,6 +238,10 @@ pub struct ViewLine {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub at: Option<DateTime<Utc>>,
+    /// 137G: a line made by the mechanical fold (an excerpt, not a model summary).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub mechanical: bool,
 }
 
 /// Guard trips by kind (§6).
@@ -320,6 +324,26 @@ pub struct Stalled {
     pub blocking: bool,
 }
 
+/// Unsummarized lines waiting for the compactor (137G). Engine → UI. TS name
+/// `EndlessBacklog`: `dreaming::Backlog` owns `Backlog.ts`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "EndlessBacklog")
+)]
+pub struct Backlog {
+    /// Level-0 lines not yet built.
+    pub lines: u32,
+    /// Of those, how many the view currently shows folded into one placeholder line (the raw budget).
+    pub folded: u32,
+    /// Estimate at the measured throughput; 0 when paused or unknown.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub eta_secs: u64,
+    /// Settling is paused for this session (no compactor calls).
+    pub paused: bool,
+}
+
 /// RPC `session_memory` (§11.2).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -348,6 +372,10 @@ pub struct SessionMemory {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub stalled: Option<Stalled>,
+    /// 137G: the unsettled backlog; `None` when nothing waits and the session is not paused.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub backlog: Option<Backlog>,
 }
 
 /// Bus event on the session stream, ≤ 1 per 500 ms per session (§11.2).
@@ -374,6 +402,10 @@ pub struct EndlessProgress {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub stalled: Option<Stalled>,
+    /// 137G: as [`SessionMemory::backlog`].
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub backlog: Option<Backlog>,
 }
 
 /// Reply of [`Endless::set_mode`].
@@ -634,6 +666,20 @@ impl Endless {
     /// the pump, return the fresh state. An epochs session is untouched.
     pub async fn retry(&self, session: SessionId) -> anyhow::Result<SessionMemory> {
         pump::retry(&self.inner, session).await
+    }
+
+    /// RPC `endless_fold` (137G): every unbuilt level-0 unit becomes a
+    /// mechanical excerpt node at once (no model call); the pump merges on.
+    /// An epochs session is untouched.
+    pub async fn fold(&self, session: SessionId) -> anyhow::Result<SessionMemory> {
+        pump::fold_all(&self.inner, session).await
+    }
+
+    /// RPC `endless_pause` (137G): `true` stops new compactor calls and
+    /// cancels those in flight (no failures), keeping the backlog; `false`
+    /// resumes. Persisted in `sessions.endless_paused`.
+    pub async fn pause(&self, session: SessionId, paused: bool) -> anyhow::Result<SessionMemory> {
+        pump::pause(&self.inner, session, paused).await
     }
 
     /// The constant VIEW_DOC appended to the system prompt in endless sessions (§9).

@@ -368,6 +368,14 @@ pub trait Api {
     /// compactor, wake the pump; the fresh `SessionMemory` (an epochs session's unchanged).
     #[method(name = "endless_retry", with_extensions)]
     async fn endless_retry(&self, session: SessionId) -> RpcResult<SessionMemory>;
+    /// 137G: fold every unbuilt level-0 line mechanically (an excerpt, no model
+    /// call, instant); the fresh `SessionMemory` (an epochs session's unchanged).
+    #[method(name = "endless_fold", with_extensions)]
+    async fn endless_fold(&self, session: SessionId) -> RpcResult<SessionMemory>;
+    /// 137G: `paused = true` stops the session's compactor calls (in-flight ones
+    /// cancelled, the backlog kept; persisted), `false` resumes; the fresh `SessionMemory`.
+    #[method(name = "endless_pause", with_extensions)]
+    async fn endless_pause(&self, session: SessionId, paused: bool) -> RpcResult<SessionMemory>;
     /// 137 §9 `zoom`: the two children of line `id+n` (`n == 1`: the whole message).
     #[method(name = "endless_zoom", with_extensions)]
     async fn endless_zoom(&self, session: SessionId, id: u64, n: u64) -> RpcResult<Vec<ViewLine>>;
@@ -4204,6 +4212,27 @@ impl ApiServer for Server {
             return Ok(r);
         }
         ask::<Agents, _>(agent::AGENT_ACTOR, agent::EndlessRetry { session }).await
+    }
+
+    async fn endless_fold(&self, ext: &Extensions, session: SessionId) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "endless_fold", (session,)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::EndlessFold { session }).await
+    }
+
+    async fn endless_pause(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        paused: bool,
+    ) -> RpcResult<SessionMemory> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "endless_pause", (session, paused)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::EndlessPause { session, paused }).await
     }
 
     async fn endless_zoom(

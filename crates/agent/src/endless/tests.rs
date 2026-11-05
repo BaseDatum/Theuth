@@ -199,6 +199,7 @@ async fn failing_node_backs_off_until_a_success() {
             free: false,
             model: Some("fake/failing".into()),
             tries: 1,
+            mechanical: false,
         }),
     )
     .await;
@@ -450,6 +451,12 @@ fn wire_types_round_trip() {
             model: "ollama/qwen".into(),
             blocking: true,
         }),
+        backlog: Some(super::Backlog {
+            lines: 5_000,
+            folded: 4_900,
+            eta_secs: 600,
+            paused: false,
+        }),
     };
     let v = serde_json::to_value(&ev).unwrap();
     assert_eq!(v["type"], "EndlessProgress");
@@ -459,6 +466,10 @@ fn wire_types_round_trip() {
     )
     .unwrap();
     assert_eq!(mem.view[0].n, 2);
+    assert!(
+        mem.backlog.is_none() && !mem.view[0].mechanical,
+        "older shape: defaults"
+    );
     let summary: crate::SessionSummary = serde_json::from_value(serde_json::json!({
         "id": SessionId::new(), "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
         "title": "t", "model": "m", "parent": null, "name": null, "effort": null, "agent": null, "cwd": null
@@ -998,6 +1009,7 @@ async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
             free: false,
             model: Some("fake/a".into()),
             tries: 1,
+            mechanical: false,
         }),
     )
     .await;
@@ -1196,4 +1208,111 @@ async fn queued_merge_does_not_hold_back_the_frontier() {
         "the frontier first: {inputs:?}"
     );
     assert!(endless.settle(id, Duration::from_secs(10)).await);
+}
+
+/// 137G G7 `endless_fold`: every unbuilt level-0 unit becomes a node at once
+/// with no model call — long units a flagged excerpt ≤ `node_bytes` (head
+/// and tail kept), short ones their free line; the hung level-0 call is
+/// cancelled (no failure); the view settles; recall still finds the rows;
+/// an epochs session is unchanged.
+#[tokio::test]
+async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
+    let p = Probe::new("fake/a", Act::Hang);
+    let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
+    endless_session(&endless, &store, id).await;
+    until("a call in flight", || p.calls() >= 1).await;
+    let before = endless.memory(id).await.unwrap();
+    let backlog = before.backlog.expect("a backlog");
+    // Level 0 is serial: the hung frontier and both units behind it wait.
+    assert_eq!((backlog.lines, backlog.paused), (3, false), "{backlog:?}");
+
+    let mem = endless.fold(id).await.unwrap();
+    assert!(mem.backlog.is_none(), "{:?}", mem.backlog);
+    assert!(!mem.settling, "every part is a built line");
+    let mech: Vec<_> = mem.view.iter().filter(|l| l.mechanical).collect();
+    assert_eq!(mech.len(), 2, "{:?}", mem.view);
+    let node_bytes = EndlessConfig::default().node_bytes as usize;
+    for l in &mech {
+        assert!(l.built && l.text.len() <= node_bytes, "{}", l.text.len());
+        assert!(
+            l.text.contains(" … ") && l.text.contains("line 59"),
+            "{}",
+            l.text
+        );
+    }
+    assert!(
+        mem.view
+            .iter()
+            .filter(|l| !l.mechanical)
+            .all(|l| l.built && !l.text.contains(" … ")),
+        "short units stay verbatim free lines"
+    );
+    until("the hung call cancelled", || {
+        p.dropped.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert!(super::pump::failed_for_tests(&endless.inner, id).is_empty());
+    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    let stored = store.endless_nodes(id).await.unwrap();
+    assert_eq!(
+        stored
+            .iter()
+            .filter(|n| n.mechanical && n.tries == 0)
+            .count(),
+        2
+    );
+    assert!(
+        stored.iter().all(|n| n.model.is_none()),
+        "no model built anything"
+    );
+    let hits = endless.recall(id, "worker_processes", 8).await.unwrap();
+    assert!(!hits.is_empty(), "the rows stay searchable");
+
+    let (_d, e2, s2, plain) = harness_for(cfg_137f(None), p.clone()).await;
+    e2.attach(plain, attached()).await.unwrap();
+    let m = e2.fold(plain).await.unwrap();
+    assert_eq!(m.mode, MemoryMode::Epochs);
+    assert!(m.backlog.is_none() && s2.endless_nodes(plain).await.unwrap().is_empty());
+}
+
+/// 137G G8 `endless_pause`: pausing cancels the call in flight (no failure)
+/// and starts none, keeps the backlog and makes `settle` return at once; the
+/// flag survives a re-attach from the store; resuming calls again.
+#[tokio::test]
+async fn pause_stops_calls_survives_reattach_and_resume_restarts() {
+    let p = Probe::new("fake/a", Act::Hang);
+    let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
+    endless_session(&endless, &store, id).await;
+    until("a call in flight", || p.calls() >= 1).await;
+
+    let mem = endless.pause(id, true).await.unwrap();
+    let b = mem.backlog.expect("paused shows a backlog");
+    assert_eq!((b.lines, b.paused, b.eta_secs), (3, true, 0), "{b:?}");
+    until("the hung call cancelled", || {
+        p.dropped.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    let calls = p.calls();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(p.calls(), calls, "no call while paused");
+    assert!(super::pump::failed_for_tests(&endless.inner, id).is_empty());
+    let t0 = Instant::now();
+    assert!(!endless.settle(id, Duration::from_secs(30)).await);
+    assert!(
+        t0.elapsed() < Duration::from_secs(5),
+        "settle does not wait"
+    );
+    assert!(store.endless_meta(id).await.unwrap().paused);
+
+    // A restart: the state reloads from the store, still paused.
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(p.calls(), calls, "no call after a restart either");
+    assert!(endless.memory(id).await.unwrap().backlog.unwrap().paused);
+
+    let mem = endless.pause(id, false).await.unwrap();
+    assert!(!mem.backlog.unwrap().paused);
+    until("calls resume", || p.calls() > calls).await;
+    assert!(!store.endless_meta(id).await.unwrap().paused);
 }

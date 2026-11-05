@@ -237,6 +237,7 @@ pub fn render_lines(tree: &Tree, fold: &Fold, units: &[Unit]) -> Vec<ViewLine> {
         text: EARLIER.to_owned(),
         built: false,
         at: None,
+        mechanical: false,
     });
     head.into_iter()
         .chain(fold.parts.iter().map(|p| {
@@ -251,6 +252,7 @@ pub fn render_lines(tree: &Tree, fold: &Fold, units: &[Unit]) -> Vec<ViewLine> {
                 at: (n == 1)
                     .then(|| units.get(id as usize).and_then(|u| u.at))
                     .flatten(),
+                mechanical: tree.get(p.l, p.i).is_some_and(|n| n.mechanical),
             }
         }))
         .collect()
@@ -329,6 +331,7 @@ mod tests {
                     free: v["free"].as_bool().unwrap_or(false),
                     model: None,
                     tries: 1,
+                    mechanical: false,
                 }
             })
             .collect();

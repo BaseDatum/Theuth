@@ -25,6 +25,8 @@ pub struct EndlessMeta {
     pub base: u64,
     /// `sessions.endless_view_bytes`: the user's per-session view budget (R1b).
     pub view_bytes: Option<u32>,
+    /// `sessions.endless_paused` (137G `endless_pause`).
+    pub paused: bool,
 }
 
 /// One `endless_units` row (the unit without its text).
@@ -104,22 +106,37 @@ impl Store {
         Ok(s.and_then(|s| s.parse().ok()).unwrap_or_default())
     }
 
-    /// `sessions.{memory, endless_filter, endless_base}`; defaults for an unknown session.
+    /// `sessions.{memory, endless_filter, endless_base, endless_view_bytes, endless_paused}`;
+    /// defaults for an unknown session.
     pub async fn endless_meta(&self, id: SessionId) -> anyhow::Result<EndlessMeta> {
-        let row: Option<(String, String, i64, Option<i64>)> = sqlx::query_as(
-            "SELECT memory, endless_filter, endless_base, endless_view_bytes FROM sessions WHERE id = ?",
+        type Row = (String, String, i64, Option<i64>, Option<bool>);
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT memory, endless_filter, endless_base, endless_view_bytes, endless_paused \
+             FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.read)
         .await?;
         Ok(row
-            .map(|(m, f, b, v)| EndlessMeta {
+            .map(|(m, f, b, v, p)| EndlessMeta {
                 mode: m.parse().unwrap_or_default(),
                 filter: f.parse().unwrap_or_default(),
                 base: u64::try_from(b).unwrap_or(0),
                 view_bytes: v.and_then(|v| u32::try_from(v).ok()),
+                paused: p.unwrap_or(false),
             })
             .unwrap_or_default())
+    }
+
+    /// 137G `endless_pause`: persist the session's pause flag.
+    pub async fn set_endless_paused(&self, id: SessionId, paused: bool) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET endless_paused = ? WHERE id = ?")
+            .bind(paused)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
     }
 
     /// Fix the filter and base at switch-on (R1-D4, R1-D6).
@@ -235,16 +252,17 @@ impl Store {
 
     /// Every built node of the session.
     pub async fn endless_nodes(&self, id: SessionId) -> anyhow::Result<Vec<Node>> {
-        type Row = (i64, i64, String, i64, bool, Option<String>, i64);
+        type Row = (i64, i64, String, i64, bool, Option<String>, i64, bool);
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT l, i, text, size, free, model, tries FROM endless_nodes WHERE session_id = ? ORDER BY l, i",
+            "SELECT l, i, text, size, free, model, tries, mechanical FROM endless_nodes \
+             WHERE session_id = ? ORDER BY l, i",
         )
         .bind(id.to_string())
         .fetch_all(&self.read)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(l, i, text, size, free, model, tries)| Node {
+            .map(|(l, i, text, size, free, model, tries, mechanical)| Node {
                 l: l as u8,
                 i: i as u64,
                 text,
@@ -252,32 +270,44 @@ impl Store {
                 free,
                 model,
                 tries: tries as i32,
+                mechanical,
             })
             .collect())
     }
 
-    /// Store one built node (the FTS triggers mirror level 0). An upsert, not
-    /// `INSERT OR REPLACE`: REPLACE's implicit delete skips the delete trigger
-    /// and would leave the old line in the FTS index.
+    /// Store one built node (the FTS triggers mirror level 0).
     pub async fn endless_node_put(&self, id: SessionId, node: &Node) -> anyhow::Result<()> {
+        self.endless_nodes_put(id, std::slice::from_ref(node)).await
+    }
+
+    /// Store built nodes in one transaction. An upsert, not `INSERT OR
+    /// REPLACE`: REPLACE's implicit delete skips the delete trigger and would
+    /// leave the old line in the FTS index.
+    pub async fn endless_nodes_put(&self, id: SessionId, nodes: &[Node]) -> anyhow::Result<()> {
+        let sid = id.to_string();
+        let now = Utc::now().to_rfc3339();
         let mut tx = self.begin_write().await?;
-        sqlx::query(
-            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(session_id, l, i) DO UPDATE SET text = excluded.text, size = excluded.size, \
-             free = excluded.free, model = excluded.model, tries = excluded.tries, created_at = excluded.created_at",
-        )
-        .bind(id.to_string())
-        .bind(i64::from(node.l))
-        .bind(node.i as i64)
-        .bind(&node.text)
-        .bind(i64::from(node.size))
-        .bind(node.free)
-        .bind(&node.model)
-        .bind(i64::from(node.tries))
-        .bind(Utc::now().to_rfc3339())
-        .execute(&mut *tx)
-        .await?;
+        for node in nodes {
+            sqlx::query(
+                "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(session_id, l, i) DO UPDATE SET text = excluded.text, size = excluded.size, \
+                 free = excluded.free, model = excluded.model, tries = excluded.tries, \
+                 mechanical = excluded.mechanical, created_at = excluded.created_at",
+            )
+            .bind(&sid)
+            .bind(i64::from(node.l))
+            .bind(node.i as i64)
+            .bind(&node.text)
+            .bind(i64::from(node.size))
+            .bind(node.free)
+            .bind(&node.model)
+            .bind(i64::from(node.tries))
+            .bind(node.mechanical)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await
     }
 
@@ -511,13 +541,15 @@ mod tests {
             .set_endless_view_bytes(id, Some(48_000))
             .await
             .unwrap();
+        store.set_endless_paused(id, true).await.unwrap();
         assert_eq!(
             store.endless_meta(id).await.unwrap(),
             EndlessMeta {
                 mode: MemoryMode::Endless,
                 filter: UnitFilter::Meeting,
                 base: 40,
-                view_bytes: Some(48_000)
+                view_bytes: Some(48_000),
+                paused: true,
             }
         );
         assert_eq!(store.endless_sessions().await.unwrap().len(), 1);
@@ -550,6 +582,7 @@ mod tests {
             free: false,
             model: Some("m".into()),
             tries: 1,
+            mechanical: false,
         };
         store
             .endless_node_put(id, &node(0, 0, "user: rename the config loader"))

@@ -21,8 +21,8 @@ use super::fold::ViewBlock;
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
 use super::tree::{self, Node, Tree, Unit, exists, id_n};
 use super::{
-    Attached, Backfill, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode, Stalled,
-    UnitFilter, ViewLine, units,
+    Attached, Backfill, Backlog, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode,
+    Stalled, UnitFilter, ViewLine, units,
 };
 use crate::backend::Backend;
 use crate::cost::{CallKind, CallStatus};
@@ -325,6 +325,8 @@ struct Live {
     base: u64,
     /// R1-D2: per-session view budget override.
     view_bytes: Option<u32>,
+    /// 137G `endless_pause`: no compactor calls while set (persisted).
+    paused: bool,
     /// Every unit, dense by `i`.
     // ponytail: whole-session unit text in memory; page from the store if a session outgrows RAM.
     units: Vec<Unit>,
@@ -510,6 +512,24 @@ impl Live {
         let front = (0u8, self.frontier(cfg));
         self.failed.get(&front).is_some_and(|r| r.failures >= 2)
     }
+
+    /// 137G: the unsettled level-0 backlog; `None` when empty and not paused.
+    fn backlog(&self) -> Option<Backlog> {
+        let lines = u32::try_from(self.unbuilt_level0()).unwrap_or(u32::MAX);
+        if lines == 0 && !self.paused {
+            return None;
+        }
+        Some(Backlog {
+            lines,
+            folded: 0,
+            eta_secs: if self.paused {
+                0
+            } else {
+                (f64::from(lines) * self.secs_per_unit()) as u64
+            },
+            paused: self.paused,
+        })
+    }
 }
 
 impl Live {
@@ -519,6 +539,7 @@ impl Live {
             filter: meta.filter,
             base: meta.base,
             view_bytes: meta.view_bytes,
+            paused: meta.paused,
             units: Vec::new(),
             tree: Tree::default(),
             fold: None,
@@ -669,6 +690,7 @@ pub(crate) async fn attach(
             live.filter = meta.filter;
             live.base = meta.base;
             live.view_bytes = meta.view_bytes;
+            live.paused = meta.paused;
             live.invalidate();
             drop(live);
             state
@@ -828,7 +850,7 @@ fn start_pump(state: Arc<State>, cancel: CancellationToken) {
 /// Start every eligible node up to `jobs` (§5.2 rules 1–3).
 fn schedule(state: &Arc<State>) {
     let mut live = state.live.lock();
-    if live.mode != MemoryMode::Endless {
+    if live.mode != MemoryMode::Endless || live.paused {
         return;
     }
     let cfg = live.fold_cfg(&state.cfg.read());
@@ -988,6 +1010,7 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
                 free: true,
                 model: None,
                 tries: 0,
+                mechanical: false,
             })),
             (None, Some(step)) => {
                 let job = Job {
@@ -1173,6 +1196,7 @@ async fn call(
         free: false,
         model: Some(c.model_id().to_owned()),
         tries: built.tries,
+        mechanical: false,
     }))
 }
 
@@ -1282,6 +1306,7 @@ fn emit_progress(state: &Arc<State>) -> Duration {
         error: live.pending_error.take(),
         backfill: live.backfill(),
         stalled: live.stalled(cfg),
+        backlog: live.backlog(),
     };
     drop(live);
     let rt = state.rt.clone();
@@ -1325,8 +1350,9 @@ pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> 
         if unbuilt == 0 {
             return true;
         }
-        // E4: a frontier that keeps failing will not land within this turn's wait.
-        if stalled {
+        // E4: a frontier that keeps failing will not land within this turn's
+        // wait; 137G: nor will anything while settling is paused.
+        if stalled || state.live.lock().paused {
             return false;
         }
         let left = deadline.saturating_duration_since(Instant::now());
@@ -1488,7 +1514,7 @@ pub(crate) async fn backfill_estimate(
     })
 }
 
-fn view_line(part: Part, text: String, built: bool, units: &[Unit]) -> ViewLine {
+fn view_line(part: Part, text: String, built: bool, live: &Live) -> ViewLine {
     let (id, n) = part.id_n();
     ViewLine {
         id,
@@ -1497,8 +1523,9 @@ fn view_line(part: Part, text: String, built: bool, units: &[Unit]) -> ViewLine 
         text: text.replace('\n', " "),
         built,
         at: (n == 1)
-            .then(|| units.get(id as usize).and_then(|u| u.at))
+            .then(|| live.units.get(id as usize).and_then(|u| u.at))
             .flatten(),
+        mechanical: live.tree.get(part.l, part.i).is_some_and(|n| n.mechanical),
     }
 }
 
@@ -1526,6 +1553,7 @@ pub(crate) async fn zoom(
             text: u.tagged(),
             built: live.tree.built(0, i),
             at: u.at,
+            mechanical: false,
         }]);
     }
     Ok([2 * i, 2 * i + 1]
@@ -1533,7 +1561,7 @@ pub(crate) async fn zoom(
         .map(|ci| {
             let part = Part { l: l - 1, i: ci };
             let (text, built) = fold::part_text(&live.tree, part, &live.units);
-            view_line(part, text, built, &live.units)
+            view_line(part, text, built, &live)
         })
         .collect())
 }
@@ -1556,7 +1584,7 @@ pub(crate) async fn recall(
     let mut out: Vec<ViewLine> = {
         let live = state.live.lock();
         hits.into_iter()
-            .map(|(i, text)| view_line(Part { l: 0, i }, text, true, &live.units))
+            .map(|(i, text)| view_line(Part { l: 0, i }, text, true, &live))
             .collect()
     };
     if out.len() < 2 {
@@ -1579,7 +1607,7 @@ pub(crate) async fn recall(
                     "{} (raw)",
                     super::guards::cut_utf8(&u.tagged(), state.cfg.read().node_bytes as usize)
                 );
-                out.push(view_line(Part { l: 0, i }, text, false, &live.units));
+                out.push(view_line(Part { l: 0, i }, text, false, &live));
             }
         }
     }
@@ -1750,6 +1778,11 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         } else {
             None
         },
+        backlog: if mode == MemoryMode::Endless {
+            live.backlog()
+        } else {
+            None
+        },
     })
 }
 
@@ -1765,6 +1798,100 @@ pub(crate) async fn retry(inner: &Inner, session: SessionId) -> anyhow::Result<S
             reresolve(inner, Some(session));
             state.reset_backoff();
         }
+    }
+    memory(inner, session).await
+}
+
+/// RPC `endless_fold` (137G G7): every unbuilt level-0 unit of `[base, T)`
+/// becomes a built node now, no model call — a unit that fits is its free
+/// node, a longer one its [`tree::mechanical_unit`] excerpt (flagged, tries
+/// 0). Level-0 calls in flight are cancelled (not failures); merges follow
+/// through the pump. The rows stay searchable (`recall`'s raw fallback and
+/// the FTS mirror of the excerpts). An epochs session is untouched.
+pub(crate) async fn fold_all(inner: &Inner, session: SessionId) -> anyhow::Result<SessionMemory> {
+    let Some(state) = state_of(inner, session) else {
+        return memory(inner, session).await;
+    };
+    if state.live.lock().mode != MemoryMode::Endless {
+        return memory(inner, session).await;
+    }
+    ingest(&state).await?;
+    let node_bytes = state.cfg.read().node_bytes;
+    let nodes: Vec<Node> = {
+        let live = state.live.lock();
+        if live.running.iter().any(|k| k.0 == 0) {
+            state.cancel_calls();
+        }
+        (live.base.min(live.t())..live.t())
+            .filter(|i| !live.tree.built(0, *i))
+            .map(|i| mechanical_node(&live.units[i as usize], node_bytes))
+            .collect()
+    };
+    state.store.endless_nodes_put(session, &nodes).await?;
+    let n = nodes.len();
+    {
+        let mut live = state.live.lock();
+        for node in nodes {
+            if !live.tree.built(0, node.i) {
+                live.failed.remove(&(0, node.i));
+                live.reported.remove(&(0, node.i));
+                live.tree.insert(node);
+            }
+        }
+        live.invalidate();
+        live.dirty = true;
+    }
+    tracing::info!(%session, units = n, "endless: folded the backlog mechanically");
+    state.built_tx.send_modify(|v| *v += 1);
+    state.wake.notify_one();
+    memory(inner, session).await
+}
+
+/// The node `endless_fold` writes for unit `u`: free when it fits, else the
+/// mechanical excerpt.
+fn mechanical_node(u: &Unit, node_bytes: u32) -> Node {
+    let (text, mechanical) = match tree::mechanical_unit(u, node_bytes) {
+        Some(text) => (text, true),
+        None => (u.tagged(), false),
+    };
+    Node {
+        l: 0,
+        i: u.i,
+        size: text.len() as u32,
+        text,
+        free: !mechanical,
+        model: None,
+        tries: 0,
+        mechanical,
+    }
+}
+
+/// RPC `endless_pause` (137G G8): persist the flag; pausing cancels the
+/// calls in flight (not failures, the nodes reschedule on resume) and
+/// `schedule` starts nothing while set; resuming wakes the pump. An epochs
+/// session is untouched.
+pub(crate) async fn pause(
+    inner: &Inner,
+    session: SessionId,
+    paused: bool,
+) -> anyhow::Result<SessionMemory> {
+    let store = inner.store_for(session);
+    if store.session_memory(session).await? != MemoryMode::Endless {
+        return memory(inner, session).await;
+    }
+    store.set_endless_paused(session, paused).await?;
+    if let Some(state) = state_of(inner, session) {
+        {
+            let mut live = state.live.lock();
+            live.paused = paused;
+            live.dirty = true;
+        }
+        if paused {
+            state.cancel_calls();
+        }
+        tracing::info!(%session, paused, "endless: settling paused/resumed");
+        state.built_tx.send_modify(|v| *v += 1);
+        state.wake.notify_one();
     }
     memory(inner, session).await
 }

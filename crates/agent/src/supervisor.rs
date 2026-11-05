@@ -110,8 +110,8 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
-    EndlessConfigChanged, EndlessRecall, EndlessRetry, EndlessZoom, GetEndlessSettings,
-    RenderMemoryView, SessionMemoryQuery, SetEndlessSettings, SetSessionMemory,
+    EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
+    GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetEndlessSettings, SetSessionMemory,
     SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
@@ -7644,6 +7644,32 @@ impl Message<EndlessRetry> for Agents {
         self.stored(m.session).await?;
         self.endless
             .retry(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<EndlessFold> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137G: any session this engine knows, like [`EndlessRetry`].
+    async fn handle(&mut self, m: EndlessFold, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .fold(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<EndlessPause> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137G: any session this engine knows, like [`EndlessRetry`].
+    async fn handle(&mut self, m: EndlessPause, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .pause(m.session, m.paused)
             .await
             .map_err(|e| format!("{e:#}"))
     }
