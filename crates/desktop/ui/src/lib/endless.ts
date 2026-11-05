@@ -2,22 +2,8 @@ import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 
-/** 137F/137G keys optional on the wire: an engine before them omits them and its defaults (`ENDLESS_DEFAULTS`) apply. */
-export type EndlessAdvanced = {
-  attempt_secs: number
-  local_attempt_secs: number
-  local_ctx_bytes: number
-  local_jobs: number
-  raw_bytes: number
-  compactor_ctx_bytes: number
-  batch_units: number
-  max_usd_per_call: number
-  max_usd_per_session_day: number
-}
-export type EndlessConfigX = EndlessConfig & Partial<EndlessAdvanced>
-
-/** The engine's defaults for the optional keys (and `jobs`), shown as placeholders and used while a key is absent. */
-export const ENDLESS_DEFAULTS: EndlessAdvanced & { jobs: number } = {
+/** The engine's defaults of `EndlessConfig`'s optional keys (137F/137G) and `jobs`: an engine before a key omits it, so these are the placeholders and the values used while it is absent. */
+export const ENDLESS_DEFAULTS: Required<Pick<EndlessConfig, 'attempt_secs' | 'local_attempt_secs' | 'local_ctx_bytes' | 'local_jobs' | 'raw_bytes' | 'compactor_ctx_bytes' | 'batch_units' | 'max_usd_per_call' | 'max_usd_per_session_day' | 'jobs'>> = {
   attempt_secs: 120,
   local_attempt_secs: 600,
   local_ctx_bytes: 24_000,
@@ -33,8 +19,12 @@ export const ENDLESS_DEFAULTS: EndlessAdvanced & { jobs: number } = {
 /** 137 R1-D4: the first view line of a capped backfill; the Memory panel renders it as a note, not a band line. */
 export const EARLIER_HISTORY = '(earlier history, not summarized; recall searches it)'
 
-/** 137G: the view's one line for the waiting lines it folds, `(4,512 lines not yet summarized — recall searches them)`. No marker in the bindings: matched on the text. */
-export const isFoldedNote = (text: string): boolean => /^\([\d,]+ lines? not yet summarized\b/.test(text)
+/**
+ * 137G: the view's placeholder lines (`fold.rs` `folded_text` / `prefix_text`): `(4512 lines not yet summarized — recall
+ * searches them)` for waiting lines, `(4512 older lines folded to fit the view — zoom or recall reach them)` for built
+ * lines that cannot merge yet. No marker in the bindings: matched on the text.
+ */
+export const isFoldedNote = (text: string): boolean => /^\([\d,]+ (?:lines? not yet summarized|older lines? folded to fit the view)\b/.test(text)
 
 /**
  * 137 R1-D3, the compactor chain as the UI names it: `agent.endless.model` when set, else

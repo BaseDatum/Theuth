@@ -323,6 +323,9 @@ function userEntries(
       // 171F B4: `turn` when this row opened the turn, so `foldCells` can hand it to the user's words that follow.
       case "cell_result":
         return { id: nextId(), ...c, turn, context };
+      // 137G G10: the endless view was shrunk to fit — a muted info line, not a user bubble or a nudge card.
+      case "memory":
+        return { id: nextId(), kind: "info", text: c.text, context };
     }
   }).concat(card);
 }

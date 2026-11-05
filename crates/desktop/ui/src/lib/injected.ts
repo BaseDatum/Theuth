@@ -53,6 +53,8 @@ export type Injected =
   | { kind: 'autoresearch'; slug: string; event: string; text: string }
   /** 171 §9.1: `<cell_result run=… name=…|cell=… label=… message=… exit secs …>` — a user cell's run the agent read; one quiet line. */
   | { kind: 'cell_result'; run: string; name?: string; label?: string; cell?: string; message?: string; exit: string; secs: string; text: string }
+  /** 137G G10: `<memory>` — the endless view was shrunk to fit this turn; rendered as a muted info line. */
+  | { kind: 'memory'; text: string }
 
 export type CellResultInput = Extract<Injected, { kind: 'cell_result' }>
 
@@ -78,7 +80,7 @@ CARD.peer_state = 'child="'
 
 /** The wrapper names `classify` turns into a card or hides (the transcript never shows them as tags). */
 export const isClassified = (name: string): boolean =>
-  Object.hasOwn(CARD, name) || Object.hasOwn(HIDDEN, name) || Object.hasOwn(ENGINE_NOTICES, name) || name === 'budget' || name === 'resume_handoff' || name === 'skill'
+  Object.hasOwn(CARD, name) || Object.hasOwn(HIDDEN, name) || Object.hasOwn(ENGINE_NOTICES, name) || name === 'budget' || name === 'resume_handoff' || name === 'skill' || name === 'memory'
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]
@@ -273,7 +275,10 @@ export function classify(text: string): Injected[] | null {
     // A notice is its bare tag (a human's `<rounds source="user">` stays text); `<budget spent cap currency>` is the one
     // engine notice that carries attributes (152 D5).
     const notice = Object.hasOwn(ENGINE_NOTICES, open) ? open as keyof typeof ENGINE_NOTICES : name === 'budget' ? name : undefined
-    if (key === undefined && !HIDDEN[name] && notice === undefined && name !== 'resume_handoff') return null
+    // 137G G10: `<memory>` (bare) is the note a turn gets when its endless view was shrunk to fit — a muted line, shown
+    // whatever the nudge setting, since it tells the reader what the model could not see.
+    const memory = open === 'memory'
+    if (key === undefined && !HIDDEN[name] && notice === undefined && name !== 'resume_handoff' && !memory) return null
     const close = `</${name}>`
     const end = rest.indexOf(close, gt)
     if (end < 0) return null
@@ -287,6 +292,8 @@ export function classify(text: string): Injected[] | null {
       // Only todo continuations escape their body at emission; other notes are already literal text.
       if (notice === 'todo_continue') body = body.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
       out.push({ kind: 'engine', notice, text: body })
+    } else if (memory) {
+      out.push({ kind: 'memory', text: rest.slice(gt + 1, end).trim() })
     } else if (name === 'resume_handoff') {
       out.push(resume(rest.slice(gt + 1, end).trim()))
     } else if (key !== undefined) {

@@ -129,6 +129,12 @@ test('stored todo continuation renders as an engine nudge with literal task text
   expect(entry).not.toHaveProperty('turn')
 })
 
+test('137G G10: the stored <memory> note is a muted info line (shown whatever the nudge setting), not a user bubble; a tag with attributes stays text', () => {
+  const note = 'memory: 4512 older unsummarized lines were folded to fit (recall searches them)'
+  expect(fromHistory({ role: 'user', text: `<memory>\n${note}\n</memory>`, turn: null, context: msg(4) })).toMatchObject([{ kind: 'info', text: note, context: msg(4) }])
+  expect(fromHistory({ role: 'user', text: '<memory kind="x">\nmine\n</memory>', turn: 1 })).toMatchObject([{ kind: 'user' }])
+})
+
 test('pending tool is replaced by its start (same id), finished by call id, abandoned ones pruned', () => {
   let s = run([
     { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },

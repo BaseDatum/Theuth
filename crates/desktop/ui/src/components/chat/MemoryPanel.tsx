@@ -12,7 +12,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ago } from '@/lib/costs/format'
 import { fmtBytes } from '@/lib/files'
-import { ENDLESS_DEFAULTS, EARLIER_HISTORY, type EndlessConfigX, isFoldedNote, tokenEstimate } from '@/lib/endless'
+import { ENDLESS_DEFAULTS, EARLIER_HISTORY, isFoldedNote, tokenEstimate } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/api'
@@ -437,7 +437,7 @@ function BacklogRow({ session, m, b, fold }: { session: string; m: SessionMemory
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const cfg = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data as EndlessConfigX | undefined
+  const cfg = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data
   const pause = useMutation(pauseMutation(api, qc, session))
   const toggle = (paused: boolean, label: string, primary = false) => (
     <Button size="xs" variant={primary ? 'default' : 'outline'} disabled={pause.isPending} onClick={() => pause.mutate(paused)}>
@@ -496,27 +496,24 @@ function BacklogRow({ session, m, b, fold }: { session: string; m: SessionMemory
   )
 }
 
-/** The panel's footer: the failing settle (137F) above the backlog row (137G) or the settle/backfill bar; after Fold now, the folded count; nothing once all are done. */
+/** The panel's footer: the failing settle (137F) above the backlog row (137G) or the settle/backfill bar; with no backlog, the view's excerpt lines (Fold now or the automatic fold); nothing once all are done. */
 export function MemoryFooter({ session, m }: { session: string; m: SessionMemory }) {
   const api = useApi()
   const qc = useQueryClient()
   const foldRpc = useMutation(foldMutation(api, qc, session))
-  // Lines the last Fold now turned into excerpts, for the "Up to date" row; a new backlog clears it.
-  const [folded, setFolded] = useState<number | null>(null)
+  const fold: Fold = { pending: foldRpc.isPending, run: () => foldRpc.mutate() }
   const b = m.backlog
-  useEffect(() => {
-    if (b) setFolded(null)
-  }, [b])
-  const fold: Fold = { pending: foldRpc.isPending, run: () => foldRpc.mutate(undefined, { onSuccess: () => setFolded(b?.lines ?? m.unbuilt) }) }
-  if (m.mode !== 'endless' || !(m.stalled || m.settling || m.backfill || b || folded !== null)) return null
+  // Units the view shows as mechanical excerpts; they merge into model summaries as the pump goes on.
+  const excerpts = m.view.reduce((n, l) => (l.mechanical ? n + l.n : n), 0)
+  if (m.mode !== 'endless' || !(m.stalled || m.settling || m.backfill || b || excerpts)) return null
   return (
     <SheetFooter className="gap-1.5 border-t border-border-subtle">
       {m.stalled && <Failing session={session} s={m.stalled} fold={fold} />}
       {b && <BacklogRow session={session} m={m} b={b} fold={fold} />}
       {(m.backfill || (m.settling && !b)) && <Progress m={m} />}
-      {folded !== null && !b && (
+      {excerpts > 0 && !b && (
         <>
-          <Bar strong label={m.settling ? 'Folded' : 'Up to date'} detail={`${count(folded, 'line')} folded as excerpts`} />
+          <Bar strong label={m.settling ? 'Folded' : 'Up to date'} detail={`${count(excerpts, 'line')} shown as excerpts`} />
           <p className={help}>Excerpts merge into summaries as usual from here.</p>
           <div className="flex gap-2">
             <ChangeModel />
@@ -529,7 +526,7 @@ export function MemoryFooter({ session, m }: { session: string; m: SessionMemory
 
 const HIT = 'hit:'
 
-/** A view line that is a note, not a zoomable band line: the capped backfill's `(earlier history …)` (R1-D4) and the folded waiting lines (137G). */
+/** A view line that is a note, not a zoomable band line: the capped backfill's `(earlier history …)` (R1-D4) and the two 137G placeholders (`isFoldedNote`). */
 export function ViewNote({ line, className }: { line: ViewLine; className?: string }) {
   return (
     <p role="note" className={cn('mb-1 flex gap-2 px-2 py-1 text-xs text-fg-tertiary italic', className)}>

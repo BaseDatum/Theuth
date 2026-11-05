@@ -83,7 +83,7 @@ const backlog: SessionMemory = {
   unbuilt: 4_812,
   view: [
     ...view.slice(0, 6),
-    { ...line(1_056, 1, '(4,512 lines not yet summarized — recall searches them)', false), n: 4_512 },
+    { ...line(1_056, 1, '(4512 lines not yet summarized — recall searches them)', false), n: 4_512 },
     line(5_865, 1, 'tool: read_file crates/agent/src/endless/pump.rs (2,031 lines)', false),
     line(5_866, 1, 'user: check why the desk stopped answering wakes', false),
     line(5_867, 1, 'tool: grep "settle" → 41 hits in 6 files', false),

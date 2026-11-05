@@ -5,7 +5,7 @@ import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Switch } from '@/components/ui/switch'
-import { ENDLESS_DEFAULTS, type EndlessConfigX, tokenEstimate, useCompactorLabel } from '@/lib/endless'
+import { ENDLESS_DEFAULTS, tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 
@@ -69,9 +69,9 @@ export function Memory({ focus = null }: { focus?: string | null }) {
   const settings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const save = useAction((next: EndlessConfig) => api.endless_settings_set(next), { keys: [queryKeys.endlessSettings] })
-  const s = settings.data as EndlessConfigX | undefined
+  const s = settings.data
   const busy = !s || save.isPending
-  const patch = (p: Partial<EndlessConfigX>) => s && save.mutate({ ...s, ...p })
+  const patch = (p: Partial<EndlessConfig>) => s && save.mutate({ ...s, ...p })
   // Live preview while the slider moves: the label and the token estimate follow the thumb before the write.
   const [viewKb, setViewKb] = useState<number | null>(null)
   const [slackPct, setSlackPct] = useState<number | null>(null)

@@ -270,10 +270,14 @@ test('the summary model picker shows the model in force and which link chose it'
   expect(paint({ ...memory, model_source: 'session' })).toContain('chat model')
 })
 
-test('the folded placeholder is a muted italic note; a mechanical line carries the excerpt tag, a model line none', () => {
+test('both placeholder kinds are muted italic notes; a mechanical line carries the excerpt tag, a model line none', () => {
+  // `fold.rs` `folded_text` / `prefix_text` (no thousands separator from the engine; the fixture's commas match too).
+  expect(isFoldedNote('(4512 lines not yet summarized — recall searches them)')).toBe(true)
   expect(isFoldedNote('(4,512 lines not yet summarized — recall searches them)')).toBe(true)
-  expect(isFoldedNote('(1 line not yet summarized — recall searches them)')).toBe(true)
+  expect(isFoldedNote('(1 lines not yet summarized — recall searches them)')).toBe(true)
+  expect(isFoldedNote('(300 older lines folded to fit the view — zoom or recall reach them)')).toBe(true)
   expect(isFoldedNote('user: why are 3 lines not yet summarized?')).toBe(false)
+  expect(isFoldedNote('(3 older lines were discussed)')).toBe(false)
   const note = renderToStaticMarkup(createElement(ViewNote, { line: line(1_056, 4_512, '(4,512 lines not yet summarized — recall searches them)', false) }))
   expect(note).toMatch(/^<p role="note" class="[^"]*text-fg-tertiary italic/)
   const node = (l: ViewLine) =>
@@ -282,4 +286,13 @@ test('the folded placeholder is a muted italic note; a mechanical line carries t
   expect(excerpt).toContain('aria-label="Excerpt — not a model summary; recall finds the original"')
   expect(excerpt).toContain('>excerpt</span>')
   expect(node(line(2, 1, 'a model summary'))).not.toContain('excerpt')
+})
+
+test('after a fold the footer counts the excerpt units from the view itself; none left, no row', () => {
+  const folded = { ...memory, units: 70, view: [line(0, 64, 'the beginning'), { ...line(64, 1, '…a … b'), mechanical: true }, { ...line(65, 1, '…c … d'), mechanical: true }, line(66, 1, 'merged')] }
+  const html = footerWith(folded)
+  expect(html).toContain('Up to date')
+  expect(html).toContain('2 lines shown as excerpts')
+  expect(footerWith({ ...folded, settling: true, backlog: waiting })).not.toContain('shown as excerpts')
+  expect(footerWith(memory)).toBe('')
 })
