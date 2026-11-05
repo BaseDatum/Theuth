@@ -7,7 +7,10 @@ import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
 import type { ViewLine } from '@/rpc/bindings/ViewLine'
 
-/** `"1"` turns the fixture on; `"backfill"` also serves the R1-D4 capped-backfill memory; `"stalled"` a failing frontier (137F), `"retrying"` the same while its retry runs. `null` = off. */
+/**
+ * `"1"` turns the fixture on; `"backfill"` also serves the R1-D4 capped-backfill memory; `"stalled"` a failing frontier (137F), `"retrying"` the same while its retry runs;
+ * 137G: `"backlog"` 4,812 waiting lines (4,512 folded), `"paused-user"` / `"paused-spend"` the same paused, `"folded"` after Fold now (excerpt lines). `null` = off.
+ */
 const flag = (): string | null => (import.meta.env.DEV ? globalThis.localStorage?.getItem('endless-fixture') || import.meta.env.VITE_ENDLESS_FIXTURE || null : null)
 export const endlessFixtureOn = (): boolean => !!flag()
 
@@ -68,6 +71,40 @@ const memory: SessionMemory = {
   model: 'anthropic/claude-haiku-4-5',
   view_bytes: 128_000,
   backfill: null,
+  model_override: null,
+  model_source: 'settings',
+  spend_today_usd: 0.42,
+}
+
+/** `"backlog"` (137G): a long-stuck chat — 4,812 lines wait, the oldest 4,512 folded into one placeholder line, the newest shown raw. */
+const backlog: SessionMemory = {
+  ...memory,
+  units: 5_868,
+  unbuilt: 4_812,
+  view: [
+    ...view.slice(0, 6),
+    { ...line(1_056, 1, '(4,512 lines not yet summarized — recall searches them)', false), n: 4_512 },
+    line(5_865, 1, 'tool: read_file crates/agent/src/endless/pump.rs (2,031 lines)', false),
+    line(5_866, 1, 'user: check why the desk stopped answering wakes', false),
+    line(5_867, 1, 'tool: grep "settle" → 41 hits in 6 files', false),
+  ],
+  backlog: { lines: 4_812, folded: 4_512, eta_secs: 660, paused: false, paused_by: null },
+}
+const paused = (by: 'user' | 'spend'): SessionMemory => ({ ...backlog, settling: false, backlog: { lines: 4_812, folded: 4_512, eta_secs: 0, paused: true, paused_by: by }, spend_today_usd: by === 'spend' ? 5.12 : 0.42 })
+
+/** `"folded"` (137G): after Fold now — the waiting lines are excerpts (`mechanical`), the pump merges on. */
+const folded: SessionMemory = {
+  ...backlog,
+  settling: false,
+  unbuilt: 0,
+  backlog: null,
+  view: [
+    ...view.slice(0, 6),
+    { ...line(1_056, 1, '…endless pump: frontier stuck at l0 i471 since 10-10 … 400 from Haiku: prompt is too long …'), mechanical: true },
+    { ...line(1_057, 1, '…desk wake loop: 3 retries, then task blocked … mention answered …'), mechanical: true },
+    { ...line(5_866, 1, 'user: check why the desk stopped answering wakes'), mechanical: true },
+    line(5_867, 1, 'Traced the settle wait; grep found 41 call sites.'),
+  ],
 }
 
 /** `localStorage.endless-fixture = "backfill"`: the R1-D4 capped-backfill shape — sentinel first line, projected cost in the footer. */
@@ -92,9 +129,25 @@ const stalled = (retrying: boolean): SessionMemory => ({
   },
 })
 
+/** The fold / pause / model RPCs' answer since the page loaded; the flag's memory before the first. */
+let changed: SessionMemory | null = null
+
 const current = (): SessionMemory => {
+  if (changed) return changed
   const f = flag()
-  return f === 'backfill' ? backfilling : f === 'stalled' || f === 'retrying' ? stalled(f === 'retrying') : memory
+  return f === 'backfill'
+    ? backfilling
+    : f === 'stalled' || f === 'retrying'
+      ? stalled(f === 'retrying')
+      : f === 'backlog'
+        ? backlog
+        : f === 'paused-user'
+          ? paused('user')
+          : f === 'paused-spend'
+            ? paused('spend')
+            : f === 'folded'
+              ? folded
+              : memory
 }
 
 let settings: EndlessConfig = {
@@ -134,6 +187,19 @@ export function endlessFixture(api: Api): Api {
       const { promise, resolve } = Promise.withResolvers<SessionMemory>()
       setTimeout(() => resolve(flag() === 'stalled' || flag() === 'retrying' ? stalled(true) : current()), 800)
       return promise
+    },
+    endless_fold: () => {
+      changed = { ...folded, model: current().model, model_override: current().model_override, model_source: current().model_source }
+      return Promise.resolve(changed)
+    },
+    endless_pause: (_s, p) => {
+      const m = current()
+      changed = m.backlog ? { ...m, settling: !p, backlog: { ...m.backlog, paused: p, paused_by: p ? 'user' : null, eta_secs: p ? 0 : 660 } } : m
+      return Promise.resolve(changed)
+    },
+    set_session_compactor_model: (_s, model) => {
+      changed = { ...current(), model: model ?? memory.model, model_override: model, model_source: model ? 'chat' : 'settings' }
+      return Promise.resolve(changed)
     },
     endless_zoom: (_s, id, n) => Promise.resolve(children(id, n)),
     endless_recall: (_s, query) => {

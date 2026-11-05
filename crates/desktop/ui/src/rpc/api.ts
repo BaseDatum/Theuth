@@ -1014,6 +1014,12 @@ export interface Api {
   session_memory(session: SessionId): Promise<SessionMemory>
   /** 137F: reset every failed view part's backoff, re-resolve the compactor, wake the summariser; the fresh memory (an epochs session's unchanged). */
   endless_retry(session: SessionId): Promise<SessionMemory>
+  /** 137G: fold every waiting level-0 line into a mechanical excerpt at once (no model call); the fresh memory. */
+  endless_fold(session: SessionId): Promise<SessionMemory>
+  /** 137G: `true` stops this chat's summary calls (backlog kept, persisted), `false` resumes; the fresh memory. */
+  endless_pause(session: SessionId, paused: boolean): Promise<SessionMemory>
+  /** 137G: this chat's own summary model (`null` = inherit agent → Settings → title → chat model); the fresh memory. */
+  set_session_compactor_model(session: SessionId, model: string | null): Promise<SessionMemory>
   /** 137 §9 `zoom`: `n = 1` → one line with the whole message; `n > 1` → the two children of `id+n`. */
   endless_zoom(session: SessionId, id: number, n: number): Promise<ViewLine[]>
   /** 137 §9 `recall`: FTS over the level-0 lines (raw fallback under 2 hits); `limit` null = 8. */
@@ -1476,6 +1482,8 @@ export const METHODS = [
   'dreaming.undo',
   'edit_turn',
   'enable_schedule',
+  'endless_fold',
+  'endless_pause',
   'endless_recall',
   'endless_retry',
   'endless_settings_get',
@@ -1735,6 +1743,7 @@ export const METHODS = [
   'set_pty_idle',
   'set_schedule_run_timeout',
   'set_secret',
+  'set_session_compactor_model',
   'set_session_memory',
   'set_session_project',
   'set_session_view_bytes',

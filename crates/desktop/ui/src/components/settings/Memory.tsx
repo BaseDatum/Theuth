@@ -1,24 +1,43 @@
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Switch } from '@/components/ui/switch'
-import { tokenEstimate, useCompactorLabel } from '@/lib/endless'
+import { ENDLESS_DEFAULTS, type EndlessConfigX, tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 
-/** 137F: the compactor's timeout and local-model keys; optional on the wire, so an engine before them omits them. */
-type Advanced = { attempt_secs: number; local_attempt_secs: number; local_ctx_bytes: number; local_jobs: number }
-type EndlessConfigX = EndlessConfig & Partial<Advanced>
+type Key = keyof typeof ENDLESS_DEFAULTS
 
-/** Key, label, help, the engine's validated range and its default (the placeholder while the key is absent). */
-const ADVANCED: readonly (readonly [keyof Advanced, string, string, number, number, number])[] = [
-  ['attempt_secs', 'Attempt seconds', 'Cloud attempt limit: how long one summary call to a cloud model may run before it is cancelled and retried. 10–3600, default 120.', 10, 3600, 120],
-  ['local_attempt_secs', 'Local attempt seconds', 'Local attempt limit: the same for a local model, which is slower to load and to answer. 30–7200, default 600.', 30, 7200, 600],
-  ['local_ctx_bytes', 'Local context bytes', 'Local prompt history size: how much of the chat a local model reads per summary call. 4000–256000, default 24000.', 4_000, 256_000, 24_000],
-  ['local_jobs', 'Local jobs', 'Local summaries at once: calls a local model runs in parallel. 1–16, default 1.', 1, 16, 1],
+/** The Advanced rows by group: key, label, help, the engine's validated range, and the step (1 = whole numbers). The engine default is the placeholder while the key is absent. */
+export const ADVANCED: readonly (readonly [string | null, readonly (readonly [Key, string, string, number, number, number])[]])[] = [
+  [
+    null,
+    [
+      ['attempt_secs', 'Attempt seconds', 'Cloud attempt limit: how long one summary call to a cloud model may run before it is cancelled and retried. 10–3600, default 120.', 10, 3600, 1],
+      ['local_attempt_secs', 'Local attempt seconds', 'Local attempt limit: the same for a local model, which is slower to load and to answer. 30–7200, default 600.', 30, 7200, 1],
+      ['local_ctx_bytes', 'Local context bytes', 'Local prompt history size: how much of the chat a local model reads per summary call. 4000–256000, default 24000.', 4_000, 256_000, 1],
+      ['local_jobs', 'Local jobs', 'Local summaries at once: calls a local model runs in parallel. 1–16, default 1.', 1, 16, 1],
+    ],
+  ],
+  [
+    'Request size',
+    [
+      ['raw_bytes', 'Unsummarized lines in full', 'Newest waiting lines sent verbatim, in bytes; older ones fold to one line. 4000–128000, default 32000.', 4_000, 128_000, 1],
+      ['compactor_ctx_bytes', 'Summary context', 'Chat history sent with each summary call, in bytes, any model. 8000–256000, default 48000.', 8_000, 256_000, 1],
+    ],
+  ],
+  [
+    'Speed & spend',
+    [
+      ['batch_units', 'Lines per summary call', 'Waiting lines summarized together in one call. 1–64, default 16.', 1, 64, 1],
+      ['jobs', 'Summaries at once (cloud)', 'Parallel summary calls per chat. 1–32, default 8.', 1, 32, 1],
+      ['max_usd_per_call', 'Spend per call (USD)', 'The most one summary call may cost. 0.001–10, default 0.10.', 0.001, 10, 0.001],
+      ['max_usd_per_session_day', 'Daily spend per chat (USD)', "Settling pauses for the rest of the UTC day once a chat's summaries cost this much; 0 = no cap. 0–1000, default 5.", 0, 1000, 0.01],
+    ],
+  ],
 ]
 
 /** A native range: `onChange` follows the pointer (the label beside it previews), `onCommit` fires on release so a drag is one write. */
@@ -40,8 +59,12 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
   )
 }
 
-/** Settings › Memory (137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`). `focusModel`: the Memory panel's "Change model" (137F). */
-export function Memory({ focusModel = false }: { focusModel?: boolean }) {
+/**
+ * Settings › Memory (137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`).
+ * `focus`: `model` focuses the compactor model (the Memory panel's "Change model", 137F); `spend` opens Advanced on the
+ * daily spend cap (the paused-by-spend row's link, 137G).
+ */
+export function Memory({ focus = null }: { focus?: string | null }) {
   const api = useApi()
   const settings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
@@ -56,10 +79,12 @@ export function Memory({ focusModel = false }: { focusModel?: boolean }) {
   const pct = slackPct ?? (s ? s.slack * 100 : 12.5)
   // R1-D3: `null` resolves to the title model when one is set; the picker's first row names what that is right now.
   const resolved = useCompactorLabel(null)
-  // 137F: opened from a failing settle; the picker is disabled until the settings load, and a disabled button takes no focus.
+  // The control is disabled until the settings load, and a disabled control takes no focus.
   useEffect(() => {
-    if (focusModel && !busy) document.getElementById('compactor-model')?.focus()
-  }, [focusModel, busy])
+    if (busy) return
+    if (focus === 'model') document.getElementById('compactor-model')?.focus()
+    if (focus === 'spend') document.querySelector<HTMLInputElement>('input[aria-label="Daily spend per chat (USD)"]')?.focus()
+  }, [focus, busy])
 
   return (
     <>
@@ -147,16 +172,21 @@ export function Memory({ focusModel = false }: { focusModel?: boolean }) {
         <Row label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
           <span className="text-sm text-fg-secondary">copy · grounding · status · format — always on</span>
         </Row>
-        <Collapsible>
+        <Collapsible defaultOpen={focus === 'spend'}>
           <CollapsibleTrigger className="mt-3 flex items-center gap-1 text-[13px] text-fg-secondary [&[data-state=open]>svg]:rotate-90">
             <ChevronRight className="size-3.5 transition-transform" /> Advanced
           </CollapsibleTrigger>
           {/* Mounted while closed (hidden by `data-state`, as `forceMount` keeps Radix from hiding it), so the fields render statically. */}
           <CollapsibleContent forceMount className="pt-1 data-[state=closed]:hidden">
-            {ADVANCED.map(([key, label, help, min, max, fallback]) => (
-              <Row key={key} label={label} description={help}>
-                <Count aria-label={label} value={s?.[key]} min={min} max={max} placeholder={s && fallback} action={{ mutate: (n) => patch({ [key]: n }), isPending: save.isPending }} />
-              </Row>
+            {ADVANCED.map(([group, rows]) => (
+              <Fragment key={group ?? ''}>
+                {group && <h4 className="mt-4 text-[13px] font-semibold">{group}</h4>}
+                {rows.map(([key, label, help, min, max, step]) => (
+                  <Row key={key} label={label} description={help}>
+                    <Count aria-label={label} value={s?.[key]} min={min} max={max} step={step < 1 ? step : undefined} placeholder={s && ENDLESS_DEFAULTS[key]} action={{ mutate: (n) => patch({ [key]: n }), isPending: save.isPending }} />
+                  </Row>
+                ))}
+              </Fragment>
             ))}
           </CollapsibleContent>
         </Collapsible>

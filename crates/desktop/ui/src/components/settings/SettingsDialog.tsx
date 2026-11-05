@@ -99,7 +99,7 @@ type Props = {
   session: string | null
   /** Pending peer request to focus on the communication tab (`?peer=`). */
   peer: string | null
-  /** A control the tab focuses on open (`?focus=`); Memory: `model`, the compactor model picker. */
+  /** A control the tab focuses on open (`?focus=`); Memory: `model` (the compactor model picker) or `spend` (the daily spend cap). */
   focus: string | null
   onTab: (tab: Tab) => void
   onClose: () => void
@@ -116,7 +116,7 @@ function Pane({ tab, session, peer, focus, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'autoresearch' && <Autoresearch />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}
-      {tab === 'memory' && <Memory focusModel={focus === 'model'} />}
+      {tab === 'memory' && <Memory focus={focus} />}
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
       {tab === 'calendar' && <Calendar />}
