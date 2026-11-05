@@ -452,6 +452,25 @@ pub enum Command {
         /// The mode to switch to; `None` = show the memory state.
         mode: Option<MemoryMode>,
     },
+    /// `endless_fold` (137G `/endless fold`).
+    EndlessFold {
+        /// Target.
+        session: SessionId,
+    },
+    /// `endless_pause` (137G `/endless pause|resume`).
+    EndlessPause {
+        /// Target.
+        session: SessionId,
+        /// Pause (`true`) or resume.
+        paused: bool,
+    },
+    /// `set_session_compactor_model` (137G `/endless model <id|clear>`).
+    EndlessModel {
+        /// Target.
+        session: SessionId,
+        /// The model id; `None` clears this chat's pick.
+        model: Option<String>,
+    },
     /// `compact_style`.
     GetCompactStyle,
     /// `set_compact_style`.
@@ -1498,6 +1517,8 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "todo" => (None, "</todo>"),
             "context_pressure" => (None, "</context_pressure>"),
             "runtime" => (None, "</runtime>"),
+            // 137G: a bare `<memory>` endless note (no attributes).
+            "memory" if open == "memory" => (None, "</memory>"),
             "knowledge" => (None, "</knowledge>"),
             // 144 §5.3: the bound chat's volatile `<notebook>` block (a harness note like `<knowledge>`).
             "notebook" => (None, "</notebook>"),
@@ -1814,8 +1835,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "/endless",
-        "[on|off]",
-        "endless memory: switch it, or show the view state",
+        "[on|off|fold|pause|resume|model <id>|model clear]",
+        "endless memory: switch it, fold the unsummarized backlog, pause/resume settling, pick this chat's compactor, or show the view state",
     ),
     (
         "/shake",
@@ -9222,23 +9243,51 @@ impl Model {
         }
     }
 
-    /// `/endless [on|off]` (137 §8.6): switch the session's memory mode, or show it.
+    /// `/endless [on|off|fold|pause|resume]` (137 §8.6, 137G): switch the
+    /// session's memory mode, fold the backlog, pause or resume settling, or show it.
     fn endless_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
         let Some(session) = self.session else {
             self.entries.push(Entry::Info("no session".into()));
             return;
         };
-        let mode = match arg.trim() {
-            "" | "status" => None,
-            "on" => Some(MemoryMode::Endless),
-            "off" => Some(MemoryMode::Epochs),
+        let command = match arg.trim() {
+            "" | "status" => Command::Memory {
+                session,
+                mode: None,
+            },
+            "on" => Command::Memory {
+                session,
+                mode: Some(MemoryMode::Endless),
+            },
+            "off" => Command::Memory {
+                session,
+                mode: Some(MemoryMode::Epochs),
+            },
+            "fold" => Command::EndlessFold { session },
+            "pause" => Command::EndlessPause {
+                session,
+                paused: true,
+            },
+            "resume" => Command::EndlessPause {
+                session,
+                paused: false,
+            },
+            "model clear" => Command::EndlessModel {
+                session,
+                model: None,
+            },
+            a if a.starts_with("model ") => Command::EndlessModel {
+                session,
+                model: Some(a["model ".len()..].trim().to_owned()),
+            },
             _ => {
-                self.entries
-                    .push(Entry::Error("usage: /endless [on|off]".into()));
+                self.entries.push(Entry::Error(
+                    "usage: /endless [on|off|fold|pause|resume|model <id>|model clear]".into(),
+                ));
                 return;
             }
         };
-        send(tx, Command::Memory { session, mode });
+        send(tx, command);
     }
 
     /// Advance a prompt flow one field. An API key or a secret's value is
@@ -11104,6 +11153,11 @@ fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
             out.extend(user_entries(said.to_owned(), turn));
         }
         return out;
+    }
+    // 137G: a bare `<memory>` harness note is a muted info line (a tag with
+    // attributes stays the user's message).
+    if let Some(body) = agent::endless_ext::memory_note(&text) {
+        return vec![Entry::Info(body.to_owned())];
     }
     if let Some((name, body, rest)) = agent::skills::injected(&text) {
         let mut out = vec![card(CardKind::Skill, name.to_owned(), body)];
@@ -15563,6 +15617,20 @@ mod tests {
         assert_eq!(injected("<b>\nnot a wrapper\n</b>"), None);
         assert_eq!(injected("hello"), None);
         assert_eq!(injected("<todo>unterminated"), None);
+        // 137G: a bare `<memory>` note is the harness's; with attributes it is the user's.
+        assert_eq!(
+            injected("<memory>\nmemory: folded\n</memory>"),
+            Some(Vec::new())
+        );
+        assert_eq!(injected("<memory kind=\"x\">mine</memory>"), None);
+        assert!(matches!(
+            user_entries("<memory>\nmemory: 3 older unsummarized lines were folded to fit\n</memory>".into(), None).as_slice(),
+            [Entry::Info(t)] if t == "memory: 3 older unsummarized lines were folded to fit"
+        ));
+        assert!(matches!(
+            user_entries("<memory kind=\"x\">mine</memory>".into(), None).as_slice(),
+            [Entry::User { .. }]
+        ));
     }
 
     /// 61 §2.3: a quiet PTY job cards as `j4 idle 63s · name`; body is the screen.

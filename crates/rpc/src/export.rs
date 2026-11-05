@@ -802,6 +802,7 @@ async fn export_bindings() {
         agent::EndlessStats,
         agent::Backfill,
         agent::Stalled,
+        agent::Backlog,
         agent::SessionMemory,
         agent::EndlessProgress,
         agent::UnitFilter,

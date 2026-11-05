@@ -353,6 +353,7 @@ fn endless_session_does_not_reinject_when_it_folds() {
             }],
             settled: true,
             unbuilt: 0,
+            folded: 0,
         });
         let actor = Session::spawn(session);
         async fn send(h: &mut Harness, actor: &ActorRef<Session>, text: &str) {

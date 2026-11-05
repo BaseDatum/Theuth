@@ -110,9 +110,9 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
-    EndlessConfigChanged, EndlessRecall, EndlessRetry, EndlessZoom, GetEndlessSettings,
-    RenderMemoryView, SessionMemoryQuery, SetEndlessSettings, SetSessionMemory,
-    SetSessionViewBytes,
+    EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
+    GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetAgentCompactorModel,
+    SetEndlessSettings, SetSessionCompactorModel, SetSessionMemory, SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
@@ -7649,6 +7649,66 @@ impl Message<EndlessRetry> for Agents {
     }
 }
 
+impl Message<EndlessFold> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137G: any session this engine knows, like [`EndlessRetry`].
+    async fn handle(&mut self, m: EndlessFold, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .fold(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<EndlessPause> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137G: any session this engine knows, like [`EndlessRetry`].
+    async fn handle(&mut self, m: EndlessPause, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .pause(m.session, m.paused)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<SetSessionCompactorModel> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137G: any session this engine knows, like [`EndlessRetry`].
+    async fn handle(
+        &mut self,
+        m: SetSessionCompactorModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .set_model(m.session, m.model)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<SetAgentCompactorModel> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 137G: the roster's desk default, like [`SetSessionCompactorModel`].
+    async fn handle(
+        &mut self,
+        m: SetAgentCompactorModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.endless
+            .set_agent_model(m.session, m.model)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
 impl Message<EndlessZoom> for Agents {
     type Reply = Result<Vec<ViewLine>, String>;
 
@@ -7812,12 +7872,29 @@ impl Message<SetEndlessSettings> for Agents {
             ("local_attempt_secs", c.local_attempt_secs, 30, 7_200),
             ("local_ctx_bytes", c.local_ctx_bytes, 4_000, 256_000),
             ("local_jobs", u32::from(c.local_jobs), 1, 16),
+            // 137G G2/G3/G6.
+            ("raw_bytes", c.raw_bytes, 4_000, 128_000),
+            ("compactor_ctx_bytes", c.compactor_ctx_bytes, 8_000, 256_000),
+            ("batch_units", u32::from(c.batch_units), 1, 64),
         ] {
             if !(lo..=hi).contains(&v) {
                 return Err(format!("{key} {v} out of range {lo}..={hi}"));
             }
         }
-        let keys: [(&str, String); 18] = [
+        // 137G G11.
+        if !(0.001..=10.0).contains(&c.max_usd_per_call) {
+            return Err(format!(
+                "max_usd_per_call {} out of range 0.001..=10",
+                c.max_usd_per_call
+            ));
+        }
+        if !(0.0..=1_000.0).contains(&c.max_usd_per_session_day) {
+            return Err(format!(
+                "max_usd_per_session_day {} out of range 0..=1000",
+                c.max_usd_per_session_day
+            ));
+        }
+        let keys: [(&str, String); 23] = [
             ("default_chat", c.default_chat.to_string()),
             ("default_desk", c.default_desk.to_string()),
             ("default_meeting", c.default_meeting.to_string()),
@@ -7835,6 +7912,14 @@ impl Message<SetEndlessSettings> for Agents {
             ("local_attempt_secs", c.local_attempt_secs.to_string()),
             ("local_ctx_bytes", c.local_ctx_bytes.to_string()),
             ("local_jobs", c.local_jobs.to_string()),
+            ("raw_bytes", c.raw_bytes.to_string()),
+            ("compactor_ctx_bytes", c.compactor_ctx_bytes.to_string()),
+            ("batch_units", c.batch_units.to_string()),
+            ("max_usd_per_call", c.max_usd_per_call.to_string()),
+            (
+                "max_usd_per_session_day",
+                c.max_usd_per_session_day.to_string(),
+            ),
             (
                 "model",
                 c.model.clone().unwrap_or_else(|| "null".to_owned()),
@@ -10020,6 +10105,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         });
     }
     let client = client(auth.clone())?;
+    // 137G R1-1: the bytes/token the preflight learned before this restart.
+    crate::tokens::init(&rt.data_dir);
     // 137: one endless service per engine; its pumps restart from the rows
     // once the actor is up (`resume_all` below).
     let endless = Endless::new(
@@ -14137,6 +14224,60 @@ pub(crate) mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("view_bytes"), "{e}");
+    }
+
+    /// 137G G9: `/compact` in an endless session is `endless_fold` — every
+    /// unbuilt line folds into a mechanical node, the epoch stays, no
+    /// summariser or compactor runs (settling is paused, so nothing else calls).
+    #[tokio::test]
+    async fn compact_in_an_endless_session_folds_without_a_model_call() {
+        let (_scratch, a) = agents_with(false).await;
+        let store = a.store.clone();
+        let agents = Agents::spawn(a);
+        let session = agents
+            .ask(CreateSession {
+                options: crate::CreateSessionOptions {
+                    memory: Some(MemoryMode::Endless),
+                    ..Default::default()
+                },
+                peer: None,
+            })
+            .await
+            .unwrap()
+            .session;
+        let m = agents
+            .ask(EndlessPause {
+                session,
+                paused: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(m.backlog.and_then(|b| b.paused_by).as_deref(), Some("user"));
+        for k in 0..3 {
+            store
+                .append(
+                    session,
+                    &ChatMessage::user(format!("long message {k}: {}", "x ".repeat(400))),
+                )
+                .await
+                .unwrap();
+        }
+        let epoch = agents
+            .ask(Compact {
+                session,
+                style: None,
+                head: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(epoch, 0, "no epoch: nothing was summarised");
+        let nodes = store.endless_nodes(session).await.unwrap();
+        let mechanical: Vec<_> = nodes.iter().filter(|n| n.l == 0 && n.mechanical).collect();
+        assert_eq!(mechanical.len(), 3, "{nodes:?}");
+        assert!(
+            nodes.iter().all(|n| n.model.is_none()),
+            "no model built a line"
+        );
     }
 
     /// 137F: `endless_retry` answers like `session_memory` (refused for an

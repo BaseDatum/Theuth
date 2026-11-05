@@ -367,6 +367,21 @@ pub fn cut_utf8(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// R1 Q2: `s` cut to at most `max` bytes at a word boundary (when one falls
+/// in the second half), ending in `…`; `s` itself when it fits.
+pub fn cut_words(s: &str, max: usize) -> String {
+    const DOTS: &str = "…";
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let head = cut_utf8(s, max.saturating_sub(DOTS.len()));
+    let head = match head.rfind(' ') {
+        Some(p) if p >= head.len() / 2 => &head[..p],
+        _ => head,
+    };
+    format!("{}{DOTS}", head.trim_end())
+}
+
 /// Every guard on `line` against the step `input` (the unit's `kind: text`,
 /// or the two child lines joined by `\n`). `Ok` carries the cleaned line.
 pub fn check(

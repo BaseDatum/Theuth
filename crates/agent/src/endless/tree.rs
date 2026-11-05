@@ -98,6 +98,8 @@ pub struct Node {
     pub model: Option<String>,
     /// Attempts used; negative when no candidate passed every guard (§6).
     pub tries: i32,
+    /// 137G: a mechanical excerpt (`endless_fold`, G7), not a model summary.
+    pub mechanical: bool,
 }
 
 /// `(id, n)` of `(l, i)`.
@@ -181,6 +183,32 @@ pub fn free_unit(unit: &Unit, node_bytes: u32) -> Option<String> {
 /// Two children whose `a + "\n" + b` fits merge for free (§5.1).
 pub fn free_merge(a: &str, b: &str, node_bytes: u32) -> Option<String> {
     (a.len() + 1 + b.len() <= node_bytes as usize).then(|| format!("{a}\n{b}"))
+}
+
+/// 137G mechanical fold: the unit's tagged text, whitespace collapsed, cut to
+/// at most `node_bytes` as head ⅔ + ` … ` + tail ⅓ (deterministic, no model).
+/// `None` when the unit is a free node anyway.
+pub fn mechanical_unit(unit: &Unit, node_bytes: u32) -> Option<String> {
+    const GAP: &str = " … ";
+    if free_unit(unit, node_bytes).is_some() {
+        return None;
+    }
+    let flat = unit
+        .tagged()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let max = node_bytes as usize;
+    if flat.len() <= max {
+        return Some(flat);
+    }
+    let room = max.saturating_sub(GAP.len());
+    let head = super::guards::cut_utf8(&flat, room * 2 / 3);
+    let mut from = flat.len() - (room - head.len());
+    while !flat.is_char_boundary(from) {
+        from += 1;
+    }
+    Some(format!("{head}{GAP}{}", &flat[from..]))
 }
 
 #[cfg(test)]

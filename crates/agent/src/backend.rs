@@ -191,6 +191,9 @@ impl Backend {
     }
 
     /// Open the stream for one model call. `session` is Cursor's conversation id.
+    /// 137G G1: the one choke point — a request over the model's ceiling is
+    /// refused here, locally ([`crate::tokens::preflight`]); every reported
+    /// usage (and a provider's overflow count) teaches the model's bytes/token.
     pub(crate) async fn stream(
         &self,
         resolved: &Resolved,
@@ -198,6 +201,14 @@ impl Backend {
         opts: &ChatOptions,
         session: SessionId,
     ) -> Result<EventStream, String> {
+        let reply = opts
+            .max_tokens
+            .or_else(|| resolved.model.as_ref().map(|m| m.limit.output))
+            .map_or(0, u64::from);
+        crate::tokens::preflight(resolved, &req, reply)?;
+        // R2-4: images/PDFs count flat, not per byte — the learner sees text only.
+        let (bytes, flat) = crate::tokens::request_size(&req);
+        let id = resolved.id.clone();
         match self {
             Backend::Cursor { oauth: store } => {
                 let t = store.access(&oauth::CURSOR).await?;
@@ -246,9 +257,28 @@ impl Backend {
                     .exec_chat_stream(spec, req, Some(&opts))
                     .await
                     .map(|r| -> EventStream {
-                        Box::pin(r.stream.map(|ev| ev.map_err(provider_error)))
+                        Box::pin(r.stream.map(move |ev| {
+                            if let Ok(ChatStreamEvent::End(end)) = &ev
+                                && let Some(p) =
+                                    end.captured_usage.as_ref().and_then(|u| u.prompt_tokens)
+                            {
+                                crate::tokens::learn(
+                                    &id,
+                                    bytes,
+                                    flat,
+                                    u64::try_from(p).unwrap_or(0),
+                                );
+                            }
+                            ev.map_err(provider_error)
+                        }))
                     })
-                    .map_err(provider_error)
+                    .map_err(|e| {
+                        let e = provider_error(e);
+                        if let Some(n) = crate::compact::overflow_numbers(&e) {
+                            crate::tokens::learn(&resolved.id, bytes, flat, u64::from(n.prompt));
+                        }
+                        e
+                    })
             }
         }
     }

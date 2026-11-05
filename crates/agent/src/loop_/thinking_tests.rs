@@ -461,6 +461,63 @@ fn default_effort_is_medium_for_anthropic_thinking_models_only() {
     assert!(opts.reasoning_effort.is_none());
 }
 
+/// 137G R2-8: what an endless compactor call sends Anthropic, on the wire.
+/// Haiku 5.5 (thinks by default, accepts `disabled`): `thinking: disabled`.
+/// Fable 5.1 (rejects `disabled`, thinks adaptively when nothing is sent):
+/// adaptive thinking at the lowest effort. Both at the 600-token cap.
+#[tokio::test]
+async fn endless_compactor_turns_thinking_off_per_model() {
+    use crate::endless::compactor::{MAX_TOKENS, ModelCompactor, prompt, thinking_off};
+    let h = Harness::texting().await;
+    let mut bodies = Vec::new();
+    for id in ["anthropic/claude-haiku-5-5", "anthropic/claude-fable-5-1"] {
+        let model = h.resolve(id);
+        let c = ModelCompactor {
+            session: SessionId::new(),
+            backend: crate::backend::Backend::for_model(
+                &model,
+                &h.client,
+                &crate::supervisor::Auth::stub(&h.dir.0),
+            ),
+            effort: thinking_off(&model),
+            model: model.clone(),
+            system: prompt("theuth"),
+            local: None,
+            cfg: Default::default(),
+        };
+        let step = [ChatMessage::user(
+            "Compress this message into one line, in at most 512 bytes:\nhello",
+        )];
+        let (req, opts) = c.request(Transport::Anthropic, "<chat>\n</chat>", &step);
+        let mut stream = h
+            .client
+            .exec_chat_stream(model.genai.as_str(), req, Some(&opts))
+            .await
+            .unwrap()
+            .stream;
+        while let Some(ev) = stream.next().await {
+            ev.unwrap();
+        }
+        bodies.push(h.bodies.lock().pop().unwrap());
+    }
+    let [haiku, fable] = &bodies[..] else {
+        unreachable!()
+    };
+    assert_eq!(haiku["thinking"], json!({"type": "disabled"}), "{haiku}");
+    assert!(
+        haiku
+            .get("output_config")
+            .is_none_or(|o| o.get("effort").is_none()),
+        "{haiku}"
+    );
+    // R3-2: no reasoning capture, so no `display: "summarized"`.
+    assert_eq!(fable["thinking"], json!({"type": "adaptive"}), "{fable}");
+    assert_eq!(fable["output_config"]["effort"], "low", "{fable}");
+    for b in [haiku, fable] {
+        assert_eq!(b["max_tokens"], MAX_TOKENS, "{b}");
+    }
+}
+
 #[tokio::test]
 async fn anthropic_request_carries_thinking_per_effort() {
     let h = Harness::new().await;

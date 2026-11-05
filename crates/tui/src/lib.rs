@@ -648,6 +648,28 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .session_memory(session)
                 .await)?)),
         },
+        Command::EndlessFold { session } => {
+            let m = msg(api.endless_fold(session).await)?;
+            UiEvent::Info(format!(
+                "Backlog folded (excerpts, no model call). {}",
+                agent::endless_ext::status(&m)
+            ))
+        }
+        Command::EndlessPause { session, paused } => {
+            let m = msg(api.endless_pause(session, paused).await)?;
+            UiEvent::Info(format!(
+                "Settling {}. {}",
+                if paused { "paused" } else { "resumed" },
+                agent::endless_ext::status(&m)
+            ))
+        }
+        Command::EndlessModel { session, model } => {
+            let m = msg(api.set_session_compactor_model(session, model).await)?;
+            UiEvent::Info(format!(
+                "Compactor for this chat: {} ({}).",
+                m.model, m.model_source
+            ))
+        }
         Command::GetCompactStyle => UiEvent::CompactStyle(msg(api.compact_style().await)?),
         Command::SetCompactStyle(style) => {
             msg(api.set_compact_style(style).await)?;

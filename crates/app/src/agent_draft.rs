@@ -52,6 +52,9 @@ pub struct AgentDraft {
     /// One paragraph on when this agent is the right one to hand off to.
     #[serde(default)]
     pub capabilities: Option<String>,
+    /// Compactor model of its endless desk sessions (137G); default: the engine's chain.
+    #[serde(default)]
+    pub memory_model: Option<String>,
     /// The charter (markdown): purpose, what it owns, what it never does, how it reports.
     pub charter: String,
 }
@@ -327,6 +330,9 @@ pub fn source(
             Some(l) if l.is_empty() => meta.push("mcp none".to_owned()),
             Some(l) => meta.push(format!("mcp {}", l.join(", "))),
         }
+        if let Some(m) = &d.memory_model {
+            meta.push(format!("memory model `{m}`"));
+        }
         let mut parts = vec![
             format!("{c}_head"),
             format!("{c}_charter"),
@@ -401,6 +407,7 @@ mod tests {
             mcp: None,
             budget: None,
             capabilities: None,
+            memory_model: None,
             charter: "You own \"prod\".\nNever deploy on Friday.".into(),
         }
     }

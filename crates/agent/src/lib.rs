@@ -64,6 +64,7 @@ pub mod store;
 pub mod supervisor;
 pub mod title;
 pub mod todo;
+pub mod tokens;
 pub mod user;
 pub mod vision;
 
@@ -183,8 +184,8 @@ pub use dreaming_ledger::{
     LedgerStop, LedgerToolError, LedgerUserMessage,
 };
 pub use endless::{
-    Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
-    SessionMemory, SetMode, Stalled, UnitFilter, ViewLine, resolved_compactor_model,
+    Backfill, Backlog, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips,
+    MemoryMode, SessionMemory, SetMode, Stalled, UnitFilter, ViewLine, resolved_compactor_model,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
@@ -1055,6 +1056,46 @@ pub struct SessionMemoryQuery {
 pub struct EndlessRetry {
     /// Target session.
     pub session: SessionId,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137G `endless_fold`): fold every
+/// unbuilt level-0 unit mechanically (no model call); an epochs session's
+/// state comes back unchanged.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct EndlessFold {
+    /// Target session.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137G `endless_pause`): stop
+/// (`true`) or resume (`false`) the session's compactor calls; persisted.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct EndlessPause {
+    /// Target session.
+    pub session: SessionId,
+    /// Paused from now on.
+    pub paused: bool,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137G `set_session_compactor_model`):
+/// this chat's own compactor (`None` = inherit); refused when the id does
+/// not resolve; persisted and live.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSessionCompactorModel {
+    /// Target session.
+    pub session: SessionId,
+    /// The model id; `None` clears the override.
+    pub model: Option<String>,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137G): the desk agent's
+/// `memory_model` for its desk session — the roster sends it at desk open.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetAgentCompactorModel {
+    /// The desk session.
+    pub session: SessionId,
+    /// The agent file's `memory_model`; `None` clears it.
+    pub model: Option<String>,
 }
 
 /// `ask` → `Result<Vec<ViewLine>, String>` (137 §9 `zoom`): the two lines

@@ -74,6 +74,21 @@ pub struct EndlessConfig {
     /// 137F E9: compactor calls in flight per local endpoint, engine-wide (1..=16).
     #[cfg_attr(feature = "ts", ts(as = "Option<u8>", optional))]
     pub local_jobs: u8,
+    /// 137G G2: unsummarized lines the view shows verbatim, newest first, in bytes (4_000..=128_000); older ones fold into one placeholder line.
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub raw_bytes: u32,
+    /// 137G G3: the compactor's `<chat>` context cap in bytes for every model (8_000..=256_000); a local one takes the smaller of this and `local_ctx_bytes`.
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub compactor_ctx_bytes: u32,
+    /// 137G G6: consecutive unsummarized units one compactor call summarizes (1..=64).
+    #[cfg_attr(feature = "ts", ts(as = "Option<u8>", optional))]
+    pub batch_units: u8,
+    /// 137G G11: USD one compactor call's prompt may cost (0.001..=10); over it the context shrinks, else the line folds mechanically.
+    #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
+    pub max_usd_per_call: f64,
+    /// 137G G11: USD a chat's compactor may spend per UTC day (0..=1000, 0 = no cap); reaching it pauses settling (`paused_by: "spend"`).
+    #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
+    pub max_usd_per_session_day: f64,
 }
 
 impl Default for EndlessConfig {
@@ -97,6 +112,11 @@ impl Default for EndlessConfig {
             local_attempt_secs: 600,
             local_ctx_bytes: 24_000,
             local_jobs: 1,
+            raw_bytes: 32_000,
+            compactor_ctx_bytes: 48_000,
+            batch_units: 16,
+            max_usd_per_call: 0.10,
+            max_usd_per_session_day: 5.0,
         }
     }
 }
@@ -112,6 +132,7 @@ impl EndlessConfig {
         fold::FoldCfg {
             view_bytes: view_bytes.clamp(16_000, 256_000),
             slack: self.slack.clamp(0.0, 0.5),
+            raw_bytes: self.raw_bytes.clamp(4_000, 128_000),
         }
     }
 }
@@ -238,6 +259,10 @@ pub struct ViewLine {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub at: Option<DateTime<Utc>>,
+    /// 137G: a line made by the mechanical fold (an excerpt, not a model summary).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub mechanical: bool,
 }
 
 /// Guard trips by kind (§6).
@@ -320,6 +345,30 @@ pub struct Stalled {
     pub blocking: bool,
 }
 
+/// Unsummarized lines waiting for the compactor (137G). Engine → UI. TS name
+/// `EndlessBacklog`: `dreaming::Backlog` owns `Backlog.ts`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "EndlessBacklog")
+)]
+pub struct Backlog {
+    /// Level-0 lines not yet built.
+    pub lines: u32,
+    /// Of those, how many the view currently shows folded into one placeholder line (the raw budget).
+    pub folded: u32,
+    /// Estimate at the measured throughput; 0 when paused or unknown.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub eta_secs: u64,
+    /// Settling is paused for this session (no compactor calls).
+    pub paused: bool,
+    /// Who paused: `"user"` (`endless_pause`) or `"spend"` (the G11 day cap); `None` while running.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub paused_by: Option<String>,
+}
+
 /// RPC `session_memory` (§11.2).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -348,6 +397,23 @@ pub struct SessionMemory {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub stalled: Option<Stalled>,
+    /// 137G: the unsettled backlog; `None` when nothing waits and the session is not paused.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub backlog: Option<Backlog>,
+    /// 137G: this chat's own compactor pick (`set_session_compactor_model`); `None` = inherit.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub model_override: Option<String>,
+    /// 137G: which link chose `model`: `"chat"` | `"agent"` | `"settings"` | `"title"` | `"session"`;
+    /// `""` for an epochs session.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<String>", optional))]
+    pub model_source: String,
+    /// 137G G11: this chat's compactor spend in the current UTC day (USD, `model_calls` kind `endless`).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<f64>", optional))]
+    pub spend_today_usd: f64,
 }
 
 /// Bus event on the session stream, ≤ 1 per 500 ms per session (§11.2).
@@ -374,6 +440,10 @@ pub struct EndlessProgress {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub stalled: Option<Stalled>,
+    /// 137G: as [`SessionMemory::backlog`].
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub backlog: Option<Backlog>,
 }
 
 /// Reply of [`Endless::set_mode`].
@@ -554,7 +624,20 @@ impl Endless {
     /// units the turn commits (D6). Once per turn, after `settle`, before the
     /// input row is logged.
     pub async fn render_for_turn(&self, session: SessionId) -> anyhow::Result<ViewRender> {
-        pump::render_for_turn(&self.inner, session).await
+        pump::render_for_turn(&self.inner, session, None, false).await
+    }
+
+    /// 137G G1/G5: [`Endless::render_for_turn`] scaled to at most
+    /// `max_bytes` of view budget (`view_bytes + raw_bytes` shrink together);
+    /// `again` re-renders the current turn's view (a refused request) instead
+    /// of opening a new turn.
+    pub async fn render_for_turn_within(
+        &self,
+        session: SessionId,
+        max_bytes: usize,
+        again: bool,
+    ) -> anyhow::Result<ViewRender> {
+        pump::render_for_turn(&self.inner, session, Some(max_bytes), again).await
     }
 
     /// 8.3: rows reached `messages`; the pump derives the units itself.
@@ -622,7 +705,20 @@ impl Endless {
         epoch: u32,
         filter: UnitFilter,
     ) -> anyhow::Result<SetMode> {
-        pump::set_mode(&self.inner, session, mode, filter, epoch).await
+        pump::set_mode(&self.inner, session, mode, filter, epoch, None).await
+    }
+
+    /// [`Endless::set_mode`] whose `/endless off` head is scaled to at most
+    /// `max_bytes` of view budget (the session model's turn allowance, R1-7).
+    pub async fn set_mode_within(
+        &self,
+        session: SessionId,
+        mode: MemoryMode,
+        epoch: u32,
+        filter: UnitFilter,
+        max_bytes: usize,
+    ) -> anyhow::Result<SetMode> {
+        pump::set_mode(&self.inner, session, mode, filter, epoch, Some(max_bytes)).await
     }
 
     /// RPC `session_memory` body data.
@@ -634,6 +730,41 @@ impl Endless {
     /// the pump, return the fresh state. An epochs session is untouched.
     pub async fn retry(&self, session: SessionId) -> anyhow::Result<SessionMemory> {
         pump::retry(&self.inner, session).await
+    }
+
+    /// RPC `endless_fold` (137G): every unbuilt level-0 unit becomes a
+    /// mechanical excerpt node at once (no model call); the pump merges on.
+    /// An epochs session is untouched.
+    pub async fn fold(&self, session: SessionId) -> anyhow::Result<SessionMemory> {
+        pump::fold_all(&self.inner, session).await
+    }
+
+    /// RPC `endless_pause` (137G): `true` stops new compactor calls and
+    /// cancels those in flight (no failures), keeping the backlog; `false`
+    /// resumes. Persisted in `sessions.endless_paused`.
+    pub async fn pause(&self, session: SessionId, paused: bool) -> anyhow::Result<SessionMemory> {
+        pump::pause(&self.inner, session, paused).await
+    }
+
+    /// RPC `set_session_compactor_model` (137G): this chat's own compactor
+    /// (`None` clears = inherit); refused when the id does not resolve;
+    /// persisted in `sessions.endless_model`; live (re-resolve + kick, 137F).
+    pub async fn set_model(
+        &self,
+        session: SessionId,
+        model: Option<String>,
+    ) -> anyhow::Result<SessionMemory> {
+        pump::set_model(&self.inner, session, model, false).await
+    }
+
+    /// The roster at desk open (137G): the agent's `memory_model` default
+    /// for this desk session (`None` clears); persisted, live.
+    pub async fn set_agent_model(
+        &self,
+        session: SessionId,
+        model: Option<String>,
+    ) -> anyhow::Result<SessionMemory> {
+        pump::set_model(&self.inner, session, model, true).await
     }
 
     /// The constant VIEW_DOC appended to the system prompt in endless sessions (§9).

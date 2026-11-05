@@ -6,9 +6,7 @@
 
 use runtime::SessionId;
 
-use crate::endless::{
-    Backfill, Endless, MemoryMode, SessionMemory, SetMode, UnitFilter, ViewBlock, ViewLine,
-};
+use crate::endless::{Backfill, Endless, MemoryMode, SessionMemory, ViewBlock, ViewLine};
 
 /// What `/endless on` tells the user (R1-D3, R1-D4), from the service's
 /// [`Backfill`] (`usd` is the service's remaining × measured $ per unit) and
@@ -35,17 +33,6 @@ pub async fn render_snapshot(endless: &Endless, session: SessionId) -> Vec<ViewB
             Vec::new()
         }
     }
-}
-
-/// `/endless on|off` with a unit filter (R1-D6).
-pub async fn set_mode(
-    endless: &Endless,
-    session: SessionId,
-    mode: MemoryMode,
-    epoch: u32,
-    filter: UnitFilter,
-) -> anyhow::Result<SetMode> {
-    endless.set_mode(session, mode, epoch, filter).await
 }
 
 /// R1-D6: the view re-folded to `bytes`, as lines (a meeting head's
@@ -93,6 +80,17 @@ pub async fn set_view_bytes(
         .await
         .map_err(|e| format!("{e:#}"))?;
     endless.memory(session).await.map_err(|e| format!("{e:#}"))
+}
+
+/// 137G R1-7: the body of a bare `<memory>…</memory>` harness note (the G9
+/// and G10 notices) — shown as an info line, never a memory unit; `None`
+/// for anything else (a `<memory …>` tag with attributes is the user's).
+pub fn memory_note(text: &str) -> Option<&str> {
+    crate::clock::strip(text)
+        .trim()
+        .strip_prefix("<memory>")?
+        .strip_suffix("</memory>")
+        .map(str::trim)
 }
 
 /// `Nm Ns` / `Nh Nm` for an ETA.
@@ -165,6 +163,24 @@ pub fn status(m: &SessionMemory) -> String {
     } else {
         s.push_str(" · up to date");
     }
+    if let Some(b) = &m.backlog {
+        if b.paused {
+            s.push_str(&format!(
+                " · settling paused by {} ({} lines wait)",
+                b.paused_by.as_deref().unwrap_or("user"),
+                b.lines
+            ));
+        } else if b.lines > 0 {
+            s.push_str(&format!(
+                " · backlog {} lines (ETA {})",
+                b.lines,
+                eta(b.eta_secs)
+            ));
+        }
+        if b.folded > 0 {
+            s.push_str(&format!(", {} folded in the view", b.folded));
+        }
+    }
     if m.stats.calls > 0 {
         s.push_str(&format!(
             " · {} compactor calls, ≈ ${:.2}",
@@ -189,6 +205,7 @@ mod tests {
                 text: "user: a\nb".into(),
                 built: true,
                 at: None,
+                mechanical: false,
             }],
             settling: false,
             unbuilt: 0,
@@ -198,6 +215,10 @@ mod tests {
             view_bytes: 128_000,
             backfill,
             stalled: None,
+            backlog: None,
+            model_override: None,
+            model_source: "settings".into(),
+            spend_today_usd: 0.0,
         }
     }
 

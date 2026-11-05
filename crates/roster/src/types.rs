@@ -248,6 +248,11 @@ pub struct AgentFile {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub view_bytes: Option<u32>,
+    /// 137G: the compactor model of its desk sessions (the chain's agent link,
+    /// below a chat's own pick); `None` = `agent.endless.model` → title → session.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub memory_model: Option<String>,
     /// The charter (markdown body).
     pub body: String,
 }
