@@ -84,5 +84,6 @@ fast.log: 23 batch + 26 merge calls, largest compactor request 46,598 B
 ## Gates (tip of fix/137g-e)
 - `mbx check -p agent -p rpc -p tui --tests`: 0 errors, 0 warnings.
 - `mbx clippy -p agent -p rpc --tests --no-deps -- -D warnings`: 0.
-- Endless tests (`endless tokens compact_in_an_endless`, 69) 5×: all pass. Full `mbx test -p agent --lib --no-fail-fast`: 720 passed, 1 failed (`repl::tests::capping_binds_out_name`, known); one earlier full run also saw `supervisor::tests::human_input_promotes_a_queued_child` time out under load (passes alone 3/3 and in the next full run).
+- Endless tests (`endless tokens compact_in_an_endless`, 79 after R1) 5×: all pass. Full `mbx test -p agent --lib --no-fail-fast` (R1): 729 passed, 2 failed — `repl::tests::capping_binds_out_name` (known) and `sensor::tests::monty_budgets_and_allowlist` (a < 3 s wall-clock bound, 3.50 s under the full-suite load; passes alone 3/3). Before R1: 720 passed, 1 failed (`capping_binds_out_name`); one earlier run also saw `supervisor::tests::human_input_promotes_a_queued_child` time out under load.
+- TUI: `mbx test -p tui --lib -- injected memory`: 8 passed.
 - `mbx test -p rpc --features ts --lib`: 85 passed; `bindings/methods.json` lists `endless_fold`, `endless_pause`, `set_session_compactor_model`.
