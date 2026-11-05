@@ -143,11 +143,12 @@ def call(a, key, system, user, max_tokens):
 
 def parse_batch(text, n):
     """Mirror of compactor::batch_lines: the last line of a repeated number wins; an
-    unnumbered line continues the numbered line before it."""
+    unnumbered line continues the numbered line before it, up to a blank line."""
     got, last = {}, None
     for l in text.splitlines():
         l = l.strip()
         if not l:
+            last = None
             continue
         m = re.match(r"^(\d+)\s*[|.:)]\s*(.*)$", l)
         if m:

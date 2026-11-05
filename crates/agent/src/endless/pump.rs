@@ -56,10 +56,13 @@ fn retry_delay(base_secs: u32, failures: u32) -> Duration {
 struct Retry {
     at: Instant,
     failures: u32,
-    /// R1-2: consecutive failures that were not transient (`compact::classify`).
+    /// R1-2 / R2-2: consecutive failures that were not transient
+    /// (`compact::classify`), plus empty replies, timeouts and panics.
     hard: u32,
     /// R1-2: when this run of failures began.
     since: Instant,
+    /// R1-3: the unit's own call is over `max_usd_per_call`.
+    cost: bool,
     /// Last error, one line, ≤ 300 chars.
     error: String,
     /// The compactor model id that failed.
@@ -67,11 +70,38 @@ struct Retry {
 }
 
 impl Retry {
-    /// R1-2 / G7: the unit folds mechanically on its next run — at least
-    /// [`MECH_AFTER`] non-transient failures, the first ≥ [`MECH_AGE`] ago.
-    fn mechanical(&self) -> bool {
-        self.hard >= MECH_AFTER && self.since.elapsed() >= MECH_AGE
+    /// R1-2 / G7: the unit folds mechanically on its next run — over cost,
+    /// or at least [`MECH_AFTER`] hard failures, the first ≥ [`MECH_AGE`]
+    /// ago, and (R2-2) another node built by the model since then: an
+    /// environmental error (401, no credit, unknown model) fails every unit
+    /// and must stall visibly, not fold the whole backlog.
+    fn mechanical(&self, last_ok: Option<Instant>) -> bool {
+        self.cost
+            || (self.hard >= MECH_AFTER
+                && self.since.elapsed() >= MECH_AGE
+                && last_ok.is_some_and(|t| t > self.since))
     }
+}
+
+/// R2-2: a failure that is no provider's transient refusal but the call
+/// itself not yielding a line — counted hard although `classify` may call it
+/// transient, so a unit that always comes back empty or always times out folds.
+fn hard_failure(e: &str) -> bool {
+    e.contains("compactor returned nothing")
+        || e.contains("timed out")
+        || e.contains("stream idle")
+        || e.contains("panicked")
+        || !matches!(
+            crate::compact::classify(e),
+            crate::compact::Failure::Transient
+        )
+}
+
+/// R2-1: a failed call the provider may still bill — dropped by theuth after
+/// dispatch (an attempt or job timeout, an idle stream). Refusals (overflow,
+/// 4xx, 429/5xx, connect errors, the local preflight's "not sent") are not.
+fn billed_drop(e: &str) -> bool {
+    e.contains("timed out") || e.contains("stream idle")
 }
 
 /// One attached session's live state.
@@ -369,9 +399,12 @@ struct Live {
     parallel: u32,
     /// 137G G6: units whose batch line failed its guard: next time alone.
     solo: HashSet<u64>,
-    /// R1-4: the day's spend is within one call of the cap — one call at a
-    /// time. Starts set (unknown until the first call checks the spend).
+    /// R1-4 / R2-3: the day's spend is within `jobs` calls of the cap — one
+    /// call at a time. Starts set (unknown until the first call checks the spend).
     near_cap: bool,
+    /// R2-2: when the compactor last built a node (no mechanical fold
+    /// without another success since a unit's first failure).
+    last_ok: Option<Instant>,
     /// R1-3: the over-cost notice went out (once per session state).
     cost_noticed: bool,
     /// Measured USD per unit from the ledger (R1-D4), refreshed by `backfill_estimate`.
@@ -597,6 +630,7 @@ impl Live {
             parallel: 1,
             solo: HashSet::new(),
             near_cap: true,
+            last_ok: None,
             cost_noticed: false,
             usd_per_unit: None,
             last_progress: None,
@@ -1012,7 +1046,10 @@ fn schedule(state: &Arc<State>) {
             continue;
         }
         let u = &live.units[key.1 as usize];
-        let mech = live.failed.get(&key).is_some_and(Retry::mechanical);
+        let mech = live
+            .failed
+            .get(&key)
+            .is_some_and(|r| r.mechanical(live.last_ok));
         let fails = live.failed.get(&key).map_or(0, |r| r.failures);
         if mech || tree::free_unit(u, node_bytes).is_some() {
             instant.push(key);
@@ -1167,7 +1204,11 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
     };
     let (ready, step) = if l == 0 {
         let u = &live.units[i as usize];
-        if live.failed.get(&key).is_some_and(Retry::mechanical) {
+        if live
+            .failed
+            .get(&key)
+            .is_some_and(|r| r.mechanical(live.last_ok))
+        {
             let r = &live.failed[&key];
             tracing::info!(session = %state.session, i, failures = r.failures, hard = r.hard, error = %r.error, "endless: unit folded mechanically");
             (Some(mechanical_node(u, node_bytes)), None)
@@ -1407,8 +1448,8 @@ async fn spend_capped(state: &State, cfg: &super::EndlessConfig) -> bool {
             return false;
         }
     };
-    // R1-4: within one call of the cap, the scheduler runs one call at a time.
-    state.live.lock().near_cap = spent + cfg.max_usd_per_call >= cap;
+    // R1-4 / R2-3: once every slot's call could cross the cap, one call at a time.
+    state.live.lock().near_cap = spent + f64::from(cfg.jobs.max(1)) * cfg.max_usd_per_call >= cap;
     if spent < cap {
         return false;
     }
@@ -1582,18 +1623,23 @@ async fn call(
     let built = built.filter(|b| b.is_ok() || !cancel.is_cancelled());
     let (status, usage) = match &built {
         Some(Ok(b)) => (CallStatus::Settled, b.usage()),
-        // R1-4: a failed or timed-out call may still be billed — its answered
-        // attempts' usage plus the failing attempt's prompt at the estimate.
+        // R1-4 / R2-1: a failed call is charged its answered attempts' usage,
+        // plus the failing attempt's prompt at the estimate only when theuth
+        // dropped it after dispatch (the provider may bill it).
         Some(Err(f)) => {
-            let prompt = compactor::COMPACT.len() + ctx.len() + step.render(cfg.node_bytes).len();
-            let est = crate::tokens::tokens_of(&model.id, prompt);
-            let mut u = compactor::sum_usage(&f.calls).unwrap_or_default();
-            u.prompt_tokens = Some(
-                u.prompt_tokens
-                    .unwrap_or(0)
-                    .saturating_add(i32::try_from(est).unwrap_or(i32::MAX)),
-            );
-            (CallStatus::Failed, Some(u))
+            let mut u = compactor::sum_usage(&f.calls);
+            if billed_drop(&f.error) {
+                let prompt =
+                    compactor::COMPACT.len() + ctx.len() + step.render(cfg.node_bytes).len();
+                let est = crate::tokens::tokens_of(&model.id, prompt);
+                let u = u.get_or_insert_default();
+                u.prompt_tokens = Some(
+                    u.prompt_tokens
+                        .unwrap_or(0)
+                        .saturating_add(i32::try_from(est).unwrap_or(i32::MAX)),
+                );
+            }
+            (CallStatus::Failed, u)
         }
         None => (CallStatus::Cancelled, None),
     };
@@ -1629,25 +1675,20 @@ async fn call(
 }
 
 /// One more consecutive failure of `key`, with its backoff (caller holds
-/// `live`). R1-2: only a non-transient failure (`compact::classify`) counts
-/// toward the mechanical fold. R1-3 / G11: a level-0 unit whose own call is
-/// over `max_usd_per_call` folds mechanically now, with one notice.
+/// `live`). R1-2 / R2-2: only a [`hard_failure`] counts toward the
+/// mechanical fold. R1-3 / G11: a level-0 unit whose own call is over
+/// `max_usd_per_call` folds mechanically now, with one notice.
 fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model: &str) {
     let base = state.cfg.read().retry_secs;
     let now = Instant::now();
     let prev = live.failed.get(&key);
     let failures = prev.map_or(0, |r| r.failures).saturating_add(1);
-    let transient = matches!(
-        crate::compact::classify(e),
-        crate::compact::Failure::Transient
-    );
-    let mut hard = prev.map_or(0, |r| r.hard) + u32::from(!transient);
-    let mut since = prev.map_or(now, |r| r.since);
+    let hard = prev.map_or(0, |r| r.hard) + u32::from(hard_failure(e));
+    let since = prev.map_or(now, |r| r.since);
     let mut delay = retry_delay(base, failures);
     let prev_failures = failures - 1;
-    if key.0 == 0 && e.starts_with(OVER_COST) {
-        hard = hard.max(MECH_AFTER);
-        since = now.checked_sub(MECH_AGE).unwrap_or(since);
+    let cost = key.0 == 0 && e.starts_with(OVER_COST);
+    if cost {
         delay = Duration::ZERO;
         if !live.cost_noticed {
             live.cost_noticed = true;
@@ -1662,6 +1703,7 @@ fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model
             failures,
             hard,
             since,
+            cost,
             error: one_line(e, 300),
             model: model.to_owned(),
         },
@@ -1703,6 +1745,9 @@ async fn finish(
     release(&mut live, &[key], counted);
     match outcome {
         Ok(Some(node)) => {
+            if !node.free && !node.mechanical {
+                live.last_ok = Some(Instant::now());
+            }
             if node.l == 0 && !node.free && !node.mechanical {
                 live.build_secs.0 += took.as_secs_f64();
                 live.build_secs.1 += 1;
@@ -1768,6 +1813,7 @@ async fn finish_batch(
     match outcome {
         Ok(true) => {
             if !nodes.is_empty() {
+                live.last_ok = Some(Instant::now());
                 live.build_secs.0 += took.as_secs_f64();
                 live.build_secs.1 += nodes.len() as u32;
             }
@@ -2117,7 +2163,14 @@ pub(crate) async fn zoom(
     let Some(state) = state_of(inner, session) else {
         return Err("this session has no endless memory".into());
     };
-    let live = state.live.lock();
+    let mut live = state.live.lock();
+    // R2-6: a folded-run line is no node even when its range is aligned.
+    let cfg = live.fold_cfg(&state.cfg.read());
+    if live.fold(cfg).is_folded_line(id, n) {
+        return Err(format!(
+            "{id}+{n} is a folded run, not a summary line; recall searches it."
+        ));
+    }
     let Some((l, i)) =
         tree::addr(id, n).filter(|(l, i)| exists(*l, *i, live.t()) && (*l == 0 || id >= live.base))
     else {
@@ -2692,6 +2745,37 @@ mod tests {
             .map(|k| format!("line {k:05} of the view ✓\n"))
             .collect();
         format!("<chat>\n{body}</chat>")
+    }
+
+    /// R2-1 / R2-2: which failures count toward the fold and which are charged.
+    #[test]
+    fn failure_kinds_for_the_fold_and_the_ledger() {
+        for hard in [
+            "compactor returned nothing",
+            "timed out after 120s",
+            "compactor job timed out after 900s",
+            "stream idle for 120s",
+            "compactor panicked",
+            "400: model not loaded",
+            "401 Unauthorized: invalid x-api-key",
+        ] {
+            assert!(hard_failure(hard), "{hard}");
+        }
+        for soft in [
+            "529 Overloaded: overloaded_error, try again later",
+            "429 Too Many Requests: rate limited",
+        ] {
+            assert!(!hard_failure(soft), "{soft}");
+        }
+        assert!(billed_drop("timed out after 120s") && billed_drop("stream idle for 120s"));
+        for unbilled in [
+            "529 Overloaded: overloaded_error, try again later",
+            "401 Unauthorized: invalid x-api-key",
+            "prompt is too long: 91610 tokens > 87308 maximum (theuth preflight, not sent: …)",
+            "error sending request: connection refused",
+        ] {
+            assert!(!billed_drop(unbilled), "{unbilled}");
+        }
     }
 
     /// 137G G3 (and 137F E8): the compactor's `<chat>` is capped at

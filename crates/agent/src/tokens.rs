@@ -39,7 +39,8 @@ const SAVE_DELTA: f64 = 0.02;
 static BPT: LazyLock<Mutex<HashMap<String, f64>>> = LazyLock::new(Default::default);
 /// Learned prompt tokens per second per local model id (G1 latency limb).
 static EVAL: LazyLock<Mutex<HashMap<String, f64>>> = LazyLock::new(Default::default);
-/// Where [`learn`] persists the ratios (`init`); `None` = memory only.
+/// Where [`learn`] persists the ratios (`init`); `None` = memory only. Held
+/// while a save writes, so saves are serial and the last one is the newest.
 static RATIOS: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(Default::default);
 
 /// Engine start: load the ratios learned before the restart from
@@ -89,21 +90,31 @@ pub fn learned(model: &str) -> bool {
     BPT.lock().contains_key(model)
 }
 
-/// Fold one observation (`bytes` sent, `tokens` the provider counted) into
-/// the model's ratio: EWMA, clamped to 1.8..=4.0; persisted (R1-1) when it
-/// moved by more than [`SAVE_DELTA`].
-pub fn learn(model: &str, bytes: usize, tokens: u64) {
+/// Fold one observation into the model's ratio — `bytes` of text sent,
+/// `flat` image/PDF tokens of the request ([`request_size`]), `tokens` the
+/// provider counted for all of it (R2-4: the media share is taken out, so a
+/// media-heavy request does not pull the ratio down): EWMA, clamped to
+/// 1.8..=4.0; persisted (R1-1) when it moved by more than [`SAVE_DELTA`].
+pub fn learn(model: &str, bytes: usize, flat: u64, tokens: u64) {
+    let tokens = tokens.saturating_sub(flat);
     if bytes < 256 || tokens == 0 {
         return;
     }
     let seen = (bytes as f64 / tokens as f64).clamp(BPT_RANGE.0, BPT_RANGE.1);
-    let mut map = BPT.lock();
-    let before = map.get(model).copied();
-    let v = map.entry(model.to_owned()).or_insert(seen);
-    *v = (*v * (1.0 - ALPHA) + seen * ALPHA).clamp(BPT_RANGE.0, BPT_RANGE.1);
-    let moved = before.is_none_or(|b| (b - *v).abs() > SAVE_DELTA);
-    if moved && let Some(path) = RATIOS.lock().clone() {
-        save_to(&path, &map);
+    let moved = {
+        let mut map = BPT.lock();
+        let before = map.get(model).copied();
+        let v = map.entry(model.to_owned()).or_insert(seen);
+        *v = (*v * (1.0 - ALPHA) + seen * ALPHA).clamp(BPT_RANGE.0, BPT_RANGE.1);
+        before.is_none_or(|b| (b - *v).abs() > SAVE_DELTA)
+    };
+    // R2-4: the snapshot is taken under the ratio lock, the file written after it.
+    if moved {
+        let path = RATIOS.lock();
+        if let Some(path) = path.as_ref() {
+            let snapshot = BPT.lock().clone();
+            save_to(path, &snapshot);
+        }
     }
 }
 
@@ -379,7 +390,7 @@ mod tests {
         let m = model("t/unknown", 0, None);
         let b = budget(Kind::Turn, &m, Limits::default());
         assert_eq!((b.target_tokens, b.ceiling_tokens), (100_000, 190_000));
-        learn("t/unknown", 2_200, 1_000);
+        learn("t/unknown", 2_200, 0, 1_000);
         let big = ChatRequest::new(vec![genai::chat::ChatMessage::user("x".repeat(500_000))]);
         let e = preflight(&m, &big, 0).unwrap_err();
         let n = crate::compact::overflow_numbers(&e).expect("parsed");
@@ -407,7 +418,7 @@ mod tests {
         let req = ChatRequest::new(vec![genai::chat::ChatMessage::user("x".repeat(300_000))]);
         assert_eq!(preflight(&m, &req, 64_000), Ok(75_000));
         assert_eq!(bytes_of(id, 1_000), 2_200, "sizing is conservative");
-        learn(id, 2_200, 1_000);
+        learn(id, 2_200, 0, 1_000);
         assert!(preflight(&m, &req, 64_000).is_err());
     }
 
@@ -430,7 +441,7 @@ mod tests {
         let id = "t/learn";
         assert_eq!(bytes_per_token(id), DEFAULT_BPT);
         for _ in 0..30 {
-            learn(id, 350_000, 100_000);
+            learn(id, 350_000, 0, 100_000);
         }
         assert!(
             (bytes_per_token(id) - 3.5).abs() < 0.01,
@@ -438,12 +449,30 @@ mod tests {
             bytes_per_token(id)
         );
         for _ in 0..30 {
-            learn(id, 100_000, 100_000);
+            learn(id, 100_000, 0, 100_000);
         }
         assert!(
             (bytes_per_token(id) - 1.8).abs() < 0.001,
             "clamped: {}",
             bytes_per_token(id)
         );
+    }
+
+    /// R2-4: a request's image/PDF tokens (counted flat) are no text — the
+    /// first sample of a media-heavy request learns the text's own ratio.
+    #[test]
+    fn media_tokens_are_taken_out_before_learning() {
+        let id = "t/media";
+        forget_for_tests(id);
+        // 6,000 B of text (3,000 tokens) + one 1,600-token image.
+        learn(id, 6_000, 1_600, 4_600);
+        assert!(
+            (bytes_per_token(id) - 2.0).abs() < 1e-9,
+            "{}",
+            bytes_per_token(id)
+        );
+        // All media: nothing to learn.
+        learn("t/media-only", 300, 1_600, 1_600);
+        assert!(!learned("t/media-only"));
     }
 }

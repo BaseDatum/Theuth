@@ -238,6 +238,14 @@ impl Fold {
         (runs, true)
     }
 
+    /// R2-6: `id+n` is one of the view's folded-run lines (a G2 run or the
+    /// hard-cap prefix) — no tree node, aligned or not.
+    pub fn is_folded_line(&self, id: u64, n: u64) -> bool {
+        let (runs, _) = self.folded_runs();
+        runs.iter()
+            .any(|r| self.parts[r.start].start() == id && self.span(r) == n)
+    }
+
     /// G2: unsummarized units the view shows folded (`Backlog.folded`).
     pub fn folded(&self) -> u32 {
         let (runs, _) = self.folded_runs();

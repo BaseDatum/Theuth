@@ -130,22 +130,15 @@ pub fn local_endpoint(model: &Resolved, base_url: Option<&str>) -> Option<String
 
 /// R1 Q1: a compactor never thinks — thinking spends the reply cap and
 /// leaves no text (Haiku 5.5 thinks adaptively when no config is sent).
-/// Anthropic gets `Zero`: genai sends `thinking: {"type": "disabled"}` for
-/// the families that think by default (Haiku 5+, Sonnet 5, Opus 5) and
-/// omits thinking for the rest. An Ollama model gets `Zero` (`think:
-/// false`); an OpenAI-style reasoning model its lowest listed effort
-/// (`none` → `minimal` → `low`); anything else no reasoning setting.
+/// R2-7: on the Anthropic transport [`ModelCompactor::request_lines`] sends
+/// `Zero` (genai: `thinking: {"type": "disabled"}` for the families that
+/// think by default, Haiku 5+, Sonnet 5, Opus 5; omitted for the rest)
+/// whatever this returns. For the other transports — a `claude-*` id on an
+/// OpenAI-compatible gateway included — this is the setting: `Zero` for an
+/// Ollama model (`think: false`), else the model's lowest listed effort
+/// (`none` → `minimal` → `low`), else no reasoning setting.
 pub fn thinking_off(model: &Resolved) -> Option<ReasoningEffort> {
-    let ns = crate::loop_::ns(&model.genai);
-    let slug = model
-        .genai
-        .split_once("::")
-        .map_or(model.genai.as_str(), |(_, s)| s);
-    let anthropic = ns == "anthropic"
-        || slug.starts_with("claude-")
-        || slug.split('.').any(|seg| seg == "anthropic")
-        || model.id.starts_with("anthropic/");
-    if anthropic || ns == "ollama" {
+    if crate::loop_::ns(&model.genai) == "ollama" {
         return Some(ReasoningEffort::Zero);
     }
     let values: Vec<&str> = model
@@ -273,13 +266,14 @@ impl Step {
 /// 137G G6: the batch reply's line for each of `n` units (`k| text`, also
 /// `k.` `k:` `k)`); `None` for a number the reply lacks. R1-9: the last line
 /// of a repeated number wins; an unnumbered line continues the numbered
-/// line before it (a wrapped reply).
+/// line before it (a wrapped reply) — R2-5: up to a blank line.
 pub fn batch_lines(reply: &str, n: usize) -> Vec<Option<String>> {
     let mut out: Vec<Option<String>> = vec![None; n];
     let mut last: Option<usize> = None;
     for line in reply.lines() {
         let l = line.trim();
         if l.is_empty() {
+            last = None;
             continue;
         }
         let digits = l.bytes().take_while(u8::is_ascii_digit).count();
@@ -788,7 +782,7 @@ pub struct ModelCompactor {
     pub(crate) backend: Backend,
     /// The COMPACT prompt with `{agent}` substituted.
     pub system: String,
-    /// The session's effort when the compactor is the session model (D8).
+    /// The reasoning setting off the Anthropic transport ([`thinking_off`]).
     pub effort: Option<ReasoningEffort>,
     /// 137F E6: `Some(queue key)` for a local compactor ([`local_endpoint`]).
     pub local: Option<String>,
@@ -828,6 +822,7 @@ impl ModelCompactor {
         convo: &[ChatMessage],
         lines: u32,
     ) -> (ChatRequest, ChatOptions) {
+        let anthropic = t == Transport::Anthropic;
         let mut messages = Vec::with_capacity(convo.len() + 2);
         if t == Transport::Anthropic {
             messages.push(
@@ -846,7 +841,14 @@ impl ModelCompactor {
             .with_capture_usage(true)
             .with_capture_content(true)
             .with_capture_reasoning_content(true)
-            .with_max_tokens(batch_reply_tokens(self.reply_tokens(), lines));
+            .with_max_tokens(batch_reply_tokens(
+                if anthropic {
+                    MAX_TOKENS
+                } else {
+                    self.reply_tokens()
+                },
+                lines,
+            ));
         // E6: idle bounds; a local stream's first token may take the whole
         // attempt (prompt eval on slow hardware), which `build` bounds. A
         // cloud stream's first byte and every silence between chunks may
@@ -864,8 +866,14 @@ impl ModelCompactor {
                 .with_prompt_cache_key(format!("endless:{}", self.session))
                 .with_cache_control(CacheControl::Ephemeral24h);
         }
-        if let Some(e) = &self.effort {
-            opts = opts.with_reasoning_effort(e.clone());
+        // R2-7: thinking off by transport, not by model id.
+        let effort = if anthropic {
+            Some(ReasoningEffort::Zero)
+        } else {
+            self.effort.clone()
+        };
+        if let Some(e) = effort {
+            opts = opts.with_reasoning_effort(e);
         }
         (req, opts)
     }
@@ -1062,12 +1070,14 @@ mod tests {
         assert!(unit_step().render(512).contains("in at most 512 bytes:"));
     }
 
-    /// R1-9: the last line of a repeated number wins; an unnumbered line
-    /// continues the numbered line before it; out-of-range numbers are dropped.
+    /// R1-9 / R2-5: the last line of a repeated number wins; an unnumbered
+    /// line continues the numbered line before it, until a blank line (a
+    /// closing remark after the list is no unit's text); out-of-range
+    /// numbers are dropped.
     #[test]
     fn batch_lines_take_the_last_duplicate_and_join_wraps() {
         let got = batch_lines(
-            "intro\n1| first\n2| second\n  wrapped tail\n1| first again\n9| none",
+            "intro\n1| first\n2| second\n  wrapped tail\n1| first again\n3| third\n\nAll lines kept under the limit.\n9| none",
             3,
         );
         assert_eq!(
@@ -1075,16 +1085,16 @@ mod tests {
             [
                 Some("first again".to_owned()),
                 Some("second wrapped tail".to_owned()),
-                None
+                Some("third".to_owned()),
             ]
         );
     }
 
-    /// R1 Q1: every compactor call runs with thinking off — `Zero` for an
-    /// Anthropic model (genai sends `thinking: {type: "disabled"}` for the
-    /// families that think by default, Haiku 5+ among them), the lowest
-    /// listed effort for an OpenAI reasoning model, nothing for a plain model;
-    /// the reply cap is back to 600 tokens.
+    /// R1 Q1 / R2-7: every compactor call runs with thinking off, decided by
+    /// the transport: the Anthropic one sends `Zero` (genai: `thinking:
+    /// {type: "disabled"}`) with the 600-token cap; a `claude-*` id behind an
+    /// OpenAI-compatible gateway gets the catalog's lowest listed effort, or
+    /// no setting — never `reasoning_effort: "none"` it did not list.
     #[test]
     fn compactor_requests_run_with_thinking_off() {
         let r = |genai: &str, efforts: Option<&[&str]>| Resolved {
@@ -1100,11 +1110,6 @@ mod tests {
                 .unwrap()
             }),
         };
-        let haiku = r(
-            "anthropic::claude-haiku-5-5",
-            Some(&["low", "medium", "high"]),
-        );
-        assert!(matches!(thinking_off(&haiku), Some(ReasoningEffort::Zero)));
         assert!(matches!(
             thinking_off(&r("openai::gpt-5", Some(&["minimal", "low", "medium"]))),
             Some(ReasoningEffort::Minimal)
@@ -1113,23 +1118,43 @@ mod tests {
             thinking_off(&r("openai::gpt-5.1", Some(&["none", "low"]))),
             Some(ReasoningEffort::Zero)
         ));
+        assert!(matches!(
+            thinking_off(&r("ollama::qwen3:8b", None)),
+            Some(ReasoningEffort::Zero)
+        ));
         assert!(thinking_off(&r("openai::gpt-4.1", None)).is_none());
         let dir = crate::TestDir::new("compactor-thinking");
-        let c = ModelCompactor {
+        let compactor = |model: Resolved| ModelCompactor {
             session: runtime::SessionId::new(),
             backend: crate::backend::Backend::for_model(
-                &haiku,
+                &model,
                 &genai::Client::builder().build().unwrap(),
                 &crate::supervisor::Auth::stub(&dir.0),
             ),
-            effort: thinking_off(&haiku),
-            model: haiku,
+            effort: thinking_off(&model),
+            model,
             system: prompt("theuth"),
             local: None,
             cfg: Default::default(),
         };
-        let (_, opts) = c.request(Transport::Anthropic, "<chat>\n</chat>", &[]);
+        let haiku = compactor(r(
+            "anthropic::claude-haiku-5-5",
+            Some(&["low", "medium", "high"]),
+        ));
+        let (_, opts) = haiku.request(Transport::Anthropic, "<chat>\n</chat>", &[]);
         assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::Zero)));
+        assert_eq!(opts.max_tokens, Some(MAX_TOKENS));
+        // A claude id on an OpenAI-compatible gateway: the catalog's lowest effort …
+        let listed = compactor(r(
+            "github_copilot::claude-sonnet-5",
+            Some(&["low", "medium", "high"]),
+        ));
+        let (_, opts) = listed.request(Transport::OpenAiLike, "<chat>\n</chat>", &[]);
+        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::Low)));
+        // … or nothing when it lists none.
+        let plain = compactor(r("openai::claude-haiku-5-5", None));
+        let (_, opts) = plain.request(Transport::OpenAiLike, "<chat>\n</chat>", &[]);
+        assert!(opts.reasoning_effort.is_none());
         assert_eq!(opts.max_tokens, Some(MAX_TOKENS));
     }
 

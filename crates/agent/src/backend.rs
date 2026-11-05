@@ -206,7 +206,8 @@ impl Backend {
             .or_else(|| resolved.model.as_ref().map(|m| m.limit.output))
             .map_or(0, u64::from);
         crate::tokens::preflight(resolved, &req, reply)?;
-        let (bytes, _) = crate::tokens::request_size(&req);
+        // R2-4: images/PDFs count flat, not per byte — the learner sees text only.
+        let (bytes, flat) = crate::tokens::request_size(&req);
         let id = resolved.id.clone();
         match self {
             Backend::Cursor { oauth: store } => {
@@ -261,7 +262,12 @@ impl Backend {
                                 && let Some(p) =
                                     end.captured_usage.as_ref().and_then(|u| u.prompt_tokens)
                             {
-                                crate::tokens::learn(&id, bytes, u64::try_from(p).unwrap_or(0));
+                                crate::tokens::learn(
+                                    &id,
+                                    bytes,
+                                    flat,
+                                    u64::try_from(p).unwrap_or(0),
+                                );
                             }
                             ev.map_err(provider_error)
                         }))
@@ -269,7 +275,7 @@ impl Backend {
                     .map_err(|e| {
                         let e = provider_error(e);
                         if let Some(n) = crate::compact::overflow_numbers(&e) {
-                            crate::tokens::learn(&resolved.id, bytes, u64::from(n.prompt));
+                            crate::tokens::learn(&resolved.id, bytes, flat, u64::from(n.prompt));
                         }
                         e
                     })
