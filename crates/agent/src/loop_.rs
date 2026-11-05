@@ -2825,6 +2825,21 @@ struct EndlessView {
     blocks_hit: usize,
     /// The `view_rebase` line went out with the first response's cache reads.
     logged: bool,
+    /// 137G G1: the view bytes this turn's budget allowed.
+    max_bytes: usize,
+    /// 137G G5: the view was re-rendered smaller after a refusal (once per turn).
+    shrunk: bool,
+    /// 137G G10: the note the turn gets when its view was shrunk.
+    note: Option<String>,
+}
+
+/// 137G G1: bytes kept beside the endless view for the tool definitions and
+/// the turn's input (the system prompt is counted from the last turn's).
+const VIEW_RESERVE: usize = 48_000;
+
+/// 137G G10: the note a turn whose view was shrunk to fit gets.
+fn view_note(folded: u32) -> String {
+    format!("memory: {folded} older unsummarized lines were folded to fit (recall searches them)")
 }
 
 /// Execution accounting of a peer-opened turn (50 §8): the wall deadline of
@@ -4438,9 +4453,11 @@ impl Turn {
     /// first request is `[tools][system][view blocks][input]`. A no-op for an
     /// epochs session (or while a backfill still covers the history, D14).
     async fn endless_start(&mut self) {
-        let Some(render) = self.endless_view().await else {
+        let Some((render, max_bytes)) = self.endless_view().await else {
             return;
         };
+        let note =
+            (render.folded > 0 && max_bytes < self.view_wanted()).then(|| view_note(render.folded));
         let blocks: Vec<String> = render.blocks.iter().map(|b| b.text.clone()).collect();
         let (changed_from_byte, blocks_hit) = match &self.state.last_view {
             Some(prev) => (
@@ -4474,16 +4491,50 @@ impl Turn {
             changed_from_byte,
             blocks_hit,
             logged: false,
+            max_bytes,
+            shrunk: false,
+            note,
         });
+    }
+
+    /// 137G G1: what the turn's budget leaves for the view — the turn target
+    /// (half the window, ≤ the ceiling) at the model's learned bytes/token,
+    /// less the system prompt and a reserve for tools and input
+    /// ([`VIEW_RESERVE`], at most a quarter of the target on small windows).
+    fn view_allowance(&self) -> usize {
+        let model = self.model().model;
+        let reply = model
+            .model
+            .as_ref()
+            .map_or(0, |m| u64::from(m.limit.output));
+        let b = crate::tokens::budget(
+            crate::tokens::Kind::Turn,
+            &model,
+            crate::tokens::Limits {
+                reply_tokens: reply,
+                ..Default::default()
+            },
+        );
+        let target = crate::tokens::bytes_of(&model.id, b.target_tokens);
+        target.saturating_sub(self.state.baseline.len() + VIEW_RESERVE.min(target / 4))
+    }
+
+    /// `view_bytes + raw_bytes` in force (the unscaled view budget).
+    fn view_wanted(&self) -> usize {
+        self.shared.endless.as_ref().map_or(0, |e| {
+            let c = e.config();
+            let f = c.fold_cfg();
+            (f.view_bytes + f.raw_bytes) as usize
+        })
     }
 
     /// The view this turn opens with: `settle` then `render_for_turn` on the
     /// service when the session is active in endless mode; the test hook's
     /// view in tests; `None` otherwise.
-    async fn endless_view(&self) -> Option<ViewRender> {
+    async fn endless_view(&self) -> Option<(ViewRender, usize)> {
         #[cfg(test)]
         if let Some(v) = self.shared.test_view.lock().clone() {
-            return Some(v);
+            return Some((v, usize::MAX));
         }
         let endless = self.shared.endless.as_ref()?;
         let id = self.shared.id;
@@ -4504,11 +4555,47 @@ impl Turn {
                 tracing::info!(session = %id, waited_ms = started.elapsed().as_millis() as u64, "endless settle: timed out; unbuilt parts render per D10");
             }
         }
-        match endless.render_for_turn(id).await {
-            Ok(r) => Some(r),
+        let max_bytes = self.view_allowance();
+        match endless.render_for_turn_within(id, max_bytes, false).await {
+            Ok(r) => Some((r, max_bytes)),
             Err(e) => {
                 tracing::warn!(session = %id, "endless render_for_turn: {e:#}; running the epochs frame this turn");
                 None
+            }
+        }
+    }
+
+    /// 137G G5: the turn's request was refused as too long (`prompt` >
+    /// `window`, the provider's count or the G1 preflight's): re-render the
+    /// view at `window / prompt × 0.85` of its budget, once per turn, and
+    /// queue the G10 note. `false` when there is no view to shrink or it
+    /// already was.
+    async fn shrink_view(&mut self, n: compact::OverflowNumbers) -> bool {
+        let Some(endless) = self.shared.endless.clone() else {
+            return false;
+        };
+        let Some(v) = self.view.as_mut().filter(|v| !v.shrunk) else {
+            return false;
+        };
+        let ratio = f64::from(n.window) / f64::from(n.prompt.max(1)) * 0.85;
+        let from = v.max_bytes.min(self.view_wanted().max(1));
+        let to = (from as f64 * ratio) as usize;
+        let id = self.shared.id;
+        match endless.render_for_turn_within(id, to, true).await {
+            Ok(render) => {
+                let Some(v) = self.view.as_mut() else {
+                    return false;
+                };
+                tracing::info!(session = %id, prompt = n.prompt, window = n.window, from_bytes = from, to_bytes = to, bytes = render.text().len(), folded = render.folded, "endless: turn refused as too long; view re-rendered smaller");
+                v.note = Some(view_note(render.folded));
+                v.render = render;
+                v.max_bytes = to;
+                v.shrunk = true;
+                true
+            }
+            Err(e) => {
+                tracing::warn!(session = %id, "endless shrink: {e:#}");
+                false
             }
         }
     }
@@ -6073,6 +6160,10 @@ impl Turn {
             }
         }
 
+        // 137G G10: a view shrunk to fit tells the model what it cannot see.
+        if let Some(text) = self.view.as_mut().and_then(|v| v.note.take()) {
+            self.note("memory", &text).await;
+        }
         let (head, mut msgs) = self.projected(&images);
         // 137 D4: the view blocks precede the turn's rows, one user message
         // each with the transport's cache marks; empty once an overflow cut
@@ -6136,6 +6227,15 @@ impl Turn {
                 return Round::Tools;
             }
             Err(Abort::Model(e)) => {
+                // 137G G5: an endless view that made the request too long is
+                // re-rendered smaller once (window / prompt × 0.85), then the
+                // round retries — before any compaction.
+                if compact::is_overflow(&e)
+                    && let Some(n) = compact::overflow_numbers(&e).filter(|n| n.prompt > n.window)
+                    && self.shrink_view(n).await
+                {
+                    return Round::Retry;
+                }
                 // 07 §8.5: one forced compaction per turn, then retry the round.
                 if chat && compact::is_overflow(&e) && !self.overflowed {
                     self.overflowed = true;
@@ -6940,11 +7040,34 @@ impl Turn {
     }
 
     /// `/compact` between turns: same baseline/tools/transport as a turn, then [`Turn::compact`].
+    /// 137G G9: in an endless session it is `endless_fold` — every unbuilt
+    /// line folded mechanically, no model call — plus a short note; the
+    /// epoch is unchanged.
     async fn compact_now(
         &mut self,
         style: Option<CompactStyle>,
         head: Option<String>,
     ) -> Result<u32, String> {
+        if let Some(endless) = self.shared.endless.clone()
+            && endless.mode(self.shared.id).await.ok() == Some(MemoryMode::Endless)
+        {
+            let before = endless
+                .memory(self.shared.id)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            let n = before.backlog.as_ref().map_or(0, |b| b.lines);
+            endless
+                .fold(self.shared.id)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            tracing::info!(session = %self.shared.id, folded = n, "context_edit: /compact in endless = fold");
+            self.note(
+                "memory",
+                &format!("memory: /compact folded {n} unsummarized lines into excerpts (no model call); zoom and recall still reach the full messages"),
+            )
+            .await;
+            return Ok(self.state.epoch);
+        }
         self.between_turns().await?;
         let (current, transport) = self.resolve().await?;
         let projected = self.state.used;

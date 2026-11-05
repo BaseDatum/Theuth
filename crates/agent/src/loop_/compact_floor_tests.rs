@@ -36,6 +36,12 @@ async fn scenario() {
 
     let mut h = Harness::new(Fake::compact_held(Duration::ZERO)).await;
     let actor = h.actor("openai/tiny").await;
+    // 137G G1: a real 9k-window model would refuse this frame (the tools and
+    // system prompt alone are ≈ 12k estimated tokens); the floor logic is
+    // about a catalog window smaller than what the provider accepts.
+    crate::tokens::EXEMPT_FOR_TESTS
+        .lock()
+        .insert("openai/tiny".to_owned());
     // The Harness's `tiny` model: a 9k window.
     let limit = (AgentConfig::default().compact_at * 9_000.0) as u32;
     assert!(

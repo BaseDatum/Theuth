@@ -64,6 +64,7 @@ pub mod store;
 pub mod supervisor;
 pub mod title;
 pub mod todo;
+pub mod tokens;
 pub mod user;
 pub mod vision;
 

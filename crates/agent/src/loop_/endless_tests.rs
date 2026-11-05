@@ -30,6 +30,7 @@ fn view() -> ViewRender {
         ],
         settled: true,
         unbuilt: 0,
+        folded: 0,
     }
 }
 
@@ -286,4 +287,144 @@ async fn scenario_off() {
     let (mut empty, _) = h.turn("openai/textonly", CancellationToken::new()).await;
     empty.state.history.clear();
     assert_eq!(empty.install_view_head(2, text).await.unwrap(), 0);
+}
+
+/// 137G: refuses the first round call as too long (Anthropic's wording),
+/// then answers like [`Fake`].
+struct RefuseFirst {
+    inner: Fake,
+    refused: std::sync::atomic::AtomicBool,
+}
+
+impl wiremock::Respond for RefuseFirst {
+    fn respond(&self, r: &wiremock::Request) -> wiremock::ResponseTemplate {
+        if super::vision_fallback_tests::body(r)["tools"].is_array()
+            && !self.refused.swap(true, Ordering::SeqCst)
+        {
+            return wiremock::ResponseTemplate::new(400).set_body_string(
+                json!({"error": {"type": "invalid_request_error",
+                    "message": "prompt is too long: 300000 tokens > 128000 maximum"}})
+                .to_string(),
+            );
+        }
+        self.inner.respond(r)
+    }
+}
+
+#[test]
+fn endless_turn_view_is_bounded_and_shrinks_after_a_refusal() {
+    crate::with_test_registry(scenario_bounded_view());
+}
+
+/// 137G G1 + G5 + G10 through the real service: 5,000 unsummarized lines
+/// (settling paused) → the turn's view fits the turn budget (half the 128k
+/// window less the system prompt and the reserve), never the raw backlog;
+/// the provider's "too long" refusal re-renders it once at M/N × 0.85 and
+/// the retried request carries the fold note.
+async fn scenario_bounded_view() {
+    let _reg_dir = registry().await;
+    let mut h = Harness::new(RefuseFirst {
+        inner: Fake::compact_held(Duration::ZERO),
+        refused: std::sync::atomic::AtomicBool::new(false),
+    })
+    .await;
+    let endless = Endless::new(
+        h.store.clone(),
+        h.rt.clone(),
+        h.client.clone(),
+        Auth::stub(&h.dir),
+        h.catalog.clone(),
+        crate::endless::EndlessConfig::default(),
+        None,
+    );
+    h.store
+        .set_session_memory(h.id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let attached = crate::endless::Attached {
+        model: h.resolve("openai/textonly"),
+        effort: None,
+        agent: "theuth".into(),
+        store: None,
+    };
+    endless.attach(h.id, attached).await.unwrap();
+    // A rendered turn first, so the rows below are live units, not a backfill.
+    endless.render_for_turn(h.id).await.unwrap();
+    endless.pause(h.id, true).await.unwrap();
+    for k in 0..5_000 {
+        let text = format!(
+            "message {k}: {}",
+            "the backlog line repeats here ".repeat(20)
+        );
+        h.store
+            .append(h.id, &ChatMessage::user(text))
+            .await
+            .unwrap();
+    }
+    assert!(
+        !endless.settle(h.id, Duration::from_secs(30)).await,
+        "paused: settle ingests and returns at once"
+    );
+    assert_eq!(
+        endless.memory(h.id).await.unwrap().backlog.unwrap().lines,
+        5_000
+    );
+    let (epoch, head, history) = h.store.frame(h.id).await.unwrap();
+    let mut session = Session::new(
+        h.id,
+        0,
+        (h.resolve("openai/textonly"), None),
+        None,
+        SessionState::resume(epoch, head, history),
+        Arc::new(AgentConfig::default()),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+        h.store.clone(),
+        h.client.clone(),
+        Auth::stub(&h.dir),
+        h.rt.clone(),
+        h.catalog.clone(),
+        None,
+        Arc::new(Semaphore::new(1)),
+        SessionResources::durable_arc(&h.dir),
+    );
+    session.shared.endless = Some(endless.clone());
+    let actor = Session::spawn(session);
+    send(&mut h, &actor, "What did the backlog say?").await;
+    let calls = main_calls(&h).await;
+    assert_eq!(calls.len(), 2, "refused once, retried once");
+    let view_bytes = |b: &Value| -> usize {
+        texts(b)
+            .iter()
+            .filter(|t| t.contains("+1|user: message"))
+            .map(String::len)
+            .sum()
+    };
+    let (first, second) = (view_bytes(&calls[0]), view_bytes(&calls[1]));
+    // Turn target: 64k tokens × 2.2 B = 140.8 KB, less the system prompt and
+    // the reserve (a quarter of it: 35.2 KB).
+    assert!(
+        first > 0 && first <= 140_800 - 35_200,
+        "first view {first} B"
+    );
+    assert!(
+        second < first && second as f64 <= first as f64 * 128.0 / 300.0 * 0.85 + 2_000.0,
+        "{first} → {second}"
+    );
+    let all = texts(&calls[1]).concat();
+    assert!(
+        all.contains("older unsummarized lines were folded to fit (recall searches them)"),
+        "the G10 note"
+    );
+    assert!(
+        all.contains("lines not yet summarized"),
+        "the folded run line"
+    );
+    assert!(
+        !all.contains("user: message 0:"),
+        "the oldest lines are folded, not sent"
+    );
 }

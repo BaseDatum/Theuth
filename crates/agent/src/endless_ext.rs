@@ -165,8 +165,23 @@ pub fn status(m: &SessionMemory) -> String {
     } else {
         s.push_str(" · up to date");
     }
-    if let Some(b) = m.backlog.as_ref().filter(|b| b.paused) {
-        s.push_str(&format!(" · settling paused ({} lines wait)", b.lines));
+    if let Some(b) = &m.backlog {
+        if b.paused {
+            s.push_str(&format!(
+                " · settling paused by {} ({} lines wait)",
+                b.paused_by.as_deref().unwrap_or("user"),
+                b.lines
+            ));
+        } else if b.lines > 0 {
+            s.push_str(&format!(
+                " · backlog {} lines (ETA {})",
+                b.lines,
+                eta(b.eta_secs)
+            ));
+        }
+        if b.folded > 0 {
+            s.push_str(&format!(", {} folded in the view", b.folded));
+        }
     }
     if m.stats.calls > 0 {
         s.push_str(&format!(
