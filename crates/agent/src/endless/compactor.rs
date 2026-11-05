@@ -129,17 +129,26 @@ pub fn local_endpoint(model: &Resolved, base_url: Option<&str>) -> Option<String
 }
 
 /// R1 Q1: a compactor never thinks — thinking spends the reply cap and
-/// leaves no text (Haiku 5.5 thinks adaptively when no config is sent).
-/// R2-7: on the Anthropic transport [`ModelCompactor::request_lines`] sends
-/// `Zero` (genai: `thinking: {"type": "disabled"}` for the families that
-/// think by default, Haiku 5+, Sonnet 5, Opus 5; omitted for the rest)
-/// whatever this returns. For the other transports — a `claude-*` id on an
+/// leaves no text (Haiku 5.5 and Fable 5.1 think adaptively when no config
+/// is sent). R2-7: on the Anthropic transport
+/// [`ModelCompactor::request_lines`] sends [`anthropic_off`] whatever this
+/// returns. Bedrock's Anthropic models go through the same genai mapping
+/// (`bedrock/converse.rs` → `insert_anthropic_reasoning`) and get
+/// [`anthropic_off`] here. For the other transports — a `claude-*` id on an
 /// OpenAI-compatible gateway included — this is the setting: `Zero` for an
 /// Ollama model (`think: false`), else the model's lowest listed effort
 /// (`none` → `minimal` → `low`), else no reasoning setting.
 pub fn thinking_off(model: &Resolved) -> Option<ReasoningEffort> {
-    if crate::loop_::ns(&model.genai) == "ollama" {
+    let ns = crate::loop_::ns(&model.genai);
+    let slug = model
+        .genai
+        .split_once("::")
+        .map_or(model.genai.as_str(), |(_, s)| s);
+    if ns == "ollama" {
         return Some(ReasoningEffort::Zero);
+    }
+    if ns.starts_with("bedrock") && slug.split('.').any(|seg| seg == "anthropic") {
+        return Some(anthropic_off(slug));
     }
     let values: Vec<&str> = model
         .model
@@ -159,6 +168,24 @@ pub fn thinking_off(model: &Resolved) -> Option<ReasoningEffort> {
     .into_iter()
     .find(|(name, _)| values.contains(name))
     .map(|(_, e)| e)
+}
+
+/// R2-8: the least thinking genai's Anthropic mapping (`ant_reasoning.rs`
+/// at d2fd71e) can ask of `slug`. `Zero` sends `thinking: {type:
+/// "disabled"}` where genai marks thinking on by default (Haiku 5+, Sonnet
+/// 5, Opus 5) and nothing elsewhere. Fable and Mythos are marked off by
+/// default, so `Zero` sends nothing — and they then think adaptively (3 of 4
+/// probe replies empty at 600 tokens) — while `disabled` is a 400 ("use
+/// thinking.type.adaptive and output_config.effort"). For them `Low`, which
+/// genai sends as `thinking: {type: "adaptive"}` + `output_config.effort:
+/// "low"` (probe: 4 of 4 text replies, 0 thinking tokens).
+pub fn anthropic_off(slug: &str) -> ReasoningEffort {
+    // genai's own family test for these two (`legacy_is_fable_or_mythos`).
+    if slug.contains("fable") || slug.contains("mythos") {
+        ReasoningEffort::Low
+    } else {
+        ReasoningEffort::Zero
+    }
 }
 
 /// The step of one call.
@@ -866,9 +893,14 @@ impl ModelCompactor {
                 .with_prompt_cache_key(format!("endless:{}", self.session))
                 .with_cache_control(CacheControl::Ephemeral24h);
         }
-        // R2-7: thinking off by transport, not by model id.
+        // R2-7 / R2-8: thinking off by transport, not by model id.
         let effort = if anthropic {
-            Some(ReasoningEffort::Zero)
+            let slug = self
+                .model
+                .genai
+                .split_once("::")
+                .map_or(self.model.genai.as_str(), |(_, s)| s);
+            Some(anthropic_off(slug))
         } else {
             self.effort.clone()
         };
@@ -1123,6 +1155,27 @@ mod tests {
             Some(ReasoningEffort::Zero)
         ));
         assert!(thinking_off(&r("openai::gpt-4.1", None)).is_none());
+        // R2-8: Bedrock's Anthropic models take genai's Anthropic mapping;
+        // Fable and Mythos reject `disabled`, so they get adaptive at `low`.
+        assert!(matches!(
+            thinking_off(&r(
+                "bedrock_sigv4::us.anthropic.claude-haiku-5-5-v1:0",
+                None
+            )),
+            Some(ReasoningEffort::Zero)
+        ));
+        assert!(matches!(
+            thinking_off(&r("bedrock_sigv4::anthropic.claude-fable-5-1-v1:0", None)),
+            Some(ReasoningEffort::Low)
+        ));
+        assert!(matches!(
+            anthropic_off("claude-mythos-5"),
+            ReasoningEffort::Low
+        ));
+        assert!(matches!(
+            anthropic_off("claude-opus-5"),
+            ReasoningEffort::Zero
+        ));
         let dir = crate::TestDir::new("compactor-thinking");
         let compactor = |model: Resolved| ModelCompactor {
             session: runtime::SessionId::new(),

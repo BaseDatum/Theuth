@@ -124,7 +124,12 @@ def call(a, key, system, user, max_tokens):
         body = {"model": a.model, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}]}
         if a.thinking == "disabled":
             # R1 Q1: Haiku 5.x thinks adaptively unless told not to; omitting the field is not enough.
-            body["thinking"] = {"type": "disabled"}
+            # R2-8: Fable/Mythos reject `disabled`; adaptive at the lowest effort is their "off".
+            if "fable" in a.model or "mythos" in a.model:
+                body["thinking"] = {"type": "adaptive"}
+                body["output_config"] = {"effort": "low"}
+            else:
+                body["thinking"] = {"type": "disabled"}
     else:
         url, hdr = a.base_url.rstrip("/") + "/v1/chat/completions", {"Authorization": "Bearer " + key}
         body = {"model": a.model, "max_tokens": max_tokens,
