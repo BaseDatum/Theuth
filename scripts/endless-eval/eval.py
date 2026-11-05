@@ -103,7 +103,7 @@ def batch_prompt(earlier, us, nb):
     body = "\n\n".join(f"[{k}] {u['kind']}: {u['text']}" for k, u in enumerate(us, 1))
     return head(earlier, nb) + (
         f"Compress each of these {n} messages into one line each, in at most {nb} bytes per line. "
-        f"Reply with exactly {n} lines, numbered in order as `1| …`, `2| …`, one per message, nothing else:\n{body}")
+        f"Reply with exactly {n} lines, numbered in order as `1| …`, `2| …`, one per message, nothing else:\n\n{body}")
 
 # ---- providers ----
 def call(a, key, system, user, max_tokens):

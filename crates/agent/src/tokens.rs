@@ -157,11 +157,20 @@ pub struct Limits {
     pub cap_bytes: Option<usize>,
 }
 
-/// `window − reply − 5 %`, in tokens.
+/// `window − reply − 5 %`, in tokens. A reply cap over half the window
+/// (a frame sized for a larger window than the catalog or the 200k default
+/// says) counts as half the window.
 pub fn ceiling(model: &Resolved, reply_tokens: u64) -> u64 {
-    let room = window(model).saturating_sub(reply_tokens);
+    let window = window(model);
+    let room = window - reply_tokens.min(window / 2);
     (room as f64 * (1.0 - MARGIN)) as u64
 }
+
+/// Test seam: model ids whose requests skip the preflight (scenarios whose
+/// fake provider accepts what the catalog window could not hold).
+#[cfg(test)]
+pub(crate) static EXEMPT_FOR_TESTS: LazyLock<Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(Default::default);
 
 /// G1 budget policy for one request of `kind` to `model`.
 pub fn budget(kind: Kind, model: &Resolved, l: Limits) -> Budget {
@@ -197,6 +206,10 @@ pub fn budget(kind: Kind, model: &Resolved, l: Limits) -> Budget {
 pub fn preflight(model: &Resolved, req: &ChatRequest, reply_tokens: u64) -> Result<u64, String> {
     let est = estimate(&model.id, req);
     let max = ceiling(model, reply_tokens);
+    #[cfg(test)]
+    if EXEMPT_FOR_TESTS.lock().contains(&model.id) {
+        return Ok(est);
+    }
     if est > max {
         let known = model.model.as_ref().is_some_and(|m| m.limit.context > 0);
         return Err(format!(
