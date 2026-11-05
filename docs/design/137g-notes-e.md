@@ -56,3 +56,11 @@ turn: POST 139,008 B (97,208 tok by the fake) -> 400 too long; "endless: turn re
 set_session_compactor_model A "small/m" -> model small/m, source chat; None -> fast/m, source settings
 fast.log: 23 batch + 26 merge calls, largest compactor request 46,598 B
 ```
+- **Preflight vs. existing scenarios**: a reply cap over half the window counts as half the window in the ceiling (the 116 test frames a 943k reply against an unknown, 200k-assumed window). `compact_floor_tests` drives a 9k-window model with a ≈12k-token frame the fake accepts; a real 9k model refuses it, so that scenario exempts its model id through the test-only `tokens::EXEMPT_FOR_TESTS` seam.
+- **Learner persistence**: none (in memory); after a restart an unmeasured model starts at 2.2 B/token again, which is conservative.
+
+## Gates (tip of fix/137g-e)
+- `mbx check -p agent -p rpc -p tui --tests`: 0 errors, 0 warnings.
+- `mbx clippy -p agent -p rpc --tests --no-deps -- -D warnings`: 0.
+- Endless tests (`endless tokens compact_in_an_endless`, 69) 5×: all pass. Full `mbx test -p agent --lib --no-fail-fast`: 720 passed, 1 failed (`repl::tests::capping_binds_out_name`, known); one earlier full run also saw `supervisor::tests::human_input_promotes_a_queued_child` time out under load (passes alone 3/3 and in the next full run).
+- `mbx test -p rpc --features ts --lib`: 85 passed; `bindings/methods.json` lists `endless_fold`, `endless_pause`, `set_session_compactor_model`.
