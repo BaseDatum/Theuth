@@ -1517,6 +1517,8 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "todo" => (None, "</todo>"),
             "context_pressure" => (None, "</context_pressure>"),
             "runtime" => (None, "</runtime>"),
+            // 137G: a bare `<memory>` endless note (no attributes).
+            "memory" if open == "memory" => (None, "</memory>"),
             "knowledge" => (None, "</knowledge>"),
             // 144 §5.3: the bound chat's volatile `<notebook>` block (a harness note like `<knowledge>`).
             "notebook" => (None, "</notebook>"),
@@ -11152,6 +11154,11 @@ fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
         }
         return out;
     }
+    // 137G: a bare `<memory>` harness note is a muted info line (a tag with
+    // attributes stays the user's message).
+    if let Some(body) = agent::endless_ext::memory_note(&text) {
+        return vec![Entry::Info(body.to_owned())];
+    }
     if let Some((name, body, rest)) = agent::skills::injected(&text) {
         let mut out = vec![card(CardKind::Skill, name.to_owned(), body)];
         if !rest.is_empty() {
@@ -15610,6 +15617,20 @@ mod tests {
         assert_eq!(injected("<b>\nnot a wrapper\n</b>"), None);
         assert_eq!(injected("hello"), None);
         assert_eq!(injected("<todo>unterminated"), None);
+        // 137G: a bare `<memory>` note is the harness's; with attributes it is the user's.
+        assert_eq!(
+            injected("<memory>\nmemory: folded\n</memory>"),
+            Some(Vec::new())
+        );
+        assert_eq!(injected("<memory kind=\"x\">mine</memory>"), None);
+        assert!(matches!(
+            user_entries("<memory>\nmemory: 3 older unsummarized lines were folded to fit\n</memory>".into(), None).as_slice(),
+            [Entry::Info(t)] if t == "memory: 3 older unsummarized lines were folded to fit"
+        ));
+        assert!(matches!(
+            user_entries("<memory kind=\"x\">mine</memory>".into(), None).as_slice(),
+            [Entry::User { .. }]
+        ));
     }
 
     /// 61 §2.3: a quiet PTY job cards as `j4 idle 63s · name`; body is the screen.

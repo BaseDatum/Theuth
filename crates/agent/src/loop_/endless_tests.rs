@@ -323,6 +323,8 @@ fn endless_turn_view_is_bounded_and_shrinks_after_a_refusal() {
 /// the retried request carries the fold note.
 async fn scenario_bounded_view() {
     let _reg_dir = registry().await;
+    // R1-10: a model id no other scenario teaches (sizing stays at 2.2 B/token).
+    crate::tokens::forget_for_tests("openai/bounded");
     let mut h = Harness::new(RefuseFirst {
         inner: Fake::compact_held(Duration::ZERO),
         refused: std::sync::atomic::AtomicBool::new(false),
@@ -342,7 +344,7 @@ async fn scenario_bounded_view() {
         .await
         .unwrap();
     let attached = crate::endless::Attached {
-        model: h.resolve("openai/textonly"),
+        model: h.resolve("openai/bounded"),
         effort: None,
         agent: "theuth".into(),
         store: None,
@@ -373,7 +375,7 @@ async fn scenario_bounded_view() {
     let mut session = Session::new(
         h.id,
         0,
-        (h.resolve("openai/textonly"), None),
+        (h.resolve("openai/bounded"), None),
         None,
         SessionState::resume(epoch, head, history),
         Arc::new(AgentConfig::default()),

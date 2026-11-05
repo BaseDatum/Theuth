@@ -363,6 +363,9 @@ impl Harness {
                 "eyes": model("eyes", true),
                 "broken": model("broken", true),
                 "tiny": tiny,
+                // 137G R1-10: the endless turn-budget test's own model id, so no
+                // other scenario's learned bytes/token reaches it.
+                "bounded": model("bounded", false),
             }}})
             .to_string(),
         )

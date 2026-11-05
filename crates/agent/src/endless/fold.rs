@@ -101,9 +101,10 @@ pub fn folded_text(n: u64) -> String {
 }
 
 /// 137G G2 hard cap: the line the oldest `n` units fold into when the view
-/// cannot fit otherwise (merges not built yet).
+/// cannot fit otherwise (merges not built yet). Its `id+n` is no tree node,
+/// so it names recall, not zoom (R1-5).
 pub fn prefix_text(n: u64) -> String {
-    format!("({n} older lines folded to fit the view — zoom or recall reach them)")
+    format!("({n} older lines folded to fit the view — recall reaches them)")
 }
 
 /// The view: parts tiling `[base, T)` with their rendered byte sizes.
@@ -114,6 +115,9 @@ pub struct Fold {
     sizes: Vec<usize>,
     /// Per part: not built (a level-0 unit rendered per D10).
     open: Vec<bool>,
+    /// R1-9: Σ sizes of built parts and of open parts, kept as parts change.
+    built_bytes: usize,
+    open_bytes: usize,
     /// First unit the tree covers (R1-D4 backfill base); 0 = everything.
     pub base: u64,
     /// Units so far.
@@ -129,6 +133,8 @@ impl Fold {
             parts: Vec::new(),
             sizes: Vec::new(),
             open: Vec::new(),
+            built_bytes: 0,
+            open_bytes: 0,
             base,
             t: base,
             cfg,
@@ -152,8 +158,11 @@ impl Fold {
         debug_assert_eq!(i, self.t);
         let part = Part { l: 0, i };
         self.parts.push(part);
-        self.sizes.push(part_len(tree, part, units));
-        self.open.push(!tree.built(0, i));
+        let size = part_len(tree, part, units);
+        let open = !tree.built(0, i);
+        self.sizes.push(size);
+        self.open.push(open);
+        self.tally(size, open, true);
         self.t = i + 1;
         self.fit(tree, units);
     }
@@ -253,10 +262,27 @@ impl Fold {
         size + if self.base > 0 { EARLIER.len() } else { 0 }
     }
 
-    /// What `fit()` folds against: every line, the G2 raw runs as one line
-    /// each (merging cannot shrink the unbuilt backlog).
+    /// Add (`add`) or remove one part's bytes from the running sums.
+    fn tally(&mut self, size: usize, open: bool, add: bool) {
+        let sum = if open {
+            &mut self.open_bytes
+        } else {
+            &mut self.built_bytes
+        };
+        if add {
+            *sum += size;
+        } else {
+            *sum -= size;
+        }
+    }
+
+    /// What `fit()` folds against, O(1) (R1-9): the built lines plus the
+    /// unbuilt ones up to `raw_bytes` (merging cannot shrink the backlog; the
+    /// G2 run lines themselves are not counted).
     fn fit_size(&self) -> usize {
-        self.size_with(&self.raw_runs(), false)
+        self.built_bytes
+            + self.open_bytes.min(self.cfg.raw_bytes as usize)
+            + if self.base > 0 { EARLIER.len() } else { 0 }
     }
 
     /// Σ bytes of every rendered line (D10 placeholders counted; G2 folded
@@ -281,11 +307,15 @@ impl Fold {
                 i: a.i / 2,
             };
             let len = part_len(tree, parent, units);
-            size = size - self.sizes[k] - self.sizes[k + 1] + len;
+            let parent_open = !tree.built(parent.l, parent.i);
+            for j in [k, k + 1] {
+                self.tally(self.sizes[j], self.open[j], false);
+            }
+            self.tally(len, parent_open, true);
             self.parts.splice(k..k + 2, [parent]);
             self.sizes.splice(k..k + 2, [len]);
-            self.open
-                .splice(k..k + 2, [!tree.built(parent.l, parent.i)]);
+            self.open.splice(k..k + 2, [parent_open]);
+            size = self.fit_size();
             merged += 1;
         }
         merged

@@ -705,7 +705,20 @@ impl Endless {
         epoch: u32,
         filter: UnitFilter,
     ) -> anyhow::Result<SetMode> {
-        pump::set_mode(&self.inner, session, mode, filter, epoch).await
+        pump::set_mode(&self.inner, session, mode, filter, epoch, None).await
+    }
+
+    /// [`Endless::set_mode`] whose `/endless off` head is scaled to at most
+    /// `max_bytes` of view budget (the session model's turn allowance, R1-7).
+    pub async fn set_mode_within(
+        &self,
+        session: SessionId,
+        mode: MemoryMode,
+        epoch: u32,
+        filter: UnitFilter,
+        max_bytes: usize,
+    ) -> anyhow::Result<SetMode> {
+        pump::set_mode(&self.inner, session, mode, filter, epoch, Some(max_bytes)).await
     }
 
     /// RPC `session_memory` body data.

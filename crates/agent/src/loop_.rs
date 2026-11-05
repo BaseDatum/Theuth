@@ -4586,6 +4586,12 @@ impl Turn {
                 let Some(v) = self.view.as_mut() else {
                     return false;
                 };
+                v.shrunk = true;
+                // R1-6: a re-render that is not smaller would resend the same request.
+                if render.text().len() >= v.render.text().len() {
+                    tracing::info!(session = %id, bytes = render.text().len(), "endless: turn refused as too long; the view cannot shrink further");
+                    return false;
+                }
                 tracing::info!(session = %id, prompt = n.prompt, window = n.window, from_bytes = from, to_bytes = to, bytes = render.text().len(), folded = render.folded, "endless: turn refused as too long; view re-rendered smaller");
                 v.note = Some(view_note(render.folded));
                 v.render = render;
@@ -6228,10 +6234,18 @@ impl Turn {
             }
             Err(Abort::Model(e)) => {
                 // 137G G5: an endless view that made the request too long is
-                // re-rendered smaller once (window / prompt × 0.85), then the
+                // re-rendered smaller once (window / prompt × 0.85; a shape
+                // without numbers, like Bedrock's, halves it), then the
                 // round retries — before any compaction.
                 if compact::is_overflow(&e)
-                    && let Some(n) = compact::overflow_numbers(&e).filter(|n| n.prompt > n.window)
+                    && let Some(n) = match compact::overflow_numbers(&e) {
+                        Some(n) => (n.prompt > n.window).then_some(n),
+                        None => Some(compact::OverflowNumbers {
+                            window: 1,
+                            prompt: 2,
+                            max_tokens: None,
+                        }),
+                    }
                     && self.shrink_view(n).await
                 {
                     return Round::Retry;
@@ -7107,7 +7121,10 @@ impl Turn {
             return Ok(SetMode { memory, head: None });
         }
         let n = self.state.epoch + 1;
-        let r = crate::endless_ext::set_mode(endless, session, mode, n, filter)
+        // R1-7: the `/endless off` head fits the session model's turn budget.
+        let allowance = self.view_allowance();
+        let r = endless
+            .set_mode_within(session, mode, n, filter, allowance)
             .await
             .map_err(|e| format!("{e:#}"))?;
         match mode {

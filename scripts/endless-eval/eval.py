@@ -68,8 +68,20 @@ def check(line, inp, nb):
         if any(w.startswith(stem) for w in lt) and stem not in il:
             return line, "status"
     if len(line.encode()) > nb:
-        return line, "size"
+        # R1 Q2 (as the engine): a size-only trip is cut at a word boundary and accepted.
+        return cut_words(line, nb), None
     return line, None
+
+def cut_words(s, nb):
+    """Mirror of guards::cut_words: ≤ nb bytes, at a word boundary in the second half, ending in '…'."""
+    b = s.encode()
+    if len(b) <= nb:
+        return s
+    head = b[:nb - 3].decode("utf-8", errors="ignore")
+    p = head.rfind(" ")
+    if p >= len(head.encode()) // 2:
+        head = head[:p]
+    return head.rstrip() + "…"
 
 # ---- key terms ----
 def terms(s):
@@ -110,6 +122,9 @@ def call(a, key, system, user, max_tokens):
     if a.provider == "anthropic":
         url, hdr = a.base_url.rstrip("/") + "/v1/messages", {"x-api-key": key, "anthropic-version": "2023-06-01"}
         body = {"model": a.model, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}]}
+        if a.thinking == "disabled":
+            # R1 Q1: Haiku 5.x thinks adaptively unless told not to; omitting the field is not enough.
+            body["thinking"] = {"type": "disabled"}
     else:
         url, hdr = a.base_url.rstrip("/") + "/v1/chat/completions", {"Authorization": "Bearer " + key}
         body = {"model": a.model, "max_tokens": max_tokens,
@@ -127,11 +142,22 @@ def call(a, key, system, user, max_tokens):
     return d["choices"][0]["message"]["content"] or "", u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
 
 def parse_batch(text, n):
-    got = {}
+    """Mirror of compactor::batch_lines: the last line of a repeated number wins; an
+    unnumbered line continues the numbered line before it."""
+    got, last = {}, None
     for l in text.splitlines():
-        m = re.match(r"^\s*(\d+)\s*[|.:)]\s*(.*)$", l)
-        if m and 1 <= int(m.group(1)) <= n and int(m.group(1)) not in got:
-            got[int(m.group(1))] = m.group(2)
+        l = l.strip()
+        if not l:
+            continue
+        m = re.match(r"^(\d+)\s*[|.:)]\s*(.*)$", l)
+        if m:
+            k = int(m.group(1))
+            if 1 <= k <= n:
+                got[k], last = m.group(2).strip(), k
+            else:
+                last = None
+        elif last is not None:
+            got[last] += " " + l
     return [got.get(k, "") for k in range(1, n + 1)]
 
 # ---- run ----
@@ -208,6 +234,8 @@ def main():
     p.add_argument("--price-out", type=float, default=5.0)
     p.add_argument("--timeout", type=float, default=120)
     p.add_argument("--out", default="/tmp/137g-e/eval/result.json")
+    p.add_argument("--thinking", choices=["disabled", "default"], default="disabled",
+                   help="anthropic: send thinking {type: disabled} (the engine's compactor does, R1 Q1)")
     a = p.parse_args()
     a.base_url = a.base_url or {"anthropic": "https://api.anthropic.com", "openai": "https://api.openai.com"}[a.provider]
     key = os.environ.get(a.key_env)
@@ -218,7 +246,7 @@ def main():
     units = load(a.limit)
     free = sum(len(f"{u['kind']}: {u['text']}".encode()) <= a.node_bytes for u in units)
     res = {m: run(a, key, units, m) for m in ("single", "batch")}
-    print(f"units={len(units)} free(verbatim, excluded)={free} node_bytes={a.node_bytes} model={a.model}")
+    print(f"units={len(units)} free(verbatim, excluded)={free} node_bytes={a.node_bytes} model={a.model} thinking={a.thinking}")
     print(f"{'mode':7}{'units':>6}{'calls':>6}{'pass%':>7}{'meanlen':>9}{'retain':>8}{'tok_in':>9}{'tok_out':>9}{'usd':>9}")
     for m, r in res.items():
         print(f"{m:7}{r['units']:>6}{r['calls']:>6}{100*r['pass_rate']:>7.1f}{r['mean_len']:>9.1f}"

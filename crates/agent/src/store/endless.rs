@@ -351,29 +351,43 @@ impl Store {
     /// REPLACE`: REPLACE's implicit delete skips the delete trigger and would
     /// leave the old line in the FTS index.
     pub async fn endless_nodes_put(&self, id: SessionId, nodes: &[Node]) -> anyhow::Result<()> {
+        self.nodes_put(id, nodes, true).await
+    }
+
+    /// 137G R1-8: store nodes only where none is built yet (`endless_fold`'s
+    /// excerpts never overwrite a model line that landed meanwhile).
+    pub async fn endless_nodes_put_new(&self, id: SessionId, nodes: &[Node]) -> anyhow::Result<()> {
+        self.nodes_put(id, nodes, false).await
+    }
+
+    async fn nodes_put(&self, id: SessionId, nodes: &[Node], replace: bool) -> anyhow::Result<()> {
         let sid = id.to_string();
         let now = Utc::now().to_rfc3339();
+        let sql = if replace {
+            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(session_id, l, i) DO UPDATE SET text = excluded.text, size = excluded.size, \
+             free = excluded.free, model = excluded.model, tries = excluded.tries, \
+             mechanical = excluded.mechanical, created_at = excluded.created_at"
+        } else {
+            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, l, i) DO NOTHING"
+        };
         let mut tx = self.begin_write().await?;
         for node in nodes {
-            sqlx::query(
-                "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, created_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-                 ON CONFLICT(session_id, l, i) DO UPDATE SET text = excluded.text, size = excluded.size, \
-                 free = excluded.free, model = excluded.model, tries = excluded.tries, \
-                 mechanical = excluded.mechanical, created_at = excluded.created_at",
-            )
-            .bind(&sid)
-            .bind(i64::from(node.l))
-            .bind(node.i as i64)
-            .bind(&node.text)
-            .bind(i64::from(node.size))
-            .bind(node.free)
-            .bind(&node.model)
-            .bind(i64::from(node.tries))
-            .bind(node.mechanical)
-            .bind(&now)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query(sql)
+                .bind(&sid)
+                .bind(i64::from(node.l))
+                .bind(node.i as i64)
+                .bind(&node.text)
+                .bind(i64::from(node.size))
+                .bind(node.free)
+                .bind(&node.model)
+                .bind(i64::from(node.tries))
+                .bind(node.mechanical)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await
     }
@@ -582,6 +596,43 @@ mod tests {
             .await
             .unwrap();
         (store, scratch)
+    }
+
+    /// 137G R1-8: `endless_fold`'s insert-only put never overwrites a model
+    /// line that landed first; the FTS mirror keeps that line.
+    #[tokio::test]
+    async fn fold_put_keeps_a_model_line_that_landed_first() {
+        let (store, _dir) = fresh().await;
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        let node = |text: &str, mechanical: bool| Node {
+            l: 0,
+            i: 0,
+            text: text.into(),
+            size: text.len() as u32,
+            free: false,
+            model: (!mechanical).then(|| "m".to_owned()),
+            tries: i32::from(!mechanical),
+            mechanical,
+        };
+        store
+            .endless_node_put(id, &node("user: the model line about zebras", false))
+            .await
+            .unwrap();
+        store
+            .endless_nodes_put_new(id, &[node("user: excerpt …", true)])
+            .await
+            .unwrap();
+        let nodes = store.endless_nodes(id).await.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert!(!nodes[0].mechanical && nodes[0].text.contains("zebras"));
+        assert_eq!(
+            store.endless_recall(id, "zebras", 8).await.unwrap().len(),
+            1
+        );
     }
 
     /// Mode round-trips, units/nodes/calls persist, FTS follows level 0

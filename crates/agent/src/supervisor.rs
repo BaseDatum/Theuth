@@ -10105,6 +10105,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         });
     }
     let client = client(auth.clone())?;
+    // 137G R1-1: the bytes/token the preflight learned before this restart.
+    crate::tokens::init(&rt.data_dir);
     // 137: one endless service per engine; its pumps restart from the rows
     // once the actor is up (`resume_all` below).
     let endless = Endless::new(

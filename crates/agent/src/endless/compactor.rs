@@ -128,6 +128,46 @@ pub fn local_endpoint(model: &Resolved, base_url: Option<&str>) -> Option<String
     })
 }
 
+/// R1 Q1: a compactor never thinks — thinking spends the reply cap and
+/// leaves no text (Haiku 5.5 thinks adaptively when no config is sent).
+/// Anthropic gets `Zero`: genai sends `thinking: {"type": "disabled"}` for
+/// the families that think by default (Haiku 5+, Sonnet 5, Opus 5) and
+/// omits thinking for the rest. An Ollama model gets `Zero` (`think:
+/// false`); an OpenAI-style reasoning model its lowest listed effort
+/// (`none` → `minimal` → `low`); anything else no reasoning setting.
+pub fn thinking_off(model: &Resolved) -> Option<ReasoningEffort> {
+    let ns = crate::loop_::ns(&model.genai);
+    let slug = model
+        .genai
+        .split_once("::")
+        .map_or(model.genai.as_str(), |(_, s)| s);
+    let anthropic = ns == "anthropic"
+        || slug.starts_with("claude-")
+        || slug.split('.').any(|seg| seg == "anthropic")
+        || model.id.starts_with("anthropic/");
+    if anthropic || ns == "ollama" {
+        return Some(ReasoningEffort::Zero);
+    }
+    let values: Vec<&str> = model
+        .model
+        .iter()
+        .flat_map(|m| &m.reasoning_options)
+        .filter_map(|o| match o {
+            models::ReasoningOption::Effort { values } => Some(values.iter().map(String::as_str)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    [
+        ("none", ReasoningEffort::Zero),
+        ("minimal", ReasoningEffort::Minimal),
+        ("low", ReasoningEffort::Low),
+    ]
+    .into_iter()
+    .find(|(name, _)| values.contains(name))
+    .map(|(_, e)| e)
+}
+
 /// The step of one call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -139,6 +179,9 @@ pub enum Step {
         text: String,
         /// Lines already written for earlier units of this stretch (text only).
         earlier: Vec<String>,
+        /// 137G R1 Q3: a firmer byte target than `node_bytes` for the
+        /// instruction (a unit retried alone after its batch line tripped).
+        aim: Option<u32>,
     },
     /// `node(l, i)`: merge two child lines.
     Merge {
@@ -202,8 +245,11 @@ impl Step {
             guards::ruler(node_bytes)
         ));
         match self {
-            Self::Unit { kind, text, .. } => s.push_str(&format!(
-                "Compress this message into one line, in at most {node_bytes} bytes:\n{}: {text}",
+            Self::Unit {
+                kind, text, aim, ..
+            } => s.push_str(&format!(
+                "Compress this message into one line, in at most {} bytes:\n{}: {text}",
+                aim.unwrap_or(node_bytes).min(node_bytes),
                 kind.as_str()
             )),
             Self::Merge { a, b, .. } => s.push_str(&format!(
@@ -225,21 +271,35 @@ impl Step {
 }
 
 /// 137G G6: the batch reply's line for each of `n` units (`k| text`, also
-/// `k.` `k:` `k)`); `None` for a number the reply lacks.
+/// `k.` `k:` `k)`); `None` for a number the reply lacks. R1-9: the last line
+/// of a repeated number wins; an unnumbered line continues the numbered
+/// line before it (a wrapped reply).
 pub fn batch_lines(reply: &str, n: usize) -> Vec<Option<String>> {
-    let mut out = vec![None; n];
+    let mut out: Vec<Option<String>> = vec![None; n];
+    let mut last: Option<usize> = None;
     for line in reply.lines() {
-        let l = line.trim_start();
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
         let digits = l.bytes().take_while(u8::is_ascii_digit).count();
-        let Ok(k) = l[..digits].parse::<usize>() else {
-            continue;
-        };
-        let rest = l[digits..].trim_start();
-        let Some(rest) = rest.strip_prefix(['|', '.', ':', ')']) else {
-            continue;
-        };
-        if (1..=n).contains(&k) && out[k - 1].is_none() {
-            out[k - 1] = Some(rest.trim().to_owned());
+        let numbered = l[..digits].parse::<usize>().ok().and_then(|k| {
+            let rest = l[digits..].trim_start();
+            rest.strip_prefix(['|', '.', ':', ')'])
+                .map(|rest| (k, rest.trim()))
+        });
+        match numbered {
+            Some((k, rest)) if (1..=n).contains(&k) => {
+                out[k - 1] = Some(rest.to_owned());
+                last = Some(k - 1);
+            }
+            Some(_) => last = None,
+            None => {
+                if let Some(slot) = last.and_then(|k| out[k].as_mut()) {
+                    slot.push(' ');
+                    slot.push_str(l);
+                }
+            }
         }
     }
     out
@@ -338,23 +398,64 @@ impl Built {
     /// The attempts' usage summed into one (for the node's `model_calls` row);
     /// `None` when no attempt reported usage.
     pub fn usage(&self) -> Option<Usage> {
-        let mut out: Option<Usage> = None;
-        for u in self.calls.iter().filter_map(|c| c.usage.as_ref()) {
-            let o = out.get_or_insert_with(Usage::default);
-            let add = |a: &mut Option<i32>, b: Option<i32>| {
-                if let Some(b) = b {
-                    *a = Some(a.unwrap_or(0).saturating_add(b));
-                }
-            };
-            add(&mut o.prompt_tokens, u.prompt_tokens);
-            add(&mut o.completion_tokens, u.completion_tokens);
-            if let Some(d) = &u.prompt_tokens_details {
-                let od = o.prompt_tokens_details.get_or_insert_with(Default::default);
-                add(&mut od.cached_tokens, d.cached_tokens);
-                add(&mut od.cache_creation_tokens, d.cache_creation_tokens);
+        sum_usage(&self.calls)
+    }
+}
+
+/// `calls`' usage summed into one; `None` when no attempt reported usage.
+pub fn sum_usage(calls: &[CallRow]) -> Option<Usage> {
+    let mut out: Option<Usage> = None;
+    for u in calls.iter().filter_map(|c| c.usage.as_ref()) {
+        let o = out.get_or_insert_with(Usage::default);
+        let add = |a: &mut Option<i32>, b: Option<i32>| {
+            if let Some(b) = b {
+                *a = Some(a.unwrap_or(0).saturating_add(b));
             }
+        };
+        add(&mut o.prompt_tokens, u.prompt_tokens);
+        add(&mut o.completion_tokens, u.completion_tokens);
+        if let Some(d) = &u.prompt_tokens_details {
+            let od = o.prompt_tokens_details.get_or_insert_with(Default::default);
+            add(&mut od.cached_tokens, d.cached_tokens);
+            add(&mut od.cache_creation_tokens, d.cache_creation_tokens);
         }
-        out
+    }
+    out
+}
+
+/// A build that failed, with the ledger rows of the attempts that were
+/// answered before it (R1-4: they were billed).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Failed {
+    /// The error, one provider or transport message.
+    pub error: String,
+    /// Answered attempts before the failure.
+    pub calls: Vec<CallRow>,
+}
+
+impl From<String> for Failed {
+    fn from(error: String) -> Self {
+        Self {
+            error,
+            calls: Vec::new(),
+        }
+    }
+}
+
+/// R1 Q2: the guards, except that a line whose only trip is `size` is cut
+/// at a word boundary to `node_bytes` (with an ellipsis) and accepted.
+pub fn accept(
+    line: &str,
+    input: &str,
+    ruler: &str,
+    node_bytes: u32,
+) -> Result<String, guards::Trip> {
+    match guards::check(line, input, ruler, guards::PROMPT_PHRASES, node_bytes) {
+        Err(guards::Trip::Size) => {
+            guards::check(line, input, ruler, guards::PROMPT_PHRASES, u32::MAX)
+                .map(|l| guards::cut_words(&l, node_bytes as usize))
+        }
+        other => other,
     }
 }
 
@@ -367,13 +468,14 @@ pub async fn build(
     node_bytes: u32,
     tries: u8,
     attempt: Duration,
-) -> Result<Built, String> {
+) -> Result<Built, Failed> {
     match step {
         Step::Batch { units, .. } => build_batch(c, ctx, step, units, node_bytes, attempt).await,
         Step::Unit {
             kind,
             text,
             earlier,
+            aim,
         } if text.len() > MAP_REDUCE_OVER => {
             // G4: chunks of ≤ CHUNK_BYTES summarised alone, then one reduce
             // call over their lines gives the node; every call is bounded by
@@ -382,29 +484,35 @@ pub async fn build(
             let mut calls = Vec::new();
             let mut tries_used = 0i32;
             let mut failed_guard = false;
-            for chunk in chunks(text, CHUNK_BYTES) {
+            let parts = chunks(text, CHUNK_BYTES)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            for chunk in parts.into_iter().map(Some).chain([None]) {
                 let part = Step::Unit {
                     kind: *kind,
-                    text: chunk.to_owned(),
+                    text: chunk.unwrap_or_else(|| lines.join("\n")),
                     earlier: earlier.clone(),
+                    aim: *aim,
                 };
-                let b = build_one(c, ctx, &part, node_bytes, tries, attempt).await?;
-                tries_used += b.tries.abs();
-                failed_guard |= b.tries < 0;
-                calls.extend(b.calls);
-                lines.push(b.text);
+                match build_one(c, ctx, &part, node_bytes, tries, attempt).await {
+                    Ok(b) => {
+                        tries_used += b.tries.abs();
+                        failed_guard |= b.tries < 0;
+                        calls.extend(b.calls);
+                        lines.push(b.text);
+                    }
+                    Err(mut f) => {
+                        calls.append(&mut f.calls);
+                        return Err(Failed {
+                            error: f.error,
+                            calls,
+                        });
+                    }
+                }
             }
-            let reduce = Step::Unit {
-                kind: *kind,
-                text: lines.join("\n"),
-                earlier: earlier.clone(),
-            };
-            let b = build_one(c, ctx, &reduce, node_bytes, tries, attempt).await?;
-            tries_used += b.tries.abs();
-            failed_guard |= b.tries < 0;
-            calls.extend(b.calls);
             Ok(Built {
-                text: b.text,
+                text: lines.pop().unwrap_or_default(),
                 tries: if failed_guard {
                     -tries_used
                 } else {
@@ -416,6 +524,32 @@ pub async fn build(
         }
         _ => build_one(c, ctx, step, node_bytes, tries, attempt).await,
     }
+}
+
+/// R1-3 / G11: the prompt bytes of the largest single call `step` makes,
+/// without its context (a map-reduce unit: one chunk's call).
+pub fn largest_call_bytes(step: &Step, node_bytes: u32) -> usize {
+    let one = match step {
+        Step::Unit {
+            kind,
+            text,
+            earlier,
+            aim,
+        } if text.len() > MAP_REDUCE_OVER => Step::Unit {
+            kind: *kind,
+            text: chunks(text, CHUNK_BYTES)
+                .first()
+                .copied()
+                .unwrap_or_default()
+                .to_owned(),
+            earlier: earlier.clone(),
+            aim: *aim,
+        }
+        .render(node_bytes)
+        .len(),
+        _ => step.render(node_bytes).len(),
+    };
+    COMPACT.len() + one
 }
 
 /// `text` cut into pieces of at most `max` bytes, at a line end when one
@@ -439,8 +573,9 @@ pub fn chunks(text: &str, max: usize) -> Vec<&str> {
 }
 
 /// 137G G6: one call for a batch; each unit's numbered line passes the same
-/// guards as a single build, or names the guard it tripped. No in-call
-/// retries: a failing unit is retried alone with the single-unit prompt.
+/// guards as a single build (a size-only trip is cut, Q2), or names the
+/// guard it tripped. No in-call retries: a failing unit is retried alone
+/// with the single-unit prompt.
 async fn build_batch(
     c: &dyn Compactor,
     ctx: &str,
@@ -448,7 +583,7 @@ async fn build_batch(
     units: &[(Kind, String)],
     node_bytes: u32,
     attempt: Duration,
-) -> Result<Built, String> {
+) -> Result<Built, Failed> {
     let convo = vec![ChatMessage::user(step.render(node_bytes))];
     let reply = match tokio::time::timeout(
         attempt,
@@ -457,8 +592,8 @@ async fn build_batch(
     .await
     {
         Ok(Ok(reply)) => reply,
-        Ok(Err(e)) => return Err(e),
-        Err(_) => return Err(format!("timed out after {}s", attempt.as_secs())),
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => return Err(format!("timed out after {}s", attempt.as_secs()).into()),
     };
     let raw = reply.text.trim();
     let ruler = guards::ruler(node_bytes);
@@ -467,11 +602,10 @@ async fn build_batch(
         .zip(batch_lines(raw, units.len()))
         .map(|((kind, text), line)| match line {
             None => Err(guards::Trip::Format.as_str()),
-            Some(l) => guards::check(
+            Some(l) => accept(
                 &l,
                 &format!("{}: {text}", kind.as_str()),
                 &ruler,
-                guards::PROMPT_PHRASES,
                 node_bytes,
             )
             .map_err(guards::Trip::as_str),
@@ -496,11 +630,13 @@ async fn build_batch(
     })
 }
 
-/// Run the retry loop for one node: up to `tries` attempts, each guard or
-/// size failure answered in the same conversation; keep the shortest passing
-/// candidate, else the shortest of all. Each attempt is bounded by `attempt`
-/// (137F E6); an attempt that fails or times out after a candidate exists
-/// ends the loop on that candidate (E7) instead of failing the node.
+/// Run the retry loop for one node: up to `tries` attempts, each guard
+/// failure answered in the same conversation (a size-only trip is cut and
+/// accepted, Q2); keep the shortest passing candidate, else the shortest of
+/// all. Each attempt is bounded by `attempt` (137F E6); an attempt that
+/// fails or times out after a candidate exists ends the loop on that
+/// candidate (E7) instead of failing the node. A failure carries the rows
+/// of the attempts answered before it (R1-4).
 async fn build_one(
     c: &dyn Compactor,
     ctx: &str,
@@ -508,7 +644,7 @@ async fn build_one(
     node_bytes: u32,
     tries: u8,
     attempt: Duration,
-) -> Result<Built, String> {
+) -> Result<Built, Failed> {
     let input = step.input();
     let ruler = guards::ruler(node_bytes);
     let mut convo = vec![ChatMessage::user(step.render(node_bytes))];
@@ -522,14 +658,19 @@ async fn build_one(
         // candidate; a provider/transport error fails the node as before.
         let reply = match tokio::time::timeout(attempt, c.compress(ctx, &convo)).await {
             Ok(Ok(reply)) => reply,
-            Ok(Err(e)) if shortest.is_none() || !is_timeout(&e) => return Err(e),
+            Ok(Err(error)) if shortest.is_none() || !is_timeout(&error) => {
+                return Err(Failed { error, calls });
+            }
             Err(_) if shortest.is_none() => {
-                return Err(format!("timed out after {}s", attempt.as_secs()));
+                return Err(Failed {
+                    error: format!("timed out after {}s", attempt.as_secs()),
+                    calls,
+                });
             }
             _ => break,
         };
         let raw = reply.text.trim().to_owned();
-        let check = guards::check(&raw, &input, &ruler, guards::PROMPT_PHRASES, node_bytes);
+        let check = accept(&raw, &input, &ruler, node_bytes);
         let usd = reply
             .usage
             .as_ref()
@@ -574,7 +715,10 @@ async fn build_one(
             calls,
             lines: Vec::new(),
         }),
-        (None, None) => Err("compactor returned nothing".into()),
+        (None, None) => Err(Failed {
+            error: "compactor returned nothing".into(),
+            calls,
+        }),
     }
 }
 
@@ -862,38 +1006,131 @@ mod tests {
             kind: Kind::User,
             text: "please rename the config loader to load_settings and keep the old alias".into(),
             earlier: vec![],
+            aim: None,
         }
     }
 
-    /// §14: size enforcement — overshoot, then comply in the same conversation.
+    /// R1 Q2: a reply whose only trip is `size` is cut at a word boundary
+    /// with an ellipsis and accepted — one call; any other trip still
+    /// answers in the same conversation.
     #[tokio::test]
-    async fn size_retry_in_same_conversation() {
+    async fn size_only_overshoot_is_cut_and_other_trips_retry() {
         let long = format!(
             "user: rename the config loader to load_settings {}",
-            "x".repeat(600)
+            "and keep the old alias ".repeat(40)
         );
-        let fake = Fake::new(&[
-            &long,
-            "user: rename the config loader to load_settings, keep old alias",
-        ]);
+        let fake = Fake::new(&[&long]);
         let built = build(&fake, "<chat>\n</chat>", &unit_step(), 512, 5, SECS)
             .await
             .unwrap();
-        assert_eq!(built.tries, 2);
-        assert_eq!(
-            built.text,
-            "user: rename the config loader to load_settings, keep old alias"
+        assert_eq!((built.tries, built.calls.len()), (1, 1));
+        assert_eq!(built.calls[0].guard, None);
+        assert!(
+            built.text.len() <= 512 && built.text.ends_with("alias…"),
+            "{}",
+            built.text
         );
-        assert_eq!(built.calls.len(), 2);
-        assert_eq!(built.calls[0].guard, Some("size"));
-        assert_eq!(built.calls[1].guard, None);
-        let sent = fake.sent.lock();
-        assert_eq!(sent[1].len(), 3, "step, assistant overshoot, correction");
-        let correction = sent[1][2].content.iter().next().and_then(|p| match p {
-            genai::chat::ContentPart::Text(t) => Some(t.clone()),
-            _ => None,
-        });
-        assert!(correction.unwrap().contains("the limit is 512"));
+
+        let ungrounded = format!("user: {}", "deploy the website tonight ".repeat(30));
+        let fake = Fake::new(&[
+            &ungrounded,
+            "user: rename the config loader to load_settings, keep old alias",
+        ]);
+        let built = build(&fake, "", &unit_step(), 512, 5, SECS).await.unwrap();
+        assert_eq!(built.tries, 2);
+        assert_eq!(built.calls[0].guard, Some("grounding"));
+        assert_eq!(
+            fake.sent.lock()[1].len(),
+            3,
+            "step, assistant reply, correction"
+        );
+    }
+
+    /// R1 Q3: a unit retried alone aims at its firmer target.
+    #[test]
+    fn solo_unit_prompt_carries_the_firm_target() {
+        let solo = Step::Unit {
+            kind: Kind::User,
+            text: "please rename the config loader to load_settings and keep the old alias".into(),
+            earlier: vec![],
+            aim: Some(409),
+        };
+        assert!(
+            solo.render(512)
+                .contains("Compress this message into one line, in at most 409 bytes:")
+        );
+        assert!(unit_step().render(512).contains("in at most 512 bytes:"));
+    }
+
+    /// R1-9: the last line of a repeated number wins; an unnumbered line
+    /// continues the numbered line before it; out-of-range numbers are dropped.
+    #[test]
+    fn batch_lines_take_the_last_duplicate_and_join_wraps() {
+        let got = batch_lines(
+            "intro\n1| first\n2| second\n  wrapped tail\n1| first again\n9| none",
+            3,
+        );
+        assert_eq!(
+            got,
+            [
+                Some("first again".to_owned()),
+                Some("second wrapped tail".to_owned()),
+                None
+            ]
+        );
+    }
+
+    /// R1 Q1: every compactor call runs with thinking off — `Zero` for an
+    /// Anthropic model (genai sends `thinking: {type: "disabled"}` for the
+    /// families that think by default, Haiku 5+ among them), the lowest
+    /// listed effort for an OpenAI reasoning model, nothing for a plain model;
+    /// the reply cap is back to 600 tokens.
+    #[test]
+    fn compactor_requests_run_with_thinking_off() {
+        let r = |genai: &str, efforts: Option<&[&str]>| Resolved {
+            id: "p/m".into(),
+            genai: genai.into(),
+            provider: None,
+            model: efforts.map(|v| {
+                serde_json::from_value(serde_json::json!({
+                    "id": "m", "name": "m", "limit": {"context": 200000, "output": 8192},
+                    "reasoning": true,
+                    "reasoning_options": [{"type": "effort", "values": v}]
+                }))
+                .unwrap()
+            }),
+        };
+        let haiku = r(
+            "anthropic::claude-haiku-5-5",
+            Some(&["low", "medium", "high"]),
+        );
+        assert!(matches!(thinking_off(&haiku), Some(ReasoningEffort::Zero)));
+        assert!(matches!(
+            thinking_off(&r("openai::gpt-5", Some(&["minimal", "low", "medium"]))),
+            Some(ReasoningEffort::Minimal)
+        ));
+        assert!(matches!(
+            thinking_off(&r("openai::gpt-5.1", Some(&["none", "low"]))),
+            Some(ReasoningEffort::Zero)
+        ));
+        assert!(thinking_off(&r("openai::gpt-4.1", None)).is_none());
+        let dir = crate::TestDir::new("compactor-thinking");
+        let c = ModelCompactor {
+            session: runtime::SessionId::new(),
+            backend: crate::backend::Backend::for_model(
+                &haiku,
+                &genai::Client::builder().build().unwrap(),
+                &crate::supervisor::Auth::stub(&dir.0),
+            ),
+            effort: thinking_off(&haiku),
+            model: haiku,
+            system: prompt("theuth"),
+            local: None,
+            cfg: Default::default(),
+        };
+        let (_, opts) = c.request(Transport::Anthropic, "<chat>\n</chat>", &[]);
+        assert!(matches!(opts.reasoning_effort, Some(ReasoningEffort::Zero)));
+        assert_eq!(opts.max_tokens, Some(MAX_TOKENS));
     }
 
     /// Tries exhausted with no passing candidate: the shortest wins, flagged negative.
@@ -915,8 +1152,8 @@ mod tests {
     /// candidate (hard cut, tries negative) instead of failing the node.
     #[tokio::test]
     async fn failed_attempt_after_a_candidate_keeps_it() {
-        let long = format!("user: rename the config loader {}", "x".repeat(600));
-        let fake = Fake::new(&[&long, "!err:timed out"]);
+        let ungrounded = format!("user: {}", "deploy the website tonight ".repeat(30));
+        let fake = Fake::new(&[&ungrounded, "!err:timed out"]);
         let built = build(&fake, "", &unit_step(), 512, 5, SECS).await.unwrap();
         assert_eq!(built.tries, -2);
         assert_eq!(built.text.len(), 512, "hard cut to node_bytes");
@@ -925,19 +1162,18 @@ mod tests {
         assert_eq!(
             build(&fake, "", &unit_step(), 512, 5, SECS)
                 .await
-                .unwrap_err(),
+                .unwrap_err()
+                .error,
             "timed out",
             "no candidate: the node fails"
         );
-        // R1-13: a provider error (429/5xx) is no slow model: the node fails and backs off.
-        let long = format!("user: rename the config loader {}", "x".repeat(600));
-        let fake = Fake::new(&[&long, "!err:429: rate limited"]);
-        assert_eq!(
-            build(&fake, "", &unit_step(), 512, 5, SECS)
-                .await
-                .unwrap_err(),
-            "429: rate limited"
-        );
+        // R1-13: a provider error (429/5xx) is no slow model: the node fails and backs off;
+        // R1-4: the failure keeps the answered attempt's row (it was billed).
+        let fake = Fake::new(&[&ungrounded, "!err:429: rate limited"]);
+        let f = build(&fake, "", &unit_step(), 512, 5, SECS)
+            .await
+            .unwrap_err();
+        assert_eq!((f.error.as_str(), f.calls.len()), ("429: rate limited", 1));
     }
 
     /// 137F E6: the attempt bound fires at `attempt`, not later.
@@ -948,7 +1184,7 @@ mod tests {
         let err = build(&fake, "", &unit_step(), 512, 5, Duration::from_secs(1))
             .await
             .unwrap_err();
-        assert_eq!(err, "timed out after 1s");
+        assert_eq!(err.error, "timed out after 1s");
         assert_eq!(t0.elapsed(), Duration::from_secs(1));
     }
 

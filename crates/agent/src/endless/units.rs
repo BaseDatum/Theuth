@@ -24,6 +24,12 @@ pub fn derive(
     let mut out = Vec::new();
     for (part, p) in m.content.iter().enumerate() {
         let (kind, text) = match (p, &m.role) {
+            // R1-7: the G9/G10 `<memory>` notices are about the memory, not in it.
+            (ContentPart::Text(t), ChatRole::User)
+                if crate::endless_ext::memory_note(t).is_some() =>
+            {
+                continue;
+            }
             (ContentPart::Text(t), ChatRole::User) => {
                 let kind = if t.starts_with(WORK_MARKER) {
                     Kind::Work
@@ -131,6 +137,22 @@ mod tests {
             r#"{"role":"User","content":[{"Text":"<message from=\"session:abc\" id=\"1\">done</message>"}]}"#,
         );
         assert_eq!(derive(3, None, &work, 30_000, 4)[0].kind, Kind::Work);
+    }
+
+    /// R1-7: a bare `<memory>` harness note (the G9/G10 notices) is no unit;
+    /// a `<memory …>` tag with attributes is the user's text and stays one.
+    #[test]
+    fn bare_memory_notes_are_not_units() {
+        let note = ChatMessage::user(
+            "<memory>\nmemory: 12 older unsummarized lines were folded to fit (recall searches them)\n</memory>",
+        );
+        assert!(derive(1, None, &note, 30_000, 0).is_empty());
+        let mine = ChatMessage::user("<memory kind=\"todo\">remember the keys</memory>");
+        assert_eq!(derive(2, None, &mine, 30_000, 0).len(), 1);
+        assert_eq!(
+            crate::endless_ext::memory_note("<memory>\n note \n</memory>"),
+            Some("note")
+        );
     }
 
     #[test]

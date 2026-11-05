@@ -7,6 +7,7 @@
 //! caller's overflow path (and `compact::overflow_numbers`) reads it.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use genai::chat::{ChatRequest, ContentPart};
@@ -15,7 +16,12 @@ use parking_lot::Mutex;
 
 /// Bytes per token before a model's usage is measured: dense JSON, code and
 /// CJK run 2.0–2.7, so 2.2 over-counts prose rather than under-counting code.
+/// What callers SIZE to.
 pub const DEFAULT_BPT: f64 = 2.2;
+/// R1-1: what the preflight REFUSES at while a model is unmeasured — the
+/// optimistic end, so a request that may fit is sent once and teaches the
+/// ratio (a local refusal teaches nothing).
+pub const UNLEARNED_REFUSE_BPT: f64 = 4.0;
 /// The learner's clamp.
 const BPT_RANGE: (f64, f64) = (1.8, 4.0);
 /// EWMA weight of one new observation.
@@ -24,27 +30,88 @@ const ALPHA: f64 = 0.3;
 pub const UNKNOWN_WINDOW: u64 = 200_000;
 /// Ceiling margin under `window − reply`.
 const MARGIN: f64 = 0.05;
+/// R1-1: the file under the data dir that keeps the learned ratios.
+pub const RATIOS_FILE: &str = "token_ratios.json";
+/// A learned ratio is written back when it moved by more than this.
+const SAVE_DELTA: f64 = 0.02;
 
 /// Learned bytes/token per model id.
 static BPT: LazyLock<Mutex<HashMap<String, f64>>> = LazyLock::new(Default::default);
 /// Learned prompt tokens per second per local model id (G1 latency limb).
 static EVAL: LazyLock<Mutex<HashMap<String, f64>>> = LazyLock::new(Default::default);
+/// Where [`learn`] persists the ratios (`init`); `None` = memory only.
+static RATIOS: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(Default::default);
+
+/// Engine start: load the ratios learned before the restart from
+/// `<data_dir>/token_ratios.json` and keep writing them there.
+pub fn init(data_dir: &Path) {
+    let path = data_dir.join(RATIOS_FILE);
+    let loaded = load_from(&path);
+    {
+        let mut map = BPT.lock();
+        for (model, bpt) in loaded {
+            map.entry(model).or_insert(bpt);
+        }
+    }
+    *RATIOS.lock() = Some(path);
+}
+
+/// The ratios a file holds (clamped); empty when missing or unreadable.
+fn load_from(path: &Path) -> HashMap<String, f64> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<HashMap<String, f64>>(&s).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, v)| v.is_finite())
+        .map(|(k, v)| (k, v.clamp(BPT_RANGE.0, BPT_RANGE.1)))
+        .collect()
+}
+
+/// Write `map` to `path` (best-effort, via a temp file so a crash never leaves half a file).
+fn save_to(path: &Path, map: &HashMap<String, f64>) {
+    let Ok(json) = serde_json::to_string_pretty(map) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path)) {
+        tracing::debug!(path = %path.display(), error = %e, "token ratios not saved");
+    }
+}
 
 /// The model's bytes per token: learned, else [`DEFAULT_BPT`].
 pub fn bytes_per_token(model: &str) -> f64 {
     BPT.lock().get(model).copied().unwrap_or(DEFAULT_BPT)
 }
 
+/// The model has a learned ratio.
+pub fn learned(model: &str) -> bool {
+    BPT.lock().contains_key(model)
+}
+
 /// Fold one observation (`bytes` sent, `tokens` the provider counted) into
-/// the model's ratio: EWMA, clamped to 1.8..=4.0.
+/// the model's ratio: EWMA, clamped to 1.8..=4.0; persisted (R1-1) when it
+/// moved by more than [`SAVE_DELTA`].
 pub fn learn(model: &str, bytes: usize, tokens: u64) {
     if bytes < 256 || tokens == 0 {
         return;
     }
     let seen = (bytes as f64 / tokens as f64).clamp(BPT_RANGE.0, BPT_RANGE.1);
     let mut map = BPT.lock();
+    let before = map.get(model).copied();
     let v = map.entry(model.to_owned()).or_insert(seen);
     *v = (*v * (1.0 - ALPHA) + seen * ALPHA).clamp(BPT_RANGE.0, BPT_RANGE.1);
+    let moved = before.is_none_or(|b| (b - *v).abs() > SAVE_DELTA);
+    if moved && let Some(path) = RATIOS.lock().clone() {
+        save_to(&path, &map);
+    }
+}
+
+/// Test seam (R1-10): forget what the process learned about `model`.
+#[cfg(test)]
+pub(crate) fn forget_for_tests(model: &str) {
+    BPT.lock().remove(model);
+    EVAL.lock().remove(model);
 }
 
 /// A completed local call: `tokens` of prompt evaluated in `secs`.
@@ -202,9 +269,17 @@ pub fn budget(kind: Kind, model: &Resolved, l: Limits) -> Budget {
 /// G1 preflight: `Err` (nothing sent) when `req`'s estimate is over the
 /// model's ceiling — "prompt is too long: N tokens > M maximum", the
 /// Anthropic shape `compact::overflow_numbers` reads, plus how it was
-/// estimated. `Ok(estimate)` otherwise.
+/// estimated. `Ok(estimate)` otherwise. R1-1: a model with no learned ratio
+/// is judged at [`UNLEARNED_REFUSE_BPT`] (the optimistic end); sizing still
+/// uses [`DEFAULT_BPT`].
 pub fn preflight(model: &Resolved, req: &ChatRequest, reply_tokens: u64) -> Result<u64, String> {
-    let est = estimate(&model.id, req);
+    let bpt = BPT
+        .lock()
+        .get(&model.id)
+        .copied()
+        .unwrap_or(UNLEARNED_REFUSE_BPT);
+    let (bytes, flat) = request_size(req);
+    let est = (bytes as f64 / bpt).ceil() as u64 + flat;
     let max = ceiling(model, reply_tokens);
     #[cfg(test)]
     if EXEMPT_FOR_TESTS.lock().contains(&model.id) {
@@ -213,9 +288,8 @@ pub fn preflight(model: &Resolved, req: &ChatRequest, reply_tokens: u64) -> Resu
     if est > max {
         let known = model.model.as_ref().is_some_and(|m| m.limit.context > 0);
         return Err(format!(
-            "prompt is too long: {est} tokens > {max} maximum (theuth preflight, not sent: {} estimated at {:.2} bytes/token, window {}{}, reply {reply_tokens})",
+            "prompt is too long: {est} tokens > {max} maximum (theuth preflight, not sent: {} estimated at {bpt:.2} bytes/token, window {}{}, reply {reply_tokens}; a stale catalog window is corrected in the data dir's models.json)",
             model.id,
-            bytes_per_token(&model.id),
             window(model),
             if known { "" } else { " assumed" },
         ));
@@ -298,23 +372,56 @@ mod tests {
         assert!(budget(Kind::Compactor, &m, l).ceiling_tokens < 32_000);
     }
 
-    /// An unknown window is 200k for both limbs; the preflight refuses
-    /// locally in the shape the overflow parser reads.
+    /// An unknown window is 200k for both limbs; a learned model's preflight
+    /// refuses locally in the shape the overflow parser reads.
     #[test]
     fn unknown_window_preflight_refuses_locally() {
         let m = model("t/unknown", 0, None);
         let b = budget(Kind::Turn, &m, Limits::default());
         assert_eq!((b.target_tokens, b.ceiling_tokens), (100_000, 190_000));
+        learn("t/unknown", 2_200, 1_000);
         let big = ChatRequest::new(vec![genai::chat::ChatMessage::user("x".repeat(500_000))]);
         let e = preflight(&m, &big, 0).unwrap_err();
         let n = crate::compact::overflow_numbers(&e).expect("parsed");
         assert_eq!((n.prompt, n.window), (227_273, 190_000), "{e}");
         assert!(
-            crate::compact::is_overflow(&e) && e.contains("not sent"),
+            crate::compact::is_overflow(&e) && e.contains("not sent") && e.contains("models.json"),
             "{e}"
         );
         let small = ChatRequest::new(vec![genai::chat::ChatMessage::user("hello")]);
         assert!(preflight(&m, &small, 0).is_ok());
+    }
+
+    /// R1-1: an unlearned 200k/64k model is judged at 4 B/token — a 300 KB
+    /// request (≈ 136k tokens at 2.2, over the 129k ceiling) is sent; once
+    /// the model is measured at 2.2 it is refused. Sizing stays at 2.2.
+    #[test]
+    fn unlearned_model_is_refused_only_on_the_optimistic_bound() {
+        let id = "t/unlearned-200k";
+        forget_for_tests(id);
+        let m = {
+            let mut m = model(id, 200_000, None);
+            m.model.as_mut().unwrap().limit.output = 64_000;
+            m
+        };
+        let req = ChatRequest::new(vec![genai::chat::ChatMessage::user("x".repeat(300_000))]);
+        assert_eq!(preflight(&m, &req, 64_000), Ok(75_000));
+        assert_eq!(bytes_of(id, 1_000), 2_200, "sizing is conservative");
+        learn(id, 2_200, 1_000);
+        assert!(preflight(&m, &req, 64_000).is_err());
+    }
+
+    /// R1-1: learned ratios survive a restart through `token_ratios.json`.
+    #[test]
+    fn learned_ratios_round_trip_through_the_file() {
+        let dir = crate::TestDir::new("token-ratios");
+        let path = dir.0.join(RATIOS_FILE);
+        let map = HashMap::from([("p/a".to_owned(), 3.1), ("p/b".to_owned(), 9.0)]);
+        save_to(&path, &map);
+        let back = load_from(&path);
+        assert_eq!(back["p/a"], 3.1);
+        assert_eq!(back["p/b"], 4.0, "clamped on load");
+        assert!(load_from(&dir.0.join("missing.json")).is_empty());
     }
 
     /// The learner converges on the observed ratio and stays clamped.

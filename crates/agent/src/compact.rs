@@ -35,7 +35,11 @@ fits is worth more than one that is exhaustive: at most a few thousand words.";
 pub const SUMMARY_MIN_CHARS: usize = 500;
 
 /// Substrings (lowercase) that mark a provider "context too long" error (07 §8.5, 36 §2.5).
-const OVERFLOW_NEEDLES: [&str; 15] = [
+const OVERFLOW_NEEDLES: [&str; 17] = [
+    // 137G R1-6: xAI ("maximum prompt length is M but the request contains N
+    // tokens") and Bedrock ("Input is too long for requested model.").
+    "maximum prompt length",
+    "input is too long",
     "context length",
     "context_length_exceeded",
     "maximum context",
@@ -434,6 +438,27 @@ pub fn overflow_numbers(err: &str) -> Option<OverflowNumbers> {
             window,
             prompt,
             max_tokens,
+        });
+    }
+    // 137G R1-6: Gemini — "The input token count (N) exceeds the maximum
+    // number of tokens allowed (M)".
+    if let Some(rest) = after(&e, "input token count") {
+        let prompt = nums(rest).next()?;
+        let window = after(rest, "allowed").and_then(|r| nums(r).next())?;
+        return Some(OverflowNumbers {
+            window,
+            prompt,
+            max_tokens: None,
+        });
+    }
+    // xAI — "maximum prompt length is M but the request contains N tokens".
+    if let Some(rest) = after(&e, "maximum prompt length is") {
+        let window = nums(rest).next()?;
+        let prompt = after(rest, "contains").and_then(|r| nums(r).next())?;
+        return Some(OverflowNumbers {
+            window,
+            prompt,
+            max_tokens: None,
         });
     }
     if let Some(rest) = after(&e, "too long:") {
@@ -1162,7 +1187,30 @@ mod tests {
         assert_eq!(reply_budget(8_192, 200_000, 1_000, None, 16_384), 8_192);
     }
 
-    const OVERFLOW_BODIES: [(&str, Option<OverflowNumbers>); 5] = [
+    const OVERFLOW_BODIES: [(&str, Option<OverflowNumbers>); 8] = [
+        // 137G R1-6: Gemini.
+        (
+            "The input token count (1204913) exceeds the maximum number of tokens allowed (1048576).",
+            Some(OverflowNumbers {
+                window: 1_048_576,
+                prompt: 1_204_913,
+                max_tokens: None,
+            }),
+        ),
+        // 137G R1-6: xAI.
+        (
+            "This model's maximum prompt length is 131072 but the request contains 200000 tokens.",
+            Some(OverflowNumbers {
+                window: 131_072,
+                prompt: 200_000,
+                max_tokens: None,
+            }),
+        ),
+        // 137G R1-6: Bedrock names no numbers (the G5 fallback halves).
+        (
+            "ValidationException: Input is too long for requested model.",
+            None,
+        ),
         (
             "This server's maximum context length is 1048576 tokens: this request needs a 1049380-token context (105663 prompt tokens plus max_tokens 943717), which exceeds the context window this server was started for; shorten the prompt or reply.",
             Some(OverflowNumbers {
@@ -1207,6 +1255,7 @@ mod tests {
                 "Web stream error for model 'zai-org/GLM-5.3-Flash': status 400. Body: {{\"error\":{{\"message\":\"litellm.BadRequestError: OpenAIException - {body}\",\"type\":\"invalid_request_error\",\"code\":400}}}}"
             );
             assert!(is_overflow(&wrapped) || want.is_none());
+            assert!(is_overflow(body), "{body}");
             assert_eq!(overflow_numbers(&wrapped), want, "{wrapped}");
         }
     }

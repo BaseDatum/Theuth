@@ -18,6 +18,11 @@ class H(BaseHTTPRequestHandler):
         req = json.loads(self.rfile.read(int(self.headers["content-length"])))
         user = req["messages"][-1]["content"]
         text = answer(user)
+        # Like Haiku 5.5: without `thinking: {type: disabled}` a long input spends the
+        # whole reply on thinking and returns no text (R1 Q1).
+        if self.path == "/v1/messages" and (req.get("thinking") or {}).get("type") != "disabled" \
+                and len(user) > 2500:
+            text = ""
         tin, tout = len(json.dumps(req)) // 4, len(text) // 4
         if self.path == "/v1/messages":
             out = {"content": [{"type": "text", "text": text}], "usage": {"input_tokens": tin, "output_tokens": tout}}

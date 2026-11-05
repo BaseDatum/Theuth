@@ -1595,6 +1595,14 @@ async fn batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone() {
             .text
             .contains(&format!("({} lines not yet summarized", b.folded))
     );
+    // R1-5: a folded run is no tree node — zoom refuses it, its text names recall only.
+    assert!(
+        endless
+            .zoom(id, folded_line.id, folded_line.n)
+            .await
+            .is_err()
+    );
+    assert!(folded_line.text.contains("recall") && !folded_line.text.contains("zoom"));
 
     endless.pause(id, false).await.unwrap();
     eventually("200 level-0 nodes", || async {
@@ -1625,11 +1633,12 @@ async fn batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone() {
     assert!(endless.memory(id).await.unwrap().backlog.is_none());
 }
 
-/// 137G G7: a unit that fails three times in a row folds mechanically and
-/// the frontier moves on; nothing stays failed.
+/// 137G G7 + R1-2: a unit folds mechanically only after three
+/// non-transient failures in a row AND 10 minutes since the first; before
+/// that it keeps retrying; then the frontier moves on, nothing stays failed.
 #[tokio::test]
-async fn three_failures_fold_the_unit_mechanically() {
-    let p = Probe::new("fake/a", Act::Fail);
+async fn three_hard_failures_over_ten_minutes_fold_the_unit() {
+    let p = Probe::new("fake/a", Act::Fail); // "400: model not loaded": deterministic
     let (_dir, endless, store, id) = harness_for(
         EndlessConfig {
             view_bytes: 16_000,
@@ -1640,6 +1649,22 @@ async fn three_failures_fold_the_unit_mechanically() {
     )
     .await;
     endless_session(&endless, &store, id).await;
+    until("three failures each", || {
+        let f = super::pump::failed_for_tests(&endless.inner, id);
+        f.len() == 2 && f.iter().all(|(.., n)| *n >= 3)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        level0(&store, id)
+            .await
+            .iter()
+            .filter(|n| n.mechanical)
+            .count(),
+        0,
+        "under 10 minutes: no fold yet"
+    );
+    super::pump::age_failures_for_tests(&endless.inner, id, Duration::from_secs(601));
     eventually("two mechanical units", || async {
         level0(&store, id)
             .await
@@ -1656,7 +1681,101 @@ async fn three_failures_fold_the_unit_mechanically() {
             .all(|(k, ..)| k.0 > 0),
         "no level-0 failure left"
     );
-    assert!(p.calls() >= 3);
+}
+
+/// A compactor that is overloaded (a transient 529) on every call.
+struct Overloaded(models::Resolved);
+
+impl Compactor for Overloaded {
+    fn compress<'a>(
+        &'a self,
+        _ctx: &'a str,
+        _convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(async { Err("529 Overloaded: overloaded_error, try again later".to_owned()) })
+    }
+
+    fn model(&self) -> &models::Resolved {
+        &self.0
+    }
+}
+
+/// R1-2: transient failures (429/529, network) never fold a unit, however
+/// many and however old.
+#[tokio::test]
+async fn transient_failures_never_fold_a_unit() {
+    assert!(matches!(
+        crate::compact::classify("529 Overloaded: overloaded_error, try again later"),
+        crate::compact::Failure::Transient
+    ));
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 16_000,
+            retry_secs: 0,
+            ..EndlessConfig::default()
+        },
+        Arc::new(Overloaded(super::pump::resolved_for_tests("fake/busy"))),
+    )
+    .await;
+    endless_session(&endless, &store, id).await;
+    until("many failures", || {
+        let f = super::pump::failed_for_tests(&endless.inner, id);
+        f.len() == 2 && f.iter().all(|(.., n)| *n >= 5)
+    })
+    .await;
+    super::pump::age_failures_for_tests(&endless.inner, id, Duration::from_secs(3_600));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        level0(&store, id)
+            .await
+            .iter()
+            .filter(|n| n.mechanical)
+            .count(),
+        0
+    );
+}
+
+/// R1-3: at $10/M input a batch over `max_usd_per_call` splits into solo
+/// calls (no failure, no fold); only a unit whose own call is over the cap
+/// folds mechanically, with one notice.
+#[tokio::test]
+async fn over_cost_batch_splits_and_only_an_over_cost_unit_folds() {
+    let s = Script::priced(Duration::ZERO, Some(10.0), 1_000);
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            max_usd_per_call: 0.03,
+            ..cfg_137f(None)
+        },
+        s.clone(),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    // Four ~650 B units: a batch of them is over $0.03, each alone is not;
+    // one 12 KB unit is over it alone.
+    seed_many(&store, id, 4, &[]).await;
+    let big = format!(
+        "message huge: {}",
+        "the rollout notes repeat here ".repeat(400)
+    );
+    store.append(id, &ChatMessage::user(big)).await.unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    eventually("every unit built", || async {
+        level0(&store, id).await.len() == 5
+    })
+    .await;
+    let nodes = level0(&store, id).await;
+    let mechanical: Vec<u64> = nodes.iter().filter(|n| n.mechanical).map(|n| n.i).collect();
+    assert_eq!(mechanical, [4], "only the big unit folds");
+    assert!(
+        nodes[..4]
+            .iter()
+            .all(|n| n.model.as_deref() == Some("fake/script"))
+    );
+    assert_eq!(s.count("batch"), 0, "the batch was never sent");
+    assert_eq!(s.count("unit"), 4, "four solo calls");
 }
 
 /// 137G G5: a compactor call refused as too long ("1204913 tokens > 1000000
@@ -1750,7 +1869,8 @@ async fn spend_guard_folds_over_cost_units_and_pauses_at_the_day_cap() {
             max_usd_per_call: 10.0,
             max_usd_per_session_day: 1.5,
             batch_units: 1,
-            jobs: 1,
+            // R1-4: no `jobs: 1` — near the cap the pump runs one call at a
+            // time by itself, so the overshoot is at most one call.
             ..cfg_137f(None)
         },
         s.clone(),
@@ -1792,6 +1912,46 @@ async fn spend_guard_folds_over_cost_units_and_pauses_at_the_day_cap() {
     );
 }
 
+/// R1-4: a failed call is still charged — the estimate of its prompt at the
+/// model's rate — so the day cap sees money spent on failing calls.
+#[tokio::test]
+async fn failed_calls_are_charged_at_the_estimate() {
+    let priced: models::Model = serde_json::from_value(serde_json::json!({
+        "id": "busy", "name": "busy", "limit": {"context": 200_000, "output": 4096},
+        "cost": {"input": 3.0, "output": 15.0}
+    }))
+    .unwrap();
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 16_000,
+            retry_secs: 600,
+            ..EndlessConfig::default()
+        },
+        Arc::new(Overloaded(models::Resolved {
+            model: Some(priced),
+            ..super::pump::resolved_for_tests("fake/busy-priced")
+        })),
+    )
+    .await;
+    endless_session(&endless, &store, id).await;
+    until("a failure", || {
+        !super::pump::failed_for_tests(&endless.inner, id).is_empty()
+    })
+    .await;
+    eventually("the failed call is priced", || async {
+        endless.memory(id).await.unwrap().spend_today_usd > 0.0
+    })
+    .await;
+    let statuses: Vec<String> = sqlx::query_scalar(
+        "SELECT status FROM model_calls WHERE owner_id = ? AND kind = 'endless'",
+    )
+    .bind(id.to_string())
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+    assert!(statuses.iter().all(|s| s == "failed"), "{statuses:?}");
+}
+
 /// 137G G9: `/endless off` with 5,000 unbuilt lines writes a bounded head
 /// (the G2 raw budget), never the whole raw view.
 #[tokio::test]
@@ -1808,17 +1968,18 @@ async fn endless_off_with_5000_unbuilt_writes_a_bounded_head() {
         .await
         .unwrap();
     endless.attach(id, attached()).await.unwrap();
+    // R1-7: a 32k-window session model leaves ≈ 25 KB for the view.
     let off = endless
-        .set_mode(id, MemoryMode::Epochs, 1, UnitFilter::All)
+        .set_mode_within(id, MemoryMode::Epochs, 1, UnitFilter::All, 25_000)
         .await
         .unwrap();
     let head = off.head.expect("a head");
     let cfg = cfg_137f(None).fold_cfg();
     assert!(
-        head.len() <= (cfg.high() + cfg.raw_bytes as usize) + 4_096,
-        "{} bytes",
-        head.len()
+        cfg.high() + cfg.raw_bytes as usize > 40_000,
+        "unscaled it would not fit"
     );
+    assert!(head.len() <= 25_000 + 4_096, "{} bytes", head.len());
     assert!(
         head.contains("lines not yet summarized"),
         "{}",

@@ -31,6 +31,8 @@ const HARNESS_TAGS: &[&str] = &[
     "knowledge",
     "nudge",
     "journal",
+    // 137G: endless notes; bare only (see `harness_wrapper`).
+    "memory",
 ];
 
 /// How one update is framed.
@@ -156,6 +158,10 @@ fn harness_wrapper(text: &str) -> Option<(&str, Option<&str>)> {
     let end = rest.find(|c: char| c == '>' || c.is_whitespace())?;
     let tag = &rest[..end];
     if !HARNESS_TAGS.contains(&tag) {
+        return None;
+    }
+    // 137G: `<memory>` is a harness note only bare; with attributes it is the user's.
+    if tag == "memory" && !rest[end..].starts_with('>') {
         return None;
     }
     let close = format!("</{tag}>");
