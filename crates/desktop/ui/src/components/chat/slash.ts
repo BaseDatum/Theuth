@@ -1,6 +1,6 @@
 import type { UseNavigateResult } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import { limitValue, probeLine, refreshedText } from '@/components/settings/providers'
+import { limitsArgs, limitValue, probeLine, refreshedText } from '@/components/settings/providers'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys } from '@/lib/rpc'
 import { openSearch } from '@/lib/search'
@@ -282,6 +282,13 @@ const split = (s: string): [string, string] => {
 
 /** 177 U6: `/provider limits`; `0` = unknown, an omitted output keeps the stored one. */
 const LIMITS_USAGE = 'usage: /provider limits <provider> <model> <context> [output]'
+
+/** 177 R1-4: a provider or its limits changed — Connections, the pickers and the context meter refetch, as the settings forms do. */
+function providersChanged() {
+  const qc = active().qc
+  void qc.invalidateQueries({ queryKey: queryKeys.providers })
+  void qc.invalidateQueries({ queryKey: queryKeys.models })
+}
 
 const STYLES: readonly CompactStyle[] = ['summary', 'cut', 'snap', 'clear']
 const style = (s: string) => STYLES.find((x) => x === s)
@@ -603,12 +610,13 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         if (!name || !url) return settings(navigate, 'connections', session)
         // 177: the key is optional; the engine refuses a missing one for a non-local URL ("api key is empty").
         await api.add_provider(name, url, key || null)
+        providersChanged()
         toast(`added provider ${name}`)
         return
       }
       if (sub === 'find') {
         const servers = await api.local_servers_probe()
-        toast.message('Local servers', { description: servers.map(probeLine).join('\n') || 'nothing answered on 127.0.0.1' })
+        toast.message('Local servers', { description: servers.map(probeLine).join('\n') || `nothing answered on ${useConnection.getState().info?.name ?? 'this node'}` })
         return
       }
       if (sub === 'limits') {
@@ -622,17 +630,20 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         if (!provider || !model || !ctxRaw || context === undefined || (outRaw && output === undefined)) throw new Error(LIMITS_USAGE)
         // No output given: keep the stored one.
         const keep = output === undefined ? ((await api.provider_models(provider)).find((m) => m.id === model)?.output ?? 0) || null : output
-        const m = await api.set_model_limits(provider, model, context, keep)
+        const m = await api.set_model_limits(...limitsArgs(provider, { id: model, context, output: keep }))
+        providersChanged()
         toast(`${provider}/${m.id}: context ${m.context ? m.context.toLocaleString('en-US') : 'unknown'} · output ${m.output ? m.output.toLocaleString('en-US') : 'unknown'}`)
         return
       }
       if (sub === 'refresh') {
         if (!rest) return settings(navigate, 'connections', session)
         toast(refreshedText(await api.refresh_provider_models(rest)))
+        providersChanged()
         return
       }
       if (sub === 'rm' && rest) {
         await api.remove_provider(rest)
+        providersChanged()
         toast(`removed provider ${rest}`)
         return
       }

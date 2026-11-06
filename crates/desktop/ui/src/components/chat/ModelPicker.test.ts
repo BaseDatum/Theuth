@@ -136,4 +136,9 @@ test('177 U4: local models and their providers carry the "local" tag; `localFirs
   // One provider opens on its models: each local row is tagged, a cloud one is not.
   expect(tags(renderToStaticMarkup(createElement(ModelPicker, { models: local.filter((m) => m.provider === 'mlx'), model: undefined, onSelect() {} })))).toBe(1)
   expect(tags(renderToStaticMarkup(createElement(ModelPicker, { models: models.filter((m) => m.provider === 'openai'), model: undefined, onSelect() {} })))).toBe(0)
+  // R1-10: the Current row and a favourite row tag a local model too (plus the two local provider rows).
+  const lead = renderToStaticMarkup(createElement(ModelPicker, { models: local, model: 'mlx/LFM3-1.7B-MLX-bf16', favorites: ['ollama/gpt-oss:20b'], onToggleFavorite() {}, onSelect() {} }))
+  expect(lead).toMatch(/>LFM3 1\.7B<\/span><span[^>]*>local</)
+  expect(lead).toMatch(/>gpt-oss 20B<\/span><span[^>]*>local</)
+  expect(tags(lead)).toBe(4)
 })

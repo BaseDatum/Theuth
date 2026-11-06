@@ -16,11 +16,11 @@ const URL_MLX = 'http://127.0.0.1:8080/v1/'
 
 const mlx: ProviderInfo = { name: 'mlx', base_url: URL_MLX, models: 3, builtin: false, configured: true, refreshable: true, local: true, runtime: 'omlx', has_key: true }
 
-/** Ollama answers with 3 models, LM Studio is not running, omlx on :8080 is already `mlx`, nothing on :8000. */
+/** Ollama answers with 3 models, LM Studio is not running, a second omlx on :8000 wants a key (401), omlx on :8080 is already `mlx`. */
 const servers: LocalServer[] = [
   { runtime: 'ollama', base_url: 'http://127.0.0.1:11434/v1/', reachable: true, models: 3, added_as: null, error: null },
   { runtime: 'lmstudio', base_url: 'http://127.0.0.1:1234/v1/', reachable: false, models: 0, added_as: null, error: 'connection refused' },
-  { runtime: 'omlx', base_url: 'http://127.0.0.1:8000/v1/', reachable: false, models: 0, added_as: null, error: 'connection refused' },
+  { runtime: 'omlx', base_url: 'http://127.0.0.1:8000/v1/', reachable: true, models: 0, added_as: null, error: 'HTTP 401 Unauthorized' },
   { runtime: 'omlx', base_url: URL_MLX, reachable: true, models: 3, added_as: 'mlx', error: null },
 ]
 
@@ -65,6 +65,9 @@ const failed: SummaryTest = {
 
 const later = <T>(v: T, ms: number) => new Promise<T>((resolve) => setTimeout(() => resolve(v), ms))
 
+/** Remove on `mlx` hides it (and its models) until reload. */
+let removed = false
+
 const wrapped = new WeakMap<Api, Api>()
 
 /** The engine's `Api` with the 177 methods answered here when the fixture is on; the same object otherwise. One wrapper per `api`. */
@@ -74,8 +77,9 @@ export function localFixture(api: Api): Api {
   if (hit) return hit
   const fixture: Api = {
     ...api,
-    list_providers: () => api.list_providers().then((rows) => [...rows.filter((p) => p.name !== 'mlx'), mlx]),
-    list_models: () => api.list_models().then((rows) => [...rows.filter((m) => m.provider !== 'mlx'), ...limits.map(model)]),
+    list_providers: () => api.list_providers().then((rows) => [...rows.filter((p) => p.name !== 'mlx'), ...(removed ? [] : [mlx])]),
+    list_models: () => api.list_models().then((rows) => [...rows.filter((m) => m.provider !== 'mlx'), ...(removed ? [] : limits.map(model))]),
+    remove_provider: (name) => (name === 'mlx' ? ((removed = true), Promise.resolve(null)) : api.remove_provider(name)),
     local_servers_probe: () => later(servers, 600),
     provider_models: (provider) => (provider === 'mlx' ? Promise.resolve(limits) : api.provider_models(provider)),
     set_model_limits: (provider, id, context, output) => {

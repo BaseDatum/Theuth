@@ -12,7 +12,9 @@ import {
   BUILTIN_LABEL,
   builtinKeyNote,
   contextPlaceholder,
+  freeName,
   isLocalUrl,
+  limitsArgs,
   limitsSave,
   limitValue,
   localAddArgs,
@@ -103,40 +105,86 @@ test('177 U1: Local servers sits between the built-ins and the custom providers;
   expect(t).toMatch(/mlx local omlx · mlx\/… · 1 models · http:\/\/127\.0\.0\.1:8080\/v1\//)
   expect(t.match(/Refresh models/g)).toHaveLength(3)
   expect(html).toContain('aria-label="Remove mlx"')
+  // R1-9: Remove opens a confirmation first (the dialog's trigger), it does not remove on click.
+  expect(html).toMatch(/<button[^>]*aria-haspopup="dialog"[^>]*aria-label="Remove mlx"|<button[^>]*aria-label="Remove mlx"[^>]*aria-haspopup="dialog"/)
   // Custom and local rows expand to their model limits; built-ins do not.
   expect(html).toContain('aria-label="Model limits of mlx"')
   expect(html).toContain('aria-label="Model limits of rwx"')
   expect(html).not.toContain('aria-label="Model limits of opencode"')
   expect(t).not.toContain('No local servers yet.')
-  expect(text(render([row('opencode', true, true)]))).toContain('No local servers yet.')
+  // R1-5: the probe runs on the engine's host, named as the Bedrock section names it.
+  expect(text(render([row('opencode', true, true)]))).toContain('No local servers yet. Find running servers looks on this node.')
+})
+
+test('177 R1-1: the probe rows stay while a re-probe runs (with the "Looking for servers…" status) and after a failed one', async () => {
+  const qc = new QueryClient()
+  qc.setQueryData(queryKeys.providers, [row('mlx', false, true, true, true)])
+  qc.setQueryData(queryKeys.localServers, probe)
+  void qc.prefetchQuery({ queryKey: queryKeys.localServers, queryFn: () => new Promise<LocalServer[]>(() => {}) })
+  const paint = () => text(renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Connections))))
+  const running = paint()
+  expect(running).toContain('Looking for servers on this node…')
+  expect(running).toContain('Ollama http://127.0.0.1:11434/v1/ · 3 models')
+  await qc.cancelQueries({ queryKey: queryKeys.localServers })
+  await qc.fetchQuery({ queryKey: queryKeys.localServers, queryFn: () => Promise.reject(new Error('engine went away')) }).catch(() => {})
+  const failed = paint()
+  expect(failed).toContain('Could not look for servers: engine went away')
+  expect(failed).toContain('Ollama http://127.0.0.1:11434/v1/ · 3 models')
+  expect(failed).toContain('Added as mlx')
 })
 
 const probe: LocalServer[] = [
   { runtime: 'ollama', base_url: 'http://127.0.0.1:11434/v1/', reachable: true, models: 3, added_as: null, error: null },
   { runtime: 'lmstudio', base_url: 'http://127.0.0.1:1234/v1/', reachable: false, models: 0, added_as: null, error: 'connection refused' },
+  { runtime: 'omlx', base_url: 'http://127.0.0.1:8000/v1/', reachable: true, models: 0, added_as: null, error: 'HTTP 401 Unauthorized' },
   { runtime: 'omlx', base_url: 'http://127.0.0.1:8080/v1/', reachable: true, models: 2, added_as: 'mlx', error: null },
 ]
+const rows = (names: string[], servers = probe) => renderToStaticMarkup(createElement(ProbeRows, { servers, names, engine: 'mac-studio', onAdd() {} }))
 
-test('177 U1: probe rows — runtime, address, N models or not running, Add unless already added as a provider', () => {
-  const html = renderToStaticMarkup(createElement(ProbeRows, { servers: probe, onAdd() {} }))
+test('177 U1 / R1-2: probe rows — runtime, address, N models or not running, the engine’s error in the row, "may need a key" for a server that answers with an error and no models', () => {
+  const html = rows(['mlx'])
   const t = text(html)
+  expect(html).toContain('role="group"')
   expect(t).toContain('Ollama http://127.0.0.1:11434/v1/ · 3 models')
-  expect(t).toContain('LM Studio http://127.0.0.1:1234/v1/ · not running')
+  expect(t).toContain('LM Studio http://127.0.0.1:1234/v1/ · not running · connection refused')
+  expect(t).toContain('omlx http://127.0.0.1:8000/v1/ · 0 models · HTTP 401 Unauthorized · may need a key')
   expect(t).toContain('omlx http://127.0.0.1:8080/v1/ · 2 models')
   expect(t).toContain('Added as mlx')
   expect(html).toContain('aria-label="Add Ollama at http://127.0.0.1:11434/v1/"')
   expect(html).toContain('aria-label="Add LM Studio at http://127.0.0.1:1234/v1/"')
-  expect(html).not.toContain('aria-label="Add omlx')
-  expect(html).toContain('title="connection refused"')
-  expect(text(renderToStaticMarkup(createElement(ProbeRows, { servers: [], onAdd() {} })))).toContain('Nothing answered on 127.0.0.1.')
-  expect(probe.map(probeLine)).toEqual(['Ollama http://127.0.0.1:11434/v1/ · 3 models', 'LM Studio http://127.0.0.1:1234/v1/ · not running', 'omlx http://127.0.0.1:8080/v1/ · 2 models · added as mlx'])
+  expect(html).not.toContain('aria-label="Add omlx at http://127.0.0.1:8080/v1/"')
+  expect(text(rows([], []))).toContain('Nothing answered on mac-studio.')
+  expect(probe.map(probeLine)).toEqual([
+    'Ollama http://127.0.0.1:11434/v1/ · 3 models',
+    'LM Studio http://127.0.0.1:1234/v1/ · not running · connection refused',
+    'omlx http://127.0.0.1:8000/v1/ · 0 models · HTTP 401 Unauthorized · may need a key',
+    'omlx http://127.0.0.1:8080/v1/ · 2 models · added as mlx',
+  ])
+})
+
+test('177 R1-1: "Added as" only while that provider exists — after Remove the row offers Add again', () => {
+  const after = rows(['opencode'])
+  expect(text(after)).not.toContain('Added as')
+  expect(after).toContain('aria-label="Add omlx at http://127.0.0.1:8080/v1/"')
+})
+
+test('177 R1-3: a prefilled name never replaces a provider (omlx → omlx-2 → omlx-3); a typed existing name warns', () => {
+  expect(freeName('omlx', [])).toBe('omlx')
+  expect(freeName('omlx', ['omlx'])).toBe('omlx-2')
+  expect(freeName('omlx', ['omlx', 'omlx-2', 'mlx'])).toBe('omlx-3')
+  const local = renderToStaticMarkup(createElement(LocalServerForm, { form: presetForm('omlx'), names: ['omlx'], onChange() {}, onSubmit() {}, pending: false }))
+  expect(local).toContain('Replaces omlx; an empty key removes its key.')
+  const free = renderToStaticMarkup(createElement(LocalServerForm, { form: presetForm('omlx'), names: ['mlx'], onChange() {}, onSubmit() {}, pending: false }))
+  expect(free).not.toContain('Replaces')
+  const custom = renderToStaticMarkup(createElement(CustomProviderForm, { form: { name: ' rwx ', url: 'https://rwx/v1/', key: '' }, names: ['rwx'], onChange() {}, onSubmit() {}, pending: false }))
+  expect(custom).toContain('Replaces rwx; an empty key removes its key.')
 })
 
 test('177 U1: Add prefills the form with the runtime, its name and the address the server answered on', () => {
   expect(probeForm(probe[0]!)).toEqual({ runtime: 'ollama', name: 'ollama', url: 'http://127.0.0.1:11434/v1/', key: '' })
   // An omlx on a non-default port keeps the probed address, not the preset's :8000.
-  expect(probeForm({ ...probe[2]!, added_as: null })).toEqual({ runtime: 'omlx', name: 'omlx', url: 'http://127.0.0.1:8080/v1/', key: '' })
-  const html = renderToStaticMarkup(createElement(LocalServerForm, { form: probeForm(probe[0]!), onChange() {}, onSubmit() {}, pending: false }))
+  expect(probeForm({ ...probe[3]!, added_as: null })).toEqual({ runtime: 'omlx', name: 'omlx', url: 'http://127.0.0.1:8080/v1/', key: '' })
+  const html = renderToStaticMarkup(createElement(LocalServerForm, { form: probeForm(probe[0]!), names: [], onChange() {}, onSubmit() {}, pending: false }))
   expect(html).toMatch(/<button[^>]*aria-label="Local server runtime"[^>]*>.*Ollama/)
   expect(html).toMatch(/value="ollama"[^>]*aria-label="Local server name"|aria-label="Local server name"[^>]*value="ollama"/)
   expect(html).toContain('value="http://127.0.0.1:11434/v1/"')
@@ -152,11 +200,11 @@ test('177 U1: the runtime presets fill name and address; the add call carries th
   expect(presetForm('openai')).toMatchObject({ name: 'local', url: '' })
   expect(localAddArgs({ ...presetForm('omlx'), name: ' mlx ' })).toEqual(['mlx', 'http://127.0.0.1:8000/v1/', null, 'omlx'])
   expect(localAddArgs({ ...presetForm('omlx'), key: ' sk-fake ' })).toEqual(['omlx', 'http://127.0.0.1:8000/v1/', 'sk-fake', 'omlx'])
-  const html = renderToStaticMarkup(createElement(LocalServerForm, { form: presetForm('lmstudio'), onChange() {}, onSubmit() {}, pending: false }))
+  const html = renderToStaticMarkup(createElement(LocalServerForm, { form: presetForm('lmstudio'), names: [], onChange() {}, onSubmit() {}, pending: false }))
   expect(html).toContain('Only if your server asks for one (omlx with key verification on does)')
   expect(html).toContain('placeholder="API key (optional)"')
   expect(html).not.toMatch(/<button[^>]*type="submit"[^>]*disabled=""/)
-  const empty = renderToStaticMarkup(createElement(LocalServerForm, { form: presetForm('openai'), onChange() {}, onSubmit() {}, pending: false }))
+  const empty = renderToStaticMarkup(createElement(LocalServerForm, { form: presetForm('openai'), names: [], onChange() {}, onSubmit() {}, pending: false }))
   expect(empty).toMatch(/<button[^>]*type="submit"[^>]*disabled=""/)
 })
 
@@ -179,6 +227,9 @@ test('177 U2: the limits editor — Context/Output per model, "unknown" placehol
   expect(t).toMatch(/LFM3-1.7B-MLX-bf16 unknown .*Qwen3 4B from server .*Gemma 3 1B set by you/)
   expect(t.match(/Save/g)).toHaveLength(3)
   expect(t.match(/Clear/g)).toHaveLength(3)
+  // R1-6: the buttons name their model.
+  expect(html).toContain('aria-label="Save limits of LFM3-1.7B-MLX-bf16"')
+  expect(html).toContain('aria-label="Clear limits of gemma-3-1b"')
   expect(contextPlaceholder({ ...limits[0]!, assumed_context: null })).toBe('unknown')
 })
 
@@ -192,6 +243,10 @@ test('177 U2: Save sends the typed fields (an emptied one as null, i.e. unknown)
   expect(limitsSave(server, '40960', '')).toBeNull()
   for (const bad of ['0', '-1', '1.5', 'abc', '1e12']) expect(limitsSave(unknown, bad, '')).toBeNull()
   expect([limitValue(''), limitValue('8192'), limitValue('0')]).toEqual([null, 8_192, undefined])
+  // R1-10: the call in contract order (provider, model, context, output); Clear is null, null.
+  expect(limitsArgs('mlx', limitsSave(unknown, '32768', '')!)).toEqual(['mlx', 'LFM3-1.7B-MLX-bf16', 32_768, null])
+  expect(limitsArgs('mlx', limitsSave(unknown, '32768', '4096')!)).toEqual(['mlx', 'LFM3-1.7B-MLX-bf16', 32_768, 4_096])
+  expect(limitsArgs('mlx', { id: user.id, context: null, output: null })).toEqual(['mlx', 'gemma-3-1b', null, null])
 })
 
 test('177 U3: the engine’s local-host rule — loopback, private, CGNAT, link-local, ULA, mapped v4, single-label and the local suffixes', () => {
@@ -217,21 +272,28 @@ test('177 U3: the engine’s local-host rule — loopback, private, CGNAT, link-
     'http://nas.home.arpa/v1/',
     'http://mac.tail1234.ts.net/v1/',
     'http://app.localhost/v1/',
+    // R1-10 vectors (shared with E's Rust tests; expected results in 177-notes-u.md).
+    'http://LOCALHOST:11434/v1/',
+    'HTTP://Studio.LOCAL/v1/',
+    'http://u:p@127.0.0.1:8080/v1/',
+    'http://[::]:8000/v1/',
+    'http://0.0.0.0/v1/',
+    'http://[::ffff:7f00:1]:8080/v1/',
   ]
-  const cloud = ['https://api.openai.com/v1/', 'http://172.32.0.1/v1/', 'http://100.128.0.1/v1/', 'http://8.8.8.8/v1/', 'http://[2001:db8::1]/v1/', 'http://[::ffff:8.8.8.8]/v1/', 'https://local.example.com/v1/', 'localhost:8080', '', 'not a url']
+  const cloud = ['https://api.openai.com/v1/', 'https://API.OpenAI.COM/v1/', 'http://u:p@8.8.8.8/v1/', 'http://172.32.0.1/v1/', 'http://100.128.0.1/v1/', 'http://8.8.8.8/v1/', 'http://[2001:db8::1]/v1/', 'http://[::ffff:8.8.8.8]/v1/', 'https://local.example.com/v1/', 'localhost:8080', '', 'not a url']
   expect(local.filter((u) => !isLocalUrl(u))).toEqual([])
   expect(cloud.filter((u) => isLocalUrl(u))).toEqual([])
 })
 
 test('177 U3: the custom form makes the key optional, and says why, only for a local address', () => {
-  const html = (url: string, key = '') => renderToStaticMarkup(createElement(CustomProviderForm, { form: { name: 'box', url, key }, onChange() {}, onSubmit() {}, pending: false }))
+  const html = (url: string, key = '') => renderToStaticMarkup(createElement(CustomProviderForm, { form: { name: 'box', url, key }, names: [], onChange() {}, onSubmit() {}, pending: false }))
   const keyField = (h: string) => h.match(/<input[^>]*aria-label="Custom provider API key"[^>]*>/)?.[0] ?? ''
   const submit = (h: string) => h.match(/<button[^>]*type="submit"[^>]*>/)?.[0] ?? ''
   const local = html('http://192.168.1.20:8080/v1/')
   expect(keyField(local)).toContain('placeholder="API key (optional)"')
   expect(keyField(local)).not.toContain('required')
   expect(submit(local)).not.toContain('disabled=""')
-  expect(local).toContain('Key optional: this address is on your machine or network')
+  expect(local).toContain('Key optional: this is a local address (loopback, private, .local, .lan)')
   const cloud = html('https://llm.example.com/v1/')
   expect(keyField(cloud)).toContain('placeholder="API key"')
   expect(keyField(cloud)).toContain('required')

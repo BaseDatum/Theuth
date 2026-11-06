@@ -1,17 +1,14 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { ChevronRight, CircleCheck, LoaderCircle, TriangleAlert } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { ChevronRight } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
-import { toast } from 'sonner'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
-import { summaryTestStats } from '@/components/settings/providers'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
-import { Button } from '@/components/ui/button'
+import { SummaryTestCall } from '@/components/settings/SummaryTestCall'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Switch } from '@/components/ui/switch'
 import { ENDLESS_DEFAULTS, tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
-import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
 
 type Key = keyof typeof ENDLESS_DEFAULTS
 
@@ -60,42 +57,6 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
       onPointerUp={(e) => onCommit(Number(e.currentTarget.value))}
       onKeyUp={(e) => onCommit(Number(e.currentTarget.value))}
     />
-  )
-}
-
-/** 177 U5: what one `test_summary_call` came back with — the line and its numbers, or the error and what to do about it. */
-export function SummaryTestResult({ t }: { t: SummaryTest }) {
-  return t.ok ? (
-    <div role="status" className="flex flex-col gap-1 rounded-md border border-success-border bg-success-bg px-3 py-2 text-[13px]">
-      <p className="flex items-center gap-1.5 font-medium text-success">
-        <CircleCheck className="size-3.5 shrink-0" aria-hidden /> Summary call worked
-      </p>
-      {t.line && <p className="break-words">{t.line}</p>}
-      <p className="text-fg-secondary">{`${t.model} · ${summaryTestStats(t)}`}</p>
-    </div>
-  ) : (
-    <div role="status" className="flex flex-col gap-1 rounded-md border border-warning-border bg-warning-bg px-3 py-2 text-[13px]">
-      <p className="flex items-center gap-1.5 font-medium text-warning">
-        <TriangleAlert className="size-3.5 shrink-0" aria-hidden /> {t.error ?? 'The summary call failed'}
-      </p>
-      {t.hint && <p>{t.hint}</p>}
-      <p className="text-fg-secondary">{`${t.model} · ${summaryTestStats(t)}`}</p>
-    </div>
-  )
-}
-
-/** 177 U5: **Test summary call** on `model` (`null` = nothing to test), with a busy state — a local model can take tens of seconds — and the result under it. */
-export function SummaryTestCall({ model, size = 'sm' }: { model: string | null | undefined; size?: 'sm' | 'xs' }) {
-  const api = useApi()
-  const test = useMutation({ mutationFn: (m: string) => api.test_summary_call(m), onError: (e) => void toast.error(e.message) })
-  return (
-    <div className="flex w-full flex-col items-start gap-2">
-      <Button size={size} variant="outline" disabled={!model || test.isPending} onClick={() => model && test.mutate(model)}>
-        {test.isPending && <LoaderCircle className="animate-spin" />}
-        {test.isPending ? 'Testing…' : 'Test summary call'}
-      </Button>
-      {test.isPending ? <p className="text-[13px] text-fg-secondary">{`Waiting for ${test.variables}; a local model can take tens of seconds.`}</p> : test.data && <SummaryTestResult t={test.data} />}
-    </div>
   )
 }
 

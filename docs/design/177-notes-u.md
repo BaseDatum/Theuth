@@ -11,14 +11,23 @@ Design: `177-local-runtimes.md` §Contract (E) and §UI.
    or local URL, also one added through the custom form) is listed under Local
    servers with the "local" tag; the others stay under Custom providers.
 2. **Probe rows.** Every row has Add (an unreachable one too: the server may be
-   started later); `added_as` replaces it with "Added as <name>". An unreachable
-   row reads "not running" (no "0 models"), its `error` on hover. Add fills the
-   form with the row's runtime, that runtime's preset name and the probed
-   address (not the preset's default port), and focuses the name. A successful
-   add re-runs the probe when results are shown, so the row turns "Added as".
-3. **Presets.** Names: `ollama`, `lmstudio`, `omlx`, `llamacpp`, `vllm`; "Other
-   OpenAI-compatible" (`openai`) suggests `local` and no address. Switching the
-   runtime refills name and address and keeps a typed key.
+   started later); `added_as` replaces it with "Added as <name>" only while
+   `list_providers` still has that name. A row reads the model count or "not
+   running", then the engine's `error`, then "may need a key" when the server
+   answered with an error and 0 models (R1-2). Add fills the form with the row's
+   runtime, a free name (below) and the probed address (not the preset's
+   default port), and focuses the name. The probe is a disabled query fetched by
+   Find running servers (R1-1), so the last rows stay through a re-probe ("Looking
+   for servers on <engine>…") and a failed one (its error in the status line); a
+   successful add re-probes. Copy names the engine (`info.name`, else "this
+   node"), as Bedrock does (R1-5).
+3. **Presets and names.** Names: `ollama`, `lmstudio`, `omlx`, `llamacpp`,
+   `vllm`; "Other OpenAI-compatible" (`openai`) suggests `local` and no address.
+   Switching the runtime refills name and address and keeps a typed key. A
+   prefilled name (runtime switch, probe Add) never replaces a provider: it gets
+   the first free `-2`, `-3` suffix. A typed existing name warns inline
+   "Replaces <name>; an empty key removes its key." (both forms). After a
+   successful add the name is cleared (R1-3).
 4. **Keys.** The local form always sends `runtime`; an empty key is `null`. The
    custom form sends 3 arguments (no runtime), `null` for an empty key, and
    allows an empty key only when `isLocalUrl(url)` — E's `local::private_url`
@@ -32,7 +41,9 @@ Design: `177-local-runtimes.md` §Contract (E) and §UI.
    fields are whole numbers ≥ 1 or empty; Clear sends `null, null`. The reply
    replaces the row in the `provider_models` cache and `list_models` is
    refetched (the pickers show the context). The cache key sits under
-   `providers`, so add/refresh/remove refetch it.
+   `providers`, so add/refresh/remove refetch it. Save/Clear are labelled
+   "Save/Clear limits of <model>", Enter in a field saves (R1-6). The call's
+   argument order lives in `providers.ts` `limitsArgs`, shared with the slash.
 6. **"Applies to new chats" not shown.** E's notes do not say running chats
    miss new limits (E6: `set_model_limits` reloads the catalog and re-resolves
    the compactors), so the brief's condition is not met.
@@ -47,18 +58,42 @@ Design: `177-local-runtimes.md` §Contract (E) and §UI.
    button is disabled and the row says each chat uses its own model. The Memory
    panel shows the button in the failing block only (on `stalled.model`): it fit
    there and is where it helps; the header row had no room. Errors are in the
-   reply (contract); an RPC error toasts.
+   reply (contract); an RPC error toasts. The component lives in
+   `SummaryTestCall.tsx` and is keyed on the model, so a new model starts
+   without the old result (R1-7).
 9. **`/provider`.** `add <name> <url> [key]`: a missing key is `null` and the
    engine's refusal of a cloud URL ("api key is empty") surfaces verbatim; a
    bare `add` or missing url opens Connections as before. `find` toasts one
    line per probed port. `limits <provider> <model> <context> [output]`: `0` =
    unknown (the engine's own wording); an omitted output keeps the stored one
-   (read with `provider_models`) instead of clearing it.
+   (read with `provider_models`) instead of clearing it. `add`, `rm`, `refresh`
+   and `limits` invalidate the `providers` and `models` queries (R1-4). Toast
+   descriptions keep `\n` (`whitespace-pre-line` on the Toaster, R1-8).
 10. **Fixture.** `dev/local-fixture.ts`, chained after the 137 fixture in
     `useApi` (dev only). It adds Sky's `mlx` omlx provider and its models to the
     engine's lists and answers the four 177 methods; `set_model_limits` on `mlx`
     keeps its state until reload. Probe: Ollama :11434 reachable with 3 models,
-    LM Studio :1234 not running, :8000 closed, omlx :8080 added as `mlx`.
+    LM Studio :1234 not running, omlx :8000 answers 401 with no models, omlx
+    :8080 added as `mlx`; Remove on `mlx` hides it until reload.
+11. **Remove** on a custom or local row asks first: "Remove <name>? Its model
+    list and any limits you set are deleted." (the AlertDialog `Double.tsx` uses).
+
+## URL vectors (R1-10; E mirrors them in Rust)
+
+`isLocalUrl` (= `local::private_url`), expected result per URL:
+
+| URL | local |
+|---|---|
+| `http://LOCALHOST:11434/v1/` | yes (hosts compare lowercase; single label) |
+| `HTTP://Studio.LOCAL/v1/` | yes (`.local`) |
+| `http://u:p@127.0.0.1:8080/v1/` | yes (userinfo ignored; loopback) |
+| `http://[::]:8000/v1/` | yes (unspecified) |
+| `http://0.0.0.0/v1/` | yes (unspecified) |
+| `http://[::ffff:7f00:1]:8080/v1/` | yes (v4-mapped 127.0.0.1) |
+| `https://API.OpenAI.COM/v1/` | no |
+| `http://u:p@8.8.8.8/v1/` | no |
+| `http://[::ffff:8.8.8.8]/v1/` | no |
+| `localhost:8080` (no scheme) | no (parses as scheme `localhost:`, no host) |
 
 ## Visual check
 

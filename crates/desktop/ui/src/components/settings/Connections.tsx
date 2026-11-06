@@ -1,25 +1,39 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Radar, RefreshCw, Trash2 } from 'lucide-react'
-import { Fragment, type ReactNode, useEffect, useState } from 'react'
+import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import {
   builtinKeyNote,
   BUILTIN_LABEL,
   contextPlaceholder,
+  freeName,
   isLocalUrl,
   LIMIT_SOURCE,
   type Limits,
+  limitsArgs,
   limitsSave,
   localAddArgs,
   type LocalForm,
   orderProviders,
   presetForm,
   probeForm,
+  probeState,
   refreshedText,
   RUNTIMES,
   runtimeLabel,
 } from '@/components/settings/providers'
 import { type Action, Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -190,6 +204,7 @@ function Providers() {
     },
   })
   const remove = useAction((name: string) => api.remove_provider(name), { keys })
+  const names = rows.map((p) => p.name)
 
   const row = (p: ProviderInfo) => (
     <Fragment key={p.name}>
@@ -260,15 +275,23 @@ function Providers() {
                 {p.configured ? 'Replace key…' : 'Set key…'}
               </Button>
             ) : (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Remove ${p.name}`}
-                disabled={remove.isPending}
-                onClick={() => remove.mutate(p.name)}
-              >
-                <Trash2 />
-              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" aria-label={`Remove ${p.name}`} disabled={remove.isPending}>
+                    <Trash2 />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>{`Remove ${p.name}?`}</AlertDialogTitle>
+                    <AlertDialogDescription>Its model list and any limits you set are deleted.</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => remove.mutate(p.name)}>Remove</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             )}
           </span>
         )}
@@ -280,58 +303,75 @@ function Providers() {
   return (
     <Section title="Providers">
       {rows.filter((p) => p.builtin).map(row)}
-      <LocalServers empty={!!providers.data && local.length === 0}>{local.map(row)}</LocalServers>
+      <LocalServers names={names} empty={!!providers.data && local.length === 0}>
+        {local.map(row)}
+      </LocalServers>
       <h4 className={SUB}>Custom providers</h4>
       {custom.map(row)}
       {providers.data && custom.length === 0 && <Empty>No custom providers yet.</Empty>}
-      <CustomProviderForm form={form} onChange={setForm} pending={add.isPending} onSubmit={() => add.mutate(form)} />
+      <CustomProviderForm form={form} names={names} onChange={setForm} pending={add.isPending} onSubmit={() => add.mutate(form)} />
     </Section>
   )
 }
 
-/** 177 U1: Find running servers (`local_servers_probe`, 127.0.0.1 only), the local provider rows, and Add local server. */
-function LocalServers({ empty, children }: { empty: boolean; children: ReactNode }) {
+/** 177 U1: Find running servers (`local_servers_probe`: the engine probes its own 127.0.0.1), the local provider rows, and Add local server. */
+function LocalServers({ names, empty, children }: { names: string[]; empty: boolean; children: ReactNode }) {
   const api = useApi()
-  const probe = useAction((_: void) => api.local_servers_probe())
+  const engine = useConnection((s) => s.info?.name) ?? 'this node'
+  // A query, not a mutation: the rows stay through a re-probe and a failed one (R1-1). Fetched only on demand.
+  const probe = useQuery({ queryKey: queryKeys.localServers, queryFn: () => api.local_servers_probe(), enabled: false, retry: false })
   const [form, setForm] = useState<LocalForm>(() => presetForm('ollama'))
   const add = useAction((f: LocalForm) => api.add_provider(...localAddArgs(f)), {
     keys: [queryKeys.providers, queryKeys.models],
     onSuccess: (p, f) => {
-      setForm(presetForm(f.runtime))
+      setForm({ ...presetForm(f.runtime), name: '' })
       toast.success(`Added ${p.name}: ${p.models} models`)
-      // The probe rows now say "Added as …".
-      if (probe.data) probe.mutate()
+      // The probe's `added_as` follows the new provider.
+      if (probe.data) void probe.refetch()
     },
   })
   return (
     <>
       <div className="mt-6 flex items-center justify-between gap-4">
         <h4 className="text-[13px] font-semibold">Local servers</h4>
-        <Button size="sm" variant="outline" disabled={probe.isPending} onClick={() => probe.mutate()}>
-          <Radar className={probe.isPending ? 'animate-pulse' : undefined} /> Find running servers
+        <Button size="sm" variant="outline" disabled={probe.isFetching} onClick={() => void probe.refetch()}>
+          <Radar className={probe.isFetching ? 'animate-pulse' : undefined} /> Find running servers
         </Button>
       </div>
+      <ProbeStatus engine={engine} fetching={probe.isFetching} error={probe.error?.message ?? null} />
       {probe.data && (
         <ProbeRows
           servers={probe.data}
+          names={names}
+          engine={engine}
           onAdd={(s) => {
-            setForm(probeForm(s))
+            setForm({ ...probeForm(s), name: freeName(probeForm(s).name, names) })
             document.getElementById(LOCAL_NAME_ID)?.focus()
           }}
         />
       )}
       {children}
-      {empty && !probe.data && <Empty>No local servers yet. Find running servers looks on this machine.</Empty>}
-      <LocalServerForm form={form} onChange={setForm} pending={add.isPending} onSubmit={() => add.mutate(form)} />
+      {empty && !probe.data && <Empty>{`No local servers yet. Find running servers looks on ${engine}.`}</Empty>}
+      <LocalServerForm form={form} names={names} onChange={setForm} pending={add.isPending} onSubmit={() => add.mutate(form)} />
     </>
   )
 }
 
-/** The probe's answer: one row per default port, Add (prefills the form) or "Added as <name>". */
-export function ProbeRows({ servers, onAdd }: { servers: LocalServer[]; onAdd(s: LocalServer): void }) {
-  if (servers.length === 0) return <Empty>Nothing answered on 127.0.0.1.</Empty>
+/** The probe's live line: "Looking for servers on <engine>…" while it runs, the error of a failed one (the last rows stay). */
+export function ProbeStatus({ engine, fetching, error }: { engine: string; fetching: boolean; error: string | null }) {
+  const text = fetching ? `Looking for servers on ${engine}…` : error ? `Could not look for servers: ${error}` : ''
   return (
-    <div className="mt-2 rounded-md border border-border-subtle px-3" aria-label="Local servers found">
+    <p role="status" className="text-[13px] text-fg-secondary empty:hidden">
+      {text}
+    </p>
+  )
+}
+
+/** The probe's answer: one row per default port, Add (prefills the form) or "Added as <name>" while that provider exists. */
+export function ProbeRows({ servers, names, engine, onAdd }: { servers: LocalServer[]; names: readonly string[]; engine: string; onAdd(s: LocalServer): void }) {
+  if (servers.length === 0) return <Empty>{`Nothing answered on ${engine}.`}</Empty>
+  return (
+    <div role="group" className="mt-2 rounded-md border border-border-subtle px-3" aria-label="Local servers found">
       {servers.map((s) => (
         <Row
           key={s.base_url}
@@ -342,12 +382,13 @@ export function ProbeRows({ servers, onAdd }: { servers: LocalServer[]; onAdd(s:
             </span>
           }
           description={
-            <span title={s.error ?? undefined}>
-              <span className="font-mono">{s.base_url}</span> · {s.reachable ? `${s.models} models` : 'not running'}
-            </span>
+            <>
+              <span className="font-mono">{s.base_url}</span> · {probeState(s)}
+            </>
           }
         >
-          {s.added_as ? (
+          {/* The probe's `added_as` is as old as the probe; a provider removed since gets Add back. */}
+          {s.added_as && names.includes(s.added_as) ? (
             <span className="text-sm text-fg-secondary">
               Added as <span className="font-mono">{s.added_as}</span>
             </span>
@@ -362,10 +403,17 @@ export function ProbeRows({ servers, onAdd }: { servers: LocalServer[]; onAdd(s:
   )
 }
 
+/** R1-3: adding under an existing name replaces that provider, and an empty key deletes its stored key. */
+function ReplaceWarning({ name, names }: { name: string; names: readonly string[] }) {
+  const n = name.trim()
+  if (!names.includes(n)) return null
+  return <p className="col-span-full text-[13px] text-warning">{`Replaces ${n}; an empty key removes its key.`}</p>
+}
+
 const LOCAL_NAME_ID = 'local-server-name'
 
-/** Add local server: the runtime fills the name and the default address (both editable); the key is optional. */
-export function LocalServerForm({ form, onChange, onSubmit, pending }: { form: LocalForm; onChange(f: LocalForm): void; onSubmit(): void; pending: boolean }) {
+/** Add local server: the runtime fills the name (a free one) and the default address, both editable; the key is optional. */
+export function LocalServerForm({ form, names, onChange, onSubmit, pending }: { form: LocalForm; names: readonly string[]; onChange(f: LocalForm): void; onSubmit(): void; pending: boolean }) {
   const ready = !!(form.name.trim() && form.url.trim())
   return (
     <form
@@ -376,7 +424,13 @@ export function LocalServerForm({ form, onChange, onSubmit, pending }: { form: L
         if (ready) onSubmit()
       }}
     >
-      <Select value={form.runtime} onValueChange={(r) => onChange({ ...presetForm(r as LocalForm['runtime']), key: form.key })}>
+      <Select
+        value={form.runtime}
+        onValueChange={(r) => {
+          const next = presetForm(r as LocalForm['runtime'])
+          onChange({ ...next, name: freeName(next.name, names), key: form.key })
+        }}
+      >
         <SelectTrigger aria-label="Local server runtime" className="w-full">
           <SelectValue>{runtimeLabel(form.runtime)}</SelectValue>
         </SelectTrigger>
@@ -406,6 +460,7 @@ export function LocalServerForm({ form, onChange, onSubmit, pending }: { form: L
       <p id="local-server-key-help" className="col-span-3 text-[13px] text-fg-secondary">
         Only if your server asks for one (omlx with key verification on does)
       </p>
+      <ReplaceWarning name={form.name} names={names} />
     </form>
   )
 }
@@ -413,7 +468,7 @@ export function LocalServerForm({ form, onChange, onSubmit, pending }: { form: L
 export type CustomForm = { name: string; url: string; key: string }
 
 /** Add custom provider (162): the key is required unless the address is local (177 U3, the engine's rule). */
-export function CustomProviderForm({ form, onChange, onSubmit, pending }: { form: CustomForm; onChange(f: CustomForm): void; onSubmit(): void; pending: boolean }) {
+export function CustomProviderForm({ form, names, onChange, onSubmit, pending }: { form: CustomForm; names: readonly string[]; onChange(f: CustomForm): void; onSubmit(): void; pending: boolean }) {
   const local = isLocalUrl(form.url)
   const ready = !!(form.name.trim() && form.url.trim() && (local || form.key.trim()))
   return (
@@ -441,9 +496,10 @@ export function CustomProviderForm({ form, onChange, onSubmit, pending }: { form
       </Button>
       {local && (
         <p className="col-span-4 text-[13px] text-fg-secondary">
-          Key optional: this address is on your machine or network (loopback, private, .local, .lan), where servers usually take no key; none is sent unless you set one.
+          Key optional: this is a local address (loopback, private, .local, .lan), where servers usually take no key; none is sent unless you set one.
         </p>
       )}
+      <ReplaceWarning name={form.name} names={names} />
     </form>
   )
 }
@@ -454,7 +510,7 @@ export function ModelLimits({ provider }: { provider: string }) {
   const qc = useQueryClient()
   const key = queryKeys.providerModels(provider)
   const models = useQuery({ queryKey: key, queryFn: () => api.provider_models(provider) })
-  const save = useAction((v: Limits) => api.set_model_limits(provider, v.id, v.context, v.output), {
+  const save = useAction((v: Limits) => api.set_model_limits(...limitsArgs(provider, v)), {
     // `list_models` carries the context window the pickers show.
     keys: [queryKeys.models],
     onSuccess: (m) => qc.setQueryData<ProviderModel[]>(key, (old) => old?.map((x) => (x.id === m.id ? m : x))),
@@ -488,6 +544,10 @@ function LimitRow({ m, save }: { m: ProviderModel; save: Action<Limits, Provider
   const [out, setOut] = useState(m.output ? String(m.output) : '')
   const next = limitsSave(m, ctx, out)
   const busy = save.isPending && save.variables?.id === m.id
+  // R1-6: Enter in either field saves, as the Save button would.
+  const enter = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && next && !busy) save.mutate(next)
+  }
   return (
     <>
       <span className="flex min-w-0 flex-col">
@@ -498,13 +558,13 @@ function LimitRow({ m, save }: { m: ProviderModel; save: Action<Limits, Provider
           {LIMIT_SOURCE[m.source]}
         </Badge>
       </span>
-      <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Context of ${m.id}`} placeholder={contextPlaceholder(m)} value={ctx} onChange={(e) => setCtx(e.target.value)} />
-      <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Output of ${m.id}`} placeholder="unknown" value={out} onChange={(e) => setOut(e.target.value)} />
+      <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Context of ${m.id}`} placeholder={contextPlaceholder(m)} value={ctx} onChange={(e) => setCtx(e.target.value)} onKeyDown={enter} />
+      <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Output of ${m.id}`} placeholder="unknown" value={out} onChange={(e) => setOut(e.target.value)} onKeyDown={enter} />
       <span className="flex items-center gap-1">
-        <Button size="xs" variant="outline" disabled={!next || busy} onClick={() => next && save.mutate(next)}>
+        <Button size="xs" variant="outline" aria-label={`Save limits of ${m.id}`} disabled={!next || busy} onClick={() => next && save.mutate(next)}>
           Save
         </Button>
-        <Button size="xs" variant="ghost" disabled={busy || (m.context === 0 && m.output === 0)} onClick={() => save.mutate({ id: m.id, context: null, output: null })}>
+        <Button size="xs" variant="ghost" aria-label={`Clear limits of ${m.id}`} disabled={busy || (m.context === 0 && m.output === 0)} onClick={() => save.mutate({ id: m.id, context: null, output: null })}>
           Clear
         </Button>
       </span>

@@ -54,6 +54,14 @@ export const probeForm = (s: LocalServer): LocalForm => ({ ...presetForm(s.runti
 /** `add_provider` arguments of the local form: an empty key is `null` (keyless), the runtime always sent. */
 export const localAddArgs = (f: LocalForm): [string, string, string | null, LocalRuntime] => [f.name.trim(), f.url.trim(), f.key.trim() || null, f.runtime]
 
+/** `name`, else the first free `name-2`, `name-3`, … — a prefilled name never replaces an existing provider (177 R1-3). */
+export function freeName(name: string, taken: readonly string[]): string {
+  if (!taken.includes(name)) return name
+  let n = 2
+  while (taken.includes(`${name}-${n}`)) n++
+  return `${name}-${n}`
+}
+
 /**
  * 177 E4, the engine's `local::private_url` mirrored: a URL whose host is loopback, private (RFC 1918, CGNAT,
  * link-local, ULA, unspecified, v4-mapped), single-label, or under `.localhost` `.local` `.internal` `.lan` `.home.arpa` `.ts.net`.
@@ -114,6 +122,9 @@ export function limitsSave(m: ProviderModel, ctx: string, out: string): Limits |
   return (context ?? 0) !== m.context || (output ?? 0) !== m.output ? { id: m.id, context, output } : null
 }
 
+/** `set_model_limits` arguments in contract order: provider, model, context, output (`null` = unknown; Clear sends both `null`). */
+export const limitsArgs = (provider: string, l: Limits): [string, string, number | null, number | null] => [provider, l.id, l.context, l.output]
+
 /** `2.1 s · 1,873 in · 41 out · finish stop · thinking off sent` — the Test summary call's numbers, the reported ones only. */
 export function summaryTestStats(t: SummaryTest): string {
   const n = (v: number) => v.toLocaleString('en-US')
@@ -129,8 +140,12 @@ export function summaryTestStats(t: SummaryTest): string {
     .join(' · ')
 }
 
+/** A probe row after its address: the model count or "not running", the engine's error, and "may need a key" when a server answers with an error and no models (omlx with key verification on). */
+export function probeState(s: LocalServer): string {
+  return [s.reachable ? `${s.models} models` : 'not running', s.error, s.reachable && s.error && s.models === 0 && 'may need a key'].filter(Boolean).join(' · ')
+}
+
 /** One probe row as text (the slash `/provider find` toast). */
 export function probeLine(s: LocalServer): string {
-  const state = !s.reachable ? 'not running' : s.added_as ? `${s.models} models · added as ${s.added_as}` : `${s.models} models`
-  return `${runtimeLabel(s.runtime)} ${s.base_url} · ${state}`
+  return `${runtimeLabel(s.runtime)} ${s.base_url} · ${probeState(s)}${s.added_as ? ` · added as ${s.added_as}` : ''}`
 }

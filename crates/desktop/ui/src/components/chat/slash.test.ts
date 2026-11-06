@@ -2,6 +2,7 @@ import { expect, test, vi } from 'vitest'
 import { toast } from 'sonner'
 import type { Api } from '@/rpc/api'
 import { NO_PICK, useDrafts } from '@/lib/drafts'
+import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
 import { type Ctx, isCommand, run, sendRaw, slashMenu } from './slash'
 
@@ -226,8 +227,28 @@ test('177 U6: /provider find probes and lists each server in one toast', async (
   ])
   await run('/provider find', ctxFor({ local_servers_probe }))
   expect(toast.message).toHaveBeenLastCalledWith('Local servers', {
-    description: 'Ollama http://127.0.0.1:11434/v1/ · 3 models\nomlx http://127.0.0.1:8080/v1/ · 2 models · added as mlx\nLM Studio http://127.0.0.1:1234/v1/ · not running',
+    description: 'Ollama http://127.0.0.1:11434/v1/ · 3 models\nomlx http://127.0.0.1:8080/v1/ · 2 models · added as mlx\nLM Studio http://127.0.0.1:1234/v1/ · not running · connection refused',
   })
+  local_servers_probe.mockResolvedValueOnce([])
+  await run('/provider find', ctxFor({ local_servers_probe }))
+  expect(toast.message).toHaveBeenLastCalledWith('Local servers', { description: 'nothing answered on this node' })
+})
+
+test('177 R1-4: /provider add, rm, refresh and limits refetch the providers and models queries', async () => {
+  const spy = vi.spyOn(active().qc, 'invalidateQueries')
+  const provider = { name: 'mlx', base_url: 'http://127.0.0.1:8080/v1/', models: 2 }
+  const api = {
+    add_provider: vi.fn().mockResolvedValue(provider),
+    remove_provider: vi.fn().mockResolvedValue(null),
+    refresh_provider_models: vi.fn().mockResolvedValue({ provider, added: [], removed: [] }),
+    set_model_limits: vi.fn().mockResolvedValue({ id: 'LFM3', name: 'LFM3', context: 32_768, output: 0, source: 'user', assumed_context: null }),
+  }
+  for (const line of ['/provider add mlx http://127.0.0.1:8080/v1/', '/provider rm mlx', '/provider refresh mlx', '/provider limits mlx LFM3 32768 0']) {
+    spy.mockClear()
+    await run(line, ctxFor(api))
+    expect(spy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([['providers'], ['models']])
+  }
+  spy.mockRestore()
 })
 
 test('177 U6: /provider limits <provider> <model> <context> [output] — 0 = unknown, an omitted output keeps the stored one, bad numbers are refused', async () => {

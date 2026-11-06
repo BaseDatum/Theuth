@@ -14,6 +14,14 @@ import type { ViewLine } from '@/rpc/bindings/ViewLine'
 import { INITIAL, LineNode, MemoryBadge, MemoryFooter, SummaryModel, ViewNote, badgeTip, flatten, foldMutation, highlight, modelMutation, nextTry, pauseMutation, reduce, retryMutation } from './MemoryPanel'
 import { isFoldedNote } from '@/lib/endless'
 import type { EndlessBacklog } from '@/rpc/bindings/EndlessBacklog'
+import type * as Combobox from './ModelCombobox'
+
+// 177 R1-10: what the summary picker was given (its closed popover renders no list to read the order from).
+const pickers = vi.hoisted(() => [] as { 'aria-label'?: string; localFirst?: boolean }[])
+vi.mock('./ModelCombobox', async (original) => {
+  const m = await original<typeof Combobox>()
+  return { ...m, ModelCombobox: (p: Parameters<typeof m.ModelCombobox>[0]) => (pickers.push(p), createElement(m.ModelCombobox, p)) }
+})
 
 const line = (id: number, n: number, text: string, built = true): ViewLine => ({ id, n, text, built, level: Math.log2(n) })
 
@@ -270,6 +278,14 @@ test('the summary model picker shows the model in force and which link chose it'
   expect(html).toContain('agent default')
   expect(paint({ ...memory, model_source: 'chat' })).toContain('this chat')
   expect(paint({ ...memory, model_source: 'session' })).toContain('chat model')
+  // 177 U4: local models first, and a local model in force carries the tag.
+  const summary = pickers.filter((p) => p['aria-label'] === 'Summary model')
+  expect(summary.length).toBeGreaterThan(0)
+  expect(summary.every((p) => p.localFirst === true)).toBe(true)
+  const qc = new QueryClient()
+  qc.setQueryData(queryKeys.models, [{ id: 'mlx/LFM3', name: 'LFM3', provider: 'mlx', context: 0, efforts: [], local: true }])
+  const local = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(SummaryModel, { session: 's1', m: { ...memory, model: 'mlx/LFM3' } }) as ReactNode }))
+  expect(local).toMatch(/LFM3<\/span><span[^>]*>local<\/span>/)
 })
 
 test('both placeholder kinds are muted italic notes; a mechanical line carries the excerpt tag, a model line none', () => {

@@ -46,6 +46,8 @@ export const queryKeys = {
   providers: ['providers'] as const,
   /** 177: `provider_models(name)`, the limits editor of a provider row; under `providers` so a provider change refetches it. */
   providerModels: (name: string) => ['providers', 'models', name] as const,
+  /** 177: `local_servers_probe()` — fetched on Find running servers only; the rows stay through a re-probe. */
+  localServers: ['local-servers'] as const,
   awsProfiles: ['aws-profiles'] as const,
   acp: ['acp'] as const,
   acpRegistry: ['acp', 'registry'] as const,

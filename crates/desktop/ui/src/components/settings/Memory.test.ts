@@ -2,14 +2,20 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
+import type * as Combobox from '@/components/chat/ModelCombobox'
 import type * as Rpc from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
 import { tokenEstimate } from '@/lib/endless'
-import { summaryTestStats } from './providers'
 import { bounded } from './shared'
-import { Memory, SummaryTestResult } from './Memory'
+import { Memory } from './Memory'
+
+// R1-10: what each picker was given (the closed popover renders no list to read the order from).
+const pickers = vi.hoisted(() => [] as { 'aria-label'?: string; localFirst?: boolean }[])
+vi.mock('@/components/chat/ModelCombobox', async (original) => {
+  const m = await original<typeof Combobox>()
+  return { ...m, ModelCombobox: (p: Parameters<typeof m.ModelCombobox>[0]) => (pickers.push(p), createElement(m.ModelCombobox, p)) }
+})
 
 const config: EndlessConfig = { default_chat: true, default_desk: true, default_meeting: false, view_bytes: 128_000, meeting_view_bytes: 32_000, node_bytes: 512, slack: 0.25, settle_secs: 60, jobs: 8, tries: 5, retry_secs: 10, cap_chars: 30_000, backfill_max_units: 2_000, model: null }
 let served: EndlessConfig = config
@@ -111,18 +117,7 @@ test('177 U5: Test summary call sits under the compactor model and tests what a 
   expect(local).toContain(`Sends one summary of a fixed sample to ${lfm.id}`)
   // 177 U4: the picker's trigger tags a local model.
   expect(local).toMatch(/LFM3-1.7B-MLX-bf16<\/span><span[^>]*>local<\/span>/)
-})
-
-const ok: SummaryTest = { ok: true, model: lfm.id, latency_ms: 2_140n, tokens_in: 1_873, tokens_out: 41, reasoning_tokens: null, finish_reason: 'stop', reasoning_seen: false, thinking_off_sent: true, line: 'Sky asks why omlx refuses max_tokens 0.', error: null, hint: null }
-const failed: SummaryTest = { ...ok, ok: false, latency_ms: 21_600n, tokens_out: 2_048, reasoning_tokens: 2_048, finish_reason: 'length', reasoning_seen: true, line: null, error: `${lfm.id} used its whole 2048-token reply on thinking (finish_reason=length)`, hint: 'Turn thinking off for this model in omlx.' }
-
-test('177 U5: a successful test shows the line, latency, tokens in and out, the finish reason and "thinking off sent"; a failed one the error and the hint', () => {
-  const text = (t: SummaryTest) => renderToStaticMarkup(createElement(SummaryTestResult, { t })).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
-  expect(text(ok)).toContain('Summary call worked Sky asks why omlx refuses max_tokens 0. mlx/LFM3-1.7B-MLX-bf16 · 2.1 s · 1,873 in · 41 out · finish stop · thinking off sent')
-  const bad = text(failed)
-  expect(bad).toContain('mlx/LFM3-1.7B-MLX-bf16 used its whole 2048-token reply on thinking (finish_reason=length) Turn thinking off for this model in omlx.')
-  expect(bad).toContain('21.6 s · 1,873 in · 2,048 out · 2,048 thinking · finish length · thinking off sent')
-  expect(bad).not.toContain('Summary call worked')
-  // Unreported numbers are left out, not shown as 0.
-  expect(summaryTestStats({ ...ok, tokens_in: null, tokens_out: null, finish_reason: null, thinking_off_sent: false, latency_ms: 900n })).toBe('0.9 s')
+  // 177 U4: the compactor picker lists local models first.
+  expect(pickers.filter((p) => p['aria-label'] === 'Compactor model').every((p) => p.localFirst === true)).toBe(true)
+  expect(pickers.some((p) => p['aria-label'] === 'Compactor model')).toBe(true)
 })
