@@ -17228,7 +17228,7 @@ done
     }
 
     /// 177 E4–E7: a keyless local provider named after its runtime is listed
-    /// with no `Authorization` header and the window its server reports
+    /// with no `Authorization` header (listing) and the window its server reports
     /// (source `server`); an unknown window reads as the assumed 16k; a user
     /// value (`set_model_limits`) reaches the catalog and survives a refresh;
     /// clearing it makes the window unknown again.

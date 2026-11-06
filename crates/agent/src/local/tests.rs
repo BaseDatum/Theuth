@@ -18,8 +18,8 @@ use crate::backend::Backend;
 use crate::endless::compactor::{self, ModelCompactor, Step};
 use crate::providers::Gateway;
 
-/// One request the fake saw: its body and whether it carried `Authorization`.
-type Seen = Arc<Mutex<Vec<(Value, bool)>>>;
+/// One request the fake saw: its body and its `Authorization` header, if any.
+type Seen = Arc<Mutex<Vec<(Value, Option<String>)>>>;
 
 /// An omlx-like OpenAI chat server: pydantic's 422 on `max_tokens: 0`; with
 /// `honour` and `chat_template_kwargs.enable_thinking == false` one text
@@ -32,7 +32,11 @@ struct Omlx {
 impl Respond for Omlx {
     fn respond(&self, req: &Request) -> ResponseTemplate {
         let body: Value = serde_json::from_slice(&req.body).unwrap();
-        let auth = req.headers.contains_key("authorization");
+        let auth = req
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         self.seen.lock().push((body.clone(), auth));
         if body.get("max_tokens").and_then(Value::as_u64) == Some(0) {
             return ResponseTemplate::new(422).set_body_json(json!({"error": {
@@ -151,10 +155,11 @@ fn unit() -> Step {
 }
 
 /// E1 + E4: a turn-shaped and a title/side-shaped request on a 0/0 model of a
-/// keyless local provider carry no `max_tokens` (the fake would 422 a 0) and
-/// no `Authorization` header; both reach the provider's own endpoint.
+/// keyless local provider carry no `max_tokens` (the fake would 422 a 0); both
+/// go through genai's OpenAI adapter to the provider's own endpoint with the
+/// placeholder key (`Authorization: Bearer local`).
 #[tokio::test]
-async fn zero_limits_send_no_max_tokens_and_keyless_sends_no_auth() {
+async fn zero_limits_send_no_max_tokens_and_keyless_sends_placeholder_key() {
     let dir = crate::TestDir::new("local-e1");
     let (server, seen) = omlx(true).await;
     let auth = auth_with(&dir.0, "mlx", &server);
@@ -191,7 +196,7 @@ async fn zero_limits_send_no_max_tokens_and_keyless_sends_no_auth() {
     assert_eq!(seen.len(), 2);
     for (body, auth) in seen.iter() {
         assert!(body.get("max_tokens").is_none(), "{body}");
-        assert!(!auth, "a keyless provider sends no Authorization header");
+        assert_eq!(auth.as_deref(), Some("Bearer local"));
     }
 }
 
@@ -214,8 +219,8 @@ fn local_provider_named_omlx_shadows_the_adapter() {
     assert_eq!(t.endpoint.base_url(), "http://127.0.0.1:18080/v1/");
     assert_eq!(t.kind, genai::adapter::AdapterKind::OpenAI);
     assert!(matches!(
-        t.auth,
-        genai::resolver::AuthData::RequestOverride { .. }
+        &t.auth,
+        genai::resolver::AuthData::Key(k) if k == crate::backend::KEYLESS_PLACEHOLDER
     ));
 }
 

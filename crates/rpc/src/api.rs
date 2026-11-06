@@ -1449,7 +1449,8 @@ pub trait Api {
     async fn list_providers(&self) -> RpcResult<Vec<ProviderInfo>>;
     /// Persist a custom provider (url + optional key + optional local runtime preset);
     /// fetches `/models` with the context windows the server reports (177).
-    /// A missing key is allowed for a local provider: no `Authorization` header.
+    /// A missing key is allowed for a local provider: its model calls carry the
+    /// placeholder `Bearer local`, its listing no `Authorization` header.
     #[method(name = "add_provider")]
     async fn add_provider(
         &self,

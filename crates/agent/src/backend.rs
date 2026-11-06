@@ -91,24 +91,22 @@ fn protocol_target(
         });
     }
     let gw = gateway?;
-    let kind = protocol.map_or(AdapterKind::OpenAI, kind_of);
-    // 177 E4: a keyless local provider sends no `Authorization` header —
-    // genai's OpenAI adapter insists on a key, so the URL is fixed here and
-    // the override's empty header set replaces the Bearer one.
-    let auth = if gw.key.is_empty() && kind == AdapterKind::OpenAI {
-        AuthData::RequestOverride {
-            url: format!("{}chat/completions", gw.base_url),
-            headers: Headers::default(),
-        }
+    // 177 E4: a keyless local provider's calls still go through genai, whose
+    // OpenAI adapter needs a key: a placeholder servers that check none ignore.
+    let key = if gw.key.is_empty() {
+        KEYLESS_PLACEHOLDER.to_owned()
     } else {
-        AuthData::Key(gw.key)
+        gw.key
     };
     Some(ProtocolTarget {
-        kind,
+        kind: protocol.map_or(AdapterKind::OpenAI, kind_of),
         endpoint: Endpoint::from_owned(gw.base_url),
-        auth,
+        auth: AuthData::Key(key),
     })
 }
+
+/// 177 E4: the Bearer value a keyless local provider's model calls carry.
+pub(crate) const KEYLESS_PLACEHOLDER: &str = "local";
 
 /// 85 §0.2: protocol → the genai adapter that speaks it.
 fn kind_of(p: Protocol) -> AdapterKind {

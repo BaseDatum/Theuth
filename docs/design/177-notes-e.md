@@ -12,13 +12,16 @@ Branch `fix/177-e`, base `b540592e`. Design: `177-local-runtimes.md`.
    `compactor::is_local`, which now calls it). It is a superset of the brief's
    list: also `*.localhost`, `*.internal`, `*.home.arpa`, `*.ts.net` and
    single-label hosts. One rule for compactor locality and `ProviderInfo.local`.
-3. **Keyless gateway auth.** genai's OpenAI adapter requires a key unless the
-   adapter opts out (`allow_no_api_key`, only omlx does). A keyless local
-   gateway therefore uses `AuthData::RequestOverride { url: "{base}chat/completions",
-   headers: {} }`: same OpenAI adapter, no `Authorization` header. Only for the
-   OpenAI-chat protocol; a keyless gateway whose `models.json` entry names
-   another protocol still sends `Bearer ` (empty) — no local runtime speaks those.
-   Model listing with no key uses `AuthData::None` (genai omits the header there).
+3. **Keyless gateway auth — deviation forced by genai (Theuth, 17:09).** Every
+   model call (turns, streaming, tools, compactor, titles, side calls) goes
+   through genai. Its OpenAI adapter requires a key unless the adapter opts out
+   (`allow_no_api_key`, only omlx does), so a keyless local gateway's calls carry
+   the placeholder key `local` (`backend::KEYLESS_PLACEHOLDER`,
+   `Authorization: Bearer local`), which servers that check no key ignore. This
+   overrides the brief's "send NO Authorization header" for model calls; the
+   Phase A `RequestOverride` to `{base}chat/completions` is gone. Raw HTTP is
+   used only for the listing extras (`local::server_contexts`) and the probe,
+   which send no header; the genai model listing uses `AuthData::None` (no header).
 4. **Keyless re-add deletes a stored key** of the same name, so the vault copy
    (which `Auth::gateway` prefers) does not keep being sent.
 5. **A cloud `providers.yaml` row without a vault key is still dropped at load**
@@ -119,7 +122,8 @@ makes it ignore the kwarg, `lfm-tiny` reports `max_model_len` 32768, `lfm-bare` 
   … window 16384 assumed, reply 4096; the local window is assumed; set the real one under Local servers or
   `/provider limits fakea lfm-bare <context>`)" — the fake saw nothing
   set_model_limits ["fakea","lfm-bare",65536,null] -> 65536/0 source user; same chat again -> assistant answers;
-  fake: turn max_tokens 24223 (tools 11, no kwargs), title max_tokens 63021 + {"enable_thinking": false}; no 422, no Authorization
+  fake: turn max_tokens 24223 (tools 11, no kwargs), title max_tokens 63021 + {"enable_thinking": false}; no 422
+  (re-run after the placeholder change: every chat request carries `Authorization: Bearer local`, see below)
 3 endless session, 3 long messages -> stats calls 3, unbuilt 0, stalled none;
   fake: 3 × {max_tokens 2048, chat_template_kwargs {"enable_thinking": false}, reasoning_effort null, tools 0}
 4 test_summary_call fakea/lfm-bare -> ok true, finish stop, thinking_off_sent true, line "Done: the weekly sync is now Thursday 15:00 …"
@@ -131,6 +135,9 @@ makes it ignore the kwarg, `lfm-tiny` reports `max_model_len` 32768, `lfm-bare` 
 6 set_model_limits lfm-tiny 12345/2048 -> source user; refresh keeps it; clear (null,null) -> unknown, assumed 16384;
   refresh -> 32768 source server again
 ```
+Re-run after the placeholder change (fresh data dir, same driver, `/tmp/177-e/proof2.txt`; the fake now logs the
+header value): steps 1–6 give the same results; every chat request (turn with 11 tools, title, 3 compactor calls,
+both `test_summary_call` attempts) carries `"authorization": "Bearer local"`; the listing `GET /v1/models` carries none.
 Every process started for the proof was stopped.
 
 ## genai fork follow-ups (not changed here)
@@ -139,5 +146,5 @@ Every process started for the proof was stopped.
   `Zero` included, to `enable_thinking: true`. It should map `Zero` to
   `enable_thinking: false` and drop `reasoning_effort`.
 - The OpenAI adapter could accept `AuthData::None` for custom endpoints
-  (`allow_no_api_key` on the public `ServiceTarget` path), which would remove
-  the `RequestOverride` in decision 3.
+  (`allow_no_api_key` on the public `ServiceTarget` path), which would let a
+  keyless provider send no header instead of the placeholder in decision 3.

@@ -2334,7 +2334,8 @@ pub struct AddProvider {
     /// `https://host/v1`.
     pub base_url: String,
     /// Bearer key; stored in the secrets vault (37) under the provider's name.
-    /// `None`/empty: a keyless local provider (no `Authorization` header; 177 E4).
+    /// `None`/empty: a keyless local provider (model calls carry the placeholder
+    /// `Bearer local`; listings and probes no header; 177 E4).
     #[serde(default)]
     pub key: Option<String>,
     /// 177: the runtime preset; makes the provider local whatever its host.

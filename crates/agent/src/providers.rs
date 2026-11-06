@@ -20,7 +20,8 @@ pub(crate) struct Gateway {
     /// Base URL, trailing slash (`https://api.example/v1/`).
     pub base_url: String,
     /// API key; [`crate::supervisor::Auth::gateway`] replaces it with the live vault value.
-    /// Empty: a keyless local provider (177 E4) — no `Authorization` header.
+    /// Empty: a keyless local provider (177 E4) — model calls carry the
+    /// placeholder key [`crate::backend::KEYLESS_PLACEHOLDER`].
     pub key: String,
     /// 177: the runtime preset it was added with.
     pub runtime: Option<LocalRuntime>,

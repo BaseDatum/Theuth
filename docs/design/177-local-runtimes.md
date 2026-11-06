@@ -34,8 +34,10 @@ worker E: `177-notes-e.md`.
   reasoning seen or `finish_reason=length` is the error
   "<model> used its whole <N>-token reply on thinking (finish_reason=<r>)"; a
   local provider retries that once with thinking off forced and twice the cap.
-- **E4** A provider may be added without a key when it is local (no
-  `Authorization` header). A local provider may take a runtime's own name
+- **E4** A provider may be added without a key when it is local. Its model
+  calls still go through genai, with the placeholder key `local`
+  (`Authorization: Bearer local`, ignored by servers that check no key); its
+  listing, limit and probe requests send no header. A local provider may take a runtime's own name
   (`ollama`, `omlx`, `lmstudio`, `llamacpp`, `vllm`) and then shadows genai's
   adapter for `<name>/<model>` ids. A provider is local when it was added with
   a runtime preset or its base URL host is loopback / private / `*.local` /
