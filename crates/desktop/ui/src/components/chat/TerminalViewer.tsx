@@ -373,7 +373,8 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
               ))}
         </div>
       )}
-      <p aria-live="polite" className={cn('truncate text-xs text-fg-secondary', exit && 'text-warning')} title={status}>
+      {/* A cell's terminal lives in a note's editor: no live region there (the cell announces its run, CELLHIST). */}
+      <p aria-live={src.kind === 'pty' ? 'polite' : undefined} className={cn('truncate text-xs text-fg-secondary', exit && 'text-warning')} title={status}>
         {status}
       </p>
     </>

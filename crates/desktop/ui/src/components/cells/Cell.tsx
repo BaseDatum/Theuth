@@ -311,6 +311,39 @@ function HistoryMenu({ cellRef, onPick }: { cellRef: CellRef; onPick(run: CellRu
   )
 }
 
+/** How long an announcement stays in the live region before it is cleared. */
+const ANNOUNCE_CLEAR_MS = 5000
+let liveRegion: HTMLElement | null = null
+let clearing: ReturnType<typeof setTimeout> | undefined
+/**
+ * §11.9 announcements go through one polite live region, a direct child of `<body>`, never inside a cell (CELLHIST):
+ * Radix's modal menus and dialogs (`aria-hidden`'s `hideOthers`) keep every `[aria-live]` node visible, so one inside a
+ * note cell made them stamp `aria-hidden` onto ProseMirror's blocks, ProseMirror redrew the cells, and an open
+ * `history ▾` re-opened forever. Created empty ahead of the first message (every cell mount ensures it): some screen
+ * readers do not speak a region that appears already filled.
+ */
+export function ensureLiveRegion(): HTMLElement {
+  if (!liveRegion?.isConnected) {
+    liveRegion = document.createElement('p')
+    liveRegion.className = 'sr-only'
+    liveRegion.setAttribute('aria-live', 'polite')
+    document.body.append(liveRegion)
+  }
+  return liveRegion
+}
+
+/** Empty now, the text on the next frame (so a repeated message is spoken again), cleared after `ANNOUNCE_CLEAR_MS`. */
+export function announce(text: string) {
+  const region = ensureLiveRegion()
+  region.textContent = ''
+  clearTimeout(clearing)
+  requestAnimationFrame(() => {
+    region.textContent = text
+    clearTimeout(clearing)
+    clearing = setTimeout(() => (region.textContent = ''), ANNOUNCE_CLEAR_MS)
+  })
+}
+
 /** 171 §11.1: the one cell component for chat, notes and notebooks. */
 export function Cell({ cellRef, cell, runnable, view, state, latest, host, callbacks, editor, readOnly }: CellProps) {
   const extras = useContext(CellExtras)
@@ -333,17 +366,17 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
   const sinceStop = useElapsed(stoppedAt, stoppedAt !== null && live)
   const killReady = stoppedAt !== null && sinceStop * 1000 >= KILL_AFTER_MS
 
-  // §11.9: state changes are announced politely from the footer.
-  const [announce, setAnnounce] = useState('')
+  // §11.9: state changes are announced politely (`announce`); the region exists before the first one.
+  useEffect(() => void ensureLiveRegion(), [])
   const seen = useRef(latest ? `${latest.id}:${latest.state}` : '')
   useEffect(() => {
     const now = latest ? `${latest.id}:${latest.state}` : ''
     if (now === seen.current) return
     seen.current = now
     if (!latest) return
-    if (latest.state === 'running') setAnnounce(`${title} running`)
+    if (latest.state === 'running') announce(`${title} running`)
     else if (ended(latest))
-      setAnnounce(`${title} finished, ${exitText(latest)}${latest.expect.length ? `, expect ${latest.expect.every((e) => e.met) ? 'met' : 'missed'}` : ''}`)
+      announce(`${title} finished, ${exitText(latest)}${latest.expect.length ? `, expect ${latest.expect.every((e) => e.met) ? 'met' : 'missed'}` : ''}`)
   }, [latest, title])
 
   const problems = state?.problems ?? []
@@ -618,9 +651,6 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
         }
         outputContent={output ? <div contentEditable={false}>{output}</div> : undefined}
       />
-      <p aria-live="polite" className="sr-only">
-        {announce}
-      </p>
     </div>
   )
 }

@@ -932,7 +932,7 @@ CSS variables only; no hex in components.
 
 ### 11.9 Accessibility
 
-The Run button's accessible name is its label ("Apply to ir-prod1"); disabled buttons carry the reason as description. State changes are announced politely from the footer ("Preview finished, exit 0, expect met"). Gutter ▶ and the selection pill have keyboard equivalents (Mod+Enter). The live xterm offers xterm's screen-reader mode; the static view is plain text. Spinners honour `prefers-reduced-motion`. Danger is never colour-only: the chip says "danger".
+The Run button's accessible name is its label ("Apply to ir-prod1"); disabled buttons carry the reason as description. State changes are announced politely ("Preview finished, exit 0, expect met") through one live region on `<body>`, never inside a cell, and a cell's live terminal has no live status line: a modal menu or dialog keeps every `[aria-live]` node visible (`aria-hidden`'s `hideOthers`), so one inside a note cell wrote `aria-hidden` onto the editor's blocks and ProseMirror redrew them — with `history ▾` open, forever (CELLHIST, `docs/design/cellhist-notes.md`). Gutter ▶ and the selection pill have keyboard equivalents (Mod+Enter). The live xterm offers xterm's screen-reader mode; the static view is plain text. Spinners honour `prefers-reduced-motion`. Danger is never colour-only: the chip says "danger".
 
 ### 11.10 The mock, panel by panel (`docs/design/assets/171-cells.html`)
 

@@ -136,3 +136,9 @@ test('171F B12: a cell terminal opens at 12 rows and grows with the rows in use 
   expect(cell).toContain('height:188px')
   expect(renderToStaticMarkup(createElement(Terminal, { session: 's', job: 'j', label: 'sh' }))).not.toContain('height:')
 })
+
+test('CELLHIST: a cell terminal (inside a note editor) has no live region; a pty terminal keeps its polite status line', () => {
+  expect(renderToStaticMarkup(createElement(Terminal, { source: { kind: 'cell', run: 'run-1' }, label: 'bash' }))).not.toContain('aria-live')
+  expect(renderToStaticMarkup(createElement(Terminal, { source: { kind: 'pty', session: 's', job: 'j' }, label: 'sh' }))).toContain('aria-live="polite"')
+  expect(renderToStaticMarkup(createElement(Terminal, { session: 's', job: 'j', label: 'sh' }))).toContain('aria-live="polite"')
+})

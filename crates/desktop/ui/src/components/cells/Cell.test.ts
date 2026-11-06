@@ -1,10 +1,10 @@
 import { createElement as h } from 'react'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import type { CellState } from '@/rpc/bindings/CellState'
 import type { Interpreter } from '@/rpc/bindings/Interpreter'
-import { Cell, CellExtras, trimBlankTail } from './Cell'
+import { announce, Cell, CellExtras, ensureLiveRegion, trimBlankTail } from './Cell'
 import { keyRun } from './CellEditor'
 import { cellOf } from './grammar'
 import { hoverAfter } from './line-run'
@@ -129,6 +129,58 @@ test('every §11.2 state renders its look and button', () => {
   for (const [want, { view, html }, check] of cases) {
     expect(view, want).toBe(want)
     check(html)
+  }
+})
+
+test('CELLHIST: no cell renders a live region of its own, whatever its state or open history', () => {
+  // A modal Radix menu (`hideOthers`) keeps every `[aria-live]` node visible: one inside a note cell made it stamp
+  // `aria-hidden` onto the editor's blocks, ProseMirror redrew the cells and an open history ▾ re-opened forever.
+  useToolRuns.getState().setDisclosed(disclosureKey(refKey(ref), 'history'), true)
+  for (const s of [
+    state(ref),
+    state(ref, { latest: run({ state: 'running', exit: null, secs: null, ended_ms: null }) }),
+    state(ref, { latest: run() }),
+    state(ref, { latest: run({ state: 'failed', exit: { type: 'code', value: 1 } }) }),
+  ]) {
+    const { view, html } = cell(1, s)
+    expect(html, view).not.toContain('aria-live')
+  }
+  useToolRuns.getState().setDisclosed(disclosureKey(refKey(ref), 'history'), false)
+})
+
+test('CELLHIST: announcements go through one empty-at-first live region on <body>, filled a frame later, cleared after 5 s', () => {
+  // Node environment: the slice of `document` the region uses.
+  type El = { className: string; textContent: string; isConnected: boolean; parentNode: unknown; attrs: Record<string, string>; setAttribute(k: string, v: string): void }
+  const body = { children: [] as El[], append: (el: El) => void (body.children.push(el), (el.parentNode = body), (el.isConnected = true)) }
+  const createElement = (): El => ({ className: '', textContent: '', isConnected: false, parentNode: null, attrs: {}, setAttribute(k, v) { this.attrs[k] = v } })
+  vi.useFakeTimers()
+  vi.stubGlobal('document', { body, createElement })
+  vi.stubGlobal('requestAnimationFrame', (f: () => void) => setTimeout(f, 16))
+  try {
+    const region = ensureLiveRegion() as unknown as El
+    expect(ensureLiveRegion()).toBe(region)
+    expect(body.children).toEqual([region])
+    expect(region.parentNode).toBe(body)
+    expect(region.attrs['aria-live']).toBe('polite')
+    expect(region.textContent).toBe('')
+
+    announce('Preview finished, exit 0')
+    expect(region.textContent).toBe('')
+    vi.advanceTimersByTime(16)
+    expect(region.textContent).toBe('Preview finished, exit 0')
+    // The same message again: emptied, then written on the next frame, so it is spoken again.
+    announce('Preview finished, exit 0')
+    expect(region.textContent).toBe('')
+    vi.advanceTimersByTime(16)
+    expect(region.textContent).toBe('Preview finished, exit 0')
+    vi.advanceTimersByTime(4999)
+    expect(region.textContent).toBe('Preview finished, exit 0')
+    vi.advanceTimersByTime(1)
+    expect(region.textContent).toBe('')
+    expect(body.children).toHaveLength(1)
+  } finally {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
   }
 })
 
