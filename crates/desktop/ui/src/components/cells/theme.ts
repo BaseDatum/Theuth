@@ -1,12 +1,10 @@
 // Owner: U1
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { tags as t } from '@lezer/highlight'
 import { EditorView, highlightSpecialChars } from '@uiw/react-codemirror'
 
 /**
- * 171 §11.8: CodeMirror theme and highlight style reading theuth's CSS variables (`--chart-*`, `--fg-tertiary`),
- * built once at module scope (171-recon-theirs §16 trap 7: a new extension array per render rebuilds the editor).
- * Importers spread it into their extension list. §3.7: invisible characters are drawn as placeholders.
+ * 171 §11.8: CodeMirror theme reading theuth's CSS variables (`--fg-tertiary`, `--fg-accent`), built once at module
+ * scope (171-recon-theirs §16 trap 7: a new extension array per render rebuilds the editor). Importers spread it into
+ * their extension list. Syntax colours are shiki's (`shiki-marks.ts`). §3.7: invisible characters are drawn as placeholders.
  */
 export const cellTheme = [
   EditorView.theme({
@@ -23,15 +21,5 @@ export const cellTheme = [
     '.cm-specialChar': { color: 'var(--status-danger-fg)', backgroundColor: 'var(--status-danger-bg)' },
     '.cm-run-gutter .cm-gutterElement': { width: '18px', color: 'var(--fg-accent)', cursor: 'pointer', textAlign: 'center' },
   }),
-  syntaxHighlighting(
-    HighlightStyle.define([
-      { tag: [t.keyword, t.controlKeyword, t.operatorKeyword, t.definitionKeyword, t.modifier], color: 'var(--chart-5)' },
-      { tag: [t.string, t.special(t.string), t.regexp], color: 'var(--chart-4)' },
-      { tag: [t.number, t.bool, t.atom], color: 'var(--chart-3)' },
-      { tag: [t.function(t.variableName), t.function(t.propertyName), t.standard(t.variableName)], color: 'var(--chart-1)' },
-      { tag: [t.comment, t.lineComment, t.blockComment, t.meta], color: 'var(--fg-tertiary)', fontStyle: 'italic' },
-      { tag: [t.special(t.variableName), t.self], color: 'var(--chart-2)' },
-    ]),
-  ),
   highlightSpecialChars({ addSpecialChars: /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/ }),
 ]

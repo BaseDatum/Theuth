@@ -1,6 +1,7 @@
 // 171 visual check, dev only: `bunx vite` then open `/src/dev/cells-fixture.html` (`?quit` adds the pre-quit sheet,
-// `?theme=dark`). The §3.8 runbook and the §11.2 variants rendered by the real `MessageAssistant` → `CellFence` →
-// `Cell` against a fake `Api` and RPC client (no engine): every `cell_*` answer below is local.
+// `?theme=dark`, `?hl` shows only the highlighting scenario). The §3.8 runbook and the §11.2 variants rendered by the
+// real `MessageAssistant` → `CellFence` → `Cell` against a fake `Api` and RPC client (no engine): every `cell_*`
+// answer below is local.
 import '@/styles.css'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
@@ -19,6 +20,7 @@ import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import type { KernelState } from '@/rpc/bindings/KernelState'
 import type { RpcClient } from '@/rpc/client'
 import { active } from '@/store/engine-scope'
+import { PLAIN, PWSH, PYTHON, SAMPLE } from './cells-sample'
 
 const MIN = 60_000
 const now = Date.now()
@@ -152,7 +154,16 @@ const SCENARIOS: Scenario[] = [
     text: fence('#| label: Whoami\n#| cwd: /tmp\n#| private\naws sts get-caller-identity'),
     states: (ref) => ({ latest: run(ref, { secs: 0.9 }, '{ "Account": "123456789012", "Arn": "arn:aws:sts::…:assumed-role/ir-prod1-admin/sky" }\n') }),
   },
+  {
+    // `?hl`: this scenario alone. Cells are never run here: no `latest`, the fixture api answers locally.
+    title: 'Highlight · the East pre-flight cell, a plain fence of its code, python and pwsh cells',
+    session: sid(9),
+    text: `${fence(SAMPLE)}\n\nThe same code as a plain fence:\n\n${fence(PLAIN)}\n\n${fence(PYTHON, 'python')}\n\n${fence(PWSH, 'pwsh')}`,
+    states: () => ({}),
+  },
 ]
+const hl = new URLSearchParams(location.search).has('hl')
+const SHOWN = hl ? SCENARIOS.slice(-1) : SCENARIOS.slice(0, -1)
 
 const sessionOf = (scope: CellScope) => SCENARIOS.find((s) => s.session === scope.id)
 const api = new Proxy({} as Api, {
@@ -212,7 +223,7 @@ function Fixture() {
       {/* The app stylesheet locks body scroll (the shell scrolls its panes); the fixture scrolls its own column. */}
       <div className="h-dvh overflow-y-auto">
       <div className="mx-auto flex max-w-[768px] flex-col gap-10 px-4 py-8">
-        {SCENARIOS.map((s, i) => (
+        {SHOWN.map((s, i) => (
           <section key={s.session} className="flex flex-col gap-2">
             <h2 className="border-b border-border-subtle pb-1 text-xs font-semibold tracking-wide text-fg-tertiary uppercase">{s.title}</h2>
             <MessageAssistant id={`e${i}`} text={s.text} open={false} session={s.session} turn={1} context={context(40 + i)} />

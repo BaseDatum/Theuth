@@ -13,14 +13,16 @@ import { parseSpec } from '@/components/chat/surface/parse'
 import { CODE_BLOCK_OPTIONS, type Diagram, diagramOf } from '@/components/editor/codeLanguages'
 import { Button } from '@/components/ui/button'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { shikiLang } from '@/lib/shiki'
 import type { Api } from '@/rpc/api'
 import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import { cn } from 'cn'
 
 /**
- * BlockNote's own code block built with our language table (59 §9.2 as-built). Its config, parser, meta (the
- * `highlight` hook the shiki extension reads) and keyboard extension (Tab, Enter, ```` ```lang ```` rule) are reused
- * below verbatim; only `render` is ours, so the ProseMirror node — and the Yjs fragment — are the default's.
+ * BlockNote's own code block built with our language table (59 §9.2 as-built). Its config, parser, meta and keyboard
+ * extension (Tab, Enter, ```` ```lang ```` rule) are reused below verbatim, except meta's `highlight` hook (the
+ * language the shiki extension loads); only `render` is ours, so the ProseMirror node — and the Yjs fragment — are the
+ * default's.
  */
 const base = createCodeBlockSpec(CODE_BLOCK_OPTIONS)
 const { supportedLanguages } = CODE_BLOCK_OPTIONS
@@ -200,7 +202,8 @@ function CodeBlock({ block, editor, contentRef }: Props) {
 export const codeBlock = createReactBlockSpec(
   base.config,
   {
-    meta: base.implementation.meta,
+    // The highlighter's language: cell forms (`pwsh`, `shellscript`, `py`, …) through the chat cells' alias map.
+    meta: { ...base.implementation.meta, highlight: (b: { props: { language: string } }) => shikiLang(b.props.language) },
     parse: base.implementation.parse,
     parseContent: base.implementation.parseContent,
     render: CodeBlock,

@@ -799,6 +799,14 @@ html .bn-block-content[data-content-type="codeBlock"]:has(> [data-diagram]) {
   color: inherit;
   background: transparent;
 }
+/* lib/shiki.ts: a token in a note code block (BlockNote) or a chat cell (CodeMirror) carries both themes' colours;
+   this picks the page's, like the message fences' `dark:` variant (snapshot-light subtrees stay light). */
+html .shiki {
+  color: var(--shiki-light);
+}
+html.dark .shiki:not(:where([data-snapshot-light], [data-snapshot-light] *)) {
+  color: var(--shiki-dark);
+}
 html .bn-editor [data-content-type="quote"] blockquote {
   color: var(--muted-foreground);
   border-left: 4px solid color-mix(in srgb, var(--muted-foreground) 30%, transparent);

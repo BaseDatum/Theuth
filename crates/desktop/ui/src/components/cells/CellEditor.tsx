@@ -2,20 +2,19 @@
 // 171 §11.1 editor + gutter, §7.1 modes, §11.7 keys: the chat cell's CodeMirror. Click and type to edit (F4) unless
 // `locked`; Esc leaves the editor; ► on the hovered line runs it; a selection shows the "Run selection" pill. Danger
 // cells run from their button only: the keys show a hint instead. A line/selection run marks its line (`line-run.ts`).
-import { type Extension, StateEffect, StateField } from '@codemirror/state'
-import { langs } from '@uiw/codemirror-extensions-langs'
+import { StateEffect, StateField } from '@codemirror/state'
 import CodeMirror, { EditorView, GutterMarker, Prec, gutter, keymap, lineNumbers } from '@uiw/react-codemirror'
 import { Play } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { isApple } from '@/lib/chord'
+import { tokensOf } from '@/lib/shiki'
 import type { CellRun } from '@/rpc/bindings/CellRun'
 import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
 import type { Lang } from '@/rpc/bindings/Lang'
 import { type HoverEvent, type LineMark, MARK_LOOK, hoverAfter, useLineRun } from './line-run'
+import { shikiMarks } from './shiki-marks'
 import { cellTheme } from './theme'
-
-const LANGUAGE: Partial<Record<Lang, () => Extension>> = { bash: langs.bash, zsh: langs.sh, sh: langs.sh, pwsh: langs.ps1, python: langs.python }
 
 /** UTF-8 byte offset of a code position (RunMode offsets count the code's bytes, header excluded). */
 const bytesBefore = (doc: string, pos: number) => new TextEncoder().encode(doc.slice(0, pos)).length
@@ -108,10 +107,9 @@ export function CellEditor({ lang, code, runnable, danger, locked, latest, onCha
         s.empty ? { type: 'line', line: v.state.doc.lineAt(s.head).number } : { type: 'selection', from: bytesBefore(doc, s.from), to: bytesBefore(doc, s.to) },
       )
     }
-    const support = LANGUAGE[lang]?.()
     return [
       ...cellTheme,
-      ...(support ? [support] : []),
+      shikiMarks((code) => tokensOf(code, lang)),
       lineNumbers(),
       hovered,
       marked,

@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRun } from '@/rpc/bindings/CellRun'
 import { useConnection } from '@/store/connection'
+import { CodeTokens } from './CodeTokens'
 import { setPicked, setStoppedAt, usePicked, useStoppedAt } from './edits'
 import { AnsiText, CellContainer, CellOutputs, ExecutionCount } from './Outputs'
 import { clock, duration, ended, errorText, exitText, refKey, scopeOf } from './store'
@@ -597,7 +598,8 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
               {notices}
               {raw && !extras.headerInEditor && (
                 <pre className="border-y border-border-subtle px-3 py-1 font-mono text-xs text-fg-tertiary">
-                  {cell.header.map((h) => `#| ${h.key}${h.value === null ? '' : `: ${h.value}`}`).join('\n')}
+                  {/* `#|` lines are comments in bash's grammar whatever the cell's language (js/ts write `//|`). */}
+                  <CodeTokens code={cell.header.map((h) => `#| ${h.key}${h.value === null ? '' : `: ${h.value}`}`).join('\n')} lang="bash" />
                 </pre>
               )}
             </div>

@@ -1,5 +1,5 @@
 // Vendored from nteract nteract/nteract:src/components/outputs/json-output.tsx (adapted for theuth 171 §16)
-// 171 §11.8: primitive colours follow the CodeMirror mapping — strings `--chart-4`, numbers `--chart-3`, keywords `--chart-5`.
+// 171 §11.8: primitive colours from theuth's chart tokens — strings `--chart-4`, numbers `--chart-3`, keywords `--chart-5`.
 import { ChevronRightIcon } from "lucide-react";
 import { createContext, type HTMLAttributes, useContext, useMemo } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";

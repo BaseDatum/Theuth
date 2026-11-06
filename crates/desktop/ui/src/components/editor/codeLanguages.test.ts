@@ -16,3 +16,9 @@ test('diagramOf: ids and aliases, any case; code languages and the default are n
   expect(diagramOf('jsonrender')).toBe('json-render')
   for (const l of ['text', 'json', 'rust', '', 'mermaidx']) expect(diagramOf(l)).toBeNull()
 })
+
+test('CODE_BLOCK_OPTIONS carries createHighlighter: the github light and dark themes BlockNote picks by name', async () => {
+  const h = await CODE_BLOCK_OPTIONS.createHighlighter()
+  // BlockNote (`@blocknote/core` SyntaxHighlighting) highlights only with a /light/ and a /dark/ theme loaded.
+  expect(h.getLoadedThemes().sort()).toEqual(['github-dark', 'github-light'])
+})

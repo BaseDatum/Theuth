@@ -1,6 +1,5 @@
-import { syntaxHighlighter } from '@blocknote/code-block'
 import { withCollaboration } from '@blocknote/core/yjs'
-import { SideMenuExtension, filterSuggestionItems, insertOrUpdateBlockForSlashMenu } from '@blocknote/core/extensions'
+import { SideMenuExtension, SyntaxHighlightingExtension, filterSuggestionItems, insertOrUpdateBlockForSlashMenu } from '@blocknote/core/extensions'
 import {
   AddBlockButton,
   BlockColorsItem,
@@ -30,6 +29,7 @@ import { NoteHost } from '@/components/cells/note-context'
 import { CELL_STARTER, makeCell, makePlain, runnableLang } from '@/components/cells/note-edit'
 import { useOpenCite, usePulseBlock } from '@/components/chat/Citations'
 import { codeBlock } from '@/components/editor/CodeBlock'
+import { CODE_BLOCK_OPTIONS } from '@/components/editor/codeLanguages'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
 import { MobileToolbar } from '@/components/editor/MobileToolbar'
 import { revealExtension } from '@/components/editor/reveal'
@@ -47,6 +47,8 @@ import { cn } from 'cn'
  * identical ProseMirror shape to the helper's.
  */
 const schema = createDocumentSchema(frontmatterBlock, codeBlock)
+/** Code block colours: the app's shiki (`lib/shiki.ts`), loaded when the first code block needs it. */
+const highlighter = SyntaxHighlightingExtension(CODE_BLOCK_OPTIONS)
 
 /** Starter chart of the "Diagram" slash item: a second entry for `codeBlock`, `language: mermaid`. */
 const DIAGRAM_STARTER = 'flowchart LR\n  A --> B'
@@ -194,7 +196,7 @@ export function Editor({
         user: { name: deviceName(), color: CURSOR_COLORS[provider.doc.clientID % CURSOR_COLORS.length] as string },
         showCursorLabels: coarse ? 'always' : 'activity',
       },
-      extensions: [revealExtension(provider, agentColor), syntaxHighlighter],
+      extensions: [revealExtension(provider, agentColor), highlighter],
     }),
     [provider, agentColor, coarse],
   )

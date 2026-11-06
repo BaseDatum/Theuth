@@ -1,7 +1,7 @@
-// 171 visual check (U2), dev only: `bunx vite` then open `/src/dev/cells-notes-fixture.html` (`?theme=dark`). A note in
-// the real `Editor` (BlockNote over a local Y.Doc, `CodeBlock` → `NoteCell`) with a `cells` defaults block, a bash
-// cell, a python cell with an HTML output, a stale cell and a member-edited cell, the header pill, then the same note
-// as a share-link guest sees it. Every `cell_*` answer below is local (no engine).
+// 171 visual check (U2), dev only: `bunx vite` then open `/src/dev/cells-notes-fixture.html` (`?theme=dark`; `?hl` is
+// the highlighting note instead). A note in the real `Editor` (BlockNote over a local Y.Doc, `CodeBlock` → `NoteCell`)
+// with a `cells` defaults block, a bash cell, a python cell with an HTML output, a stale cell and a member-edited cell,
+// the header pill, then the same note as a share-link guest sees it. Every `cell_*` answer below is local (no engine).
 import '@/styles.css'
 import { BlockNoteEditor } from '@blocknote/core'
 import { blocksToYXmlFragment } from '@blocknote/core/yjs'
@@ -23,13 +23,23 @@ import type { CellScope } from '@/rpc/bindings/CellScope'
 import type { CellState } from '@/rpc/bindings/CellState'
 import type { KernelState } from '@/rpc/bindings/KernelState'
 import { active } from '@/store/engine-scope'
+import { PLAIN, PWSH, PYTHON, SAMPLE } from './cells-sample'
 
 const DOC = 'notefixture000000000000000'
 const GUEST_DOC = 'notefixtureguest0000000000'
 const now = Date.now()
 const MIN = 60_000
 
-const BLOCKS = [
+const HIGHLIGHT = [
+  { type: 'heading', content: 'East pre-flight' },
+  { type: 'codeBlock', props: { language: 'cells' }, content: '#| cwd: /tmp/cellhl' },
+  { type: 'codeBlock', props: { language: 'shellscript' }, content: SAMPLE },
+  { type: 'codeBlock', props: { language: 'python' }, content: PYTHON },
+  { type: 'codeBlock', props: { language: 'pwsh' }, content: PWSH },
+  { type: 'paragraph', content: 'The same code as a plain code block:' },
+  { type: 'codeBlock', props: { language: 'bash' }, content: PLAIN },
+]
+const BLOCKS = new URLSearchParams(location.search).has('hl') ? HIGHLIGHT : [
   { type: 'heading', content: 'Cost check' },
   { type: 'paragraph', content: 'Spend by project from the usage export. The first cell fetches it; the second runs on the project’s own virtualenv.' },
   { type: 'codeBlock', props: { language: 'cells' }, content: '#| cwd: ~/Develop/costs\n#| shell: /opt/homebrew/bin/bash\n#| python: .venv' },

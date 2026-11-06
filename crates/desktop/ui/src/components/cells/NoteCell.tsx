@@ -17,6 +17,7 @@ import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import type { DocId } from '@/rpc/bindings/DocId'
 import type { NoteKey } from '@/rpc/bindings/NoteKey'
 import { Cell, CellExtras, Chip, Notice } from './Cell'
+import { CodeTokens } from './CodeTokens'
 import { digest } from './grammar'
 import { MARK_LOOK, noteHover, useLineRun } from './line-run'
 import { historyAfter } from './open-as-note'
@@ -142,11 +143,11 @@ function MemberReview({ run, code }: { run: string | null; code: string }) {
 }
 
 /** §3.5 stale: the code the latest run ran, one click away (`runs/<run>/code` through `cell_output_file`). */
-function RanCode({ run }: { run: string }) {
+function RanCode({ run, lang }: { run: string; lang: string }) {
   const api = useApi()
   const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run, 'code')), staleTime: Infinity })
   if (q.error) return <div className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</div>
-  return <pre className="mx-3 mb-2 max-h-64 overflow-auto rounded-md border border-border-subtle px-2 py-1 font-mono text-xs text-fg-secondary">{q.data ?? 'loading…'}</pre>
+  return <pre className="mx-3 mb-2 max-h-64 overflow-auto rounded-md border border-border-subtle px-2 py-1 font-mono text-xs text-fg-secondary">{q.data === undefined ? 'loading…' : <CodeTokens code={q.data} lang={lang} />}</pre>
 }
 
 /** §6.3: the python chip as a menu of `cell_interpreters(cwd)`; a pick rewrites the `#| python:` header. */
@@ -461,7 +462,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
             </button>
           </Notice>
         )}
-        {view === 'stale' && latest && ranCode && <RanCode run={latest.id} />}
+        {view === 'stale' && latest && ranCode && <RanCode run={latest.id} lang={cell.lang} />}
       </>
     ),
   }
