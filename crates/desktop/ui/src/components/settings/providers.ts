@@ -140,9 +140,10 @@ export function summaryTestStats(t: SummaryTest): string {
     .join(' · ')
 }
 
-/** A probe row after its address: the model count or "not running", the engine's error, and "may need a key" when a server answers with an error and no models (omlx with key verification on). */
+/** A probe row after its address: the model count or "not running", the engine's error, and "may need a key" when a server answers with an error and no models (omlx with key verification on) — unless the error already says so. */
 export function probeState(s: LocalServer): string {
-  return [s.reachable ? `${s.models} models` : 'not running', s.error, s.reachable && s.error && s.models === 0 && 'may need a key'].filter(Boolean).join(' · ')
+  const hint = s.reachable && s.error && s.models === 0 && !/key/i.test(s.error) && 'may need a key'
+  return [s.reachable ? `${s.models} models` : 'not running', s.error, hint].filter(Boolean).join(' · ')
 }
 
 /** One probe row as text (the slash `/provider find` toast). */

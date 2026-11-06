@@ -22,6 +22,7 @@ import {
   presetForm,
   probeForm,
   probeLine,
+  probeState,
   refreshedText,
   RUNTIMES,
 } from './providers'
@@ -154,6 +155,11 @@ test('177 U1 / R1-2: probe rows — runtime, address, N models or not running, t
   expect(html).toContain('aria-label="Add LM Studio at http://127.0.0.1:1234/v1/"')
   expect(html).not.toContain('aria-label="Add omlx at http://127.0.0.1:8080/v1/"')
   expect(text(rows([], []))).toContain('Nothing answered on mac-studio.')
+  // R2-1: an engine error that already names the key gets no second hint.
+  const s401 = probe[2]!
+  expect(probeState({ ...s401, error: 'answered 401: needs an API key' })).toBe('0 models · answered 401: needs an API key')
+  expect(probeState({ ...s401, error: 'Invalid KEY' })).toBe('0 models · Invalid KEY')
+  expect(probeState(s401)).toBe('0 models · HTTP 401 Unauthorized · may need a key')
   expect(probe.map(probeLine)).toEqual([
     'Ollama http://127.0.0.1:11434/v1/ · 3 models',
     'LM Studio http://127.0.0.1:1234/v1/ · not running · connection refused',
