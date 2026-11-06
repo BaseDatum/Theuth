@@ -753,7 +753,7 @@ const SUMMARY_SAMPLE_UNIT: &str =
 
 /// 177 E9: the cost owner the summary tests are charged to (no session owns them).
 const SUMMARY_TEST_OWNER: SessionId = SessionId(uuid::Uuid::from_u128(
-    0x0177_e9e9_0000_7000_8000_000000000177,
+    0x0177_e9e9_0000_7000_8000_0000_0000_0177,
 ));
 
 /// 177 E9: what to do about a failed summary test.

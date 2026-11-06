@@ -44,10 +44,17 @@ worker E: `177-notes-e.md`.
   ignored) and store them with `limit.source: "server"`; a user value is never
   overwritten.
 - **E6** `set_model_limits` writes the user `models.json` atomically, reloads
-  the catalog and re-resolves the endless compactors.
-- **E7** An unknown local context is budgeted as 16,384 tokens everywhere;
-  local providers never inherit a cloud sibling's window.
-- **E8** `local_servers_probe` probes 127.0.0.1 only, never adds.
+  the catalog and re-resolves the endless compactors. Every catalog reload
+  (add, refresh, remove, limits) reaches running chats: their model takes the
+  new entry at its next call, so the UI need not say "applies to new chats".
+- **E7** An unknown local context is budgeted as 16,384 tokens everywhere
+  (window, preflight, endless budgets, chat auto-compaction); local providers
+  never inherit a cloud sibling's window. A chat turn whose prompt does not fit
+  the assumed window is refused locally with "the local window is assumed; set
+  the real one under Local servers or `/provider limits <p> <m> <context>`"
+  (theuth's own turn prompt is ≈ 31k tokens with tools).
+- **E8** `local_servers_probe` probes 127.0.0.1 only, never adds
+  (`THEUTH_LOCAL_PROBE_PORTS` replaces the port list for a scratch engine).
 - **E9** `test_summary_call` runs one real summary call on a fixed sample.
 
 ## Contract
