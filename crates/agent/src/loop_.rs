@@ -369,6 +369,11 @@ pub struct Titled;
 /// `tell`: switch the model; takes effect on the next model call, mid-turn included.
 pub struct SwitchModel(pub Resolved);
 
+/// `tell` (177 E6): the catalog was reloaded (a provider listing, model
+/// limits). The session's model takes its new entry — its next call sees the
+/// new window and output limit — and the next turn reads the new catalog.
+pub struct CatalogChanged(pub Arc<models::Catalog>);
+
 /// `tell`: reasoning effort for the session's next turn (`None` = provider
 /// default). Not applied mid-turn: Anthropic rejects thinking changes inside a
 /// tool-use turn.
@@ -800,6 +805,9 @@ struct Shared {
     /// carries its view). Set by [`SetMemoryNow`]; W1's `active()` is the
     /// durable guard.
     meeting_filter: Arc<std::sync::atomic::AtomicBool>,
+    /// 177 R1-1: the "context window is unknown" notice of a local model was
+    /// given in this session (once per session).
+    window_noted: Arc<std::sync::atomic::AtomicBool>,
     /// Test hook: the view an endless turn renders instead of asking the service.
     #[cfg(test)]
     test_view: Arc<parking_lot::Mutex<Option<ViewRender>>>,
@@ -929,6 +937,7 @@ impl Session {
                 endless: None,
                 parent_view: false,
                 meeting_filter: Arc::default(),
+                window_noted: Arc::default(),
                 #[cfg(test)]
                 test_view: Arc::default(),
                 permits,
@@ -2323,7 +2332,15 @@ impl Message<crate::SideCall> for Session {
         let side = self.shared.side(self.entered.flatten());
         tokio::spawn(async move {
             let out = match model {
-                Ok(model) => side.call(model, &m.system, m.user, m.budget, m.kind).await,
+                Ok(model) => {
+                    // R2-6: a title-model title (notebook note titles) is short;
+                    // other roles (insights, ask, polish, escalate) keep thinking.
+                    let short =
+                        m.kind == CallKind::Title && matches!(m.role, crate::ModelRole::Title);
+                    side.short(short)
+                        .call(model, &m.system, m.user, m.budget, m.kind)
+                        .await
+                }
                 Err(e) => Err(e),
             };
             if let Some(tx) = tx {
@@ -2374,6 +2391,24 @@ impl Message<SwitchModel> for Session {
         let effort = current.effort.take();
         *current = Current::new(model, None, &self.shared.client, &self.shared.auth);
         current.effort = effort;
+    }
+}
+
+impl Message<CatalogChanged> for Session {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        CatalogChanged(catalog): CatalogChanged,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        {
+            let mut current = self.shared.model.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((_, m)) = catalog.get(&current.model.id) {
+                current.model.model = Some(m.clone());
+            }
+        }
+        self.shared.catalog = catalog;
     }
 }
 
@@ -3837,12 +3872,27 @@ impl Turn {
         let window = self.window_of(model);
         if window == 0 && !self.window_logged {
             self.window_logged = true;
-            tracing::info!(session = %self.shared.id, model = %model.id, "context window unknown; auto-compaction off");
+            let local = model.model.as_ref().is_some_and(|m| m.limit.assumed > 0)
+                || crate::local::runtime_named(model);
+            // 177 R1-1: a local model's unknown window is said once per session
+            // with the fix; its turns are still sent (no refusal, no auto-compaction).
+            if local {
+                if !self
+                    .shared
+                    .window_noted
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::warn!(session = %self.shared.id, model = %model.id, "{}'s context window is unknown; set it under Settings › Connections › Local servers (or /provider limits) so theuth can size requests", model.id);
+                }
+            } else {
+                tracing::info!(session = %self.shared.id, model = %model.id, "context window unknown; auto-compaction off");
+            }
         }
         window
     }
 
-    /// [`Turn::window`] without the log.
+    /// [`Turn::window`] without the log: a KNOWN window only (177 R1-1: a local
+    /// model's assumed window never sizes, refuses or compacts a chat turn).
     fn window_of(&self, model: &Resolved) -> u32 {
         let window = self
             .shared
@@ -4945,6 +4995,7 @@ impl Turn {
                     &mut calls,
                     thinking,
                     partial.as_ref().map(|(t, id)| (*t, id.as_str())),
+                    kind,
                 )
                 .await;
             let (status, usage) = match &r {
@@ -5064,8 +5115,18 @@ impl Turn {
         calls: &mut bool,
         thinking: &mut Option<u64>,
         partial: Option<(TurnId, &str)>,
+        kind: CallKind,
     ) -> Result<StreamEnd, Abort> {
-        let (req, opts) = frame.request(transport, conversation, current.effort());
+        // 177 E2: an aux (vision) call to a local OpenAI-protocol server asks
+        // for no thinking and sends no effort keyword; turns are unchanged.
+        let quiet = kind == CallKind::Vision && current.backend.local_openai(&current.model);
+        let effort = if quiet { None } else { current.effort() };
+        let (req, opts) = frame.request(transport, conversation, effort);
+        let opts = if quiet {
+            crate::backend::thinking_off(opts)
+        } else {
+            opts
+        };
         let open = current
             .backend
             .stream(&current.model, req, &opts, conversation);
@@ -5799,6 +5860,7 @@ impl Turn {
         self.state.title_task = Some(tokio::spawn(async move {
             let chars = |s: &str| (!private).then(|| s.chars().count());
             let reply = match side
+                .short(true)
                 .call(model, title::SYSTEM, digest, TITLE_TIMEOUT, CallKind::Title)
                 .await
             {
@@ -9800,6 +9862,7 @@ mod tests {
                 limit: models::Limit {
                     context: 200_000,
                     output: 8_192,
+                    ..Default::default()
                 },
                 cost: None,
                 reasoning: false,
@@ -10291,6 +10354,7 @@ mod tests {
                 limit: models::Limit {
                     context: 1,
                     output: 1,
+                    ..Default::default()
                 },
                 cost: Some(models::Cost {
                     input: 3.0,
@@ -10452,6 +10516,7 @@ mod tests {
                 crate::providers::Gateway {
                     base_url,
                     key: "k".into(),
+                    runtime: None,
                 },
             );
         let model = Resolved {

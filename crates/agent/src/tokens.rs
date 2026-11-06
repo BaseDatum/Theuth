@@ -181,7 +181,9 @@ pub fn bytes_of(model: &str, tokens: u64) -> usize {
     (tokens as f64 * bytes_per_token(model)) as usize
 }
 
-/// The context window in tokens: the catalog's, else [`UNKNOWN_WINDOW`].
+/// The context window in tokens: the catalog's (known: bundled, server- or
+/// user-set), else [`UNKNOWN_WINDOW`]. The only window that refuses a request
+/// ([`preflight`]) or drives chat auto-compaction.
 pub fn window(model: &Resolved) -> u64 {
     model
         .model
@@ -189,6 +191,25 @@ pub fn window(model: &Resolved) -> u64 {
         .map(|m| u64::from(m.limit.context))
         .filter(|w| *w > 0)
         .unwrap_or(UNKNOWN_WINDOW)
+}
+
+/// 177 E7: the window memory and summary budgets size to — the known window,
+/// else a local model's assumed one ([`models::Limit::assumed`], or a local
+/// runtime's id with no catalog entry), else [`UNKNOWN_WINDOW`]. Never refuses.
+pub fn memory_window(model: &Resolved) -> u64 {
+    let (context, assumed) = model
+        .model
+        .as_ref()
+        .map_or((0, 0), |m| (m.limit.context, m.limit.assumed));
+    if context > 0 {
+        u64::from(context)
+    } else if assumed > 0 {
+        u64::from(assumed)
+    } else if crate::local::runtime_named(model) {
+        u64::from(crate::local::ASSUMED_CONTEXT)
+    } else {
+        UNKNOWN_WINDOW
+    }
 }
 
 /// Who is asking (the quality fill differs).
@@ -239,7 +260,10 @@ pub struct Limits {
 /// (a frame sized for a larger window than the catalog or the 200k default
 /// says) counts as half the window.
 pub fn ceiling(model: &Resolved, reply_tokens: u64) -> u64 {
-    let window = window(model);
+    ceiling_at(window(model), reply_tokens)
+}
+
+fn ceiling_at(window: u64, reply_tokens: u64) -> u64 {
     let room = window - reply_tokens.min(window / 2);
     (room as f64 * (1.0 - MARGIN)) as u64
 }
@@ -250,10 +274,18 @@ pub fn ceiling(model: &Resolved, reply_tokens: u64) -> u64 {
 pub(crate) static EXEMPT_FOR_TESTS: LazyLock<Mutex<std::collections::HashSet<String>>> =
     LazyLock::new(Default::default);
 
-/// G1 budget policy for one request of `kind` to `model`.
+/// G1 budget policy for one memory-side request of `kind` to `model`: the
+/// compactor's context ([`Kind::Compactor`], sized on [`memory_window`] —
+/// 177 E7: a local model's unknown window is assumed here) and the turn's view
+/// allowance ([`Kind::Turn`], sized on known windows only like the turn
+/// itself: an unknown window keeps the pre-177 behaviour, R1 19:20).
 pub fn budget(kind: Kind, model: &Resolved, l: Limits) -> Budget {
-    let ceiling = ceiling(model, l.reply_tokens);
-    let mut target = (window(model) as f64 * kind.fill()) as u64;
+    let window = match kind {
+        Kind::Compactor => memory_window(model),
+        Kind::Turn | Kind::Side => window(model),
+    };
+    let ceiling = ceiling_at(window, l.reply_tokens);
+    let mut target = (window as f64 * kind.fill()) as u64;
     if kind != Kind::Turn
         && let (Some(usd), Some(price)) = (
             l.max_usd_per_call,

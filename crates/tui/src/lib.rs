@@ -982,13 +982,42 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             name,
             base_url,
             key,
-        } => UiEvent::ProviderAdded(msg(api.add_provider(name, base_url, key).await)?),
+        } => UiEvent::ProviderAdded(msg(api
+            .add_provider(name, base_url, (!key.is_empty()).then_some(key), None)
+            .await)?),
         Command::RemoveProvider(name) => {
             msg(api.remove_provider(name.clone()).await)?;
             UiEvent::Info(format!("removed provider {name}"))
         }
         Command::RefreshProvider(name) => {
             UiEvent::Info(msg(api.refresh_provider_models(name).await)?.line())
+        }
+        Command::FindLocalServers => UiEvent::Info(
+            msg(api.local_servers_probe().await)?
+                .iter()
+                .map(agent::LocalServer::line)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Command::SetModelLimits {
+            provider,
+            model,
+            context,
+            output,
+        } => {
+            // R2-8: no output given keeps the stored one (as the desktop does); 0 clears.
+            let output = match output {
+                Some(o) => (o > 0).then_some(o),
+                None => msg(api.provider_models(provider.clone()).await)?
+                    .into_iter()
+                    .find(|m| m.id == model)
+                    .map(|m| m.output)
+                    .filter(|&o| o > 0),
+            };
+            let m = msg(api
+                .set_model_limits(provider.clone(), model, context, output)
+                .await)?;
+            UiEvent::Info(format!("{provider}/{}", m.line()))
         }
         Command::LinkStatus => UiEvent::Link(msg(api.link_status().await)?),
         Command::LinkEnable(enabled) => {

@@ -2459,6 +2459,7 @@ mod tests {
                 efforts: Vec::new(),
                 budget_min: None,
                 budget_max: None,
+                local: false,
             })
             .collect();
         // The provider's models level lists all ten rows (124 §3.2).
@@ -2639,6 +2640,7 @@ mod tests {
             efforts: Vec::new(),
             budget_min: None,
             budget_max: None,
+            local: false,
         };
         let items = vec![
             model("google/gemini-2.5-pro", "Gemini 2.5 Pro", "google"),

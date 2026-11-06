@@ -91,12 +91,22 @@ fn protocol_target(
         });
     }
     let gw = gateway?;
+    // 177 E4: a keyless local provider's calls still go through genai, whose
+    // OpenAI adapter needs a key: a placeholder servers that check none ignore.
+    let key = if gw.key.is_empty() {
+        KEYLESS_PLACEHOLDER.to_owned()
+    } else {
+        gw.key
+    };
     Some(ProtocolTarget {
         kind: protocol.map_or(AdapterKind::OpenAI, kind_of),
         endpoint: Endpoint::from_owned(gw.base_url),
-        auth: AuthData::Key(gw.key),
+        auth: AuthData::Key(key),
     })
 }
+
+/// 177 E4: the Bearer value a keyless local provider's model calls carry.
+pub(crate) const KEYLESS_PLACEHOLDER: &str = "local";
 
 /// 85 §0.2: protocol → the genai adapter that speaks it.
 fn kind_of(p: Protocol) -> AdapterKind {
@@ -155,6 +165,16 @@ fn openrouter_options(
     }
 }
 
+/// 177 E2: the body field that switches a local server's chat template out
+/// of thinking (vLLM, llama.cpp, omlx, SGLang read it), merged last. Never
+/// paired with an effort keyword: genai's omlx adapter turns any
+/// `reasoning_effort` into `enable_thinking: true`.
+pub(crate) fn thinking_off(opts: ChatOptions) -> ChatOptions {
+    opts.with_extra_body(serde_json::json!({
+        "chat_template_kwargs": {"enable_thinking": false}
+    }))
+}
+
 impl Backend {
     /// The `cursor` namespace is the one id genai cannot serve; everything
     /// else, gateways included, goes through the genai client.
@@ -168,6 +188,28 @@ impl Backend {
                 client: client.clone(),
                 auth: auth.clone(),
             }
+        }
+    }
+
+    /// 177 E2: `resolved` is served by a local model server over the OpenAI
+    /// chat protocol — a custom provider (gateway) of kind OpenAI with a
+    /// runtime preset or a loopback host (R2-5, not a LAN gateway in front of
+    /// cloud models), or genai's own omlx adapter — where `chat_template_kwargs`
+    /// steers thinking.
+    pub(crate) fn local_openai(&self, resolved: &Resolved) -> bool {
+        let Backend::Genai { auth, .. } = self else {
+            return false;
+        };
+        match target_for(resolved, auth) {
+            Some(t) => {
+                t.kind == AdapterKind::OpenAI
+                    && resolved
+                        .provider
+                        .as_deref()
+                        .and_then(|p| auth.gateway(p))
+                        .is_some_and(|g| g.on_this_machine())
+            }
+            None => ns(&resolved.genai) == "omlx",
         }
     }
 
@@ -289,7 +331,10 @@ impl Backend {
 /// genai's per-adapter guesses are wrong for new ids (Bedrock falls back to 4096).
 fn reply_cap(opts: ChatOptions, resolved: &Resolved) -> ChatOptions {
     match &resolved.model {
-        Some(m) if opts.max_tokens.is_none() => opts.with_max_tokens(m.limit.output),
+        // 177 E1: 0 = unknown; a server rejects `max_tokens: 0` (omlx: 422).
+        Some(m) if opts.max_tokens.is_none() && m.limit.output > 0 => {
+            opts.with_max_tokens(m.limit.output)
+        }
         _ => opts,
     }
 }
@@ -406,6 +451,7 @@ mod tests {
             Some(Gateway {
                 base_url: "https://gw.example/v1/".into(),
                 key: "gk".into(),
+                runtime: None,
             })
         };
         let mut g = r("rwx/claude-opus-5-5");
@@ -649,6 +695,7 @@ mod tests {
             Gateway {
                 base_url: format!("{}/v1/", server.uri()),
                 key: "gk".into(),
+                runtime: None,
             },
         );
         let backend = Backend::Genai {
@@ -690,6 +737,7 @@ mod tests {
             limit: models::Limit {
                 context: 200_000,
                 output: 8_192,
+                ..Default::default()
             },
             cost: None,
             reasoning: false,
@@ -727,6 +775,7 @@ mod tests {
                 limit: models::Limit {
                     context: 200_000,
                     output: 8_192,
+                    ..Default::default()
                 },
                 cost: None,
                 reasoning: false,
@@ -743,7 +792,14 @@ mod tests {
             reply_cap(ChatOptions::default(), &r).max_tokens,
             Some(8_192)
         );
-        let unknown = Resolved { model: None, ..r };
+        let unknown = Resolved {
+            model: None,
+            ..r.clone()
+        };
         assert_eq!(reply_cap(ChatOptions::default(), &unknown).max_tokens, None);
+        // 177 E1: an output limit of 0 is unknown — no `max_tokens` at all.
+        let mut zero = r;
+        zero.model.as_mut().unwrap().limit.output = 0;
+        assert_eq!(reply_cap(ChatOptions::default(), &zero).max_tokens, None);
     }
 }

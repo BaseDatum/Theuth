@@ -1447,13 +1447,17 @@ pub trait Api {
     /// The Connections providers: built-ins (`opencode`, `openrouter`) first, then custom providers (`/provider`).
     #[method(name = "list_providers")]
     async fn list_providers(&self) -> RpcResult<Vec<ProviderInfo>>;
-    /// Persist a custom provider (url + key); fetches `/models`.
+    /// Persist a custom provider (url + optional key + optional local runtime preset);
+    /// fetches `/models` with the context windows the server reports (177).
+    /// A missing key is allowed for a local provider: its model calls carry the
+    /// placeholder `Bearer local`, its listing no `Authorization` header.
     #[method(name = "add_provider")]
     async fn add_provider(
         &self,
         name: String,
         base_url: String,
-        key: String,
+        key: Option<String>,
+        runtime: Option<agent::LocalRuntime>,
     ) -> RpcResult<ProviderInfo>;
     /// Forget a custom provider.
     #[method(name = "remove_provider")]
@@ -1461,6 +1465,28 @@ pub trait Api {
     /// List a provider's models again (custom: `GET {base}models`; opencode/openrouter: their list) and reload the catalog (162).
     #[method(name = "refresh_provider_models")]
     async fn refresh_provider_models(&self, name: String) -> RpcResult<RefreshedModels>;
+    /// 177 E8: what answers on the default local runtime ports of 127.0.0.1
+    /// (11434, 1234, 8000, 8080); 1.5 s at most. Never adds anything.
+    #[method(name = "local_servers_probe")]
+    async fn local_servers_probe(&self) -> RpcResult<Vec<agent::LocalServer>>;
+    /// 177: a provider's models with their stored limits (0 = unknown).
+    #[method(name = "provider_models")]
+    async fn provider_models(&self, provider: String) -> RpcResult<Vec<agent::ProviderModel>>;
+    /// 177 E6: set a model's limits (source `user`; `None` clears back to unknown)
+    /// and reload the catalog; running chats pick them up at their next turn.
+    /// (`context` is renamed in Rust only: jsonrpsee's server glue owns that identifier.)
+    #[method(name = "set_model_limits")]
+    async fn set_model_limits(
+        &self,
+        provider: String,
+        model: String,
+        #[argument(rename = "context")] window: Option<u32>,
+        output: Option<u32>,
+    ) -> RpcResult<agent::ProviderModel>;
+    /// 177 E9: one real summary (compactor) call for `model` on a fixed sample;
+    /// writes no memory. Failures come back in the reply, with a hint.
+    #[method(name = "test_summary_call")]
+    async fn test_summary_call(&self, model: String) -> RpcResult<agent::SummaryTest>;
     /// Start an MCP server login; returns the URL to open. The server reconnects on success (`McpProgress`).
     #[method(name = "mcp_login")]
     async fn mcp_login(&self, server: String) -> RpcResult<String>;
@@ -6674,7 +6700,8 @@ impl ApiServer for Server {
         &self,
         name: String,
         base_url: String,
-        key: String,
+        key: Option<String>,
+        runtime: Option<agent::LocalRuntime>,
     ) -> RpcResult<ProviderInfo> {
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
@@ -6682,6 +6709,7 @@ impl ApiServer for Server {
                 name,
                 base_url,
                 key,
+                runtime,
             },
         )
         .await
@@ -6693,6 +6721,37 @@ impl ApiServer for Server {
 
     async fn refresh_provider_models(&self, name: String) -> RpcResult<RefreshedModels> {
         ask::<Agents, _>(agent::AGENT_ACTOR, RefreshProviderModels { name }).await
+    }
+
+    async fn local_servers_probe(&self) -> RpcResult<Vec<agent::LocalServer>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::ProbeLocalServers).await
+    }
+
+    async fn provider_models(&self, provider: String) -> RpcResult<Vec<agent::ProviderModel>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::ProviderModels { provider }).await
+    }
+
+    async fn set_model_limits(
+        &self,
+        provider: String,
+        model: String,
+        window: Option<u32>,
+        output: Option<u32>,
+    ) -> RpcResult<agent::ProviderModel> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetModelLimits {
+                provider,
+                model,
+                context: window,
+                output,
+            },
+        )
+        .await
+    }
+
+    async fn test_summary_call(&self, model: String) -> RpcResult<agent::SummaryTest> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::TestSummaryCall { model }).await
     }
 
     async fn mcp_login(&self, server: String) -> RpcResult<String> {

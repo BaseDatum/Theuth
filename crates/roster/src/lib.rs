@@ -302,6 +302,7 @@ fn stale_info(id: String) -> agent::ModelInfo {
         efforts: Vec::new(),
         budget_min: None,
         budget_max: None,
+        local: false,
     }
 }
 

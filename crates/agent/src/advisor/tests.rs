@@ -207,6 +207,7 @@ impl Rig {
                 Gateway {
                     base_url: format!("{}/v1/", server.uri()),
                     key: "k".into(),
+                    runtime: None,
                 },
             );
         let rt = a.rt.clone();

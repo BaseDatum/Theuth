@@ -88,6 +88,8 @@ impl Retry {
 /// transient, so a unit that always comes back empty or always times out folds.
 fn hard_failure(e: &str) -> bool {
     e.contains("compactor returned nothing")
+        // 177 E3: a reply spent on thinking is the empty case with a cause.
+        || e.contains("reply on thinking")
         || e.contains("timed out")
         || e.contains("stream idle")
         || e.contains("panicked")
@@ -697,27 +699,195 @@ fn compactor_for(
         },
         None => attached.model.clone(),
     };
+    let c = model_compactor(inner, session, model, &attached.agent);
+    // 177 E6: new limits (a refresh, `set_model_limits`) make a new compactor.
+    let limits = c
+        .model
+        .model
+        .as_ref()
+        .map(|m| (m.limit.context, m.limit.output));
+    (
+        format!("{}|{:?}|{limits:?}", c.model.id, c.effort),
+        Arc::new(c),
+    )
+}
+
+/// The real compactor for `model` — the request options of every summary
+/// call: locality (137F E6), thinking off (R1 Q1).
+pub(crate) fn model_compactor(
+    inner: &Inner,
+    session: SessionId,
+    model: models::Resolved,
+    agent: &str,
+) -> ModelCompactor {
     let base =
         crate::backend::target_for(&model, &inner.auth).map(|t| t.endpoint.base_url().to_owned());
     let local = compactor::local_endpoint(&model, base.as_deref());
+    let backend = Backend::for_model(&model, &inner.client, &inner.auth);
+    // 177 E2: a local OpenAI-protocol server is told by `chat_template_kwargs`.
+    let quiet = backend.local_openai(&model);
     // R1 Q1: the compactor never thinks, whatever the session's effort (E8:
-    // `think: false` only through genai's own Ollama adapter, not a gateway, R1-14).
-    let effort = if base.is_some() && crate::loop_::ns(&model.genai) == "ollama" {
+    // `think: false` only through genai's own Ollama adapter, not a gateway,
+    // R1-14; 177 E2: never an effort keyword next to the kwargs).
+    let effort = if quiet || (base.is_some() && crate::loop_::ns(&model.genai) == "ollama") {
         None
     } else {
         compactor::thinking_off(&model)
     };
-    let key = format!("{}|{effort:?}", model.id);
-    let c = ModelCompactor {
+    ModelCompactor {
         session,
-        backend: Backend::for_model(&model, &inner.client, &inner.auth),
+        backend,
         model,
-        system: compactor::prompt(&attached.agent),
+        system: compactor::prompt(agent),
         effort,
         local,
+        quiet,
         cfg: inner.cfg.clone(),
+    }
+}
+
+/// 177 E9: the fixed sample [`test_summary`] compresses.
+const SUMMARY_SAMPLE_CTX: &str = "<chat>\nuser: Can you move the weekly sync to Thursday at 3pm and tell Dana?\ntalk: Done: the weekly sync is now Thursday 15:00 and Dana has the new invite.\n</chat>";
+const SUMMARY_SAMPLE_UNIT: &str =
+    "Done: the weekly sync is now Thursday 15:00 and Dana has the new invite.";
+
+/// 177 E9: the cost owner the summary tests are charged to (no session owns them).
+const SUMMARY_TEST_OWNER: SessionId = SessionId(uuid::Uuid::from_u128(
+    0x0177_e9e9_0000_7000_8000_0000_0000_0177,
+));
+
+/// 177 E9: what to do about a failed summary test.
+fn summary_hint(e: &str) -> Option<&'static str> {
+    let l = e.to_ascii_lowercase();
+    Some(if l.contains("reply on thinking") {
+        compactor::THINKING_HINT
+    } else if l.contains("connection refused")
+        || l.contains("error sending request")
+        || l.contains("connect")
+    {
+        "The server did not answer: is it running at the provider's URL?"
+    } else if l.contains("401") || l.contains("403") || l.contains("unauthorized") {
+        "The server wants an API key: add the provider again with its key."
+    } else if l.contains("404") || l.contains("not found") {
+        "The server does not serve this model id: refresh the provider's models."
+    } else if l.contains("timed out") || l.contains("stream idle") {
+        "Too slow for the attempt bound: pick a smaller model or raise Memory's local attempt seconds."
+    } else if crate::compact::is_overflow(e) {
+        "The prompt is over the model's window: set its context under Local servers."
+    } else if l.contains("returned nothing") {
+        "The model wrote nothing: pick a model that follows short instructions."
+    } else {
+        return None;
+    })
+}
+
+/// 177 E9: one real single-unit compactor call for `model` on a fixed
+/// two-message sample, with the request options (E2/E3) and guards of a
+/// summary, charged like a side call (`model_calls`, kind `endless`, to
+/// [`SUMMARY_TEST_OWNER`]). Never writes memory.
+pub(crate) async fn test_summary(inner: &Inner, model: &str) -> crate::SummaryTest {
+    let mut out = crate::SummaryTest {
+        model: model.to_owned(),
+        ..Default::default()
     };
-    (key, Arc::new(c))
+    let resolved = match inner
+        .catalog
+        .read()
+        .resolve(model, &*crate::supervisor::configured(inner.auth.clone()))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            out.error = Some(e);
+            return out;
+        }
+    };
+    out.model = resolved.id.clone();
+    let c = model_compactor(inner, SessionId::new(), resolved, "theuth");
+    let (node_bytes, attempt) = {
+        let cfg = inner.cfg.read();
+        let secs = if c.local.is_some() {
+            cfg.local_attempt_secs.clamp(30, 7_200)
+        } else {
+            cfg.attempt_secs.clamp(10, 3_600)
+        };
+        (cfg.node_bytes, Duration::from_secs(u64::from(secs)))
+    };
+    let step = compactor::Step::Unit {
+        kind: tree::Kind::Talk,
+        text: SUMMARY_SAMPLE_UNIT.to_owned(),
+        earlier: Vec::new(),
+        aim: None,
+    };
+    let request_id = format!("endless:test:{}", uuid::Uuid::now_v7());
+    let reserved = match inner.store.ensure_owner(SUMMARY_TEST_OWNER, None).await {
+        Ok(()) => inner
+            .store
+            .reserve_call(
+                SUMMARY_TEST_OWNER,
+                &request_id,
+                0,
+                None,
+                CallKind::Endless,
+                c.model.provider.as_deref(),
+                Some(&c.model.id),
+            )
+            .await
+            .map_err(|e| tracing::warn!(error = %e, "summary test: reserve"))
+            .ok(),
+        Err(e) => {
+            tracing::warn!(error = %e, "summary test: cost owner");
+            None
+        }
+    };
+    let tally = compactor::Tally::new(&c);
+    let started = Instant::now();
+    let built = compactor::build(&tally, SUMMARY_SAMPLE_CTX, &step, node_bytes, 1, attempt).await;
+    out.latency_ms = started.elapsed().as_millis() as u64;
+    let calls = match &built {
+        Ok(b) => &b.calls,
+        Err(f) => &f.calls,
+    };
+    let usage = compactor::sum_usage(calls);
+    if let Some(r) = &reserved {
+        let status = if built.is_ok() {
+            CallStatus::Settled
+        } else {
+            CallStatus::Failed
+        };
+        let obs = compactor::observation(usage.as_ref(), &c.model);
+        if let Err(e) = inner.store.settle_call(r, status, obs).await {
+            tracing::warn!(error = %e, "summary test: settle");
+        }
+    }
+    if let Some(u) = &usage {
+        let n = |v: Option<i32>| v.and_then(|n| u32::try_from(n).ok());
+        out.tokens_in = n(u.prompt_tokens);
+        out.tokens_out = n(u.completion_tokens);
+    }
+    match tally.last() {
+        Some(r) => {
+            out.reasoning_tokens = r.reasoning_tokens();
+            out.finish_reason = r.stop.clone();
+            out.reasoning_seen = r.reasoning;
+            out.thinking_off_sent = r.thinking_off;
+        }
+        None => out.thinking_off_sent = c.quiet || c.effort.is_some(),
+    }
+    match built {
+        Ok(b) if b.tries > 0 => {
+            out.ok = true;
+            out.line = Some(b.text);
+        }
+        Ok(b) => {
+            out.error = Some(format!("the reply failed the summary guards: {}", b.text));
+            out.hint = Some("Pick a model that follows short instructions.".into());
+        }
+        Err(f) => {
+            out.hint = summary_hint(&f.error).map(str::to_owned);
+            out.error = Some(f.error);
+        }
+    }
+    out
 }
 
 /// E1/E2: re-resolve the compactor of `session` (`None` = every attached

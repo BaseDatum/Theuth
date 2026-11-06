@@ -44,6 +44,7 @@ pub mod endless;
 pub mod endless_ext;
 pub mod frame;
 pub mod limits;
+pub mod local;
 pub mod loop_;
 pub mod notebook_context;
 pub mod notebooks;
@@ -194,6 +195,7 @@ pub use lifecycle::{
     CleanupStatus, CloseAck, CloseResult, CloseTree, CreateSessionOptions, PrivateOwner,
     SessionOpen,
 };
+pub use models::LimitSource;
 #[cfg(feature = "test-support")]
 pub use supervisor::spawn_test_agents;
 pub use supervisor::{
@@ -2105,6 +2107,10 @@ pub struct ModelInfo {
     pub budget_min: Option<u32>,
     /// Largest `budget_tokens` value, when bounded.
     pub budget_max: Option<u32>,
+    /// 177: served by a local model server (exact on `list_models` rows; other
+    /// replies use the provider-name rule).
+    #[serde(default)]
+    pub local: bool,
 }
 
 /// Effort keyword or integer budget → genai. `"default"` → `None` (provider default).
@@ -2254,23 +2260,87 @@ pub struct ProviderInfo {
     /// `opencode` / `openrouter`: keyed by a secret, not removable (85 §0.9).
     #[serde(default)]
     pub builtin: bool,
-    /// A key exists (vault or env); custom providers always carry one.
+    /// A key exists (vault or env); custom providers carry one unless keyless local ones (177).
     #[serde(default)]
     pub configured: bool,
     /// Refresh models is available (custom providers; opencode/openrouter with a key) (162 D6).
     #[serde(default)]
     pub refreshable: bool,
+    /// 177: a local model server — a runtime preset, or a base URL whose host is
+    /// loopback, private (RFC 1918, CGNAT, link-local, ULA), `*.local` or `*.lan`.
+    #[serde(default)]
+    pub local: bool,
+    /// 177: the runtime preset the provider was added with, if any.
+    #[serde(default)]
+    pub runtime: Option<LocalRuntime>,
+    /// 177: a key is stored (vault or env); `false` for a keyless local provider.
+    #[serde(default)]
+    pub has_key: bool,
+}
+
+/// 177: a local model runtime preset. `openai` = a generic OpenAI-compatible local server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum LocalRuntime {
+    /// Ollama (`:11434`, OpenAI-compatible under `/v1/`).
+    Ollama,
+    /// LM Studio (`:1234`).
+    Lmstudio,
+    /// omlx (`:8000`).
+    Omlx,
+    /// llama.cpp `llama-server` (`:8080`).
+    Llamacpp,
+    /// vLLM (`:8000`).
+    Vllm,
+    /// Any other OpenAI-compatible local server.
+    Openai,
+}
+
+impl LocalRuntime {
+    /// The wire / provider-name form (`lmstudio`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ollama => "ollama",
+            Self::Lmstudio => "lmstudio",
+            Self::Omlx => "omlx",
+            Self::Llamacpp => "llamacpp",
+            Self::Vllm => "vllm",
+            Self::Openai => "openai",
+        }
+    }
+
+    /// Parse [`LocalRuntime::as_str`]'s form.
+    pub fn parse(s: &str) -> Option<Self> {
+        [
+            Self::Ollama,
+            Self::Lmstudio,
+            Self::Omlx,
+            Self::Llamacpp,
+            Self::Vllm,
+            Self::Openai,
+        ]
+        .into_iter()
+        .find(|r| r.as_str() == s)
+    }
 }
 
 /// `ask` → `Result<ProviderInfo, String>`: persist a custom provider, fetch its models.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddProvider {
-    /// `[a-z][a-z0-9_-]*`, not a built-in adapter.
+    /// `[a-z][a-z0-9_-]*`, not a built-in adapter (a local provider may take a
+    /// runtime's own name: `ollama`, `omlx`, `lmstudio`, `llamacpp`, `vllm`; 177 E4).
     pub name: String,
     /// `https://host/v1`.
     pub base_url: String,
     /// Bearer key; stored in the secrets vault (37) under the provider's name.
-    pub key: String,
+    /// `None`/empty: a keyless local provider (model calls carry the placeholder
+    /// `Bearer local`; listings and probes no header; 177 E4).
+    #[serde(default)]
+    pub key: Option<String>,
+    /// 177: the runtime preset; makes the provider local whatever its host.
+    #[serde(default)]
+    pub runtime: Option<LocalRuntime>,
 }
 
 /// `ask` → `Result<(), String>`: delete a custom provider's url, key, and catalog models.
@@ -2316,6 +2386,170 @@ impl RefreshedModels {
             )
         }
     }
+}
+
+/// `ask` → `Vec<LocalServer>`: probe the default local runtime ports on
+/// 127.0.0.1 (11434, 1234, 8000, 8080; 177 E8). Never adds anything.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ProbeLocalServers;
+
+/// One probed local port (177 E8).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct LocalServer {
+    /// What answered, by response shape (`openai` = only a plain `/v1/models`);
+    /// for a port nothing answered on, the runtime usually found there.
+    pub runtime: LocalRuntime,
+    /// The URL to add: `http://127.0.0.1:<port>/v1/` (Ollama included).
+    pub base_url: String,
+    /// Something answered on the port.
+    pub reachable: bool,
+    /// Models it listed.
+    pub models: u32,
+    /// The existing provider with the same base URL.
+    pub added_as: Option<String>,
+    /// Why it is unreachable or unusable.
+    pub error: Option<String>,
+}
+
+impl LocalServer {
+    /// One line for chat frontends (`/provider find`).
+    pub fn line(&self) -> String {
+        let state = if !self.reachable {
+            format!(
+                "not running ({})",
+                self.error.as_deref().unwrap_or("no answer")
+            )
+        } else if let Some(e) = &self.error {
+            e.clone()
+        } else {
+            format!("{} models", self.models)
+        };
+        let added = match &self.added_as {
+            Some(n) => format!("  added as {n}"),
+            // `openai` is a cloud adapter's name: a generic local server is `local`.
+            None if self.reachable => format!(
+                "  /provider add {} {}",
+                match self.runtime {
+                    LocalRuntime::Openai => "local",
+                    r => r.as_str(),
+                },
+                self.base_url
+            ),
+            None => String::new(),
+        };
+        format!(
+            "{}  {}  {state}{added}",
+            self.runtime.as_str(),
+            self.base_url
+        )
+    }
+}
+
+/// `ask` → `Result<Vec<ProviderModel>, String>`: a provider's models with their limits (177).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProviderModels {
+    /// Provider name (custom or catalog).
+    pub provider: String,
+}
+
+/// One model of a provider with its stored limits (177).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ProviderModel {
+    /// Model id within the provider (`provider/<id>` is the picker id).
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Context window in tokens; 0 = unknown.
+    pub context: u32,
+    /// Max output tokens; 0 = unknown.
+    pub output: u32,
+    /// Who set the limits.
+    pub source: LimitSource,
+    /// `Some(16384)`: a local model whose context is unknown is budgeted as this (177 E7).
+    pub assumed_context: Option<u32>,
+}
+
+impl ProviderModel {
+    /// One line for chat frontends: `m1: context 32768 (server), output unknown`.
+    pub fn line(&self) -> String {
+        let n = |v: u32| {
+            if v == 0 {
+                "unknown".to_owned()
+            } else {
+                v.to_string()
+            }
+        };
+        let source = match self.source {
+            LimitSource::Server => "server",
+            LimitSource::User => "user",
+            LimitSource::Unknown => "unknown",
+        };
+        let assumed = self
+            .assumed_context
+            .map(|a| format!(", budgeted as {a}"))
+            .unwrap_or_default();
+        format!(
+            "{}: context {} ({source}{assumed}), output {}",
+            self.id,
+            n(self.context),
+            n(self.output)
+        )
+    }
+}
+
+/// `ask` → `Result<ProviderModel, String>`: write a model's limits into the user
+/// `models.json` (source `user`) and reload the catalog (177 E6).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetModelLimits {
+    /// Provider name.
+    pub provider: String,
+    /// Model id within the provider.
+    pub model: String,
+    /// Context window; `None` clears it back to unknown.
+    pub context: Option<u32>,
+    /// Max output; `None` clears it back to unknown.
+    pub output: Option<u32>,
+}
+
+/// `ask` → `SummaryTest`: one real single-unit compactor call on a fixed sample (177 E9).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TestSummaryCall {
+    /// `provider/model`.
+    pub model: String,
+}
+
+/// Reply of [`TestSummaryCall`] (177 E9).
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SummaryTest {
+    /// A summary line came back and passed the guards.
+    pub ok: bool,
+    /// The resolved model id.
+    pub model: String,
+    /// Wall-clock time of the call(s).
+    pub latency_ms: u64,
+    /// Prompt tokens, when reported.
+    pub tokens_in: Option<u32>,
+    /// Completion tokens, when reported.
+    pub tokens_out: Option<u32>,
+    /// Reasoning tokens, when reported.
+    pub reasoning_tokens: Option<u32>,
+    /// `stop`, `length`, … when reported.
+    pub finish_reason: Option<String>,
+    /// The reply carried reasoning (chunks or reasoning tokens).
+    pub reasoning_seen: bool,
+    /// The request switched thinking off (`chat_template_kwargs`, `think:false`, or an effort).
+    pub thinking_off_sent: bool,
+    /// The summary line, on success.
+    pub line: Option<String>,
+    /// What failed.
+    pub error: Option<String>,
+    /// What to do about it.
+    pub hint: Option<String>,
 }
 
 /// `ask` → `Result<SessionId, String>`: create an empty root session, for

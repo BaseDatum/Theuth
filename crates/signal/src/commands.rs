@@ -721,14 +721,16 @@ async fn provider_cmd(arg: &str) -> anyhow::Result<Reply> {
             let name = parts.next().unwrap_or_default();
             let url = parts.next().unwrap_or("").trim();
             let key = parts.next().unwrap_or("").trim();
-            if name.is_empty() || url.is_empty() || key.is_empty() {
-                return text("usage: /provider add <name> <url> <key>".into());
+            // 177 E10: a local URL needs no key (the engine refuses a cloud one without).
+            if name.is_empty() || url.is_empty() {
+                return text("usage: /provider add <name> <url> [key]".into());
             }
             let p = agent()?
                 .ask(agent::AddProvider {
                     name: name.to_owned(),
                     base_url: url.to_owned(),
-                    key: key.to_owned(),
+                    key: (!key.is_empty()).then(|| key.to_owned()),
+                    runtime: None,
                 })
                 .await
                 .map_err(err)?;

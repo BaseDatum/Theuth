@@ -48,6 +48,7 @@ impl Compactor for Echo {
                 text: line,
                 usage: serde_json::from_str(r#"{"prompt_tokens":1000,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":900}}"#).ok(),
                 latency: Duration::from_millis(1),
+                ..Default::default()
             })
         })
     }
@@ -793,6 +794,7 @@ impl Compactor for Probe {
                     text: line,
                     usage: None,
                     latency: self.delay,
+                    ..Default::default()
                 }),
                 Act::Fail => Err("400: model not loaded".to_owned()),
                 Act::Hang => {
@@ -1506,6 +1508,7 @@ impl Compactor for Script {
                 text,
                 usage,
                 latency: self.delay,
+                ..Default::default()
             })
         })
     }
@@ -1668,6 +1671,7 @@ impl Compactor for Picky {
                     text: line,
                     usage: None,
                     latency: Duration::ZERO,
+                    ..Default::default()
                 })
             }
         })
