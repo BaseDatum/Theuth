@@ -300,6 +300,7 @@ fn listed_model(id: &str, context: u32) -> Model {
             } else {
                 models::LimitSource::Unknown
             },
+            assumed: 0,
         },
         cost: None,
         reasoning: false,

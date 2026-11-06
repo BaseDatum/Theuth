@@ -200,6 +200,73 @@ async fn zero_limits_send_no_max_tokens_and_keyless_sends_placeholder_key() {
     }
 }
 
+/// 177 R1-1: the assumed window sizes memory only. A chat request on a local
+/// model whose window is unknown is sent whatever its size (no local refusal,
+/// no `max_tokens`); memory budgets size to 16,384; a known small window still
+/// refuses locally.
+#[tokio::test]
+async fn assumed_window_sizes_memory_but_never_refuses() {
+    let dir = crate::TestDir::new("local-r1");
+    let (server, seen) = omlx(true).await;
+    let auth = auth_with(&dir.0, "mlx", &server);
+    let mut model = zero_model("mlx");
+    model.model.as_mut().unwrap().limit.assumed = ASSUMED_CONTEXT;
+    assert_eq!(crate::tokens::window(&model), crate::tokens::UNKNOWN_WINDOW);
+    assert_eq!(crate::tokens::memory_window(&model), 16_384);
+    let b = crate::tokens::budget(
+        crate::tokens::Kind::Compactor,
+        &model,
+        crate::tokens::Limits {
+            reply_tokens: u64::from(compactor::LOCAL_MAX_TOKENS),
+            ..Default::default()
+        },
+    );
+    assert_eq!(b.target_tokens, 16_384 / 4);
+    // ≈ 30k tokens even at 4 B/token: over any 16k ceiling.
+    let big = "theuth system prompt and tools. ".repeat(4_000);
+    let backend = Backend::for_model(&model, &genai::Client::builder().build().unwrap(), &auth);
+    let history = [ChatMessage::user(big.clone())];
+    let frame = crate::frame::Frame {
+        tools: &[],
+        system: "sys",
+        head: None,
+        history: &history,
+        vision: false,
+        strip_reasoning: false,
+        max_tokens: None,
+    };
+    let (req, opts) = frame.request(
+        crate::frame::Transport::OpenAiLike,
+        runtime::SessionId::new(),
+        None,
+    );
+    let mut s = backend
+        .stream(&model, req, &opts, runtime::SessionId::new())
+        .await
+        .expect("an unknown window never refuses");
+    while s.next().await.is_some() {}
+    assert_eq!(seen.lock().len(), 1);
+    assert!(seen.lock()[0].0.get("max_tokens").is_none());
+
+    // A known (server- or user-set) small window refuses before sending.
+    let mut known = model.clone();
+    known.model.as_mut().unwrap().limit.context = 8_192;
+    let (req, opts) = frame.request(
+        crate::frame::Transport::OpenAiLike,
+        runtime::SessionId::new(),
+        None,
+    );
+    let e = match backend
+        .stream(&known, req, &opts, runtime::SessionId::new())
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("a known 8k window must refuse a 30k-token request"),
+    };
+    assert!(e.starts_with("prompt is too long:"), "{e}");
+    assert_eq!(seen.lock().len(), 1, "nothing sent");
+}
+
 /// E4: a local provider named `omlx` shadows genai's omlx adapter — `omlx/m`
 /// goes to the provider's URL; with no provider of that name genai resolves it.
 #[test]

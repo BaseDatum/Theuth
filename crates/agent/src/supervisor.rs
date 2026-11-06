@@ -17283,7 +17283,12 @@ done
             (0, models::LimitSource::Unknown, Some(16_384))
         );
         let resolved = |a: &Agents| a.catalog.resolve("omlx/small", &|_| true).unwrap();
-        assert_eq!(crate::tokens::window(&resolved(&a)), 16_384);
+        // R1-1: unknown for turns, assumed for memory budgets only.
+        assert_eq!(
+            crate::tokens::window(&resolved(&a)),
+            crate::tokens::UNKNOWN_WINDOW
+        );
+        assert_eq!(crate::tokens::memory_window(&resolved(&a)), 16_384);
 
         crate::providers::set_limits(&dir, &a.catalog, "omlx", "small", Some(8192), Some(1024))
             .unwrap();

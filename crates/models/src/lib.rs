@@ -225,6 +225,12 @@ pub struct Limit {
     /// 177 E5: where the limits came from; absent (bundled, older user files) = unknown.
     #[serde(default, skip_serializing_if = "LimitSource::is_unknown")]
     pub source: LimitSource,
+    /// 177 E7: the window memory and summary budgets assume while `context` is
+    /// unknown (a local server's model: [`ASSUMED_LOCAL_CONTEXT`]); 0 elsewhere.
+    /// Never a known window — nothing is refused or auto-compacted on it — and
+    /// never written to a file.
+    #[serde(skip)]
+    pub assumed: u32,
 }
 
 /// 177: who set a model's limits. A server-reported value never overwrites a user one.
@@ -347,7 +353,8 @@ static BUNDLED: LazyLock<BTreeMap<String, Provider>> = LazyLock::new(|| {
         .expect("bundled data/models.json is valid")
 });
 
-/// 177 E7: the window a local model with an unknown context is budgeted as.
+/// 177 E7: the window memory and summary budgets assume for a local model whose
+/// context is unknown ([`Limit::assumed`]); never used to refuse a request.
 pub const ASSUMED_LOCAL_CONTEXT: u32 = 16_384;
 
 impl Catalog {
@@ -360,9 +367,9 @@ impl Catalog {
     }
 
     /// [`Catalog::load`], with `local(provider)` (or a block's own `local`)
-    /// marking local model servers (177 E7): their unknown windows are
-    /// [`ASSUMED_LOCAL_CONTEXT`], never a cloud sibling's, and they are never
-    /// anyone's sibling.
+    /// marking local model servers (177 E7): their unknown windows stay 0 and
+    /// carry [`Limit::assumed`] for memory budgets, never a cloud sibling's
+    /// window, and they are never anyone's sibling.
     pub fn load_with(data_dir: &Path, local: &dyn Fn(&str) -> bool) -> Catalog {
         let mut providers = BUNDLED.clone();
         let path = data_dir.join("models.json");
@@ -382,7 +389,7 @@ impl Catalog {
             p.local |= local(pid);
             if p.local {
                 for m in p.models.values_mut().filter(|m| m.limit.context == 0) {
-                    m.limit.context = ASSUMED_LOCAL_CONTEXT;
+                    m.limit.assumed = ASSUMED_LOCAL_CONTEXT;
                 }
             }
         }
@@ -390,6 +397,7 @@ impl Catalog {
         let fills: Vec<(String, String, Model)> = cat
             .providers
             .iter()
+            .filter(|(_, p)| !p.local)
             .flat_map(|(pid, p)| p.models.values().map(move |m| (pid, m)))
             .filter(|(_, m)| m.limit.context == 0)
             .filter_map(|(pid, m)| {
@@ -1003,10 +1011,10 @@ mod tests {
         assert!(m.limit.context > 0 && m.protocol.is_none() && m.canonical.is_none());
     }
 
-    /// 177 E7: a local server's unknown window is the assumed 16k, never a
-    /// cloud sibling's, and its models are nobody's sibling; the same id under
-    /// a cloud custom provider still borrows the sibling. Files without
-    /// `local`/`source` load as before.
+    /// 177 E7: a local server's unknown window stays unknown (0) and carries
+    /// the assumed 16k for memory budgets only; it is never a cloud sibling's,
+    /// and its models are nobody's sibling; the same id under a cloud custom
+    /// provider still borrows the sibling. Files without `local`/`source` load as before.
     #[test]
     fn local_unknown_windows_are_assumed_not_borrowed() {
         let dir = std::env::temp_dir().join(format!("models-e7-{}", std::process::id()));
@@ -1025,8 +1033,16 @@ mod tests {
         .unwrap();
         let c = Catalog::load_with(&dir, &|p| p == "lan");
         let ctx = |id: &str| c.get(id).unwrap().1.limit.context;
-        assert_eq!(ctx("lan/claude-opus-5-5"), ASSUMED_LOCAL_CONTEXT);
-        assert_eq!(ctx("lan/zork-local-9"), ASSUMED_LOCAL_CONTEXT);
+        let assumed = |id: &str| c.get(id).unwrap().1.limit.assumed;
+        assert_eq!(
+            (ctx("lan/claude-opus-5-5"), assumed("lan/claude-opus-5-5")),
+            (0, ASSUMED_LOCAL_CONTEXT)
+        );
+        assert_eq!(
+            (ctx("lan/zork-local-9"), assumed("lan/zork-local-9")),
+            (0, ASSUMED_LOCAL_CONTEXT)
+        );
+        assert_eq!(assumed("rwx/claude-opus-5-5"), 0);
         assert!(
             ctx("rwx/claude-opus-5-5") > ASSUMED_LOCAL_CONTEXT,
             "cloud keeps the sibling"

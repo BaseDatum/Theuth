@@ -49,12 +49,16 @@ worker E: `177-notes-e.md`.
   the catalog and re-resolves the endless compactors. Every catalog reload
   (add, refresh, remove, limits) reaches running chats: their model takes the
   new entry at its next call, so the UI need not say "applies to new chats".
-- **E7** An unknown local context is budgeted as 16,384 tokens everywhere
-  (window, preflight, endless budgets, chat auto-compaction); local providers
-  never inherit a cloud sibling's window. A chat turn whose prompt does not fit
-  the assumed window is refused locally with "the local window is assumed; set
-  the real one under Local servers or `/provider limits <p> <m> <context>`"
-  (theuth's own turn prompt is ≈ 31k tokens with tools).
+- **E7** An unknown local context is assumed to be 16,384 tokens for MEMORY and
+  SUMMARY budgets only: the endless compactor's context and targets,
+  `test_summary_call`, and the endless view allowance (`tokens::memory_window`,
+  `models::Limit::assumed`, never written). It never refuses a request and
+  never drives chat auto-compaction: a chat turn on such a model is sent as
+  before 177 (auto-compaction off, `max_tokens` omitted), and the session logs
+  once "<model>'s context window is unknown; set it under Settings ›
+  Connections › Local servers (or /provider limits) so theuth can size
+  requests". Only a known window (bundled, server- or user-set) refuses.
+  Local providers never inherit a cloud sibling's window.
 - **E8** `local_servers_probe` probes 127.0.0.1 only, never adds
   (`THEUTH_LOCAL_PROBE_PORTS` replaces the port list for a scratch engine).
 - **E9** `test_summary_call` runs one real summary call on a fixed sample.
@@ -119,7 +123,11 @@ type SummaryTest = {
 
 - `add_provider`: `key` and `runtime` may be omitted (trailing params). A
   missing or empty key is refused for a non-local URL ("api key is empty").
-  The 3-argument call of today still works.
+  The 3-argument call of today still works. A keyless local provider's model
+  calls (turns, streaming, tools, compactor, titles, side calls) go through
+  genai with the placeholder key `local`, so they DO send
+  `Authorization: Bearer local` (genai's OpenAI adapter needs a key); only the
+  raw listing, limit and probe requests send no `Authorization` header.
 - `provider_models`: a custom provider's rows come from the user
   `models.json` (what the listing and the user stored); a catalog provider's
   from the catalog. An entry without a stored source but with limits reports

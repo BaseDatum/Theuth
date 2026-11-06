@@ -77,22 +77,28 @@ Branch `fix/177-e`, base `b540592e`. Design: `177-local-runtimes.md`.
     polish, subagent, vision, escalate) and every endless session's model take
     their new entries too, and the compactor key includes the limits, so a
     limits change rebuilds the compactor.
-17. **E7 lives in the catalog:** `Catalog::load_with(dir, local)` marks local
-    gateways (and blocks with `"local": true`), sets their unknown windows to
-    16,384 in memory (never written), skips sibling fill for them, and keeps
-    them out of `closest` (they are nobody's sibling; an unlisted id of a local
-    provider, or of genai's `ollama`/`omlx`, borrows no cloud window).
-    `tokens::window` and the turn's `window_of` fall back to 16,384 for a local
-    runtime's id with no entry. So `list_models` shows `context: 16384` for such
-    a model; `provider_models` shows the stored 0 plus `assumed_context`.
-18. **E7 consequence, seen in the live proof:** theuth's own turn prompt (system
-    prompt + 11 tools) is ≈ 31k tokens, over the 11.7k ceiling of an assumed
-    16k window, so a chat turn on a never-configured local model is refused
-    locally before anything is sent. The refusal names the fix:
-    "the local window is assumed; set the real one under Local servers or
-    `/provider limits <p> <m> <context>`". Summary, title and side calls fit.
-    I kept the brief's "16,384 everywhere, preflight included"; the risk is
-    listed in the DONE message.
+17. **E7 (as changed by R1-1): the assumed window is a memory hint.**
+    `Catalog::load_with(dir, local)` marks local gateways (and blocks with
+    `"local": true`), skips sibling fill for them, keeps them out of `closest`
+    (an unlisted id of a local provider, or of genai's `ollama`/`omlx`, borrows
+    no cloud window), and gives their unknown windows
+    `limit.assumed = 16,384` (`#[serde(skip)]`, never written; `context` stays 0).
+    `tokens::memory_window` (known window, else `assumed`, else 16,384 for a
+    local runtime's id with no entry) sizes `tokens::budget` only — the endless
+    compactor's context and target (so `test_summary_call` too) and the turn's
+    view allowance. `tokens::window` (preflight, `ceiling`) and the turn's
+    `window_of` (auto-compaction, reply budget) use known windows only, so a chat
+    turn on an unknown local window is sent as before 177: auto-compaction off,
+    `max_tokens` omitted. `list_models` shows `context: 0`; `provider_models`
+    shows 0 plus `assumed_context: 16384`.
+18. **The unknown-window notice is a log line**: there is no user-facing notice
+    event (only the `tracing` line "context window unknown; auto-compaction
+    off"), so for a local model the turn logs once per session (a
+    `Shared.window_noted` flag), at warn: "<model>'s context window is unknown;
+    set it under Settings › Connections › Local servers (or /provider limits)
+    so theuth can size requests". A cloud model keeps the old per-turn info line.
+    Before R1-1 the assumed window also refused turns (theuth's own turn prompt is
+    ≈ 31k tokens); that regression is gone.
 19. **E9 accounting:** `test_summary_call` reserves and settles one
     `model_calls` row (kind `endless`) under a fixed cost owner
     `0177e9e9-0000-7000-8000-000000000177` (`SUMMARY_TEST_OWNER`, registered with `ensure_owner`): no
@@ -164,6 +170,13 @@ makes it ignore the kwarg, `lfm-tiny` reports `max_model_len` 32768, `lfm-bare` 
 Re-run after the placeholder change (fresh data dir, same driver, `/tmp/177-e/proof2.txt`; the fake now logs the
 header value): steps 1–6 give the same results; every chat request (turn with 11 tools, title, 3 compactor calls,
 both `test_summary_call` attempts) carries `"authorization": "Bearer local"`; the listing `GET /v1/models` carries none.
+Re-run after R1-1 (`/tmp/177-e/proof3.txt`, fresh data dir): step 2's first turn on the 0/0 model is now SENT —
+fake: `{"max_tokens": "absent", "tools": 11, "authorization": "Bearer local"}` → "Hello from fake A …"; the title call
+likewise has no `max_tokens` (+ `enable_thinking: false`). The engine log has, once for the session:
+`WARN agent::loop_: fakea/lfm-bare's context window is unknown; set it under Settings › Connections › Local servers
+(or /provider limits) so theuth can size requests`. After `set_model_limits(65536)` the next turn carries
+`max_tokens: 28486`. Steps 3–6 unchanged: 3 compactor calls at `max_tokens: 2048` with the kwarg, `unbuilt 0`;
+`test_summary_call` ok, then the thinking error; probe and limits round trip as before.
 Every process started for the proof was stopped.
 
 ## genai fork follow-ups (not changed here)

@@ -805,6 +805,9 @@ struct Shared {
     /// carries its view). Set by [`SetMemoryNow`]; W1's `active()` is the
     /// durable guard.
     meeting_filter: Arc<std::sync::atomic::AtomicBool>,
+    /// 177 R1-1: the "context window is unknown" notice of a local model was
+    /// given in this session (once per session).
+    window_noted: Arc<std::sync::atomic::AtomicBool>,
     /// Test hook: the view an endless turn renders instead of asking the service.
     #[cfg(test)]
     test_view: Arc<parking_lot::Mutex<Option<ViewRender>>>,
@@ -934,6 +937,7 @@ impl Session {
                 endless: None,
                 parent_view: false,
                 meeting_filter: Arc::default(),
+                window_noted: Arc::default(),
                 #[cfg(test)]
                 test_view: Arc::default(),
                 permits,
@@ -3860,25 +3864,37 @@ impl Turn {
         let window = self.window_of(model);
         if window == 0 && !self.window_logged {
             self.window_logged = true;
-            tracing::info!(session = %self.shared.id, model = %model.id, "context window unknown; auto-compaction off");
+            let local = model.model.as_ref().is_some_and(|m| m.limit.assumed > 0)
+                || crate::local::runtime_named(model);
+            // 177 R1-1: a local model's unknown window is said once per session
+            // with the fix; its turns are still sent (no refusal, no auto-compaction).
+            if local {
+                if !self
+                    .shared
+                    .window_noted
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::warn!(session = %self.shared.id, model = %model.id, "{}'s context window is unknown; set it under Settings › Connections › Local servers (or /provider limits) so theuth can size requests", model.id);
+                }
+            } else {
+                tracing::info!(session = %self.shared.id, model = %model.id, "context window unknown; auto-compaction off");
+            }
         }
         window
     }
 
-    /// [`Turn::window`] without the log.
+    /// [`Turn::window`] without the log: a KNOWN window only (177 R1-1: a local
+    /// model's assumed window never sizes, refuses or compacts a chat turn).
     fn window_of(&self, model: &Resolved) -> u32 {
         let window = self
             .shared
             .catalog
             .closest(&model.id)
             .map_or(0, |m| m.limit.context);
-        if window > 0 {
-            window
-        } else if self.state.window_hint == 0 && crate::local::runtime_named(model) {
-            // 177 E7: a local runtime's unknown window is the assumed one.
-            crate::local::ASSUMED_CONTEXT
-        } else {
+        if window == 0 {
             self.state.window_hint
+        } else {
+            window
         }
     }
 
