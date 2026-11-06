@@ -133,8 +133,21 @@ test('the cell key row: ↑ ↓ ⏎ Esc Tab ^C raw bytes, arrows per cursor-key 
 test('171F B12: a cell terminal opens at 12 rows and grows with the rows in use to the 30-row grid; a pty box keeps its own size', () => {
   expect([liveRows(1, 12, 30), liveRows(12, 12, 30), liveRows(20, 12, 30), liveRows(30, 12, 30), liveRows(31, 12, 30)]).toEqual([12, 12, 20, 30, 30])
   const cell = renderToStaticMarkup(createElement(Terminal, { source: { kind: 'cell', run: 'run-1' }, label: 'bash' }))
-  expect(cell).toContain('height:188px')
+  // The rows are the xterm host's height (12 × ~15 px); the box around it has none of its own.
+  expect(cell).toContain('height:180px')
   expect(renderToStaticMarkup(createElement(Terminal, { session: 's', job: 'j', label: 'sh' }))).not.toContain('height:')
+})
+
+test('the cursor row of a waiting cell stays in view: the box grows by its scrollbar and scrolls from the bottom', () => {
+  const cell = renderToStaticMarkup(createElement(Terminal, { source: { kind: 'cell', run: 'run-1' }, label: 'bash' }))
+  const box = cell.match(/^<div class="(?<cls>[^"]*)" style="(?<style>[^"]*)">/)?.groups
+  expect(box, cell).toBeDefined()
+  const { cls = '', style = '' } = box ?? {}
+  // No fixed height: a horizontal scrollbar (100 cols in a narrow box) adds to the box instead of covering the last row.
+  expect(style).not.toContain('height')
+  // Clipped by the host's max-height it scrolls, starting at — and staying on — the bottom row (where a prompt waits).
+  expect(cls.split(' ')).toEqual(expect.arrayContaining(['overflow-auto', 'flex', 'flex-col-reverse']))
+  expect(cls).not.toContain('overflow-hidden')
 })
 
 test('CELLHIST: a cell terminal (inside a note editor) has no live region; a pty terminal keeps its polite status line', () => {

@@ -424,19 +424,36 @@ impl Kernel for Typed {
     }
 }
 
-/// L11: a kernel's `input()` request shows on the run until `cell_input` answers it; the
-/// answer reaches the kernel as typed (python: raw text, no newline added).
+/// L11: a kernel's `input()` request shows on the run — on `cell_state`'s latest, which the
+/// UI's input line reads — until `cell_input` answers it; the answer reaches the kernel as
+/// typed (python: raw text, no newline added).
 #[tokio::test]
 async fn input_prompt_is_shown_until_answered() {
+    let _one = note::DOCS_TEST.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let cells = cells_in(dir.path()).await;
-    let s = SessionId(uuid::Uuid::new_v4());
-    let mut rec = finished("r_in", chat(s, 1, 1), "d", now_ms(), RunState::Running);
+    let doc = DocId("d-in".into());
+    let cell = CellRef::Note {
+        doc: doc.clone(),
+        key: NoteKey::Block("py".into()),
+    };
+    let text = format!("#| cwd: {}\ninput('Continue? ')", dir.path().display());
+    note::set_docs(Arc::new(Blocks([("py".to_owned(), text)].into())));
+    let mut rec = finished("r_in", cell.clone(), "d", now_ms(), RunState::Running);
     rec.ended_ms = None;
+    // The store has the run's row too (as `enqueue` writes it), without the prompt: `cell_state`
+    // must read the live record over it.
+    cells
+        .store()
+        .unwrap()
+        .insert(&rec, &Scope::Doc(doc.clone()).key(), None)
+        .await
+        .unwrap();
     let key = json(&rec.kernel);
     let kernel = Arc::new(Typed(KernelSpec::Monty, Mutex::new(Vec::new())));
     {
         let mut st = cells.inner.state.lock();
+        st.by_cell.insert(json(&cell), rec.id.clone());
         st.kernels.insert(
             key.clone(),
             Slot {
@@ -473,14 +490,20 @@ async fn input_prompt_is_shown_until_answered() {
         prompt: "password: ".into(),
         password: true,
     };
+    let shown = || async {
+        let s = cells
+            .state(Scope::Doc(doc.clone()), vec![cell.clone()])
+            .await
+            .unwrap();
+        s.cells[0].latest.as_ref().unwrap().input.clone()
+    };
     cells.waiting_input(&rec.id, prompt.clone()).await;
-    let live = cells.find_run(&rec.id).await.unwrap().unwrap();
-    assert_eq!(live.input, Some(prompt));
+    assert_eq!(shown().await, Some(prompt));
     cells
         .input(rec.id.clone(), b"hunter2".to_vec())
         .await
         .unwrap();
-    assert_eq!(cells.find_run(&rec.id).await.unwrap().unwrap().input, None);
+    assert_eq!(shown().await, None);
     assert_eq!(*kernel.1.lock(), vec![b"hunter2".to_vec()]);
 }
 

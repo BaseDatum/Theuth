@@ -1889,7 +1889,11 @@ impl Cells {
                 _ => continue,
             };
             self.arm(&scope, &mut i).await?;
-            let latest = self.store()?.latest_of_cell(&json(c)).await?.map(|r| r.run);
+            // The live record first: only it carries the `input()` prompt a run waits on (L11).
+            let latest = match self.live_of_cell(&json(c)) {
+                Some(live) => Some(live),
+                None => self.store()?.latest_of_cell(&json(c)).await?.map(|r| r.run),
+            };
             let interpreter = match i.cwd.as_deref() {
                 Some(cwd) => match self
                     .resolve(&i.presented.cell, cwd, &env, i.defaults.as_ref())

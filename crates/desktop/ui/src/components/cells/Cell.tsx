@@ -245,12 +245,11 @@ function LiveTerminal({ run, code, label }: { run: CellRun; code: string; label:
     <div className="flex flex-col gap-1">
       <div className="rounded-md p-0.5 ring-1 ring-fg-accent">
         <p className="truncate px-2 pt-1 font-mono text-xs text-fg-tertiary">$ {first}</p>
-        {/* 171F B12: no fixed height — the terminal sizes itself to the rows in use (12 to the 30-row grid). */}
-        <div className="flex max-h-[60vh] flex-col">
-          <Suspense fallback={null}>
-            <Terminal source={{ kind: 'cell', run: run.id }} label={label} />
-          </Suspense>
-        </div>
+        {/* 171F B12: no fixed height — the terminal sizes itself to the rows in use (12 to the 30-row grid), capped at
+            60vh. Its parent is a block, not flex: WebKit does not grow a flex item by its own horizontal scrollbar. */}
+        <Suspense fallback={null}>
+          <Terminal source={{ kind: 'cell', run: run.id }} label={label} className="max-h-[60vh]" />
+        </Suspense>
       </div>
       <p className="text-xs text-fg-accent">the terminal is live — type or use arrows</p>
     </div>

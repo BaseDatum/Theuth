@@ -47,8 +47,7 @@ test('every §11.2 state renders its look and button', () => {
         expect(button(x, 'Stop')).toBeDefined()
         expect(button(x, 'Kill')).toContain('disabled')
         expect(button(x, 'Kill')).toContain('title="Kill — closes the kernel; the next run starts fresh"')
-        // 171F B12: the live shell box sizes to its rows, no fixed 32rem.
-        expect(x).toContain('max-h-[60vh]')
+        // 171F B12: the live shell box sizes to its rows, no fixed 32rem (its 60vh cap is the lazy Terminal's own class).
         expect(x).not.toContain('h-[32rem]')
       },
     ],

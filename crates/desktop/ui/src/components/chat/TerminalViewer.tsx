@@ -326,12 +326,24 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
   return (
     <>
       <div
-        // A cell box's height is its flex basis (`flex-initial`; it still shrinks under the host's max-height).
-        className={cn('relative min-h-0 flex-1 overflow-hidden rounded-md p-1', src.kind === 'cell' && 'flex-initial', className)}
-        // p-1: 4 px above and below the rows; ~15 px a 12 px row until xterm has measured one.
-        style={{ backgroundColor: BG, height: src.kind === 'cell' ? rows * (rowH || 15) + 8 : undefined }}
+        // A cell box (a block child: WebKit grows only those by their own scrollbar) sizes to its rows plus its own
+        // horizontal scrollbar (a 100-col grid is wider than a narrow box), so the bottom row — the cursor row, where a
+        // prompt waits — is never under the bar. Past the caller's max-height it scrolls, and `flex-col-reverse` keeps
+        // it at the bottom unless the user scrolls up.
+        className={cn(
+          'relative min-h-0 flex-1 rounded-md p-1',
+          src.kind === 'cell' ? 'flex flex-col-reverse overflow-auto' : 'overflow-hidden',
+          className,
+        )}
+        // `colorScheme`: the box's scrollbars match the soot canvas on a light app theme too.
+        style={{ backgroundColor: BG, colorScheme: 'dark' }}
       >
-        <div ref={host} className={cn('size-full', src.kind === 'cell' && 'overflow-x-auto overflow-y-hidden')} />
+        <div
+          ref={host}
+          className={src.kind === 'cell' ? 'w-max shrink-0 overflow-hidden' : 'size-full'}
+          // The rows in use of the 30-row grid; ~15 px a 12 px row until xterm has measured one.
+          style={src.kind === 'cell' ? { height: rows * (rowH || 15) } : undefined}
+        />
       </div>
       {keys && !exit && (
         <div className="flex gap-1 overflow-x-auto" role="group" aria-label="Terminal keys">

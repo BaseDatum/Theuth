@@ -675,7 +675,7 @@ Images render inline from the run's files (fetched by `cell_output_file`); HTML,
 
 ### 8.6 Long output
 
-While running: the xterm scrolls (its own scrollback). Finished: the static view shows the last `cells.ui_tail_lines` (200) lines with "show all 4 812 lines" (paged through `cell_output`), a copy button (clean text) and "Open log". The fold summary (§11.1) never grows with output.
+While running: the xterm scrolls (its own scrollback); its box keeps the cursor row in view — a prompt with no newline shows where it waits (the box grows by its own horizontal scrollbar, and under the 60vh cap it scrolls from the bottom unless the user scrolls up), and a running `input()` prompt reaches the input line through `cell_state`'s live latest. Finished: the static view shows the last `cells.ui_tail_lines` (200) lines with "show all 4 812 lines" (paged through `cell_output`), a copy button (clean text) and "Open log". The fold summary (§11.1) never grows with output.
 
 ### 8.7 Ordering contract
 
