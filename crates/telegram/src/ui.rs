@@ -818,6 +818,7 @@ mod tests {
             efforts: vec![],
             budget_min: None,
             budget_max: None,
+            local: false,
         }
     }
 

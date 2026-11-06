@@ -12,13 +12,25 @@ use kameo::actor::ActorRef;
 use models::{Limit, Model, Provider};
 use serde::{Deserialize, Serialize};
 
+use crate::LocalRuntime;
+
 /// One custom provider (named OpenAI-compatible endpoint).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Gateway {
     /// Base URL, trailing slash (`https://api.example/v1/`).
     pub base_url: String,
     /// API key; [`crate::supervisor::Auth::gateway`] replaces it with the live vault value.
+    /// Empty: a keyless local provider (177 E4) — no `Authorization` header.
     pub key: String,
+    /// 177: the runtime preset it was added with.
+    pub runtime: Option<LocalRuntime>,
+}
+
+impl Gateway {
+    /// 177: a runtime preset, or a private / loopback host ([`crate::local::private_url`]).
+    pub fn local(&self) -> bool {
+        self.runtime.is_some() || crate::local::private_url(&self.base_url)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -27,13 +39,25 @@ struct File {
     inner: BTreeMap<String, Entry>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Entry {
     base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime: Option<LocalRuntime>,
 }
 
-/// `name` is a legal gateway id: `[a-z][a-z0-9_-]*`, not a built-in adapter.
-pub fn validate_name(name: &str) -> Result<(), String> {
+impl Entry {
+    fn local(&self) -> bool {
+        self.runtime.is_some() || crate::local::private_url(&self.base_url)
+    }
+}
+
+/// Runtime names a LOCAL provider may take, shadowing genai's adapter of that name (177 E4).
+const RUNTIME_NAMES: [&str; 5] = ["ollama", "omlx", "lmstudio", "llamacpp", "vllm"];
+
+/// `name` is a legal gateway id: `[a-z][a-z0-9_-]*`, not a built-in adapter —
+/// except that a `local` provider may take a runtime's own name (177 E4).
+pub fn validate_name(name: &str, local: bool) -> Result<(), String> {
     let mut cs = name.chars();
     let Some(first) = cs.next() else {
         return Err("provider name is empty".into());
@@ -43,6 +67,9 @@ pub fn validate_name(name: &str) -> Result<(), String> {
         || name.len() > 32
     {
         return Err("provider name: 1–32 chars, start with a-z, then a-z, 0-9, _ or -".into());
+    }
+    if local && RUNTIME_NAMES.contains(&name) {
+        return Ok(());
     }
     // 85 §0.8: the built-in key providers are secrets, not gateways.
     if matches!(name, "opencode" | "openrouter" | "open_router" | "zen") {
@@ -84,23 +111,27 @@ pub fn normalize_url(raw: &str) -> Result<String, String> {
     Ok(s)
 }
 
-/// Gateways that have both a `providers.yaml` row and a key in the vault.
-/// `vault: None` (the vault failed to open) yields no gateways.
+/// Gateways with a `providers.yaml` row and a key in the vault, plus local rows
+/// with no key (keyless, 177 E4). `vault: None` (the vault failed to open)
+/// yields only the keyless local ones.
 pub(crate) fn load(data_dir: &Path, vault: Option<&secrets::Vault>) -> HashMap<String, Gateway> {
-    let Some(vault) = vault else {
-        return HashMap::new();
-    };
     let mut out = HashMap::new();
-    for (name, url) in read_file(data_dir) {
-        if let Some(key) = vault.get(&name, 0).filter(|k| !k.is_empty()) {
-            out.insert(
-                name,
-                Gateway {
-                    base_url: url,
-                    key: key.to_string(),
-                },
-            );
+    for (name, entry) in read_file(data_dir) {
+        let key = vault
+            .and_then(|v| v.get(&name, 0))
+            .filter(|k| !k.is_empty())
+            .map(|k| k.to_string());
+        if key.is_none() && !entry.local() {
+            continue;
         }
+        out.insert(
+            name,
+            Gateway {
+                base_url: entry.base_url,
+                key: key.unwrap_or_default(),
+                runtime: entry.runtime,
+            },
+        );
     }
     out
 }
@@ -113,11 +144,11 @@ pub fn secrets_actor() -> Result<ActorRef<secrets::SecretsActor>, String> {
         .ok_or_else(|| "secrets vault unavailable".to_owned())
 }
 
-fn read_file(data_dir: &Path) -> BTreeMap<String, String> {
+fn read_file(data_dir: &Path) -> BTreeMap<String, Entry> {
     let path = data_dir.join("providers.yaml");
     match std::fs::read_to_string(&path) {
         Ok(s) => serde_yaml::from_str::<File>(&s)
-            .map(|f| f.inner.into_iter().map(|(n, e)| (n, e.base_url)).collect())
+            .map(|f| f.inner)
             .unwrap_or_else(|e| {
                 tracing::warn!("{}: {e}; ignoring", path.display());
                 BTreeMap::new()
@@ -130,22 +161,9 @@ fn read_file(data_dir: &Path) -> BTreeMap<String, String> {
     }
 }
 
-fn write_file(data_dir: &Path, rows: &BTreeMap<String, String>) -> Result<(), String> {
+fn write_file(data_dir: &Path, rows: BTreeMap<String, Entry>) -> Result<(), String> {
     let path = data_dir.join("providers.yaml");
-    let file = File {
-        inner: rows
-            .iter()
-            .map(|(n, u)| {
-                (
-                    n.clone(),
-                    Entry {
-                        base_url: u.clone(),
-                    },
-                )
-            })
-            .collect(),
-    };
-    let text = serde_yaml::to_string(&file).map_err(|e| e.to_string())?;
+    let text = serde_yaml::to_string(&File { inner: rows }).map_err(|e| e.to_string())?;
     atomic_write(&path, text.as_bytes(), 0o644)
 }
 
@@ -153,7 +171,12 @@ fn write_file(data_dir: &Path, rows: &BTreeMap<String, String>) -> Result<(), St
 #[derive(Clone, Copy)]
 pub enum Listing<'a> {
     /// A custom provider: the listing is the truth for which ids exist.
-    Custom,
+    Custom {
+        /// 177 E7: a local model server (its block is marked; no sibling fill).
+        local: bool,
+        /// 177 E5: context windows the server reported, by id.
+        contexts: &'a HashMap<String, u32>,
+    },
     /// A built-in: add only ids absent from `catalog` (bundled plus user file); never remove.
     Builtin(&'a models::Catalog),
 }
@@ -161,7 +184,9 @@ pub enum Listing<'a> {
 /// Merge a model listing into `<data_dir>/models.json` (the user file; bundled is
 /// untouched) and return the ids added and removed, each sorted (162 D4):
 /// - custom: a still-listed id keeps its entry as is (hand edits included), a new id
-///   gets a context-0 entry (it inherits from its models.dev sibling), an unlisted id goes;
+///   gets a context-0 entry (it inherits from its models.dev sibling unless the
+///   provider is local), an unlisted id goes; a server-reported context (177 E5)
+///   fills an unknown or server-set window, never a user one;
 /// - built-in: only ids neither the catalog nor the user file has are added, under a
 ///   block with no `name`/`env`, so the bundled provider metadata stays.
 ///
@@ -175,25 +200,23 @@ pub fn write_models(
     if ids.is_empty() {
         return Err(format!("{name} listed no models"));
     }
-    let path = data_dir.join("models.json");
-    // A broken user file is an error, never overwritten with just this provider.
-    let mut user: BTreeMap<String, Provider> = match std::fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("{}: {e}", path.display()))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-        Err(e) => return Err(e.to_string()),
-    };
+    let mut user = read_models(data_dir)?;
     let entry = user.entry(name.to_owned()).or_insert_with(|| Provider {
         id: name.to_owned(),
         name: match listing {
-            Listing::Custom => name.to_owned(),
+            Listing::Custom { .. } => name.to_owned(),
             Listing::Builtin(_) => String::new(),
         },
         env: vec![],
+        local: false,
         models: BTreeMap::new(),
     });
     let listed: BTreeSet<&str> = ids.iter().map(String::as_str).collect();
     let mut removed = Vec::new();
-    if let Listing::Custom = listing {
+    let mut changed = false;
+    if let Listing::Custom { local, contexts } = listing {
+        changed = entry.local != local;
+        entry.local = local;
         entry.models.retain(|id, _| {
             let keep = listed.contains(id.as_str());
             if !keep {
@@ -201,32 +224,81 @@ pub fn write_models(
             }
             keep
         });
+        for (id, m) in &mut entry.models {
+            let l = &mut m.limit;
+            let server_owned = l.source == models::LimitSource::Server
+                || (l.source == models::LimitSource::Unknown && l.context == 0);
+            if let Some(&c) = contexts.get(id)
+                && c > 0
+                && server_owned
+                && (l.context, l.source) != (c, models::LimitSource::Server)
+            {
+                l.context = c;
+                l.source = models::LimitSource::Server;
+                changed = true;
+            }
+        }
     }
     let mut added = Vec::new();
     for id in listed {
         let known = entry.models.contains_key(id)
             || matches!(listing, Listing::Builtin(c) if c.get(&format!("{name}/{id}")).is_some());
         if !known {
-            entry.models.insert(id.to_owned(), listed_model(id));
+            let context = match listing {
+                Listing::Custom { contexts, .. } => contexts.get(id).copied().unwrap_or(0),
+                Listing::Builtin(_) => 0,
+            };
+            entry
+                .models
+                .insert(id.to_owned(), listed_model(id, context));
             added.push(id.to_owned());
         }
     }
-    if added.is_empty() && removed.is_empty() {
+    if added.is_empty() && removed.is_empty() && !changed {
         return Ok((added, removed));
     }
-    let text = serde_json::to_string_pretty(&user).map_err(|e| e.to_string())?;
-    atomic_write(&path, (text + "\n").as_bytes(), 0o644)?;
+    write_user_models(data_dir, &user)?;
     Ok((added, removed))
 }
 
-/// A listed id with no metadata: context 0 so the catalog fills it from a sibling.
-fn listed_model(id: &str) -> Model {
+/// The user `models.json` (missing = empty); a broken file is an error, never
+/// overwritten with just one provider.
+pub(crate) fn read_models(data_dir: &Path) -> Result<BTreeMap<String, Provider>, String> {
+    let path = data_dir.join("models.json");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Atomically replace the user `models.json`.
+pub(crate) fn write_user_models(
+    data_dir: &Path,
+    user: &BTreeMap<String, Provider>,
+) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(user).map_err(|e| e.to_string())?;
+    atomic_write(
+        &data_dir.join("models.json"),
+        (text + "\n").as_bytes(),
+        0o644,
+    )
+}
+
+/// A listed id with no metadata but a server-reported `context` (0 = unknown:
+/// the catalog fills it from a sibling unless the provider is local).
+fn listed_model(id: &str, context: u32) -> Model {
     Model {
         id: id.to_owned(),
         name: id.to_owned(),
         limit: Limit {
-            context: 0,
+            context,
             output: 0,
+            source: if context > 0 {
+                models::LimitSource::Server
+            } else {
+                models::LimitSource::Unknown
+            },
         },
         cost: None,
         reasoning: false,
@@ -236,6 +308,47 @@ fn listed_model(id: &str) -> Model {
         protocol: None,
         canonical: None,
     }
+}
+
+/// 177 E6: set (`Some`) or clear (`None`) a model's limits in the user
+/// `models.json`, source `user` (unknown when both end up 0); the model must
+/// already be listed there or in the bundled catalog. Returns the stored model.
+pub fn set_limits(
+    data_dir: &Path,
+    catalog: &models::Catalog,
+    provider: &str,
+    model: &str,
+    context: Option<u32>,
+    output: Option<u32>,
+) -> Result<Model, String> {
+    let mut user = read_models(data_dir)?;
+    let base = user
+        .get(provider)
+        .and_then(|p| p.models.get(model).cloned())
+        .or_else(|| {
+            catalog
+                .get(&format!("{provider}/{model}"))
+                .map(|(_, m)| m.clone())
+        })
+        .ok_or_else(|| format!("no model {provider}/{model}"))?;
+    let block = user.entry(provider.to_owned()).or_insert_with(|| Provider {
+        id: provider.to_owned(),
+        name: String::new(),
+        env: vec![],
+        local: false,
+        models: BTreeMap::new(),
+    });
+    let mut m = base;
+    m.limit.context = context.unwrap_or(0);
+    m.limit.output = output.unwrap_or(0);
+    m.limit.source = if m.limit.context == 0 && m.limit.output == 0 {
+        models::LimitSource::Unknown
+    } else {
+        models::LimitSource::User
+    };
+    block.models.insert(model.to_owned(), m.clone());
+    write_user_models(data_dir, &user)?;
+    Ok(m)
 }
 
 fn remove_models(data_dir: &Path, name: &str) -> Result<(), String> {
@@ -255,32 +368,48 @@ fn remove_models(data_dir: &Path, name: &str) -> Result<(), String> {
     std::fs::write(&path, text + "\n").map_err(|e| e.to_string())
 }
 
-/// Persist a custom provider: key into the vault (source `provider add`), url into
-/// `providers.yaml`. Overwrites the same name; its models are [`write_models`]'.
+/// Persist a custom provider: key into the vault (source `provider add`), url and
+/// runtime into `providers.yaml`. Overwrites the same name; its models are
+/// [`write_models`]'. An empty key is allowed only for a local provider (177 E4),
+/// and drops a key stored earlier under the name.
 pub async fn save(
     data_dir: &Path,
     actor: &ActorRef<secrets::SecretsActor>,
     name: &str,
     base_url: &str,
     key: &str,
+    runtime: Option<LocalRuntime>,
 ) -> Result<(), String> {
-    validate_name(name)?;
-    let base_url = normalize_url(base_url)?;
-    if key.trim().is_empty() {
-        return Err("api key is empty".into());
+    let entry = Entry {
+        base_url: normalize_url(base_url)?,
+        runtime,
+    };
+    validate_name(name, entry.local())?;
+    let key = key.trim();
+    if key.is_empty() {
+        if !entry.local() {
+            return Err("api key is empty".into());
+        }
+        // A keyless re-add must not keep sending the old key.
+        let _ = actor
+            .ask(secrets::Delete {
+                name: name.to_owned(),
+            })
+            .await;
+    } else {
+        actor
+            .ask(secrets::Set {
+                name: name.to_owned(),
+                value: key.to_owned(),
+                note: Some(format!("custom provider {name} key")),
+                source: "provider add".into(),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
     }
-    actor
-        .ask(secrets::Set {
-            name: name.to_owned(),
-            value: key.trim().to_owned(),
-            note: Some(format!("custom provider {name} key")),
-            source: "provider add".into(),
-        })
-        .await
-        .map_err(|e| e.to_string())?;
     let mut rows = read_file(data_dir);
-    rows.insert(name.to_owned(), base_url);
-    write_file(data_dir, &rows)
+    rows.insert(name.to_owned(), entry);
+    write_file(data_dir, rows)
 }
 
 /// Drop a custom provider's url, key, and catalog models. A key already gone from
@@ -294,7 +423,7 @@ pub async fn remove(
     if rows.remove(name).is_none() {
         return Err(format!("no provider `{name}`"));
     }
-    write_file(data_dir, &rows)?;
+    write_file(data_dir, rows)?;
     if let Err(e) = actor
         .ask(secrets::Delete {
             name: name.to_owned(),
@@ -334,17 +463,36 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    static NONE: std::sync::LazyLock<HashMap<String, u32>> = std::sync::LazyLock::new(HashMap::new);
+
+    /// A cloud custom provider's listing with no server-reported windows.
+    fn cloud() -> Listing<'static> {
+        Listing::Custom {
+            local: false,
+            contexts: &NONE,
+        }
+    }
+
     #[test]
     fn name_and_url_rules() {
-        assert!(validate_name("rwx").is_ok());
-        assert!(validate_name("my-gw_1").is_ok());
-        assert!(validate_name("openai").is_err());
-        assert!(validate_name("cursor").is_err());
-        assert!(validate_name("Anthropic").is_err());
-        assert!(validate_name("1rwx").is_err());
+        assert!(validate_name("rwx", false).is_ok());
+        assert!(validate_name("my-gw_1", false).is_ok());
+        assert!(validate_name("openai", false).is_err());
+        assert!(validate_name("cursor", false).is_err());
+        assert!(validate_name("Anthropic", false).is_err());
+        assert!(validate_name("1rwx", false).is_err());
+        // 177 E4: a runtime's own name is a local provider's only.
+        for name in ["omlx", "ollama", "lmstudio", "llamacpp", "vllm"] {
+            assert!(validate_name(name, true).is_ok(), "{name}");
+        }
+        assert_eq!(
+            validate_name("omlx", false).unwrap_err(),
+            "`omlx` is a built-in provider; pick another name"
+        );
+        assert!(validate_name("openai", true).is_err());
         // 85 §0.8: the built-ins are secrets, not gateways; the error points there.
         for name in ["opencode", "openrouter", "open_router", "zen"] {
-            let err = validate_name(name).unwrap_err();
+            let err = validate_name(name, false).unwrap_err();
             assert!(
                 err.contains("set the `opencode` / `openrouter` secret"),
                 "{name}: {err}"
@@ -375,22 +523,36 @@ mod tests {
             rt,
             std::time::Duration::from_secs(1),
         ));
-        save(&dir, &actor, "rwx", "https://api.ai.rwx.dev/v1", "sk-test")
-            .await
-            .unwrap();
-        write_models(&dir, "rwx", &["m1".into()], Listing::Custom).unwrap();
+        save(
+            &dir,
+            &actor,
+            "rwx",
+            "https://api.ai.rwx.dev/v1",
+            "sk-test",
+            None,
+        )
+        .await
+        .unwrap();
+        write_models(&dir, "rwx", &["m1".into()], cloud()).unwrap();
         assert_eq!(vault.get("rwx", 0).unwrap().as_str(), "sk-test");
         let g = load(&dir, Some(&vault));
         assert_eq!(g["rwx"].base_url, "https://api.ai.rwx.dev/v1/");
         assert_eq!(g["rwx"].key, "sk-test");
         // A hand edit survives a re-add (save + the same listing): 162 D4.
         hand_edit(&dir, "rwx", "m1");
-        save(&dir, &actor, "rwx", "https://api.ai.rwx.dev/v1", "sk-two")
-            .await
-            .unwrap();
+        save(
+            &dir,
+            &actor,
+            "rwx",
+            "https://api.ai.rwx.dev/v1",
+            "sk-two",
+            None,
+        )
+        .await
+        .unwrap();
         let before = std::fs::read(dir.join("models.json")).unwrap();
         assert_eq!(
-            write_models(&dir, "rwx", &["m1".into()], Listing::Custom).unwrap(),
+            write_models(&dir, "rwx", &["m1".into()], cloud()).unwrap(),
             (vec![], vec![])
         );
         assert_eq!(std::fs::read(dir.join("models.json")).unwrap(), before);
@@ -422,13 +584,13 @@ mod tests {
         let dir = scratch.0.clone();
         let ids = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            write_models(&dir, "rwx", &ids(&["b", "a"]), Listing::Custom).unwrap(),
+            write_models(&dir, "rwx", &ids(&["b", "a"]), cloud()).unwrap(),
             (ids(&["a", "b"]), vec![])
         );
         assert_eq!(user_file(&dir)["rwx"]["name"], "rwx");
         hand_edit(&dir, "rwx", "a");
         assert_eq!(
-            write_models(&dir, "rwx", &ids(&["c", "a"]), Listing::Custom).unwrap(),
+            write_models(&dir, "rwx", &ids(&["c", "a"]), cloud()).unwrap(),
             (ids(&["c"]), ids(&["b"]))
         );
         let v = user_file(&dir);
@@ -501,13 +663,13 @@ mod tests {
     fn empty_listing_or_broken_file_leaves_models_json_alone() {
         let scratch = crate::TestDir::new("prov-empty");
         let dir = scratch.0.clone();
-        write_models(&dir, "rwx", &["a".into()], Listing::Custom).unwrap();
+        write_models(&dir, "rwx", &["a".into()], cloud()).unwrap();
         let before = std::fs::read(dir.join("models.json")).unwrap();
-        let e = write_models(&dir, "rwx", &[], Listing::Custom).unwrap_err();
+        let e = write_models(&dir, "rwx", &[], cloud()).unwrap_err();
         assert_eq!(e, "rwx listed no models");
         assert_eq!(std::fs::read(dir.join("models.json")).unwrap(), before);
         std::fs::write(dir.join("models.json"), "{ not json").unwrap();
-        assert!(write_models(&dir, "rwx", &["b".into()], Listing::Custom).is_err());
+        assert!(write_models(&dir, "rwx", &["b".into()], cloud()).is_err());
         assert_eq!(
             std::fs::read_to_string(dir.join("models.json")).unwrap(),
             "{ not json"

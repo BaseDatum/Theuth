@@ -153,6 +153,7 @@ impl Harness {
                 crate::providers::Gateway {
                     base_url,
                     key: "k".into(),
+                    runtime: None,
                 },
             );
         let model = Resolved {

@@ -116,6 +116,10 @@ use crate::{
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
+use crate::{
+    LocalServer, ProbeLocalServers, ProviderModel, ProviderModels, SetModelLimits, SummaryTest,
+    TestSummaryCall,
+};
 use crate::{attach, clock, frame, repl, search, spill};
 use tools::{
     CloseTree, CloseTreeAll, OpenTree, ParticipantsReady, Retention, SessionResources, TreeOpened,
@@ -8260,7 +8264,13 @@ impl Message<ListModels> for Agents {
             .catalog
             .providers()
             .filter(|p| (self.configured)(Catalog::adapter(&p.id)))
-            .flat_map(|p| p.models.values().map(|m| ModelInfo::new(&p.id, m)))
+            .flat_map(|p| {
+                let local = self.provider_local(&p.id);
+                p.models.values().map(move |m| ModelInfo {
+                    local,
+                    ..ModelInfo::new(&p.id, m)
+                })
+            })
             .collect();
         // Cursor is not in models.dev: ask the backend what the account may use.
         if self.auth.login("cursor") {
@@ -8281,6 +8291,7 @@ impl Message<ListModels> for Agents {
                             id,
                             name: m.name,
                             provider: "cursor".into(),
+                            local: false,
                         }
                     })),
                     Err(e) => tracing::warn!("cursor models: {e}"),
@@ -8948,18 +8959,19 @@ impl Agents {
             .providers()
             .find(|p| p.id == name)
             .map_or(0, |p| p.models.len() as u32);
-        let (base_url, builtin, configured) = match name {
-            "opencode" => (
-                crate::backend::ZEN_ENDPOINT.to_owned(),
-                true,
-                self.auth.opencode_key().is_some(),
-            ),
-            "openrouter" => (
-                OPENROUTER_ENDPOINT.to_owned(),
-                true,
-                self.auth.openrouter_key().is_some(),
-            ),
-            _ => (self.auth.gateway(name)?.base_url, false, true),
+        let (base_url, builtin, configured, has_key, gw) = match name {
+            "opencode" => {
+                let k = self.auth.opencode_key().is_some();
+                (crate::backend::ZEN_ENDPOINT.to_owned(), true, k, k, None)
+            }
+            "openrouter" => {
+                let k = self.auth.openrouter_key().is_some();
+                (OPENROUTER_ENDPOINT.to_owned(), true, k, k, None)
+            }
+            _ => {
+                let g = self.auth.gateway(name)?;
+                (g.base_url.clone(), false, true, !g.key.is_empty(), Some(g))
+            }
         };
         Some(ProviderInfo {
             name: name.to_owned(),
@@ -8968,35 +8980,105 @@ impl Agents {
             builtin,
             configured,
             refreshable: configured,
+            local: gw.as_ref().is_some_and(|g| g.local()),
+            runtime: gw.and_then(|g| g.runtime),
+            has_key,
         })
+    }
+
+    /// 177: `provider` is a local model server (a local gateway, or a block the
+    /// listing marked local).
+    fn provider_local(&self, provider: &str) -> bool {
+        self.auth.gateway(provider).is_some_and(|g| g.local())
+            || self
+                .catalog
+                .providers()
+                .any(|p| p.id == provider && p.local)
+    }
+
+    /// Swap in a reloaded catalog everywhere it is read.
+    fn reload_catalog(&mut self) {
+        self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
+        self.costs.set_catalog(self.catalog.clone());
+        self.endless.set_catalog(self.catalog.clone());
+    }
+
+    /// List gateway `name`'s models (`GET {base}models`, keyless when it has no
+    /// key) with the context windows the server reports (177 E5), and merge
+    /// them into `models.json` (162 D4).
+    async fn list_gateway(
+        &self,
+        name: &str,
+        g: &crate::providers::Gateway,
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        let auth = if g.key.is_empty() {
+            AuthData::None
+        } else {
+            AuthData::Key(g.key.clone())
+        };
+        let ids = self
+            .client
+            .all_model_names(
+                AdapterKind::OpenAI,
+                (Endpoint::from_owned(g.base_url.clone()), auth),
+            )
+            .await
+            .map_err(|e| format!("listing {name}'s models: {e}"))?;
+        let contexts = crate::local::server_contexts(&g.base_url, &g.key, g.local(), &ids).await;
+        crate::providers::write_models(
+            &self.rt.data_dir,
+            name,
+            &ids,
+            crate::providers::Listing::Custom {
+                local: g.local(),
+                contexts: &contexts,
+            },
+        )
     }
 
     /// 162 D3: ask `name`'s model-list endpoint again, merge the ids into
     /// `models.json` (D4), and reload the catalog and costs' price table.
     async fn refresh_provider_models(&mut self, name: &str) -> Result<RefreshedModels, String> {
-        let (kind, endpoint, key, builtin) = match name {
+        let (kind, endpoint, key) = match name {
             "opencode" => (
                 AdapterKind::OpenAI,
                 crate::backend::ZEN_ENDPOINT.to_owned(),
                 self.auth.opencode_key(),
-                true,
             ),
             "openrouter" => (
                 AdapterKind::OpenRouter,
                 OPENROUTER_ENDPOINT.to_owned(),
                 self.auth.openrouter_key(),
-                true,
             ),
-            _ => match self.auth.gateway(name) {
-                Some(g) => (AdapterKind::OpenAI, g.base_url, Some(g.key), false),
-                None if self.catalog.providers().any(|p| p.id == name)
-                    || oauth::provider(name).is_some()
-                    || AdapterKind::from_lower_str(name).is_some() =>
-                {
-                    return Err(format!("{name}'s models come from the built-in catalog"));
-                }
-                None => return Err(format!("no provider {name}")),
-            },
+            _ => {
+                let (added, removed) = match self.auth.gateway(name) {
+                    Some(g) if g.key.is_empty() && !g.local() => {
+                        return Err(format!("{name} has no key; set it first"));
+                    }
+                    Some(g) => self.list_gateway(name, &g).await?,
+                    None if matches!(name, "ollama" | "omlx") => {
+                        return Err(format!(
+                            "{name} is built in; add it under Local servers to list its models"
+                        ));
+                    }
+                    None if self.catalog.providers().any(|p| p.id == name)
+                        || oauth::provider(name).is_some()
+                        || AdapterKind::from_lower_str(name).is_some() =>
+                    {
+                        return Err(format!("{name}'s models come from the built-in catalog"));
+                    }
+                    None => return Err(format!("no provider {name}")),
+                };
+                self.reload_catalog();
+                let provider = self
+                    .provider_info(name)
+                    .ok_or_else(|| format!("no provider {name}"))?;
+                return Ok(RefreshedModels {
+                    provider,
+                    added,
+                    removed,
+                });
+            }
         };
         let key = key
             .filter(|k| !k.is_empty())
@@ -9007,16 +9089,13 @@ impl Agents {
             .await
             .map_err(|e| format!("listing {name}'s models: {e}"))?;
         let catalog = self.catalog.clone();
-        let listing = if builtin {
-            crate::providers::Listing::Builtin(&catalog)
-        } else {
-            crate::providers::Listing::Custom
-        };
-        let (added, removed) =
-            crate::providers::write_models(&self.rt.data_dir, name, &ids, listing)?;
-        self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
-        self.costs.set_catalog(self.catalog.clone());
-        self.endless.set_catalog(self.catalog.clone());
+        let (added, removed) = crate::providers::write_models(
+            &self.rt.data_dir,
+            name,
+            &ids,
+            crate::providers::Listing::Builtin(&catalog),
+        )?;
+        self.reload_catalog();
         let provider = self
             .provider_info(name)
             .ok_or_else(|| format!("no provider {name}"))?;
@@ -9062,49 +9141,36 @@ impl Message<AddProvider> for Agents {
         m: AddProvider,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<ProviderInfo, String> {
-        crate::providers::validate_name(&m.name)?;
         let base_url = crate::providers::normalize_url(&m.base_url)?;
-        let key = m.key.trim();
-        if key.is_empty() {
+        let g = crate::providers::Gateway {
+            base_url,
+            key: m.key.as_deref().unwrap_or_default().trim().to_owned(),
+            runtime: m.runtime,
+        };
+        crate::providers::validate_name(&m.name, g.local())?;
+        if g.key.is_empty() && !g.local() {
             return Err("api key is empty".into());
         }
-        let listing = self
-            .client
-            .all_model_names(
-                AdapterKind::OpenAI,
-                (
-                    Endpoint::from_owned(base_url.clone()),
-                    AuthData::Key(key.to_owned()),
-                ),
-            )
-            .await;
         let secrets = crate::providers::secrets_actor()?;
-        crate::providers::save(&self.rt.data_dir, &secrets, &m.name, &base_url, key).await?;
+        crate::providers::save(
+            &self.rt.data_dir,
+            &secrets,
+            &m.name,
+            &g.base_url,
+            &g.key,
+            g.runtime,
+        )
+        .await?;
         self.auth
             .gateways
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                m.name.clone(),
-                crate::providers::Gateway {
-                    base_url,
-                    key: key.to_owned(),
-                },
-            );
+            .insert(m.name.clone(), g.clone());
         // 162 D4: the same writer as Refresh; a failed listing keeps the existing list.
-        if let Err(e) = listing.map_err(|e| e.to_string()).and_then(|ids| {
-            crate::providers::write_models(
-                &self.rt.data_dir,
-                &m.name,
-                &ids,
-                crate::providers::Listing::Custom,
-            )
-        }) {
-            tracing::warn!(provider = %m.name, "listing models: {e}; keeping the existing list");
+        if let Err(e) = self.list_gateway(&m.name, &g).await {
+            tracing::warn!(provider = %m.name, "{e}; keeping the existing list");
         }
-        self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
-        self.costs.set_catalog(self.catalog.clone());
-        self.endless.set_catalog(self.catalog.clone());
+        self.reload_catalog();
         self.provider_info(&m.name)
             .ok_or_else(|| format!("no provider {}", m.name))
     }
@@ -9137,10 +9203,137 @@ impl Message<RemoveProvider> for Agents {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&m.name);
-        self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
-        self.costs.set_catalog(self.catalog.clone());
-        self.endless.set_catalog(self.catalog.clone());
+        self.reload_catalog();
         Ok(())
+    }
+}
+
+impl Message<ProbeLocalServers> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Vec<LocalServer>>;
+
+    async fn handle(
+        &mut self,
+        _: ProbeLocalServers,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let providers: Vec<(String, String)> = self
+            .auth
+            .gateways
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(n, g)| (n.clone(), g.base_url.clone()))
+            .collect();
+        tokio::spawn(async move {
+            tx.send(crate::local::probe(&crate::local::PROBE_PORTS, &providers).await);
+        });
+        reply
+    }
+}
+
+impl Agents {
+    /// 177: `provider`'s models with their stored limits — a custom provider's
+    /// from the user `models.json` (what its listing and the user wrote), a
+    /// catalog provider's from the catalog.
+    fn provider_models(&self, provider: &str) -> Result<Vec<ProviderModel>, String> {
+        let local = self.provider_local(provider);
+        let custom = self.auth.gateway(provider).is_some();
+        let models: Vec<models::Model> = if custom {
+            crate::providers::read_models(&self.rt.data_dir)?
+                .remove(provider)
+                .map(|p| p.models.into_values().collect())
+                .unwrap_or_default()
+        } else {
+            self.catalog
+                .providers()
+                .find(|p| p.id == provider)
+                .ok_or_else(|| format!("no provider {provider}"))?
+                .models
+                .values()
+                .cloned()
+                .collect()
+        };
+        Ok(models
+            .iter()
+            .map(|m| provider_model(m, local, custom))
+            .collect())
+    }
+}
+
+/// 177: one [`ProviderModel`] row. A stored source wins; an entry without one
+/// but with limits is a hand edit (custom) or the bundled catalog (`server`).
+pub(crate) fn provider_model(m: &models::Model, local: bool, custom: bool) -> ProviderModel {
+    let known = m.limit.context > 0 || m.limit.output > 0;
+    let source = match m.limit.source {
+        models::LimitSource::Unknown if known && custom => models::LimitSource::User,
+        models::LimitSource::Unknown if known => models::LimitSource::Server,
+        s => s,
+    };
+    ProviderModel {
+        id: m.id.clone(),
+        name: m.name.clone(),
+        context: m.limit.context,
+        output: m.limit.output,
+        source,
+        assumed_context: (local && m.limit.context == 0).then_some(crate::local::ASSUMED_CONTEXT),
+    }
+}
+
+impl Message<ProviderModels> for Agents {
+    type Reply = Result<Vec<ProviderModel>, String>;
+
+    async fn handle(
+        &mut self,
+        m: ProviderModels,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.provider_models(&m.provider)
+    }
+}
+
+impl Message<SetModelLimits> for Agents {
+    type Reply = Result<ProviderModel, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetModelLimits,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let stored = crate::providers::set_limits(
+            &self.rt.data_dir,
+            &self.catalog,
+            &m.provider,
+            &m.model,
+            m.context,
+            m.output,
+        )?;
+        // E6: the same reload as Refresh (the endless compactors re-resolve).
+        self.reload_catalog();
+        Ok(provider_model(
+            &stored,
+            self.provider_local(&m.provider),
+            self.auth.gateway(&m.provider).is_some(),
+        ))
+    }
+}
+
+impl Message<TestSummaryCall> for Agents {
+    type Reply = kameo::reply::DelegatedReply<SummaryTest>;
+
+    async fn handle(
+        &mut self,
+        m: TestSummaryCall,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let endless = self.endless.clone();
+        tokio::spawn(async move {
+            tx.send(endless.test_summary(&m.model).await);
+        });
+        reply
     }
 }
 
@@ -9325,6 +9518,7 @@ impl ModelInfo {
             efforts: m.efforts(),
             budget_min: budget.map(|b| b.0),
             budget_max: budget.and_then(|b| b.1),
+            local: crate::endless::compactor::local_name(provider),
         }
     }
 }
@@ -9346,6 +9540,10 @@ impl From<&Resolved> for ModelInfo {
             efforts: r.model.as_ref().map(|m| m.efforts()).unwrap_or_default(),
             budget_min: budget.map(|b| b.0),
             budget_max: budget.and_then(|b| b.1),
+            local: r
+                .provider
+                .as_deref()
+                .is_some_and(crate::endless::compactor::local_name),
         }
     }
 }
@@ -16941,6 +17139,7 @@ done
             crate::providers::Gateway {
                 base_url: base_url.clone(),
                 key: "sk-old".into(),
+                runtime: None,
             },
         );
 
@@ -16978,11 +17177,12 @@ done
             a.refresh_provider_models("nope").await.unwrap_err(),
             "no provider nope"
         );
+        // A cloud provider with no key (a local one may be keyless, 177 E4).
         a.auth.gateways.write().unwrap().insert(
             "bare".into(),
             crate::providers::Gateway {
-                base_url,
-                key: String::new(),
+                base_url: "https://bare.example/v1/".into(),
+                ..Default::default()
             },
         );
         assert_eq!(
@@ -17008,6 +17208,9 @@ done
                 builtin: false,
                 configured: true,
                 refreshable: true,
+                local: false,
+                runtime: None,
+                has_key: true,
             },
             added: vec!["a".into(), "b".into()],
             removed: vec!["c".into()],

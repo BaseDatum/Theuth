@@ -91,10 +91,22 @@ fn protocol_target(
         });
     }
     let gw = gateway?;
+    let kind = protocol.map_or(AdapterKind::OpenAI, kind_of);
+    // 177 E4: a keyless local provider sends no `Authorization` header —
+    // genai's OpenAI adapter insists on a key, so the URL is fixed here and
+    // the override's empty header set replaces the Bearer one.
+    let auth = if gw.key.is_empty() && kind == AdapterKind::OpenAI {
+        AuthData::RequestOverride {
+            url: format!("{}chat/completions", gw.base_url),
+            headers: Headers::default(),
+        }
+    } else {
+        AuthData::Key(gw.key)
+    };
     Some(ProtocolTarget {
-        kind: protocol.map_or(AdapterKind::OpenAI, kind_of),
+        kind,
         endpoint: Endpoint::from_owned(gw.base_url),
-        auth: AuthData::Key(gw.key),
+        auth,
     })
 }
 
@@ -289,7 +301,10 @@ impl Backend {
 /// genai's per-adapter guesses are wrong for new ids (Bedrock falls back to 4096).
 fn reply_cap(opts: ChatOptions, resolved: &Resolved) -> ChatOptions {
     match &resolved.model {
-        Some(m) if opts.max_tokens.is_none() => opts.with_max_tokens(m.limit.output),
+        // 177 E1: 0 = unknown; a server rejects `max_tokens: 0` (omlx: 422).
+        Some(m) if opts.max_tokens.is_none() && m.limit.output > 0 => {
+            opts.with_max_tokens(m.limit.output)
+        }
         _ => opts,
     }
 }
@@ -406,6 +421,7 @@ mod tests {
             Some(Gateway {
                 base_url: "https://gw.example/v1/".into(),
                 key: "gk".into(),
+                runtime: None,
             })
         };
         let mut g = r("rwx/claude-opus-5-5");
@@ -649,6 +665,7 @@ mod tests {
             Gateway {
                 base_url: format!("{}/v1/", server.uri()),
                 key: "gk".into(),
+                runtime: None,
             },
         );
         let backend = Backend::Genai {
@@ -690,6 +707,7 @@ mod tests {
             limit: models::Limit {
                 context: 200_000,
                 output: 8_192,
+                ..Default::default()
             },
             cost: None,
             reasoning: false,
@@ -727,6 +745,7 @@ mod tests {
                 limit: models::Limit {
                     context: 200_000,
                     output: 8_192,
+                    ..Default::default()
                 },
                 cost: None,
                 reasoning: false,
@@ -743,7 +762,14 @@ mod tests {
             reply_cap(ChatOptions::default(), &r).max_tokens,
             Some(8_192)
         );
-        let unknown = Resolved { model: None, ..r };
+        let unknown = Resolved {
+            model: None,
+            ..r.clone()
+        };
         assert_eq!(reply_cap(ChatOptions::default(), &unknown).max_tokens, None);
+        // 177 E1: an output limit of 0 is unknown — no `max_tokens` at all.
+        let mut zero = r;
+        zero.model.as_mut().unwrap().limit.output = 0;
+        assert_eq!(reply_cap(ChatOptions::default(), &zero).max_tokens, None);
     }
 }

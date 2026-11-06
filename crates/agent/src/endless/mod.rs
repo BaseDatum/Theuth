@@ -567,6 +567,11 @@ impl Endless {
         pump::reresolve(&self.inner, None);
     }
 
+    /// 177 E9: one real summary call for `model` on a fixed sample; writes no memory.
+    pub async fn test_summary(&self, model: &str) -> crate::SummaryTest {
+        pump::test_summary(&self.inner, model).await
+    }
+
     /// `settle` returned early because the frontier keeps failing (R1-15).
     pub fn frontier_failing(&self, session: SessionId) -> bool {
         pump::frontier_failing(&self.inner, session)

@@ -27,6 +27,10 @@ pub struct Provider {
     /// Env vars models.dev lists for the key; informational.
     #[serde(default)]
     pub env: Vec<String>,
+    /// 177 E7: a local model server's block (written by the provider listing);
+    /// its unknown windows are never filled from a cloud sibling.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local: bool,
     /// Models keyed by model id (may contain `/`, e.g. `anthropic/claude-sonnet-4.5` on openrouter).
     pub models: BTreeMap<String, Model>,
 }
@@ -212,12 +216,36 @@ impl Model {
 }
 
 /// Token limits.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Limit {
-    /// Context window in tokens.
+    /// Context window in tokens; 0 = unknown.
     pub context: u32,
-    /// Max output tokens.
+    /// Max output tokens; 0 = unknown.
     pub output: u32,
+    /// 177 E5: where the limits came from; absent (bundled, older user files) = unknown.
+    #[serde(default, skip_serializing_if = "LimitSource::is_unknown")]
+    pub source: LimitSource,
+}
+
+/// 177: who set a model's limits. A server-reported value never overwrites a user one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum LimitSource {
+    /// The serving runtime reported it at listing time.
+    Server,
+    /// Typed by the user (`set_model_limits`, `/provider limits`, a hand edit).
+    User,
+    /// Nobody knows.
+    #[default]
+    Unknown,
+}
+
+impl LimitSource {
+    /// The serde default (skipped when writing).
+    pub fn is_unknown(&self) -> bool {
+        *self == Self::Unknown
+    }
 }
 
 /// USD per million tokens.
@@ -343,6 +371,7 @@ impl Catalog {
         let fills: Vec<(String, String, Model)> = cat
             .providers
             .iter()
+            .filter(|(_, p)| !p.local)
             .flat_map(|(pid, p)| p.models.values().map(move |m| (pid, m)))
             .filter(|(_, m)| m.limit.context == 0)
             .filter_map(|(pid, m)| {
@@ -537,7 +566,11 @@ mod tests {
         Model {
             id: id.into(),
             name: id.into(),
-            limit: Limit { context, output: 1 },
+            limit: Limit {
+                context,
+                output: 1,
+                ..Limit::default()
+            },
             cost: None,
             reasoning: false,
             tool_call: false,
@@ -559,6 +592,7 @@ mod tests {
                 id: id.into(),
                 name: id.into(),
                 env: vec![],
+                local: false,
                 models,
             },
         )

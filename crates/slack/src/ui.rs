@@ -871,6 +871,7 @@ mod tests {
                 efforts: vec![],
                 budget_min: None,
                 budget_max: None,
+                local: false,
             },
             ModelInfo {
                 id: "anthropic/claude".into(),
@@ -882,6 +883,7 @@ mod tests {
                 efforts: vec![],
                 budget_min: None,
                 budget_max: None,
+                local: false,
             },
         ];
         let skills_rows = vec![SkillMeta {
@@ -953,6 +955,7 @@ mod tests {
             efforts: vec![],
             budget_min: None,
             budget_max: None,
+            local: false,
         };
         let r = models(&[m], "openai/gpt-5");
         let sel = &r.blocks.unwrap()[0]["accessory"];

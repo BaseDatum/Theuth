@@ -12540,6 +12540,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "ts-rs",
 ]
 
 [[package]]

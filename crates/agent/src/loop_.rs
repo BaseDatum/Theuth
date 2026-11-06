@@ -9800,6 +9800,7 @@ mod tests {
                 limit: models::Limit {
                     context: 200_000,
                     output: 8_192,
+                    ..Default::default()
                 },
                 cost: None,
                 reasoning: false,
@@ -10291,6 +10292,7 @@ mod tests {
                 limit: models::Limit {
                     context: 1,
                     output: 1,
+                    ..Default::default()
                 },
                 cost: Some(models::Cost {
                     input: 3.0,
@@ -10452,6 +10454,7 @@ mod tests {
                 crate::providers::Gateway {
                     base_url,
                     key: "k".into(),
+                    runtime: None,
                 },
             );
         let model = Resolved {

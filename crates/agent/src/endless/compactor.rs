@@ -39,7 +39,7 @@ fn is_timeout(e: &str) -> bool {
 }
 
 /// Provider / adapter names of local model runtimes (E6).
-const LOCAL_RUNTIMES: [&str; 10] = [
+const LOCAL_RUNTIMES: [&str; 11] = [
     "ollama",
     "lmstudio",
     "lm-studio",
@@ -50,7 +50,13 @@ const LOCAL_RUNTIMES: [&str; 10] = [
     "localai",
     "koboldcpp",
     "mlx",
+    "omlx",
 ];
+
+/// A local runtime's provider / adapter name ([`LOCAL_RUNTIMES`]).
+pub fn local_name(n: &str) -> bool {
+    LOCAL_RUNTIMES.iter().any(|r| n.eq_ignore_ascii_case(r))
+}
 
 /// 137F E6: a local compactor — a local runtime provider; a loopback /
 /// private (RFC 1918, CGNAT 100.64/10, link-local, ULA) / `*.local` /
@@ -70,48 +76,10 @@ pub fn is_local(model: &Resolved, base_url: Option<&str>) -> bool {
     {
         return true;
     }
-    if let Some(host) = base_url
-        .and_then(|u| url::Url::parse(u).ok())
-        .and_then(|u| u.host().map(|h| h.to_owned()))
-    {
-        let private = match host {
-            url::Host::Domain(d) => {
-                let d = d.to_ascii_lowercase();
-                !d.contains('.')
-                    || [
-                        ".localhost",
-                        ".local",
-                        ".internal",
-                        ".lan",
-                        ".home.arpa",
-                        ".ts.net",
-                    ]
-                    .iter()
-                    .any(|s| d.ends_with(s))
-            }
-            url::Host::Ipv4(ip) => private_v4(ip),
-            url::Host::Ipv6(ip) => {
-                ip.is_loopback()
-                    || ip.is_unique_local()
-                    || ip.is_unicast_link_local()
-                    || ip.is_unspecified()
-                    || ip.to_ipv4_mapped().is_some_and(private_v4)
-            }
-        };
-        if private {
-            return true;
-        }
+    if base_url.is_some_and(crate::local::private_url) {
+        return true;
     }
     model.model.as_ref().is_some_and(|m| m.cost.is_none())
-}
-
-fn private_v4(ip: std::net::Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
-    ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || ip.is_unspecified()
-        || (a == 100 && b & 0xC0 == 64)
 }
 
 /// The E9 queue key of a local compactor (`None` = cloud): its base URL,

@@ -10,6 +10,7 @@ platform = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+ts-rs = { workspace = true, optional = true }
 ort = { workspace = true }  # the process-wide ONNX Runtime initialiser (`onnx::ort_lib`, 57 §6 step 1)
 
 # The DirectML EP option builder (`onnx::configure`, 58 step 12), explicit `accelerator: directml`
@@ -17,6 +18,9 @@ ort = { workspace = true }  # the process-wide ONNX Runtime initialiser (`onnx::
 # under `load-dynamic`, nothing links. WebGPU (step 13) needs no feature beyond the workspace `api-22`.
 [target.'cfg(windows)'.dependencies]
 ort = { workspace = true, features = ["directml"] }
+
+[features]
+ts = ["dep:ts-rs"]
 
 [lints]
 workspace = true

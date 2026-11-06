@@ -17649,6 +17649,7 @@ mod tests {
             efforts: vec![],
             budget_min: None,
             budget_max: None,
+            local: false,
         };
         // The startup fetch primes state silently.
         m.apply(UiEvent::VisionModel(Some(info(
@@ -17737,6 +17738,7 @@ mod tests {
             efforts: vec![],
             budget_min: None,
             budget_max: None,
+            local: false,
         })));
         m.attach(shot);
         assert!(
@@ -19946,6 +19948,7 @@ mod tests {
             efforts: vec![],
             budget_min: None,
             budget_max: None,
+            local: false,
         })
         .collect()
     }

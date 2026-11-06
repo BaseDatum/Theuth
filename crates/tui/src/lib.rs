@@ -982,7 +982,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             name,
             base_url,
             key,
-        } => UiEvent::ProviderAdded(msg(api.add_provider(name, base_url, key).await)?),
+        } => UiEvent::ProviderAdded(msg(api
+            .add_provider(name, base_url, (!key.is_empty()).then_some(key), None)
+            .await)?),
         Command::RemoveProvider(name) => {
             msg(api.remove_provider(name.clone()).await)?;
             UiEvent::Info(format!("removed provider {name}"))

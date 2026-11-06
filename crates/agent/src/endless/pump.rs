@@ -697,6 +697,18 @@ fn compactor_for(
         },
         None => attached.model.clone(),
     };
+    let c = model_compactor(inner, session, model, &attached.agent);
+    (format!("{}|{:?}", c.model.id, c.effort), Arc::new(c))
+}
+
+/// The real compactor for `model` — the request options of every summary
+/// call: locality (137F E6), thinking off (R1 Q1).
+pub(crate) fn model_compactor(
+    inner: &Inner,
+    session: SessionId,
+    model: models::Resolved,
+    agent: &str,
+) -> ModelCompactor {
     let base =
         crate::backend::target_for(&model, &inner.auth).map(|t| t.endpoint.base_url().to_owned());
     let local = compactor::local_endpoint(&model, base.as_deref());
@@ -707,17 +719,86 @@ fn compactor_for(
     } else {
         compactor::thinking_off(&model)
     };
-    let key = format!("{}|{effort:?}", model.id);
-    let c = ModelCompactor {
+    ModelCompactor {
         session,
         backend: Backend::for_model(&model, &inner.client, &inner.auth),
         model,
-        system: compactor::prompt(&attached.agent),
+        system: compactor::prompt(agent),
         effort,
         local,
         cfg: inner.cfg.clone(),
+    }
+}
+
+/// 177 E9: the fixed sample [`test_summary`] compresses.
+const SUMMARY_SAMPLE_CTX: &str = "<chat>\nuser: Can you move the weekly sync to Thursday at 3pm and tell Dana?\ntalk: Done: the weekly sync is now Thursday 15:00 and Dana has the new invite.\n</chat>";
+const SUMMARY_SAMPLE_UNIT: &str =
+    "Done: the weekly sync is now Thursday 15:00 and Dana has the new invite.";
+
+/// 177 E9: one real single-unit compactor call for `model` on a fixed
+/// two-message sample, with the request options and guards of a summary.
+/// Never writes memory.
+pub(crate) async fn test_summary(inner: &Inner, model: &str) -> crate::SummaryTest {
+    let mut out = crate::SummaryTest {
+        model: model.to_owned(),
+        ..Default::default()
     };
-    (key, Arc::new(c))
+    let resolved = match inner
+        .catalog
+        .read()
+        .resolve(model, &*crate::supervisor::configured(inner.auth.clone()))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            out.error = Some(e);
+            return out;
+        }
+    };
+    out.model = resolved.id.clone();
+    let c = model_compactor(inner, SessionId::new(), resolved, "theuth");
+    out.thinking_off_sent = c.effort.is_some();
+    let (node_bytes, attempt) = {
+        let cfg = inner.cfg.read();
+        let secs = if c.local.is_some() {
+            cfg.local_attempt_secs
+        } else {
+            cfg.attempt_secs
+        };
+        (
+            cfg.node_bytes,
+            Duration::from_secs(u64::from(secs.clamp(10, 3_600))),
+        )
+    };
+    let step = compactor::Step::Unit {
+        kind: tree::Kind::Talk,
+        text: SUMMARY_SAMPLE_UNIT.to_owned(),
+        earlier: Vec::new(),
+        aim: None,
+    };
+    let started = std::time::Instant::now();
+    let built = compactor::build(&c, SUMMARY_SAMPLE_CTX, &step, node_bytes, 1, attempt).await;
+    out.latency_ms = started.elapsed().as_millis() as u64;
+    let calls = match &built {
+        Ok(b) => &b.calls,
+        Err(f) => &f.calls,
+    };
+    if let Some(u) = compactor::sum_usage(calls) {
+        let n = |v: Option<i32>| v.and_then(|n| u32::try_from(n).ok());
+        out.tokens_in = n(u.prompt_tokens);
+        out.tokens_out = n(u.completion_tokens);
+    }
+    match built {
+        Ok(b) if b.tries > 0 => {
+            out.ok = true;
+            out.line = Some(b.text);
+        }
+        Ok(b) => {
+            out.error = Some(format!("the reply failed the summary guards: {}", b.text));
+            out.hint = Some("Pick a model that follows short instructions.".into());
+        }
+        Err(f) => out.error = Some(f.error),
+    }
+    out
 }
 
 /// E1/E2: re-resolve the compactor of `session` (`None` = every attached
