@@ -8986,10 +8986,18 @@ impl Agents {
         })
     }
 
-    /// 177: `provider` is a local model server (a local gateway, or a block the
-    /// listing marked local).
+    /// 177: `provider` is a local model server for the tag (a local gateway by
+    /// the broad host rule, or a block the listing marked local).
     fn provider_local(&self, provider: &str) -> bool {
-        self.auth.gateway(provider).is_some_and(|g| g.local())
+        self.auth.gateway(provider).is_some_and(|g| g.local()) || self.provider_on_host(provider)
+    }
+
+    /// 177 R2-5: `provider` runs on this machine (a preset or loopback
+    /// gateway, or a block marked local) — its unknown windows are assumed.
+    fn provider_on_host(&self, provider: &str) -> bool {
+        self.auth
+            .gateway(provider)
+            .is_some_and(|g| g.on_this_machine())
             || self
                 .catalog
                 .providers()
@@ -9026,6 +9034,10 @@ impl Agents {
         }
     }
 
+    /// 177 R2-7: the longest a provider's model listing may take (it runs on
+    /// the Agents mailbox).
+    const LISTING_TIMEOUT: Duration = Duration::from_secs(10);
+
     /// List gateway `name`'s models (`GET {base}models`, keyless when it has no
     /// key) with the context windows the server reports (177 E5), and merge
     /// them into `models.json` (162 D4).
@@ -9039,21 +9051,29 @@ impl Agents {
         } else {
             AuthData::Key(g.key.clone())
         };
-        let ids = self
-            .client
-            .all_model_names(
+        // R2-7: a black-holed host must not hold the Agents mailbox.
+        let ids = tokio::time::timeout(
+            Self::LISTING_TIMEOUT,
+            self.client.all_model_names(
                 AdapterKind::OpenAI,
                 (Endpoint::from_owned(g.base_url.clone()), auth),
+            ),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "listing {name}'s models: timed out after {}s",
+                Self::LISTING_TIMEOUT.as_secs()
             )
-            .await
-            .map_err(|e| format!("listing {name}'s models: {e}"))?;
+        })?
+        .map_err(|e| format!("listing {name}'s models: {e}"))?;
         let contexts = crate::local::server_contexts(&g.base_url, &g.key, g.local(), &ids).await;
         crate::providers::write_models(
             &self.rt.data_dir,
             name,
             &ids,
             crate::providers::Listing::Custom {
-                local: g.local(),
+                local: g.on_this_machine(),
                 contexts: &contexts,
             },
         )
@@ -9106,11 +9126,19 @@ impl Agents {
         let key = key
             .filter(|k| !k.is_empty())
             .ok_or_else(|| format!("{name} has no key; set it first"))?;
-        let ids = self
-            .client
-            .all_model_names(kind, (Endpoint::from_owned(endpoint), AuthData::Key(key)))
-            .await
-            .map_err(|e| format!("listing {name}'s models: {e}"))?;
+        let ids = tokio::time::timeout(
+            Self::LISTING_TIMEOUT,
+            self.client
+                .all_model_names(kind, (Endpoint::from_owned(endpoint), AuthData::Key(key))),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "listing {name}'s models: timed out after {}s",
+                Self::LISTING_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("listing {name}'s models: {e}"))?;
         let catalog = self.catalog.clone();
         let (added, removed) = crate::providers::write_models(
             &self.rt.data_dir,
@@ -9261,7 +9289,7 @@ impl Agents {
     /// from the user `models.json` (what its listing and the user wrote), a
     /// catalog provider's from the catalog.
     fn provider_models(&self, provider: &str) -> Result<Vec<ProviderModel>, String> {
-        let local = self.provider_local(provider);
+        let local = self.provider_on_host(provider);
         let custom = self.auth.gateway(provider).is_some();
         let models: Vec<models::Model> = if custom {
             crate::providers::read_models(&self.rt.data_dir)?
@@ -9336,7 +9364,7 @@ impl Message<SetModelLimits> for Agents {
         self.reload_catalog().await;
         Ok(provider_model(
             &stored,
-            self.provider_local(&m.provider),
+            self.provider_on_host(&m.provider),
             self.auth.gateway(&m.provider).is_some(),
         ))
     }
@@ -10001,7 +10029,9 @@ const CLAUDE_CODE_UA: &str = "claude-cli/2.1.257 (external, cli)";
 /// assumed windows, no cloud siblings).
 fn load_catalog(data_dir: &Path, auth: &Auth) -> Catalog {
     let gateways = auth.gateways.read().unwrap_or_else(|e| e.into_inner());
-    Catalog::load_with(data_dir, &|p| gateways.get(p).is_some_and(|g| g.local()))
+    Catalog::load_with(data_dir, &|p| {
+        gateways.get(p).is_some_and(|g| g.on_this_machine())
+    })
 }
 
 /// The auth-resolver rule as a predicate over genai namespaces: a key in
@@ -17225,6 +17255,28 @@ done
             .unwrap();
         let or = a.provider_info("openrouter").unwrap();
         assert!(or.builtin && or.configured && or.refreshable);
+    }
+
+    /// 177 R2-7: a listing that never answers (a black-holed LAN host) gives
+    /// up after `LISTING_TIMEOUT` instead of holding the Agents mailbox.
+    #[tokio::test]
+    async fn hanging_listing_times_out() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let (_scratch, a) = agents().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+        let g = crate::providers::Gateway {
+            base_url: format!("{}/v1/", server.uri()),
+            ..Default::default()
+        };
+        let started = std::time::Instant::now();
+        let e = a.list_gateway("hang", &g).await.unwrap_err();
+        assert!(e.contains("timed out after 10s"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(30));
     }
 
     /// 177 E4–E7: a keyless local provider named after its runtime is listed

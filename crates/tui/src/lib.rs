@@ -1005,6 +1005,15 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             context,
             output,
         } => {
+            // R2-8: no output given keeps the stored one (as the desktop does); 0 clears.
+            let output = match output {
+                Some(o) => (o > 0).then_some(o),
+                None => msg(api.provider_models(provider.clone()).await)?
+                    .into_iter()
+                    .find(|m| m.id == model)
+                    .map(|m| m.output)
+                    .filter(|&o| o > 0),
+            };
             let m = msg(api
                 .set_model_limits(provider.clone(), model, context, output)
                 .await)?;

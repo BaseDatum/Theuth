@@ -82,6 +82,34 @@ fn private_v4(ip: std::net::Ipv4Addr) -> bool {
         || (a == 100 && b & 0xC0 == 64)
 }
 
+/// 177 R2-5: a base URL on this machine — loopback (`127.0.0.0/8`, `::1`,
+/// v4-mapped loopback), unspecified (`0.0.0.0`, `::`), `localhost` or
+/// `*.localhost`. The narrow rule for behaviour (thinking-off kwargs, the
+/// assumed window); [`private_url`] stays the rule for the local tag and the
+/// optional key.
+pub fn loopback_url(base_url: &str) -> bool {
+    let Some(host) = url::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host().map(|h| h.to_owned()))
+    else {
+        return false;
+    };
+    match host {
+        url::Host::Domain(d) => {
+            let d = d.to_ascii_lowercase();
+            d == "localhost" || d.ends_with(".localhost")
+        }
+        url::Host::Ipv4(ip) => ip.is_loopback() || ip.is_unspecified(),
+        url::Host::Ipv6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| v4.is_loopback() || v4.is_unspecified())
+        }
+    }
+}
+
 /// `localhost` and `127.0.0.1` name the same server when matching `added_as`.
 fn same_url(a: &str, b: &str) -> bool {
     let norm = |s: &str| {
@@ -106,8 +134,10 @@ fn port_runtime(port: u16) -> LocalRuntime {
 /// for the whole probe — and say what answers. `providers` (name, base URL)
 /// fill `added_as`. Loopback only; nothing is added.
 pub async fn probe(ports: &[u16], providers: &[(String, String)]) -> Vec<LocalServer> {
+    // R2-1: never follow a redirect off the probed port (another host, DNS).
     let client = match reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_millis(300))
         .timeout(Duration::from_millis(1_400))
         .build()
@@ -231,60 +261,80 @@ async fn probe_port(client: &reqwest::Client, port: u16) -> LocalServer {
     server
 }
 
-/// The context window one `/v1/models` (or LM Studio `/api/v0/models`) entry
-/// reports: the loaded window first, then the served, then the model's maximum.
-fn entry_context(v: &Value) -> Option<u32> {
-    [
-        "loaded_context_length",
-        "n_ctx",
-        "max_model_len",
-        "context_length",
-        "context_window",
-        "max_context_length",
-    ]
-    .iter()
-    .find_map(|k| v.get(*k)?.as_u64())
-    .and_then(|n| u32::try_from(n).ok())
-    .filter(|&n| n > 0)
+/// The SERVED context window one `/v1/models` entry reports (R2-2: never a
+/// model's maximum such as LM Studio's `max_context_length`).
+fn entry_context(v: &Value, fields: &[&str]) -> Option<u32> {
+    fields
+        .iter()
+        .find_map(|k| v.get(*k)?.as_u64())
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|&n| n > 0)
 }
 
-/// `id → context` from a `{data: [{id, …}]}` listing.
-fn listing_contexts(v: &Value, out: &mut std::collections::HashMap<String, u32>) {
-    for e in v
-        .get("data")
+/// Served-window fields of an OpenAI-style `/v1/models` entry (vLLM
+/// `max_model_len`, llama.cpp `n_ctx`, a loaded window, gateways' `context_length`).
+const V1_FIELDS: &[&str] = &[
+    "loaded_context_length",
+    "n_ctx",
+    "max_model_len",
+    "context_length",
+    "context_window",
+];
+
+/// `(id, context)` pairs of a `{data: [{id, …}]}` listing.
+fn listing_contexts(v: &Value, fields: &[&str]) -> Vec<(String, u32)> {
+    v.get("data")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-    {
-        if let (Some(id), Some(c)) = (e.get("id").and_then(Value::as_str), entry_context(e)) {
-            out.entry(id.to_owned()).or_insert(c);
-        }
-    }
+        .filter_map(|e| Some((e.get("id")?.as_str()?.to_owned(), entry_context(e, fields)?)))
+        .collect()
 }
 
-/// 177 E5: the context windows a server reports, by model id — `{base}models`
-/// entry fields for any custom provider; for a `local` one also LM Studio's
-/// `/api/v0/models`, llama.cpp's `/props` (one window for every id in `ids`)
-/// and Ollama's `/api/show`. At most 2 s; any failure is ignored (empty).
+/// Ollama's served `num_ctx` from `/api/show`'s `parameters` text
+/// (`"num_ctx                        8192\nstop …"`), if the model sets one.
+fn ollama_num_ctx(show: &Value) -> Option<u32> {
+    show.get("parameters")?
+        .as_str()?
+        .lines()
+        .find_map(|l| {
+            let mut it = l.split_whitespace();
+            if it.next()? != "num_ctx" {
+                return None;
+            }
+            it.next()?.parse::<u32>().ok()
+        })
+        .filter(|&n| n > 0)
+}
+
+/// 177 E5: the context windows a server SERVES, by model id (R2-2: never a
+/// model's maximum) — `{base}models` entry fields for any custom provider;
+/// for a `local` one also LM Studio's `/api/v0/models` `loaded_context_length`
+/// (a loaded model only), llama.cpp's `/props` `n_ctx` (one window for every
+/// id in `ids`), and Ollama's `num_ctx` (`/api/show` `parameters`, else
+/// `/api/ps` `context_length` of a loaded model, else unknown). At most 2 s;
+/// what arrived before the bound is kept; a failure is ignored. Redirects are
+/// not followed.
 pub async fn server_contexts(
     base_url: &str,
     key: &str,
     local: bool,
     ids: &[String],
 ) -> std::collections::HashMap<String, u32> {
-    let mut out = std::collections::HashMap::new();
     let Ok(client) = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_millis(500))
         .timeout(Duration::from_secs(2))
         .build()
     else {
-        return out;
+        return std::collections::HashMap::new();
     };
-    let get = |url: String| {
-        let mut r = client.get(url);
-        if !key.is_empty() {
-            r = r.bearer_auth(key);
-        }
+    let send = |r: reqwest::RequestBuilder| {
+        let r = if key.is_empty() {
+            r
+        } else {
+            r.bearer_auth(key)
+        };
         async move {
             r.send()
                 .await
@@ -296,86 +346,97 @@ pub async fn server_contexts(
                 .ok()
         }
     };
+    let get = |url: String| send(client.get(url));
     let root = base_url
         .trim_end_matches('/')
         .trim_end_matches("/v1")
         .to_owned();
+    let local_get = |path: &str| {
+        let fut = get(format!("{root}{path}"));
+        async move { if local { fut.await } else { None } }
+    };
+    // Each source writes as it lands (R2-8: what arrived before the bound is
+    // kept); the lower rank wins whatever the arrival order.
+    let found = parking_lot::Mutex::new(std::collections::HashMap::<String, (u8, u32)>::new());
+    let put = |rank: u8, id: String, n: u32| {
+        let mut found = found.lock();
+        let slot = found.entry(id).or_insert((rank, n));
+        if rank < slot.0 {
+            *slot = (rank, n);
+        }
+    };
     let work = async {
-        let (v1, v0, props, tags) = tokio::join!(
-            get(format!("{base_url}models")),
+        tokio::join!(
             async {
-                if local {
-                    get(format!("{root}/api/v0/models")).await
-                } else {
-                    None
+                if let Some(v) = get(format!("{base_url}models")).await {
+                    for (id, n) in listing_contexts(&v, V1_FIELDS) {
+                        put(0, id, n);
+                    }
                 }
             },
             async {
-                if local {
-                    get(format!("{root}/props")).await
-                } else {
-                    None
+                if let Some(v) = local_get("/api/v0/models").await {
+                    for (id, n) in listing_contexts(&v, &["loaded_context_length"]) {
+                        put(1, id, n);
+                    }
                 }
             },
             async {
-                if local {
-                    get(format!("{root}/api/tags")).await
-                } else {
-                    None
+                if let Some(n) = local_get("/props").await.and_then(|p| {
+                    p.pointer("/default_generation_settings/n_ctx")?
+                        .as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                }) && n > 0
+                {
+                    for id in ids {
+                        put(2, id.clone(), n);
+                    }
+                }
+            },
+            async {
+                let (tags, ps) = tokio::join!(local_get("/api/tags"), local_get("/api/ps"));
+                if !tags.is_some_and(|t| t.get("models").is_some()) {
+                    return;
+                }
+                // A loaded model's served window, by name.
+                let loaded: std::collections::HashMap<String, u32> = ps
+                    .as_ref()
+                    .and_then(|p| p.get("models")?.as_array().cloned())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|m| {
+                        let name = m.get("name").or_else(|| m.get("model"))?.as_str()?;
+                        let n = u32::try_from(m.get("context_length")?.as_u64()?).ok()?;
+                        (n > 0).then(|| (name.to_owned(), n))
+                    })
+                    .collect();
+                for id in ids {
+                    if found.lock().contains_key(id) {
+                        continue;
+                    }
+                    let show = send(
+                        client
+                            .post(format!("{root}/api/show"))
+                            .json(&serde_json::json!({"model": id})),
+                    )
+                    .await;
+                    if let Some(n) = show
+                        .as_ref()
+                        .and_then(ollama_num_ctx)
+                        .or_else(|| loaded.get(id).copied())
+                    {
+                        put(3, id.clone(), n);
+                    }
                 }
             },
         );
-        if let Some(v) = &v1 {
-            listing_contexts(v, &mut out);
-        }
-        if let Some(v) = &v0 {
-            listing_contexts(v, &mut out);
-        }
-        if let Some(n) = props.as_ref().and_then(|p| {
-            p.pointer("/default_generation_settings/n_ctx")?
-                .as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-        }) && n > 0
-        {
-            for id in ids {
-                out.entry(id.clone()).or_insert(n);
-            }
-        }
-        if tags.is_some_and(|t| t.get("models").is_some()) {
-            let shows = ids.iter().filter(|id| !out.contains_key(*id)).map(|id| {
-                let mut r = client
-                    .post(format!("{root}/api/show"))
-                    .json(&serde_json::json!({"model": id}));
-                if !key.is_empty() {
-                    r = r.bearer_auth(key);
-                }
-                async move {
-                    let v: Value = r
-                        .send()
-                        .await
-                        .ok()?
-                        .error_for_status()
-                        .ok()?
-                        .json()
-                        .await
-                        .ok()?;
-                    let info = v.get("model_info")?;
-                    let arch = info.get("general.architecture")?.as_str()?;
-                    let n = info.get(format!("{arch}.context_length"))?.as_u64()?;
-                    Some((id.clone(), u32::try_from(n).ok().filter(|&n| n > 0)?))
-                }
-            });
-            out.extend(futures::future::join_all(shows).await.into_iter().flatten());
-        }
     };
-    // A slow server yields what arrived before the bound — nothing, here.
-    if tokio::time::timeout(Duration::from_secs(2), work)
-        .await
-        .is_err()
-    {
-        return std::collections::HashMap::new();
-    }
-    out
+    let _ = tokio::time::timeout(Duration::from_secs(2), work).await;
+    found
+        .into_inner()
+        .into_iter()
+        .map(|(id, (_, n))| (id, n))
+        .collect()
 }
 
 #[cfg(test)]

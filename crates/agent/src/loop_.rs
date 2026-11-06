@@ -2332,7 +2332,15 @@ impl Message<crate::SideCall> for Session {
         let side = self.shared.side(self.entered.flatten());
         tokio::spawn(async move {
             let out = match model {
-                Ok(model) => side.call(model, &m.system, m.user, m.budget, m.kind).await,
+                Ok(model) => {
+                    // R2-6: a title-model title (notebook note titles) is short;
+                    // other roles (insights, ask, polish, escalate) keep thinking.
+                    let short =
+                        m.kind == CallKind::Title && matches!(m.role, crate::ModelRole::Title);
+                    side.short(short)
+                        .call(model, &m.system, m.user, m.budget, m.kind)
+                        .await
+                }
                 Err(e) => Err(e),
             };
             if let Some(tx) = tx {
@@ -5852,6 +5860,7 @@ impl Turn {
         self.state.title_task = Some(tokio::spawn(async move {
             let chars = |s: &str| (!private).then(|| s.chars().count());
             let reply = match side
+                .short(true)
                 .call(model, title::SYSTEM, digest, TITLE_TIMEOUT, CallKind::Title)
                 .await
             {

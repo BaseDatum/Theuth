@@ -740,7 +740,7 @@ pub enum Command {
         model: String,
         /// Context window; `None` = unknown.
         context: Option<u32>,
-        /// Max output; `None` = unknown.
+        /// Max output; `None` = keep the stored one, `Some(0)` = unknown (R2-8).
         output: Option<u32>,
     },
     /// `list_providers`.
@@ -8621,7 +8621,7 @@ impl Model {
                                 model: p[1].to_owned(),
                                 // 0 clears back to unknown.
                                 context: (context > 0).then_some(context),
-                                output: n(3).and_then(Result::ok).filter(|&o| o > 0),
+                                output: n(3).and_then(Result::ok),
                             },
                         );
                     }
@@ -15220,6 +15220,16 @@ mod tests {
             rx.try_recv(),
             Ok(Command::SetModelLimits { provider, model, context: Some(32768), output: Some(4096) })
                 if provider == "omlx" && model == "LFM3"
+        ));
+        // R2-8: no output keeps the stored one (None); 0 clears it (Some(0)).
+        m.submit("/provider limits omlx LFM3 8192 0", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelLimits {
+                context: Some(8192),
+                output: Some(0),
+                ..
+            })
         ));
         m.submit("/provider limits omlx LFM3 0", &tx);
         assert!(matches!(

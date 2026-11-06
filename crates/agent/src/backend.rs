@@ -192,8 +192,10 @@ impl Backend {
     }
 
     /// 177 E2: `resolved` is served by a local model server over the OpenAI
-    /// chat protocol — a local custom provider (gateway) of kind OpenAI, or
-    /// genai's own omlx adapter — where `chat_template_kwargs` steers thinking.
+    /// chat protocol — a custom provider (gateway) of kind OpenAI with a
+    /// runtime preset or a loopback host (R2-5, not a LAN gateway in front of
+    /// cloud models), or genai's own omlx adapter — where `chat_template_kwargs`
+    /// steers thinking.
     pub(crate) fn local_openai(&self, resolved: &Resolved) -> bool {
         let Backend::Genai { auth, .. } = self else {
             return false;
@@ -205,7 +207,7 @@ impl Backend {
                         .provider
                         .as_deref()
                         .and_then(|p| auth.gateway(p))
-                        .is_some_and(|g| g.local())
+                        .is_some_and(|g| g.on_this_machine())
             }
             None => ns(&resolved.genai) == "omlx",
         }

@@ -407,13 +407,20 @@ pub trait Compactor: Send + Sync {
         self.compress(ctx, convo)
     }
     /// 177 E3: [`Compactor::compress`] with thinking off forced and twice the
-    /// reply cap — the one retry of a local reply spent on thinking.
+    /// reply cap (R2-4: within the output limit and the window) — the one
+    /// retry of a local reply spent on thinking.
     fn compress_thinking_off<'a>(
         &'a self,
         ctx: &'a str,
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
         self.compress(ctx, convo)
+    }
+    /// 177 R2-4: the forced retry could ask for more than the attempt that
+    /// thought through its cap (`false`: the thinking error at once).
+    fn can_grow(&self, ctx: &str, convo: &[ChatMessage]) -> bool {
+        let _ = (ctx, convo);
+        true
     }
 }
 
@@ -517,6 +524,9 @@ impl Compactor for Tally<'_> {
             self.record(&r);
             r
         })
+    }
+    fn can_grow(&self, ctx: &str, convo: &[ChatMessage]) -> bool {
+        self.inner.can_grow(ctx, convo)
     }
 }
 
@@ -867,7 +877,7 @@ async fn build_one(
         // cap; otherwise (or again) it is the node's error.
         if reply.spent_on_thinking() {
             calls.push(row(&calls, &reply, "", Some(guards::Trip::Empty.as_str())));
-            if forced || c.local().is_none() {
+            if forced || c.local().is_none() || !c.can_grow(ctx, &convo) {
                 return Err(Failed {
                     error: thinking_error(c.model_id(), &reply),
                     calls,
@@ -1100,11 +1110,16 @@ impl ModelCompactor {
         } else {
             batch_reply_tokens(MAX_TOKENS + self.budget(), lines)
         };
+        let max = if forced {
+            self.forced_cap(&req, cap)
+        } else {
+            cap
+        };
         let mut opts = ChatOptions::default()
             .with_capture_usage(true)
             .with_capture_content(true)
             // R3-2: no `with_capture_reasoning_content` — only text parts are read.
-            .with_max_tokens(if forced { cap * 2 } else { cap });
+            .with_max_tokens(max);
         // E6: idle bounds; a local stream's first token may take the whole
         // attempt (prompt eval on slow hardware), which `build` bounds. A
         // cloud stream's first byte and every silence between chunks may
@@ -1150,6 +1165,30 @@ impl ModelCompactor {
     }
 }
 
+impl ModelCompactor {
+    /// 177 R2-4: the forced retry's cap — twice `cap`, within the model's
+    /// output limit and what the window the prompt was fitted for leaves
+    /// beside `req` (`tokens::memory_window`, 5 % margin).
+    fn forced_cap(&self, req: &ChatRequest, cap: u32) -> u32 {
+        let mut forced = cap.saturating_mul(2);
+        if let Some(out) = self
+            .model
+            .model
+            .as_ref()
+            .map(|m| m.limit.output)
+            .filter(|&o| o > 0)
+        {
+            forced = forced.min(out);
+        }
+        let (bytes, flat) = crate::tokens::request_size(req);
+        let prompt = crate::tokens::tokens_of(&self.model.id, bytes) + flat;
+        let window = crate::tokens::memory_window(&self.model);
+        let room = ((window as f64) * 0.95) as u64;
+        let room = u32::try_from(room.saturating_sub(prompt)).unwrap_or(u32::MAX);
+        forced.min(room)
+    }
+}
+
 impl Compactor for ModelCompactor {
     fn compress<'a>(
         &'a self,
@@ -1186,6 +1225,11 @@ impl Compactor for ModelCompactor {
 
     fn out_tokens(&self) -> u32 {
         self.reply_tokens()
+    }
+
+    fn can_grow(&self, ctx: &str, convo: &[ChatMessage]) -> bool {
+        let (_, opts) = self.request_opts(Transport::OpenAiLike, ctx, convo, 1, true);
+        opts.max_tokens.unwrap_or(0) > self.reply_tokens()
     }
 }
 

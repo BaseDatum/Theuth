@@ -25,15 +25,20 @@ worker E: `177-notes-e.md`.
 ## Behaviour
 
 - **E1** `reply_cap` sends `max_tokens` only when `limit.output > 0`.
-- **E2** Compactor, title and aux (side) calls to a local provider over the
-  OpenAI protocol send `extra_body {"chat_template_kwargs": {"enable_thinking": false}}`,
-  merged last, and never a reasoning-effort keyword. Ollama's native adapter keeps
-  `think: false`. Main chat turns are unchanged.
+- **E2** Compactor, title and vision-aux calls to a provider ON THIS MACHINE
+  (a runtime preset or a loopback host — R2-5; not a LAN gateway in front of
+  cloud models) over the OpenAI protocol send
+  `extra_body {"chat_template_kwargs": {"enable_thinking": false}}`, merged last,
+  and never a reasoning-effort keyword. Other side calls (consult, advisor,
+  notebook insights, ask, polish, escalate) and main chat turns are unchanged
+  (R2-6). Ollama's native adapter keeps `think: false`.
 - **E3** The compactor's reply keeps the stop reason and whether reasoning was
   seen. A local single-unit cap is 2048 tokens (cloud 600). An empty reply with
   reasoning seen or `finish_reason=length` is the error
   "<model> used its whole <N>-token reply on thinking (finish_reason=<r>)"; a
-  local provider retries that once with thinking off forced and twice the cap.
+  local provider retries that once at twice the cap, clamped to the model's
+  output limit and to what the window leaves beside the prompt (R2-4); when the
+  cap cannot grow the error comes at once.
 - **E4** A provider may be added without a key when it is local. Its model
   calls still go through genai, with the placeholder key `local`
   (`Authorization: Bearer local`, ignored by servers that check no key); its
@@ -42,9 +47,13 @@ worker E: `177-notes-e.md`.
   adapter for `<name>/<model>` ids. A provider is local when it was added with
   a runtime preset or its base URL host is loopback / private / `*.local` /
   `*.lan` (137F E6's host rule).
-- **E5** Add and refresh read context windows from the server (≤ 2 s, failures
-  ignored) and store them with `limit.source: "server"`; a user value is never
-  overwritten.
+- **E5** Add and refresh read SERVED context windows from the server (≤ 2 s,
+  what arrived is kept, failures ignored, redirects not followed) and store
+  them with `limit.source: "server"`; a user value is never overwritten. Never a
+  model's maximum (R2-2): vLLM `max_model_len`, llama.cpp `n_ctx`, LM Studio
+  `loaded_context_length` (a loaded model only), Ollama `num_ctx` from
+  `/api/show` `parameters`, else `/api/ps` `context_length` of a loaded model,
+  else unknown. The genai listing itself is bounded at 10 s (R2-7).
 - **E6** `set_model_limits` writes the user `models.json` atomically, reloads
   the catalog and re-resolves the endless compactors. Every catalog reload
   (add, refresh, remove, limits) reaches running chats: their model takes the
@@ -58,9 +67,10 @@ worker E: `177-notes-e.md`.
   once "<model>'s context window is unknown; set it under Settings ›
   Connections › Local servers (or /provider limits) so theuth can size
   requests". Only a known window (bundled, server- or user-set) refuses.
-  Local providers never inherit a cloud sibling's window.
-- **E8** `local_servers_probe` probes 127.0.0.1 only, never adds
-  (`THEUTH_LOCAL_PROBE_PORTS` replaces the port list for a scratch engine).
+  Providers on this machine (a runtime preset or a loopback host, R2-5) never
+  inherit a cloud sibling's window; a LAN gateway keeps sibling windows.
+- **E8** `local_servers_probe` probes 127.0.0.1 only, follows no redirect,
+  never adds (`THEUTH_LOCAL_PROBE_PORTS` replaces the port list for a scratch engine).
 - **E9** `test_summary_call` runs one real summary call on a fixed sample.
 
 ## Contract
@@ -149,8 +159,11 @@ type SummaryTest = {
 
 ### Storage
 
-- `providers.yaml`: `<name>: {base_url, runtime?}`; a local row loads with no
-  vault key (keyless).
+- `providers.yaml`: `<name>: {base_url, runtime?, owns_key?}`; a local row loads
+  with no vault key (keyless). `owns_key: false` marks a keyless add: its
+  remove (or a later keyless add) never deletes the vault secret of the same
+  name, which may be the user's own (genai's `omlx` key). Rows without the
+  field (pre-177) own their key.
 - user `models.json`: a provider block may carry `"local": true`; a model's
   `limit` may carry `"source": "server" | "user"` (absent = unknown). Files
   without these fields load as before.

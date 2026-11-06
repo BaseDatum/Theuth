@@ -28,6 +28,8 @@ pub(crate) struct Side {
     pub budget: Option<crate::Budget>,
     client: genai::Client,
     auth: crate::supervisor::Auth,
+    /// 177 R2-6: a title call (thinking off on a local server).
+    short: bool,
 }
 
 impl Shared {
@@ -75,11 +77,19 @@ impl Shared {
             budget: self.budget.read().clone(),
             client: self.client.clone(),
             auth: self.auth.clone(),
+            short: false,
         }
     }
 }
 
 impl Side {
+    /// 177 R2-6: mark the call a title — a short summary-style call that gets
+    /// the thinking-off template kwargs on a local server.
+    pub(crate) fn short(mut self, short: bool) -> Self {
+        self.short = short;
+        self
+    }
+
     /// One request: `system` + one user message, no tools, drained to the
     /// stream's `End`, reserved and settled as `kind` for this session. `Err`
     /// is the provider's message, `timed out` after `budget`, or `cancelled`
@@ -113,8 +123,10 @@ impl Side {
             max_tokens: (reply > 0).then_some(reply),
         };
         let (req, opts) = frame.request(transport, self.session, None);
-        // 177 E2: titles and side calls to a local OpenAI-protocol server think not.
-        let opts = if current.backend.local_openai(&current.model) {
+        // 177 E2 / R2-6: a title (a short summary-style call) to a local
+        // OpenAI-protocol server thinks not; consult, advisor, notebook
+        // insights, ask, polish and escalate keep the model's thinking.
+        let opts = if self.short && current.backend.local_openai(&current.model) {
             crate::backend::thinking_off(opts)
         } else {
             opts

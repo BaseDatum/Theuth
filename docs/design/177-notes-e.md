@@ -137,6 +137,53 @@ Branch `fix/177-e`, base `b540592e`. Design: `177-local-runtimes.md`.
     else is `reachable: true`, `models: 0`, `error: "answered 401: needs an API
     key"` (or 403), with the port's usual runtime (omlx on :8000).
 
+## Engine review R2 (18:34)
+- **R2-1 redirects:** the probe client and the `server_contexts` client use
+  `redirect::Policy::none()`; the probe keeps `no_proxy` (loopback only). The
+  window reader keeps the system proxy, because it also reads cloud custom
+  providers. A 302 is just an answer: the probe row is reachable with no models.
+- **R2-2 served windows:** see the E5 line of the design doc. `max_context_length`
+  is no longer read anywhere, and Ollama's `model_info.<arch>.context_length` is
+  never stored. Each source writes as it arrives, and a lower rank wins whatever
+  the arrival order (`/v1/models` < LM Studio < llama.cpp `/props` < Ollama).
+- **R2-3 key provenance:** `providers.yaml` rows carry `owns_key` (false for a
+  keyless add, true for a keyed add; absent on pre-177 rows, which always
+  stored their key). A keyless add deletes the secret of its name only when it
+  replaces a row that owned it; remove deletes it only when the row owned it.
+  I chose this over renaming secrets to `provider.<name>`, because it needs no
+  migration and Sky's `mlx` row keeps working as is. Known edge: a KEYED add
+  named `omlx` overwrites a genai `omlx` secret with the provider's key (the
+  user typed it for that name); its remove then deletes it. A keyless gateway
+  named `omlx` whose vault already holds the user's `omlx` key sends that key
+  (`Auth::gateway` prefers the vault), which is the same server's key.
+- **R2-4 forced cap:** `min(2 × cap, limit.output, 0.95 × memory_window −
+  estimated prompt)`. `Compactor::can_grow` (default true for the scripted
+  fakes) tells `build_one` whether the retry could ask for more; if not, the
+  thinking error comes at once after one call.
+- **R2-5 narrow locality:** `Gateway::on_this_machine` = runtime preset or a
+  loopback host (`local::loopback_url`: 127/8, `::1`, v4-mapped loopback,
+  `0.0.0.0`, `::`, `localhost`, `*.localhost`). It decides the E2 kwargs
+  (`Backend::local_openai`), the E7 assumed window and the skipped sibling
+  fill (`load_catalog`, the listing's block `local` flag), and
+  `ProviderModel.assumed_context`. `Gateway::local` (broad, 137F's host rule)
+  stays for `ProviderInfo.local`, `ModelInfo.local`, the optional key, the
+  runtime-name rule and the E5 extra endpoints. The 137F compactor locality
+  (2048 cap, attempt bounds, queue) is unchanged. Sky's `mlx` at 127.0.0.1
+  qualifies.
+- **R2-6:** `Side::short(true)` marks a title. The kwargs go to the session
+  title, to `SideCall`s with kind `Title` AND role `Title` (notebook note
+  titles), and to the vision aux call. Not to notebook insights (kind Title,
+  another role), consult, ask, polish or escalate.
+- **R2-7:** the genai listing in add and refresh is bounded at 10 s
+  (`Agents::LISTING_TIMEOUT`); add then keeps the existing list, refresh errors
+  "listing <name>'s models: timed out after 10s".
+- **R2-8:** TUI `/provider limits p m <context>` keeps the stored output (read
+  through `provider_models`, as the desktop does); an explicit `0` clears it. A
+  timed-out `server_contexts` keeps what it read. E9 spend: `cost_owners` has no
+  label column, so the test calls stay under the fixed owner
+  `0177e9e9-0000-7000-8000-000000000177` with kind `endless` and request ids
+  `endless:test:<uuid>`. That request-id prefix is the recognisable label.
+
 ## Live proof (scratch engine, `target/debug/t` at a0fdc9cd)
 Setup: `env -i HOME=/tmp/177-e/home PATH=/usr/bin:/bin THEUTH_LOCAL_PROBE_PORTS=18101,18102,18109 THEUTH_RPC__LISTEN=127.0.0.1:18200 t --headless --data-dir /tmp/177-e/data`
 (`secrets.key_store: file`, `agent.model`/`title_model`/`endless.model: fakea/lfm-bare`).
@@ -177,6 +224,11 @@ likewise has no `max_tokens` (+ `enable_thinking: false`). The engine log has, o
 (or /provider limits) so theuth can size requests`. After `set_model_limits(65536)` the next turn carries
 `max_tokens: 28486`. Steps 3–6 unchanged: 3 compactor calls at `max_tokens: 2048` with the kwarg, `unbuilt 0`;
 `test_summary_call` ok, then the thinking error; probe and limits round trip as before.
+Re-run after R2 (`/tmp/177-e/proof4.txt`, fresh data dir; fake (b)'s `/api/show` now returns
+`parameters: "num_ctx 8192"` and `model_info.llama.context_length: 131072`): `ollama/qwen-local:1b` is stored
+at 8192 (the served `num_ctx`, not the 131072 maximum), source server. Steps 2–6 unchanged (turn sent without
+`max_tokens`, 3 compactor calls at 2048 with the kwarg, summary test ok then 2048 → 4096 on the thinking fake,
+probe rows, limits round trip).
 Every process started for the proof was stopped.
 
 ## genai fork follow-ups (not changed here)

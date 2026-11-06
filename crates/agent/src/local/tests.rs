@@ -399,6 +399,94 @@ async fn reply_spent_on_thinking_retries_once_at_twice_the_cap() {
     assert_eq!(seen.lock().len(), 1);
 }
 
+/// R2-4: the forced retry stays within the model's output limit; when it
+/// cannot grow the cap, the thinking error comes at once (one call).
+#[tokio::test]
+async fn forced_retry_never_exceeds_the_output_limit() {
+    let dir = crate::TestDir::new("local-r24");
+    let (server, seen) = omlx(false).await;
+    let auth = auth_with(&dir.0, "mlx", &server);
+    let mut model = zero_model("mlx");
+    model.model.as_mut().unwrap().limit.output = 2048;
+    let c = compactor_for(model, &auth);
+    let f = compactor::build(
+        &c,
+        "<chat>\n</chat>",
+        &unit(),
+        512,
+        5,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        f.error
+            .contains("used its whole 2048-token reply on thinking"),
+        "{}",
+        f.error
+    );
+    assert_eq!(seen.lock().len(), 1, "no retry that could not ask for more");
+    // With room (output 3000), the retry asks for 3000, not 4096.
+    let (server, seen) = omlx(false).await;
+    let auth = auth_with(&dir.0, "mlx", &server);
+    let mut model = zero_model("mlx");
+    model.model.as_mut().unwrap().limit.output = 3000;
+    let c = compactor_for(model, &auth);
+    compactor::build(
+        &c,
+        "<chat>\n</chat>",
+        &unit(),
+        512,
+        5,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap_err();
+    let caps: Vec<u64> = seen
+        .lock()
+        .iter()
+        .map(|(b, _)| b["max_tokens"].as_u64().unwrap())
+        .collect();
+    assert_eq!(caps, [2048, 3000]);
+}
+
+/// R2-5: a LAN gateway (private host, no preset) in front of cloud models is
+/// local for the tag and the optional key, but gets no thinking kwargs; a
+/// preset or a loopback host does.
+#[test]
+fn lan_gateway_is_local_but_gets_no_thinking_kwargs() {
+    let dir = crate::TestDir::new("local-r25");
+    let auth = crate::supervisor::Auth::stub(&dir.0);
+    let lan = Gateway {
+        base_url: "http://10.0.0.5:4000/v1/".into(),
+        key: "sk".into(),
+        runtime: None,
+    };
+    assert!(lan.local() && !lan.on_this_machine());
+    auth.gateways
+        .write()
+        .unwrap()
+        .insert("lan".into(), lan.clone());
+    let c = compactor_for(zero_model("lan"), &auth);
+    assert!(!c.quiet);
+    let (_, opts) = c.request(crate::frame::Transport::OpenAiLike, "ctx", &[]);
+    assert!(opts.extra_body.is_none());
+    for g in [
+        Gateway {
+            runtime: Some(LocalRuntime::Vllm),
+            ..lan.clone()
+        },
+        Gateway {
+            base_url: "http://localhost:8000/v1/".into(),
+            ..lan
+        },
+    ] {
+        assert!(g.on_this_machine(), "{g:?}");
+        auth.gateways.write().unwrap().insert("lan".into(), g);
+        assert!(compactor_for(zero_model("lan"), &auth).quiet);
+    }
+}
+
 /// Answer `GET p` on `server` with `body`.
 async fn serve(server: &MockServer, p: &str, body: Value) {
     Mock::given(method("GET"))
@@ -420,13 +508,22 @@ async fn server_windows_by_runtime_shape() {
         json!({"data": [{"id": "a", "max_model_len": 32768, "owned_by": "vllm"}]}),
     )
     .await;
-    // LM Studio: /api/v0/models, the loaded window before the maximum.
+    // LM Studio: /api/v0/models — a loaded model's window; an unloaded one's
+    // `max_context_length` is the architecture maximum, not stored (R2-2).
     let lms = MockServer::start().await;
-    serve(&lms, "/v1/models", json!({"data": [{"id": "b"}]})).await;
+    serve(
+        &lms,
+        "/v1/models",
+        json!({"data": [{"id": "b"}, {"id": "b2"}]}),
+    )
+    .await;
     serve(
         &lms,
         "/api/v0/models",
-        json!({"data": [{"id": "b", "max_context_length": 131072, "loaded_context_length": 8192}]}),
+        json!({"data": [
+            {"id": "b", "max_context_length": 131072, "loaded_context_length": 8192},
+            {"id": "b2", "max_context_length": 131072}
+        ]}),
     )
     .await;
     // llama.cpp: /props, one window for every id.
@@ -438,38 +535,116 @@ async fn server_windows_by_runtime_shape() {
         json!({"default_generation_settings": {"n_ctx": 4096}}),
     )
     .await;
-    // Ollama: /api/tags, then /api/show per model.
+    // Ollama (R2-2): `num_ctx` from /api/show `parameters`, else /api/ps for a
+    // loaded model, else unknown — never `model_info`'s architecture maximum.
     let ollama = MockServer::start().await;
     serve(
         &ollama,
         "/v1/models",
-        json!({"data": [{"id": "llama3:8b"}]}),
+        json!({"data": [{"id": "tuned:1b"}, {"id": "loaded:3b"}, {"id": "cold:7b"}]}),
     )
     .await;
     serve(
         &ollama,
         "/api/tags",
-        json!({"models": [{"name": "llama3:8b"}]}),
+        json!({"models": [{"name": "tuned:1b"}, {"name": "loaded:3b"}, {"name": "cold:7b"}]}),
     )
     .await;
-    Mock::given(method("POST"))
-        .and(path("/api/show"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "model_info": {"general.architecture": "llama", "llama.context_length": 8192}})))
-        .mount(&ollama)
-        .await;
-    for (server, id, want) in [
-        (&vllm, "a", 32768),
-        (&lms, "b", 8192),
-        (&llama, "c", 4096),
-        (&ollama, "llama3:8b", 8192),
+    serve(
+        &ollama,
+        "/api/ps",
+        json!({"models": [{"name": "loaded:3b", "context_length": 2048}]}),
+    )
+    .await;
+    let info = json!({"general.architecture": "llama", "llama.context_length": 131072});
+    for (model, show) in [
+        (
+            "tuned:1b",
+            json!({"parameters": "num_ctx                        4096\nstop \"<|eot|>\"", "model_info": info}),
+        ),
+        ("loaded:3b", json!({"model_info": info})),
+        ("cold:7b", json!({"model_info": info})),
     ] {
-        let got = server_contexts(&format!("{}/v1/", server.uri()), "", true, &ids(&[id])).await;
-        assert_eq!(got.get(id), Some(&want), "{}", server.uri());
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"model": model}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(show))
+            .mount(&ollama)
+            .await;
     }
+    let all = |server: &MockServer, s: &[&str]| {
+        let base = format!("{}/v1/", server.uri());
+        let ids = ids(s);
+        async move { server_contexts(&base, "", true, &ids).await }
+    };
+    assert_eq!(all(&vllm, &["a"]).await.get("a"), Some(&32768));
+    let got = all(&lms, &["b", "b2"]).await;
+    assert_eq!((got.get("b"), got.get("b2")), (Some(&8192), None));
+    assert_eq!(all(&llama, &["c"]).await.get("c"), Some(&4096));
+    let got = all(&ollama, &["tuned:1b", "loaded:3b", "cold:7b"]).await;
+    assert_eq!(
+        (
+            got.get("tuned:1b"),
+            got.get("loaded:3b"),
+            got.get("cold:7b")
+        ),
+        (Some(&4096), Some(&2048), None)
+    );
     // A cloud provider is asked /v1/models only.
     let got = server_contexts(&format!("{}/v1/", llama.uri()), "k", false, &ids(&["c"])).await;
     assert!(got.is_empty(), "{got:?}");
+    // R2-8: a slow endpoint keeps the windows already read.
+    let slow = MockServer::start().await;
+    serve(
+        &slow,
+        "/v1/models",
+        json!({"data": [{"id": "s", "max_model_len": 9000}]}),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+        .mount(&slow)
+        .await;
+    assert_eq!(all(&slow, &["s"]).await.get("s"), Some(&9000));
+}
+
+/// R2-1: neither the probe nor the window reader follows a redirect to
+/// another host.
+#[tokio::test]
+async fn redirects_are_not_followed() {
+    let elsewhere = MockServer::start().await;
+    let hit = Seen::default();
+    let seen = hit.clone();
+    Mock::given(method("GET"))
+        .respond_with(move |r: &Request| {
+            seen.lock().push((json!(r.url.path()), None));
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"data": [{"id": "x", "max_model_len": 1}], "models": []}))
+        })
+        .mount(&elsewhere)
+        .await;
+    let redirecting = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/v1/models", elsewhere.uri())),
+        )
+        .mount(&redirecting)
+        .await;
+    let found = probe(&[redirecting.address().port()], &[]).await;
+    assert!(found[0].reachable && found[0].models == 0, "{found:?}");
+    let got = server_contexts(
+        &format!("{}/v1/", redirecting.uri()),
+        "",
+        true,
+        &["x".to_owned()],
+    )
+    .await;
+    assert!(got.is_empty(), "{got:?}");
+    assert!(hit.lock().is_empty(), "the other host was never asked");
 }
 
 /// E8: the probe on injected ports names each runtime by what answers, marks

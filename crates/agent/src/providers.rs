@@ -32,6 +32,14 @@ impl Gateway {
     pub fn local(&self) -> bool {
         self.runtime.is_some() || crate::local::private_url(&self.base_url)
     }
+
+    /// 177 R2-5: the narrow rule for behaviour — a runtime preset, or a
+    /// loopback host ([`crate::local::loopback_url`]). Thinking-off kwargs and
+    /// the assumed window follow it; a LAN gateway in front of cloud models
+    /// (LiteLLM on 10.x) is [`Gateway::local`] but not this.
+    pub fn on_this_machine(&self) -> bool {
+        self.runtime.is_some() || crate::local::loopback_url(&self.base_url)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -45,11 +53,20 @@ struct Entry {
     base_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime: Option<LocalRuntime>,
+    /// R2-3: this provider's add stored the vault secret of its name (`false`:
+    /// keyless). Absent on rows written before 177, whose adds always stored one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owns_key: Option<bool>,
 }
 
 impl Entry {
     fn local(&self) -> bool {
         self.runtime.is_some() || crate::local::private_url(&self.base_url)
+    }
+
+    /// The vault secret of the provider's name is the provider's own.
+    fn owns_key(&self) -> bool {
+        self.owns_key != Some(false)
     }
 }
 
@@ -372,8 +389,11 @@ fn remove_models(data_dir: &Path, name: &str) -> Result<(), String> {
 
 /// Persist a custom provider: key into the vault (source `provider add`), url and
 /// runtime into `providers.yaml`. Overwrites the same name; its models are
-/// [`write_models`]'. An empty key is allowed only for a local provider (177 E4),
-/// and drops a key stored earlier under the name.
+/// [`write_models`]'. An empty key is allowed only for a local provider (177 E4).
+///
+/// R2-3: the row records whether this provider wrote the vault secret of its
+/// name (`owns_key`). A keyless add deletes that secret only when it replaces
+/// a row that owned it — a first keyless `omlx` keeps the user's `omlx` key.
 pub async fn save(
     data_dir: &Path,
     actor: &ActorRef<secrets::SecretsActor>,
@@ -382,22 +402,26 @@ pub async fn save(
     key: &str,
     runtime: Option<LocalRuntime>,
 ) -> Result<(), String> {
+    let key = key.trim();
     let entry = Entry {
         base_url: normalize_url(base_url)?,
         runtime,
+        owns_key: Some(!key.is_empty()),
     };
     validate_name(name, entry.local())?;
-    let key = key.trim();
+    let mut rows = read_file(data_dir);
     if key.is_empty() {
         if !entry.local() {
             return Err("api key is empty".into());
         }
-        // A keyless re-add must not keep sending the old key.
-        let _ = actor
-            .ask(secrets::Delete {
-                name: name.to_owned(),
-            })
-            .await;
+        // A keyless re-add must not keep sending the key this provider stored.
+        if rows.get(name).is_some_and(Entry::owns_key) {
+            let _ = actor
+                .ask(secrets::Delete {
+                    name: name.to_owned(),
+                })
+                .await;
+        }
     } else {
         actor
             .ask(secrets::Set {
@@ -409,28 +433,28 @@ pub async fn save(
             .await
             .map_err(|e| e.to_string())?;
     }
-    let mut rows = read_file(data_dir);
     rows.insert(name.to_owned(), entry);
     write_file(data_dir, rows)
 }
 
-/// Drop a custom provider's url, key, and catalog models. A key already gone from
-/// the vault (the user deleted it) is not an error.
+/// Drop a custom provider's url, its key (only one its add stored, R2-3), and
+/// its catalog models. A key already gone from the vault is not an error.
 pub async fn remove(
     data_dir: &Path,
     actor: &ActorRef<secrets::SecretsActor>,
     name: &str,
 ) -> Result<(), String> {
     let mut rows = read_file(data_dir);
-    if rows.remove(name).is_none() {
+    let Some(entry) = rows.remove(name) else {
         return Err(format!("no provider `{name}`"));
-    }
+    };
     write_file(data_dir, rows)?;
-    if let Err(e) = actor
-        .ask(secrets::Delete {
-            name: name.to_owned(),
-        })
-        .await
+    if entry.owns_key()
+        && let Err(e) = actor
+            .ask(secrets::Delete {
+                name: name.to_owned(),
+            })
+            .await
     {
         tracing::warn!(provider = name, "removing key from the vault: {e}");
     }
@@ -564,6 +588,73 @@ mod tests {
         assert!(load(&dir, Some(&vault)).is_empty());
         assert!(load(&dir, None).is_empty());
         assert!(!dir.join("models.json").exists());
+    }
+
+    /// R2-3: a keyless add and its remove never touch a secret the provider
+    /// did not store (the user's genai `omlx` key); a provider that stored its
+    /// key and is re-added keyless drops it; a pre-177 row owns its key.
+    #[tokio::test]
+    async fn keyless_add_and_remove_keep_foreign_secrets() {
+        use kameo::actor::Spawn;
+        use std::sync::Arc;
+        let scratch = crate::TestDir::new("prov-r23");
+        let dir = scratch.0.clone();
+        let vault = Arc::new(
+            secrets::Vault::open(&dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let actor = secrets::SecretsActor::spawn(secrets::SecretsActor::new(
+            vault.clone(),
+            rt,
+            std::time::Duration::from_secs(1),
+        ));
+        let key = |n: &str| vault.get(n, 0).map(|k| k.as_str().to_owned());
+        vault
+            .set("omlx", "user-genai-key", None, "test")
+            .await
+            .unwrap();
+        save(&dir, &actor, "omlx", "http://127.0.0.1:8000/v1", "", None)
+            .await
+            .unwrap();
+        assert_eq!(key("omlx").as_deref(), Some("user-genai-key"));
+        remove(&dir, &actor, "omlx").await.unwrap();
+        assert_eq!(key("omlx").as_deref(), Some("user-genai-key"));
+
+        save(
+            &dir,
+            &actor,
+            "lms",
+            "http://127.0.0.1:1234/v1",
+            "sk-lms",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(key("lms").as_deref(), Some("sk-lms"));
+        save(&dir, &actor, "lms", "http://127.0.0.1:1234/v1", "", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            key("lms"),
+            None,
+            "a keyless re-add drops the key it replaced"
+        );
+
+        // A row written before 177 (no `owns_key`): its add stored the key.
+        vault
+            .set("mlx", "sk-mlx", None, "provider add")
+            .await
+            .unwrap();
+        std::fs::write(
+            dir.join("providers.yaml"),
+            "mlx:\n  base_url: http://127.0.0.1:8080/v1/\n",
+        )
+        .unwrap();
+        assert_eq!(load(&dir, Some(&vault))["mlx"].key, "sk-mlx");
+        remove(&dir, &actor, "mlx").await.unwrap();
+        assert_eq!(key("mlx"), None);
     }
 
     fn user_file(dir: &Path) -> serde_json::Value {
