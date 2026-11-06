@@ -13,6 +13,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
       className="toaster group"
+      // Multi-line descriptions (`/provider find`, `toastSync`) keep their `\n` line breaks.
+      toastOptions={{ classNames: { description: "whitespace-pre-line" } }}
       icons={{
         success: <CircleCheckIcon className="size-4" />,
         info: <InfoIcon className="size-4" />,

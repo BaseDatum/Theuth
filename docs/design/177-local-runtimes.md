@@ -168,3 +168,27 @@ type SummaryTest = {
 - user `models.json`: a provider block may carry `"local": true`; a model's
   `limit` may carry `"source": "server" | "user"` (absent = unknown). Files
   without these fields load as before.
+
+## UI (desktop, worker U)
+
+Decisions and evidence: `177-notes-u.md`. The desktop calls the contract above
+unchanged (`rpc/api.ts` `Api`; `add_provider(name, url, key?, runtime?)`).
+
+- **U1** Settings › Connections › Providers: built-ins, then **Local servers**
+  (Find running servers → one row per probed port with Add, or "Added as
+  <name>"; the local provider rows tagged "local"; Add local server: runtime
+  select filling name and address, optional key), then **Custom providers**.
+- **U2** Every custom and local row has **Limits**: `provider_models` with
+  Context / Output fields ("unknown", "unknown · assuming 16k"), the source tag
+  (from server / set by you / unknown), Save (`set_model_limits`, an empty
+  field = `null`) and Clear (`null, null`).
+- **U3** The custom form's key is optional when the URL is local by
+  `local::private_url` (mirrored in `providers.ts` `isLocalUrl`).
+- **U4** `ModelInfo.local` → a "local" tag in every model picker; the two
+  summary pickers (Settings › Memory, the Memory panel) list local first.
+- **U5** **Test summary call** under the compactor model in Settings › Memory
+  and in the Memory panel's failing block.
+- **U6** `/provider add <name> <url> [key] | find | limits <provider> <model>
+  <context> [output] | refresh | rm`.
+- **U7** Dev fixture `src/dev/local-fixture.ts` (`localStorage.local-fixture`
+  = `1` or `fail`).

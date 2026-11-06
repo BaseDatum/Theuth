@@ -2,18 +2,28 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
+import type * as Combobox from '@/components/chat/ModelCombobox'
 import type * as Rpc from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
+import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import { tokenEstimate } from '@/lib/endless'
 import { bounded } from './shared'
 import { Memory } from './Memory'
 
+// R1-10: what each picker was given (the closed popover renders no list to read the order from).
+const pickers = vi.hoisted(() => [] as { 'aria-label'?: string; localFirst?: boolean }[])
+vi.mock('@/components/chat/ModelCombobox', async (original) => {
+  const m = await original<typeof Combobox>()
+  return { ...m, ModelCombobox: (p: Parameters<typeof m.ModelCombobox>[0]) => (pickers.push(p), createElement(m.ModelCombobox, p)) }
+})
+
 const config: EndlessConfig = { default_chat: true, default_desk: true, default_meeting: false, view_bytes: 128_000, meeting_view_bytes: 32_000, node_bytes: 512, slack: 0.25, settle_secs: 60, jobs: 8, tries: 5, retry_secs: 10, cap_chars: 30_000, backfill_max_units: 2_000, model: null }
 let served: EndlessConfig = config
+let listed: ModelInfo[] = []
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
-  useApi: () => ({ endless_settings_get: async () => served, list_models: async () => [], title_model: async () => ({ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' }) }),
+  useApi: () => ({ endless_settings_get: async () => served, list_models: async () => listed, title_model: async () => ({ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' }) }),
 }))
 
 async function render(): Promise<string> {
@@ -89,4 +99,25 @@ test('137G Advanced: request size and speed & spend rows carry the engine ranges
   // An emptied day cap must not write 0 (= no cap).
   expect(bounded('', 0, 1000, 0.01)).toBeUndefined()
   expect(bounded('  ', 0, 1000)).toBeUndefined()
+})
+
+const lfm = { id: 'mlx/LFM3-1.7B-MLX-bf16', name: 'LFM3-1.7B-MLX-bf16', provider: 'mlx', context: 0, reasoning: false, image: false, efforts: [], budget_min: null, budget_max: null, local: true } satisfies ModelInfo
+
+test('177 U5: Test summary call sits under the compactor model and tests what a summary would use — the compactor model, else the title model', async () => {
+  const html = await render()
+  expect(html).toContain('Test summary call')
+  expect(html).toContain('Sends one summary of a fixed sample to anthropic/claude-haiku-4-5')
+  expect(html.indexOf('aria-label="Compactor model"')).toBeLessThan(html.indexOf('Test summary call'))
+  expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Test summary call/)
+  served = { ...config, model: lfm.id }
+  listed = [lfm]
+  const local = await render()
+  served = config
+  listed = []
+  expect(local).toContain(`Sends one summary of a fixed sample to ${lfm.id}`)
+  // 177 U4: the picker's trigger tags a local model.
+  expect(local).toMatch(/LFM3-1.7B-MLX-bf16<\/span><span[^>]*>local<\/span>/)
+  // 177 U4: the compactor picker lists local models first.
+  expect(pickers.filter((p) => p['aria-label'] === 'Compactor model').every((p) => p.localFirst === true)).toBe(true)
+  expect(pickers.some((p) => p['aria-label'] === 'Compactor model')).toBe(true)
 })

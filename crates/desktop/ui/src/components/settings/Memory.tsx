@@ -3,6 +3,7 @@ import { ChevronRight } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
+import { SummaryTestCall } from '@/components/settings/SummaryTestCall'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Switch } from '@/components/ui/switch'
 import { ENDLESS_DEFAULTS, tokenEstimate, useCompactorLabel } from '@/lib/endless'
@@ -77,6 +78,9 @@ export function Memory({ focus = null }: { focus?: string | null }) {
   const [slackPct, setSlackPct] = useState<number | null>(null)
   const kb = viewKb ?? (s ? s.view_bytes / 1000 : 128)
   const pct = slackPct ?? (s ? s.slack * 100 : 12.5)
+  // 177 U5: the model a summary call would use now — the compactor model, else the title model; else each chat's own.
+  const title = useQuery({ queryKey: queryKeys.titleModel, queryFn: () => api.title_model(), enabled: !!s && !s.model })
+  const testModel = s?.model ?? title.data?.id
   // R1-D3: `null` resolves to the title model when one is set; the picker's first row names what that is right now.
   const resolved = useCompactorLabel(null)
   // The control is disabled until the settings load, and a disabled control takes no focus.
@@ -163,11 +167,19 @@ export function Memory({ focus = null }: { focus?: string | null }) {
             aria-label="Compactor model"
             className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
+            localFirst
             value={s?.model}
             none={{ label: resolved }}
             disabled={busy}
             onChange={(id) => patch({ model: id })}
           />
+        </Row>
+        <Row
+          wide
+          label="Test summary call"
+          description={testModel ? `Sends one summary of a fixed sample to ${testModel}, as the summariser would, and shows what came back.` : "Unset with no title model, each chat summarises with its own model: pick a compactor model to test it."}
+        >
+          <SummaryTestCall model={testModel} />
         </Row>
         <Row label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
           <span className="text-sm text-fg-secondary">copy · grounding · status · format — always on</span>

@@ -289,6 +289,10 @@ import type {
   LoginInfo,
 } from '@/rpc/extra'
 import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
+import type { LocalRuntime } from '@/rpc/bindings/LocalRuntime'
+import type { LocalServer } from '@/rpc/bindings/LocalServer'
+import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
+import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
 import type { RefreshedModels } from '@/rpc/bindings/RefreshedModels'
 import type { VoiceStatus } from '@/rpc/bindings/VoiceStatus'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
@@ -344,7 +348,8 @@ export interface Api {
   add_node(key: string, name: string | null): Promise<Node>
   add_mcp_repo(url: string, name: string | null): Promise<RepoInfo>
   add_mcp_server(name: string, entry: JsonValue): Promise<McpServer>
-  add_provider(name: string, base_url: string, key: string): Promise<ProviderInfo>
+  /** 177: `key` may be `null` (or omitted) for a local URL; `runtime` is the Local servers preset. */
+  add_provider(name: string, base_url: string, key?: string | null, runtime?: LocalRuntime | null): Promise<ProviderInfo>
   add_skill(name: string, description: string, body: string, always: boolean): Promise<SkillMeta>
   add_skill_repo(url: string, name: string | null): Promise<SkillMeta[]>
   /** 125 §6.3: the advisor status of `session` (`state: 'off'` when it has none). */
@@ -651,6 +656,14 @@ export interface Api {
   list_mcp(session: SessionId | null): Promise<McpServer[]>
   list_models(): Promise<ModelInfo[]>
   list_providers(): Promise<ProviderInfo[]>
+  /** 177 E8: probe the default local-server ports on 127.0.0.1; never adds. */
+  local_servers_probe(): Promise<LocalServer[]>
+  /** 177: `provider`'s models with their stored limits (0 = unknown). */
+  provider_models(provider: string): Promise<ProviderModel[]>
+  /** 177 E6: store a model's context / output limit; `null` clears that field to unknown. */
+  set_model_limits(provider: string, model: string, context: number | null, output: number | null): Promise<ProviderModel>
+  /** 177 E9: one real summary call on a fixed sample; failures are in the reply (`ok: false`, `error`, `hint`). */
+  test_summary_call(model: string): Promise<SummaryTest>
   list_queued(session: SessionId): Promise<QueuedInput[]>
   list_sessions(): Promise<SessionSummary[]>
   /** Every styled project's icon and colour (51 §3 as-built). */
@@ -1556,6 +1569,7 @@ export const METHODS = [
   'list_tools',
   'load_session',
   'load_skill',
+  'local_servers_probe',
   'login',
   'logout',
   'mcp_login',
@@ -1644,6 +1658,7 @@ export const METHODS = [
   'polish',
   'polish_model',
   'promote_answer',
+  'provider_models',
   'pty_input',
   'pty_resize',
   'pty_screen',
@@ -1737,6 +1752,7 @@ export const METHODS = [
   'set_meeting_oracle_mode',
   'set_model',
   'set_model_favorite',
+  'set_model_limits',
   'set_peer_scope',
   'set_polish_model',
   'set_project_style',
@@ -1798,6 +1814,7 @@ export const METHODS = [
   'telegram_status',
   'test_schedule',
   'test_schedule_file',
+  'test_summary_call',
   'theuth_agent_model',
   'title_model',
   'transcribe',

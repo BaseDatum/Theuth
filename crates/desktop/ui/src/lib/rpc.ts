@@ -10,12 +10,13 @@ import { on } from '@/store/sessions'
 import { isPopout, openPopout } from '@/lib/popout'
 import { applySandboxEvent } from '@/store/sandboxes'
 import { endlessFixture } from '@/dev/endless-fixture'
+import { localFixture } from '@/dev/local-fixture'
 
-/** The connected `Api`. Routes render only once connected, so a missing client is a bug. In dev the 137 fixture may answer the endless methods (`dev/endless-fixture.ts`). */
+/** The connected `Api`. Routes render only once connected, so a missing client is a bug. In dev the 137 and 177 fixtures may answer the endless and local-server methods (`dev/endless-fixture.ts`, `dev/local-fixture.ts`). */
 export function useApi(): Api {
   const api = useConnection((s) => s.api)
   if (!api) throw new Error('useApi before the connection opened')
-  return import.meta.env.DEV ? endlessFixture(api) : api
+  return import.meta.env.DEV ? localFixture(endlessFixture(api)) : api
 }
 
 export const queryKeys = {
@@ -43,6 +44,10 @@ export const queryKeys = {
   skill: (name: string) => ['skill', name] as const,
   logins: ['logins'] as const,
   providers: ['providers'] as const,
+  /** 177: `provider_models(name)`, the limits editor of a provider row; under `providers` so a provider change refetches it. */
+  providerModels: (name: string) => ['providers', 'models', name] as const,
+  /** 177: `local_servers_probe()` — fetched on Find running servers only; the rows stay through a re-probe. */
+  localServers: ['local-servers'] as const,
   awsProfiles: ['aws-profiles'] as const,
   acp: ['acp'] as const,
   acpRegistry: ['acp', 'registry'] as const,

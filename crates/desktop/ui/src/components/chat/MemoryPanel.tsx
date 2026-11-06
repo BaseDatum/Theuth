@@ -3,6 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { LoaderCircle, TriangleAlert } from 'lucide-react'
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { SummaryTestCall } from '@/components/settings/SummaryTestCall'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -199,6 +200,7 @@ export function SummaryModel({ session, m }: { session: string; m: SessionMemory
         size="sm"
         className="h-6 max-w-56 gap-1 px-2 text-xs text-fg-secondary"
         models={models.data ?? []}
+        localFirst
         value={m.model}
         none={{ label: 'Use default' }}
         disabled={setModel.isPending}
@@ -395,6 +397,8 @@ function Failing({ session, s, fold }: { session: string; s: Stalled; fold: Fold
         <FoldButton fold={fold} />
         <ChangeModel />
       </div>
+      {/* 177 U5: the failing model, tried once on a fixed sample. */}
+      <SummaryTestCall model={s.model} size="xs" />
     </div>
   )
 }
