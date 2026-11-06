@@ -104,6 +104,32 @@ Branch `fix/177-e`, base `b540592e`. Design: `177-local-runtimes.md`.
 22. **Probe identification is literal:** fake (a) reports `max_model_len`, so
     the probe calls it `vllm` (the brief's rule), although I added it with
     the `omlx` preset.
+23. **`local::private_url` vectors (UI review, 18:02), mirrored by the desktop
+    UI** (`local::tests::private_url_vectors`). The host is parsed by the
+    `url` crate (lower-cased; userinfo and port ignored); the scheme is not checked.
+
+    | URL | local |
+    |---|---|
+    | `HTTP://LOCALHOST:8080/V1/` | true (single label) |
+    | `http://u:p@127.0.0.1:8080/v1/` | true |
+    | `http://[::]:8000/v1/`, `http://0.0.0.0:8000/v1/` | true (unspecified) |
+    | `http://[::ffff:7f00:1]:8000/v1/` | true (v4-mapped loopback) |
+    | `http://[::1]:8000/v1/`, `http://127.0.0.1:8000/v1/` | true |
+    | `10.1.2.3`, `172.16.0.1`, `172.31.255.255`, `192.168.1.5` | true (RFC 1918) |
+    | `172.32.0.1` | false |
+    | `100.64.0.1`, `100.127.255.255` | true (CGNAT 100.64/10) |
+    | `100.128.0.1` | false |
+    | `169.254.1.1`, `[fe80::1]` | true (link-local) |
+    | `[fd00::1]` | true (ULA) |
+    | `[2001:db8::1]`, `8.8.8.8` | false |
+    | `gpu-box` (single label) | true |
+    | `studio.local:1234`, `studio.LAN`, `foo.localhost`, `foo.internal`, `nas.home.arpa`, `mac.tail1234.ts.net` | true (suffix) |
+    | `api.openai.com`, `local.example.com`, `evil.local.example.com` | false |
+    | `not a url` | false |
+24. **Probe of a keyed server (UI review, 18:02):** a server that answers 401
+    or 403 on `/v1/models`, `/api/v0/models` or `/api/tags` and lists nothing
+    else is `reachable: true`, `models: 0`, `error: "answered 401: needs an API
+    key"` (or 403), with the port's usual runtime (omlx on :8000).
 
 ## Live proof (scratch engine, `target/debug/t` at a0fdc9cd)
 Setup: `env -i HOME=/tmp/177-e/home PATH=/usr/bin:/bin THEUTH_LOCAL_PROBE_PORTS=18101,18102,18109 THEUTH_RPC__LISTEN=127.0.0.1:18200 t --headless --data-dir /tmp/177-e/data`

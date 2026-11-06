@@ -443,6 +443,13 @@ async fn probe_identifies_runtimes_and_added_as() {
         .respond_with(ok(json!({"data": [{"id": "p", "owned_by": "me"}]})))
         .mount(&plain)
         .await;
+    let keyed = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(json!({"detail": "API key required"})),
+        )
+        .mount(&keyed)
+        .await;
     let closed = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap().port()
@@ -455,6 +462,7 @@ async fn probe_identifies_runtimes_and_added_as() {
         port(&vllm),
         port(&plain),
         closed,
+        port(&keyed),
     ];
     let added = vec![(
         "ollama".to_owned(),
@@ -476,6 +484,7 @@ async fn probe_identifies_runtimes_and_added_as() {
             (LocalRuntime::Vllm, true, 1, None),
             (LocalRuntime::Openai, true, 1, None),
             (LocalRuntime::Openai, false, 0, None),
+            (LocalRuntime::Openai, true, 0, None),
         ]
     );
     assert_eq!(
@@ -483,6 +492,56 @@ async fn probe_identifies_runtimes_and_added_as() {
         format!("http://127.0.0.1:{}/v1/", port(&lms))
     );
     assert_eq!(found[5].error.as_deref(), Some("connection refused"));
+    assert_eq!(
+        (
+            found[6].reachable,
+            found[6].models,
+            found[6].error.as_deref()
+        ),
+        (true, 0, Some("answered 401: needs an API key")),
+        "omlx with key verification on"
+    );
+}
+
+/// The host rule every locality decision uses; the desktop UI mirrors these
+/// vectors (177 notes, decision 23).
+#[test]
+fn private_url_vectors() {
+    for (url, want) in [
+        ("HTTP://LOCALHOST:8080/V1/", true),
+        ("http://u:p@127.0.0.1:8080/v1/", true),
+        ("http://[::]:8000/v1/", true),
+        ("http://0.0.0.0:8000/v1/", true),
+        ("http://[::ffff:7f00:1]:8000/v1/", true),
+        ("http://[::1]:8000/v1/", true),
+        ("http://127.0.0.1:8000/v1/", true),
+        ("http://10.1.2.3/v1/", true),
+        ("http://172.16.0.1/v1/", true),
+        ("http://172.31.255.255/v1/", true),
+        ("http://172.32.0.1/v1/", false),
+        ("http://192.168.1.5/v1/", true),
+        ("http://100.64.0.1/v1/", true),
+        ("http://100.127.255.255/v1/", true),
+        ("http://100.128.0.1/v1/", false),
+        ("http://169.254.1.1/v1/", true),
+        ("http://[fd00::1]/v1/", true),
+        ("http://[fe80::1]/v1/", true),
+        ("http://[2001:db8::1]/v1/", false),
+        ("http://8.8.8.8/v1/", false),
+        ("http://gpu-box/v1/", true),
+        ("http://studio.local:1234/v1/", true),
+        ("http://studio.LAN/v1/", true),
+        ("http://foo.localhost/v1/", true),
+        ("http://foo.internal/v1/", true),
+        ("http://nas.home.arpa/v1/", true),
+        ("http://mac.tail1234.ts.net/v1/", true),
+        ("https://api.openai.com/v1/", false),
+        ("https://local.example.com/v1/", false),
+        ("https://evil.local.example.com/v1/", false),
+        ("not a url", false),
+    ] {
+        assert_eq!(private_url(url), want, "{url}");
+    }
 }
 
 /// E9: the summary test call — ok on a model that honours the kwargs, the

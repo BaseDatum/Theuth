@@ -149,9 +149,9 @@ fn unreachable(port: u16, error: String) -> LocalServer {
     }
 }
 
-/// `Ok(Some(json))` on a 2xx JSON body, `Ok(None)` when the server answered
-/// otherwise, `Err` when nothing answered.
-async fn get_json(client: &reqwest::Client, url: String) -> Result<Option<Value>, String> {
+/// `Ok(Ok(json))` on a 2xx JSON body, `Ok(Err(status))` when the server
+/// answered otherwise, `Err` when nothing answered.
+async fn get_json(client: &reqwest::Client, url: String) -> Result<Result<Value, u16>, String> {
     let r = client.get(url).send().await.map_err(|e| {
         if e.is_connect() {
             "connection refused".to_owned()
@@ -161,10 +161,11 @@ async fn get_json(client: &reqwest::Client, url: String) -> Result<Option<Value>
             e.to_string()
         }
     })?;
-    if !r.status().is_success() {
-        return Ok(None);
+    let status = r.status();
+    if !status.is_success() {
+        return Ok(Err(status.as_u16()));
     }
-    Ok(r.json::<Value>().await.ok())
+    Ok(r.json::<Value>().await.map_err(|_| status.as_u16()))
 }
 
 async fn probe_port(client: &reqwest::Client, port: u16) -> LocalServer {
@@ -182,7 +183,12 @@ async fn probe_port(client: &reqwest::Client, port: u16) -> LocalServer {
     }
     server.reachable = true;
     server.error = None;
-    let ok = |r: Result<Option<Value>, String>| r.ok().flatten();
+    // omlx with key verification on (or any keyed server) refuses the list.
+    let refused = [&v1, &v0, &tags].into_iter().find_map(|r| match r {
+        Ok(Err(s @ (401 | 403))) => Some(*s),
+        _ => None,
+    });
+    let ok = |r: Result<Result<Value, u16>, String>| r.ok().and_then(Result::ok);
     let (tags, v1, v0, props) = (ok(tags), ok(v1), ok(v0), ok(props));
     let list = |v: &Option<Value>, key: &str| -> Option<Vec<Value>> {
         v.as_ref()?.get(key)?.as_array().cloned()
@@ -214,7 +220,10 @@ async fn probe_port(client: &reqwest::Client, port: u16) -> LocalServer {
         (runtime, d.len())
     } else {
         server.runtime = port_runtime(port);
-        server.error = Some("answered, but lists no models at /v1/models".into());
+        server.error = Some(match refused {
+            Some(s) => format!("answered {s}: needs an API key"),
+            None => "answered, but lists no models at /v1/models".into(),
+        });
         return server;
     };
     server.runtime = runtime;

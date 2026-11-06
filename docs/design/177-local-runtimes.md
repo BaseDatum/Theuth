@@ -132,7 +132,8 @@ type SummaryTest = {
   port: `/api/tags` → ollama; `/api/v0/models` (with `/v1/models`) → lmstudio;
   `/props` with `default_generation_settings` → llamacpp; a `/v1/models` entry
   with `max_model_len` or `owned_by` "vllm" → vllm; `owned_by` containing
-  "omlx" → omlx; else openai.
+  "omlx" → omlx; else openai. A server that answers 401/403 on its model list
+  is `reachable: true`, `models: 0`, `error: "answered 401: needs an API key"`.
 - `test_summary_call`: failures are in the reply (`ok: false`, `error`,
   `hint`), never an RPC error.
 - `refresh_provider_models` on genai's built-in `ollama`/`omlx` (no provider of
