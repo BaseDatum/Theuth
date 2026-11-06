@@ -1,5 +1,10 @@
+import type { LimitSource } from '@/rpc/bindings/LimitSource'
+import type { LocalRuntime } from '@/rpc/bindings/LocalRuntime'
+import type { LocalServer } from '@/rpc/bindings/LocalServer'
 import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
+import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
 import type { RefreshedModels } from '@/rpc/bindings/RefreshedModels'
+import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
 
 /** Display names of the built-in key providers (85 §0.9); the engine sends the ids. */
 export const BUILTIN_LABEL: Record<string, string> = {
@@ -21,4 +26,111 @@ export function builtinKeyNote(name: string) {
 export function refreshedText({ provider: p, added, removed }: RefreshedModels): string {
   if (added.length === 0 && removed.length === 0) return `${p.name}: ${p.models} models, no change`
   return `${p.name}: ${p.models} models (+${added.length}, −${removed.length})`
+}
+
+/** 177 U1: the Add local server presets — label, the provider name it suggests and the default address (`openai` = any other OpenAI-compatible server, no default). */
+export const RUNTIMES: readonly { runtime: LocalRuntime; label: string; name: string; url: string }[] = [
+  { runtime: 'ollama', label: 'Ollama', name: 'ollama', url: 'http://127.0.0.1:11434/v1/' },
+  { runtime: 'lmstudio', label: 'LM Studio', name: 'lmstudio', url: 'http://127.0.0.1:1234/v1/' },
+  { runtime: 'omlx', label: 'omlx', name: 'omlx', url: 'http://127.0.0.1:8000/v1/' },
+  { runtime: 'llamacpp', label: 'llama.cpp', name: 'llamacpp', url: 'http://127.0.0.1:8080/v1/' },
+  { runtime: 'vllm', label: 'vLLM', name: 'vllm', url: 'http://127.0.0.1:8000/v1/' },
+  { runtime: 'openai', label: 'Other OpenAI-compatible', name: 'local', url: '' },
+]
+
+const preset = (runtime: LocalRuntime) => RUNTIMES.find((r) => r.runtime === runtime) ?? RUNTIMES[RUNTIMES.length - 1]!
+
+export const runtimeLabel = (runtime: LocalRuntime): string => preset(runtime).label
+
+/** The Add local server form. */
+export type LocalForm = { runtime: LocalRuntime; name: string; url: string; key: string }
+
+/** Picking a runtime fills the name and the default address; both stay editable. */
+export const presetForm = (runtime: LocalRuntime): LocalForm => ({ runtime, name: preset(runtime).name, url: preset(runtime).url, key: '' })
+
+/** A probe row's Add: its runtime's name, the address it answered on. */
+export const probeForm = (s: LocalServer): LocalForm => ({ ...presetForm(s.runtime), url: s.base_url })
+
+/** `add_provider` arguments of the local form: an empty key is `null` (keyless), the runtime always sent. */
+export const localAddArgs = (f: LocalForm): [string, string, string | null, LocalRuntime] => [f.name.trim(), f.url.trim(), f.key.trim() || null, f.runtime]
+
+/**
+ * 177 E4, the engine's `local::private_url` mirrored: a URL whose host is loopback, private (RFC 1918, CGNAT,
+ * link-local, ULA, unspecified, v4-mapped), single-label, or under `.localhost` `.local` `.internal` `.lan` `.home.arpa` `.ts.net`.
+ */
+export function isLocalUrl(raw: string): boolean {
+  let host: string
+  try {
+    host = new URL(raw.trim()).hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  if (!host) return false
+  if (host.startsWith('[')) return localV6(host.slice(1, -1))
+  const v4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)
+  if (v4) return localV4(v4.slice(1).map(Number) as [number, number, number, number])
+  return !host.includes('.') || ['.localhost', '.local', '.internal', '.lan', '.home.arpa', '.ts.net'].some((s) => host.endsWith(s))
+}
+
+function localV4([a, b, c, d]: [number, number, number, number]): boolean {
+  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a | b | c | d) === 0 || (a === 100 && (b & 0xc0) === 64)
+}
+
+/** `URL` serializes IPv6 as compressed lowercase hex (no dotted tail), so `::` expansion is all it takes. */
+function localV6(s: string): boolean {
+  const part = (x: string | undefined) => (x ? x.split(':').map((h) => parseInt(h, 16)) : [])
+  const [head, tail] = s.split('::')
+  const h = part(head)
+  const t = part(tail)
+  const w = s.includes('::') ? [...h, ...Array<number>(8 - h.length - t.length).fill(0), ...t] : h
+  const zeros = (n: number) => w.slice(0, n).every((x) => x === 0)
+  if (zeros(7) && (w[7] === 0 || w[7] === 1)) return true
+  if ((w[0]! & 0xfe00) === 0xfc00 || (w[0]! & 0xffc0) === 0xfe80) return true
+  return zeros(5) && w[5] === 0xffff && localV4([w[6]! >> 8, w[6]! & 255, w[7]! >> 8, w[7]! & 255])
+}
+
+/** 177 U2: the source tag of a model's limits. */
+export const LIMIT_SOURCE: Record<LimitSource, string> = { server: 'from server', user: 'set by you', unknown: 'unknown' }
+
+/** The Context field's placeholder: "unknown", or what a local model is budgeted as meanwhile (177 E7). */
+export const contextPlaceholder = (m: ProviderModel): string => (m.assumed_context ? `unknown · assuming ${Math.round(m.assumed_context / 1024)}k` : 'unknown')
+
+/** One limit field: empty → `null` (unknown), a whole number ≥ 1 → itself, anything else → `undefined` (not savable). */
+export function limitValue(raw: string): number | null | undefined {
+  const s = raw.trim()
+  if (s === '') return null
+  const n = Number(s)
+  return Number.isInteger(n) && n >= 1 && n <= 0xffff_ffff ? n : undefined
+}
+
+/** A `set_model_limits` call: the model and both fields, `null` = unknown. */
+export type Limits = { id: string; context: number | null; output: number | null }
+
+/** What Save sends for the typed fields (empty = `null`); `null` while a field is invalid or nothing changed. Clear sends `null` for both. */
+export function limitsSave(m: ProviderModel, ctx: string, out: string): Limits | null {
+  const context = limitValue(ctx)
+  const output = limitValue(out)
+  if (context === undefined || output === undefined) return null
+  return (context ?? 0) !== m.context || (output ?? 0) !== m.output ? { id: m.id, context, output } : null
+}
+
+/** `2.1 s · 1,873 in · 41 out · finish stop · thinking off sent` — the Test summary call's numbers, the reported ones only. */
+export function summaryTestStats(t: SummaryTest): string {
+  const n = (v: number) => v.toLocaleString('en-US')
+  return [
+    `${(Number(t.latency_ms) / 1000).toFixed(1)} s`,
+    t.tokens_in !== null && `${n(t.tokens_in)} in`,
+    t.tokens_out !== null && `${n(t.tokens_out)} out`,
+    t.reasoning_tokens !== null && `${n(t.reasoning_tokens)} thinking`,
+    t.finish_reason && `finish ${t.finish_reason}`,
+    t.thinking_off_sent && 'thinking off sent',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/** One probe row as text (the slash `/provider find` toast). */
+export function probeLine(s: LocalServer): string {
+  const state = !s.reachable ? 'not running' : s.added_as ? `${s.models} models · added as ${s.added_as}` : `${s.models} models`
+  return `${runtimeLabel(s.runtime)} ${s.base_url} · ${state}`
 }

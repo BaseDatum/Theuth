@@ -14,7 +14,7 @@ import { touch } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import { dialogPlacement, useFavorites } from './ModelMenu'
-import { ModelPicker } from './ModelPicker'
+import { LocalTag, ModelPicker } from './ModelPicker'
 
 const NONE = '__none__'
 
@@ -37,6 +37,7 @@ export function ModelCombobox({
   id,
   className,
   size,
+  localFirst,
   'aria-label': ariaLabel,
 }: {
   models: ModelInfo[]
@@ -51,6 +52,8 @@ export function ModelCombobox({
   className?: string
   size?: 'sm' | 'default'
   'aria-label'?: string
+  /** 177 U4: local models first (the summary-model pickers). */
+  localFirst?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const current = value ? models.find((m) => m.id === value) : undefined
@@ -58,12 +61,14 @@ export function ModelCombobox({
   const trigger = (
     <Button id={id} variant="outline" size={size} disabled={disabled} aria-label={ariaLabel} className={cn('justify-between font-normal', className)}>
       <span className="truncate">{triggerLabel(current, value, none, effort?.current)}</span>
+      {current?.local && <LocalTag />}
       <ChevronDown className="size-4 opacity-70" />
     </Button>
   )
   const picker = (className?: string, listClassName?: string) => (
     <ModelPicker
       models={models}
+      localFirst={localFirst}
       model={value ?? undefined}
       extra={value && !current ? [value] : undefined}
       effort={effort && { ...effort, onSelect: (level) => (setOpen(false), effort.onSelect(level)) }}

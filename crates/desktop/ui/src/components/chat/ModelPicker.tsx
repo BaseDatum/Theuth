@@ -35,22 +35,28 @@ export type View = {
 export function withExtra(models: ModelInfo[], extra: string[] | undefined): ModelInfo[] {
   const add = (extra ?? []).filter((id) => !models.some((m) => m.id === id))
   if (add.length === 0) return models
-  return [...models, ...add.map((id) => ({ id, name: id, provider: OTHER, context: 0, reasoning: false, image: false, efforts: [], budget_min: null, budget_max: null }))]
+  return [...models, ...add.map((id) => ({ id, name: id, provider: OTHER, context: 0, reasoning: false, image: false, efforts: [], budget_min: null, budget_max: null, local: false }))]
 }
 
-/** The rows of one picker state (§3.1–§3.3, §3.5, 127 favorites); pure, so the levels are unit-testable without React. */
-export function viewFor(a: { models: ModelInfo[]; model: string | undefined; provider: string | null; query: string; none?: { label: string }; extra?: string[]; favorites?: string[] }): View {
+/** 177 U4: the providers that serve `local` models. */
+export const localProviders = (models: ModelInfo[]): Set<string> => new Set(models.filter((m) => m.local).map((m) => m.provider))
+
+/** Stable partition: the rows `isLocal` accepts first (177 U4, the summary pickers). */
+const localsFirst = <T,>(rows: T[], isLocal: (r: T) => boolean): T[] => [...rows.filter(isLocal), ...rows.filter((r) => !isLocal(r))]
+
+/** The rows of one picker state (§3.1–§3.3, §3.5, 127 favorites); pure, so the levels are unit-testable without React. `localFirst` (177 U4): local providers and search hits lead. */
+export function viewFor(a: { models: ModelInfo[]; model: string | undefined; provider: string | null; query: string; none?: { label: string }; extra?: string[]; favorites?: string[]; localFirst?: boolean }): View {
   const models = withExtra(a.models, a.extra)
-  const providers = providersOf(models)
+  const local = localProviders(models)
+  const providers = a.localFirst ? localsFirst(providersOf(models), (p) => local.has(p.id)) : providersOf(models)
   const favorites = a.favorites ?? []
   const current = a.model === undefined ? undefined : models.find((m) => m.id === a.model)
   const currentRow: Row[] = a.model === undefined ? [] : [{ kind: 'current', value: `current:${a.model}`, id: a.model, name: current?.name ?? a.model, provider: current?.provider }]
   const modelRow = (m: ModelInfo, current: boolean): Row => ({ kind: 'model', value: `model:${m.id}`, m, current, favorite: favorites.includes(m.id) })
   const search = searchTerms(a.query).length > 0
   if (search) {
-    const results: Row[] = rankModels(models, a.query)
-      .filter((m) => m.id !== a.model)
-      .map((m) => modelRow(m, false))
+    const ranked = rankModels(models, a.query).filter((m) => m.id !== a.model)
+    const results: Row[] = (a.localFirst ? localsFirst(ranked, (m) => m.local) : ranked).map((m) => modelRow(m, false))
     const rows = [...currentRow, ...(results.length ? results : [{ kind: 'empty', value: 'empty' } as const])]
     return { mode: 'search', provider: a.provider, rows }
   }
@@ -87,6 +93,8 @@ export function contextLabel(context: number): string {
 }
 
 export type ModelPickerProps = {
+  /** 177 U4: local providers and local search hits first (the summary-model pickers). */
+  localFirst?: boolean
   models: ModelInfo[]
   /** The current id (session, draft, or form value); `undefined` → no Current row. */
   model: string | undefined
@@ -135,10 +143,16 @@ function SearchInput({ query, setQuery, canGoBack, back, onToggleFavorite }: { q
 /** The `CommandItem` look for the rows cmdk does not own (`leadRow`). */
 const LEAD_ROW = 'flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg:not([class*=text-])]:text-muted-foreground'
 
-export function ModelPicker({ models, model, onSelect, effort, none, extra, favorites, onToggleFavorite, className, listClassName }: ModelPickerProps) {
+/** 177 U4: the small tag of a model (or provider) served by a local model server. */
+export function LocalTag() {
+  return <span className="shrink-0 rounded-sm border border-border px-1 text-[10px] leading-4 text-fg-tertiary">local</span>
+}
+
+export function ModelPicker({ models, model, onSelect, effort, none, extra, favorites, onToggleFavorite, className, listClassName, localFirst }: ModelPickerProps) {
   const [query, setQuery] = useState('')
   const [provider, setProvider] = useState<string | null>(null)
-  const view = viewFor({ models, model, provider, query, none, extra, favorites })
+  const view = viewFor({ models, model, provider, query, none, extra, favorites, localFirst })
+  const local = localProviders(models)
   const canGoBack = view.rows.some((r) => r.kind === 'back')
   // cmdk 1.1.1 always moves the highlight to the first `[cmdk-item]` in the DOM after a search change
   // (and a controlled `value` cannot veto that: it reports the move through `onValueChange` and keeps
@@ -151,6 +165,7 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
         return (
           <button key={row.value} type="button" className={LEAD_ROW} onClick={() => onSelect(row.id)}>
             <span className="truncate">{row.name}</span>
+            {row.provider && local.has(row.provider) && <LocalTag />}
             {row.provider && <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{row.provider}</span>}
             <Check className={row.provider ? undefined : 'ml-auto'} />
           </button>
@@ -195,6 +210,7 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
         return (
           <CommandItem key={row.value} value={row.value} onSelect={() => setProvider(row.id)}>
             <span className="truncate">{row.id}</span>
+            {local.has(row.id) && <LocalTag />}
             <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{row.count} models</span>
             {row.current && <Check className="size-4" />}
             <ChevronRight className="size-4 opacity-70" />
@@ -204,6 +220,7 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
         return (
           <CommandItem key={row.value} value={row.value} onSelect={() => onSelect(row.m.id)}>
             <span className="truncate">{row.m.name}</span>
+            {row.m.local && <LocalTag />}
             <span className="ml-auto shrink-0 text-xs text-fg-tertiary">{[row.m.provider, contextLabel(row.m.context)].filter(Boolean).join(' · ')}</span>
             {row.current && <Check className="size-4" />}
             {star(row.m.id, true)}
@@ -213,6 +230,7 @@ export function ModelPicker({ models, model, onSelect, effort, none, extra, favo
         return (
           <CommandItem key={row.value} value={row.value} onSelect={() => onSelect(row.m.id)}>
             <span className="truncate">{row.m.name}</span>
+            {row.m.local && <LocalTag />}
             <span className="ml-auto shrink-0 text-xs text-fg-tertiary">
               {view.mode === 'search' ? row.m.provider : [contextLabel(row.m.context), row.m.image ? 'vision' : ''].filter(Boolean).join(' · ')}
             </span>

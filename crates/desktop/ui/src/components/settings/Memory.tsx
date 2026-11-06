@@ -1,13 +1,17 @@
-import { useQuery } from '@tanstack/react-query'
-import { ChevronRight } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { ChevronRight, CircleCheck, LoaderCircle, TriangleAlert } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
+import { toast } from 'sonner'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
+import { summaryTestStats } from '@/components/settings/providers'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
+import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Switch } from '@/components/ui/switch'
 import { ENDLESS_DEFAULTS, tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
+import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
 
 type Key = keyof typeof ENDLESS_DEFAULTS
 
@@ -59,6 +63,42 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
   )
 }
 
+/** 177 U5: what one `test_summary_call` came back with — the line and its numbers, or the error and what to do about it. */
+export function SummaryTestResult({ t }: { t: SummaryTest }) {
+  return t.ok ? (
+    <div role="status" className="flex flex-col gap-1 rounded-md border border-success-border bg-success-bg px-3 py-2 text-[13px]">
+      <p className="flex items-center gap-1.5 font-medium text-success">
+        <CircleCheck className="size-3.5 shrink-0" aria-hidden /> Summary call worked
+      </p>
+      {t.line && <p className="break-words">{t.line}</p>}
+      <p className="text-fg-secondary">{`${t.model} · ${summaryTestStats(t)}`}</p>
+    </div>
+  ) : (
+    <div role="status" className="flex flex-col gap-1 rounded-md border border-warning-border bg-warning-bg px-3 py-2 text-[13px]">
+      <p className="flex items-center gap-1.5 font-medium text-warning">
+        <TriangleAlert className="size-3.5 shrink-0" aria-hidden /> {t.error ?? 'The summary call failed'}
+      </p>
+      {t.hint && <p>{t.hint}</p>}
+      <p className="text-fg-secondary">{`${t.model} · ${summaryTestStats(t)}`}</p>
+    </div>
+  )
+}
+
+/** 177 U5: **Test summary call** on `model` (`null` = nothing to test), with a busy state — a local model can take tens of seconds — and the result under it. */
+export function SummaryTestCall({ model, size = 'sm' }: { model: string | null | undefined; size?: 'sm' | 'xs' }) {
+  const api = useApi()
+  const test = useMutation({ mutationFn: (m: string) => api.test_summary_call(m), onError: (e) => void toast.error(e.message) })
+  return (
+    <div className="flex w-full flex-col items-start gap-2">
+      <Button size={size} variant="outline" disabled={!model || test.isPending} onClick={() => model && test.mutate(model)}>
+        {test.isPending && <LoaderCircle className="animate-spin" />}
+        {test.isPending ? 'Testing…' : 'Test summary call'}
+      </Button>
+      {test.isPending ? <p className="text-[13px] text-fg-secondary">{`Waiting for ${test.variables}; a local model can take tens of seconds.`}</p> : test.data && <SummaryTestResult t={test.data} />}
+    </div>
+  )
+}
+
 /**
  * Settings › Memory (137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`).
  * `focus`: `model` focuses the compactor model (the Memory panel's "Change model", 137F); `spend` opens Advanced on the
@@ -77,6 +117,9 @@ export function Memory({ focus = null }: { focus?: string | null }) {
   const [slackPct, setSlackPct] = useState<number | null>(null)
   const kb = viewKb ?? (s ? s.view_bytes / 1000 : 128)
   const pct = slackPct ?? (s ? s.slack * 100 : 12.5)
+  // 177 U5: the model a summary call would use now — the compactor model, else the title model; else each chat's own.
+  const title = useQuery({ queryKey: queryKeys.titleModel, queryFn: () => api.title_model(), enabled: !!s && !s.model })
+  const testModel = s?.model ?? title.data?.id
   // R1-D3: `null` resolves to the title model when one is set; the picker's first row names what that is right now.
   const resolved = useCompactorLabel(null)
   // The control is disabled until the settings load, and a disabled control takes no focus.
@@ -163,11 +206,19 @@ export function Memory({ focus = null }: { focus?: string | null }) {
             aria-label="Compactor model"
             className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
+            localFirst
             value={s?.model}
             none={{ label: resolved }}
             disabled={busy}
             onChange={(id) => patch({ model: id })}
           />
+        </Row>
+        <Row
+          wide
+          label="Test summary call"
+          description={testModel ? `Sends one summary of a fixed sample to ${testModel}, as the summariser would, and shows what came back.` : "Unset with no title model, each chat summarises with its own model: pick a compactor model to test it."}
+        >
+          <SummaryTestCall model={testModel} />
         </Row>
         <Row label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
           <span className="text-sm text-fg-secondary">copy · grounding · status · format — always on</span>

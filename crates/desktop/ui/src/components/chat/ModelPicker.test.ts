@@ -1,6 +1,8 @@
 import { expect, test } from 'vitest'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import { contextLabel, favoriteTarget, type View, viewFor } from './ModelPicker'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { contextLabel, favoriteTarget, ModelPicker, type View, viewFor, withExtra } from './ModelPicker'
 
 const model = (provider: string, id: string, name: string, extra: Partial<ModelInfo> = {}): ModelInfo => ({
   id,
@@ -12,6 +14,7 @@ const model = (provider: string, id: string, name: string, extra: Partial<ModelI
   efforts: [],
   budget_min: null,
   budget_max: null,
+  local: false,
   ...extra,
 })
 
@@ -115,4 +118,22 @@ test('contextLabel: thousands, empty when unknown', () => {
   expect(contextLabel(200_000)).toBe('200k')
   expect(contextLabel(1_047_576)).toBe('1048k')
   expect(contextLabel(0)).toBe('')
+})
+
+test('177 U4: local models and their providers carry the "local" tag; `localFirst` (summary pickers) lists local providers and local search hits first', () => {
+  const local = [...models, model('mlx', 'mlx/LFM3-1.7B-MLX-bf16', 'LFM3 1.7B', { local: true }), model('ollama', 'ollama/gpt-oss:20b', 'gpt-oss 20B', { local: true })]
+  expect(values(viewFor({ models: local, model: undefined, provider: null, query: '' }))).toEqual(['provider:anthropic', 'provider:mlx', 'provider:ollama', 'provider:openai'])
+  expect(values(viewFor({ models: local, model: undefined, provider: null, query: '', localFirst: true }))).toEqual(['provider:mlx', 'provider:ollama', 'provider:anthropic', 'provider:openai'])
+  const hits = (localFirst: boolean) => values(viewFor({ models: local, model: undefined, provider: null, query: 'gpt', localFirst }))
+  expect(hits(true)[0]).toBe('model:ollama/gpt-oss:20b')
+  expect(hits(true).slice(1).sort()).toEqual(hits(false).filter((v) => v !== 'model:ollama/gpt-oss:20b').sort())
+  // An `extra` (stale on-file) id is never local.
+  expect(withExtra([], ['x/gone'])[0]!.local).toBe(false)
+  const tags = (html: string) => html.match(/>local</g)?.length ?? 0
+  const providers = renderToStaticMarkup(createElement(ModelPicker, { models: local, model: undefined, onSelect() {} }))
+  expect(tags(providers)).toBe(2)
+  expect(providers).toMatch(/>mlx<\/span><span[^>]*>local</)
+  // One provider opens on its models: each local row is tagged, a cloud one is not.
+  expect(tags(renderToStaticMarkup(createElement(ModelPicker, { models: local.filter((m) => m.provider === 'mlx'), model: undefined, onSelect() {} })))).toBe(1)
+  expect(tags(renderToStaticMarkup(createElement(ModelPicker, { models: models.filter((m) => m.provider === 'openai'), model: undefined, onSelect() {} })))).toBe(0)
 })

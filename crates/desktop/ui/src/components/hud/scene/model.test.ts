@@ -264,7 +264,7 @@ test('Revision 2 — gaugePath: empty at 0, one arc with the large-arc flag flip
 test('Revision 2 — contextFill: the provider’s last bill over the estimate, context_size over the catalog window, clamped; unknown window → null (no gauge, no fake value)', () => {
   const b = { head_images_tokens: 0, head_text_tokens: 0, tail_messages: 0, tail_tokens: 0, system_tokens: 0, total_estimate: 90_000, last_provider_context: 118_000, calibration: 1, live: true }
   const s = F.sessions.find((x) => x.id === 'desk-ops')!
-  const models = [{ id: s.model, name: 'm', provider: 'p', context: 200_000, reasoning: false, image: false, efforts: [], budget_min: null, budget_max: null }]
+  const models = [{ id: s.model, name: 'm', provider: 'p', context: 200_000, reasoning: false, image: false, efforts: [], budget_min: null, budget_max: null, local: false }]
   expect(contextFill(b, s, models)).toEqual({ fill: 0.59, used: 118_000, window: 200_000, live: true })
   expect(contextFill({ ...b, last_provider_context: null }, s, models)).toMatchObject({ fill: 0.45, used: 90_000 })
   expect(contextFill(b, { ...s, context_size: 128_000 }, models)).toMatchObject({ fill: 118 / 128, window: 128_000 })

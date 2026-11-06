@@ -5,7 +5,7 @@ import { NO_PICK, useDrafts } from '@/lib/drafts'
 import { useSessions } from '@/store/sessions'
 import { type Ctx, isCommand, run, sendRaw, slashMenu } from './slash'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
 
 /** One macrotask hop: every microtask queued so far (promise continuations) has run. */
 const flush = () => new Promise<void>((r) => setImmediate(r))
@@ -199,6 +199,50 @@ test('162 D8: /provider refresh <name> toasts the counts, bare refresh opens Con
   expect(ctx.navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'connections' }, search: { session: 'abc' } })
   refresh_provider_models.mockRejectedValueOnce(new Error('rwx has no key; set it first'))
   await expect(run('/provider refresh rwx', ctxFor({ refresh_provider_models }))).rejects.toThrow('rwx has no key; set it first')
-  await expect(run('/provider bogus', ctxFor({}))).rejects.toThrow('usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]')
+  await expect(run('/provider bogus', ctxFor({}))).rejects.toThrow('usage: /provider [add <name> <url> [key] | find | limits <provider> <model> <context> [output] | refresh <name> | rm <name>]')
   expect(refresh_provider_models).toHaveBeenCalledTimes(3)
+})
+
+test('177 U6: /provider add takes an optional key (none = null, a local server), bare add opens Connections', async () => {
+  const add_provider = vi.fn().mockResolvedValue({})
+  await run('/provider add mlx http://127.0.0.1:8080/v1/', ctxFor({ add_provider }))
+  expect(add_provider).toHaveBeenLastCalledWith('mlx', 'http://127.0.0.1:8080/v1/', null)
+  await run('/provider add rwx https://rwx/v1/ sk-fake', ctxFor({ add_provider }))
+  expect(add_provider).toHaveBeenLastCalledWith('rwx', 'https://rwx/v1/', 'sk-fake')
+  const ctx = ctxFor({ add_provider })
+  await run('/provider add mlx', ctx)
+  expect(ctx.navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'connections' }, search: { session: 'abc' } })
+  // The engine's refusal of a keyless cloud URL surfaces verbatim.
+  add_provider.mockRejectedValueOnce(new Error('api key is empty'))
+  await expect(run('/provider add rwx https://rwx/v1/', ctxFor({ add_provider }))).rejects.toThrow('api key is empty')
+  expect(add_provider).toHaveBeenCalledTimes(3)
+})
+
+test('177 U6: /provider find probes and lists each server in one toast', async () => {
+  const local_servers_probe = vi.fn().mockResolvedValue([
+    { runtime: 'ollama', base_url: 'http://127.0.0.1:11434/v1/', reachable: true, models: 3, added_as: null, error: null },
+    { runtime: 'omlx', base_url: 'http://127.0.0.1:8080/v1/', reachable: true, models: 2, added_as: 'mlx', error: null },
+    { runtime: 'lmstudio', base_url: 'http://127.0.0.1:1234/v1/', reachable: false, models: 0, added_as: null, error: 'connection refused' },
+  ])
+  await run('/provider find', ctxFor({ local_servers_probe }))
+  expect(toast.message).toHaveBeenLastCalledWith('Local servers', {
+    description: 'Ollama http://127.0.0.1:11434/v1/ · 3 models\nomlx http://127.0.0.1:8080/v1/ · 2 models · added as mlx\nLM Studio http://127.0.0.1:1234/v1/ · not running',
+  })
+})
+
+test('177 U6: /provider limits <provider> <model> <context> [output] — 0 = unknown, an omitted output keeps the stored one, bad numbers are refused', async () => {
+  const set_model_limits = vi.fn().mockImplementation(async (_p: string, id: string, context: number | null, output: number | null) => ({ id, name: id, context: context ?? 0, output: output ?? 0, source: 'user', assumed_context: null }))
+  const provider_models = vi.fn().mockResolvedValue([{ id: 'LFM3', name: 'LFM3', context: 0, output: 1024, source: 'server', assumed_context: 16_384 }])
+  await run('/provider limits mlx LFM3 32768 2048', ctxFor({ set_model_limits, provider_models }))
+  expect(set_model_limits).toHaveBeenLastCalledWith('mlx', 'LFM3', 32_768, 2_048)
+  expect(provider_models).not.toHaveBeenCalled()
+  expect(toast).toHaveBeenLastCalledWith('mlx/LFM3: context 32,768 · output 2,048')
+  await run('/provider limits mlx LFM3 32768', ctxFor({ set_model_limits, provider_models }))
+  expect(set_model_limits).toHaveBeenLastCalledWith('mlx', 'LFM3', 32_768, 1_024)
+  await run('/provider limits mlx LFM3 0 0', ctxFor({ set_model_limits, provider_models }))
+  expect(set_model_limits).toHaveBeenLastCalledWith('mlx', 'LFM3', null, null)
+  expect(toast).toHaveBeenLastCalledWith('mlx/LFM3: context unknown · output unknown')
+  for (const bad of ['/provider limits mlx LFM3', '/provider limits mlx', '/provider limits mlx LFM3 big', '/provider limits mlx LFM3 4096 -1', '/provider limits mlx LFM3 1.5'])
+    await expect(run(bad, ctxFor({ set_model_limits, provider_models }))).rejects.toThrow('usage: /provider limits <provider> <model> <context> [output]')
+  expect(set_model_limits).toHaveBeenCalledTimes(3)
 })

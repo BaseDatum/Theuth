@@ -12,6 +12,7 @@ const model = (provider: string, id: string, name: string, extra: Partial<ModelI
   efforts: [],
   budget_min: null,
   budget_max: null,
+  local: false,
   ...extra,
 })
 

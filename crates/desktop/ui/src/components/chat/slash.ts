@@ -1,6 +1,6 @@
 import type { UseNavigateResult } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import { refreshedText } from '@/components/settings/providers'
+import { limitValue, probeLine, refreshedText } from '@/components/settings/providers'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys } from '@/lib/rpc'
 import { openSearch } from '@/lib/search'
@@ -150,8 +150,8 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   { name: '/quit', hint: '', desc: 'exit' },
   {
     name: '/provider',
-    hint: '[add|refresh|rm <name>]',
-    desc: 'providers (built-in and custom)',
+    hint: '[add|find|limits|refresh|rm]',
+    desc: 'providers (built-in, local and custom)',
   },
   {
     name: '/aws',
@@ -279,6 +279,9 @@ const split = (s: string): [string, string] => {
   const at = s.indexOf(' ')
   return at < 0 ? [s, ''] : [s.slice(0, at), s.slice(at + 1).trim()]
 }
+
+/** 177 U6: `/provider limits`; `0` = unknown, an omitted output keeps the stored one. */
+const LIMITS_USAGE = 'usage: /provider limits <provider> <model> <context> [output]'
 
 const STYLES: readonly CompactStyle[] = ['summary', 'cut', 'snap', 'clear']
 const style = (s: string) => STYLES.find((x) => x === s)
@@ -597,9 +600,30 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (sub === 'add') {
         const [name, after] = split(rest)
         const [url, key] = split(after)
-        if (!name || !url || !key) return settings(navigate, 'connections', session)
-        await api.add_provider(name, url, key)
+        if (!name || !url) return settings(navigate, 'connections', session)
+        // 177: the key is optional; the engine refuses a missing one for a non-local URL ("api key is empty").
+        await api.add_provider(name, url, key || null)
         toast(`added provider ${name}`)
+        return
+      }
+      if (sub === 'find') {
+        const servers = await api.local_servers_probe()
+        toast.message('Local servers', { description: servers.map(probeLine).join('\n') || 'nothing answered on 127.0.0.1' })
+        return
+      }
+      if (sub === 'limits') {
+        const [provider, after] = split(rest)
+        const [model, nums] = split(after)
+        const [ctxRaw, outRaw] = split(nums)
+        // `0` = unknown, as the engine reports it.
+        const limit = (s: string) => (s === '0' ? null : limitValue(s))
+        const context = limit(ctxRaw)
+        const output = outRaw ? limit(outRaw) : undefined
+        if (!provider || !model || !ctxRaw || context === undefined || (outRaw && output === undefined)) throw new Error(LIMITS_USAGE)
+        // No output given: keep the stored one.
+        const keep = output === undefined ? ((await api.provider_models(provider)).find((m) => m.id === model)?.output ?? 0) || null : output
+        const m = await api.set_model_limits(provider, model, context, keep)
+        toast(`${provider}/${m.id}: context ${m.context ? m.context.toLocaleString('en-US') : 'unknown'} · output ${m.output ? m.output.toLocaleString('en-US') : 'unknown'}`)
         return
       }
       if (sub === 'refresh') {
@@ -612,7 +636,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         toast(`removed provider ${rest}`)
         return
       }
-      throw new Error('usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]')
+      throw new Error('usage: /provider [add <name> <url> [key] | find | limits <provider> <model> <context> [output] | refresh <name> | rm <name>]')
     case '/aws': {
       if (!arg) return settings(navigate, 'connections', session)
       const r = await api.set_aws_profile(arg === 'clear' ? null : arg)
