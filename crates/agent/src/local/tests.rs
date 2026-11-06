@@ -200,10 +200,11 @@ async fn zero_limits_send_no_max_tokens_and_keyless_sends_placeholder_key() {
     }
 }
 
-/// 177 R1-1: the assumed window sizes memory only. A chat request on a local
-/// model whose window is unknown is sent whatever its size (no local refusal,
-/// no `max_tokens`); memory budgets size to 16,384; a known small window still
-/// refuses locally.
+/// 177 R1-1: the assumed window sizes the memory compactor only. A chat
+/// request on a local model whose window is unknown is sent whatever its size
+/// (no local refusal, no `max_tokens`); the turn's view allowance is the
+/// unknown-cloud one; the compactor budget sizes to 16,384; a known small
+/// window still refuses locally.
 #[tokio::test]
 async fn assumed_window_sizes_memory_but_never_refuses() {
     let dir = crate::TestDir::new("local-r1");
@@ -222,6 +223,17 @@ async fn assumed_window_sizes_memory_but_never_refuses() {
         },
     );
     assert_eq!(b.target_tokens, 16_384 / 4);
+    // The turn's view allowance (Kind::Turn) uses known windows only: an
+    // unknown local window sizes exactly like an unknown cloud one.
+    let cloud = zero_model("rwx");
+    let view = |m: &models::Resolved| {
+        crate::tokens::budget(crate::tokens::Kind::Turn, m, Default::default())
+    };
+    assert_eq!(view(&model), view(&cloud));
+    assert_eq!(
+        view(&model).target_tokens,
+        crate::tokens::UNKNOWN_WINDOW / 2
+    );
     // ≈ 30k tokens even at 4 B/token: over any 16k ceiling.
     let big = "theuth system prompt and tools. ".repeat(4_000);
     let backend = Backend::for_model(&model, &genai::Client::builder().build().unwrap(), &auth);

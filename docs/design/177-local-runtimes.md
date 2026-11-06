@@ -58,10 +58,11 @@ worker E: `177-notes-e.md`.
   the catalog and re-resolves the endless compactors. Every catalog reload
   (add, refresh, remove, limits) reaches running chats: their model takes the
   new entry at its next call, so the UI need not say "applies to new chats".
-- **E7** An unknown local context is assumed to be 16,384 tokens for MEMORY and
-  SUMMARY budgets only: the endless compactor's context and targets,
-  `test_summary_call`, and the endless view allowance (`tokens::memory_window`,
-  `models::Limit::assumed`, never written). It never refuses a request and
+- **E7** An unknown local context is assumed to be 16,384 tokens for the
+  memory COMPACTOR only: its context and targets, and `test_summary_call`
+  (`tokens::memory_window`, `models::Limit::assumed`, never written). The
+  turn's memory-view allowance, like the turn, uses known windows only (else
+  the pre-177 `view_bytes` cap). It never refuses a request and
   never drives chat auto-compaction: a chat turn on such a model is sent as
   before 177 (auto-compaction off, `max_tokens` omitted), and the session logs
   once "<model>'s context window is unknown; set it under Settings ›

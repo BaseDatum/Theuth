@@ -275,10 +275,15 @@ pub(crate) static EXEMPT_FOR_TESTS: LazyLock<Mutex<std::collections::HashSet<Str
     LazyLock::new(Default::default);
 
 /// G1 budget policy for one memory-side request of `kind` to `model`: the
-/// compactor's context and the turn's view allowance. Sized on
-/// [`memory_window`] (177 E7: a local model's unknown window is assumed here).
+/// compactor's context ([`Kind::Compactor`], sized on [`memory_window`] —
+/// 177 E7: a local model's unknown window is assumed here) and the turn's view
+/// allowance ([`Kind::Turn`], sized on known windows only like the turn
+/// itself: an unknown window keeps the pre-177 behaviour, R1 19:20).
 pub fn budget(kind: Kind, model: &Resolved, l: Limits) -> Budget {
-    let window = memory_window(model);
+    let window = match kind {
+        Kind::Compactor => memory_window(model),
+        Kind::Turn | Kind::Side => window(model),
+    };
     let ceiling = ceiling_at(window, l.reply_tokens);
     let mut target = (window as f64 * kind.fill()) as u64;
     if kind != Kind::Turn

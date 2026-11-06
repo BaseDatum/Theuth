@@ -84,9 +84,9 @@ Branch `fix/177-e`, base `b540592e`. Design: `177-local-runtimes.md`.
     no cloud window), and gives their unknown windows
     `limit.assumed = 16,384` (`#[serde(skip)]`, never written; `context` stays 0).
     `tokens::memory_window` (known window, else `assumed`, else 16,384 for a
-    local runtime's id with no entry) sizes `tokens::budget` only — the endless
-    compactor's context and target (so `test_summary_call` too) and the turn's
-    view allowance. `tokens::window` (preflight, `ceiling`) and the turn's
+    local runtime's id with no entry) sizes `tokens::budget(Kind::Compactor)`
+    only — the endless compactor's context and target (so `test_summary_call`
+    too). The turn's view allowance (`Kind::Turn`, R1 19:20), `tokens::window` (preflight, `ceiling`) and the turn's
     `window_of` (auto-compaction, reply budget) use known windows only, so a chat
     turn on an unknown local window is sent as before 177: auto-compaction off,
     `max_tokens` omitted. `list_models` shows `context: 0`; `provider_models`
