@@ -167,6 +167,16 @@ fn openrouter_options(
     }
 }
 
+/// 177 E2: the body field that switches a local server's chat template out
+/// of thinking (vLLM, llama.cpp, omlx, SGLang read it), merged last. Never
+/// paired with an effort keyword: genai's omlx adapter turns any
+/// `reasoning_effort` into `enable_thinking: true`.
+pub(crate) fn thinking_off(opts: ChatOptions) -> ChatOptions {
+    opts.with_extra_body(serde_json::json!({
+        "chat_template_kwargs": {"enable_thinking": false}
+    }))
+}
+
 impl Backend {
     /// The `cursor` namespace is the one id genai cannot serve; everything
     /// else, gateways included, goes through the genai client.
@@ -180,6 +190,26 @@ impl Backend {
                 client: client.clone(),
                 auth: auth.clone(),
             }
+        }
+    }
+
+    /// 177 E2: `resolved` is served by a local model server over the OpenAI
+    /// chat protocol — a local custom provider (gateway) of kind OpenAI, or
+    /// genai's own omlx adapter — where `chat_template_kwargs` steers thinking.
+    pub(crate) fn local_openai(&self, resolved: &Resolved) -> bool {
+        let Backend::Genai { auth, .. } = self else {
+            return false;
+        };
+        match target_for(resolved, auth) {
+            Some(t) => {
+                t.kind == AdapterKind::OpenAI
+                    && resolved
+                        .provider
+                        .as_deref()
+                        .and_then(|p| auth.gateway(p))
+                        .is_some_and(|g| g.local())
+            }
+            None => ns(&resolved.genai) == "omlx",
         }
     }
 

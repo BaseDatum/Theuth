@@ -113,6 +113,12 @@ impl Side {
             max_tokens: (reply > 0).then_some(reply),
         };
         let (req, opts) = frame.request(transport, self.session, None);
+        // 177 E2: titles and side calls to a local OpenAI-protocol server think not.
+        let opts = if current.backend.local_openai(&current.model) {
+            crate::backend::thinking_off(opts)
+        } else {
+            opts
+        };
         let request_id = Uuid::now_v7().to_string();
         // 136 §2.2: a detached call under a budgeted owner is refused like a
         // round call (`budget exhausted: …`); its cost counts either way.

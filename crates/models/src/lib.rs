@@ -347,12 +347,23 @@ static BUNDLED: LazyLock<BTreeMap<String, Provider>> = LazyLock::new(|| {
         .expect("bundled data/models.json is valid")
 });
 
+/// 177 E7: the window a local model with an unknown context is budgeted as.
+pub const ASSUMED_LOCAL_CONTEXT: u32 = 16_384;
+
 impl Catalog {
     /// Bundled catalog merged with `<data_dir>/models.json` (same shape; user wins per model,
     /// and user provider metadata wins). A missing user file is normal; a broken one is logged and skipped.
     /// Models with no context limit (gateway ids written by `AddProvider`) inherit limits,
     /// reasoning, vision, and reasoning options from their closest models.dev sibling by name.
     pub fn load(data_dir: &Path) -> Catalog {
+        Self::load_with(data_dir, &|_| false)
+    }
+
+    /// [`Catalog::load`], with `local(provider)` (or a block's own `local`)
+    /// marking local model servers (177 E7): their unknown windows are
+    /// [`ASSUMED_LOCAL_CONTEXT`], never a cloud sibling's, and they are never
+    /// anyone's sibling.
+    pub fn load_with(data_dir: &Path, local: &dyn Fn(&str) -> bool) -> Catalog {
         let mut providers = BUNDLED.clone();
         let path = data_dir.join("models.json");
         match std::fs::read_to_string(&path) {
@@ -367,11 +378,18 @@ impl Catalog {
                 tracing::warn!(path = %path.display(), error = %e, "ignoring unreadable models.json")
             }
         }
+        for (pid, p) in &mut providers {
+            p.local |= local(pid);
+            if p.local {
+                for m in p.models.values_mut().filter(|m| m.limit.context == 0) {
+                    m.limit.context = ASSUMED_LOCAL_CONTEXT;
+                }
+            }
+        }
         let mut cat = Catalog { providers };
         let fills: Vec<(String, String, Model)> = cat
             .providers
             .iter()
-            .filter(|(_, p)| !p.local)
             .flat_map(|(pid, p)| p.models.values().map(move |m| (pid, m)))
             .filter(|(_, m)| m.limit.context == 0)
             .filter_map(|(pid, m)| {
@@ -435,6 +453,13 @@ impl Catalog {
             return Some(m);
         }
         let (provider, slug) = id.rsplit_once('/').unwrap_or(("", id));
+        // 177 E7: an unlisted id of a local server (a local block, or genai's
+        // own local adapters) borrows no cloud window.
+        if self.providers.get(provider).is_some_and(|p| p.local)
+            || matches!(provider, "ollama" | "omlx")
+        {
+            return None;
+        }
         // `cursor/cursor-grok-4.6`: the vendor prefix is not the family.
         let mut want: Vec<&str> = tokens(slug).collect();
         if want
@@ -447,6 +472,8 @@ impl Catalog {
         let vendor = vendor_of(family);
         self.providers
             .iter()
+            // 177 E7: a local server's model (an assumed window) is nobody's sibling.
+            .filter(|(_, p)| !p.local)
             .flat_map(|(pid, p)| p.models.values().map(move |m| (pid, m)))
             .filter_map(|(pid, m)| {
                 let have: Vec<&str> = tokens(&m.id).collect();
@@ -974,5 +1001,58 @@ mod tests {
         let sibling = cat.resolve("rwx/claude-opus-5-5", &|_| true).unwrap();
         let m = sibling.model.unwrap();
         assert!(m.limit.context > 0 && m.protocol.is_none() && m.canonical.is_none());
+    }
+
+    /// 177 E7: a local server's unknown window is the assumed 16k, never a
+    /// cloud sibling's, and its models are nobody's sibling; the same id under
+    /// a cloud custom provider still borrows the sibling. Files without
+    /// `local`/`source` load as before.
+    #[test]
+    fn local_unknown_windows_are_assumed_not_borrowed() {
+        let dir = std::env::temp_dir().join(format!("models-e7-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let block = |big: u32| {
+            serde_json::json!({"models": {
+                "claude-opus-5-5": {"id": "claude-opus-5-5", "name": "o", "limit": {"context": 0, "output": 0}},
+                "zork-local-9": {"id": "zork-local-9", "name": "z", "limit": {"context": big, "output": 0}}
+            }})
+        };
+        std::fs::write(
+            dir.join("models.json"),
+            serde_json::json!({"lan": block(0), "rwx": block(0), "flagged": {"local": true, "models": {}}})
+                .to_string(),
+        )
+        .unwrap();
+        let c = Catalog::load_with(&dir, &|p| p == "lan");
+        let ctx = |id: &str| c.get(id).unwrap().1.limit.context;
+        assert_eq!(ctx("lan/claude-opus-5-5"), ASSUMED_LOCAL_CONTEXT);
+        assert_eq!(ctx("lan/zork-local-9"), ASSUMED_LOCAL_CONTEXT);
+        assert!(
+            ctx("rwx/claude-opus-5-5") > ASSUMED_LOCAL_CONTEXT,
+            "cloud keeps the sibling"
+        );
+        assert_eq!(
+            ctx("rwx/zork-local-9"),
+            0,
+            "a local model is nobody's sibling"
+        );
+        assert!(c.providers().any(|p| p.id == "flagged" && p.local));
+        assert!(
+            c.resolve("lan/unlisted-claude-opus-5-5", &|_| true)
+                .unwrap()
+                .model
+                .is_none()
+        );
+        assert!(
+            c.resolve("ollama/claude-opus-5-5", &|_| true)
+                .unwrap()
+                .model
+                .is_none()
+        );
+        assert_eq!(
+            c.get("lan/zork-local-9").unwrap().1.limit.source,
+            LimitSource::Unknown
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

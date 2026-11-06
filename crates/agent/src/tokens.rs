@@ -181,14 +181,23 @@ pub fn bytes_of(model: &str, tokens: u64) -> usize {
     (tokens as f64 * bytes_per_token(model)) as usize
 }
 
-/// The context window in tokens: the catalog's, else [`UNKNOWN_WINDOW`].
+/// The context window in tokens: the catalog's, else (177 E7) the assumed
+/// local window for a local runtime's id, else [`UNKNOWN_WINDOW`]. A local
+/// server's catalog entry already carries the assumed window
+/// (`models::Catalog::load_with`).
 pub fn window(model: &Resolved) -> u64 {
     model
         .model
         .as_ref()
         .map(|m| u64::from(m.limit.context))
         .filter(|w| *w > 0)
-        .unwrap_or(UNKNOWN_WINDOW)
+        .unwrap_or_else(|| {
+            if crate::local::runtime_named(model) {
+                u64::from(crate::local::ASSUMED_CONTEXT)
+            } else {
+                UNKNOWN_WINDOW
+            }
+        })
 }
 
 /// Who is asking (the quality fill differs).
@@ -297,9 +306,24 @@ pub fn preflight(model: &Resolved, req: &ChatRequest, reply_tokens: u64) -> Resu
         return Ok(est);
     }
     if est > max {
-        let known = model.model.as_ref().is_some_and(|m| m.limit.context > 0);
+        let known = model.model.as_ref().is_some_and(|m| {
+            m.limit.context > 0
+                && !(m.limit.source == models::LimitSource::Unknown
+                    && m.limit.context == crate::local::ASSUMED_CONTEXT)
+        });
+        // 177 E7: a local server's window is a guess until someone sets it.
+        let fix = if !known && window(model) == u64::from(crate::local::ASSUMED_CONTEXT) {
+            match model.id.split_once('/') {
+                Some((p, m)) => format!(
+                    "the local window is assumed; set the real one under Local servers or `/provider limits {p} {m} <context>`"
+                ),
+                None => "the local window is assumed; set the real one under Local servers".into(),
+            }
+        } else {
+            "a stale catalog window is corrected in the data dir's models.json".into()
+        };
         return Err(format!(
-            "prompt is too long: {est} tokens > {max} maximum (theuth preflight, not sent: {} estimated at {bpt:.2} bytes/token, window {}{}, reply {reply_tokens}; a stale catalog window is corrected in the data dir's models.json)",
+            "prompt is too long: {est} tokens > {max} maximum (theuth preflight, not sent: {} estimated at {bpt:.2} bytes/token, window {}{}, reply {reply_tokens}; {fix})",
             model.id,
             window(model),
             if known { "" } else { " assumed" },

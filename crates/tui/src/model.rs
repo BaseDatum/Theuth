@@ -730,6 +730,19 @@ pub enum Command {
     RemoveProvider(String),
     /// `refresh_provider_models` (162 D8).
     RefreshProvider(String),
+    /// `local_servers_probe` (177 E8).
+    FindLocalServers,
+    /// `set_model_limits` (177 E6).
+    SetModelLimits {
+        /// Provider name.
+        provider: String,
+        /// Model id within the provider.
+        model: String,
+        /// Context window; `None` = unknown.
+        context: Option<u32>,
+        /// Max output; `None` = unknown.
+        output: Option<u32>,
+    },
     /// `list_providers`.
     ListProviders,
     /// `link_status`.
@@ -1863,8 +1876,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/quit", "", "exit"),
     (
         "/provider",
-        "[add [name [url [key]]] | refresh <name> | rm <name>]",
-        "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for a custom provider's name, url, key; refresh lists a provider's models again",
+        "[add [name [url [key]]] | refresh <name> | rm <name> | limits <provider> <model> <context> [output] | find]",
+        "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for a custom provider's name, url, key (no key for a local server); refresh lists a provider's models again; limits sets a model's context/output (0 = unknown); find probes local model servers",
     ),
     (
         "/secrets",
@@ -8540,8 +8553,10 @@ impl Model {
         }
     }
 
-    /// `/provider` list | `add` [name [url [key]]] | `refresh <name>` | `rm <name>`.
+    /// `/provider` list | `add` [name [url [key]]] | `refresh <name>` | `rm <name>`
+    /// | `limits <provider> <model> <context> [output]` | `find` (177 E10).
     fn provider_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        const USAGE: &str = "usage: /provider [add [name [url [key]]] | refresh <name> | rm <name> | limits <provider> <model> <context> [output] | find]";
         let (sub, rest) = arg
             .split_once(' ')
             .map_or((arg, ""), |(s, r)| (s, r.trim()));
@@ -8570,7 +8585,8 @@ impl Model {
                         .push(Entry::Info(format!("provider add {name}: base url")));
                     return;
                 }
-                if key.is_empty() {
+                // 177 E10: a local server needs no key; a cloud one is asked for.
+                if key.is_empty() && !agent::local::private_url(url) {
                     self.prompt = Some(Prompt::ProviderKey {
                         name: name.to_owned(),
                         url: url.to_owned(),
@@ -8592,9 +8608,30 @@ impl Model {
                 send(tx, Command::RefreshProvider(name.to_owned()))
             }
             ("rm", name) if !name.is_empty() => send(tx, Command::RemoveProvider(name.to_owned())),
-            _ => self.entries.push(Entry::Error(
-                "usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]".into(),
-            )),
+            ("find", "") => send(tx, Command::FindLocalServers),
+            ("limits", rest) => {
+                let p: Vec<&str> = rest.split_whitespace().collect();
+                let n = |i: usize| p.get(i).map(|s| s.parse::<u32>());
+                match (p.len(), n(2), n(3)) {
+                    (3, Some(Ok(context)), None) | (4, Some(Ok(context)), Some(Ok(_))) => {
+                        send(
+                            tx,
+                            Command::SetModelLimits {
+                                provider: p[0].to_owned(),
+                                model: p[1].to_owned(),
+                                // 0 clears back to unknown.
+                                context: (context > 0).then_some(context),
+                                output: n(3).and_then(Result::ok).filter(|&o| o > 0),
+                            },
+                        );
+                    }
+                    _ => self.entries.push(Entry::Error(
+                        "usage: /provider limits <provider> <model> <context> [output] (0 = unknown)"
+                            .into(),
+                    )),
+                }
+            }
+            _ => self.entries.push(Entry::Error(USAGE.into())),
         }
     }
 
@@ -9301,11 +9338,23 @@ impl Model {
                 self.entries.push(Entry::Info(format!("name: {line}")));
             }
             Some(Prompt::ProviderUrl { name }) => {
-                self.prompt = Some(Prompt::ProviderKey {
-                    name: name.clone(),
-                    url: line.to_owned(),
-                });
                 self.entries.push(Entry::Info(format!("url: {line}")));
+                // 177 E10: a local server needs no key.
+                if agent::local::private_url(line) {
+                    send(
+                        tx,
+                        Command::AddProvider {
+                            name,
+                            base_url: line.to_owned(),
+                            key: String::new(),
+                        },
+                    );
+                } else {
+                    self.prompt = Some(Prompt::ProviderKey {
+                        name: name.clone(),
+                        url: line.to_owned(),
+                    });
+                }
             }
             Some(Prompt::ProviderKey { name, url }) => {
                 self.entries.push(Entry::Info("api key: set".into()));
@@ -15142,11 +15191,52 @@ mod tests {
         assert!(rx.try_recv().is_err(), "refresh needs a name");
         assert!(matches!(
             m.entries.last(),
-            Some(Entry::Error(e)) if e == "usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]"
+            Some(Entry::Error(e)) if e.starts_with("usage: /provider")
         ));
         m.submit("/provider add", &tx);
         m.cancel_prompt();
         assert!(m.prompt.is_none());
+    }
+
+    /// 177 E10: a local URL needs no key (one-shot and wizard), `limits`
+    /// parses context/output (0 = unknown), `find` probes; bad `limits` is usage.
+    #[test]
+    fn provider_local_add_limits_and_find() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/provider add omlx http://127.0.0.1:8000/v1", &tx);
+        assert!(m.prompt.is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::AddProvider { name, key, .. }) if name == "omlx" && key.is_empty()
+        ));
+        m.submit("/provider add", &tx);
+        m.submit("lms", &tx);
+        m.submit("http://localhost:1234/v1", &tx);
+        assert!(m.prompt.is_none(), "no key step for a local URL");
+        assert!(matches!(rx.try_recv(), Ok(Command::AddProvider { key, .. }) if key.is_empty()));
+        m.submit("/provider limits omlx LFM3 32768 4096", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelLimits { provider, model, context: Some(32768), output: Some(4096) })
+                if provider == "omlx" && model == "LFM3"
+        ));
+        m.submit("/provider limits omlx LFM3 0", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModelLimits {
+                context: None,
+                output: None,
+                ..
+            })
+        ));
+        m.submit("/provider limits omlx LFM3 big", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /provider limits"))
+        );
+        m.submit("/provider find", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::FindLocalServers)));
     }
 
     /// A vault listing with one two-version secret.

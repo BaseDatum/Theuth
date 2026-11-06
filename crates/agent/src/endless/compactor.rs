@@ -324,6 +324,47 @@ pub struct Reply {
     pub usage: Option<Usage>,
     /// Wall-clock time of the attempt.
     pub latency: Duration,
+    /// 177 E3: the provider's finish reason (`stop`, `length`, …), when reported.
+    pub stop: Option<String>,
+    /// 177 E3: the stop reason is the reply cap (`length`, `max_tokens`, …).
+    pub truncated: bool,
+    /// 177 E3: the reply carried reasoning (chunks, or reasoning tokens in usage).
+    pub reasoning: bool,
+    /// 177 E3: the `max_tokens` the attempt asked for (0 = not set).
+    pub cap: u32,
+    /// 177 E2/E3: the request switched thinking off (kwargs or an effort).
+    pub thinking_off: bool,
+}
+
+impl Reply {
+    /// Reasoning tokens from usage, when reported.
+    pub fn reasoning_tokens(&self) -> Option<u32> {
+        self.usage
+            .as_ref()?
+            .completion_tokens_details
+            .as_ref()?
+            .reasoning_tokens
+            .and_then(|n| u32::try_from(n).ok())
+    }
+
+    /// 177 E3: no text, and the model thought or hit the cap — the reply was
+    /// spent on thinking.
+    pub fn spent_on_thinking(&self) -> bool {
+        self.text.trim().is_empty() && (self.reasoning || self.truncated)
+    }
+}
+
+/// 177 E3: what the panel shows when a reply was spent on thinking.
+pub const THINKING_HINT: &str =
+    "Pick a non-thinking summary model, or switch thinking off on the server.";
+
+/// 177 E3: the error of a reply spent on thinking (a hard failure, R2-2).
+pub fn thinking_error(model: &str, r: &Reply) -> String {
+    format!(
+        "{model} used its whole {}-token reply on thinking (finish_reason={}). {THINKING_HINT}",
+        r.cap,
+        r.stop.as_deref().unwrap_or("unknown")
+    )
 }
 
 /// What the retry loop needs from a model: send the conversation so far, get
@@ -365,6 +406,15 @@ pub trait Compactor: Send + Sync {
         let _ = lines;
         self.compress(ctx, convo)
     }
+    /// 177 E3: [`Compactor::compress`] with thinking off forced and twice the
+    /// reply cap — the one retry of a local reply spent on thinking.
+    fn compress_thinking_off<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        self.compress(ctx, convo)
+    }
 }
 
 /// R2-11: `inner`, recording every answered attempt as it lands — so a job
@@ -373,6 +423,8 @@ pub trait Compactor: Send + Sync {
 pub struct Tally<'a> {
     inner: &'a dyn Compactor,
     rows: parking_lot::Mutex<Vec<CallRow>>,
+    /// 177 E9: the last answered reply.
+    last: parking_lot::Mutex<Option<Reply>>,
 }
 
 impl<'a> Tally<'a> {
@@ -381,6 +433,7 @@ impl<'a> Tally<'a> {
         Self {
             inner,
             rows: parking_lot::Mutex::new(Vec::new()),
+            last: parking_lot::Mutex::new(None),
         }
     }
 
@@ -389,8 +442,14 @@ impl<'a> Tally<'a> {
         self.rows.lock().clone()
     }
 
+    /// 177 E9: the last answered reply, if any.
+    pub fn last(&self) -> Option<Reply> {
+        self.last.lock().clone()
+    }
+
     fn record(&self, reply: &Result<Reply, String>) {
         if let Ok(r) = reply {
+            *self.last.lock() = Some(r.clone());
             let mut rows = self.rows.lock();
             let try_no = rows.len() as u32;
             rows.push(CallRow {
@@ -444,6 +503,17 @@ impl Compactor for Tally<'_> {
     ) -> BoxFuture<'a, Result<Reply, String>> {
         Box::pin(async move {
             let r = self.inner.compress_lines(ctx, convo, lines).await;
+            self.record(&r);
+            r
+        })
+    }
+    fn compress_thinking_off<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(async move {
+            let r = self.inner.compress_thinking_off(ctx, convo).await;
             self.record(&r);
             r
         })
@@ -723,6 +793,22 @@ async fn build_batch(
     })
 }
 
+/// One attempt bounded by `attempt`: `Ok(None)` ends the loop on the
+/// candidate already held (`have`, E7); a provider/transport error, or a
+/// timeout with no candidate, fails the node.
+async fn bounded(
+    fut: BoxFuture<'_, Result<Reply, String>>,
+    attempt: Duration,
+    have: bool,
+) -> Result<Option<Reply>, String> {
+    match tokio::time::timeout(attempt, fut).await {
+        Ok(Ok(reply)) => Ok(Some(reply)),
+        Ok(Err(error)) if !have || !is_timeout(&error) => Err(error),
+        Err(_) if !have => Err(format!("timed out after {}s", attempt.as_secs())),
+        _ => Ok(None),
+    }
+}
+
 /// Run the retry loop for one node: up to `tries` attempts, each guard
 /// failure answered in the same conversation (a size-only trip is cut and
 /// accepted, Q2); keep the shortest passing candidate, else the shortest of
@@ -730,6 +816,9 @@ async fn build_batch(
 /// fails or times out after a candidate exists ends the loop on that
 /// candidate (E7) instead of failing the node. A failure carries the rows
 /// of the attempts answered before it (R1-4).
+/// 177 E3: a local reply spent on thinking gets one more attempt with
+/// thinking off forced and twice the cap; a second one (or a cloud one)
+/// fails the node with [`thinking_error`].
 async fn build_one(
     c: &dyn Compactor,
     ctx: &str,
@@ -745,37 +834,68 @@ async fn build_one(
     let mut passing: Option<String> = None;
     let mut shortest: Option<String> = None;
     let mut used = 0i32;
-    for try_no in 0..tries.max(1) as u32 {
+    // 177 E3: thinking off forced (after a local reply spent on thinking).
+    let mut forced = false;
+    let row =
+        |calls: &Vec<CallRow>, reply: &Reply, raw: &str, guard: Option<&'static str>| CallRow {
+            try_no: calls.len() as u32,
+            bytes: Some(raw.len() as u32),
+            guard,
+            usage: reply.usage.clone(),
+            usd_estimate: reply
+                .usage
+                .as_ref()
+                .and_then(|u| c.rates().map(|r| estimate_usd(u, &r))),
+            latency_ms: reply.latency.as_millis() as u64,
+        };
+    for _ in 0..tries.max(1) as u32 {
         used += 1;
-        // E7 (R1-13): a slow attempt after a candidate exists keeps the
-        // candidate; a provider/transport error fails the node as before.
-        let reply = match tokio::time::timeout(attempt, c.compress(ctx, &convo)).await {
-            Ok(Ok(reply)) => reply,
-            Ok(Err(error)) if shortest.is_none() || !is_timeout(&error) => {
-                return Err(Failed { error, calls });
+        let send = |forced: bool| {
+            if forced {
+                c.compress_thinking_off(ctx, &convo)
+            } else {
+                c.compress(ctx, &convo)
             }
-            Err(_) if shortest.is_none() => {
+        };
+        let mut reply = match bounded(send(forced), attempt, shortest.is_some()).await {
+            Ok(Some(r)) => r,
+            Ok(None) => break,
+            Err(error) => return Err(Failed { error, calls }),
+        };
+        // 177 E3: a reply spent on thinking is no guard trip to correct: a
+        // local model gets one retry with thinking off forced and twice the
+        // cap; otherwise (or again) it is the node's error.
+        if reply.spent_on_thinking() {
+            calls.push(row(&calls, &reply, "", Some(guards::Trip::Empty.as_str())));
+            if forced || c.local().is_none() {
                 return Err(Failed {
-                    error: format!("timed out after {}s", attempt.as_secs()),
+                    error: thinking_error(c.model_id(), &reply),
                     calls,
                 });
             }
-            _ => break,
-        };
+            forced = true;
+            used += 1;
+            reply = match bounded(send(true), attempt, shortest.is_some()).await {
+                Ok(Some(r)) => r,
+                Ok(None) => break,
+                Err(error) => return Err(Failed { error, calls }),
+            };
+            if reply.spent_on_thinking() {
+                calls.push(row(&calls, &reply, "", Some(guards::Trip::Empty.as_str())));
+                return Err(Failed {
+                    error: thinking_error(c.model_id(), &reply),
+                    calls,
+                });
+            }
+        }
         let raw = reply.text.trim().to_owned();
         let check = accept(&raw, &input, &ruler, node_bytes);
-        let usd = reply
-            .usage
-            .as_ref()
-            .and_then(|u| c.rates().map(|r| estimate_usd(u, &r)));
-        calls.push(CallRow {
-            try_no,
-            bytes: Some(raw.len() as u32),
-            guard: check.as_ref().err().map(|t| t.as_str()),
-            usage: reply.usage.clone(),
-            usd_estimate: usd,
-            latency_ms: reply.latency.as_millis() as u64,
-        });
+        calls.push(row(
+            &calls,
+            &reply,
+            &raw,
+            check.as_ref().err().map(|t| t.as_str()),
+        ));
         let candidate = guards::cut_utf8(&raw, node_bytes as usize).to_owned();
         if !candidate.is_empty() && shortest.as_ref().is_none_or(|s| candidate.len() < s.len()) {
             shortest = Some(candidate.clone());
@@ -885,22 +1005,41 @@ pub struct ModelCompactor {
     pub effort: Option<ReasoningEffort>,
     /// 137F E6: `Some(queue key)` for a local compactor ([`local_endpoint`]).
     pub local: Option<String>,
+    /// 177 E2: a local OpenAI-protocol server — thinking off by
+    /// `chat_template_kwargs`, no effort keyword.
+    pub quiet: bool,
     /// `agent.endless` in force (the cloud stream bounds follow `attempt_secs`, R1-12).
     pub(crate) cfg: std::sync::Arc<parking_lot::RwLock<super::EndlessConfig>>,
 }
 
+/// 177 E3: a local compactor's single-unit reply cap (local calls cost nothing).
+pub const LOCAL_MAX_TOKENS: u32 = 2_048;
+
 impl ModelCompactor {
-    /// `max_tokens`: 600 plus the thinking budget the effort implies on
-    /// Anthropic (genai's `ant_reasoning.rs` budgets), else 600.
-    fn reply_tokens(&self) -> u32 {
-        let budget = match &self.effort {
+    /// The thinking budget the effort implies on Anthropic (genai's
+    /// `ant_reasoning.rs` budgets), else 0.
+    fn budget(&self) -> u32 {
+        match &self.effort {
             None | Some(ReasoningEffort::Zero | ReasoningEffort::Minimal) => 0,
             Some(ReasoningEffort::Low) => 1_024,
             Some(ReasoningEffort::Medium) => 8_000,
             Some(ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max) => 24_000,
             Some(ReasoningEffort::Budget(n)) => *n,
+        }
+    }
+
+    /// A single unit's `max_tokens`: 600 (177 E3: a local compactor 2048,
+    /// within the model's own output limit) plus the effort's thinking budget.
+    fn reply_tokens(&self) -> u32 {
+        let base = match (
+            &self.local,
+            self.model.model.as_ref().map(|m| m.limit.output),
+        ) {
+            (Some(_), Some(out)) if out > 0 => LOCAL_MAX_TOKENS.min(out),
+            (Some(_), _) => LOCAL_MAX_TOKENS,
+            (None, _) => MAX_TOKENS,
         };
-        MAX_TOKENS + budget
+        base + self.budget()
     }
 
     /// `[system][user ctx (marked)][user step][assistant][user correction]…`.
@@ -921,6 +1060,22 @@ impl ModelCompactor {
         convo: &[ChatMessage],
         lines: u32,
     ) -> (ChatRequest, ChatOptions) {
+        self.request_opts(t, ctx, convo, lines, false)
+    }
+
+    /// [`ModelCompactor::request_lines`]; `forced` (177 E3, the retry of a
+    /// reply spent on thinking) doubles the cap. Thinking is already off as far
+    /// as the transport allows: kwargs on a local OpenAI-protocol server,
+    /// `think: false` on genai's Ollama adapter, nothing elsewhere (a priceless
+    /// cloud gateway counts as local for 137F E6 but must not get the kwargs).
+    pub fn request_opts(
+        &self,
+        t: Transport,
+        ctx: &str,
+        convo: &[ChatMessage],
+        lines: u32,
+        forced: bool,
+    ) -> (ChatRequest, ChatOptions) {
         let anthropic = t == Transport::Anthropic;
         let mut messages = Vec::with_capacity(convo.len() + 2);
         if t == Transport::Anthropic {
@@ -936,18 +1091,20 @@ impl ModelCompactor {
         if t != Transport::Anthropic {
             req = req.with_system(self.system.clone());
         }
+        // 177 E3: a local single unit gets the local cap; a batch keeps the
+        // cloud formula (600 per line).
+        let cap = if anthropic {
+            batch_reply_tokens(MAX_TOKENS, lines)
+        } else if lines <= 1 {
+            self.reply_tokens()
+        } else {
+            batch_reply_tokens(MAX_TOKENS + self.budget(), lines)
+        };
         let mut opts = ChatOptions::default()
             .with_capture_usage(true)
             .with_capture_content(true)
             // R3-2: no `with_capture_reasoning_content` — only text parts are read.
-            .with_max_tokens(batch_reply_tokens(
-                if anthropic {
-                    MAX_TOKENS
-                } else {
-                    self.reply_tokens()
-                },
-                lines,
-            ));
+            .with_max_tokens(if forced { cap * 2 } else { cap });
         // E6: idle bounds; a local stream's first token may take the whole
         // attempt (prompt eval on slow hardware), which `build` bounds. A
         // cloud stream's first byte and every silence between chunks may
@@ -965,6 +1122,14 @@ impl ModelCompactor {
                 .with_prompt_cache_key(format!("endless:{}", self.session))
                 .with_cache_control(CacheControl::Ephemeral24h);
         }
+        // 177 E2: a local OpenAI-protocol server is told by its chat template,
+        // and never gets an effort keyword (genai's omlx adapter would turn
+        // it into `enable_thinking: true`); genai's own Ollama adapter keeps
+        // its `think: false`.
+        let kwargs = !anthropic && self.quiet;
+        if kwargs {
+            opts = crate::backend::thinking_off(opts);
+        }
         // R2-7 / R2-8: thinking off by transport, not by model id.
         let effort = if anthropic {
             let slug = self
@@ -973,6 +1138,8 @@ impl ModelCompactor {
                 .split_once("::")
                 .map_or(self.model.genai.as_str(), |(_, s)| s);
             Some(anthropic_off(slug))
+        } else if kwargs && crate::loop_::ns(&self.model.genai) != "ollama" {
+            None
         } else {
             self.effort.clone()
         };
@@ -989,7 +1156,7 @@ impl Compactor for ModelCompactor {
         ctx: &'a str,
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
-        Box::pin(self.compress_inner(ctx, convo, 1))
+        Box::pin(self.compress_inner(ctx, convo, 1, false))
     }
 
     fn compress_lines<'a>(
@@ -998,7 +1165,15 @@ impl Compactor for ModelCompactor {
         convo: &'a [ChatMessage],
         lines: u32,
     ) -> BoxFuture<'a, Result<Reply, String>> {
-        Box::pin(self.compress_inner(ctx, convo, lines))
+        Box::pin(self.compress_inner(ctx, convo, lines, false))
+    }
+
+    fn compress_thinking_off<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(self.compress_inner(ctx, convo, 1, true))
     }
 
     fn model(&self) -> &Resolved {
@@ -1021,32 +1196,48 @@ impl ModelCompactor {
         ctx: &str,
         convo: &[ChatMessage],
         lines: u32,
+        forced: bool,
     ) -> Result<Reply, String> {
         let transport = self.backend.transport(&self.model).await?;
-        let (req, opts) = self.request_lines(transport, ctx, convo, lines);
+        let (req, opts) = self.request_opts(transport, ctx, convo, lines, forced);
+        let cap = opts.max_tokens.unwrap_or(0);
+        let thinking_off = opts.extra_body.is_some() || opts.reasoning_effort.is_some();
         let started = Instant::now();
         let mut stream = self
             .backend
             .stream(&self.model, req, &opts, self.session)
             .await?;
+        let mut reasoning = false;
         while let Some(ev) = stream.next().await {
-            if let ChatStreamEvent::End(end) = ev? {
-                let latency = started.elapsed();
-                // G1 latency limb: a local endpoint's measured prompt-eval rate.
-                if self.local.is_some()
-                    && let Some(p) = end.captured_usage.as_ref().and_then(|u| u.prompt_tokens)
-                {
-                    crate::tokens::learn_eval(
-                        &self.model.id,
-                        u64::try_from(p).unwrap_or(0),
-                        latency.as_secs_f64(),
-                    );
+            match ev? {
+                ChatStreamEvent::ReasoningChunk(_) => reasoning = true,
+                ChatStreamEvent::End(end) => {
+                    let latency = started.elapsed();
+                    // G1 latency limb: a local endpoint's measured prompt-eval rate.
+                    if self.local.is_some()
+                        && let Some(p) = end.captured_usage.as_ref().and_then(|u| u.prompt_tokens)
+                    {
+                        crate::tokens::learn_eval(
+                            &self.model.id,
+                            u64::try_from(p).unwrap_or(0),
+                            latency.as_secs_f64(),
+                        );
+                    }
+                    let stop = end.captured_stop_reason.as_ref();
+                    let mut reply = Reply {
+                        text: end.captured_texts().map(|t| t.concat()).unwrap_or_default(),
+                        usage: end.captured_usage.clone(),
+                        latency,
+                        stop: stop.map(|s| s.raw().to_owned()),
+                        truncated: stop.is_some_and(|s| s.is_max_tokens()),
+                        reasoning,
+                        cap,
+                        thinking_off,
+                    };
+                    reply.reasoning |= reply.reasoning_tokens().is_some_and(|n| n > 0);
+                    return Ok(reply);
                 }
-                return Ok(Reply {
-                    text: end.captured_texts().map(|t| t.concat()).unwrap_or_default(),
-                    usage: end.captured_usage,
-                    latency,
-                });
+                _ => {}
             }
         }
         Err("stream ended without End event".into())
@@ -1105,6 +1296,7 @@ mod tests {
                     text,
                     usage: None,
                     latency: Duration::from_millis(1),
+                    ..Default::default()
                 })
             })
         }
@@ -1279,6 +1471,7 @@ mod tests {
             model,
             system: prompt("theuth"),
             local: None,
+            quiet: false,
             cfg: Default::default(),
         };
         let haiku = compactor(r(
@@ -1492,6 +1685,7 @@ mod tests {
             system: prompt("theuth"),
             effort: None,
             local: None,
+            quiet: false,
             cfg: std::sync::Arc::new(parking_lot::RwLock::new(super::super::EndlessConfig {
                 attempt_secs: 300,
                 ..Default::default()

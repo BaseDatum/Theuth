@@ -560,9 +560,15 @@ impl Endless {
         pump::reresolve(&self.inner, Some(session));
     }
 
-    /// A provider was added, refreshed or removed (the catalog and the
-    /// gateways changed): every session's compactor is re-resolved (R1-16).
+    /// A provider was added, refreshed or removed, or a model's limits set
+    /// (the catalog and the gateways changed): every session's model takes
+    /// its new catalog entry (177 E6) and its compactor is re-resolved (R1-16).
     pub fn set_catalog(&self, catalog: Arc<models::Catalog>) {
+        for h in self.inner.sessions.lock().values_mut() {
+            if let Some((_, m)) = catalog.get(&h.attached.model.id) {
+                h.attached.model.model = Some(m.clone());
+            }
+        }
         *self.inner.catalog.write() = catalog;
         pump::reresolve(&self.inner, None);
     }

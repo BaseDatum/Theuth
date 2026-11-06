@@ -369,6 +369,11 @@ pub struct Titled;
 /// `tell`: switch the model; takes effect on the next model call, mid-turn included.
 pub struct SwitchModel(pub Resolved);
 
+/// `tell` (177 E6): the catalog was reloaded (a provider listing, model
+/// limits). The session's model takes its new entry — its next call sees the
+/// new window and output limit — and the next turn reads the new catalog.
+pub struct CatalogChanged(pub Arc<models::Catalog>);
+
 /// `tell`: reasoning effort for the session's next turn (`None` = provider
 /// default). Not applied mid-turn: Anthropic rejects thinking changes inside a
 /// tool-use turn.
@@ -2377,6 +2382,24 @@ impl Message<SwitchModel> for Session {
     }
 }
 
+impl Message<CatalogChanged> for Session {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        CatalogChanged(catalog): CatalogChanged,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        {
+            let mut current = self.shared.model.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((_, m)) = catalog.get(&current.model.id) {
+                current.model.model = Some(m.clone());
+            }
+        }
+        self.shared.catalog = catalog;
+    }
+}
+
 impl Message<SetPendingEffort> for Session {
     type Reply = ();
 
@@ -3849,10 +3872,13 @@ impl Turn {
             .catalog
             .closest(&model.id)
             .map_or(0, |m| m.limit.context);
-        if window == 0 {
-            self.state.window_hint
-        } else {
+        if window > 0 {
             window
+        } else if self.state.window_hint == 0 && crate::local::runtime_named(model) {
+            // 177 E7: a local runtime's unknown window is the assumed one.
+            crate::local::ASSUMED_CONTEXT
+        } else {
+            self.state.window_hint
         }
     }
 
@@ -4945,6 +4971,7 @@ impl Turn {
                     &mut calls,
                     thinking,
                     partial.as_ref().map(|(t, id)| (*t, id.as_str())),
+                    kind,
                 )
                 .await;
             let (status, usage) = match &r {
@@ -5064,8 +5091,18 @@ impl Turn {
         calls: &mut bool,
         thinking: &mut Option<u64>,
         partial: Option<(TurnId, &str)>,
+        kind: CallKind,
     ) -> Result<StreamEnd, Abort> {
-        let (req, opts) = frame.request(transport, conversation, current.effort());
+        // 177 E2: an aux (vision) call to a local OpenAI-protocol server asks
+        // for no thinking and sends no effort keyword; turns are unchanged.
+        let quiet = kind == CallKind::Vision && current.backend.local_openai(&current.model);
+        let effort = if quiet { None } else { current.effort() };
+        let (req, opts) = frame.request(transport, conversation, effort);
+        let opts = if quiet {
+            crate::backend::thinking_off(opts)
+        } else {
+            opts
+        };
         let open = current
             .backend
             .stream(&current.model, req, &opts, conversation);

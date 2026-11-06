@@ -1,0 +1,559 @@
+//! 177: local model servers end to end against fakes (wiremock on loopback):
+//! no `max_tokens: 0` (E1), thinking off on summary calls (E2), a reply spent
+//! on thinking (E3), keyless gateways and runtime names (E4), server windows
+//! (E5), the probe (E8) and the summary test call (E9).
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use genai::chat::{ChatMessage, ChatStreamEvent};
+use parking_lot::Mutex;
+use serde_json::{Value, json};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+use super::*;
+use crate::backend::Backend;
+use crate::endless::compactor::{self, ModelCompactor, Step};
+use crate::providers::Gateway;
+
+/// One request the fake saw: its body and whether it carried `Authorization`.
+type Seen = Arc<Mutex<Vec<(Value, bool)>>>;
+
+/// An omlx-like OpenAI chat server: pydantic's 422 on `max_tokens: 0`; with
+/// `honour` and `chat_template_kwargs.enable_thinking == false` one text
+/// line, else only `reasoning_content` until the cap (`finish_reason: length`).
+struct Omlx {
+    seen: Seen,
+    honour: bool,
+}
+
+impl Respond for Omlx {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let auth = req.headers.contains_key("authorization");
+        self.seen.lock().push((body.clone(), auth));
+        if body.get("max_tokens").and_then(Value::as_u64) == Some(0) {
+            return ResponseTemplate::new(422).set_body_json(json!({"error": {
+                "message": "body -> max_tokens: Input should be greater than 0"}}));
+        }
+        let off = body.pointer("/chat_template_kwargs/enable_thinking") == Some(&json!(false));
+        let cap = body
+            .get("max_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(4096);
+        let chunk = |delta: Value, finish: Value, usage: Value| {
+            let mut c = json!({"id": "c1", "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]});
+            if !usage.is_null() {
+                c["usage"] = usage;
+            }
+            format!("data: {c}\n\n")
+        };
+        let sse = if self.honour && off {
+            chunk(
+                json!({"role": "assistant", "content": "The weekly sync is now Thursday 15:00; Dana has the invite."}),
+                Value::Null,
+                Value::Null,
+            ) + &chunk(
+                json!({}),
+                json!("stop"),
+                json!({"prompt_tokens": 300, "completion_tokens": 14}),
+            )
+        } else {
+            chunk(
+                json!({"role": "assistant", "reasoning_content": "Hmm, let me think about the sync."}),
+                Value::Null,
+                Value::Null,
+            ) + &chunk(
+                json!({}),
+                json!("length"),
+                json!({"prompt_tokens": 300, "completion_tokens": cap,
+                    "completion_tokens_details": {"reasoning_tokens": cap}}),
+            )
+        };
+        ResponseTemplate::new(200).set_body_raw(sse + "data: [DONE]\n\n", "text/event-stream")
+    }
+}
+
+async fn omlx(honour: bool) -> (MockServer, Seen) {
+    let server = MockServer::start().await;
+    let seen = Seen::default();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(Omlx {
+            seen: seen.clone(),
+            honour,
+        })
+        .mount(&server)
+        .await;
+    (server, seen)
+}
+
+/// Auth with one keyless gateway `name` → `{server}/v1/`.
+fn auth_with(dir: &std::path::Path, name: &str, server: &MockServer) -> crate::supervisor::Auth {
+    let auth = crate::supervisor::Auth::stub(dir);
+    auth.gateways.write().unwrap().insert(
+        name.into(),
+        Gateway {
+            base_url: format!("{}/v1/", server.uri()),
+            ..Default::default()
+        },
+    );
+    auth
+}
+
+/// `provider/m` with a catalog entry of unknown limits (what a listing writes).
+fn zero_model(provider: &str) -> models::Resolved {
+    models::Resolved {
+        id: format!("{provider}/m"),
+        genai: format!("{provider}::m"),
+        provider: Some(provider.into()),
+        model: Some(models::Model {
+            id: "m".into(),
+            name: "m".into(),
+            limit: models::Limit::default(),
+            cost: None,
+            reasoning: false,
+            tool_call: true,
+            image: false,
+            reasoning_options: vec![],
+            protocol: None,
+            canonical: None,
+        }),
+    }
+}
+
+fn compactor_for(model: models::Resolved, auth: &crate::supervisor::Auth) -> ModelCompactor {
+    let backend = Backend::for_model(&model, &genai::Client::builder().build().unwrap(), auth);
+    let quiet = backend.local_openai(&model);
+    let base = crate::backend::target_for(&model, auth).map(|t| t.endpoint.base_url().to_owned());
+    ModelCompactor {
+        session: runtime::SessionId::new(),
+        local: compactor::local_endpoint(&model, base.as_deref()),
+        model,
+        backend,
+        system: compactor::prompt("theuth"),
+        effort: None,
+        quiet,
+        cfg: Default::default(),
+    }
+}
+
+fn unit() -> Step {
+    Step::Unit {
+        kind: crate::endless::tree::Kind::Talk,
+        text: "Done: the weekly sync is now Thursday 15:00 and Dana has the new invite.".into(),
+        earlier: vec![],
+        aim: None,
+    }
+}
+
+/// E1 + E4: a turn-shaped and a title/side-shaped request on a 0/0 model of a
+/// keyless local provider carry no `max_tokens` (the fake would 422 a 0) and
+/// no `Authorization` header; both reach the provider's own endpoint.
+#[tokio::test]
+async fn zero_limits_send_no_max_tokens_and_keyless_sends_no_auth() {
+    let dir = crate::TestDir::new("local-e1");
+    let (server, seen) = omlx(true).await;
+    let auth = auth_with(&dir.0, "mlx", &server);
+    let model = zero_model("mlx");
+    let backend = Backend::for_model(&model, &genai::Client::builder().build().unwrap(), &auth);
+    let tools = [genai::chat::Tool::new("echo")];
+    for tools in [&tools[..], &[]] {
+        let history = [ChatMessage::user("hi")];
+        let frame = crate::frame::Frame {
+            tools,
+            system: "sys",
+            head: None,
+            history: &history,
+            vision: false,
+            strip_reasoning: false,
+            max_tokens: None,
+        };
+        let (req, opts) = frame.request(
+            crate::frame::Transport::OpenAiLike,
+            runtime::SessionId::new(),
+            None,
+        );
+        let mut s = backend
+            .stream(&model, req, &opts, runtime::SessionId::new())
+            .await
+            .unwrap();
+        let mut ended = false;
+        while let Some(ev) = s.next().await {
+            ended |= matches!(ev.unwrap(), ChatStreamEvent::End(_));
+        }
+        assert!(ended);
+    }
+    let seen = seen.lock();
+    assert_eq!(seen.len(), 2);
+    for (body, auth) in seen.iter() {
+        assert!(body.get("max_tokens").is_none(), "{body}");
+        assert!(!auth, "a keyless provider sends no Authorization header");
+    }
+}
+
+/// E4: a local provider named `omlx` shadows genai's omlx adapter — `omlx/m`
+/// goes to the provider's URL; with no provider of that name genai resolves it.
+#[test]
+fn local_provider_named_omlx_shadows_the_adapter() {
+    let dir = crate::TestDir::new("local-e4");
+    let auth = crate::supervisor::Auth::stub(&dir.0);
+    let model = zero_model("omlx");
+    assert!(crate::backend::target_for(&model, &auth).is_none());
+    auth.gateways.write().unwrap().insert(
+        "omlx".into(),
+        Gateway {
+            base_url: "http://127.0.0.1:18080/v1/".into(),
+            ..Default::default()
+        },
+    );
+    let t = crate::backend::target_for(&model, &auth).unwrap();
+    assert_eq!(t.endpoint.base_url(), "http://127.0.0.1:18080/v1/");
+    assert_eq!(t.kind, genai::adapter::AdapterKind::OpenAI);
+    assert!(matches!(
+        t.auth,
+        genai::resolver::AuthData::RequestOverride { .. }
+    ));
+}
+
+/// E2: a local OpenAI-protocol provider's summary call carries
+/// `chat_template_kwargs.enable_thinking: false` and no effort keyword; a
+/// cloud gateway's request does not.
+#[tokio::test]
+async fn local_summary_call_switches_thinking_off_by_chat_template() {
+    let dir = crate::TestDir::new("local-e2");
+    let (server, seen) = omlx(true).await;
+    let auth = auth_with(&dir.0, "mlx", &server);
+    let c = compactor_for(zero_model("mlx"), &auth);
+    let built = compactor::build(
+        &c,
+        "<chat>\n</chat>",
+        &unit(),
+        512,
+        3,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    assert!(built.tries > 0, "{built:?}");
+    let seen = seen.lock();
+    let body = &seen[0].0;
+    assert_eq!(
+        body["chat_template_kwargs"],
+        json!({"enable_thinking": false})
+    );
+    assert!(body.get("reasoning_effort").is_none(), "{body}");
+    assert_eq!(body["max_tokens"], compactor::LOCAL_MAX_TOKENS);
+
+    // A cloud custom provider (not local by URL or preset): no kwargs, 600.
+    auth.gateways.write().unwrap().insert(
+        "rwx".into(),
+        Gateway {
+            base_url: "https://api.rwx.example/v1/".into(),
+            key: "k".into(),
+            runtime: None,
+        },
+    );
+    let mut cloud = zero_model("rwx");
+    cloud.model.as_mut().unwrap().cost = Some(models::Cost {
+        input: 1.0,
+        output: 1.0,
+        cache_read: None,
+        cache_write: None,
+    });
+    let c = compactor_for(cloud, &auth);
+    assert!(!c.quiet && c.local.is_none());
+    let (_, opts) = c.request(crate::frame::Transport::OpenAiLike, "ctx", &[]);
+    assert!(opts.extra_body.is_none());
+    assert_eq!(opts.max_tokens, Some(compactor::MAX_TOKENS));
+}
+
+/// E3: a model that thinks through the cap whatever it is told — one forced
+/// retry at twice the cap, then the "whole reply on thinking" error; a model
+/// that honours the kwargs answers on the first call.
+#[tokio::test]
+async fn reply_spent_on_thinking_retries_once_at_twice_the_cap() {
+    let dir = crate::TestDir::new("local-e3");
+    let (server, seen) = omlx(false).await;
+    let auth = auth_with(&dir.0, "mlx", &server);
+    let c = compactor_for(zero_model("mlx"), &auth);
+    let f = compactor::build(
+        &c,
+        "<chat>\n</chat>",
+        &unit(),
+        512,
+        5,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        f.error.starts_with(
+            "mlx/m used its whole 4096-token reply on thinking (finish_reason=length)"
+        ),
+        "{}",
+        f.error
+    );
+    assert!(f.error.ends_with(compactor::THINKING_HINT));
+    assert_eq!(
+        f.calls.len(),
+        2,
+        "one call and one forced retry, not five tries"
+    );
+    let caps: Vec<u64> = seen
+        .lock()
+        .iter()
+        .map(|(b, _)| b["max_tokens"].as_u64().unwrap())
+        .collect();
+    assert_eq!(caps, [2048, 4096]);
+
+    let (server, seen) = omlx(true).await;
+    let auth = auth_with(&dir.0, "mlx", &server);
+    let c = compactor_for(zero_model("mlx"), &auth);
+    let b = compactor::build(
+        &c,
+        "<chat>\n</chat>",
+        &unit(),
+        512,
+        5,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    assert!(b.tries == 1 && b.text.contains("Thursday"), "{b:?}");
+    assert_eq!(seen.lock().len(), 1);
+}
+
+/// Answer `GET p` on `server` with `body`.
+async fn serve(server: &MockServer, p: &str, body: Value) {
+    Mock::given(method("GET"))
+        .and(path(p.to_owned()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// E5: each server shape's window, read at listing time.
+#[tokio::test]
+async fn server_windows_by_runtime_shape() {
+    let ids = |s: &[&str]| s.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    // vLLM: `max_model_len` in /v1/models.
+    let vllm = MockServer::start().await;
+    serve(
+        &vllm,
+        "/v1/models",
+        json!({"data": [{"id": "a", "max_model_len": 32768, "owned_by": "vllm"}]}),
+    )
+    .await;
+    // LM Studio: /api/v0/models, the loaded window before the maximum.
+    let lms = MockServer::start().await;
+    serve(&lms, "/v1/models", json!({"data": [{"id": "b"}]})).await;
+    serve(
+        &lms,
+        "/api/v0/models",
+        json!({"data": [{"id": "b", "max_context_length": 131072, "loaded_context_length": 8192}]}),
+    )
+    .await;
+    // llama.cpp: /props, one window for every id.
+    let llama = MockServer::start().await;
+    serve(&llama, "/v1/models", json!({"data": [{"id": "c"}]})).await;
+    serve(
+        &llama,
+        "/props",
+        json!({"default_generation_settings": {"n_ctx": 4096}}),
+    )
+    .await;
+    // Ollama: /api/tags, then /api/show per model.
+    let ollama = MockServer::start().await;
+    serve(
+        &ollama,
+        "/v1/models",
+        json!({"data": [{"id": "llama3:8b"}]}),
+    )
+    .await;
+    serve(
+        &ollama,
+        "/api/tags",
+        json!({"models": [{"name": "llama3:8b"}]}),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model_info": {"general.architecture": "llama", "llama.context_length": 8192}})))
+        .mount(&ollama)
+        .await;
+    for (server, id, want) in [
+        (&vllm, "a", 32768),
+        (&lms, "b", 8192),
+        (&llama, "c", 4096),
+        (&ollama, "llama3:8b", 8192),
+    ] {
+        let got = server_contexts(&format!("{}/v1/", server.uri()), "", true, &ids(&[id])).await;
+        assert_eq!(got.get(id), Some(&want), "{}", server.uri());
+    }
+    // A cloud provider is asked /v1/models only.
+    let got = server_contexts(&format!("{}/v1/", llama.uri()), "k", false, &ids(&["c"])).await;
+    assert!(got.is_empty(), "{got:?}");
+}
+
+/// E8: the probe on injected ports names each runtime by what answers, marks
+/// an added one, and reports a closed port unreachable within the bound.
+#[tokio::test]
+async fn probe_identifies_runtimes_and_added_as() {
+    let ok = |body: Value| ResponseTemplate::new(200).set_body_json(body);
+    let ollama = MockServer::start().await;
+    Mock::given(path("/api/tags"))
+        .respond_with(ok(json!({"models": [{"name": "a"}, {"name": "b"}]})))
+        .mount(&ollama)
+        .await;
+    let lms = MockServer::start().await;
+    Mock::given(path("/v1/models"))
+        .respond_with(ok(json!({"data": [{"id": "x"}]})))
+        .mount(&lms)
+        .await;
+    Mock::given(path("/api/v0/models"))
+        .respond_with(ok(json!({"data": [{"id": "x"}]})))
+        .mount(&lms)
+        .await;
+    let llama = MockServer::start().await;
+    Mock::given(path("/v1/models"))
+        .respond_with(ok(json!({"data": [{"id": "g"}]})))
+        .mount(&llama)
+        .await;
+    Mock::given(path("/props"))
+        .respond_with(ok(json!({"default_generation_settings": {"n_ctx": 4096}})))
+        .mount(&llama)
+        .await;
+    let vllm = MockServer::start().await;
+    Mock::given(path("/v1/models"))
+        .respond_with(ok(json!({"data": [{"id": "q", "max_model_len": 8192}]})))
+        .mount(&vllm)
+        .await;
+    let plain = MockServer::start().await;
+    Mock::given(path("/v1/models"))
+        .respond_with(ok(json!({"data": [{"id": "p", "owned_by": "me"}]})))
+        .mount(&plain)
+        .await;
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let port = |s: &MockServer| s.address().port();
+    let ports = [
+        port(&ollama),
+        port(&lms),
+        port(&llama),
+        port(&vllm),
+        port(&plain),
+        closed,
+    ];
+    let added = vec![(
+        "ollama".to_owned(),
+        format!("http://localhost:{}/v1/", port(&ollama)),
+    )];
+    let started = std::time::Instant::now();
+    let found = probe(&ports, &added).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let got: Vec<(LocalRuntime, bool, u32, Option<&str>)> = found
+        .iter()
+        .map(|s| (s.runtime, s.reachable, s.models, s.added_as.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (LocalRuntime::Ollama, true, 2, Some("ollama")),
+            (LocalRuntime::Lmstudio, true, 1, None),
+            (LocalRuntime::Llamacpp, true, 1, None),
+            (LocalRuntime::Vllm, true, 1, None),
+            (LocalRuntime::Openai, true, 1, None),
+            (LocalRuntime::Openai, false, 0, None),
+        ]
+    );
+    assert_eq!(
+        found[1].base_url,
+        format!("http://127.0.0.1:{}/v1/", port(&lms))
+    );
+    assert_eq!(found[5].error.as_deref(), Some("connection refused"));
+}
+
+/// E9: the summary test call — ok on a model that honours the kwargs, the
+/// thinking error with its hint on one that does not; charged to the test owner.
+#[tokio::test]
+async fn test_summary_call_ok_and_thinking_failure() {
+    for honour in [true, false] {
+        let dir = crate::TestDir::new("local-e9");
+        let (server, _seen) = omlx(honour).await;
+        let auth = auth_with(&dir.0, "omlx", &server);
+        let store = crate::store::Store::open(&dir.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let endless = crate::endless::Endless::new(
+            store,
+            runtime::Runtime::new(figment::Figment::new(), dir.0.clone()),
+            genai::Client::builder().build().unwrap(),
+            auth,
+            Arc::new(models::Catalog::load(&dir.0)),
+            crate::endless::EndlessConfig::default(),
+            None,
+        );
+        let t = endless.test_summary("omlx/m").await;
+        assert_eq!(t.model, "omlx/m");
+        assert!(t.thinking_off_sent, "{t:?}");
+        if honour {
+            assert!(t.ok, "{t:?}");
+            assert!(t.line.as_deref().is_some_and(|l| l.contains("Thursday")));
+            assert_eq!(t.finish_reason.as_deref(), Some("stop"));
+            assert_eq!((t.tokens_in, t.tokens_out), (Some(300), Some(14)));
+            assert!(t.error.is_none() && t.hint.is_none());
+        } else {
+            assert!(!t.ok);
+            assert!(
+                t.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("reply on thinking")),
+                "{t:?}"
+            );
+            assert_eq!(t.hint.as_deref(), Some(compactor::THINKING_HINT));
+            assert_eq!(t.finish_reason.as_deref(), Some("length"));
+            assert!(t.reasoning_seen);
+            assert_eq!(t.reasoning_tokens, Some(4096));
+        }
+    }
+    // A server that is not running (a closed loopback port): an error and the hint.
+    let dir = crate::TestDir::new("local-e9b");
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let auth = crate::supervisor::Auth::stub(&dir.0);
+    auth.gateways.write().unwrap().insert(
+        "omlx".into(),
+        Gateway {
+            base_url: format!("http://127.0.0.1:{closed}/v1/"),
+            ..Default::default()
+        },
+    );
+    let store = crate::store::Store::open(&dir.0.join("sessions.sqlite"), None)
+        .await
+        .unwrap();
+    let endless = crate::endless::Endless::new(
+        store,
+        runtime::Runtime::new(figment::Figment::new(), dir.0.clone()),
+        genai::Client::builder().build().unwrap(),
+        auth,
+        Arc::new(models::Catalog::load(&dir.0)),
+        crate::endless::EndlessConfig::default(),
+        None,
+    );
+    let t = endless.test_summary("omlx/m").await;
+    assert!(!t.ok && t.error.is_some(), "{t:?}");
+    assert_eq!(
+        t.hint.as_deref(),
+        Some("The server did not answer: is it running at the provider's URL?"),
+        "{t:?}"
+    );
+}

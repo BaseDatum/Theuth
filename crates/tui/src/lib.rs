@@ -992,6 +992,24 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::RefreshProvider(name) => {
             UiEvent::Info(msg(api.refresh_provider_models(name).await)?.line())
         }
+        Command::FindLocalServers => UiEvent::Info(
+            msg(api.local_servers_probe().await)?
+                .iter()
+                .map(agent::LocalServer::line)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Command::SetModelLimits {
+            provider,
+            model,
+            context,
+            output,
+        } => {
+            let m = msg(api
+                .set_model_limits(provider.clone(), model, context, output)
+                .await)?;
+            UiEvent::Info(format!("{provider}/{}", m.line()))
+        }
         Command::LinkStatus => UiEvent::Link(msg(api.link_status().await)?),
         Command::LinkEnable(enabled) => {
             msg(api.link_enable(enabled, None).await)?;

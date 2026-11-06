@@ -576,6 +576,38 @@ mod tests {
         std::fs::write(dir.join("models.json"), v.to_string()).unwrap();
     }
 
+    /// 177 E5: a server-reported window fills an unknown entry and follows the
+    /// server later; a hand edit (no source, a window) is never overwritten;
+    /// a local listing marks the block.
+    #[test]
+    fn server_windows_fill_unknown_never_user() {
+        let scratch = crate::TestDir::new("prov-windows");
+        let dir = scratch.0.clone();
+        let ids = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let local = |c: &[(&str, u32)]| -> HashMap<String, u32> {
+            c.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect()
+        };
+        let listing = |contexts| Listing::Custom {
+            local: true,
+            contexts,
+        };
+        let first = local(&[("a", 8192)]);
+        write_models(&dir, "lm", &ids(&["a", "b"]), listing(&first)).unwrap();
+        let v = user_file(&dir);
+        assert_eq!(v["lm"]["local"], true);
+        assert_eq!(
+            v["lm"]["models"]["a"]["limit"],
+            serde_json::json!({"context": 8192, "output": 0, "source": "server"})
+        );
+        assert!(v["lm"]["models"]["b"]["limit"].get("source").is_none());
+        hand_edit(&dir, "lm", "b");
+        let later = local(&[("a", 4096), ("b", 999)]);
+        write_models(&dir, "lm", &ids(&["a", "b"]), listing(&later)).unwrap();
+        let v = user_file(&dir);
+        assert_eq!(v["lm"]["models"]["a"]["limit"]["context"], 4096);
+        assert_eq!(v["lm"]["models"]["b"]["limit"]["context"], 1234);
+    }
+
     /// 162 D4 custom: the listing is the truth; listed entries are kept as they
     /// are (a hand-edited `protocol` included), new ids are context 0, gone ids go.
     #[test]

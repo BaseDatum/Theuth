@@ -483,6 +483,7 @@ async fn endless_compactor_turns_thinking_off_per_model() {
             model: model.clone(),
             system: prompt("theuth"),
             local: None,
+            quiet: false,
             cfg: Default::default(),
         };
         let step = [ChatMessage::user(

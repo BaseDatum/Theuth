@@ -8,10 +8,34 @@ use serde_json::Value;
 use crate::{LocalRuntime, LocalServer};
 
 /// 177 E7: the window a local model with an unknown context is budgeted as.
-pub const ASSUMED_CONTEXT: u32 = 16_384;
+pub const ASSUMED_CONTEXT: u32 = models::ASSUMED_LOCAL_CONTEXT;
+
+/// 177 E7: `r` names a local runtime (`ollama/…`, `omlx/…`, a provider called
+/// `lmstudio` …) — for an id the catalog has no entry for.
+pub fn runtime_named(r: &models::Resolved) -> bool {
+    r.provider
+        .as_deref()
+        .is_some_and(crate::endless::compactor::local_name)
+        || crate::endless::compactor::local_name(crate::loop_::ns(&r.genai))
+}
 
 /// 177 E8: the ports [`probe`] tries by default.
 pub const PROBE_PORTS: [u16; 4] = [11434, 1234, 8000, 8080];
+
+/// The ports `local_servers_probe` tries: `THEUTH_LOCAL_PROBE_PORTS`
+/// (comma-separated, for a scratch engine pointed at fakes), else
+/// [`PROBE_PORTS`]. Always on 127.0.0.1.
+pub fn probe_ports() -> Vec<u16> {
+    std::env::var("THEUTH_LOCAL_PROBE_PORTS")
+        .ok()
+        .map(|s| {
+            s.split(',')
+                .filter_map(|p| p.trim().parse().ok())
+                .collect::<Vec<u16>>()
+        })
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| PROBE_PORTS.to_vec())
+}
 
 /// A base URL whose host is loopback, private (RFC 1918, CGNAT 100.64/10,
 /// link-local, ULA), `*.local` / `*.localhost` / `*.internal` / `*.lan` /
@@ -344,3 +368,6 @@ pub async fn server_contexts(
     }
     out
 }
+
+#[cfg(test)]
+mod tests;

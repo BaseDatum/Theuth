@@ -64,12 +64,12 @@ use crate::lifecycle::{
     PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
 };
 use crate::loop_::{
-    CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextBreakdownNow,
-    ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
-    QueuedInputs, QuietInput, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn,
-    ResumedTurn, Session, SessionState, SetBudgetNow, SetCompactionOverride, SetMemoryNow,
-    SetPendingEffort, SetTitlePin, SetToolsetOverride, SuppressPeerInputs, SwitchModel, TrimTurn,
-    UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
+    CancelPeerScope, CancelTurn, CatalogChanged, CompactNow, CompactionOverride,
+    ContextBreakdownNow, ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning,
+    PEER_INTAKE, PeerInput, QueuedInputs, QuietInput, RedoTurn, RemoveContextNow, ResetRuntimeNow,
+    RestartTurn, ResumedTurn, Session, SessionState, SetBudgetNow, SetCompactionOverride,
+    SetMemoryNow, SetPendingEffort, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
+    SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -8997,10 +8997,33 @@ impl Agents {
     }
 
     /// Swap in a reloaded catalog everywhere it is read.
-    fn reload_catalog(&mut self) {
-        self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
+    async fn reload_catalog(&mut self) {
+        self.catalog = Arc::new(load_catalog(&self.rt.data_dir, &self.auth));
         self.costs.set_catalog(self.catalog.clone());
         self.endless.set_catalog(self.catalog.clone());
+        // 177 E6: the role models (title, polish, subagent, vision, escalate)
+        // take their new entries; running chats take theirs at their next call.
+        for slot in [
+            &self.title_model,
+            &self.polish_model,
+            &self.subagent_model,
+            &self.vision_model,
+            &self.escalate_model,
+        ] {
+            let mut slot = slot.write().unwrap_or_else(|e| e.into_inner());
+            if let Some(r) = slot.as_mut()
+                && let Some((_, m)) = self.catalog.get(&r.id)
+            {
+                r.model = Some(m.clone());
+            }
+        }
+        for live in self.sessions.values() {
+            if let LiveActor::Native(a) = &live.actor
+                && live.actor.is_alive()
+            {
+                let _ = a.tell(CatalogChanged(self.catalog.clone())).await;
+            }
+        }
     }
 
     /// List gateway `name`'s models (`GET {base}models`, keyless when it has no
@@ -9069,7 +9092,7 @@ impl Agents {
                     }
                     None => return Err(format!("no provider {name}")),
                 };
-                self.reload_catalog();
+                self.reload_catalog().await;
                 let provider = self
                     .provider_info(name)
                     .ok_or_else(|| format!("no provider {name}"))?;
@@ -9095,7 +9118,7 @@ impl Agents {
             &ids,
             crate::providers::Listing::Builtin(&catalog),
         )?;
-        self.reload_catalog();
+        self.reload_catalog().await;
         let provider = self
             .provider_info(name)
             .ok_or_else(|| format!("no provider {name}"))?;
@@ -9170,7 +9193,7 @@ impl Message<AddProvider> for Agents {
         if let Err(e) = self.list_gateway(&m.name, &g).await {
             tracing::warn!(provider = %m.name, "{e}; keeping the existing list");
         }
-        self.reload_catalog();
+        self.reload_catalog().await;
         self.provider_info(&m.name)
             .ok_or_else(|| format!("no provider {}", m.name))
     }
@@ -9203,7 +9226,7 @@ impl Message<RemoveProvider> for Agents {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&m.name);
-        self.reload_catalog();
+        self.reload_catalog().await;
         Ok(())
     }
 }
@@ -9227,7 +9250,7 @@ impl Message<ProbeLocalServers> for Agents {
             .map(|(n, g)| (n.clone(), g.base_url.clone()))
             .collect();
         tokio::spawn(async move {
-            tx.send(crate::local::probe(&crate::local::PROBE_PORTS, &providers).await);
+            tx.send(crate::local::probe(&crate::local::probe_ports(), &providers).await);
         });
         reply
     }
@@ -9310,7 +9333,7 @@ impl Message<SetModelLimits> for Agents {
             m.output,
         )?;
         // E6: the same reload as Refresh (the endless compactors re-resolve).
-        self.reload_catalog();
+        self.reload_catalog().await;
         Ok(provider_model(
             &stored,
             self.provider_local(&m.provider),
@@ -9974,6 +9997,13 @@ const ANTHROPIC_BETAS: &str =
 /// The client the subscription token was minted for.
 const CLAUDE_CODE_UA: &str = "claude-cli/2.1.257 (external, cli)";
 
+/// The merged catalog with every local custom provider marked (177 E7:
+/// assumed windows, no cloud siblings).
+fn load_catalog(data_dir: &Path, auth: &Auth) -> Catalog {
+    let gateways = auth.gateways.read().unwrap_or_else(|e| e.into_inner());
+    Catalog::load_with(data_dir, &|p| gateways.get(p).is_some_and(|g| g.local()))
+}
+
 /// The auth-resolver rule as a predicate over genai namespaces: a key in
 /// the vault, a login on disk, the adapter's default env var set, or an
 /// adapter needing no key (`ollama`). `cursor` is not a genai adapter: only
@@ -10197,7 +10227,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         &rt.data_dir.join("spill"),
         Duration::from_secs(7 * 24 * 3600),
     );
-    let catalog = Arc::new(Catalog::load(&rt.data_dir));
+    let catalog = Arc::new(load_catalog(&rt.data_dir, &auth));
     let configured = configured(auth.clone());
     // Unresolvable → warn and fall back to the session model rather than fail every title.
     let title_model = cfg.title_model.as_deref().and_then(|id| {
@@ -17195,6 +17225,90 @@ done
             .unwrap();
         let or = a.provider_info("openrouter").unwrap();
         assert!(or.builtin && or.configured && or.refreshable);
+    }
+
+    /// 177 E4–E7: a keyless local provider named after its runtime is listed
+    /// with no `Authorization` header and the window its server reports
+    /// (source `server`); an unknown window reads as the assumed 16k; a user
+    /// value (`set_model_limits`) reaches the catalog and survives a refresh;
+    /// clearing it makes the window unknown again.
+    #[tokio::test]
+    async fn keyless_local_provider_limits_from_server_then_user() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+        struct Models(Arc<parking_lot::Mutex<Vec<bool>>>);
+        impl Respond for Models {
+            fn respond(&self, r: &Request) -> ResponseTemplate {
+                self.0.lock().push(r.headers.contains_key("authorization"));
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": [
+                    {"id": "big", "max_model_len": 32768}, {"id": "small"}]}))
+            }
+        }
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        let server = MockServer::start().await;
+        let auths = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(Models(auths.clone()))
+            .mount(&server)
+            .await;
+        a.auth.gateways.write().unwrap().insert(
+            "omlx".into(),
+            crate::providers::Gateway {
+                base_url: format!("{}/v1/", server.uri()),
+                ..Default::default()
+            },
+        );
+        let r = a.refresh_provider_models("omlx").await.unwrap();
+        assert_eq!(r.added, ["big", "small"]);
+        let p = &r.provider;
+        assert!(p.local && !p.has_key && p.configured && p.runtime.is_none());
+        assert!(!auths.lock().is_empty() && auths.lock().iter().all(|a| !a));
+        let row = |a: &Agents, i: usize| a.provider_models("omlx").unwrap()[i].clone();
+        assert_eq!(
+            row(&a, 0),
+            ProviderModel {
+                id: "big".into(),
+                name: "big".into(),
+                context: 32768,
+                output: 0,
+                source: models::LimitSource::Server,
+                assumed_context: None,
+            }
+        );
+        let small = row(&a, 1);
+        assert_eq!(
+            (small.context, small.source, small.assumed_context),
+            (0, models::LimitSource::Unknown, Some(16_384))
+        );
+        let resolved = |a: &Agents| a.catalog.resolve("omlx/small", &|_| true).unwrap();
+        assert_eq!(crate::tokens::window(&resolved(&a)), 16_384);
+
+        crate::providers::set_limits(&dir, &a.catalog, "omlx", "small", Some(8192), Some(1024))
+            .unwrap();
+        a.reload_catalog().await;
+        assert_eq!(crate::tokens::window(&resolved(&a)), 8192);
+        a.refresh_provider_models("omlx").await.unwrap();
+        let small = row(&a, 1);
+        assert_eq!(
+            (small.context, small.output, small.source),
+            (8192, 1024, models::LimitSource::User)
+        );
+        assert_eq!(row(&a, 0).source, models::LimitSource::Server);
+
+        crate::providers::set_limits(&dir, &a.catalog, "omlx", "small", None, None).unwrap();
+        a.reload_catalog().await;
+        let small = row(&a, 1);
+        assert_eq!(
+            (small.context, small.source, small.assumed_context),
+            (0, models::LimitSource::Unknown, Some(16_384))
+        );
+        assert!(
+            crate::providers::set_limits(&dir, &a.catalog, "omlx", "nope", Some(1), None)
+                .unwrap_err()
+                .contains("no model omlx/nope")
+        );
     }
 
     /// 162 D7: the one line every frontend prints after a refresh.

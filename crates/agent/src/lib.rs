@@ -2411,6 +2411,40 @@ pub struct LocalServer {
     pub error: Option<String>,
 }
 
+impl LocalServer {
+    /// One line for chat frontends (`/provider find`).
+    pub fn line(&self) -> String {
+        let state = if !self.reachable {
+            format!(
+                "not running ({})",
+                self.error.as_deref().unwrap_or("no answer")
+            )
+        } else if let Some(e) = &self.error {
+            e.clone()
+        } else {
+            format!("{} models", self.models)
+        };
+        let added = match &self.added_as {
+            Some(n) => format!("  added as {n}"),
+            // `openai` is a cloud adapter's name: a generic local server is `local`.
+            None if self.reachable => format!(
+                "  /provider add {} {}",
+                match self.runtime {
+                    LocalRuntime::Openai => "local",
+                    r => r.as_str(),
+                },
+                self.base_url
+            ),
+            None => String::new(),
+        };
+        format!(
+            "{}  {}  {state}{added}",
+            self.runtime.as_str(),
+            self.base_url
+        )
+    }
+}
+
 /// `ask` → `Result<Vec<ProviderModel>, String>`: a provider's models with their limits (177).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderModels {
@@ -2434,6 +2468,34 @@ pub struct ProviderModel {
     pub source: LimitSource,
     /// `Some(16384)`: a local model whose context is unknown is budgeted as this (177 E7).
     pub assumed_context: Option<u32>,
+}
+
+impl ProviderModel {
+    /// One line for chat frontends: `m1: context 32768 (server), output unknown`.
+    pub fn line(&self) -> String {
+        let n = |v: u32| {
+            if v == 0 {
+                "unknown".to_owned()
+            } else {
+                v.to_string()
+            }
+        };
+        let source = match self.source {
+            LimitSource::Server => "server",
+            LimitSource::User => "user",
+            LimitSource::Unknown => "unknown",
+        };
+        let assumed = self
+            .assumed_context
+            .map(|a| format!(", budgeted as {a}"))
+            .unwrap_or_default();
+        format!(
+            "{}: context {} ({source}{assumed}), output {}",
+            self.id,
+            n(self.context),
+            n(self.output)
+        )
+    }
 }
 
 /// `ask` → `Result<ProviderModel, String>`: write a model's limits into the user
