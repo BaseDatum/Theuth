@@ -145,7 +145,7 @@ const LEAD_ROW = 'flex w-full cursor-default items-center gap-2 rounded-sm px-2 
 
 /** 177 U4: the small tag of a model (or provider) served by a local model server. */
 export function LocalTag() {
-  return <span className="shrink-0 rounded-sm border border-border px-1 text-[10px] leading-4 text-fg-tertiary">local</span>
+  return <span className="shrink-0 rounded-sm border border-fg-tertiary/40 px-1 text-[10px] leading-4 text-fg-secondary">local</span>
 }
 
 export function ModelPicker({ models, model, onSelect, effort, none, extra, favorites, onToggleFavorite, className, listClassName, localFirst }: ModelPickerProps) {

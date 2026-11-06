@@ -468,7 +468,7 @@ export function ModelLimits({ provider }: { provider: string }) {
       ) : models.data.length === 0 ? (
         <Empty>No models listed yet; Refresh models asks the server.</Empty>
       ) : (
-        <div className="grid grid-cols-[minmax(0,1fr)_11rem_7rem_auto] items-center gap-x-2 gap-y-2 text-[13px]">
+        <div className="grid grid-cols-[minmax(0,1fr)_13rem_6.5rem_auto] items-center gap-x-2 gap-y-2 text-[13px]">
           <span className="text-fg-tertiary">Model</span>
           <span className="text-fg-tertiary">Context (tokens)</span>
           <span className="text-fg-tertiary">Output (tokens)</span>
@@ -498,8 +498,8 @@ function LimitRow({ m, save }: { m: ProviderModel; save: Action<Limits, Provider
           {LIMIT_SOURCE[m.source]}
         </Badge>
       </span>
-      <Input type="number" min={1} className="h-8 text-right" aria-label={`Context of ${m.id}`} placeholder={contextPlaceholder(m)} value={ctx} onChange={(e) => setCtx(e.target.value)} />
-      <Input type="number" min={1} className="h-8 text-right" aria-label={`Output of ${m.id}`} placeholder="unknown" value={out} onChange={(e) => setOut(e.target.value)} />
+      <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Context of ${m.id}`} placeholder={contextPlaceholder(m)} value={ctx} onChange={(e) => setCtx(e.target.value)} />
+      <Input type="number" min={1} className="h-8 px-2 text-right text-[13px] md:text-[13px]" aria-label={`Output of ${m.id}`} placeholder="unknown" value={out} onChange={(e) => setOut(e.target.value)} />
       <span className="flex items-center gap-1">
         <Button size="xs" variant="outline" disabled={!next || busy} onClick={() => next && save.mutate(next)}>
           Save

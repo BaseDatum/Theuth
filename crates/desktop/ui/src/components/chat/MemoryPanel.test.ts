@@ -137,6 +137,8 @@ test('the footer shows the failing row above the settle bar: count, error, next 
   expect(html).toContain('Newer lines wait behind this one.')
   expect(html).toContain('>Retry now</button>')
   expect(html).toContain('>Change model</button>')
+  // 177 U5: the failing model can be tried once from here.
+  expect(html).toContain('>Test summary call</button>')
   expect(html).toContain('Settling 3 lines')
   const below = footer({ ...memory, stalled: { ...failing, failures: 1, blocking: false } })
   expect(below).toContain('· 1 attempt ·')
