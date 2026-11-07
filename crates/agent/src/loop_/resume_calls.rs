@@ -399,6 +399,8 @@ mod tests {
             kind: ResumeKind::Suspended,
             cause,
             interrupted_at: Utc::now(),
+            ran_ms: 0,
+            bounded: false,
             last: LastStep::ToolBatch {
                 all_finished: false,
             },

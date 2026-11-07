@@ -377,6 +377,10 @@ pub struct Serving {
     pub children: HashSet<SessionId>,
     /// The "a child is still running" deferral was logged for this wake.
     pub logged_live_child: bool,
+    /// 178 F3: a turn start, resume or finish of the desk was seen since the
+    /// delivery. The `Tick` backstop judges only then: a resumed turn still
+    /// waiting for its resume slot publishes nothing and is not "inactive".
+    pub turn_seen: bool,
 }
 
 /// 70 DESK-PROTOCOL 3: the nudge points, in one table so Sky can rule on
@@ -522,14 +526,89 @@ orphaned is re-placed by task_place.",
     /// for this wake never counts — after a restart every pre-restart child
     /// is `Idle` with `finished_at: None`, and that must not park the wake.
     pub fn live_child(s: &Serving, kids: &[agent::AgentInfo]) -> bool {
-        kids.iter().any(|k| {
-            matches!(
-                k.state,
-                agent::AgentState::Running
-                    | agent::AgentState::Awaiting { .. }
-                    | agent::AgentState::Approval { .. }
-            ) || (s.children.contains(&k.id) && k.finished_at.is_none())
-        })
+        kids.iter().any(|k| is_live(s, k))
+    }
+
+    /// One kid of [`live_child`]: running now, or spawned for `s` and unfinished.
+    pub fn is_live(s: &Serving, k: &agent::AgentInfo) -> bool {
+        matches!(
+            k.state,
+            agent::AgentState::Running
+                | agent::AgentState::Awaiting { .. }
+                | agent::AgentState::Approval { .. }
+        ) || (s.children.contains(&k.id) && k.finished_at.is_none())
+    }
+
+    /// 178 W4: the kids holding `s` ([`is_live`]), by peer name — or
+    /// `session:<8>` for a nameless one — for `AgentSummary::waiting_on`.
+    pub fn waiting_on(s: &Serving, kids: &[agent::AgentInfo]) -> Vec<String> {
+        kids.iter()
+            .filter(|k| is_live(s, k))
+            .map(|k| {
+                if k.name.is_empty() {
+                    format!("session:{}", &k.id.to_string()[..8])
+                } else {
+                    k.name.clone()
+                }
+            })
+            .collect()
+    }
+
+    /// What a desk turn's end decides for the wake it served (70
+    /// DESK-PROTOCOL 3, WAKE-LIVE-CHILD D1/D2). Pure: `Roster::judge_turn`
+    /// acts on it at a turn end, and the roster `Tick` backstop (178 W5)
+    /// re-runs it as for a yielded end when nothing of the desk is alive.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Verdict {
+        /// Not a yield: hand the wake back, re-delivered after the back-off
+        /// or `min_backoff_ms` (5 min after a cancel), whichever is later.
+        Release {
+            /// The floor.
+            min_backoff_ms: u64,
+        },
+        /// Handled (or nothing to judge): finish the wake.
+        Handled,
+        /// A live child's result continues this episode; judged again then.
+        Defer,
+        /// Unhandled, not nudged yet: the one nudge.
+        Nudge,
+        /// Unhandled after the nudge: `blocked: no continuation`.
+        Block,
+    }
+
+    /// The verdict on serving `s` after a turn that stopped with
+    /// `stop_reason`. `judged` is the wake's task and the desk agent's events
+    /// on it since delivery; `None` for a wake without a task.
+    pub fn verdict(
+        stop_reason: &str,
+        s: &Serving,
+        judged: Option<(&Task, &[TaskEvent])>,
+        live_child: bool,
+    ) -> Verdict {
+        if !yielded(stop_reason) {
+            return Verdict::Release {
+                min_backoff_ms: if stop_reason == "cancelled" {
+                    300_000
+                } else {
+                    0
+                },
+            };
+        }
+        let Some((task, mine)) = judged else {
+            return Verdict::Handled;
+        };
+        let Some(Nudge::TurnEnd { unhandled, .. }) = for_reason(s.wake.reason) else {
+            return Verdict::Handled;
+        };
+        if !unhandled(s, task, mine, live_child) {
+            Verdict::Handled
+        } else if live_child {
+            Verdict::Defer
+        } else if !s.nudged {
+            Verdict::Nudge
+        } else {
+            Verdict::Block
+        }
     }
 
     /// The turn ended by the model's own hand (`agent::AgentEvent::TurnFinished::stop_reason`
@@ -710,7 +789,7 @@ impl Shared {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::file::parse;
 
@@ -1053,6 +1132,7 @@ Attached (read with the tool for the kind, see Attachments):\n\
             rounds: 0,
             children: HashSet::new(),
             logged_live_child: false,
+            turn_seen: false,
         };
         let ev = |field: &str, after: &str| TaskEvent {
             at_ms: 0,
@@ -1170,6 +1250,7 @@ Attached (read with the tool for the kind, see Attachments):\n\
             rounds: 0,
             children: HashSet::from([mine]),
             logged_live_child: false,
+            turn_seen: false,
         };
         // (a) the restart case: cold, never seen finishing, not ours
         assert!(!nudges::live_child(&s, &[kid(other, A::Idle, false)]));
@@ -1195,6 +1276,129 @@ Attached (read with the tool for the kind, see Attachments):\n\
             &[kid(other, A::Error, false), kid(other, A::Cancelled, false)]
         ));
         assert!(!nudges::live_child(&s, &[]));
+    }
+
+    /// A task in `state`, owned by `agent:karol`, for the verdict tests.
+    pub(crate) fn task_in(state: tasks::TaskState) -> tasks::Task {
+        tasks::Task {
+            id: tasks::TaskId("12".into()),
+            title: "t".into(),
+            brief: String::new(),
+            owner: "agent:karol".parse().unwrap(),
+            state,
+            reviewer: None,
+            blockers: vec![],
+            blocks: vec![],
+            parent: None,
+            project: None,
+            where_: None,
+            harness: None,
+            external: vec![],
+            thread: None,
+            checkout: None,
+            schedule: None,
+            created_by: "user".into(),
+            created_ms: 0,
+            updated_ms: 0,
+            no_progress_count: 0,
+            next_wake_after_ms: None,
+            done_when: None,
+            attachments: vec![],
+            priority: tasks::Priority::Medium,
+        }
+    }
+
+    /// Serving a `reason` wake on task 12, delivered in `state`.
+    fn serving_on(reason: tasks::WakeReason, state: tasks::TaskState) -> Serving {
+        Serving {
+            wake: tasks::Wake {
+                id: "w".into(),
+                agent: "karol".into(),
+                task: Some(tasks::TaskId("12".into())),
+                reason,
+                key: String::new(),
+                count: 1,
+                claimed_by: None,
+                created_ms: 0,
+            },
+            state: Some(state),
+            owner: Some("agent:karol".parse().unwrap()),
+            events: 0,
+            nudged: false,
+            rounds: 0,
+            children: HashSet::new(),
+            logged_live_child: false,
+            turn_seen: false,
+        }
+    }
+
+    /// WAKE-LIVE-CHILD D2 through the pure verdict: a turn that did not
+    /// yield hands the wake back — 5 min after a cancel, the plain back-off
+    /// after an error or a timeout — whatever the task or children say.
+    #[test]
+    fn non_yield_verdicts_release_with_floor() {
+        use nudges::{Verdict, verdict};
+        use tasks::{TaskState as S, WakeReason as R};
+        let s = serving_on(R::Assigned, S::Todo);
+        let t = task_in(S::Todo);
+        for live in [false, true] {
+            assert_eq!(
+                verdict("cancelled", &s, Some((&t, &[])), live),
+                Verdict::Release {
+                    min_backoff_ms: 300_000
+                }
+            );
+            for stop in ["error", "timed_out"] {
+                assert_eq!(
+                    verdict(stop, &s, Some((&t, &[])), live),
+                    Verdict::Release { min_backoff_ms: 0 },
+                    "{stop}"
+                );
+            }
+        }
+        assert_eq!(
+            verdict("cancelled", &s, None, false),
+            Verdict::Release {
+                min_backoff_ms: 300_000
+            },
+            "a task-less wake too"
+        );
+    }
+
+    /// WAKE-LIVE-CHILD D1 through the pure verdict: a live child defers the
+    /// rows whose `unhandled` ignores children (todo, review, reply); the
+    /// `doing` row reads a live child as the continuation (handled). Without
+    /// one: nudge first, then block; a yield on a task-less wake is handled.
+    #[test]
+    fn live_child_defers_only_rows_that_ignore_children() {
+        use nudges::{Verdict, verdict};
+        use tasks::{TaskState as S, WakeReason as R};
+        let rows = [
+            (R::Assigned, S::Todo),
+            (R::Review, S::Review),
+            (R::Comment, S::Doing),
+        ];
+        for (reason, state) in rows {
+            let mut s = serving_on(reason, state);
+            let t = task_in(state);
+            let at = |s: &Serving, live| verdict("end_turn", s, Some((&t, &[])), live);
+            assert_eq!(at(&s, true), Verdict::Defer, "{reason:?}");
+            assert_eq!(at(&s, false), Verdict::Nudge, "{reason:?}");
+            s.nudged = true;
+            assert_eq!(at(&s, true), Verdict::Defer, "{reason:?} nudged");
+            assert_eq!(at(&s, false), Verdict::Block, "{reason:?} nudged");
+        }
+        let s = serving_on(R::Assigned, S::Todo);
+        let doing = task_in(S::Doing);
+        assert_eq!(
+            verdict("end_turn", &s, Some((&doing, &[])), true),
+            Verdict::Handled
+        );
+        assert_eq!(
+            verdict("end_turn", &s, Some((&doing, &[])), false),
+            Verdict::Nudge
+        );
+        assert_eq!(verdict("end_turn", &s, None, true), Verdict::Handled);
     }
 
     #[test]

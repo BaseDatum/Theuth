@@ -296,6 +296,23 @@ pub struct AgentSummary {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub error: Option<String>,
+    /// 178 W4: the children holding the desk's current wake (peer name, else
+    /// a short title); empty when the desk waits on none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub waiting_on: Vec<String>,
+}
+
+impl AgentSummary {
+    /// 178 W4: `waiting on <first>` (`+N` more), or `None` when the desk waits
+    /// on no child; the UI chip says the same.
+    pub fn waiting_label(&self) -> Option<String> {
+        let first = self.waiting_on.first()?;
+        Some(match self.waiting_on.len() - 1 {
+            0 => format!("waiting on {first}"),
+            n => format!("waiting on {first} +{n}"),
+        })
+    }
 }
 
 /// One desk episode (67 §6.2).

@@ -81,7 +81,7 @@ export function AgentDetail({ name, tab }: { name: string; tab: Tab }) {
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-fg-secondary">
                 {summary && !proposed && <ActiveSwitch agent={summary} />}
-                {summary && !summary.file.paused && !proposed && <ActivityChip status={summary.status} />}
+                {summary && !summary.file.paused && !proposed && <ActivityChip status={summary.status} waiting={summary.waiting_on} />}
                 {proposed && <Badge>proposed by {file.data.proposed_by ?? '—'}</Badge>}
                 <span>reports to {root ? 'you' : file.data.reports_to}</span>
                 {summary?.error && <span className="text-danger">{summary.error}</span>}

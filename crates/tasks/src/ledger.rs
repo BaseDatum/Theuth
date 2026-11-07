@@ -1919,6 +1919,9 @@ impl Ledger {
     pub async fn dispatch(&mut self) -> R<Vec<Delivery>> {
         let now = self.now();
         let wakes = self.store.wakes().await.map_err(db)?;
+        // 178 W7: counters outlive deliveries; a wake that left the table
+        // (finished, completed, stale) takes its counter with it.
+        self.retry.retain(|id, _| wakes.iter().any(|w| w.id == *id));
         let busy: HashSet<&str> = wakes
             .iter()
             .filter(|w| w.claimed_by.is_some())
@@ -2039,8 +2042,9 @@ impl Ledger {
     }
 
     /// Delivery returned: fix the placeholder claim to the desk now open.
+    /// 178 W7: the wake's retry counter stays until [`Self::finish_wake`], so
+    /// a desk whose turns keep failing backs off doubling across deliveries.
     pub async fn delivered(&mut self, wake: &Wake) -> R<()> {
-        self.retry.remove(&wake.id);
         if wake.claimed_by.as_deref() == Some(DISPATCHING)
             && let Some(desk) = self.router.as_ref().and_then(|r| r.desk_for(&wake.agent))
         {
@@ -2103,6 +2107,7 @@ impl Ledger {
         if let Some(t) = &wake.task {
             self.delivered.remove(&(wake.agent.clone(), t.clone()));
         }
+        self.retry.remove(&wake.id);
         self.store.finish_wake(&wake.id).await.map_err(db)
     }
 
@@ -4416,7 +4421,8 @@ pub(crate) mod tests {
 
     /// WAKE-LIVE-CHILD D2: a wake handed back by a turn that did not yield is
     /// unclaimed and re-dispatched after its floor; without a floor the
-    /// delivery back-off (5 s) applies.
+    /// delivery back-off applies — the second release of the same wake, so
+    /// 10 s (178 W7: a delivery no longer resets the count).
     #[tokio::test]
     async fn release_wake_unclaims_with_a_floor() {
         let mut r = rig().await;
@@ -4436,13 +4442,63 @@ pub(crate) mod tests {
         assert_eq!(again[0].wake.id, w.id, "delivered again after the floor");
         r.ledger.delivered(&again[0].wake).await.unwrap();
         r.ledger.release_wake(&again[0].wake, 0).await.unwrap();
-        r.tick(4_000);
+        r.tick(9_000);
         assert!(
             r.ledger.dispatch().await.unwrap().is_empty(),
-            "5 s back-off"
+            "10 s back-off"
         );
         r.tick(2_000);
         assert_eq!(r.ledger.dispatch().await.unwrap().len(), 1);
+    }
+
+    /// 178 W7: a desk whose turns keep failing is re-woken 5 s, 10 s, 20 s
+    /// … apart — the count survives each delivery; finishing the wake ends it.
+    #[tokio::test]
+    async fn release_wake_backoff_doubles_across_deliveries() {
+        let mut r = rig().await;
+        r.task("agent:ops").await;
+        let mut wake = r.ledger.dispatch().await.unwrap().remove(0).wake;
+        for secs in [5_000, 10_000, 20_000, 40_000] {
+            r.ledger.delivered(&wake).await.unwrap();
+            r.ledger.release_wake(&wake, 0).await.unwrap();
+            r.tick(secs - 1_000);
+            assert!(
+                r.ledger.dispatch().await.unwrap().is_empty(),
+                "held {secs} ms"
+            );
+            r.tick(2_000);
+            wake = r.ledger.dispatch().await.unwrap().remove(0).wake;
+        }
+        r.ledger.finish_wake(&wake).await.unwrap();
+        assert!(
+            r.ledger.retry.is_empty(),
+            "the finished wake's count is gone"
+        );
+    }
+
+    /// 178 non-goal pinned: the ledger never ages a claim the current desk
+    /// holds — releasing a desk's wake is the roster's call (its judge and
+    /// `Tick` backstop), never a sweep's or a clock's.
+    #[tokio::test]
+    async fn current_desks_claim_is_never_aged_by_sweep() {
+        let mut r = rig().await;
+        r.router
+            .desks
+            .lock()
+            .unwrap()
+            .insert("ops".into(), "d-ops".into());
+        let t = r.task("agent:ops").await;
+        let w = r.ledger.dispatch().await.unwrap().remove(0).wake;
+        r.ledger
+            .comment(&t.id, "ping", false, "user", None)
+            .await
+            .unwrap();
+        r.tick(48 * 3_600_000);
+        r.ledger.sweep(None).await.unwrap();
+        assert!(r.ledger.dispatch().await.unwrap().is_empty(), "still held");
+        let rows = r.ledger.wakes().await.unwrap();
+        let held = rows.iter().find(|x| x.id == w.id).expect("row kept");
+        assert_eq!(held.claimed_by.as_deref(), Some("d-ops"));
     }
 
     /// WAKE-LIVE-CHILD D3: the busy skip is reported once per blocking wake

@@ -2023,6 +2023,7 @@ mod tests {
             open_tasks: 0,
             spent_month: spent,
             error: None,
+            waiting_on: Vec::new(),
         }
     }
 

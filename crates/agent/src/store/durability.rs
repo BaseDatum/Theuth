@@ -227,6 +227,32 @@ struct StepRow {
     at: String,
 }
 
+/// 178 F1: a turn's run time from its journal rows (`n` order). The newest
+/// `suspended` row carrying `ran_ms` is the drain's cumulative run clock
+/// (`durability::run_clock`); the rows after it add their span — a run since
+/// that resume which no drain measured (a crash). Rows with no `ran_ms`
+/// anywhere (written before 178) fall back to the whole span, first to newest.
+/// Downtime between a `suspended` row and the next run is never counted.
+fn run_ms(steps: &[StepRow]) -> anyhow::Result<u64> {
+    let mut ran = 0u64;
+    let mut span: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
+    for s in steps {
+        let at = parse_dt(&s.at)?;
+        if s.kind == StepKind::Suspended.as_str()
+            && let Some(ms) = json(&s.payload)["ran_ms"].as_u64()
+        {
+            ran = ms;
+            span = None;
+            continue;
+        }
+        span = Some(span.map_or((at, at), |(first, _)| (first, at)));
+    }
+    let tail = span.map_or(0, |(first, last)| {
+        (last - first).num_milliseconds().max(0) as u64
+    });
+    Ok(ran + tail)
+}
+
 type CallTuple = (
     String,
     String,
@@ -672,6 +698,60 @@ impl Store {
             .transpose()
     }
 
+    /// 178 W1/F1: `turn`'s run time before an interruption ([`run_ms`] over
+    /// its rows, `n` order); only rows at or before `until` when given (a
+    /// resumed turn's own new rows never count). 0 without rows.
+    pub async fn turn_run_ms(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+        until: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<u64> {
+        let rows: Vec<(String, Option<String>, String, String)> = sqlx::query_as(
+            "SELECT kind, call_id, payload, at FROM turn_steps \
+             WHERE session_id = ? AND turn_id = ? ORDER BY n",
+        )
+        .bind(session.to_string())
+        .bind(turn.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        let mut steps = Vec::with_capacity(rows.len());
+        for (kind, call_id, payload, at) in rows {
+            if until.is_some_and(|u| parse_dt(&at).is_ok_and(|a| a > u)) {
+                continue;
+            }
+            steps.push(StepRow {
+                kind,
+                call_id,
+                payload,
+                at,
+            });
+        }
+        run_ms(&steps)
+    }
+
+    /// Test seam (178): set the `at` of step `n` of `turn`, to journal a
+    /// turn that ran before a restart.
+    #[cfg(test)]
+    pub async fn set_step_at(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+        n: i64,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE turn_steps SET at = ? WHERE session_id = ? AND turn_id = ? AND n = ?")
+            .bind(at.to_rfc3339())
+            .bind(session.to_string())
+            .bind(turn.to_string())
+            .bind(n)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// 146 D9: the ACP child's journal. An ACP child owes work from the
     /// moment the supervisor hands it a prompt (or its harness opens a turn)
     /// until that turn ends; one `input_accepted` row marks it, so
@@ -757,13 +837,19 @@ impl Store {
             })
             .collect();
         anyhow::ensure!(!steps.is_empty(), "turn {turn} of {session} has no journal");
-        let interrupted_at = steps
+        let ats = steps
             .iter()
             .map(|s| parse_dt(&s.at))
-            .collect::<anyhow::Result<Vec<_>>>()?
-            .into_iter()
-            .max()
-            .expect("non-empty");
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let interrupted_at = *ats.iter().max().expect("non-empty");
+        let ran_ms = run_ms(&steps)?;
+        // 178 W2: the opener's source says whether the turn ran bounded.
+        let bounded = steps
+            .iter()
+            .find(|s| s.kind == StepKind::InputAccepted.as_str())
+            .is_some_and(|s| {
+                matches!(json(&s.payload)["source"].as_str(), Some("peer" | "scoped"))
+            });
         let mut kind = ResumeKind::Interrupted;
         let mut suspended_reason = None;
         let mut newest = None;
@@ -844,6 +930,8 @@ impl Store {
             kind,
             cause: ResumeCause::from_journal(kind, suspended_reason.as_deref()),
             interrupted_at,
+            ran_ms,
+            bounded,
             last,
             calls,
             partial,

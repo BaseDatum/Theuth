@@ -61,6 +61,64 @@ impl Default for DurabilityConfig {
     }
 }
 
+/// 178 W1/W2: the floor of a resumed turn's remaining run time — an
+/// over-cap turn gets this long to land before it is cancelled.
+pub const RESUME_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 178 W1/W2: what is left of a run-time `cap` after `ran` (the turn's run
+/// time before a restart, [`run_clock`] / `store::durability::run_ms`:
+/// downtime never counts), floored at [`RESUME_GRACE`] but never above `cap`.
+pub fn remaining_run(cap: std::time::Duration, ran: chrono::Duration) -> std::time::Duration {
+    let ran = ran.to_std().unwrap_or_default();
+    cap.saturating_sub(ran).max(RESUME_GRACE.min(cap))
+}
+
+/// 178 F1: the run clock of every turn running in this process, read by the
+/// drain, which writes the turn's accrued run time as `ran_ms` on its
+/// `suspended` row. Cumulative across resumes: a turn starts from the
+/// `ran_ms` its journal already holds. `std::time::Instant` is
+/// `clock_gettime(CLOCK_UPTIME_RAW)` on Darwin and `CLOCK_MONOTONIC` on
+/// Linux (std docs) — neither advances while the machine sleeps, so a laptop
+/// asleep mid-turn adds nothing (Windows' `QueryPerformanceCounter` may).
+pub mod run_clock {
+    use std::collections::HashMap;
+    use std::sync::LazyLock;
+    use std::time::Instant;
+
+    use runtime::{SessionId, TurnId};
+
+    type Clocks = HashMap<TurnId, (SessionId, Instant, u64)>;
+    static CLOCKS: LazyLock<parking_lot::Mutex<Clocks>> = LazyLock::new(Default::default);
+
+    /// `turn` of `session` runs from now, `prior_ms` already behind it. A
+    /// clock already running for `turn` is kept.
+    pub fn start(session: SessionId, turn: TurnId, prior_ms: u64) {
+        CLOCKS
+            .lock()
+            .entry(turn)
+            .or_insert((session, Instant::now(), prior_ms));
+    }
+
+    /// `turn` stopped running here.
+    pub fn stop(turn: TurnId) {
+        CLOCKS.lock().remove(&turn);
+    }
+
+    /// Every clock of `session` stops (an ACP child's prompt returned).
+    pub fn stop_session(session: SessionId) {
+        CLOCKS.lock().retain(|_, (s, _, _)| *s != session);
+    }
+
+    /// `turn`'s run time so far, prior runs included; `None` when it does
+    /// not run here.
+    pub fn ran_ms(turn: TurnId) -> Option<u64> {
+        CLOCKS
+            .lock()
+            .get(&turn)
+            .map(|(_, at, prior)| prior + at.elapsed().as_millis() as u64)
+    }
+}
+
 /// 146 D4: the restart-recovery counts. Published on the bus by the boot
 /// pass (`respawn_acp_children`) and again whenever a respawn settles; the
 /// Attention actor renders one `resume:boot:<at_ms>` item from the latest.
@@ -344,6 +402,13 @@ pub struct ResumePlan {
     pub cause: ResumeCause,
     /// Newest journal row's `at`.
     pub interrupted_at: DateTime<Utc>,
+    /// 178 F1: the turn's run time before the interruption
+    /// (`store::durability::run_ms`): the drain's cumulative `ran_ms`, plus
+    /// what ran after it; downtime never counts.
+    pub ran_ms: u64,
+    /// 178 W2: the turn's opener was bounded (a peer input, or a scoped
+    /// input at depth 0: journaled `source` `peer` / `scoped`).
+    pub bounded: bool,
     /// What to act on (§4.2).
     pub last: LastStep,
     /// The open batch's `tool_calls` rows, in `tool_batch.payload.call_ids`

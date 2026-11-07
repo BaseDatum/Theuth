@@ -97,8 +97,13 @@ impl Message<Drain> for Agents {
                 tracing::error!("109: drain: open_turns: {e:#}");
                 Vec::new()
             });
-            let payload = serde_json::json!({ "reason": m.reason });
             for (session, turn, _) in &open {
+                // 178 F1: the turn's accrued run time (cumulative across
+                // resumes) rides on the row; a turn not running here has none.
+                let mut payload = serde_json::json!({ "reason": m.reason });
+                if let Some(ms) = crate::durability::run_clock::ran_ms(*turn) {
+                    payload["ran_ms"] = ms.into();
+                }
                 if let Err(e) = store
                     .step(*session, *turn, StepKind::Suspended, None, &payload)
                     .await

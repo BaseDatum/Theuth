@@ -1337,6 +1337,173 @@ async fn suspended_scenarios() {
     unload_always_lands_the_cancel(&registry, &holds).await;
 }
 
+/// 178 W2/W3: the resume slot bounds a replay, not a turn; a queued resume
+/// stopped by the user lands `cancelled`; a bounded turn keeps its bound.
+#[test]
+fn resume_slots_and_bounds_contract() {
+    crate::with_test_registry(slot_scenarios());
+}
+
+async fn slot_scenarios() {
+    let scratch = crate::TestDir::new("178-reg");
+    let reg_dir = scratch.0.clone();
+    let hits = reg_dir.join("hits");
+    let (registry, holds) = registry(&reg_dir, &hits, false).await;
+    resume_slot_is_released_after_the_first_round(&registry, &hits, &holds).await;
+    queued_resume_turn_cancel_lands_cancelled(&registry, &holds).await;
+    bounded_turn_keeps_its_bound_after_resume(&registry, &holds).await;
+}
+
+/// `Resume` of `plan` on `actor` under `slots`.
+async fn resume_on(actor: &ActorRef<Session>, plan: ResumePlan, slots: Option<Arc<Semaphore>>) {
+    assert!(
+        actor
+            .ask(Resume {
+                plan,
+                slots,
+                cause: ResumeCause::Crash,
+                from: None,
+                lost_jobs: Vec::new(),
+            })
+            .await
+            .unwrap()
+    );
+}
+
+/// 178 W3: with `resume_parallel = 1` and two open turns, the first holds
+/// the one slot through its replay — here its rerun `probe` never returns —
+/// only up to `RESUME_SLOT_HOLD`; the second still resumes meanwhile.
+async fn resume_slot_is_released_after_the_first_round(
+    registry: &ActorRef<ToolRegistry>,
+    hits: &Path,
+    holds: &Holds,
+) {
+    let (h1, t1) = interrupt_mid_batch(registry, &holds.0, C1, C2).await;
+    let (mut h2, t2) = interrupt_mid_batch(registry, &holds.0, C1, C2).await;
+    let p1 = h1.store.resume_plan(h1.id, t1).await.unwrap();
+    let p2 = h2.store.resume_plan(h2.id, t2).await.unwrap();
+    holds.0.store(true, Ordering::SeqCst);
+    let slots = Arc::new(Semaphore::new(1));
+    let a1 = h1.actor("openai/textonly").await;
+    resume_on(&a1, p1, Some(slots.clone())).await;
+    let file = hits_file(hits, h1.id);
+    for _ in 0..200 {
+        if hits_of(&file).iter().filter(|h| *h == PROBE).count() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        slots.available_permits(),
+        0,
+        "the first turn's replay holds the slot"
+    );
+    let a2 = h2.actor("openai/textonly").await;
+    resume_on(&a2, p2, Some(slots.clone())).await;
+    let events = h2
+        .drain_until(|e| matches!(e, AgentEvent::TurnResumed { turn, .. } if *turn == t2))
+        .await;
+    assert!(!events.is_empty());
+    assert!(
+        a1.ask(IsRunning).await.unwrap(),
+        "the first is still running"
+    );
+    a1.tell(CancelTurn { keep: None }).await.unwrap();
+    a2.tell(CancelTurn { keep: None }).await.unwrap();
+    holds.0.store(false, Ordering::SeqCst);
+    wait_idle(&a1).await;
+    wait_idle(&a2).await;
+}
+
+/// 109 §4.6 kept (178 W3): a turn waiting for a resume slot that the user
+/// stops ends `cancelled`, and its journal turn closes.
+async fn queued_resume_turn_cancel_lands_cancelled(
+    registry: &ActorRef<ToolRegistry>,
+    holds: &Holds,
+) {
+    let (mut h, tid) = interrupt_mid_batch(registry, &holds.0, C1, C2).await;
+    let plan = h.store.resume_plan(h.id, tid).await.unwrap();
+    let slots = Arc::new(Semaphore::new(1));
+    let _taken = slots.clone().acquire_owned().await.unwrap();
+    let actor = h.actor("openai/textonly").await;
+    resume_on(&actor, plan, Some(slots)).await;
+    assert!(actor.ask(IsRunning).await.unwrap(), "waits for its slot");
+    actor.tell(CancelTurn { keep: None }).await.unwrap();
+    let events = h.drain().await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::TurnFinished { turn, stop_reason, .. } if *turn == tid && stop_reason == "cancelled"
+        )),
+        "{events:?}"
+    );
+    wait_idle(&actor).await;
+    assert_eq!(
+        kinds(&h.store, h.id, tid).await.last().unwrap(),
+        "turn_finished"
+    );
+}
+
+/// 178 W2: a depth-0 turn that ran bounded (a peer or scoped opener: the
+/// journal says `peer`/`scoped`) keeps its bound after a resume — with the
+/// run time it has left (here none of a 1 s cap: the floor, then
+/// `timed_out`) — and its permit slot is set, so a resumed bounded turn
+/// with time left runs its rounds instead of stopping `cancelled`.
+async fn bounded_turn_keeps_its_bound_after_resume(
+    registry: &ActorRef<ToolRegistry>,
+    holds: &Holds,
+) {
+    // The journal's opener source decides `bounded`.
+    let h = Harness::new(BatchFake).await;
+    for (source, bounded) in [("peer", true), ("scoped", true), ("user", false)] {
+        let t = TurnId::new();
+        h.store.input_accepted(h.id, t, None, source).await.unwrap();
+        let plan = h.store.resume_plan(h.id, t).await.unwrap();
+        assert_eq!(plan.bounded, bounded, "{source}");
+        h.store.finish_turn(h.id, t, "stop").await.unwrap();
+    }
+
+    // Time left: the round takes the permit from the slot and the turn ends `stop`.
+    let (mut h, tid) = interrupt_mid_batch(registry, &holds.0, C1, C2).await;
+    let mut plan = h.store.resume_plan(h.id, tid).await.unwrap();
+    assert!(!plan.bounded, "a user opener");
+    plan.bounded = true;
+    let actor = h.actor("openai/textonly").await;
+    resume_on(&actor, plan, None).await;
+    let events = h.drain().await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::TurnFinished { turn, stop_reason, .. } if *turn == tid && stop_reason == "stop"
+        )),
+        "{events:?}"
+    );
+    wait_idle(&actor).await;
+
+    // Over its cap before the restart: the floor (never above the 1 s cap), then `timed_out`.
+    let (mut h, tid) = interrupt_mid_batch(registry, &holds.0, C1, C2).await;
+    let mut plan = h.store.resume_plan(h.id, tid).await.unwrap();
+    plan.bounded = true;
+    plan.ran_ms = 1_000_000;
+    let mut cfg = AgentConfig::default();
+    cfg.subagents.max_runtime_secs = 1;
+    holds.0.store(true, Ordering::SeqCst);
+    let actor = h
+        .actor_with("openai/textonly", CompactStyle::default(), cfg)
+        .await;
+    resume_on(&actor, plan, None).await;
+    let events = h.drain().await;
+    holds.0.store(false, Ordering::SeqCst);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::TurnFinished { turn, stop_reason, .. } if *turn == tid && stop_reason == "timed_out"
+        )),
+        "{events:?}"
+    );
+    wait_idle(&actor).await;
+}
+
 /// §9.2 step 2: a session told `Draining` opens no model call — the turn
 /// writes `suspended` after the input and stops without `turn_finished`;
 /// the next start resumes it as §4.2 row 1 (`kind = Suspended`) and the

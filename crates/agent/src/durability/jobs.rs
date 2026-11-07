@@ -828,6 +828,8 @@ mod tests {
             kind: ResumeKind::Interrupted,
             cause: crate::durability::ResumeCause::Crash,
             interrupted_at: Utc::now(),
+            ran_ms: 0,
+            bounded: false,
             last: LastStep::ToolBatch {
                 all_finished: false,
             },
@@ -977,6 +979,8 @@ mod tests {
             kind: ResumeKind::Interrupted,
             cause: crate::durability::ResumeCause::Crash,
             interrupted_at: Utc::now(),
+            ran_ms: 0,
+            bounded: false,
             last: LastStep::ToolBatch {
                 all_finished: false,
             },

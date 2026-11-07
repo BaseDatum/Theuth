@@ -12292,10 +12292,12 @@ pub fn agents_table(rows: &[roster::AgentSummary]) -> String {
     }
     let mut out = vec!["name · status · open".to_owned()];
     out.extend(rows.iter().map(|a| {
-        let status = serde_json::to_value(a.status)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default();
+        let status = a.waiting_label().unwrap_or_else(|| {
+            serde_json::to_value(a.status)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default()
+        });
         format!("{} · {status} · {}", a.file.name.as_str(), a.open_tasks)
     }));
     out.join("\n")
@@ -16111,10 +16113,11 @@ mod tests {
             open_tasks: 2,
             spent_month: 0.0,
             error: None,
+            waiting_on: vec!["scout".into(), "probe".into()],
         };
         assert_eq!(
             agents_table(&[agent]),
-            "name · status · open\nops · working · 2"
+            "name · status · open\nops · waiting on scout +1 · 2"
         );
         m.apply(UiEvent::Roster(vec![]));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no agents"));

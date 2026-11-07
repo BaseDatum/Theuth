@@ -246,6 +246,11 @@ pub struct Agents {
     undelivered: HashMap<SessionId, Vec<Undelivered>>,
     /// Children whose current turn was cancelled by the runtime cap.
     timed_out: HashSet<SessionId>,
+    /// 178 F2: arms handed out so far ([`ChildTurn::arm`]).
+    arms: u64,
+    /// 178 W6: the last `AgentEvent::Error` of a child turn, for the
+    /// `[child turn ended: error — …]` prefix of its result.
+    child_errors: HashMap<(SessionId, TurnId), String>,
     /// Children spawned with a `tools` ceiling ([`SpawnChild::cap`]), for
     /// the board row; the registry enforces it ([`SetCap`]).
     caps: HashMap<SessionId, Risk>,
@@ -441,8 +446,11 @@ struct ChildTurn {
     /// The pool permit the spawn turn holds; `None` for a follow-up turn
     /// (human steer, peer message) and for a human-promoted spawn turn.
     permit: Option<SpawnPermit>,
-    /// `max_runtime_secs` timer; `None` for a follow-up turn.
+    /// `max_runtime_secs` timer (178 W1: every child turn has one); `None`
+    /// only when no supervisor ref was at hand to arm it.
     timer: Option<AbortHandle>,
+    /// 178 F2: which arm `timer` is; a [`ChildTimedOut`] of another is stale.
+    arm: u64,
     /// When the turn started (the picker's elapsed column).
     started_at: DateTime<Utc>,
 }
@@ -808,8 +816,9 @@ struct StartChildTurn {
     permit: SpawnPermit,
 }
 
-/// `tell` (internal): a child turn hit `max_runtime_secs`.
-struct ChildTimedOut(SessionId);
+/// `tell` (internal): a child turn hit `max_runtime_secs`; `.1` is the arm
+/// ([`ChildTurn::arm`]) whose timer fired (178 F2).
+struct ChildTimedOut(SessionId, u64);
 
 const ADJECTIVES: [&str; 8] = [
     "quick", "calm", "bold", "keen", "brisk", "neat", "wise", "swift",
@@ -2237,6 +2246,8 @@ impl Agents {
         child_waits::child_result_delivered(self, parent, child).await;
         let request = self.bound.remove(&(child, turn));
         let answered = self.delivered.remove(&(child, turn));
+        let timed_out = self.timed_out.remove(&child);
+        let error = self.child_errors.remove(&(child, turn));
         let Some(mut text) = self.turn_text.remove(&(child, turn)) else {
             tracing::error!(session = %child, %turn, "child turn finished without its PeerTurnFinished result");
             self.error(
@@ -2248,12 +2259,17 @@ impl Agents {
             .await;
             return;
         };
-        if self.timed_out.remove(&child) {
-            text = format!(
-                "[timed out after {}s, stop={}]\n{text}",
+        let prefix = if timed_out {
+            Some(format!(
+                "[timed out after {}s, stop={}]",
                 self.cfg.subagents.max_runtime_secs,
                 attr(stop_reason)
-            );
+            ))
+        } else {
+            failure_prefix(stop_reason, error.as_deref(), &text)
+        };
+        if let Some(prefix) = prefix {
+            text = format!("{prefix}\n{text}");
         }
         // Bound like any tool result; the child's id is the spill file stem (36 §4.1).
         let text = spill::cap(
@@ -2459,6 +2475,14 @@ impl Agents {
         if let Some(timer) = self.child_turns.remove(&session).and_then(|ct| ct.timer) {
             timer.abort();
         }
+        // 178 F1: an ACP prompt's run clock stops with it (a native turn
+        // stops its own at the end of `drive`).
+        if matches!(
+            self.sessions.get(&session).map(|l| &l.actor),
+            Some(LiveActor::Acp(_))
+        ) {
+            crate::durability::run_clock::stop_session(session);
+        }
         self.last_stop
             .insert(session, (stop_reason.to_owned(), Utc::now()));
         self.search.invalidate();
@@ -2629,33 +2653,22 @@ impl Message<AgentEvent> for Agents {
             // 109 LIVE: a turn resumed after a restart (`Turn::resume`)
             // publishes `TurnResumed`, never `TurnStarted`; for liveness it is
             // the start of a turn all the same.
-            AgentEvent::TurnStarted { session, .. } | AgentEvent::TurnResumed { session, .. } => {
-                self.running.insert(session);
-                // A follow-up turn (steer, peer message) has no permit but
-                // still needs a start time for the picker — and, on an ACP
-                // child, the runtime timer (R2.4): a `session/prompt` that
-                // never returns must not keep the child running forever.
-                let live = self.sessions.get(&session);
-                if live.is_some_and(|l| l.parent.is_some())
-                    && !self.child_turns.contains_key(&session)
-                {
-                    let timer = match live.map(|l| &l.actor) {
-                        Some(LiveActor::Acp(_)) => {
-                            Some(self.runtime_timer(session, ctx.actor_ref().clone()))
-                        }
-                        _ => None,
-                    };
-                    self.child_turns.insert(
-                        session,
-                        ChildTurn {
-                            permit: None,
-                            timer,
-                            started_at: Utc::now(),
-                        },
-                    );
-                }
-                // 155 §5.3: a turn starting ends `idle`/`done`.
-                self.check_peer_waits(session).await;
+            AgentEvent::TurnStarted { session, .. } => {
+                self.turn_began(session, None, ctx.actor_ref().clone())
+                    .await;
+            }
+            AgentEvent::TurnResumed {
+                session,
+                turn,
+                interrupted_at,
+                ..
+            } => {
+                self.turn_began(
+                    session,
+                    Some((turn, interrupted_at)),
+                    ctx.actor_ref().clone(),
+                )
+                .await;
             }
             AgentEvent::TurnFinished {
                 session,
@@ -2699,6 +2712,18 @@ impl Message<AgentEvent> for Agents {
                 {
                     tracing::warn!(session = %session, "inner_call_finished: {e:#}");
                 }
+            }
+            // 178 W6: what a failed child turn hands its parent says why.
+            AgentEvent::Error {
+                session,
+                turn: Some(turn),
+                message,
+            } if self
+                .sessions
+                .get(&session)
+                .is_some_and(|l| l.parent.is_some()) =>
+            {
+                self.child_errors.insert((session, turn), message);
             }
             // `SessionDeleted` is only ever published by `DeleteSession`,
             // which bumps before replying; `TitleChanged` also comes from the
@@ -3454,6 +3479,28 @@ fn attr(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// 178 W6: the line that leads a child result whose turn did not end well —
+/// an `error` (with the turn's last error, first line, ≤ 200 chars), a
+/// `cancelled` (the runtime cap has its own prefix) or no reply at all.
+/// `None` for an ordinary result.
+fn failure_prefix(stop_reason: &str, error: Option<&str>, text: &str) -> Option<String> {
+    match stop_reason {
+        "error" => {
+            let why: String = error
+                .and_then(|e| e.lines().find(|l| !l.trim().is_empty()))
+                .unwrap_or("unknown error")
+                .trim()
+                .chars()
+                .take(200)
+                .collect();
+            Some(format!("[child turn ended: error — {why}]"))
+        }
+        "cancelled" => Some("[child turn cancelled]".into()),
+        _ if text.trim().is_empty() => Some("[child turn ended with no reply]".into()),
+        _ => None,
+    }
 }
 
 impl Message<SendInput> for Agents {
@@ -5002,28 +5049,119 @@ impl Agents {
             .route(child, None, text, Vec::new(), None, ticket, scope, false)
             .await;
         let me = me.or_else(|| ActorRef::<Agents>::lookup(AGENT_ACTOR).ok().flatten());
-        let timer = me.map(|me| self.runtime_timer(child, me));
-        self.child_turns.insert(
-            child,
-            ChildTurn {
-                permit,
-                timer,
-                started_at: Utc::now(),
-            },
-        );
+        self.arm_child_turn(child, permit, chrono::Duration::zero(), me);
     }
 
-    /// The `max_runtime_secs` timer of one child turn: [`ChildTimedOut`]
-    /// unless aborted when the turn ends.
-    fn runtime_timer(&self, child: SessionId, me: ActorRef<Agents>) -> AbortHandle {
-        let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
-        tokio::spawn(async move {
-            tokio::time::sleep(after).await;
-            let _ = me.tell(ChildTimedOut(child)).await;
-        })
-        .abort_handle()
+    /// A turn of `session` began (`TurnStarted`) or was resumed after a
+    /// restart (`TurnResumed`: `resumed` = its turn and `interrupted_at`).
+    /// 178 W1: every child turn is capped — native and ACP, spawn, follow-up
+    /// or resumed — with what is left of `max_runtime_secs` after the run
+    /// time the journal shows before the restart (downtime never counts).
+    async fn turn_began(
+        &mut self,
+        session: SessionId,
+        resumed: Option<(TurnId, DateTime<Utc>)>,
+        me: ActorRef<Agents>,
+    ) {
+        self.running.insert(session);
+        let live = self.sessions.get(&session);
+        let child = live.is_some_and(|l| l.parent.is_some());
+        let acp = matches!(live.map(|l| &l.actor), Some(LiveActor::Acp(_)));
+        // 178 F1: an ACP prompt's run clock lives here (its journal turn is
+        // the supervisor's); the drain reads it for the `suspended` row.
+        let acp_ran = if acp {
+            self.acp_run_clock(session).await
+        } else {
+            0
+        };
+        if child && !self.child_turns.contains_key(&session) {
+            let ran_ms = match resumed {
+                Some((turn, at)) => self
+                    .store_for(session)
+                    .turn_run_ms(session, turn, Some(at))
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(session = %session, "178: child run time unknown: {e:#}");
+                        0
+                    }),
+                None => acp_ran,
+            };
+            let ran = chrono::Duration::milliseconds(ran_ms as i64);
+            self.arm_child_turn(session, None, ran, Some(me));
+        }
+        // 155 §5.3: a turn starting ends `idle`/`done`.
+        self.check_peer_waits(session).await;
     }
 
+    /// 178 F1: start the run clock of the ACP session's open journal turn
+    /// (146 D9: one per prompt, kept open across a restart and respawned on)
+    /// from the run time its journal holds; returns that run time (ms).
+    async fn acp_run_clock(&self, session: SessionId) -> u64 {
+        let store = self.store_for(session);
+        let turn = match store.open_turn(session).await {
+            Ok(Some((turn, _))) => turn,
+            Ok(None) => return 0,
+            Err(e) => {
+                tracing::warn!(session = %session, "178: ACP open turn unknown: {e:#}");
+                return 0;
+            }
+        };
+        let ran = store
+            .turn_run_ms(session, turn, None)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(session = %session, "178: ACP run time unknown: {e:#}");
+                0
+            });
+        crate::durability::run_clock::start(session, turn, ran);
+        ran
+    }
+
+    /// The one arming point of a child turn's `max_runtime_secs` timer
+    /// (178 W1): a turn that already has a timer keeps it; otherwise the
+    /// timer gets [`crate::durability::remaining_run`] after `ran`, and
+    /// `started_at` is `now - ran` so status shows the turn's true age.
+    fn arm_child_turn(
+        &mut self,
+        child: SessionId,
+        permit: Option<SpawnPermit>,
+        ran: chrono::Duration,
+        me: Option<ActorRef<Agents>>,
+    ) {
+        let cap = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
+        let budget = crate::durability::remaining_run(cap, ran);
+        self.arms += 1;
+        let arm = self.arms;
+        let ct = self.child_turns.entry(child).or_insert_with(|| ChildTurn {
+            permit: None,
+            timer: None,
+            arm: 0,
+            started_at: Utc::now() - ran,
+        });
+        if permit.is_some() {
+            ct.permit = permit;
+        }
+        if ct.timer.is_none() {
+            ct.arm = arm;
+            ct.timer = me.map(|me| runtime_timer(child, arm, me, budget));
+        }
+        if !ran.is_zero() {
+            tracing::info!(session = %child, ran_secs = ran.num_seconds(), budget_secs = budget.as_secs(), "178: resumed child turn capped with its remaining run time");
+        }
+    }
+}
+
+/// The `max_runtime_secs` timer of one child turn (arm `arm`):
+/// [`ChildTimedOut`] after `after` unless aborted when the turn ends.
+fn runtime_timer(child: SessionId, arm: u64, me: ActorRef<Agents>, after: Duration) -> AbortHandle {
+    tokio::spawn(async move {
+        tokio::time::sleep(after).await;
+        let _ = me.tell(ChildTimedOut(child, arm)).await;
+    })
+    .abort_handle()
+}
+
+impl Agents {
     /// A human input reaches a queued child (01 §2.6): the permit wait is
     /// abandoned and the brief runs now, permit-free, as a human-opened
     /// turn. Returns the inputs held for the child, for [`Self::replay`]
@@ -5090,6 +5228,14 @@ impl Agents {
                 .await;
         }
         const WHY: &str = "spawn cancelled before it started";
+        // 178 W8: nothing will come from it — the parent's wait goes, said once.
+        child_waits::child_gone(
+            self,
+            &[child],
+            "was dropped: its spawn was cancelled before it started",
+            &[],
+        )
+        .await;
         for h in q.held {
             match h {
                 Held::Routed { ticket, .. } => {
@@ -5136,15 +5282,17 @@ impl Agents {
 impl Message<ChildTimedOut> for Agents {
     type Reply = ();
 
+    /// 178 F2: only the timer of the child's current arm cancels it; a fire
+    /// that lost the race with its turn's end (a stale arm) does nothing.
     async fn handle(
         &mut self,
-        ChildTimedOut(child): ChildTimedOut,
+        ChildTimedOut(child, arm): ChildTimedOut,
         _: &mut Context<Self, Self::Reply>,
     ) {
         if self
             .child_turns
             .get(&child)
-            .is_some_and(|ct| ct.timer.is_some())
+            .is_some_and(|ct| ct.timer.is_some() && ct.arm == arm)
             && let Some(live) = self.sessions.get(&child)
         {
             self.timed_out.insert(child);
@@ -6946,6 +7094,12 @@ impl Agents {
         };
         live.actor.stop().await;
         self.running.remove(&session);
+        // 178 F5: its turn is gone with the actor; a kept entry would leave
+        // the next turn (here or after a move back) without a timer.
+        if let Some(timer) = self.child_turns.remove(&session).and_then(|ct| ct.timer) {
+            timer.abort();
+        }
+        crate::durability::run_clock::stop_session(session);
         self.endless.detach(session);
         true
     }
@@ -8152,12 +8306,15 @@ impl Message<DeleteSession> for Agents {
         self.expire_waits("session deleted", |w| {
             ids.contains(&w.session) || PeerAddress::local(&w.to).is_some_and(|t| ids.contains(&t))
         });
+        // 178 W8: before the rows go — a parent outside the tree is told once.
+        child_waits::child_gone(self, &ids, "was deleted", &ids).await;
         for id in &ids {
             self.drop_queued(*id).await;
             self.ledger.forget(*id);
             self.bound.retain(|(s, _), _| s != id);
             self.delivered.retain(|(s, _), _| s != id);
             self.turn_text.retain(|(s, _), _| s != id);
+            self.child_errors.retain(|(s, _), _| s != id);
             self.owned_children.remove(id);
             self.caps.remove(id);
             self.remote_parent.remove(id);
@@ -10435,6 +10592,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             queued: HashMap::new(),
             undelivered: HashMap::new(),
             timed_out: HashSet::new(),
+            arms: 0,
+            child_errors: HashMap::new(),
             caps: HashMap::new(),
             remote_parent: HashMap::new(),
             owned_children: HashMap::new(),
@@ -11523,6 +11682,8 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         queued: HashMap::new(),
         undelivered: HashMap::new(),
         timed_out: HashSet::new(),
+        arms: 0,
+        child_errors: HashMap::new(),
         caps: HashMap::new(),
         remote_parent: HashMap::new(),
         owned_children: HashMap::new(),
@@ -16792,6 +16953,551 @@ pub(crate) mod tests {
         rt.publish(finished(child)).await;
         next_event(&mut rx, |e| matches!(e, AgentEvent::TurnFinished { .. })).await;
         assert_eq!(state(&agents).await, (AgentState::Idle, false));
+    }
+
+    // ----- 178: every child turn is capped; failed children say so -----
+
+    use crate::store::Scope;
+    use tools::WaitRow;
+
+    /// `child`'s `ChildTurn`: (present, timer armed, permit held, age in s).
+    async fn child_turn_of(agents: &ActorRef<Agents>, child: SessionId) -> (bool, bool, bool, i64) {
+        agents
+            .ask(With(move |a: &mut Agents| {
+                match a.child_turns.get(&child) {
+                    Some(ct) => (
+                        true,
+                        ct.timer.is_some(),
+                        ct.permit.is_some(),
+                        (Utc::now() - ct.started_at).num_seconds(),
+                    ),
+                    None => (false, false, false, 0),
+                }
+            }))
+            .await
+            .unwrap()
+    }
+
+    fn started(session: SessionId, turn: TurnId) -> AgentEvent {
+        AgentEvent::TurnStarted {
+            session,
+            turn,
+            text: "go".into(),
+            model: "m".into(),
+            turn_seq: 1,
+            channel: None,
+        }
+    }
+
+    fn resumed(session: SessionId, turn: TurnId, interrupted_at: DateTime<Utc>) -> AgentEvent {
+        AgentEvent::TurnResumed {
+            session,
+            turn,
+            kind: crate::durability::ResumeKind::Interrupted,
+            interrupted_at,
+            resumed_at: Utc::now(),
+            partial_dropped: false,
+            cause: crate::durability::ResumeCause::Crash,
+            from: None,
+        }
+    }
+
+    /// A journaled turn `turn` of `session`: two steps, at `first` and `last`.
+    async fn journal_turn(
+        store: &Store,
+        session: SessionId,
+        turn: TurnId,
+        first: DateTime<Utc>,
+        last: DateTime<Utc>,
+    ) {
+        use crate::durability::StepKind;
+        let p = serde_json::json!({"source": "user"});
+        store
+            .step(session, turn, StepKind::InputAccepted, None, &p)
+            .await
+            .unwrap();
+        store
+            .step(
+                session,
+                turn,
+                StepKind::ModelCall,
+                Some("c1"),
+                &serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        store.set_step_at(session, turn, 1, first).await.unwrap();
+        store.set_step_at(session, turn, 2, last).await.unwrap();
+    }
+
+    /// 178 W1: a native child turn is capped by the supervisor's timer; at
+    /// the cap the turn is cancelled, its result reaches the parent with the
+    /// `[timed out …]` prefix and the parent's `child_result` row is cleared.
+    #[tokio::test]
+    async fn native_spawn_turn_is_capped_and_timeout_is_prefixed() {
+        let (_scratch, mut a) = agents_with(true).await;
+        Arc::make_mut(&mut a.cfg).subagents.max_runtime_secs = 1;
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let (p, _) = in_turn(&mut a).await;
+        let child = kid(&mut a, p, "x").await;
+        child_waits::child_spawned(&mut a, p, child, "call-x", None).await;
+        assert_eq!(store.child_waits(Scope::Here).await.unwrap().len(), 1);
+        let agents = Agents::spawn(a);
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let ct = TurnId::new();
+        agents.tell(started(child, ct)).await.unwrap();
+        let (_, timed, permit, _) = child_turn_of(&agents, child).await;
+        assert!(timed && !permit, "timer armed");
+        tokio::time::sleep(Duration::from_millis(1600)).await;
+        let hit = agents
+            .ask(With(move |a: &mut Agents| a.timed_out.contains(&child)))
+            .await
+            .unwrap();
+        assert!(hit, "the cap fired");
+        // The cancel lands: the turn ends `cancelled` with what it had.
+        agents
+            .ask(With(move |a: &mut Agents| {
+                child_turn(a, child, ct, true);
+                a.turn_text.insert((child, ct), "partial".into());
+            }))
+            .await
+            .unwrap();
+        agents
+            .tell(AgentEvent::TurnFinished {
+                session: child,
+                turn: ct,
+                stop_reason: "cancelled".into(),
+                usage: crate::Usage::default(),
+                context: 0,
+            })
+            .await
+            .unwrap();
+        assert!(!child_turn_of(&agents, child).await.0);
+        let got = store.peer_records(p, None, 1).await.unwrap().remove(0).text;
+        assert_eq!(got, "[timed out after 1s, stop=cancelled]\npartial");
+        assert!(store.child_waits(Scope::Here).await.unwrap().is_empty());
+    }
+
+    /// 178 W1: a native child's follow-up turn (no permit) is timed too, and
+    /// each new turn gets a fresh timer.
+    #[tokio::test]
+    async fn native_follow_up_turn_gets_runtime_timer() {
+        let (_scratch, mut a) = agents().await;
+        let rt = a.rt.clone();
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, root, "kid").await;
+        let agents = Agents::spawn(a);
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        agents.tell(started(child, TurnId::new())).await.unwrap();
+        let (present, timed, permit, _) = child_turn_of(&agents, child).await;
+        assert!(present && timed && !permit, "timed, permit-free");
+        agents.tell(finished(child)).await.unwrap();
+        assert!(!child_turn_of(&agents, child).await.0, "gone with the turn");
+        agents.tell(started(child, TurnId::new())).await.unwrap();
+        assert!(
+            child_turn_of(&agents, child).await.1,
+            "the next turn is timed"
+        );
+        // A depth-0 session's turn is never a child turn.
+        agents.tell(started(root, TurnId::new())).await.unwrap();
+        assert!(!child_turn_of(&agents, root).await.0);
+    }
+
+    /// 178 W1: a native child turn resumed after a restart is capped with
+    /// what is left of its cap — here none (it ran 3 s of a 1 s cap), so the
+    /// floor applies (`RESUME_GRACE`, never above the cap) and it fires; its
+    /// age counts the pre-restart run. A resumed depth-0 turn gets no timer.
+    #[tokio::test]
+    async fn resumed_native_child_gets_a_timer_with_remaining_time() {
+        let (_scratch, mut a) = agents().await;
+        Arc::make_mut(&mut a.cfg).subagents.max_runtime_secs = 1;
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, root, "kid").await;
+        let agents = Agents::spawn(a);
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let (t, now) = (TurnId::new(), Utc::now());
+        journal_turn(&store, child, t, now - chrono::Duration::seconds(3), now).await;
+        agents.tell(resumed(child, t, now)).await.unwrap();
+        let (present, timed, _, age) = child_turn_of(&agents, child).await;
+        assert!(present && timed);
+        assert!((3..=5).contains(&age), "age {age}");
+        tokio::time::sleep(Duration::from_millis(1600)).await;
+        let hit = agents
+            .ask(With(move |a: &mut Agents| a.timed_out.contains(&child)))
+            .await
+            .unwrap();
+        assert!(hit, "over its cap: cancelled after the floor");
+        let rt0 = TurnId::new();
+        journal_turn(&store, root, rt0, now - chrono::Duration::seconds(3), now).await;
+        agents.tell(resumed(root, rt0, now)).await.unwrap();
+        assert!(
+            !child_turn_of(&agents, root).await.0,
+            "depth 0 is unbounded"
+        );
+        assert_eq!(
+            crate::durability::remaining_run(
+                Duration::from_secs(90),
+                chrono::Duration::seconds(40)
+            ),
+            crate::durability::RESUME_GRACE,
+            "50 s left of 90 → the 60 s floor"
+        );
+        assert_eq!(
+            crate::durability::remaining_run(
+                Duration::from_secs(28_800),
+                chrono::Duration::seconds(800)
+            ),
+            Duration::from_secs(28_000)
+        );
+    }
+
+    /// 178 W1: the pre-restart run is the journal's first step to the
+    /// interruption — the downtime after it (a laptop asleep) never counts.
+    #[tokio::test]
+    async fn timer_does_not_count_downtime() {
+        let (_scratch, mut a) = agents().await;
+        Arc::make_mut(&mut a.cfg).subagents.max_runtime_secs = 600;
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, root, "kid").await;
+        let agents = Agents::spawn(a);
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let (t, now) = (TurnId::new(), Utc::now());
+        let stopped = now - chrono::Duration::seconds(990);
+        journal_turn(
+            &store,
+            child,
+            t,
+            now - chrono::Duration::seconds(1000),
+            stopped,
+        )
+        .await;
+        agents.tell(resumed(child, t, stopped)).await.unwrap();
+        let (_, timed, _, age) = child_turn_of(&agents, child).await;
+        assert!(timed);
+        assert!((10..=12).contains(&age), "10 s ran, not 1000: {age}");
+    }
+
+    /// 178 W1/F1 (146): an ACP child whose journal turn stayed open across
+    /// two restarts — opened 50 min ago, drained at 15 s of run time, resumed,
+    /// drained again at 40 s — is timed on its next `TurnStarted` from the
+    /// drains' cumulative `ran_ms` (40 s), never its wall-clock age.
+    #[tokio::test]
+    async fn twice_resumed_acp_child_counts_run_time_once() {
+        use crate::durability::StepKind;
+        let (_scratch, mut a) = agents().await;
+        Arc::make_mut(&mut a.cfg).subagents.max_runtime_secs = 600;
+        let mut fake = node(&a, "box");
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, e1, _) = agents.ask(spawn_on(p, "box", "e1", "go")).await.unwrap();
+        fake.handshake(Vec::new(), None).await;
+        let (id, _) = fake.prompt().await;
+        fake.end_turn(&id);
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        for _ in 0..800 {
+            if store.open_turn(e1).await.unwrap().is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        // The prompt's journal turn, opened again as a restart leaves it (or
+        // still open when the close lags under load: one `input_accepted` either way).
+        let payload = serde_json::json!({"source": "input", "text": "go"});
+        let jt = match store.acp_turn_open(e1, &payload).await.unwrap() {
+            Some(t) => t,
+            None => store.open_turn(e1).await.unwrap().expect("open").0,
+        };
+        for ms in [15_000, 40_000] {
+            store
+                .step(
+                    e1,
+                    jt,
+                    StepKind::Suspended,
+                    None,
+                    &serde_json::json!({"reason": "shutdown", "ran_ms": ms}),
+                )
+                .await
+                .unwrap();
+        }
+        let now = Utc::now();
+        for (n, ago) in [(1, 3000), (2, 2985), (3, 10)] {
+            store
+                .set_step_at(e1, jt, n, now - chrono::Duration::seconds(ago))
+                .await
+                .unwrap();
+        }
+        agents
+            .ask(SendInput {
+                channel: None,
+                session: Some(e1),
+                text: "more".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+        let (_, text) = fake.prompt().await;
+        assert_eq!(text, "more");
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == e1),
+        )
+        .await;
+        let (_, timed, _, age) = child_turn_of(&agents, e1).await;
+        assert!(timed);
+        assert!(
+            (40..=42).contains(&age),
+            "40 s ran before the restart: {age}"
+        );
+    }
+
+    /// 178 F1: a native child turn drained at 30 s of run time, resumed,
+    /// run 20 s more and drained again (`ran_ms` 50 s), then resumed after
+    /// hours down: its age and budget count 50 s — each downtime never, the
+    /// first run once.
+    #[tokio::test]
+    async fn twice_resumed_turn_counts_run_time_once() {
+        use crate::durability::StepKind;
+        let (_scratch, mut a) = agents().await;
+        Arc::make_mut(&mut a.cfg).subagents.max_runtime_secs = 600;
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, root, "kid").await;
+        let agents = Agents::spawn(a);
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let (t, now) = (TurnId::new(), Utc::now());
+        let at = |secs| now - chrono::Duration::seconds(secs);
+        let rows: [(StepKind, serde_json::Value, i64); 5] = [
+            (
+                StepKind::InputAccepted,
+                serde_json::json!({"source": "user"}),
+                9000,
+            ),
+            (StepKind::ModelCall, serde_json::json!({}), 8999),
+            (
+                StepKind::Suspended,
+                serde_json::json!({"reason": "shutdown", "ran_ms": 30_000}),
+                8970,
+            ),
+            (StepKind::ModelCall, serde_json::json!({}), 5000),
+            (
+                StepKind::Suspended,
+                serde_json::json!({"reason": "shutdown", "ran_ms": 50_000}),
+                4980,
+            ),
+        ];
+        for (n, (kind, payload, ago)) in rows.into_iter().enumerate() {
+            store.step(child, t, kind, None, &payload).await.unwrap();
+            store
+                .set_step_at(child, t, n as i64 + 1, at(ago))
+                .await
+                .unwrap();
+        }
+        agents.tell(resumed(child, t, at(4980))).await.unwrap();
+        let (_, timed, _, age) = child_turn_of(&agents, child).await;
+        assert!(timed);
+        assert!((50..=52).contains(&age), "50 s ran, not 9000: {age}");
+        let plan = store.resume_plan(child, t).await.unwrap();
+        assert_eq!(plan.ran_ms, 50_000, "the plan's bound counts the same");
+    }
+
+    /// 178 F2: a timer that fired for an earlier arm (its turn ended as it
+    /// fired) never cancels the child's next turn; the current arm's does.
+    #[tokio::test]
+    async fn stale_runtime_fire_does_not_cancel_the_next_turn() {
+        let (_scratch, mut a) = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, root, "kid").await;
+        let agents = Agents::spawn(a);
+        let arm = |agents: &ActorRef<Agents>| {
+            let agents = agents.clone();
+            async move {
+                agents
+                    .ask(With(move |a: &mut Agents| a.child_turns[&child].arm))
+                    .await
+                    .unwrap()
+            }
+        };
+        let hit = |agents: &ActorRef<Agents>| {
+            let agents = agents.clone();
+            async move {
+                agents
+                    .ask(With(move |a: &mut Agents| a.timed_out.contains(&child)))
+                    .await
+                    .unwrap()
+            }
+        };
+        agents.tell(started(child, TurnId::new())).await.unwrap();
+        let first = arm(&agents).await;
+        agents.tell(finished(child)).await.unwrap();
+        agents.tell(started(child, TurnId::new())).await.unwrap();
+        let second = arm(&agents).await;
+        assert_ne!(first, second);
+        agents.tell(ChildTimedOut(child, first)).await.unwrap();
+        assert!(!hit(&agents).await, "a stale fire is ignored");
+        agents.tell(ChildTimedOut(child, second)).await.unwrap();
+        assert!(hit(&agents).await, "the current arm's fire cancels");
+    }
+
+    /// 178 F5: unloading a child (a release, a transfer) drops its turn's
+    /// timer entry with the actor, so the child's next turn — after it is
+    /// loaded again — is armed instead of finding a stale entry.
+    #[tokio::test]
+    async fn next_turn_after_unloaded_child_is_capped() {
+        let (_scratch, mut a) = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, root, "kid").await;
+        // Its turn was timed when the session was unloaded (a release).
+        a.child_turns.insert(
+            child,
+            ChildTurn {
+                permit: None,
+                timer: None,
+                arm: 1,
+                started_at: Utc::now(),
+            },
+        );
+        assert!(a.unload_session(child).await);
+        assert!(!a.child_turns.contains_key(&child), "gone with the actor");
+        // Loaded again (the lazy path a later input takes), its next turn is timed.
+        a.session(Some(child), Some((root, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        let agents = Agents::spawn(a);
+        agents.tell(started(child, TurnId::new())).await.unwrap();
+        let (present, timed, _, _) = child_turn_of(&agents, child).await;
+        assert!(present && timed, "the next turn is capped");
+    }
+
+    /// 178 W6: a child turn that ended in an error, a cancel or with nothing
+    /// said reaches its parent with a line saying so; a good one does not.
+    #[tokio::test]
+    async fn hand_off_prefixes_error_cancelled_and_empty_results() {
+        let (_scratch, mut a) = agents_with(true).await;
+        let (p, _) = in_turn(&mut a).await;
+        let child = kid(&mut a, p, "kid").await;
+        let cases = [
+            (
+                "error",
+                Some("provider said 503\nretry later"),
+                "half",
+                "[child turn ended: error — provider said 503]\nhalf",
+            ),
+            (
+                "error",
+                None,
+                "",
+                "[child turn ended: error — unknown error]\n",
+            ),
+            ("cancelled", None, "part", "[child turn cancelled]\npart"),
+            (
+                "end_turn",
+                None,
+                "  ",
+                "[child turn ended with no reply]\n  ",
+            ),
+            ("end_turn", None, "fine", "fine"),
+        ];
+        for (stop, error, text, want) in cases {
+            let ct = TurnId::new();
+            child_turn(&mut a, child, ct, true);
+            a.turn_text.insert((child, ct), text.into());
+            if let Some(e) = error {
+                a.child_errors.insert((child, ct), e.into());
+            }
+            a.child_finished(child, ct, stop).await;
+            let got = a
+                .store
+                .peer_records(p, None, 1)
+                .await
+                .unwrap()
+                .remove(0)
+                .text;
+            assert_eq!(got, want, "{stop}");
+        }
+        assert!(a.child_errors.is_empty(), "consumed with the result");
+    }
+
+    /// 178 W8: a queued child archived before its permit came never returns
+    /// a result — the parent's `child_result` row on it goes, and the parent
+    /// is told once.
+    #[tokio::test]
+    async fn drop_queued_clears_the_child_result_wait() {
+        let (_scratch, a) = agents_with(true).await;
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let mut rx = tap(&rt).await;
+        let (agents, p) = rooted(a).await;
+        let (_, _x, _) = agents
+            .ask(SpawnChild {
+                call_id: "c-x".into(),
+                ..spawn(p, "x", "first")
+            })
+            .await
+            .unwrap();
+        let (_, y, queued) = agents
+            .ask(SpawnChild {
+                call_id: "c-y".into(),
+                ..spawn(p, "y", "second")
+            })
+            .await
+            .unwrap();
+        assert!(queued.is_some(), "y waits for x's slot");
+        let on_y = |rows: Vec<WaitRow>| rows.iter().any(|w| w.target == y.to_string());
+        assert!(on_y(store.child_waits(Scope::Here).await.unwrap()));
+        agents
+            .ask(ArchiveSession {
+                session: y,
+                archived: true,
+            })
+            .await
+            .unwrap();
+        assert!(!on_y(store.child_waits(Scope::Here).await.unwrap()));
+        let e = next_event(&mut rx, |e| {
+            matches!(e, AgentEvent::MessageDelivered { session, from, .. }
+                if *session == p && *from == format!("session:{y}"))
+        })
+        .await;
+        let AgentEvent::MessageDelivered { text, .. } = e else {
+            unreachable!()
+        };
+        assert!(
+            text.contains("before it started; no result will come"),
+            "{text}"
+        );
+    }
+
+    /// 178 W8: deleting a child clears its parent's `child_result` row and
+    /// tells the parent once.
+    #[tokio::test]
+    async fn deleted_child_clears_the_parent_wait() {
+        let (_scratch, mut a) = agents_with(true).await;
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let (p, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, p, "gone").await;
+        child_waits::child_spawned(&mut a, p, child, "call-g", None).await;
+        let mut rx = tap(&rt).await;
+        let agents = Agents::spawn(a);
+        agents.ask(DeleteSession { session: child }).await.unwrap();
+        assert!(store.child_waits(Scope::Here).await.unwrap().is_empty());
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::MessageDelivered { session, .. } if *session == p),
+        )
+        .await;
+        let AgentEvent::MessageDelivered { text, .. } = e else {
+            unreachable!()
+        };
+        assert!(text.starts_with("`gone` (session:"), "{text}");
+        assert!(text.contains("was deleted; no result will come"), "{text}");
     }
 
     /// 109 LIVE: a respawned ACP child counts as running from the moment its

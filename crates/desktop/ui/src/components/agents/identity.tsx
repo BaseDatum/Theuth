@@ -52,13 +52,24 @@ export function statusDot(status: AgentStatus): string {
   return ACTIVITY[status]?.dot ?? 'bg-fg-tertiary'
 }
 
-export function ActivityChip({ status, className }: { status: AgentStatus; className?: string }) {
+/** 178: the children the desk's current wake waits on, as the chip says it ("waiting on scout +2"); `null` when none. */
+export function waitingLabel(waiting: readonly string[] | undefined): string | null {
+  const [first, ...rest] = waiting ?? []
+  if (!first) return null
+  return rest.length ? `waiting on ${first} +${rest.length}` : `waiting on ${first}`
+}
+
+export function ActivityChip({ status, waiting, className }: { status: AgentStatus; waiting?: readonly string[]; className?: string }) {
   const s = ACTIVITY[status]
   if (!s) return null
+  const label = waitingLabel(waiting) ?? s.label
   return (
-    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium', s.chip, className)}>
-      <span className={cn('size-1.5 rounded-full', s.dot)} aria-hidden />
-      {s.label}
+    <span
+      className={cn('inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium', s.chip, className)}
+      title={waiting?.length ? waiting.join(', ') : undefined}
+    >
+      <span className={cn('size-1.5 shrink-0 rounded-full', s.dot)} aria-hidden />
+      <span className="truncate">{label}</span>
     </span>
   )
 }

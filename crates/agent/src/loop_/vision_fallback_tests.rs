@@ -515,6 +515,16 @@ impl Harness {
 
     /// [`Harness::actor`] with a configured default compaction style (`agent.compact_style`).
     pub(super) async fn actor_styled(&self, main: &str, style: CompactStyle) -> ActorRef<Session> {
+        self.actor_with(main, style, AgentConfig::default()).await
+    }
+
+    /// [`Harness::actor_styled`] under `cfg`.
+    pub(super) async fn actor_with(
+        &self,
+        main: &str,
+        style: CompactStyle,
+        cfg: AgentConfig,
+    ) -> ActorRef<Session> {
         let (epoch, head, history) = self.store.frame(self.id).await.unwrap();
         Session::spawn(Session::new(
             self.id,
@@ -522,7 +532,7 @@ impl Harness {
             (self.resolve(main), None),
             None,
             SessionState::resume(epoch, head, history),
-            Arc::new(AgentConfig::default()),
+            Arc::new(cfg),
             Arc::new(RwLock::new(style)),
             Arc::default(),
             self.vision_model.clone(),

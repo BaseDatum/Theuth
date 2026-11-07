@@ -139,7 +139,7 @@ function Row({ name, agent: a, depth }: { name: string; agent: AgentSummary | nu
           </span>
         </td>
         <td className="hidden md:table-cell">{name === THEUTH ? <Badge variant="outline">built-in</Badge> : a && <ActiveSwitch agent={a} />}</td>
-        <td className="hidden md:table-cell">{a && !a.file.paused && <ActivityChip status={a.status} />}</td>
+        <td className="hidden md:table-cell">{a && !a.file.paused && <ActivityChip status={a.status} waiting={a.waiting_on} />}</td>
         <td className="hidden text-fg-secondary md:table-cell">{name === THEUTH ? 'you' : a?.file.reports_to}</td>
         <td className="text-right tabular-nums">{a?.open_tasks ?? '—'}</td>
         <td className="hidden lg:table-cell">{a && (a.file.budget.type === 'monthly' ? <BudgetBar agent={a} /> : <span className="text-xs text-fg-tertiary">none</span>)}</td>

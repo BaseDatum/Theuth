@@ -121,8 +121,8 @@ function Card({ name, agent: a, style }: { name: string; agent: AgentSummary | n
           {name === THEUTH ? <Badge variant="outline">built-in</Badge> : a && <ActiveSwitch agent={a} withLabel={false} />}
         </div>
         <div className="flex items-center gap-1.5 text-xs text-fg-secondary">
-          {a && (a.file.paused ? <span className="text-fg-tertiary">paused</span> : <ActivityChip status={a.status} />)}
-          {a && <span className="ml-auto tabular-nums">{a.open_tasks} open</span>}
+          {a && (a.file.paused ? <span className="text-fg-tertiary">paused</span> : <ActivityChip status={a.status} waiting={a.waiting_on} />)}
+          {a && <span className="ml-auto shrink-0 tabular-nums">{a.open_tasks} open</span>}
         </div>
         {a && <BudgetBar agent={a} />}
       </Link>

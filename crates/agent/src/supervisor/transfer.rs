@@ -186,7 +186,11 @@ pub async fn suspend_open_turn(store: &Store, session: SessionId, reason: &str) 
             return None;
         }
     };
-    let payload = serde_json::json!({ "reason": reason });
+    let mut payload = serde_json::json!({ "reason": reason });
+    // 178 F1: the accrued run time moves with the session.
+    if let Some(ms) = crate::durability::run_clock::ran_ms(turn) {
+        payload["ran_ms"] = ms.into();
+    }
     if let Err(e) = store
         .step(session, turn, StepKind::Suspended, None, &payload)
         .await

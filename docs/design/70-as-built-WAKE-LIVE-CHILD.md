@@ -102,3 +102,12 @@ Formatting: `rustfmt --edition 2024` on the touched files; pre-existing drift in
 Commits: `07a4bf69` fix(tasks,agent): release non-yielded wakes, report busy skips, sweep asks liveness · `8b074a8d` fix(roster): a cold child is not a live child; a non-yielded turn releases its wake · docs(design) this file.
 
 DONE WAKE-LIVE-CHILD
+
+## Amendment (178 DESK-WEDGE, 2026-11-07)
+
+- **Back-off doubles across deliveries.** `delivered()` no longer clears the wake's retry counter; `finish_wake` does (and `dispatch` drops counters of wakes that left the table). error → 5 s, again → 10 s, 20 s … 5 min; cancel → 5 min floor as before. Supersedes the "successful delivery still clears the counter" deviation above.
+- **Judge = pure `nudges::verdict()`** (`Release{min_backoff_ms} | Handled | Defer | Nudge | Block`); `judge_turn` fetches the task/events/children and acts. The deferral table is unchanged.
+- **Tick backstop.** A desk that serves a wake while the D4 probe says its session tree is not active now, and nothing in it (desk or descendant) was active for 2 × TICK, is judged as for a yielded turn end (`judge_turn(name, "end_turn")`): the existing protocol (finish, one nudge, `NoContinuation`). Liveness, never age: a running child keeps deferring (D1); an unknown liveness judges nothing. Covers a lost `TurnFinished` and a refused/lost child result. The Tick's probe is `Roster.probe` (`tasks::AgentProbe`; a fake in tests).
+- **A `Resume` wake handed to a taken session is not served on the desk.** No desk turn ends to judge it, so `DeliverWake` finishes the wake once the taken session has its input instead of setting `Desk.serving` (which held the agent's queue for ever).
+- **Status.** `TurnResumed` marks the desk working like `TurnStarted`; `working()` is `working || serving.is_some()` (the `AgentStatus::Working` doc). `AgentSummary.waiting_on` names the children holding the current wake (`nudges::waiting_on`, the judge's `is_live`); the views show `waiting on <name> (+N)`.
+- **Reopen release waits for tasks.** At boot the roster opens desks before the tasks plugin starts; `open_desk`'s `ReleaseClaims` needs the tasks actor, so a reopened desk without one is queued (`Roster.unreleased`) and released at `TasksUp`, before dispatch is enabled. Before this, the dead turn's claim survived every restart.

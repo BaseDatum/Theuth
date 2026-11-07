@@ -146,22 +146,17 @@ impl Signals {
         store.depth(s).await.unwrap_or(1) == 0 && !store.unattended(s).await.unwrap_or(true)
     }
 
-    /// Desks with a working episode, from the roster.
+    /// Desks with a turn running now, from the roster (178 F4: a desk only
+    /// serving a wake — parked on a long child — does not hold the dream).
     async fn desks_doing(&self) -> Option<u32> {
         if !self.probes {
             return None;
         }
         let roster = roster::actor()?;
-        let agents = tokio::time::timeout(Duration::from_secs(2), roster.ask(roster::ListAgents))
+        tokio::time::timeout(Duration::from_secs(2), roster.ask(roster::DesksRunning))
             .await
             .ok()?
-            .ok()?;
-        Some(
-            agents
-                .iter()
-                .filter(|a| a.status == roster::types::AgentStatus::Working)
-                .count() as u32,
-        )
+            .ok()
     }
 
     /// Remember the session's last assistant text for a later rewind.

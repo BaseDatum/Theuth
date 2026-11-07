@@ -53,6 +53,11 @@ pub const DB: &str = "roster.sqlite";
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListAgents;
 
+/// `ask` → `u32`: desks with a turn running now (178 F4: a desk only
+/// serving a wake — waiting on a child — does not count; the dreaming gate).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct DesksRunning;
+
 /// `ask` → `Result<AgentFile, String>`. `theuth` is synthesised. `Err("no such agent")`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GetAgent(pub String);
@@ -201,6 +206,10 @@ struct Tick;
 /// Episode housekeeping cadence.
 const TICK: Duration = Duration::from_secs(60);
 
+/// 178 W5: how long a serving desk's session tree must be inactive before
+/// the `Tick` backstop judges its wake (2 × [`TICK`]).
+const SERVING_GRACE_MS: u64 = 2 * TICK.as_millis() as u64;
+
 /// A closing turn that never finishes is given up after this.
 const CLOSING_GRACE_MS: u64 = 10 * 60 * 1000;
 
@@ -237,6 +246,13 @@ pub struct Roster {
     /// 137 D12 / R1-D7: `agent.endless` as booted — the default memory mode
     /// of desks without a `memory:` field and the default view budget.
     endless: agent::EndlessConfig,
+    /// The `Tick`'s liveness probe (the tasks sweep's); a fake in tests.
+    probe: Arc<dyn tasks::ledger::LivenessProbe>,
+    /// 178: desks reopened before the tasks plugin was up; their dead turns'
+    /// claims are released at [`TasksUp`].
+    unreleased: Vec<runtime::SessionId>,
+    /// 178 F4: `AgentSummary::waiting_on` per desk ([`Self::refresh_waiting`]).
+    waiting: HashMap<String, Vec<String>>,
 }
 
 /// The `agent` config section's `endless` key alone (the roster reads
@@ -383,6 +399,9 @@ impl Roster {
             costs: budget::Tracker::default(),
             diagnosed: HashSet::new(),
             endless,
+            probe: Arc::new(tasks::AgentProbe),
+            unreleased: Vec::new(),
+            waiting: HashMap::new(),
         };
         // ponytail: the previous run's open episodes are closed without a
         // journal turn (their sessions may be gone); their journals are the
@@ -596,8 +615,14 @@ impl Roster {
                 })
                 .await;
             // Whatever turn claimed wakes on it died with the last process.
-            if let Some(t) = tasks::actor() {
-                let _ = t.tell(tasks::ReleaseClaims(session.to_string())).await;
+            // 178: at boot the roster opens desks before the tasks plugin
+            // starts; the release then waits for `TasksUp` — without it the
+            // dead turn's claim held the agent's queue for good.
+            match tasks::actor() {
+                Some(t) => {
+                    let _ = t.tell(tasks::ReleaseClaims(session.to_string())).await;
+                }
+                None => self.unreleased.push(session),
             }
             // 148 E3/F4: a reopened desk runs on its effective model — the
             // configured one, else the live default; `switch_session` leaves
@@ -1016,6 +1041,62 @@ impl Roster {
             .map(|(n, _)| n.clone())
     }
 
+    /// A turn started (`model` from `TurnStarted`) or resumed on a session.
+    fn desk_turn_began(&mut self, session: runtime::SessionId, model: Option<String>) {
+        if let Some(name) = self.desk_name(session)
+            && let Some(d) = self.desks.get_mut(&name)
+        {
+            d.working = true;
+            d.last_active_ms = now_ms();
+            if model.is_some() {
+                d.model = model;
+            }
+            if let Some(s) = d.serving.as_mut() {
+                s.turn_seen = true;
+            }
+        }
+    }
+
+    /// 178 F4: a turn event of `session`; when it is a child spawned for a
+    /// desk's current wake, that desk's `waiting_on` is refreshed.
+    async fn child_turn_event(&mut self, session: runtime::SessionId) {
+        let name = self
+            .desks
+            .iter()
+            .find(|(_, d)| {
+                d.serving
+                    .as_ref()
+                    .is_some_and(|s| s.children.contains(&session))
+            })
+            .map(|(n, _)| n.clone());
+        if let Some(name) = name {
+            self.refresh_waiting(&name).await;
+        }
+    }
+
+    /// 178 F4: the cached `AgentSummary::waiting_on` of a desk that serves a
+    /// wake with no turn running — refreshed on Tick, at the desk's turn end
+    /// and on its children's turn events, never per `ListAgents` (each
+    /// refresh is one `ListAgents` ask to the agent actor).
+    async fn refresh_waiting(&mut self, name: &str) {
+        let target = self.desks.get(name).and_then(|d| {
+            d.serving
+                .clone()
+                .filter(|_| !d.working)
+                .map(|s| (d.session, s))
+        });
+        match target {
+            Some((session, s)) => {
+                let kids = Self::children_of(session).await;
+                self.waiting
+                    .insert(name.to_owned(), desk::nudges::waiting_on(&s, &kids));
+            }
+            None => {
+                self.waiting.remove(name);
+            }
+        }
+    }
+
     /// The wake the desk served is handled (or the task was blocked): the
     /// row is deleted durably (STALE-WAKE-DESKS), so it can neither hold the
     /// agent busy nor be re-armed by a later restart.
@@ -1076,142 +1157,147 @@ impl Roster {
     /// the delivery back-off otherwise — so it is delivered again instead of
     /// holding the agent busy for ever.
     async fn judge_turn(&mut self, name: &str, stop_reason: &str) {
-        if !desk::nudges::yielded(stop_reason) {
-            let Some(s) = self.desks.get_mut(name).and_then(|d| d.serving.take()) else {
-                return;
-            };
-            tracing::info!(
-                agent = %name,
-                task = ?s.wake.task,
-                wake = %s.wake.id,
-                stop_reason,
-                "wake released: turn did not yield"
-            );
-            if let Some(t) = tasks::actor() {
-                let _ = t
-                    .tell(tasks::ReleaseWake {
-                        wake: s.wake,
-                        min_backoff_ms: if stop_reason == "cancelled" {
-                            300_000
-                        } else {
-                            0
-                        },
-                    })
-                    .await;
-            }
-            return;
-        }
+        use desk::nudges::Verdict;
         let Some(d) = self.desks.get(name) else {
             return;
         };
         let Some(s) = d.serving.clone() else { return };
         let session = d.session;
-        let Some(id) = s.wake.task.clone() else {
-            self.clear_serving(name).await;
-            return;
-        };
-        let Some(tasks) = tasks::actor() else { return };
-        let Some(row) = desk::nudges::for_reason(s.wake.reason) else {
-            self.clear_serving(name).await;
-            return;
-        };
-        let desk::nudges::Nudge::TurnEnd {
-            name: rule,
-            unhandled,
-            text,
-            ..
-        } = row
-        else {
-            return;
-        };
-        let (Ok(task), Ok(events)) = (
-            tasks.ask(tasks::GetTask(id.clone())).await,
-            tasks.ask(tasks::TaskEvents(id.clone())).await,
-        ) else {
-            return;
-        };
-        let me = format!("agent:{name}");
-        let mine: Vec<tasks::TaskEvent> = events
-            .into_iter()
-            .skip(s.events)
-            .filter(|e| e.actor == me)
-            .collect();
-        let kids = Self::children_of(session).await;
-        let live_child = desk::nudges::live_child(&s, &kids);
-        if !unhandled(&s, &task, &mine, live_child) {
-            self.clear_serving(name).await;
-            return;
+        // What a yield on a task wake is judged against; a release needs nothing.
+        let mut judged = None;
+        let mut kids = Vec::new();
+        if desk::nudges::yielded(stop_reason)
+            && let Some(id) = s.wake.task.clone()
+            && desk::nudges::for_reason(s.wake.reason).is_some()
+        {
+            let Some(tasks) = tasks::actor() else { return };
+            let (Ok(task), Ok(events)) = (
+                tasks.ask(tasks::GetTask(id.clone())).await,
+                tasks.ask(tasks::TaskEvents(id)).await,
+            ) else {
+                return;
+            };
+            let me = format!("agent:{name}");
+            let mine: Vec<tasks::TaskEvent> = events
+                .into_iter()
+                .skip(s.events)
+                .filter(|e| e.actor == me)
+                .collect();
+            kids = Self::children_of(session).await;
+            judged = Some((task, mine));
         }
-        if live_child {
-            // The child's result continues this episode; judged again then.
-            if !s.logged_live_child {
+        let live_child = desk::nudges::live_child(&s, &kids);
+        let verdict = desk::nudges::verdict(
+            stop_reason,
+            &s,
+            judged.as_ref().map(|(t, m)| (t, m.as_slice())),
+            live_child,
+        );
+        match verdict {
+            Verdict::Release { min_backoff_ms } => {
+                if let Some(d) = self.desks.get_mut(name) {
+                    d.serving = None;
+                }
                 tracing::info!(
                     agent = %name,
-                    task = %id,
-                    wake = s.wake.reason.as_str(),
-                    children = kids.len(),
-                    "turn not judged: a child of the desk is still running"
+                    task = ?s.wake.task,
+                    wake = %s.wake.id,
+                    stop_reason,
+                    "wake released: turn did not yield"
                 );
-                if let Some(s) = self.desks.get_mut(name).and_then(|d| d.serving.as_mut()) {
-                    s.logged_live_child = true;
+                if let Some(t) = tasks::actor() {
+                    let _ = t
+                        .tell(tasks::ReleaseWake {
+                            wake: s.wake,
+                            min_backoff_ms,
+                        })
+                        .await;
                 }
             }
-            return;
-        }
-        if !s.nudged {
-            let mut nudge = text(&task);
-            if s.rounds >= self.cfg.max_rounds {
-                nudge.push_str(&format!(
-                    " You have used {} of {} follow-up rounds on this task this episode: no more children — write the deliverable and dispose.",
-                    s.rounds, self.cfg.max_rounds
-                ));
+            Verdict::Handled => self.clear_serving(name).await,
+            // The child's result continues this episode; judged again then.
+            Verdict::Defer => {
+                if !s.logged_live_child {
+                    tracing::info!(
+                        agent = %name,
+                        task = ?s.wake.task,
+                        wake = s.wake.reason.as_str(),
+                        children = kids.len(),
+                        "turn not judged: a child of the desk is still running"
+                    );
+                    if let Some(s) = self.desks.get_mut(name).and_then(|d| d.serving.as_mut()) {
+                        s.logged_live_child = true;
+                    }
+                }
             }
-            self.thread_note(
-                &task,
-                &format!(
-                    "nudged: {rule} — task {} still {} after the turn woken `{}`",
-                    task.id,
+            Verdict::Nudge => {
+                let (
+                    Some((task, _)),
+                    Some(desk::nudges::Nudge::TurnEnd {
+                        name: rule, text, ..
+                    }),
+                ) = (&judged, desk::nudges::for_reason(s.wake.reason))
+                else {
+                    return;
+                };
+                let mut nudge = text(task);
+                if s.rounds >= self.cfg.max_rounds {
+                    nudge.push_str(&format!(
+                        " You have used {} of {} follow-up rounds on this task this episode: no more children — write the deliverable and dispose.",
+                        s.rounds, self.cfg.max_rounds
+                    ));
+                }
+                self.thread_note(
+                    task,
+                    &format!(
+                        "nudged: {rule} — task {} still {} after the turn woken `{}`",
+                        task.id,
+                        task.state.as_str(),
+                        s.wake.reason.as_str()
+                    ),
+                )
+                .await;
+                if let Some(a) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    .ok()
+                    .flatten()
+                    && a.ask(agent::SendInput {
+                        session: Some(session),
+                        text: desk::notice("nudge", &nudge),
+                        files: vec![],
+                        delivery: agent::Delivery::default(),
+                        id: None,
+                        channel: None,
+                    })
+                    .await
+                    .is_ok()
+                    && let Some(d) = self.desks.get_mut(name)
+                    && let Some(s) = d.serving.as_mut()
+                {
+                    s.nudged = true;
+                }
+            }
+            Verdict::Block => {
+                let (Some((task, _)), Some(tasks)) = (&judged, tasks::actor()) else {
+                    return;
+                };
+                let why = format!(
+                    "nudged once and still {} after the turn woken `{}`: blocked, manager woken",
                     task.state.as_str(),
                     s.wake.reason.as_str()
-                ),
-            )
-            .await;
-            if let Some(a) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
-                .ok()
-                .flatten()
-                && a.ask(agent::SendInput {
-                    session: Some(session),
-                    text: desk::notice("nudge", &nudge),
-                    files: vec![],
-                    delivery: agent::Delivery::default(),
-                    id: None,
-                    channel: None,
-                })
-                .await
-                .is_ok()
-                && let Some(d) = self.desks.get_mut(name)
-                && let Some(s) = d.serving.as_mut()
-            {
-                s.nudged = true;
+                );
+                if let Err(e) = tasks
+                    .ask(tasks::NoContinuation {
+                        id: task.id.clone(),
+                        agent: name.to_owned(),
+                        why,
+                    })
+                    .await
+                {
+                    tracing::warn!(agent = %name, task = %task.id, "no-continuation not applied: {e}");
+                }
+                self.clear_serving(name).await;
             }
-            return;
         }
-        let why = format!(
-            "nudged once and still {} after the turn woken `{}`: blocked, manager woken",
-            task.state.as_str(),
-            s.wake.reason.as_str()
-        );
-        if let Err(e) = tasks
-            .ask(tasks::NoContinuation {
-                id: id.clone(),
-                agent: name.to_owned(),
-                why,
-            })
-            .await
-        {
-            tracing::warn!(agent = %name, task = %id, "no-continuation not applied: {e}");
-        }
-        self.clear_serving(name).await;
     }
 
     /// Write the file, update the read model in place (so a `GetAgent` right
@@ -1282,6 +1368,14 @@ impl Roster {
         } else {
             AgentStatus::Idle
         };
+        // 178 W4/F4: what the desk's current wake waits on — the cache, and
+        // only while no turn of the desk runs.
+        let waiting_on = self
+            .desks
+            .get(&name)
+            .filter(|d| d.serving.is_some() && !d.working)
+            .and_then(|_| self.waiting.get(&name).cloned())
+            .unwrap_or_default();
         AgentSummary {
             file: f,
             status,
@@ -1293,12 +1387,16 @@ impl Roster {
                 .await
                 .unwrap_or(0.0),
             error: None,
+            waiting_on,
         }
     }
 
-    /// A wake is being handled on the desk.
+    /// A wake is being handled on the desk (178 W4: a turn runs on it, or it
+    /// still serves a wake — e.g. one waiting on a child's result).
     fn working(&self, desk: runtime::SessionId) -> bool {
-        self.desks.values().any(|d| d.session == desk && d.working)
+        self.desks
+            .values()
+            .any(|d| d.session == desk && (d.working || d.serving.is_some()))
     }
 
     /// A lease event is acted on unless this engine is shutting down: the
@@ -1544,16 +1642,54 @@ impl Message<Tick> for Roster {
             if !d.idle_due(now, self.cfg.episode_idle_secs, false) {
                 continue;
             }
-            let live_work =
-                tasks::ledger::LivenessProbe::liveness(&tasks::AgentProbe, &d.session.to_string())
-                    .await
-                    .is_some_and(|l| l.active_now);
+            let live_work = self
+                .probe
+                .liveness(&d.session.to_string())
+                .await
+                .is_some_and(|l| l.active_now);
             if d.idle_due(now, self.cfg.episode_idle_secs, live_work) {
                 idle.push(name.clone());
             }
         }
         for name in idle {
             self.close_desk(&name, "idle").await;
+        }
+        // 178 W5: the backstop for a served wake no turn end will judge (a
+        // lost `TurnFinished`, a refused or lost child result): a desk that
+        // serves one while nothing of its session tree has been alive for
+        // `SERVING_GRACE_MS` is judged as for a yielded turn end. Liveness,
+        // never age: a running child keeps it deferring; unknown → skipped.
+        let mut stale = Vec::new();
+        for (name, d) in &self.desks {
+            // 178 F3: only once the desk was seen to run a turn for the wake —
+            // a resumed turn waiting for its resume slot publishes nothing yet.
+            if !d.serving.as_ref().is_some_and(|s| s.turn_seen) {
+                continue;
+            }
+            let Some(l) = self.probe.liveness(&d.session.to_string()).await else {
+                continue;
+            };
+            let last = l.last_active_ms.unwrap_or(0).max(d.last_active_ms);
+            if !l.active_now && now.saturating_sub(last) > SERVING_GRACE_MS {
+                stale.push(name.clone());
+            }
+        }
+        for name in stale {
+            if let Some(d) = self.desks.get_mut(&name) {
+                d.working = false;
+            }
+            tracing::info!(agent = %name, "178: desk serves a wake with nothing alive; judged as a turn end");
+            self.judge_turn(&name, "end_turn").await;
+        }
+        // 178 F4: the `waiting_on` cache catches children no event names.
+        let serving: Vec<String> = self
+            .desks
+            .iter()
+            .filter(|(_, d)| d.serving.is_some())
+            .map(|(n, _)| n.clone())
+            .collect();
+        for name in serving {
+            self.refresh_waiting(&name).await;
         }
         let overdue: Vec<runtime::SessionId> = self
             .closing
@@ -1703,6 +1839,16 @@ impl Message<DeliverWake> for Roster {
             .map_err(|e| e.to_string())?;
         d.primed = true;
         d.last_active_ms = now_ms();
+        // 178 W5: a taken session's turn is not the desk's — no desk turn
+        // will end to judge it, so serving it here would hold the agent's
+        // queue for ever. The wake is done once the session has its input.
+        if resumed.is_some() {
+            tracing::info!(agent = %m.agent, wake = %m.wake.id, "resume wake handed to the taken session; not served on the desk");
+            if let Some(t) = tasks::actor() {
+                let _ = t.tell(tasks::FinishWake(m.wake)).await;
+            }
+            return Ok(());
+        }
         // Every wake is tracked, task or not, so its row is finished when the turn ends.
         d.serving = Some(desk::Serving {
             wake: m.wake.clone(),
@@ -1713,7 +1859,10 @@ impl Message<DeliverWake> for Roster {
             rounds: 0,
             children: HashSet::new(),
             logged_live_child: false,
+            turn_seen: false,
         });
+        // A new wake: the previous one's `waiting_on` is not this one's.
+        self.waiting.remove(&m.agent);
         Ok(())
     }
 }
@@ -1725,13 +1874,13 @@ impl Message<agent::AgentEvent> for Roster {
         use agent::AgentEvent as E;
         match ev {
             E::TurnStarted { session, model, .. } => {
-                if let Some(name) = self.desk_name(session)
-                    && let Some(d) = self.desks.get_mut(&name)
-                {
-                    d.working = true;
-                    d.last_active_ms = now_ms();
-                    d.model = Some(model);
-                }
+                self.desk_turn_began(session, Some(model));
+                self.child_turn_event(session).await;
+            }
+            // 178 W4: a resumed desk turn is a turn all the same (no model field).
+            E::TurnResumed { session, .. } => {
+                self.desk_turn_began(session, None);
+                self.child_turn_event(session).await;
             }
             E::TextDelta { session, text, .. } => {
                 if let Some(c) = self.closing.get_mut(&session) {
@@ -1749,6 +1898,7 @@ impl Message<agent::AgentEvent> for Roster {
                     return;
                 }
                 let Some(name) = self.desk_name(session) else {
+                    self.child_turn_event(session).await;
                     return;
                 };
                 let (model, endless) = {
@@ -1757,10 +1907,14 @@ impl Message<agent::AgentEvent> for Roster {
                     };
                     d.working = false;
                     d.last_active_ms = now_ms();
+                    if let Some(s) = d.serving.as_mut() {
+                        s.turn_seen = true;
+                    }
                     (d.model.clone(), d.memory == agent::MemoryMode::Endless)
                 };
                 // 70 DESK-PROTOCOL 3: the nudge point.
                 self.judge_turn(&name, &stop_reason).await;
+                self.refresh_waiting(&name).await;
                 // 137 R1-D7: the idle moment a pending memory switch waits for.
                 self.apply_pending_memory(&name).await;
                 // 137 D12: an endless desk's frame is bounded by its view; the
@@ -1927,6 +2081,12 @@ impl Message<TasksUp> for Roster {
     type Reply = ();
 
     async fn handle(&mut self, _: TasksUp, _: &mut Context<Self, Self::Reply>) {
+        if let Some(t) = tasks::actor() {
+            for session in std::mem::take(&mut self.unreleased) {
+                tracing::info!(%session, "178: claims of a desk reopened before tasks started released");
+                let _ = t.tell(tasks::ReleaseClaims(session.to_string())).await;
+            }
+        }
         self.dispatching(self.lease.holding).await;
     }
 }
@@ -1959,6 +2119,14 @@ impl Message<Reconcile> for Roster {
 
     async fn handle(&mut self, _: Reconcile, _: &mut Context<Self, Self::Reply>) {
         self.reconcile().await;
+    }
+}
+
+impl Message<DesksRunning> for Roster {
+    type Reply = u32;
+
+    async fn handle(&mut self, _: DesksRunning, _: &mut Context<Self, Self::Reply>) -> u32 {
+        self.desks.values().filter(|d| d.working).count() as u32
     }
 }
 
@@ -2001,6 +2169,7 @@ impl Message<ListAgents> for Roster {
                         open_tasks: 0,
                         spent_month: 0.0,
                         error: Some(e),
+                        waiting_on: Vec::new(),
                     });
                 }
             }
@@ -3606,5 +3775,351 @@ mod tests {
         );
         assert_eq!(r.store.delete_proposal("qa").await.unwrap(), None);
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    // ----- 178: desk status and the Tick backstop -----
+
+    /// The Tick's probe, answering what the test sets.
+    #[derive(Default)]
+    struct FakeProbe(std::sync::Mutex<Option<tasks::ledger::Liveness>>);
+
+    #[async_trait::async_trait]
+    impl tasks::ledger::LivenessProbe for FakeProbe {
+        async fn liveness(&self, _: &str) -> Option<tasks::ledger::Liveness> {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    impl FakeProbe {
+        fn set(&self, active_now: bool, last_active_ms: Option<u64>) {
+            *self.0.lock().unwrap() = Some(tasks::ledger::Liveness {
+                active_now,
+                last_active_ms,
+            });
+        }
+    }
+
+    /// A wake without a task (judged handled at a yield) for `ops`.
+    fn plain_serving() -> desk::Serving {
+        desk::Serving {
+            wake: tasks::Wake {
+                id: "w1".into(),
+                agent: "ops".into(),
+                task: None,
+                reason: tasks::WakeReason::Manual,
+                key: String::new(),
+                count: 1,
+                claimed_by: Some("d".into()),
+                created_ms: 0,
+            },
+            state: None,
+            owner: None,
+            events: 0,
+            nudged: false,
+            rounds: 0,
+            children: HashSet::new(),
+            logged_live_child: false,
+            // A turn of the desk ran for it (the backstop's precondition).
+            turn_seen: true,
+        }
+    }
+
+    /// `ops` hired with its desk at a fresh session last active `idle_ms`
+    /// ago, serving `serving`; the Tick probes through the returned fake.
+    async fn desk_rig(
+        tag: &str,
+        serving: Option<desk::Serving>,
+        idle_ms: u64,
+    ) -> (PathBuf, Roster, runtime::SessionId, Arc<FakeProbe>) {
+        let data = tmp(tag);
+        std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
+        let mut r = roster(&data).await;
+        r.reconcile().await;
+        let session = runtime::SessionId::new();
+        r.desks.insert(
+            "ops".into(),
+            desk::Desk {
+                session,
+                episode: String::new(),
+                last_active_ms: now_ms() - idle_ms,
+                working: false,
+                primed: false,
+                model: None,
+                serving,
+                memory: agent::MemoryMode::Epochs,
+                pending_memory: None,
+            },
+        );
+        r.shared.set_desk("ops", session);
+        let probe = Arc::new(FakeProbe::default());
+        r.probe = probe.clone();
+        (data, r, session, probe)
+    }
+
+    async fn status_of(actor: &ActorRef<Roster>) -> AgentStatus {
+        let rows = actor.ask(ListAgents).await.unwrap();
+        rows.into_iter()
+            .find(|a| a.file.name.as_str() == "ops")
+            .expect("ops listed")
+            .status
+    }
+
+    /// 178 W4: a desk turn resumed after a restart (`TurnResumed`, never
+    /// `TurnStarted`) shows the desk working until its `TurnFinished`.
+    #[test]
+    fn turn_resumed_marks_desk_working_until_finished() {
+        with_engine_lock(async {
+            let (data, r, session, _) = desk_rig("resumed-working", None, 0).await;
+            let actor = Roster::spawn(r);
+            assert_eq!(status_of(&actor).await, AgentStatus::Idle);
+            let turn = runtime::TurnId::new();
+            actor
+                .tell(agent::AgentEvent::TurnResumed {
+                    session,
+                    turn,
+                    kind: agent::durability::ResumeKind::Interrupted,
+                    interrupted_at: chrono::Utc::now(),
+                    resumed_at: chrono::Utc::now(),
+                    partial_dropped: false,
+                    cause: agent::durability::ResumeCause::Crash,
+                    from: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(status_of(&actor).await, AgentStatus::Working);
+            actor
+                .tell(agent::AgentEvent::TurnFinished {
+                    session,
+                    turn,
+                    stop_reason: "end_turn".into(),
+                    usage: agent::Usage::default(),
+                    context: 0,
+                })
+                .await
+                .unwrap();
+            assert_eq!(status_of(&actor).await, AgentStatus::Idle);
+            actor.kill();
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 178 W4: "Working = a wake is being handled" — a desk that serves a wake
+    /// between turns (waiting on a child's result) is working, not idle.
+    #[test]
+    fn summary_is_working_while_a_wake_is_served() {
+        with_engine_lock(async {
+            let (data, mut r, _, _) = desk_rig("served-working", None, 0).await;
+            let f = r.shared.file("ops").unwrap();
+            assert_eq!(r.summary(f.clone()).await.status, AgentStatus::Idle);
+            r.desks.get_mut("ops").unwrap().serving = Some(plain_serving());
+            assert_eq!(r.summary(f).await.status, AgentStatus::Working);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 178 W4: the children a served wake waits on, by the judge's rule —
+    /// spawned for it and unfinished, or running now — named, and the chip
+    /// text the views show for them.
+    #[test]
+    fn summary_lists_children_the_desk_waits_on() {
+        use agent::AgentState as A;
+        let kid = |name: &str, state, finished: bool| agent::AgentInfo {
+            id: runtime::SessionId::new(),
+            name: name.into(),
+            parent: runtime::SessionId::new(),
+            depth: 1,
+            agent: None,
+            model: String::new(),
+            state,
+            started_at: None,
+            finished_at: finished.then(chrono::Utc::now),
+            last: String::new(),
+            project: None,
+            retention: Default::default(),
+            activity: Default::default(),
+            cap: None,
+            kind: Default::default(),
+            observed: None,
+        };
+        let (scout, done, cold, runner) = (
+            kid("scout", A::Idle, false),
+            kid("done", A::Idle, true),
+            kid("cold", A::Idle, false),
+            kid("", A::Running, false),
+        );
+        let mut s = plain_serving();
+        s.children = HashSet::from([scout.id, done.id]);
+        let kids = [scout, done, cold, runner.clone()];
+        let names = desk::nudges::waiting_on(&s, &kids);
+        assert_eq!(
+            names,
+            [
+                "scout".to_owned(),
+                format!("session:{}", &runner.id.to_string()[..8])
+            ]
+        );
+        let row = |waiting_on: Vec<String>| AgentSummary {
+            file: file::parse("ops", "Ops.").unwrap(),
+            status: AgentStatus::Working,
+            desk: None,
+            open_tasks: 0,
+            spent_month: 0.0,
+            error: None,
+            waiting_on,
+        };
+        assert_eq!(
+            row(names).waiting_label().as_deref(),
+            Some("waiting on scout +1")
+        );
+        assert_eq!(
+            row(vec!["scout".into()]).waiting_label().as_deref(),
+            Some("waiting on scout")
+        );
+        assert_eq!(row(Vec::new()).waiting_label(), None);
+    }
+
+    /// 178 W5: a desk serving a wake while nothing of its session tree has
+    /// been alive past the grace (a lost `TurnFinished` left it `working`)
+    /// is judged as for a yielded end — this task-less wake: handled.
+    #[test]
+    fn tick_rejudges_a_serving_desk_when_nothing_is_alive() {
+        with_engine_lock(async {
+            let (data, mut r, _, probe) =
+                desk_rig("tick-rejudge", Some(plain_serving()), 3 * 60_000).await;
+            r.desks.get_mut("ops").unwrap().working = true;
+            probe.set(false, None);
+            let actor = Roster::spawn(r);
+            assert_eq!(status_of(&actor).await, AgentStatus::Working);
+            actor.tell(Tick).await.unwrap();
+            assert_eq!(status_of(&actor).await, AgentStatus::Idle);
+            actor.kill();
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 178 W5 is liveness-based: while the session tree works (a child
+    /// runs) the wake keeps waiting however old it is, and an unknown
+    /// liveness judges nothing.
+    #[test]
+    fn tick_keeps_deferring_while_a_child_runs() {
+        with_engine_lock(async {
+            let (data, r, _, probe) =
+                desk_rig("tick-defer", Some(plain_serving()), 24 * 3_600_000).await;
+            let actor = Roster::spawn(r);
+            probe.set(true, None);
+            actor.tell(Tick).await.unwrap();
+            assert_eq!(status_of(&actor).await, AgentStatus::Working);
+            *probe.0.lock().unwrap() = None;
+            actor.tell(Tick).await.unwrap();
+            assert_eq!(status_of(&actor).await, AgentStatus::Working, "unknown");
+            actor.kill();
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 178 W5: the grace (2 × TICK) runs from the newest activity of the
+    /// desk or any descendant — a wake just delivered, or a child that just
+    /// finished, is not judged yet.
+    #[test]
+    fn tick_waits_out_the_delivery_grace() {
+        with_engine_lock(async {
+            let (data, r, _, probe) = desk_rig("tick-grace", Some(plain_serving()), 0).await;
+            let actor = Roster::spawn(r);
+            probe.set(false, None);
+            actor.tell(Tick).await.unwrap();
+            assert_eq!(
+                status_of(&actor).await,
+                AgentStatus::Working,
+                "just delivered"
+            );
+            let (data2, r, _, probe2) =
+                desk_rig("tick-grace2", Some(plain_serving()), 10 * 60_000).await;
+            let actor2 = Roster::spawn(r);
+            probe2.set(false, Some(now_ms() - 60_000));
+            actor2.tell(Tick).await.unwrap();
+            assert_eq!(
+                status_of(&actor2).await,
+                AgentStatus::Working,
+                "a child finished a minute ago"
+            );
+            probe2.set(false, Some(now_ms() - 3 * 60_000));
+            actor2.tell(Tick).await.unwrap();
+            assert_eq!(status_of(&actor2).await, AgentStatus::Idle);
+            actor.kill();
+            actor2.kill();
+            let _ = std::fs::remove_dir_all(&data);
+            let _ = std::fs::remove_dir_all(&data2);
+        });
+    }
+
+    /// 178 F3: a re-delivered wake whose desk turn is a resumed one still
+    /// waiting for its resume slot (no `TurnResumed` yet, nothing active) is
+    /// not judged by the backstop however long it waits.
+    #[test]
+    fn tick_leaves_a_desk_whose_resumed_turn_waits_for_a_slot() {
+        with_engine_lock(async {
+            let mut waiting = plain_serving();
+            waiting.turn_seen = false;
+            let (data, r, _, probe) = desk_rig("tick-slot", Some(waiting), 30 * 60_000).await;
+            probe.set(false, None);
+            let actor = Roster::spawn(r);
+            for _ in 0..2 {
+                actor.tell(Tick).await.unwrap();
+            }
+            assert_eq!(
+                status_of(&actor).await,
+                AgentStatus::Working,
+                "no turn seen yet"
+            );
+            actor.kill();
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 178 W5: a `Resume` wake whose checkout session was taken here
+    /// continues that session; no desk turn will end to judge it, so the
+    /// desk is not left serving it (that held the agent's queue for ever).
+    #[test]
+    fn resume_wake_to_a_taken_session_does_not_set_serving() {
+        with_engine_lock(async {
+            let data = tmp("resume-taken");
+            std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
+                .await
+                .unwrap();
+            let taken = agents.ask(agent::NewSession::default()).await.unwrap();
+            let r = roster_on(rt.clone(), &data).await;
+            assert!(r.desks.contains_key("ops"), "desk opened");
+            let actor = Roster::spawn(r);
+            let mut task = crate::desk::tests::task_in(tasks::TaskState::Doing);
+            task.checkout = Some(tasks::Checkout {
+                session: taken.to_string(),
+                engine: "here".into(),
+                epoch: 2,
+                progress_at_ms: 0,
+                orphaned: true,
+                taken: true,
+            });
+            let mut wake = plain_serving().wake;
+            wake.reason = tasks::WakeReason::Resume;
+            wake.task = Some(task.id.clone());
+            actor
+                .ask(DeliverWake {
+                    agent: "ops".into(),
+                    wake,
+                    task: Some(task),
+                })
+                .await
+                .unwrap();
+            assert_eq!(status_of(&actor).await, AgentStatus::Idle);
+            actor.kill();
+            agents.kill();
+            kameo::registry::ACTOR_REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(agent::AGENT_ACTOR);
+            let _ = std::fs::remove_dir_all(&data);
+        });
     }
 }

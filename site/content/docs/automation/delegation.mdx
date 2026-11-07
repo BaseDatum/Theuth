@@ -67,7 +67,7 @@ With communication on, ask for something that splits naturally:
 
 The three children show up in the desktop sidebar under this chat as a small tree (live rows first), each with a glyph for its state and, once known, a cost. In the terminal, `/agents` opens a picker of this session's subagents — running, awaiting, then newest finished first; ⏎ opens one. Each child reads docs and source on its own; reads need no approval under the default policy, so a research fan-out usually runs without interrupting you.
 
-As each finishes, its report arrives in the parent transcript as an incoming message from that child (`tokio-research`, …), and the parent synthesises once all three are in. Children that take longer than `agent.subagents.max_runtime_secs` (600 s) are cancelled and their partial text is delivered prefixed `[timed out after 600s, stop=…]`.
+As each finishes, its report arrives in the parent transcript as an incoming message from that child (`tokio-research`, …), and the parent synthesises once all three are in. A child turn that runs longer than `agent.subagents.max_runtime_secs` (600 s of run time; a restart does not reset it, downtime does not count) is cancelled and its partial text is delivered prefixed `[timed out after 600s, stop=…]`; a child turn that failed says so (`[child turn ended: error — …]`, `[child turn cancelled]`, `[child turn ended with no reply]`).
 
 ## Walkthrough: a repo task through opencode
 
@@ -140,7 +140,7 @@ agent:
     effort: null
     max_depth: 1            # children at this depth cannot spawn further
     max_concurrent: 8       # simultaneous child spawn turns; extra spawns queue
-    max_runtime_secs: 600   # wall clock per spawn turn
+    max_runtime_secs: 600   # run time per child turn (resumes continue it)
     reply_timeout_secs: 120 # send_message{await_reply} deadline
 ```
 
@@ -150,7 +150,7 @@ agent:
 | `effort` | `null` | `config.yaml` |
 | `max_depth` | `1` | `config.yaml` (restart). At the limit `spawn_subagent` is hidden from the child and rejected at call time. |
 | `max_concurrent` | `8` | `config.yaml` (restart). The parent still receives "Spawned …" at once; the 9th child waits for a slot. |
-| `max_runtime_secs` | `600` | Settings › Agent loop › **Subagent timeout**; `config.yaml`. Applies to spawns from now on. |
+| `max_runtime_secs` | `600` | Settings › Agent loop › **Subagent timeout**; `config.yaml`. Per child turn, run time only (see Limits). Applies to turns from now on. |
 | `reply_timeout_secs` | `120` | `config.yaml` |
 
 Other caps: a child's result text is bounded by `agent.max_tool_output_chars` (32 000) with the remainder spilled to `~/.theuth/spill/<parent>/<child>.txt`, and vault values are redacted from it. A recipient with 32 pending unread peer inputs answers `busy`.
@@ -212,7 +212,8 @@ Exercised in this repo as of this writing: **opencode 1.18.30 and 2.0.22**, **om
 |---|---|
 | Nesting | `max_depth` 1: a child cannot spawn by default |
 | Concurrent spawn turns | `max_concurrent` 8; further spawns queue silently |
-| Child runtime | `max_runtime_secs` 600 → child cancelled, result prefixed `[timed out after 600s, stop=<reason>]`, child state `cancelled` |
+| Child runtime | `max_runtime_secs` 600 per child turn (spawn, follow-up, human-opened, resumed) → turn cancelled, result prefixed `[timed out after 600s, stop=<reason>]`, child state `cancelled`. Only run time counts: a turn resumed after a restart continues its own cap (at least 60 s left to land); time the engine was stopped or the machine slept is not counted |
+| Failed child | Result prefixed `[child turn ended: error — <reason>]`, `[child turn cancelled]`, or `[child turn ended with no reply]`; nothing is retried automatically |
 | `await_reply` wait | `reply_timeout_secs` 120 |
 | Result size | `agent.max_tool_output_chars` 32 000, rest spilled to `spill/<parent>/<child>.txt` |
 | Peer intake | 32 unread inputs per recipient → `busy` |

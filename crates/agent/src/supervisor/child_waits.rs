@@ -3,7 +3,8 @@
 //! when the engine that ran the child is gone after a takeover. The hooks:
 //! `SpawnChild`'s success arm → [`child_spawned`], `Agents::hand_off` →
 //! [`child_result_delivered`], `transfer::on_resume_here` (W2) →
-//! [`settle_on_transfer`]. `Store::child_waits(Scope)` (C) is the reader;
+//! [`settle_on_transfer`], `drop_queued` / `DeleteSession` → [`child_gone`]
+//! (178 W8). `Store::child_waits(Scope)` (C) is the reader;
 //! `cut_journal_in` leaves `child_result` rows alone (Revision 1 Q8).
 
 use replica::PeerId;
@@ -52,6 +53,53 @@ pub async fn child_result_delivered(agents: &mut Agents, parent: SessionId, chil
         {
             tracing::warn!(session = %parent, %child, "139: child_result wait not cleared: {e:#}");
         }
+    }
+}
+
+/// 178 W8: `children` will never return a result — a queued spawn dropped
+/// before it started, or a deleted session. Every `child_result` row on
+/// them is cleared, and its parent told once (`why` after the child's
+/// label) in [`settle_on_transfer`]'s style — unless the parent is in
+/// `quiet` (deleted with them) or closing.
+pub async fn child_gone(
+    agents: &mut Agents,
+    children: &[SessionId],
+    why: &str,
+    quiet: &[SessionId],
+) {
+    let rows = match agents.store.child_waits(Scope::Here).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("139: child_waits: {e:#}");
+            return;
+        }
+    };
+    for w in rows {
+        let Some(child) = children.iter().copied().find(|c| w.target == c.to_string()) else {
+            continue;
+        };
+        if let Err(e) = agents.store.wait_clear(w.session, &w.tool_call_id).await {
+            tracing::warn!(session = %w.session, %child, "139: child_result wait not cleared: {e:#}");
+            continue;
+        }
+        if quiet.contains(&w.session) || agents.closing.contains(&w.session) {
+            continue;
+        }
+        let name = match agents.store.session(child).await {
+            Ok(Some(row)) => row.name,
+            _ => None,
+        };
+        let body = format!(
+            "{} {why}; no result will come from it.",
+            label(&name, child)
+        );
+        let wrapped = format!(
+            "<message from=\"session:{child}\" at=\"{}\">\n{body}\n</message>",
+            crate::clock::hhmm(chrono::Local::now())
+        );
+        agents
+            .inject(w.session, &format!("session:{child}"), body, wrapped, None)
+            .await;
     }
 }
 

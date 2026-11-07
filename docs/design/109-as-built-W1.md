@@ -52,8 +52,11 @@ before the `Invoke` is sent; local calls: before `call_started`), `call.<i>.afte
 
 - `Session` message `Resume { plan, slots }` `loop_.rs:1158-1194`: claims the state like `start_turn`,
   spawns `Turn::resume(plan, slots)`; `false` when a turn is in flight.
-- `Turn::resume` `loop_.rs:3926`: adopts `plan.turn`, takes one `resume_parallel` slot (held to the
-  end), then `drive(turn, Some(plan))`. `drive` `loop_.rs:3943` publishes `TurnResumed` first, runs
+- `Turn::resume` `loop_.rs:3926`: adopts `plan.turn`, takes one `resume_parallel` slot, then
+  `drive(turn, Some(plan))`. 178 W3: the slot bounds the replay burst, not the turn — it is released
+  after `resume_prelude` plus the first `round`, or after 60 s, whichever comes first (a turn whose
+  replay blocks in a long tool no longer starves turns 5..N). A stop while waiting for the slot ends
+  the turn `cancelled`. `drive` `loop_.rs:3943` publishes `TurnResumed` first, runs
   `rebase`, then `resume_prelude` `loop_.rs:2945` decides the first step:
 
 | newest step | built |

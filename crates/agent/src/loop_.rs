@@ -1265,17 +1265,8 @@ impl Session {
                 if peer {
                     // 50 §8: peer-triggered execution shares the child-work cap
                     // and the child wall deadline, waits included.
-                    task.peer_work = Some(PeerWork {
-                        deadline: tokio::time::Instant::now()
-                            + Duration::from_secs(self.shared.cfg.subagents.max_runtime_secs),
-                    });
-                    *self.shared.permit.lock() = PermitSlot {
-                        turn: Some(turn),
-                        permits: Some(self.shared.permits.clone()),
-                        cancel: Some(task.cancel.clone()),
-                        ..PermitSlot::default()
-                    };
-                    self.install_gate().await;
+                    let cap = Duration::from_secs(self.shared.cfg.subagents.max_runtime_secs);
+                    self.bind_turn(&mut task, turn, cap).await;
                 }
                 opened = true;
                 break;
@@ -1620,8 +1611,8 @@ impl Message<QuietInput> for Session {
 /// `ask` → `bool`: resume the open turn `plan` describes (109 §4.1), as
 /// `Agents::session`'s lazily loaded actor is handed it. `slots` is the boot
 /// scan's `Semaphore(resume_parallel)`: the turn task takes one slot before
-/// its first step and holds it until the turn ends. `false` when a turn is
-/// already in flight (the input that beat the scan resumes it lazily).
+/// its first step and holds it through its replay (178 W3). `false` when a
+/// turn is already in flight (the input that beat the scan resumes it lazily).
 pub struct Resume {
     /// From `Store::resume_plan`.
     pub plan: ResumePlan,
@@ -1659,6 +1650,13 @@ impl Message<Resume> for Session {
         let mut task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
         task.resume_from = m.from;
         task.resume_lost_jobs = m.lost_jobs;
+        // 178 W2: a bounded turn keeps its bound with the run time it has left.
+        if m.plan.bounded {
+            let cap = Duration::from_secs(self.shared.cfg.subagents.max_runtime_secs);
+            let ran = chrono::Duration::milliseconds(m.plan.ran_ms as i64);
+            let left = crate::durability::remaining_run(cap, ran);
+            self.bind_turn(&mut task, turn, left).await;
+        }
         let me = ctx.actor_ref().clone();
         let plan = ResumePlan {
             cause: m.cause,
@@ -1957,6 +1955,25 @@ impl Drop for CellRunning<'_> {
 }
 
 impl Session {
+    /// 50 §8: `task` (turn `turn`) runs bounded — one child-work permit,
+    /// taken before each model call, and a wall deadline `within` from now
+    /// (enforced in `drive` at depth 0; a child's is the supervisor's
+    /// runtime timer, 178 W1). 178 W2: a resumed bounded turn comes here
+    /// too, so `hold_permit` finds its slot set.
+    async fn bind_turn(&mut self, task: &mut Turn, turn: TurnId, within: Duration) {
+        task.peer_work = Some(PeerWork {
+            deadline: tokio::time::Instant::now() + within,
+            within,
+        });
+        *self.shared.permit.lock() = PermitSlot {
+            turn: Some(turn),
+            permits: Some(self.shared.permits.clone()),
+            cancel: Some(task.cancel.clone()),
+            ..PermitSlot::default()
+        };
+        self.install_gate().await;
+    }
+
     /// Publish this session's slot and install the gate once; called when
     /// the first peer-opened turn starts (a session that never runs one
     /// registers nothing).
@@ -2813,6 +2830,8 @@ struct Turn {
     scope: TurnScope,
     /// Set when a peer exchange opened the turn (50 §8): its deadline.
     peer_work: Option<PeerWork>,
+    /// 178 W3: dropping it frees the boot scan's resume slot this turn holds.
+    resume_slot: Option<tokio::sync::oneshot::Sender<()>>,
     /// Seq of this turn's first persisted row; bounds [`Turn::result_text`].
     first_seq: Option<i64>,
     /// Image occurrences whose consultation failed this turn (52 §5.3): not
@@ -2877,11 +2896,20 @@ fn view_note(folded: u32) -> String {
     format!("memory: {folded} older unsummarized lines were folded to fit (recall searches them)")
 }
 
+/// 178 W3: the longest a resumed turn holds its `resume_parallel` slot.
+#[cfg(not(test))]
+const RESUME_SLOT_HOLD: Duration = Duration::from_secs(60);
+/// Short in tests, so a held first round frees the slot without a minute's wait.
+#[cfg(test)]
+const RESUME_SLOT_HOLD: Duration = Duration::from_secs(2);
+
 /// Execution accounting of a peer-opened turn (50 §8): the wall deadline of
 /// the whole turn, waits included. The permit itself lives in
 /// `Shared::permit` so [`PermitGate`] can drop it during human waits.
 struct PeerWork {
     deadline: tokio::time::Instant,
+    /// The bound the deadline was set from (178 F3: a resume re-arms it).
+    within: Duration,
 }
 
 /// The execution permit of the running peer-opened turn (50 §8), shared by
@@ -3664,6 +3692,7 @@ impl Turn {
             checkpoints: 0,
             scope: TurnScope::default(),
             peer_work: None,
+            resume_slot: None,
             first_seq: None,
             vision_failed: BTreeSet::new(),
             vision_noticed: false,
@@ -5299,6 +5328,9 @@ impl Turn {
         let ticket = input.ticket;
         let peer = input.peer.take();
         let replayed = input.replay.is_some();
+        // 178 W2: a scoped depth-0 input bounds the turn it opens (`bounded`);
+        // the journal says so, so a resumed turn keeps its bound.
+        let scoped = input.scope.is_some() && self.shared.depth == 0;
         let advisory = input.advisory.take();
         let channel = input.channel.take();
         let msg = match input.replay.take() {
@@ -5357,7 +5389,11 @@ impl Turn {
             }
             (Some(turn), None) => {
                 crash_point(crash::INPUT_BEFORE_PERSIST);
-                let source = if replayed { "replay" } else { "user" };
+                let source = match (scoped, replayed) {
+                    (true, _) => "scoped",
+                    (false, true) => "replay",
+                    (false, false) => "user",
+                };
                 let r = self
                     .shared
                     .store
@@ -5562,9 +5598,11 @@ impl Turn {
     /// 109 §4.1: continue the open turn `plan` describes instead of taking an
     /// input — the frame is the stored one, `rebase` runs as at a turn start,
     /// and the §4.2 state machine decides the first step. `slots` bounds how
-    /// many turns resume at once (§4.6): one is taken here and held until the
-    /// turn ends; a cancel while waiting proceeds into `drive`, whose first
-    /// round stops on it.
+    /// many turns resume at once (§4.6): one is taken here; 178 W3: it bounds
+    /// the replay burst, not the turn — released after the prelude and the
+    /// first round ([`Turn::resume_slot`]) or after [`RESUME_SLOT_HOLD`],
+    /// whichever comes first. A cancel while waiting proceeds into `drive`,
+    /// whose first round stops on it.
     async fn resume(mut self, plan: ResumePlan, slots: Option<Arc<Semaphore>>) -> SessionState {
         let turn = plan.turn;
         self.turn = Some(turn);
@@ -5575,27 +5613,50 @@ impl Turn {
             },
             None => None,
         };
-        let state = self.drive(turn, Some(plan)).await;
-        drop(permit);
-        state
+        if let Some(permit) = permit {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(RESUME_SLOT_HOLD, rx).await;
+                drop(permit);
+            });
+            self.resume_slot = Some(tx);
+        }
+        // 178 F3: a bounded turn's remaining time starts now, after the slot
+        // wait, as its `TurnResumed` does.
+        if let Some(w) = self.peer_work.as_mut() {
+            w.deadline = tokio::time::Instant::now() + w.within;
+        }
+        self.drive(turn, Some(plan)).await
     }
 
     /// The turn after its inputs: rounds until a stop, then the end-of-turn
     /// bookkeeping. `plan` = a resumed turn (109 §4.2).
     async fn drive(mut self, turn: TurnId, plan: Option<ResumePlan>) -> SessionState {
+        // 178 F1: the run clock the drain reads, from what the journal already ran.
+        crate::durability::run_clock::start(
+            self.shared.id,
+            turn,
+            plan.as_ref().map_or(0, |p| p.ran_ms),
+        );
         // 50 §8: the wall deadline of a peer-opened turn covers everything —
         // model calls, tools and waits — and ends it through its own token.
-        let deadline = self.peer_work.as_ref().map(|w| {
-            let cancel = self.cancel.clone();
-            let at = w.deadline;
-            tokio::spawn(async move {
-                tokio::select! {
-                    _ = tokio::time::sleep_until(at) => cancel.cancel(),
-                    _ = cancel.cancelled() => {}
-                }
-            })
-            .abort_handle()
-        });
+        // 178 W1: at depth 0 only; a child's one clock is the supervisor's
+        // runtime timer, so the two never both report.
+        let deadline = self
+            .peer_work
+            .as_ref()
+            .filter(|_| self.shared.depth == 0)
+            .map(|w| {
+                let cancel = self.cancel.clone();
+                let at = w.deadline;
+                tokio::spawn(async move {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(at) => cancel.cancel(),
+                        _ = cancel.cancelled() => {}
+                    }
+                })
+                .abort_handle()
+            });
         let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
             .flatten();
@@ -5635,7 +5696,12 @@ impl Turn {
                 loop {
                     let outcome = match first.take() {
                         Some(r) => r,
-                        None => self.round(registry, turn, rounds).await,
+                        None => {
+                            let r = self.round(registry, turn, rounds).await;
+                            // 178 W3: prelude + first round done → the resume slot goes.
+                            self.resume_slot = None;
+                            r
+                        }
                     };
                     match outcome {
                         Round::Tools => {
@@ -5689,6 +5755,7 @@ impl Turn {
             }
         };
         let mut stop_reason = stop_reason;
+        crate::durability::run_clock::stop(turn);
         if let Some(timer) = deadline {
             timer.abort();
             if stop_reason == "cancelled"
@@ -5979,7 +6046,11 @@ impl Turn {
             .draining
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            let payload = serde_json::json!({ "reason": "drain" });
+            let mut payload = serde_json::json!({ "reason": "drain" });
+            // 178 F1: the newest `suspended` row carries the run clock too.
+            if let Some(ms) = crate::durability::run_clock::ran_ms(turn) {
+                payload["ran_ms"] = ms.into();
+            }
             if let Err(e) = self
                 .shared
                 .store
