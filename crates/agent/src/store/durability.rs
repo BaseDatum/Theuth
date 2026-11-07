@@ -233,24 +233,38 @@ struct StepRow {
 /// that resume which no drain measured (a crash). Rows with no `ran_ms`
 /// anywhere (written before 178) fall back to the whole span, first to newest.
 /// Downtime between a `suspended` row and the next run is never counted.
-fn run_ms(steps: &[StepRow]) -> anyhow::Result<u64> {
-    let mut ran = 0u64;
+/// A `ran_ms` well above that whole span cannot have run (only a damaged
+/// row carries one): past `max(5 s, 1 %)` of slack — the run clock is not
+/// NTP-slewed and drifts from the wall clock, which may also step — it is
+/// ignored for the span, so every caller's arithmetic gets a plausible value.
+fn run_ms(session: SessionId, turn: TurnId, steps: &[StepRow]) -> anyhow::Result<u64> {
+    let span_ms = |(first, last): (DateTime<Utc>, DateTime<Utc>)| {
+        u64::try_from((last - first).num_milliseconds()).unwrap_or(0)
+    };
+    let mut ran = None;
+    let mut whole: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
     let mut span: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
     for s in steps {
         let at = parse_dt(&s.at)?;
+        whole = Some(whole.map_or((at, at), |(first, _)| (first, at)));
         if s.kind == StepKind::Suspended.as_str()
             && let Some(ms) = json(&s.payload)["ran_ms"].as_u64()
         {
-            ran = ms;
+            ran = Some(ms);
             span = None;
             continue;
         }
         span = Some(span.map_or((at, at), |(first, _)| (first, at)));
     }
-    let tail = span.map_or(0, |(first, last)| {
-        (last - first).num_milliseconds().max(0) as u64
-    });
-    Ok(ran + tail)
+    let whole = whole.map_or(0, span_ms);
+    match ran {
+        None => Ok(whole),
+        Some(ran) if ran > whole.saturating_add((whole / 100).max(5_000)) => {
+            tracing::warn!(%session, %turn, ran_ms = ran, span_ms = whole, "178: impossible ran_ms ignored; run time is the journal span");
+            Ok(whole)
+        }
+        Some(ran) => Ok(ran.saturating_add(span.map_or(0, span_ms))),
+    }
 }
 
 type CallTuple = (
@@ -727,7 +741,7 @@ impl Store {
                 at,
             });
         }
-        run_ms(&steps)
+        run_ms(session, turn, &steps)
     }
 
     /// Test seam (178): set the `at` of step `n` of `turn`, to journal a
@@ -842,7 +856,7 @@ impl Store {
             .map(|s| parse_dt(&s.at))
             .collect::<anyhow::Result<Vec<_>>>()?;
         let interrupted_at = *ats.iter().max().expect("non-empty");
-        let ran_ms = run_ms(&steps)?;
+        let ran_ms = run_ms(session, turn, &steps)?;
         // 178 W2: the opener's source says whether the turn ran bounded.
         let bounded = steps
             .iter()
@@ -2506,5 +2520,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    /// 178: a turn journaled over `end` s — opened, a model call, drained
+    /// with `ran_ms` = `ran` at 20 s, then run from 25 s to `end` after the
+    /// resume.
+    fn drained_turn(ran: Value, end: i64) -> Vec<StepRow> {
+        let t0 = Utc::now() - chrono::Duration::hours(2);
+        let row = |kind: StepKind, payload: Value, secs| StepRow {
+            kind: kind.as_str().into(),
+            call_id: None,
+            payload: payload.to_string(),
+            at: (t0 + chrono::Duration::seconds(secs)).to_rfc3339(),
+        };
+        vec![
+            row(StepKind::InputAccepted, json!({"source": "user"}), 0),
+            row(StepKind::ModelCall, json!({}), 10),
+            row(
+                StepKind::Suspended,
+                json!({"reason": "shutdown", "ran_ms": ran}),
+                20,
+            ),
+            row(StepKind::ModelCall, json!({}), 25),
+            row(StepKind::ModelCall, json!({}), end),
+        ]
+    }
+
+    /// 178: a `ran_ms` beyond the turn's whole journal span (27 s) plus the
+    /// 5 s slack cannot have run — `u64::MAX`, past `i64::MAX`, or just over
+    /// — so the span is the run time; a sane one, or one inside the slack
+    /// (clock drift), still counts with the run after it. On a 1 h span the
+    /// slack is 1 % (36 s): 2 s over is kept, 1 h over is not.
+    #[test]
+    fn run_ms_ignores_an_impossible_ran_ms() {
+        let (s, t) = (SessionId::new(), TurnId::new());
+        let run = |ran: u64, end| run_ms(s, t, &drained_turn(json!(ran), end)).unwrap();
+        for bad in [u64::MAX, i64::MAX as u64 + 1, 32_001] {
+            assert_eq!(run(bad, 27), 27_000, "{bad}");
+        }
+        assert_eq!(run(15_000, 27), 17_000);
+        assert_eq!(run(32_000, 27), 34_000, "inside the slack");
+        assert_eq!(run(3_602_000, 3600), 3_602_000 + 3_575_000, "drift kept");
+        assert_eq!(run(7_200_000, 3600), 3_600_000, "1 h over");
+    }
+
+    /// 178: a `ran_ms` that is no `u64` is no run clock: the span counts.
+    #[test]
+    fn run_ms_ignores_a_non_numeric_ran_ms() {
+        let (s, t) = (SessionId::new(), TurnId::new());
+        for bad in [json!("15000"), json!(-5), json!(1.5)] {
+            assert_eq!(
+                run_ms(s, t, &drained_turn(bad.clone(), 27)).unwrap(),
+                27_000,
+                "{bad}"
+            );
+        }
     }
 }

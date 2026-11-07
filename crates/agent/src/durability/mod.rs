@@ -73,6 +73,17 @@ pub fn remaining_run(cap: std::time::Duration, ran: chrono::Duration) -> std::ti
     cap.saturating_sub(ran).max(RESUME_GRACE.min(cap))
 }
 
+/// 178: `ms` of run time as the span `Utc::now()` steps back by for a
+/// turn's age; zero when it is no such span (a corrupt `ran_ms` past the
+/// guard in `store::durability::run_ms`): never a panic.
+pub fn ran_delta(ms: u64) -> chrono::TimeDelta {
+    i64::try_from(ms)
+        .ok()
+        .and_then(chrono::TimeDelta::try_milliseconds)
+        .filter(|d| chrono::Utc::now().checked_sub_signed(*d).is_some())
+        .unwrap_or_default()
+}
+
 /// 178 F1: the run clock of every turn running in this process, read by the
 /// drain, which writes the turn's accrued run time as `ran_ms` on its
 /// `suspended` row. Cumulative across resumes: a turn starts from the
@@ -112,10 +123,10 @@ pub mod run_clock {
     /// `turn`'s run time so far, prior runs included; `None` when it does
     /// not run here.
     pub fn ran_ms(turn: TurnId) -> Option<u64> {
-        CLOCKS
-            .lock()
-            .get(&turn)
-            .map(|(_, at, prior)| prior + at.elapsed().as_millis() as u64)
+        CLOCKS.lock().get(&turn).map(|(_, at, prior)| {
+            let ran = u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            prior.saturating_add(ran)
+        })
     }
 }
 

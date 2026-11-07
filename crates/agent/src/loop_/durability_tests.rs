@@ -1352,6 +1352,7 @@ async fn slot_scenarios() {
     resume_slot_is_released_after_the_first_round(&registry, &hits, &holds).await;
     queued_resume_turn_cancel_lands_cancelled(&registry, &holds).await;
     bounded_turn_keeps_its_bound_after_resume(&registry, &holds).await;
+    bounded_resume_with_corrupt_ran_ms_does_not_panic(&registry, &holds).await;
 }
 
 /// `Resume` of `plan` on `actor` under `slots`.
@@ -1502,6 +1503,39 @@ async fn bounded_turn_keeps_its_bound_after_resume(
         "{events:?}"
     );
     wait_idle(&actor).await;
+}
+
+/// 178: a bounded turn whose `suspended` row carries a corrupt `ran_ms`
+/// gets a plausible plan bound (the store ignores it); one injected past
+/// that guard (`-1` / `i64::MIN` as `i64`) counts as no run, so the turn
+/// keeps its whole cap and ends `stop` — the session never panics.
+async fn bounded_resume_with_corrupt_ran_ms_does_not_panic(
+    registry: &ActorRef<ToolRegistry>,
+    holds: &Holds,
+) {
+    for bad in [u64::MAX, i64::MAX as u64 + 1] {
+        let (mut h, tid) = interrupt_mid_batch(registry, &holds.0, C1, C2).await;
+        let p = serde_json::json!({"reason": "shutdown", "ran_ms": bad});
+        h.store
+            .step(h.id, tid, crate::durability::StepKind::Suspended, None, &p)
+            .await
+            .unwrap();
+        let mut plan = h.store.resume_plan(h.id, tid).await.unwrap();
+        assert!(plan.ran_ms < 600_000, "the journal span: {}", plan.ran_ms);
+        plan.bounded = true;
+        plan.ran_ms = bad;
+        let actor = h.actor("openai/textonly").await;
+        resume_on(&actor, plan, None).await;
+        let events = h.drain().await;
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::TurnFinished { turn, stop_reason, .. } if *turn == tid && stop_reason == "stop"
+            )),
+            "{bad}: {events:?}"
+        );
+        wait_idle(&actor).await;
+    }
 }
 
 /// §9.2 step 2: a session told `Draining` opens no model call — the turn

@@ -5086,7 +5086,7 @@ impl Agents {
                     }),
                 None => acp_ran,
             };
-            let ran = chrono::Duration::milliseconds(ran_ms as i64);
+            let ran = crate::durability::ran_delta(ran_ms);
             self.arm_child_turn(session, None, ran, Some(me));
         }
         // 155 §5.3: a turn starting ends `idle`/`done`.
@@ -5136,7 +5136,7 @@ impl Agents {
             permit: None,
             timer: None,
             arm: 0,
-            started_at: Utc::now() - ran,
+            started_at: Utc::now().checked_sub_signed(ran).unwrap_or_else(Utc::now),
         });
         if permit.is_some() {
             ct.permit = permit;
@@ -17308,6 +17308,38 @@ pub(crate) mod tests {
         assert!((50..=52).contains(&age), "50 s ran, not 9000: {age}");
         let plan = store.resume_plan(child, t).await.unwrap();
         assert_eq!(plan.ran_ms, 50_000, "the plan's bound counts the same");
+    }
+
+    /// 178: a child turn whose `suspended` row carries a corrupt `ran_ms`
+    /// (`u64::MAX`: only a damaged row) resumes timed on its journal span
+    /// (20 s) and the actor lives on; past the store's guard the duration
+    /// falls back to zero, never a panic.
+    #[tokio::test]
+    async fn resume_with_corrupt_ran_ms_does_not_panic() {
+        use crate::durability::StepKind;
+        let (_scratch, mut a) = agents().await;
+        Arc::make_mut(&mut a.cfg).subagents.max_runtime_secs = 600;
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, root, "kid").await;
+        let agents = Agents::spawn(a);
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let (t, now) = (TurnId::new(), Utc::now());
+        let at = |secs| now - chrono::Duration::seconds(secs);
+        journal_turn(&store, child, t, at(1000), at(990)).await;
+        let p = serde_json::json!({"reason": "shutdown", "ran_ms": u64::MAX});
+        store
+            .step(child, t, StepKind::Suspended, None, &p)
+            .await
+            .unwrap();
+        store.set_step_at(child, t, 3, at(980)).await.unwrap();
+        agents.tell(resumed(child, t, at(980))).await.unwrap();
+        let (_, timed, _, age) = child_turn_of(&agents, child).await;
+        assert!(timed);
+        assert!((20..=22).contains(&age), "the 20 s span: {age}");
+        assert_eq!(store.resume_plan(child, t).await.unwrap().ran_ms, 20_000);
+        assert!(crate::durability::ran_delta(u64::MAX).is_zero());
+        assert!(crate::durability::ran_delta(i64::MAX as u64).is_zero());
     }
 
     /// 178 F2: a timer that fired for an earlier arm (its turn ended as it

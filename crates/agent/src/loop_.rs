@@ -1653,7 +1653,7 @@ impl Message<Resume> for Session {
         // 178 W2: a bounded turn keeps its bound with the run time it has left.
         if m.plan.bounded {
             let cap = Duration::from_secs(self.shared.cfg.subagents.max_runtime_secs);
-            let ran = chrono::Duration::milliseconds(m.plan.ran_ms as i64);
+            let ran = crate::durability::ran_delta(m.plan.ran_ms);
             let left = crate::durability::remaining_run(cap, ran);
             self.bind_turn(&mut task, turn, left).await;
         }
