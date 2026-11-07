@@ -1113,4 +1113,222 @@ mod tests {
         b.close().await;
         c.close().await;
     }
+
+    // ---- 180: a taken session's ledger owner (no record replica here, the bug's precondition) ----
+
+    /// Reserve, dispatch and settle one call on `owner` in `store`.
+    async fn book(store: &Store, owner: SessionId) {
+        use agent::cost::{CallKind, CallStatus, CostObservation};
+        let call = store
+            .reserve_call(owner, "req", 0, None, CallKind::Round, Some("p"), Some("m"))
+            .await
+            .unwrap();
+        store.mark_dispatched(&call).await.unwrap();
+        store
+            .settle_call(&call, CallStatus::Settled, CostObservation::default())
+            .await
+            .unwrap();
+    }
+
+    /// The derived stand-in's `hlc` (`accounting::STAND_IN_HLC`).
+    const STAND_IN: &str = "0000000000000000-00000000-0";
+
+    type LedgerRow = (String, Option<String>, String, i64, Option<String>);
+
+    impl Engine {
+        async fn ro(&self) -> sqlx::SqlitePool {
+            sqlx::SqlitePool::connect(&format!(
+                "sqlite://{}?mode=ro",
+                self.dir.join("sessions.sqlite").display()
+            ))
+            .await
+            .unwrap()
+        }
+
+        /// `(table, parent)` of every `PRAGMA foreign_key_check` row of the accounting tables.
+        async fn ledger_orphans(&self) -> Vec<(String, String)> {
+            let pool = self.ro().await;
+            let rows: Vec<(String, Option<i64>, String, i64)> =
+                sqlx::query_as("PRAGMA foreign_key_check")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            pool.close().await;
+            rows.into_iter()
+                .filter(|r| {
+                    [
+                        "cost_owners",
+                        "model_calls",
+                        "remote_meters",
+                        "remote_turns",
+                    ]
+                    .contains(&r.0.as_str())
+                })
+                .map(|r| (r.0, r.2))
+                .collect()
+        }
+
+        /// `(root_id, parent_id, history_coverage, revision, hlc)` of `owner`'s ledger row.
+        async fn ledger_row(&self, owner: SessionId) -> Option<LedgerRow> {
+            let pool = self.ro().await;
+            let row = sqlx::query_as(
+                "SELECT root_id, parent_id, history_coverage, revision, hlc FROM cost_owners WHERE id = ?",
+            )
+            .bind(owner.to_string())
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+            row
+        }
+
+        /// Calls booked on `owner` here.
+        async fn calls(&self, owner: SessionId) -> usize {
+            self.store
+                .session_cost(owner)
+                .await
+                .unwrap()
+                .map_or(0, |c| c.direct.calls as usize)
+        }
+    }
+
+    /// 180 (Sky's report), both directions: a session one engine created
+    /// reaches the other through the session log only — its `sessions` and
+    /// `model_calls` rows, not its ledger row. The taker reserves and books
+    /// on a stand-in derived from the session row, and holds no orphan.
+    #[tokio::test]
+    async fn taken_session_reserves_without_replicated_owner() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        for (from, to, next) in [(&a, &b, "b"), (&b, &a, "a")] {
+            let id = SessionId::new();
+            from.store
+                .create_session(id, "m", None, None, None)
+                .await
+                .unwrap();
+            book(&from.store, id).await;
+            to.pull(from).await;
+            assert_eq!(to.ledger_row(id).await, None, "no record replica here");
+
+            to.take(None, vec![], vec![])
+                .run(id, TakeReason::User)
+                .await
+                .unwrap();
+            assert_eq!(to.store.owner(id).await.unwrap(), Some((next.into(), 2)));
+            book(&to.store, id).await;
+            assert_eq!(to.calls(id).await, 2, "the replicated call and the new one");
+            let row = to.ledger_row(id).await.unwrap();
+            assert_eq!(
+                (row.0, row.1, row.2.as_str(), row.4.as_deref()),
+                (id.to_string(), None, "unknown", Some(STAND_IN))
+            );
+            assert!(to.ledger_orphans().await.is_empty());
+        }
+        a.close().await;
+        b.close().await;
+    }
+
+    /// 180 D1a: a grandchild taken alone (takes are per session) derives its
+    /// whole lineage from the `sessions` rows, root first; every row points
+    /// at the tree's root.
+    #[tokio::test]
+    async fn taken_child_chain_root_first() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        let (root, child, grand) = (SessionId::new(), SessionId::new(), SessionId::new());
+        a.store
+            .create_session(root, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .create_session(child, "m", Some(root), None, None)
+            .await
+            .unwrap();
+        a.store
+            .create_session(grand, "m", Some(child), None, None)
+            .await
+            .unwrap();
+        b.pull(&a).await;
+        b.take(None, vec![], vec![])
+            .run(grand, TakeReason::User)
+            .await
+            .unwrap();
+        book(&b.store, grand).await;
+
+        let r = root.to_string();
+        for (id, parent) in [(root, None), (child, Some(root)), (grand, Some(child))] {
+            let row = b.ledger_row(id).await.unwrap();
+            assert_eq!(
+                (row.0, row.1, row.2.as_str(), row.4.as_deref()),
+                (
+                    r.clone(),
+                    parent.map(|p| p.to_string()),
+                    "unknown",
+                    Some(STAND_IN)
+                ),
+                "{id}"
+            );
+        }
+        assert!(b.ledger_orphans().await.is_empty());
+        a.close().await;
+        b.close().await;
+    }
+
+    /// a → b → a: whatever B derived and booked, A's own ledger row
+    /// (revision, coverage, stamp) is untouched when A takes the session
+    /// back, and A books against it. `snapshot`: B bootstraps from A's
+    /// snapshot instead of A's log.
+    async fn origin_retake(snapshot: bool) {
+        let (a, b) = (engine("a").await, engine("b").await);
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        book(&a.store, id).await;
+        let mine = a.ledger_row(id).await.unwrap();
+        assert_eq!(mine.2, "complete");
+        if snapshot {
+            let snap = crate::apply::build_snapshot(&a.store, &a.id())
+                .await
+                .unwrap();
+            crate::apply::apply_snapshot(&b.store, &snap).await.unwrap();
+        } else {
+            b.pull(&a).await;
+        }
+        b.take(None, vec![], vec![])
+            .run(id, TakeReason::User)
+            .await
+            .unwrap();
+        book(&b.store, id).await;
+        a.pull(&b).await;
+        assert_eq!(a.store.fence(id).await.unwrap(), Some((2, "b".into())));
+
+        a.take(None, vec![], vec![])
+            .run(id, TakeReason::User)
+            .await
+            .unwrap();
+        assert_eq!(a.store.owner(id).await.unwrap(), Some(("a".into(), 3)));
+        assert_eq!(
+            a.ledger_row(id).await,
+            Some(mine),
+            "B touched nothing of A's row"
+        );
+        book(&a.store, id).await;
+        assert_eq!(a.calls(id).await, 3);
+        assert!(a.ledger_orphans().await.is_empty());
+        b.pull(&a).await;
+        assert_eq!(b.calls(id).await, 3);
+        assert!(b.ledger_orphans().await.is_empty());
+        a.close().await;
+        b.close().await;
+    }
+
+    #[tokio::test]
+    async fn origin_retake_keeps_its_row() {
+        origin_retake(false).await;
+    }
+
+    #[tokio::test]
+    async fn origin_retake_keeps_its_row_after_snapshot() {
+        origin_retake(true).await;
+    }
 }

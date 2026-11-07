@@ -699,6 +699,21 @@ impl Store {
                 tracing::info!("68: claimed {n} unowned session(s) as {me}");
             }
         }
+        // 180 D3: owners that replicated `sessions`, `model_calls`,
+        // `remote_meters` and `remote_turns` rows reference but no ledger row
+        // backs (the record replica delivers `cost_owners` on its own stream,
+        // often minutes after the session log). Stand-ins carry the sentinel
+        // HLC, so the record replica lets the owner's real row replace them.
+        match repair_cost_owners(&read).await {
+            Ok(r) if r.derived + r.tombstoned > 0 => tracing::info!(
+                "accounting: repaired {} missing cost owner(s): {} derived from sessions, {} tombstoned root(s)",
+                r.derived + r.tombstoned,
+                r.derived,
+                r.tombstoned
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("accounting: cost owner repair: {e:#}"),
+        }
         let session: Arc<Mutex<Option<capture::Session>>> = Arc::new(Mutex::new(None));
         let slot = session.clone();
         let write = SqlitePoolOptions::new()
@@ -3418,6 +3433,15 @@ impl Store {
         })
         .collect())
     }
+}
+
+/// 180 D3: [`accounting::repair_owners_in`] over the whole store in one
+/// transaction, at open.
+async fn repair_cost_owners(pool: &SqlitePool) -> anyhow::Result<accounting::OwnersRepaired> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let repaired = accounting::repair_owners_in(&mut tx).await?;
+    tx.commit().await?;
+    Ok(repaired)
 }
 
 /// Column layout of every attached table (`PRAGMA table_info`), in

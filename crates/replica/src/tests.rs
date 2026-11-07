@@ -432,3 +432,110 @@ async fn counters_see_captures_applies_and_echoes() {
     let sb = b.engine.stats().await.unwrap();
     assert_eq!((sb.captured, sb.echo), (5, 3), "{sb:?}");
 }
+
+/// 180 D1b: one table of a batch that cannot be written here (B's `agents`
+/// has a UNIQUE A's lacks, and a local row holds the value) no longer aborts
+/// the batch: `cost_owners`, behind it alphabetically, lands; the failed
+/// table's rows and shadow clocks roll back and its changes are parked, not
+/// dropped. Once the local row is gone, the next batch touching `agents`
+/// retries them and they land.
+#[tokio::test]
+async fn apply_with_one_failing_table_still_lands_cost_owners() {
+    async fn side_of(agents: &str) -> Side {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&dir.path().join("replica.sqlite"))
+            .await
+            .unwrap();
+        let pool = open_pool(&dir.path().join("data.sqlite")).await;
+        exec(&pool, agents).await;
+        exec(
+            &pool,
+            "CREATE TABLE cost_owners (id TEXT PRIMARY KEY, root_id TEXT NOT NULL, hlc TEXT)",
+        )
+        .await;
+        let handle = engine
+            .attach(&pool, &["agents", "cost_owners"])
+            .await
+            .unwrap();
+        Side {
+            engine,
+            pool,
+            handle,
+            dir,
+        }
+    }
+    async fn n_of(pool: &SqlitePool, id: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT n FROM agents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+    async fn parked(side: &Side) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM parked")
+            .fetch_one(side.engine.store.pool())
+            .await
+            .unwrap()
+    }
+    let a = side_of("CREATE TABLE agents (id TEXT PRIMARY KEY, n INTEGER, hlc TEXT)").await;
+    let b = side_of("CREATE TABLE agents (id TEXT PRIMARY KEY, n INTEGER UNIQUE, hlc TEXT)").await;
+    exec(
+        &b.pool,
+        "INSERT INTO agents (id, n) VALUES ('x', 1), ('y', -1)",
+    )
+    .await;
+    b.handle.flush().await.unwrap();
+    exec(&a.pool, "INSERT INTO agents (id, n) VALUES ('x', -1)").await;
+    exec(
+        &a.pool,
+        "INSERT INTO cost_owners (id, root_id) VALUES ('s', 's')",
+    )
+    .await;
+    let batch = a.handle.flush().await.unwrap().unwrap();
+    let tables: std::collections::BTreeSet<&str> =
+        batch.changes.iter().map(|c| c.table.as_str()).collect();
+    assert_eq!(tables.len(), 2, "one batch carries both tables");
+
+    assert!(b.engine.apply(&batch).await.unwrap());
+    let owner: Option<String> =
+        sqlx::query_scalar("SELECT root_id FROM cost_owners WHERE id = 's'")
+            .fetch_optional(&b.pool)
+            .await
+            .unwrap();
+    assert_eq!(owner.as_deref(), Some("s"));
+    assert_eq!(
+        n_of(&b.pool, "x").await,
+        Some(1),
+        "the failing table rolled back"
+    );
+    let mut conn = b.engine.store.pool().acquire().await.unwrap();
+    let clocks = crate::store::col_clocks(&mut conn, "agents", "x")
+        .await
+        .unwrap();
+    assert!(
+        clocks
+            .get("n")
+            .is_none_or(|h| h.origin == *b.engine.origin()),
+        "A's clock for the unwritten column was rolled back"
+    );
+    drop(conn);
+    assert_eq!(parked(&b).await, 1, "kept for retry, not dropped");
+    assert!(
+        !b.engine.apply(&batch).await.unwrap(),
+        "the batch is recorded"
+    );
+
+    // What blocked it goes away; A's next `agents` change triggers the retry.
+    exec(&b.pool, "DELETE FROM agents WHERE id = 'y'").await;
+    b.handle.flush().await.unwrap();
+    exec(&a.pool, "INSERT INTO agents (id, n) VALUES ('z', 5)").await;
+    let next = a.handle.flush().await.unwrap().unwrap();
+    assert!(b.engine.apply(&next).await.unwrap());
+    assert_eq!(
+        n_of(&b.pool, "x").await,
+        Some(-1),
+        "the parked change landed"
+    );
+    assert_eq!(n_of(&b.pool, "z").await, Some(5));
+    assert_eq!(parked(&b).await, 0);
+}

@@ -192,6 +192,9 @@ pub struct Engine {
     pub(crate) counters: Counters,
     /// Applied column writes of the last [`ECHO_WINDOW`], oldest first.
     recent: Mutex<VecDeque<Recent>>,
+    /// 180: `(origin, table)` pairs an apply problem was already warned
+    /// about; repeats log at debug (a mixed fleet replays ~10⁵ batches).
+    warned: Mutex<HashSet<(String, String)>>,
 }
 
 impl Engine {
@@ -224,7 +227,22 @@ impl Engine {
             transport: Mutex::new(None),
             counters: Counters::default(),
             recent: Mutex::new(VecDeque::new()),
+            warned: Mutex::new(HashSet::new()),
         }))
+    }
+
+    /// Log an apply problem of `origin`'s rows in `table`: a warning the
+    /// first time per pair, debug after.
+    pub(crate) fn note(&self, origin: &PeerId, table: &str, msg: std::fmt::Arguments<'_>) {
+        if self
+            .warned
+            .lock()
+            .insert((origin.0.clone(), table.to_owned()))
+        {
+            tracing::warn!("replica: {msg} (further ones from {origin} in {table} at debug)");
+        } else {
+            tracing::debug!("replica: {msg}");
+        }
     }
 
     /// This replica's origin id.
@@ -278,6 +296,23 @@ impl Engine {
                         info: info.clone(),
                     },
                 );
+            }
+        }
+        // 180 D1b: changes parked before a restart (a migration may have
+        // fixed what broke them) get their retry as the table comes back.
+        {
+            let _guard = self.write_lock.lock().await;
+            let tables: Vec<&str> = infos.iter().map(|(t, _)| t.as_str()).collect();
+            match self.retry_parked_locked(&tables).await {
+                Ok(again) => {
+                    for (attached, table, pk) in again {
+                        let changes = self.row_as_changes(&attached, &table, &pk).await?;
+                        if !changes.is_empty() {
+                            self.emit_locked(changes).await?;
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("replica: retry parked {tables:?}: {e:#}"),
             }
         }
         let names: Arc<[String]> = infos.into_iter().map(|(t, _)| t).collect();

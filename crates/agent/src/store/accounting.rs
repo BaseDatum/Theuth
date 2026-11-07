@@ -61,8 +61,17 @@ pub(super) async fn bump_in(
         .collect()
 }
 
+/// 180 D1a: the `hlc` of a ledger row this engine derived for an owner whose
+/// real row has not replicated in (yet). It parses (`replica::Hlc::parse`)
+/// and sorts below every real stamp, so under the record replica's
+/// per-column last-writer-wins the stand-in never overwrites the owner's row
+/// anywhere and the owner's row overwrites it wherever it lands.
+pub(crate) const STAND_IN_HLC: &str = "0000000000000000-00000000-0";
+
 /// Register `id` as an accounting owner under `parent` (idempotent). New
-/// owners start `complete`; the parent must already be an owner.
+/// owners start `complete`; a parent without a ledger row gets a stand-in
+/// derived from `sessions` first ([`ensure_owner_chain_in`]: a subagent
+/// spawned in a taken session whose owner row has not replicated in).
 pub(crate) async fn ensure_owner_in(
     conn: &mut SqliteConnection,
     id: SessionId,
@@ -73,6 +82,7 @@ pub(crate) async fn ensure_owner_in(
         None => (sid.clone(), None),
         Some(p) => {
             let p = p.to_string();
+            ensure_owner_chain_in(conn, &p).await?;
             let root: Option<(String,)> =
                 sqlx::query_as("SELECT root_id FROM cost_owners WHERE id = ?")
                     .bind(&p)
@@ -101,6 +111,131 @@ pub(crate) async fn ensure_owner_in(
     Ok(())
 }
 
+async fn root_of(conn: &mut SqliteConnection, id: &str) -> anyhow::Result<Option<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT root_id FROM cost_owners WHERE id = ?")
+            .bind(id)
+            .fetch_optional(conn)
+            .await?,
+    )
+}
+
+/// 180 D1a: `owner`'s ledger row and every missing ancestor's, derived from
+/// the replicated `sessions` rows root first (`INSERT OR IGNORE`, history
+/// coverage `unknown`, [`STAND_IN_HLC`]). A parent with neither a `sessions`
+/// nor a ledger row here ends the chain: its child becomes a root. No bump:
+/// the stand-ins carry no money. `None`: `owner` has neither row, nothing
+/// was written; `Some(n)`: `n` rows inserted (0 on the hot path, one indexed
+/// lookup).
+pub(crate) async fn ensure_owner_chain_in(
+    conn: &mut SqliteConnection,
+    owner: &str,
+) -> anyhow::Result<Option<u64>> {
+    if root_of(conn, owner).await?.is_some() {
+        return Ok(Some(0));
+    }
+    let chain: Vec<(String, Option<String>)> = sqlx::query_as(
+        "WITH RECURSIVE up(id, parent, depth) AS (
+             SELECT id, parent, 0 FROM sessions WHERE id = ?
+             UNION ALL
+             SELECT s.id, s.parent, up.depth + 1
+             FROM sessions s JOIN up ON s.id = up.parent WHERE up.depth < ?
+         )
+         SELECT id, parent FROM up ORDER BY depth DESC",
+    )
+    .bind(owner)
+    .bind(LINEAGE_MAX)
+    .fetch_all(&mut *conn)
+    .await?;
+    if chain.is_empty() {
+        return Ok(None);
+    }
+    let mut inserted = 0;
+    for (id, parent) in chain {
+        let parent_root = match &parent {
+            Some(p) => root_of(conn, p).await?,
+            None => None,
+        };
+        let (root, parent) = match parent_root {
+            Some(root) => (root, parent),
+            None => (id.clone(), None),
+        };
+        inserted += sqlx::query(
+            "INSERT OR IGNORE INTO cost_owners \
+             (id, root_id, parent_id, deleted_at, history_coverage, revision, hlc) \
+             VALUES (?, ?, ?, NULL, ?, 0, ?)",
+        )
+        .bind(&id)
+        .bind(&root)
+        .bind(&parent)
+        .bind(Coverage::Unknown.as_str())
+        .bind(STAND_IN_HLC)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    }
+    Ok(Some(inserted))
+}
+
+/// What [`repair_owners_in`] wrote.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwnersRepaired {
+    /// Stand-ins derived from `sessions` rows ([`ensure_owner_chain_in`]).
+    pub derived: u64,
+    /// Tombstoned roots for owners no `sessions` row describes.
+    pub tombstoned: u64,
+}
+
+/// 180 D3, the boot repair: first a stand-in for every `sessions` row
+/// without a ledger row (lineage root first), then a tombstoned root
+/// (`deleted_at` set, `unknown` coverage, [`STAND_IN_HLC`]) for every other
+/// id that `model_calls`, `remote_meters`, `remote_turns` or a ledger row's
+/// `parent_id` names — so no reference dangles. Adds owners, never calls;
+/// calls that had no owner (invisible to the cost cube's join) count from
+/// now on. Idempotent: a second pass finds nothing.
+pub(crate) async fn repair_owners_in(
+    conn: &mut SqliteConnection,
+) -> anyhow::Result<OwnersRepaired> {
+    let lacking: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM sessions s WHERE NOT EXISTS (SELECT 1 FROM cost_owners o WHERE o.id = s.id)",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut derived = 0;
+    for id in lacking {
+        derived += ensure_owner_chain_in(conn, &id).await?.unwrap_or(0);
+    }
+    let orphans: Vec<String> = sqlx::query_scalar(
+        "SELECT owner_id FROM model_calls m WHERE NOT EXISTS (SELECT 1 FROM cost_owners o WHERE o.id = m.owner_id) \
+         UNION SELECT owner_id FROM remote_meters r WHERE NOT EXISTS (SELECT 1 FROM cost_owners o WHERE o.id = r.owner_id) \
+         UNION SELECT owner_id FROM remote_turns t WHERE NOT EXISTS (SELECT 1 FROM cost_owners o WHERE o.id = t.owner_id) \
+         UNION SELECT parent_id FROM cost_owners c WHERE parent_id IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM cost_owners o WHERE o.id = c.parent_id)",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let at = now();
+    let mut tombstoned = 0;
+    for id in orphans {
+        tombstoned += sqlx::query(
+            "INSERT OR IGNORE INTO cost_owners \
+             (id, root_id, parent_id, deleted_at, history_coverage, revision, hlc) \
+             VALUES (?1, ?1, NULL, ?2, ?3, 0, ?4)",
+        )
+        .bind(&id)
+        .bind(&at)
+        .bind(Coverage::Unknown.as_str())
+        .bind(STAND_IN_HLC)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    }
+    Ok(OwnersRepaired {
+        derived,
+        tombstoned,
+    })
+}
+
 /// Child delete: keep lineage and ledger, mark the owner gone.
 pub(crate) async fn tombstone_owner_in(
     conn: &mut SqliteConnection,
@@ -126,6 +261,8 @@ pub(crate) async fn tombstone_owner_in(
 /// One `model_calls` attempt row (`pending`, coverage `unresolved`) inside
 /// the caller's transaction: [`Store::reserve_call`], and the loop's
 /// `model_call` journal step (109 §3.3 step 2) which rides the same commit.
+/// 180 D1a: a missing owner row is derived from `sessions` first; an owner
+/// with no `sessions` row either is refused.
 #[expect(clippy::too_many_arguments, reason = "one row, one call")]
 pub(crate) async fn reserve_call_in(
     conn: &mut SqliteConnection,
@@ -137,6 +274,12 @@ pub(crate) async fn reserve_call_in(
     provider: Option<&str>,
     model: Option<&str>,
 ) -> anyhow::Result<CallId> {
+    anyhow::ensure!(
+        ensure_owner_chain_in(conn, &owner.to_string())
+            .await?
+            .is_some(),
+        "session {owner} has no row here"
+    );
     let call = CallId(Uuid::now_v7().to_string());
     sqlx::query(
         "INSERT INTO model_calls (call_id, owner_id, request_id, attempt, turn_id, kind, status, \
@@ -767,6 +910,8 @@ impl Store {
             i64::try_from(total.nanos).map_err(|_| anyhow::anyhow!("amount out of range"))?;
         let oid = owner.to_string();
         let mut tx = self.begin_write().await?;
+        // 180 D1a: a meter of a taken session whose owner row has not replicated in.
+        ensure_owner_chain_in(&mut tx, &oid).await?;
         let state: Option<MeterState> = sqlx::query_as(
             "SELECT id, owner_id, epoch, currency, baseline_nanos, high_water_nanos, last_report_id, \
              source_metadata, baseline_kind \
@@ -1238,11 +1383,15 @@ impl Store {
 
     /// 160 H3: owners whose history predates the ledger.
     pub(crate) async fn cost_pre_ledger_sessions(&self) -> anyhow::Result<u32> {
-        let n: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM cost_owners WHERE history_coverage = ?")
-                .bind(Coverage::Unknown.as_str())
-                .fetch_one(&self.read)
-                .await?;
+        // 180: stand-ins and repaired roots carry the sentinel stamp; they are
+        // owners whose real row has not replicated in, not pre-ledger sessions.
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_owners WHERE history_coverage = ? AND hlc IS NOT ?",
+        )
+        .bind(Coverage::Unknown.as_str())
+        .bind(STAND_IN_HLC)
+        .fetch_one(&self.read)
+        .await?;
         Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
@@ -2242,5 +2391,359 @@ mod tests {
         let (spent, est) = store.budget_spent(s, "USD", "m", since).await.unwrap();
         assert_eq!(est, 100_000_000, "newest settled attempt");
         assert_eq!(spent, 300_000_000 + 100_000_000 + 100_000_000);
+    }
+
+    /// `(id, root_id, parent_id, history_coverage, tombstoned, hlc)` of every ledger row, by id.
+    type OwnerRow = (String, String, Option<String>, String, bool, Option<String>);
+    async fn owners(pool: &sqlx::SqlitePool) -> Vec<OwnerRow> {
+        sqlx::query_as(
+            "SELECT id, root_id, parent_id, history_coverage, deleted_at IS NOT NULL, hlc \
+             FROM cost_owners ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// 180 D1a: an owner with neither a ledger row nor a `sessions` row has
+    /// nothing to derive from: the reservation is refused, naming the
+    /// session, and nothing is written.
+    #[tokio::test]
+    async fn unknown_session_still_refuses() {
+        let (store, _dir) = fresh().await;
+        let ghost = SessionId::new();
+        let e = store
+            .reserve_call(ghost, "req", 0, None, CallKind::Round, Some("p"), Some("m"))
+            .await
+            .unwrap_err();
+        assert_eq!(format!("{e:#}"), format!("session {ghost} has no row here"));
+        let rows: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM model_calls), (SELECT COUNT(*) FROM cost_owners)",
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(rows, (0, 0));
+    }
+
+    /// 180 D3 on a store like xeus' (replication with foreign keys off):
+    /// sessions without ledger rows (a root and its child), calls, a meter
+    /// and a remote turn of owners nobody registered, a ledger child whose
+    /// parent never arrived. Opening it derives the sessions' stand-ins
+    /// (parent first), tombstones a root for every other referenced id,
+    /// leaves `foreign_key_check` empty, and the cost cube's join now counts
+    /// every call; a second open changes nothing.
+    #[tokio::test]
+    async fn repair_backfills_orphans() {
+        let dir = crate::TestDir::new("acct-repair");
+        let path = dir.0.join("sessions.sqlite");
+        let store = Store::open(&path, None).await.unwrap();
+        let (r, c) = (SessionId::new(), SessionId::new());
+        store
+            .create_session(r, "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .create_session(c, "m", Some(r), None, None)
+            .await
+            .unwrap();
+        store.close().await;
+        let [r, c, call_only, meter_only, turn_only, parent, child] = [
+            r.to_string(),
+            c.to_string(),
+            SessionId::new().to_string(),
+            SessionId::new().to_string(),
+            SessionId::new().to_string(),
+            SessionId::new().to_string(),
+            SessionId::new().to_string(),
+        ];
+        let raw = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&path)
+                    .foreign_keys(false),
+            )
+            .await
+            .unwrap();
+        let seed = [
+            "DELETE FROM cost_owners".to_owned(),
+            format!(
+                "INSERT INTO model_calls (call_id, owner_id, request_id, attempt, kind, status, coverage, created_at, returned_nanos, returned_currency) \
+                 VALUES ('c1', '{r}', 'q', 0, 'round', 'settled', 'complete', '2026-11-07T17:00:00Z', 1000, 'USD'), \
+                        ('c2', '{c}', 'q', 0, 'round', 'settled', 'complete', '2026-11-07T17:00:00Z', 1000, 'USD'), \
+                        ('c3', '{c}', 'q', 1, 'round', 'settled', 'complete', '2026-11-07T17:00:00Z', 1000, 'USD'), \
+                        ('c4', '{call_only}', 'q', 0, 'round', 'settled', 'complete', '2026-11-07T17:00:00Z', 1000, 'USD')"
+            ),
+            format!(
+                "INSERT INTO remote_meters (id, owner_id, origin, external_session, epoch, source, currency, \
+                 baseline_kind, scope, coverage, updated_at) \
+                 VALUES ('meter', '{meter_only}', 'acp', 'ext', 1, 'usage', 'USD', 'zero', 'native', 'complete', '2026-11-07T17:00:00Z')"
+            ),
+            format!(
+                "INSERT INTO remote_turns (owner_id, turn_id, harness, model, input_tokens, output_tokens, \
+                 cache_read_tokens, cache_write_tokens, at) VALUES ('{turn_only}', 't', 'omp', NULL, 1, 1, 0, 0, '2026-11-07T17:00:00Z')"
+            ),
+            // A pre-180 orphan: written with 0052's stand-in triggers out of
+            // the way (they would give the parent a stand-in at once), then
+            // the migration's own SQL puts them back.
+            "DROP TRIGGER cost_owners_parent_stand_in_insert".to_owned(),
+            "DROP TRIGGER cost_owners_parent_stand_in_update".to_owned(),
+            format!(
+                "INSERT INTO cost_owners (id, root_id, parent_id, history_coverage, revision) \
+                 VALUES ('{child}', '{parent}', '{parent}', 'complete', 3)"
+            ),
+        ];
+        for sql in seed {
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .execute(&raw)
+                .await
+                .unwrap();
+        }
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0052_cost_owner_parent_stand_in.sql"
+        ))
+        .execute(&raw)
+        .await
+        .unwrap();
+        raw.close().await;
+
+        let store = Store::open(&path, None).await.unwrap();
+        let (unknown, stand_in) = (
+            Coverage::Unknown.as_str().to_owned(),
+            Some(STAND_IN_HLC.to_owned()),
+        );
+        let tomb = |id: &str| {
+            (
+                id.to_owned(),
+                id.to_owned(),
+                None,
+                unknown.clone(),
+                true,
+                stand_in.clone(),
+            )
+        };
+        let mut want = vec![
+            (
+                r.clone(),
+                r.clone(),
+                None,
+                unknown.clone(),
+                false,
+                stand_in.clone(),
+            ),
+            (
+                c,
+                r.clone(),
+                Some(r),
+                unknown.clone(),
+                false,
+                stand_in.clone(),
+            ),
+            tomb(&call_only),
+            tomb(&meter_only),
+            tomb(&turn_only),
+            tomb(&parent),
+            (
+                child,
+                parent.clone(),
+                Some(parent),
+                "complete".to_owned(),
+                false,
+                None,
+            ),
+        ];
+        want.sort();
+        let first = owners(store.pool()).await;
+        assert_eq!(first, want);
+        let fk: Vec<(String, Option<i64>, String, i64)> =
+            sqlx::query_as("PRAGMA foreign_key_check")
+                .fetch_all(store.pool())
+                .await
+                .unwrap();
+        assert!(
+            fk.iter().all(|r| !matches!(
+                r.0.as_str(),
+                "cost_owners" | "model_calls" | "remote_meters" | "remote_turns"
+            )),
+            "{fk:?}"
+        );
+        let counted: i64 = store
+            .cost_native(None, None)
+            .await
+            .unwrap()
+            .iter()
+            .map(|g| g.calls)
+            .sum();
+        assert_eq!(counted, 4, "the cube's join counts every call, none added");
+        assert_eq!(
+            store.cost_pre_ledger_sessions().await.unwrap(),
+            0,
+            "stand-ins and repaired roots are not 'no usage data' sessions"
+        );
+        store.close().await;
+
+        let store = Store::open(&path, None).await.unwrap();
+        assert_eq!(owners(store.pool()).await, first);
+        assert_eq!(
+            super::super::repair_cost_owners(store.pool())
+                .await
+                .unwrap(),
+            OwnersRepaired::default()
+        );
+        store.close().await;
+    }
+
+    /// A store with the record replica attached to its write pool (what
+    /// `replicate_records` does in the engine).
+    async fn replicated(
+        store: &Store,
+        dir: &crate::TestDir,
+    ) -> (std::sync::Arc<replica::Engine>, replica::ReplicaHandle) {
+        let engine = replica::Engine::open(&dir.0.join("replica.sqlite"))
+            .await
+            .unwrap();
+        let handle = engine
+            .attach(&store.write, &["projects", "cost_owners"])
+            .await
+            .unwrap();
+        (engine, handle)
+    }
+
+    /// `(id, root_id, parent_id, history_coverage, tombstoned)`: the ledger
+    /// as the cube reads it, without the stamp.
+    async fn lineage(
+        pool: &sqlx::SqlitePool,
+    ) -> Vec<(String, String, Option<String>, String, bool)> {
+        owners(pool)
+            .await
+            .into_iter()
+            .map(|(a, b, c, d, e, _)| (a, b, c, d, e))
+            .collect()
+    }
+
+    async fn ledger_fk_clean(pool: &sqlx::SqlitePool) -> bool {
+        let fk: Vec<(String, Option<i64>, String, i64)> =
+            sqlx::query_as("PRAGMA foreign_key_check")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        fk.iter().all(|r| {
+            !matches!(
+                r.0.as_str(),
+                "cost_owners" | "model_calls" | "remote_meters" | "remote_turns"
+            )
+        })
+    }
+
+    /// 180 D1b: the record replica applies a batch's rows in pk order, so a
+    /// child whose id sorts before its parent's (or a child from one origin
+    /// whose parent is in another's batch) arrives first. It used to fail
+    /// the parent FK and be skipped for good; the 0052 trigger gives the
+    /// parent a stand-in, the child lands, and the parent's real row then
+    /// overwrites the stand-in in place.
+    #[tokio::test]
+    async fn record_child_owner_before_its_parent_still_lands() {
+        let (da, db) = (
+            crate::TestDir::new("acct-rec-a"),
+            crate::TestDir::new("acct-rec-b"),
+        );
+        let a = Store::open(&da.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let b = Store::open(&db.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let (ea, ha) = replicated(&a, &da).await;
+        let (eb, _hb) = replicated(&b, &db).await;
+        let mut feed = ea.subscribe();
+        let child = SessionId::new();
+        let parent = SessionId::new();
+        assert!(
+            child.to_string() < parent.to_string(),
+            "the child applies first"
+        );
+        a.ensure_owner(parent, None).await.unwrap();
+        a.ensure_owner(child, Some(parent)).await.unwrap();
+        ha.flush().await.unwrap();
+        let mut batches = Vec::new();
+        while let Ok(batch) = feed.try_recv() {
+            batches.push(batch);
+        }
+        // Should the poll have split them, the child's batch goes first.
+        for batch in batches.iter().rev() {
+            assert!(eb.apply(batch).await.unwrap());
+        }
+        assert_eq!(lineage(b.pool()).await, lineage(a.pool()).await);
+        let parent_hlc = owners(b.pool())
+            .await
+            .into_iter()
+            .find(|o| o.0 == parent.to_string())
+            .and_then(|o| o.5);
+        assert_ne!(
+            parent_hlc.as_deref(),
+            Some(STAND_IN_HLC),
+            "the real row replaced it"
+        );
+        assert!(ledger_fk_clean(b.pool()).await);
+    }
+
+    /// 180 item 2: the real row replaces a stand-in by `UPDATE` in place —
+    /// a delete-and-insert would cascade (`remote_turns … ON DELETE
+    /// CASCADE`) and wipe the taker's remote turns.
+    #[tokio::test]
+    async fn stand_in_replaced_by_the_real_row_keeps_remote_turns() {
+        let (da, db) = (
+            crate::TestDir::new("acct-turn-a"),
+            crate::TestDir::new("acct-turn-b"),
+        );
+        let a = Store::open(&da.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let b = Store::open(&db.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let s = SessionId::new();
+        a.create_session(s, "m", None, None, None).await.unwrap();
+        // B holds the replicated session row, not its ledger row (removed
+        // before B's replica attaches, so the removal is no change of its own).
+        b.create_session(s, "m", None, None, None).await.unwrap();
+        sqlx::query("DELETE FROM cost_owners")
+            .execute(b.pool())
+            .await
+            .unwrap();
+        let (ea, ha) = replicated(&a, &da).await;
+        let (eb, _hb) = replicated(&b, &db).await;
+        b.record_remote_turn(
+            s,
+            TurnId::new(),
+            "omp",
+            None,
+            &crate::cost::TokenTotals::default(),
+            false,
+        )
+        .await
+        .unwrap();
+        let stand_in = owners(b.pool()).await;
+        assert_eq!(stand_in.len(), 1);
+        assert_eq!(stand_in[0].5.as_deref(), Some(STAND_IN_HLC));
+
+        // A's row predates A's attach: the announce is what ships it.
+        let mut feed = ea.subscribe();
+        assert_eq!(ha.announce_unstamped().await.unwrap(), 1);
+        let mut applied = 0;
+        while let Ok(batch) = feed.try_recv() {
+            applied += usize::from(eb.apply(&batch).await.unwrap());
+        }
+        assert!(applied > 0);
+        let turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM remote_turns")
+            .fetch_one(b.pool())
+            .await
+            .unwrap();
+        assert_eq!(turns, 1, "the taker's remote turn survived");
+        let row = owners(b.pool()).await.remove(0);
+        assert_eq!(row.3, Coverage::Complete.as_str(), "the origin's coverage");
+        assert_ne!(row.5.as_deref(), Some(STAND_IN_HLC));
+        assert!(ledger_fk_clean(b.pool()).await);
     }
 }

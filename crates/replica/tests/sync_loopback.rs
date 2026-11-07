@@ -340,6 +340,33 @@ async fn pre_existing_rows_are_announced_once() {
     assert_eq!(ha.announce_unstamped().await.unwrap(), 0);
 }
 
+/// 180 D1a: a stand-in row stamped with the sentinel HLC (what an engine derives for a taken
+/// session's ledger owner before the owner's row arrives) loses last-writer-wins in both
+/// directions, even though it was written after the real row: the origin keeps its row, and the
+/// stand-in is overwritten wherever the real row lands.
+#[tokio::test]
+async fn sentinel_stand_in_never_overwrites_the_origin_row() {
+    const SENTINEL: &str = "0000000000000000-00000000-0";
+    assert!(replica::Hlc::parse(SENTINEL).is_some());
+    let switch = Arc::new(Switch::default());
+    let a = node("A", &switch).await;
+    let b = node("B", &switch).await;
+    exec(
+        &a.pool,
+        "INSERT INTO tasks (id, title, state) VALUES ('t1', 'real', 'open')",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    exec(
+        &b.pool,
+        &format!("INSERT INTO tasks (id, title, state, hlc) VALUES ('t1', 'stand-in', 'unknown', '{SENTINEL}')"),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    link(&switch, &a.transport, &b.transport, true);
+    converge(&[&a.pool, &b.pool], &[row("t1", "real", "open")]).await;
+}
+
 /// 69 smoke: once every known peer holds a batch the outbox prunes it, so a peer that joins
 /// later (or lost its replica) finds its catch-up point below what is held. It gets the whole
 /// state as one batch first; the remaining tail (single columns) then lands as a no-op instead of

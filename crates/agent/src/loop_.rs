@@ -10957,6 +10957,54 @@ mod tests {
         assert!(calls(&store, orphan).await.is_empty());
     }
 
+    /// 180 D1a: the session row replicated, its ledger row has not (a taken
+    /// session before the record replica delivered it). The reservation
+    /// derives the owner and the call reaches the transport exactly once.
+    #[tokio::test]
+    async fn removed_owner_row_still_reaches_the_transport_once() {
+        let scratch = crate::TestDir::new("cost");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM cost_owners")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        let (base_url, hits, _) =
+            fake_openai(vec![sse(r#"{"prompt_tokens":1,"completion_tokens":1}"#)]).await;
+        let (turn, current, transport, _events) =
+            gateway_turn(&dir, store.clone(), id, base_url).await;
+
+        let history = [ChatMessage::user("hi")];
+        let frame = Frame {
+            tools: &[],
+            system: "s",
+            head: None,
+            history: &history,
+            vision: false,
+            strip_reasoning: false,
+            max_tokens: None,
+        };
+        let out = turn
+            .call(
+                &current,
+                frame,
+                transport,
+                None,
+                id,
+                CallKind::Round,
+                &mut None,
+            )
+            .await;
+        assert!(out.is_ok(), "the derived owner lets the call through");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(calls(&store, id).await.len(), 1);
+    }
+
     /// 136 §2.2: a 1-cent budget. The first call (spend 0, no estimate yet)
     /// goes out and settles at $0.25; the second is refused before any row
     /// is written — `Abort::Budget` with the spend and the cap, no transport

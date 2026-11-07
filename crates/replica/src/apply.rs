@@ -60,36 +60,59 @@ impl Engine {
         }
 
         let mut reannounce: Vec<(Attached, String, String)> = Vec::new();
+        let mut parked: Vec<String> = Vec::new();
         let mut book = self.store.pool().begin_with("BEGIN IMMEDIATE").await?;
-        for (table, rows) in by_table {
-            let attached = self.tables.lock().get(table).cloned();
+        for (table, rows) in &by_table {
+            let attached = self.tables.lock().get(*table).cloned();
             let Some(attached) = attached else {
-                tracing::warn!(
-                    "replica: batch {}#{} touches unattached table {table}; skipped",
-                    batch.origin,
-                    batch.seq
+                // ponytail: not parked — an engine that runs without a plugin would park every
+                // batch of its tables forever; a table that attaches late misses what came before.
+                self.note(
+                    &batch.origin,
+                    table,
+                    format_args!(
+                        "batch {}#{} touches unattached table {table}; skipped",
+                        batch.origin, batch.seq
+                    ),
                 );
                 continue;
             };
-            let mut tx = attached.pool.begin_with("BEGIN IMMEDIATE").await?;
-            let base_seq: i64 = sqlx::query("SELECT COALESCE(MAX(seq), 0) FROM _replica_log")
-                .fetch_one(&mut *tx)
+            // 180 D1b: one table that cannot be written (a constraint a local
+            // row breaks) no longer aborts the batch — that ended the stream,
+            // re-sent the batch on reconnect and failed it again, so every
+            // table behind it (`cost_owners` behind `agents`, `availability`…)
+            // never landed. Its rows and shadow clocks roll back and its
+            // changes are parked for retry; the other tables land.
+            match self
+                .apply_table_saved(&mut book, &attached, &batch.origin, table, rows)
                 .await?
-                .get(0);
-            for (pk, changes) in rows {
-                let lost_delete = apply_row(&attached, table, pk, &changes, &mut tx, &mut book)
-                    .await
-                    .with_context(|| format!("table {table} pk {pk}"))?;
-                if lost_delete {
-                    reannounce.push((attached.clone(), table.to_owned(), pk.to_owned()));
+            {
+                Ok(lost) => reannounce.extend(
+                    lost.into_iter()
+                        .map(|pk| (attached.clone(), (*table).to_owned(), pk)),
+                ),
+                Err(e) => {
+                    let changes: Vec<&Change> = rows.values().flatten().copied().collect();
+                    sqlx::query(
+                        "INSERT OR IGNORE INTO parked (origin, seq, tbl, changes) VALUES (?, ?, ?, ?)",
+                    )
+                    .bind(&batch.origin.0)
+                    .bind(i64::try_from(batch.seq)?)
+                    .bind(*table)
+                    .bind(postcard::to_allocvec(&changes)?)
+                    .execute(&mut *book)
+                    .await?;
+                    parked.push((*table).to_owned());
+                    self.note(
+                        &batch.origin,
+                        table,
+                        format_args!(
+                            "batch {}#{} table {table}: {e:#}; parked for retry",
+                            batch.origin, batch.seq
+                        ),
+                    );
                 }
             }
-            // The writes above fired the capture triggers: they are not local writes.
-            sqlx::query("DELETE FROM _replica_log WHERE seq > ?")
-                .bind(base_seq)
-                .execute(&mut *tx)
-                .await?;
-            tx.commit().await?;
         }
         let bytes = postcard::to_allocvec(batch)?;
         store::insert_batch(&mut *book, &batch.origin, batch.seq, &bytes).await?;
@@ -102,6 +125,14 @@ impl Engine {
         if let Err(e) = self.prune_outbox().await {
             tracing::warn!("replica: prune outbox: {e:#}");
         }
+        // What this batch wrote may be what an earlier parked change of the
+        // same table waited for.
+        let touched: Vec<&str> = by_table
+            .keys()
+            .copied()
+            .filter(|t| !parked.iter().any(|p| p == t))
+            .collect();
+        reannounce.extend(self.retry_parked_locked(&touched).await?);
 
         for (attached, table, pk) in reannounce {
             match self.row_as_changes(&attached, &table, &pk).await {
@@ -113,6 +144,99 @@ impl Engine {
             }
         }
         Ok(true)
+    }
+
+    /// [`apply_table`] under a savepoint of `book`: `Ok(Err(e))` = rolled
+    /// back (rows and shadow clocks), nothing of the table written. Rows it
+    /// had to skip are noted once per `(origin, table)`.
+    async fn apply_table_saved(
+        &self,
+        book: &mut sqlx::SqliteConnection,
+        attached: &Attached,
+        origin: &crate::PeerId,
+        table: &str,
+        rows: &BTreeMap<&str, Vec<&Change>>,
+    ) -> anyhow::Result<Result<Vec<String>, anyhow::Error>> {
+        sqlx::query("SAVEPOINT replica_table")
+            .execute(&mut *book)
+            .await?;
+        let mut skipped = Vec::new();
+        match apply_table(attached, table, rows, book, &mut skipped).await {
+            Ok(lost) => {
+                sqlx::query("RELEASE replica_table")
+                    .execute(&mut *book)
+                    .await?;
+                if let Some(first) = skipped.first() {
+                    self.note(
+                        origin,
+                        table,
+                        format_args!("{} row(s) of {table} skipped: {first}", skipped.len()),
+                    );
+                }
+                Ok(Ok(lost))
+            }
+            Err(e) => {
+                sqlx::query("ROLLBACK TO replica_table")
+                    .execute(&mut *book)
+                    .await?;
+                sqlx::query("RELEASE replica_table")
+                    .execute(&mut *book)
+                    .await?;
+                Ok(Err(e))
+            }
+        }
+    }
+
+    /// Retry every parked change of `tables` (last-writer-wins makes a late
+    /// apply safe: what newer writes superseded loses); drop what applies.
+    /// Returns the rows to re-announce. Caller holds `write_lock`.
+    pub(crate) async fn retry_parked_locked(
+        &self,
+        tables: &[&str],
+    ) -> anyhow::Result<Vec<(Attached, String, String)>> {
+        let mut reannounce = Vec::new();
+        for &table in tables {
+            let attached = self.tables.lock().get(table).cloned();
+            let Some(attached) = attached else { continue };
+            let parked: Vec<(String, i64, Vec<u8>)> = sqlx::query_as(
+                "SELECT origin, seq, changes FROM parked WHERE tbl = ? ORDER BY origin, seq",
+            )
+            .bind(table)
+            .fetch_all(self.store.pool())
+            .await?;
+            for (origin, seq, bytes) in parked {
+                let changes: Vec<Change> = postcard::from_bytes(&bytes)?;
+                let mut rows: BTreeMap<&str, Vec<&Change>> = BTreeMap::new();
+                for c in &changes {
+                    rows.entry(c.pk.as_str()).or_default().push(c);
+                }
+                let origin = crate::PeerId(origin);
+                let mut book = self.store.pool().begin_with("BEGIN IMMEDIATE").await?;
+                match self
+                    .apply_table_saved(&mut book, &attached, &origin, table, &rows)
+                    .await?
+                {
+                    Ok(lost) => {
+                        sqlx::query("DELETE FROM parked WHERE origin = ? AND seq = ? AND tbl = ?")
+                            .bind(&origin.0)
+                            .bind(seq)
+                            .bind(table)
+                            .execute(&mut *book)
+                            .await?;
+                        tracing::info!("replica: parked {origin}#{seq} {table} applied");
+                        reannounce.extend(
+                            lost.into_iter()
+                                .map(|pk| (attached.clone(), table.to_owned(), pk)),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::debug!("replica: parked {origin}#{seq} {table} still fails: {e:#}")
+                    }
+                }
+                book.commit().await?;
+            }
+        }
+        Ok(reannounce)
     }
 
     /// The row as it stands, one change per column with the clock it holds.
@@ -216,6 +340,38 @@ impl Engine {
     }
 }
 
+/// One table of a batch in its own transaction on the table's pool (shadow
+/// clocks into `book`); returns the pks whose delete lost (to re-announce).
+async fn apply_table(
+    attached: &Attached,
+    table: &str,
+    rows: &BTreeMap<&str, Vec<&Change>>,
+    book: &mut sqlx::SqliteConnection,
+    skipped: &mut Vec<String>,
+) -> anyhow::Result<Vec<String>> {
+    let mut tx = attached.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let base_seq: i64 = sqlx::query("SELECT COALESCE(MAX(seq), 0) FROM _replica_log")
+        .fetch_one(&mut *tx)
+        .await?
+        .get(0);
+    let mut lost = Vec::new();
+    for (pk, changes) in rows {
+        if apply_row(attached, table, pk, changes, &mut tx, book, skipped)
+            .await
+            .with_context(|| format!("pk {pk}"))?
+        {
+            lost.push((*pk).to_owned());
+        }
+    }
+    // The writes above fired the capture triggers: they are not local writes.
+    sqlx::query("DELETE FROM _replica_log WHERE seq > ?")
+        .bind(base_seq)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(lost)
+}
+
 /// LWW for one row: walk its changes in order against the tombstone and the
 /// column clocks; delete when the delete is newer than every column, write
 /// the winning columns in one upsert. Returns whether a delete in `changes`
@@ -227,6 +383,7 @@ async fn apply_row(
     changes: &[&Change],
     tx: &mut sqlx::SqliteConnection,
     book: &mut sqlx::SqliteConnection,
+    skipped: &mut Vec<String>,
 ) -> anyhow::Result<bool> {
     let mut tomb = store::tombstone(book, table, pk).await?;
     let mut clocks = store::col_clocks(book, table, pk).await?;
@@ -265,7 +422,7 @@ async fn apply_row(
             continue; // whole-row without a tombstone: not produced by capture
         };
         if !attached.info.columns.iter().any(|k| k == col) {
-            tracing::warn!("replica: {table}.{col} is not a replicated column here; skipped");
+            skipped.push(format!("{table}.{col} is not a replicated column here"));
             continue;
         }
         if tomb.as_ref().is_some_and(|t| *t >= c.hlc) {
@@ -342,7 +499,7 @@ async fn apply_row(
             // A partial row for a pk this engine never received: the insert is still in flight
             // from a third engine, or lies below a pruned outbox (the Hello gap snapshot covers
             // that on the next connect). Skipped; the col clocks stay unset so it lands then.
-            tracing::warn!("replica: {table} pk {pk}: {e}; changes skipped");
+            skipped.push(format!("pk {pk}: {e}"));
             return Ok(lost_delete);
         }
     }

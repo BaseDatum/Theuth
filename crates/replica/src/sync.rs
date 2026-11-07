@@ -55,7 +55,7 @@ impl Engine {
                         let engine = engine.clone();
                         tokio::spawn(async move {
                             if let Err(e) = run_stream(&engine, stream).await {
-                                tracing::debug!("replica: stream from {peer} ended: {e:#}");
+                                tracing::warn!("replica: stream from {peer} ended: {e:#}");
                             }
                         });
                     }
@@ -132,7 +132,7 @@ async fn dial(engine: Arc<Engine>, t: Arc<dyn Transport>, peer: PeerId) {
             Ok(stream) => {
                 backoff = BACKOFF_MIN;
                 if let Err(e) = run_stream(&engine, stream).await {
-                    tracing::debug!("replica: stream to {peer} ended: {e:#}");
+                    tracing::warn!("replica: stream to {peer} ended: {e:#}");
                 }
             }
             Err(e) => tracing::debug!("replica: open {peer}: {e:#}"),

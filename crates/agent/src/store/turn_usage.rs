@@ -105,6 +105,8 @@ impl Store {
         let sid = owner.to_string();
         let n = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
         let mut tx = self.begin_write().await?;
+        // 180 D1a: a turn of a taken session whose owner row has not replicated in.
+        super::accounting::ensure_owner_chain_in(&mut tx, &sid).await?;
         sqlx::query(
             "INSERT OR REPLACE INTO remote_turns (owner_id, turn_id, harness, model, input_tokens, \
              output_tokens, cache_read_tokens, cache_write_tokens, at, lower_bound) \
