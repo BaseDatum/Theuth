@@ -205,6 +205,7 @@ pub fn start(app: &AppHandle) {
 }
 
 /// A quit is under way: 166's Dock click and ⌘Tab leave a hidden main window hidden then (D6).
+#[cfg(target_os = "macos")]
 pub fn requested(app: &AppHandle) -> bool {
     app.state::<Quit>().requested.load(SeqCst)
 }

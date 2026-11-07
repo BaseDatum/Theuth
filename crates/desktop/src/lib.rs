@@ -602,6 +602,7 @@ mod desktop {
     /// `theuth://quit`: the companion's tray › Quit theuth — the whole app, one quit (130 W7) → [`quit::request`].
     /// Both companions open this link (163: the Swift one aims it at the running shell; on Windows the
     /// single-instance plugin hands it over). A plain `terminate()` would skip the handshake and its overlay.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
     fn is_quit_link(url: &tauri::Url) -> bool {
         url.scheme() == "theuth"
             && url.host_str() == Some("quit")
@@ -611,6 +612,7 @@ mod desktop {
     /// The app route for a `theuth://` URL, or `None` for anything the companion does not send.
     /// 171 §14.3: `theuth://c/<session>?cell=<name|ordinal>` keeps the `cell` query (a slug or an
     /// ordinal, `[a-z0-9-]{1,48}`); every other query, and a `cell` value outside that set, is dropped.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
     fn deep_link_route(url: &tauri::Url) -> Option<String> {
         if url.scheme() != "theuth" {
             return None;

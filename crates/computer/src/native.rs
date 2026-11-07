@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+// Only the macOS and Windows tools use `Risk`, `Tool` and `ToolCx` (the tests use `Risk`).
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(unused_imports))]
 use tools::{DynTool, Risk, Tool, ToolCx, ToolOutput};
 
 /// Timeout when the call names none (§11.1).

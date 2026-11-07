@@ -25,9 +25,11 @@ pub mod login_item;
 #[cfg(target_os = "macos")]
 pub const BUNDLE_ID: &str = "io.theuth.mac.companion";
 /// Event to every webview: `{ alive: bool }`, on every change and once at start.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub const ALIVE_EVENT: &str = "companion-alive";
 
 /// Payload of [`ALIVE_EVENT`].
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct Alive {
     /// A process with [`BUNDLE_ID`] is running.
