@@ -86,6 +86,7 @@ function run(ref: CellRef, name: string, over: Partial<CellRun> = {}): CellRun {
     private: false,
     name,
     input: null,
+    ran_past: null,
     ...over,
   }
 }
@@ -123,7 +124,7 @@ const api = new Proxy({} as Api, {
           const [scope, refs] = args as [CellScope, CellRef[]]
           return {
             cells: refs.map(
-              (ref): CellState => ({ cell: ref, digest: 'x', problems: [], chips: [], armed: null, superseded_by: null, latest: null, stale: false, member_edit: null, interpreter: null, host: null, ...stateOf(ref) }),
+              (ref): CellState => ({ cell: ref, digest: 'x', problems: [], chips: [], armed: null, superseded_by: null, latest: null, stale: false, member_edit: null, interpreter: null, host: null, disarmed: null, ...stateOf(ref) }),
             ),
             kernels: scope.id === DOC ? kernels : [],
           }

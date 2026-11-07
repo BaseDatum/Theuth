@@ -79,6 +79,7 @@ function run(ref: CellRef, over: Partial<CellRun>, text = ''): CellRun {
     private: false,
     name: null,
     input: null,
+    ran_past: null,
     ...over,
   }
   runs.set(r.id, { run: r, text })
@@ -186,6 +187,7 @@ const api = new Proxy({} as Api, {
               member_edit: null,
               interpreter: { kind: 'bash', source: 'Homebrew', path: '/opt/homebrew/bin/bash', version: '5.2', why: '', auto: true },
               host: null,
+              disarmed: null,
               ...s?.states(ref, ref.type === 'chat' ? ref.ordinal - 1 : i),
             })),
             kernels: s?.kernels ? [kernelOf(s.session, s.kernels)] : [],

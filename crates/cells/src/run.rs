@@ -153,7 +153,7 @@ fn fresh(ended: i64, now_ms: i64, max_age_mins: u64) -> bool {
     now_ms.saturating_sub(ended) <= max_ms
 }
 
-/// §7.6: the disabled button's text for an `after: <after_name>` cell whose gate is not armed.
+/// §7.6: the reason an `after: <after_name>` cell whose gate is not armed warns with.
 pub fn disarmed_reason(
     gate: Option<&CellRun>,
     after_name: &str,
@@ -180,6 +180,22 @@ pub fn disarmed_reason(
         return format!("the {after_name} run is more than {age} old — run it again");
     }
     format!("after: {after_name} — run it first")
+}
+
+/// §7.6: the one line a Run anyway run carries (its history entry, its `<cell_result>`), from
+/// the gate's name and its [`disarmed_reason`]:
+/// `ran past after: preview — the preview run is more than 1 h old`.
+pub fn ran_past(after_name: &str, reason: &str) -> String {
+    let why = reason
+        .strip_suffix(" — run it again")
+        .or_else(|| reason.strip_suffix(" — run it first"))
+        .unwrap_or(reason);
+    let why = match why.strip_prefix(&format!("after: {after_name}")) {
+        Some("") => "it had not run".to_owned(),
+        Some(rest) => format!("it{rest}"),
+        None => why.to_owned(),
+    };
+    format!("ran past after: {after_name} — {why}")
 }
 
 #[cfg(test)]
@@ -224,6 +240,7 @@ mod tests {
             private: false,
             name: None,
             input: None,
+            ran_past: None,
         }
     }
 
@@ -285,6 +302,30 @@ Resources:
         assert_eq!(
             disarmed_reason(None, "preview", SHA, now, 60),
             "after: preview — run it first"
+        );
+    }
+
+    #[test]
+    fn ran_past_names_the_gate_and_why_once() {
+        let now = 10 * HOUR_MS;
+        let old = done_run(now - 61 * 60_000);
+        let mut failed = done_run(now - 1_000);
+        failed.state = RunState::Failed;
+        let line = |gate: Option<&CellRun>, sha: &str| {
+            ran_past("prepare", &disarmed_reason(gate, "prepare", sha, now, 60))
+        };
+        assert_eq!(
+            line(Some(&old), SHA),
+            "ran past after: prepare — the prepare run is more than 1 h old"
+        );
+        assert_eq!(line(None, SHA), "ran past after: prepare — it had not run");
+        assert_eq!(
+            line(Some(&failed), SHA),
+            "ran past after: prepare — it did not succeed"
+        );
+        assert_eq!(
+            line(Some(&done_run(now - 1_000)), "sha-b"),
+            "ran past after: prepare — it was edited since it ran"
         );
     }
 

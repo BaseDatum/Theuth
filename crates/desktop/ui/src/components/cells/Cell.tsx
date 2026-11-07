@@ -20,7 +20,7 @@ import { AnsiText, CellContainer, CellOutputs, ExecutionCount } from './Outputs'
 import { clock, duration, ended, errorText, exitText, refKey, scopeOf } from './store'
 import type { CellProps, CellViewState } from './types'
 import { OutputDisclosure } from './vendor/nteract/outputs/ansi-output'
-import { interpreterText, labelOf, titleOf } from './view'
+import { disarmedReason, interpreterText, labelOf, RUN_ANYWAY, titleOf } from './view'
 // xterm loads with the first live run.
 const Terminal = lazy(() => import('@/components/chat/TerminalViewer').then((m) => ({ default: m.Terminal })))
 
@@ -303,6 +303,7 @@ function HistoryMenu({ cellRef, onPick }: { cellRef: CellRef; onPick(run: CellRu
             {clock(r.queued_ms)} · {exitText(r)}
             {r.secs != null && ` · ${duration(r.secs)}`}
             {r.edited && ' · edited'}
+            {r.ran_past && ` · ${r.ran_past}`}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -384,6 +385,8 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
   const cwdMissing = warnings.find((p) => p.code === 'cwd_not_found')
   // A pending reply shows the button disabled with its reason ("ready when the reply ends"), not no button.
   const canPress = (runnable || !!extras.pending) && !readOnly && view !== 'invalid' && view !== 'superseded' && view !== 'guest'
+  // CELLAFTER (§7.6): an unarmed `after` gate warns (the strip) and the button runs anyway; the host sends the override.
+  const gate = canPress ? disarmedReason(state, cell) : null
   const stop = () => {
     if (!latest || !live) return
     if (stoppedAt === null) {
@@ -418,20 +421,25 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
           )}
         </div>
       )
-    const text = view === 'disarmed' ? `after: ${extras.afterLabel ?? o.after}` : view === 'lost' ? 'Run again' : (extras.runText ?? label) /* 171:U2-ADD */
-    const reason = view === 'disarmed' ? `arms when ${extras.afterLabel ?? o.after} has succeeded on its current code` : extras.pending ? 'ready when the reply ends' : undefined
-    const disabled = view === 'disarmed' || !!extras.pending || !!cwdMissing
+    // A member's edit still names whose text runs past the gate (171F `runText` "Run Alice's edit").
+    const text = gate ? (extras.runText ? `${extras.runText} anyway` : RUN_ANYWAY) : view === 'lost' ? 'Run again' : (extras.runText ?? label) /* 171:U2-ADD */
+    const reason = extras.pending ? 'ready when the reply ends' : (gate ?? undefined)
+    const disabled = !!extras.pending || !!cwdMissing
     return (
       <Button
         size="sm"
-        variant={o.danger ? 'destructive' : 'default'}
-        className={cn('h-7 gap-1 pointer-coarse:h-12 aria-disabled:cursor-not-allowed aria-disabled:opacity-50', phoneDanger && 'w-full')}
+        variant={o.danger ? 'destructive' : gate ? 'outline' : 'default'}
+        className={cn(
+          'h-7 gap-1 pointer-coarse:h-12 aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+          gate && !o.danger && 'border-warning-border text-warning hover:bg-warning-bg hover:text-warning',
+          phoneDanger && 'w-full',
+        )}
         aria-disabled={disabled || undefined}
         aria-description={reason}
         title={reason}
-        onClick={() => !disabled && callbacks.onRun({ type: 'cell' })}
+        onClick={() => !disabled && callbacks.onRun({ type: 'cell' }, gate !== null)}
       >
-        {!o.danger && <Play className="size-3" aria-hidden />}
+        {!o.danger && (gate ? <AlertTriangle className="size-3" aria-hidden /> : <Play className="size-3" aria-hidden />)}
         {text}
       </Button>
     )
@@ -509,6 +517,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
           {`armed by ${(extras.afterLabel ?? o.after ?? '').toLowerCase()} ✓ ${clock(state.armed.at_ms)} · ${state.armed.summary}`}
         </Notice>
       )}
+      {gate && <Notice tone="danger">{gate}</Notice>}
       {view === 'lost' && <Notice tone="warning">lost — engine restarted{latest?.cwd ? ` · ${latest.cwd}` : ''}</Notice>}
       {view === 'stale' && !extras.staleInFooter && <Notice tone="muted">ran an earlier version</Notice>}
       {view === 'edited' && <Notice tone="muted">theuth will see the code that actually ran.</Notice>}

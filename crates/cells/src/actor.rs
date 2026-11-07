@@ -339,8 +339,10 @@ enum Gate {
 
 /// The pure refusals of a press, in order (§12.1 inv. 5, 7, 8; §5.6): the source changed or
 /// was superseded, the cell is invalid, a `danger` cell pressed other than whole, the cwd
-/// is missing, the `after` gate is disarmed. Lint never refuses (inv. 12). The cwd on `Ok`.
-fn refuse(i: &Inspected, seen: &str, mode: &RunMode) -> Result<PathBuf> {
+/// is missing, the `after` gate is disarmed. `confirmed` (the user's second press past a
+/// warning: Run anyway, or a danger cell's line/selection ▶, §7.1, §7.6) skips exactly those
+/// two checks. Lint never refuses (inv. 12). The cwd on `Ok`.
+fn refuse(i: &Inspected, seen: &str, mode: &RunMode, confirmed: bool) -> Result<PathBuf> {
     if i.presented.digest != seen || i.superseded_by.is_some() {
         return Err(CellsError::Changed);
     }
@@ -348,7 +350,7 @@ fn refuse(i: &Inspected, seen: &str, mode: &RunMode) -> Result<PathBuf> {
         return Err(CellsError::Invalid(p.message.clone()));
     }
     let o = &i.presented.cell.options;
-    if o.danger && *mode != RunMode::Cell {
+    if o.danger && *mode != RunMode::Cell && !confirmed {
         let label = o
             .label
             .clone()
@@ -361,7 +363,9 @@ fn refuse(i: &Inspected, seen: &str, mode: &RunMode) -> Result<PathBuf> {
             o.cwd.clone().unwrap_or_default(),
         ));
     };
-    if let Some(Gate::Disarmed(why)) = &i.after {
+    if let Some(Gate::Disarmed(why)) = &i.after
+        && !confirmed
+    {
         return Err(CellsError::Disarmed(why.clone()));
     }
     Ok(cwd)
@@ -428,6 +432,8 @@ struct Prepared {
     interpreter: Interpreter,
     code: String,
     code_sha: String,
+    /// Run anyway past an unarmed gate: the line the run records (§7.6).
+    ran_past: Option<String>,
 }
 
 impl Cells {
@@ -704,6 +710,7 @@ impl Cells {
         mode: &RunMode,
         edited: Option<&str>,
         member_ack: Option<&str>,
+        confirmed: bool,
     ) -> Result<Prepared> {
         let env = self.login_env().await;
         let inspected = match cell {
@@ -720,11 +727,20 @@ impl Cells {
                 inspected
             }
         };
-        self.prepare_from(inspected, &cell.scope(), seen, mode, edited, &env)
-            .await
+        self.prepare_from(
+            inspected,
+            &cell.scope(),
+            seen,
+            mode,
+            edited,
+            &env,
+            confirmed,
+        )
+        .await
     }
 
     /// [`Self::prepare`] once the source is read: gate, refuse, cut the code, resolve.
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_from(
         &self,
         mut inspected: Inspected,
@@ -733,9 +749,20 @@ impl Cells {
         mode: &RunMode,
         edited: Option<&str>,
         env: &Env,
+        confirmed: bool,
     ) -> Result<Prepared> {
         self.arm(scope, &mut inspected).await?;
-        let cwd = refuse(&inspected, seen, mode)?;
+        let cwd = refuse(&inspected, seen, mode, confirmed)?;
+        let ran_past = match &inspected.after {
+            Some(Gate::Disarmed(why)) => inspected
+                .presented
+                .cell
+                .options
+                .after
+                .as_deref()
+                .map(|a| crate::run::ran_past(a, why)),
+            _ => None,
+        };
         let c = inspected.presented.cell.clone();
         let base = edited.unwrap_or(&c.code);
         let code = match mode {
@@ -764,6 +791,7 @@ impl Cells {
             interpreter,
             code,
             code_sha,
+            ran_past,
         })
     }
 
@@ -829,6 +857,7 @@ impl Cells {
                 &req.mode,
                 req.edited.as_deref(),
                 req.member_ack.as_deref(),
+                req.confirmed,
             )
             .await?;
         let _ = store;
@@ -914,6 +943,7 @@ impl Cells {
             private: c.options.private,
             name: c.options.name.clone(),
             input: None,
+            ran_past: p.ran_past.clone(),
         };
         let meta = Meta {
             name: c.options.name.clone(),
@@ -1704,7 +1734,11 @@ impl Cells {
                     continue;
                 }
             }
-            let p = match self.prepare(cell, seen, &RunMode::Cell, None, None).await {
+            // No batch override: an unarmed `after` stops the pass (§7.2).
+            let p = match self
+                .prepare(cell, seen, &RunMode::Cell, None, None, false)
+                .await
+            {
                 Ok(p) => p,
                 Err(e) => {
                     stopped = stop(cell, e.to_string(), true);
@@ -1927,8 +1961,12 @@ impl Cells {
                 digest: i.presented.digest.clone(),
                 problems: i.problems,
                 chips: i.chips,
-                armed: match i.after {
-                    Some(Gate::Armed(a)) => Some(a),
+                armed: match &i.after {
+                    Some(Gate::Armed(a)) => Some(a.clone()),
+                    _ => None,
+                },
+                disarmed: match i.after {
+                    Some(Gate::Disarmed(why)) => Some(why),
                     _ => None,
                 },
                 superseded_by: i.superseded_by,

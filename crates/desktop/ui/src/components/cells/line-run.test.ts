@@ -1,5 +1,7 @@
-import { expect, test } from 'vitest'
-import { busy, hoverAfter, noteHover, pressed, refused, settled, started } from './line-run'
+import { expect, test, vi } from 'vitest'
+import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import { cellOf } from './grammar'
+import { askSkipped, busy, cellIdentity, hoverAfter, lineGuard, noteHover, pastGate, pressed, refused, settled, skipAsking, started, WARN_MS } from './line-run'
 import { run } from './test-fixtures'
 
 const ID = 'r_01JC7Q2M8V0000000000000001'
@@ -44,6 +46,52 @@ test('171F4 T2-6: output, a newer run or a refused press clears the mark', () =>
   const other = pressed(null, 5)
   expect(started(other, 3, mine())).toBe(other)
   expect(refused(other, 3)).toBe(other)
+})
+
+test('CELLAFTER: a ▶ on a disarmed cell warns first; the same line again within the window runs, later or elsewhere warns again', () => {
+  const first = pastGate(null, 2, T)
+  expect(first).toEqual({ run: false, warned: { line: 2, at: T } })
+  expect(pastGate(first.warned, 2, T + WARN_MS)).toEqual({ run: true, warned: null })
+  expect(pastGate(first.warned, 2, T + WARN_MS + 1)).toEqual({ run: false, warned: { line: 2, at: T + WARN_MS + 1 } })
+  // Another line resets the warning to that line; its own second press runs.
+  const other = pastGate(first.warned, 3, T + 100)
+  expect(other).toEqual({ run: false, warned: { line: 3, at: T + 100 } })
+  expect(pastGate(other.warned, 2, T + 200).run).toBe(false)
+  expect(pastGate(other.warned, 3, T + 200).run).toBe(true)
+})
+
+test('CELLAFTER: a danger ▶ asks (naming the gate when also disarmed) until "Don’t ask again"; a disarmed one warns; else it runs', () => {
+  const why = 'after: preview — run it first'
+  expect(lineGuard(true, false, null)).toEqual({ kind: 'confirm', reason: null })
+  expect(lineGuard(true, false, why)).toEqual({ kind: 'confirm', reason: why })
+  expect(lineGuard(true, true, null)).toEqual({ kind: 'run' })
+  // Not asking any more never waives the gate's own warning.
+  expect(lineGuard(true, true, why)).toEqual({ kind: 'warn', text: `${why} — press ▶ again to run anyway` })
+  expect(lineGuard(false, false, why)).toEqual({ kind: 'warn', text: `${why} — press ▶ again to run anyway` })
+  expect(lineGuard(false, false, null)).toEqual({ kind: 'run' })
+  // A reason's own "— run it again" gives way to the offer; the confirm keeps the reason whole.
+  const old = 'the prepare run is more than 1 h old — run it again'
+  expect(lineGuard(false, false, old)).toEqual({ kind: 'warn', text: 'the prepare run is more than 1 h old — press ▶ again to run anyway' })
+  expect(lineGuard(true, false, old)).toEqual({ kind: 'confirm', reason: old })
+})
+
+test('CELLAFTER: "Don’t ask again" is per cell identity — scope + name across edits and refs, else the ref', () => {
+  const store = new Map<string, string>()
+  vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) })
+  try {
+    const named = cellOf('bash', '#| name: wipe\n#| danger\necho a') as CellSpec
+    const edited = cellOf('bash', '#| name: wipe\n#| danger\necho b') as CellSpec
+    const unnamed = cellOf('bash', '#| danger\necho a') as CellSpec
+    const byName = cellIdentity({ type: 'note', doc: 'd1', key: { kind: 'name', value: 'wipe' } }, named)
+    expect(cellIdentity({ type: 'note', doc: 'd1', key: { kind: 'block', value: 'b7' } }, edited)).toBe(byName)
+    expect(cellIdentity({ type: 'note', doc: 'd2', key: { kind: 'name', value: 'wipe' } }, named)).not.toBe(byName)
+    const block = cellIdentity({ type: 'note', doc: 'd1', key: { kind: 'block', value: 'b7' } }, unnamed)
+    expect(askSkipped(byName)).toBe(false)
+    skipAsking(byName)
+    expect([askSkipped(byName), askSkipped(block)]).toEqual([true, false])
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })
 
 test('171F4 N2: in a note the pointer may travel left to the ► — the band before the text keeps the hovered line', () => {

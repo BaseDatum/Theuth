@@ -117,6 +117,7 @@ pub(crate) async fn run(
     run: RunId,
     edited: Option<String>,
     member_ack: Option<String>,
+    confirmed: Option<bool>,
 ) -> RpcResult<CellRun> {
     let p = cells_guard::press(ext)?;
     let scope = cell.scope();
@@ -125,7 +126,7 @@ pub(crate) async fn run(
         ext,
         &scope,
         "cell_run",
-        (&cell, &seen, &mode, &run, &edited, &member_ack),
+        (&cell, &seen, &mode, &run, &edited, &member_ack, &confirmed),
     )
     .await?
     {
@@ -141,6 +142,7 @@ pub(crate) async fn run(
             run,
             edited,
             member_ack,
+            confirmed: confirmed.unwrap_or(false),
             pressed_by: cells_guard::pressed_by(ext, &p),
         })
         .await
@@ -644,6 +646,7 @@ mod tests {
                     r.clone(),
                     None,
                     None,
+                    None,
                 )
                 .await
                 .map(drop),
@@ -792,5 +795,46 @@ mod tests {
             cells_guard::pressed_by(&fwd, &link::RpcPeer::internal()),
             "desktop · engine-b"
         );
+    }
+
+    /// CELLAFTER F1: an old client's `cell_run` — six params, no `confirmed` — parses and is
+    /// answered exactly like one sending `null` or `false`: an unconfirmed press, never
+    /// "invalid params".
+    #[tokio::test]
+    async fn cell_run_without_confirmed_is_an_unconfirmed_press() {
+        use crate::api::ApiServer as _;
+        use jsonrpsee::core::server::MethodsError;
+        let mut methods: jsonrpsee::Methods = server().into_rpc().into();
+        let (peer, _g) = link::RpcPeer::open();
+        methods.extensions_mut().insert(peer);
+        let (cell, run) = (chat_cell(), RunId("r_old".into()));
+        let code = |r: Result<CellRun, MethodsError>| match r {
+            Err(MethodsError::JsonRpc(e)) => e.code(),
+            other => panic!("{other:?}"),
+        };
+        let none = None::<String>;
+        let six = code(
+            methods
+                .call("cell_run", (&cell, "d", RunMode::Cell, &run, &none, &none))
+                .await,
+        );
+        let null = code(
+            methods
+                .call(
+                    "cell_run",
+                    (&cell, "d", RunMode::Cell, &run, &none, &none, None::<bool>),
+                )
+                .await,
+        );
+        let unconfirmed = code(
+            methods
+                .call(
+                    "cell_run",
+                    (&cell, "d", RunMode::Cell, &run, &none, &none, false),
+                )
+                .await,
+        );
+        assert_ne!(six, jsonrpsee::types::error::INVALID_PARAMS_CODE);
+        assert_eq!((six, null), (unconfirmed, unconfirmed));
     }
 }

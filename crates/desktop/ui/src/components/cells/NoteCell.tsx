@@ -19,12 +19,14 @@ import type { NoteKey } from '@/rpc/bindings/NoteKey'
 import { Cell, CellExtras, Chip, Notice } from './Cell'
 import { CodeTokens } from './CodeTokens'
 import { digest } from './grammar'
-import { MARK_LOOK, noteHover, useLineRun } from './line-run'
+import { CONFIRM_ROOM, LineConfirm } from './LineConfirm'
+import { type Ask, type AskEvent, askSkipped, askStep, cellIdentity, lineGuard, MARK_LOOK, noteHover, useLineRun } from './line-run'
 import { historyAfter } from './open-as-note'
 import { headerFolded, lineDiff, lineStart, memberName, modeOf, pythonValue, withPython } from './note-edit'
 import { NoteHost } from './note-context'
 import { clock, errorText, lastPass, mintId, press, refKey, refresh, register, scopeKey, scopeOf, setNotice, useCellRecord, useCells } from './store'
-import { interpreterText, labelOf, titleOf, viewOf } from './view'
+import { commandUnits, unitLabel, unitMode, unitOf } from './units'
+import { disarmedReason, interpreterText, labelOf, RUN_ANYWAY, titleOf, viewOf } from './view'
 import './note-cells.css'
 
 export type NoteCellProps = {
@@ -56,12 +58,13 @@ export function mountedCells(doc: DocId): { ref: CellRef; text: string }[] {
 
 /**
  * One press of a note cell (§15.2 `cell_run`): the digest of the text on screen as `seen`, a client-minted id retried
- * on transport failures, no edited text (the note IS the text), and `member_ack` = the member's pub8 when the engine
- * reported a member edit (invariant 6, "Run Alice's edit").
+ * on transport failures, no edited text (the note IS the text), `member_ack` = the member's pub8 when the engine
+ * reported a member edit (invariant 6, "Run Alice's edit"), and `confirmed` = the press past a warning (Run anyway,
+ * a danger cell's second ▶).
  */
-export async function pressNote(api: Pick<Api, 'cell_run'>, ref: CellRef, text: string, mode: CellRunMode, memberAck: string | null) {
+export async function pressNote(api: Pick<Api, 'cell_run'>, ref: CellRef, text: string, mode: CellRunMode, memberAck: string | null, confirmed = false) {
   const seen = await digest(text)
-  return press(mintId('r_'), (id) => api.cell_run(ref, seen, mode, id, null, memberAck))
+  return press(mintId('r_'), (id) => api.cell_run(ref, seen, mode, id, null, memberAck, confirmed))
 }
 
 /**
@@ -219,6 +222,9 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const member = pub8 ? memberName(pub8, host?.provider.meta?.members) : null
   const view = viewOf(record, cell, false)
   const danger = cell.options.danger
+  // CELLAFTER (§7.1, §7.6): the gate's reason while it is not armed. The button runs anyway; a line/selection ▶ of a
+  // disarmed or danger cell warns first and runs on its second press. Only those presses reach `run` (keys hint).
+  const gate = disarmedReason(record, cell)
   const [hint, setHint] = useState<string | null>(null)
   const [review, setReview] = useDisclosure(disclosureKey(key, 'review'))
   const [ranCode, setRanCode] = useDisclosure(disclosureKey(key, 'ran-code'))
@@ -246,8 +252,10 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
       },
     )
   }
-  const run = (mode: CellRunMode) => {
-    const pressed = pressNote(api, ref, code, mode, pub8)
+  // `confirmed` only from the presses past a warning: Run anyway, the second ▶, the danger confirm (or its "Don't ask
+  // again"). `text`: the cell text the press was made on (an ask's press-time text; else what is on screen now).
+  const run = (mode: CellRunMode, confirmed = false, text = code) => {
+    const pressed = pressNote(api, ref, text, mode, pub8, confirmed)
     act(() => pressed)
     return pressed
   }
@@ -262,22 +270,43 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   }
 
   // 171F4 T2-6: a line/selection run marks its first code line in the gutter (running, then ✓/✗ when it printed
-  // nothing); a repeat press of a line whose run is in flight does nothing.
+  // nothing); a repeat press of a line whose run is in flight does nothing. CELLAFTER: the line ▶ runs a command
+  // (`units.ts`): its mark sits on the command's first line.
   const slot = useRef<HTMLDivElement>(null)
   const lineRun = useLineRun(latest)
   const markTop = useRef(0)
-  const runAt = (line: number, mode: CellRunMode, top?: number) => {
-    markTop.current = top ?? lineTop(slot.current, lineStart(code, cell, line))
-    lineRun.run(line, () => run(mode))
+  const units = useMemo(() => commandUnits(cell.code, cell.lang), [cell.code, cell.lang])
+  const topOf = (line: number) => lineTop(slot.current, lineStart(code, cell, line))
+  const runAt = (line: number, mode: CellRunMode, top?: number, warning: string | null = null, confirmed = false, text = code) => {
+    markTop.current = top ?? topOf(line)
+    lineRun.run(line, () => run(mode, confirmed, text), warning)
   }
+  // A pointer ▶ (§7.1, §7.6): a danger cell asks first (unless "Don't ask again"), a disarmed one warns first.
+  const [ask, setAsk] = useState<Ask | null>(null)
+  const identity = cellIdentity(ref, cell)
+  const pointAt = (line: number, last: number, mode: CellRunMode, what: 'line' | 'selection', top = topOf(line)) => {
+    const g = lineGuard(danger, askSkipped(identity), gate)
+    if (g.kind === 'confirm') return setAsk({ line, last, mode, what, text: code, reason: g.reason, identity })
+    // A warned ▶ runs on its second press, past the gate; a danger ▶ the user stopped being asked about runs confirmed.
+    runAt(line, mode, top, g.kind === 'warn' ? g.text : null, g.kind === 'warn' || danger)
+  }
+  const step = (e: AskEvent) => {
+    if (!ask) return
+    const s = askStep(ask, e)
+    setAsk(s.ask)
+    if (s.run) runAt(s.run.line, s.run.mode, undefined, null, true, s.run.text)
+  }
+  // M1: any change of the block's text closes an open ask (the run would no longer be what was confirmed).
+  useEffect(() => setAsk((a) => a && askStep(a, { kind: 'code', text: code }).ask), [code])
 
   // §7.1/§11.7 keys inside the code block: Shift+Enter runs the cell and moves to the next one, Mod+Enter runs the
   // selection or the caret line, Mod+. stops. The caret is in BlockNote's root editable, so the listener sits on the
   // document (capture: before BlockNote's own code-block keys).
   // `editor` is null in a server render (BlockNote's snapshot before mount).
   const sel = useEditorState({ editor: blocknote, selector: ({ editor: e }) => (e ? selectionIn(e.prosemirrorState.selection, block) : null) })
-  const keys = useRef({ code, cell, run, runAt, view, latest, label, stop: callbacks.onStop })
-  keys.current = { code, cell, run, runAt, view, latest, label, stop: callbacks.onStop }
+  const anyway = member ? `Run ${member}'s edit anyway` : RUN_ANYWAY
+  const keys = useRef({ code, cell, run, runAt, units, view, gate, latest, label, anyway, stop: callbacks.onStop })
+  keys.current = { code, cell, run, runAt, units, view, gate, latest, label, anyway, stop: callbacks.onStop }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = isApple() ? e.metaKey : e.ctrlKey
@@ -293,7 +322,8 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
       if (e.key !== 'Enter' || !(e.shiftKey || mod) || (e.shiftKey && mod)) return
       e.preventDefault()
       e.stopPropagation()
-      if (k.cell.options.danger || k.view === 'disarmed' || k.view === 'invalid') return setHint(`press ${k.label} to run this`)
+      if (k.cell.options.danger || k.gate !== null || k.view === 'invalid')
+        return setHint(`press ${k.gate !== null && k.view !== 'invalid' ? k.anyway : k.label} to run this`)
       if (e.shiftKey) {
         k.run({ type: 'cell' })
         const cells = [...document.querySelectorAll<HTMLElement>('[data-note-cell][data-block]')]
@@ -304,7 +334,10 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
       const [from, to] = at.split(':').map(Number) as [number, number]
       const mode = modeOf(k.code, k.cell, from, to)
       const caret = modeOf(k.code, k.cell, from, from)
-      if (mode) k.runAt(caret?.type === 'line' ? caret.line : 1, mode)
+      // The caret line runs its whole command, as its ▶ does.
+      const unit = mode?.type === 'line' ? unitOf(k.units, mode.line) : null
+      if (unit) k.runAt(unit[0], unitMode(k.cell.code, unit))
+      else if (mode) k.runAt(caret?.type === 'line' ? caret.line : 1, mode)
       else setHint('put the caret on a code line to run it')
     }
     document.addEventListener('keydown', onKey, true)
@@ -312,10 +345,11 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     // The latest values ride `keys`; the listener is per block.
   }, [blocknote, block])
 
-  // The gutter ► (§11.1): a positioned overlay on the hovered code line, absent on danger cells.
+  // The gutter ► (§11.1): a positioned overlay at the hovered command's first line (danger-toned on a danger cell);
+  // any visual row of its lines (soft wrap included) shows the one ►.
   const [hover, setHover] = useState<{ line: number; top: number } | null>(null)
   const onMove = (e: MouseEvent<HTMLDivElement>) => {
-    if (danger || (e.target instanceof Element && e.target.closest('button'))) return
+    if (e.target instanceof Element && e.target.closest('button')) return
     const codeEl = slot.current?.querySelector('code')
     if (!codeEl || !slot.current) return
     // 171F4 N2: the band before the code text, where the ► sits, keeps the hovered line (`noteHover`); over the
@@ -332,10 +366,8 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
       const offset = range.toString().length
       const mode = modeOf(code, cell, offset, offset)
       if (mode?.type === 'line') {
-        line = mode.line
-        range.collapse(false)
-        const box = range.getBoundingClientRect()
-        top = Math.round((box.height ? box.top : e.clientY - 10) - slot.current.getBoundingClientRect().top)
+        line = unitOf(units, mode.line)[0]
+        top = topOf(line)
       }
     }
     const next = noteHover(hover?.line ?? null, e.clientX, textLeft, line)
@@ -345,8 +377,9 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const [selFrom, selTo] = sel ? (sel.split(':').map(Number) as [number, number]) : [0, 0]
   const selMode = sel && selFrom !== selTo ? modeOf(code, cell, selFrom, selTo) : null
   const selLine = modeOf(code, cell, Math.min(selFrom, selTo), Math.min(selFrom, selTo))
+  const selEnd = modeOf(code, cell, Math.max(selFrom, selTo), Math.max(selFrom, selTo))
   const mod = isApple() ? '⌘' : 'Ctrl'
-  const mark = danger ? null : lineRun.mark
+  const mark = lineRun.mark
   // 171F4 N3: the `#|` lines fold behind the "#|" pill (the chips show the same options); display only, the text
   // keeps them. Shown while the caret is in them or the pill is on. The fold pulls the code up by the header's height
   // and clips the header (note-cells.css), so the caret can still arrow up into it.
@@ -360,7 +393,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const fold = folded && foldPx > 0 ? ({ '--header-fold': `${foldPx}px` } as CSSProperties) : undefined
 
   const slotted = (
-    <div ref={slot} className="relative" data-header-fold={fold ? '' : undefined} style={fold} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+    <div ref={slot} className={cn('relative', ask && CONFIRM_ROOM)} data-header-fold={fold ? '' : undefined} style={fold} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
       {editor}
       {mark && (
         <span
@@ -374,30 +407,59 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
           {MARK_LOOK[mark.phase].glyph}
         </span>
       )}
-      {hover && !danger && hover.line !== mark?.line && (
+      {lineRun.warn && (
+        <span
+          contentEditable={false}
+          className="pointer-events-none absolute right-2 z-10 rounded bg-warning-bg px-2 py-0.5 text-[11px] text-warning shadow-sm"
+          style={{ top: markTop.current }}
+        >
+          {lineRun.warn.text}
+        </span>
+      )}
+      {hover && hover.line !== mark?.line && !ask && (
         <button
           type="button"
           contentEditable={false}
-          className="absolute left-1.5 flex size-5 items-center justify-center rounded text-fg-accent hover:bg-layer-2 pointer-coarse:size-12"
+          className={cn('absolute left-1.5 flex size-5 items-center justify-center rounded hover:bg-layer-2 pointer-coarse:size-12', danger ? 'text-danger' : 'text-fg-accent')}
           style={{ top: hover.top }}
-          aria-label={`Run line ${hover.line}`}
-          title={`Run line ${hover.line} · ${mod}↵`}
+          aria-label={unitLabel(unitOf(units, hover.line))}
+          title={danger ? `${unitLabel(unitOf(units, hover.line))} · asks first` : `${unitLabel(unitOf(units, hover.line))} · ${mod}↵`}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => runAt(hover.line, { type: 'line', line: hover.line }, hover.top)}
+          onClick={() => {
+            const [a, b] = unitOf(units, hover.line)
+            pointAt(a, b, unitMode(cell.code, [a, b]), 'line', hover.top)
+          }}
         >
           <Play className="size-3 fill-current" aria-hidden />
         </button>
       )}
-      {selMode && !danger && (
+      {selMode && (
         <button
           type="button"
           contentEditable={false}
-          className="absolute top-1 right-2 rounded-full border border-border bg-layer-1 px-2 py-0.5 text-[11px] text-fg-secondary shadow-sm hover:bg-layer-2 pointer-coarse:min-h-12"
+          className={cn(
+            'absolute top-1 right-2 rounded-full border bg-layer-1 px-2 py-0.5 text-[11px] shadow-sm hover:bg-layer-2 pointer-coarse:min-h-12',
+            danger ? 'border-danger text-danger' : 'border-border text-fg-secondary',
+          )}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => runAt(selLine?.type === 'line' ? selLine.line : 1, selMode)}
+          onClick={() => {
+            const a = selLine?.type === 'line' ? selLine.line : 1
+            pointAt(a, selEnd?.type === 'line' ? selEnd.line : a, selMode, 'selection')
+          }}
         >
-          Run selection {mod}↵
+          {danger ? 'Run selection' : `Run selection ${mod}↵`}
         </button>
+      )}
+      {ask && (
+        <LineConfirm
+          top={topOf(ask.last)}
+          what={ask.what}
+          lines={[ask.line, ask.last]}
+          title={title}
+          reason={ask.reason}
+          onCancel={() => step({ kind: 'cancel' })}
+          onRun={(skip) => step({ kind: 'run', skip })}
+        />
       )}
     </div>
   )

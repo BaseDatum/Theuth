@@ -29,7 +29,8 @@ export type HostChip = { engine: string; label: string } | null
 
 /** What a cell can do; `CellFence` (chat) and `NoteCell` (notes) bind these to the RPCs of §15.2. */
 export type CellCallbacks = {
-  onRun(mode: CellRunMode, edited?: string): void
+  /** `confirmed`: the user pressed past a warning (Run anyway, a danger line's confirm); `false` unless passed. */
+  onRun(mode: CellRunMode, confirmed?: boolean): void
   onStop(kill: boolean): void
   onInput(data: string): void
   onAsk(): void

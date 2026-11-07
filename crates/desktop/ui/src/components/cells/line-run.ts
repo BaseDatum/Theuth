@@ -1,9 +1,15 @@
 // 171F4 T2-6: the gutter's answer to a line or selection ▶. While the run is in flight the pressed line shows it is
 // running and a repeat press of that line is ignored; a run that ends with no output shows ✓ (exit 0) or ✗ for
 // FEEDBACK_MS, then the normal ►. A run with output answers in the output pane: the mark just clears.
+// CELLAFTER (§7.1, §7.6): a ▶ on a danger cell asks first (`LineConfirm`, unless "Don't ask again" for that cell); on a
+// non-danger cell whose `after` gate is not armed the first ▶ only warns by its line (`pastGate`).
 import { useEffect, useRef, useState } from 'react'
+import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
+import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRun } from '@/rpc/bindings/CellRun'
-import { ended } from './store'
+import type { CellSpec } from '@/rpc/bindings/CellSpec'
+import { announce } from './Cell'
+import { ended, refKey, scopeKey, scopeOf } from './store'
 
 export const FEEDBACK_MS = 1500
 
@@ -60,9 +66,79 @@ export function hoverAfter(current: number | null, e: HoverEvent): number | null
 export const noteHover = (current: number | null, x: number, textLeft: number, line: number | null) =>
   hoverAfter(current, x < textLeft ? { kind: 'leave', inEditor: true } : { kind: 'move', line })
 
+/** CELLAFTER: how long a ▶'s warning stays, and waits for the second press. */
+export const WARN_MS = 5000
+
+/** The warned ▶: its line and when. */
+export type Warned = { line: number; at: number }
+
 /**
- * The gutter mark of one cell. `run(line, start)` presses `line` (`start` sends it) unless that line's run is in
- * flight; returns whether it pressed.
+ * 171 §7.6 (CELLAFTER): a line or selection ▶ on a non-danger cell whose `after` gate is not armed. The first press
+ * only warns; a second press of the same line within `WARN_MS` runs; a later one, or one on another line, warns again.
+ */
+export function pastGate(w: Warned | null, line: number, now: number): { run: boolean; warned: Warned | null } {
+  if (w?.line === line && now - w.at <= WARN_MS) return { run: true, warned: null }
+  return { run: false, warned: { line, at: now } }
+}
+
+/** What a pointer ▶ does (§7.1, §7.6): asks (a danger cell, with the gate's reason when it is also disarmed), warns first (a disarmed cell), or runs. */
+export type LineGuard = { kind: 'run' } | { kind: 'confirm'; reason: string | null } | { kind: 'warn'; text: string }
+
+/**
+ * `skipAsk`: the user ticked "Don't ask again for this cell" (`askSkipped`); the gate still warns then. The warning
+ * drops the reason's own "— run it again" advice, which the "press ▶ again" offer replaces.
+ */
+export function lineGuard(danger: boolean, skipAsk: boolean, disarmed: string | null): LineGuard {
+  if (danger && !skipAsk) return { kind: 'confirm', reason: disarmed }
+  if (disarmed !== null) return { kind: 'warn', text: `${disarmed.replace(/ — run it again$/, '')} — press ▶ again to run anyway` }
+  return { kind: 'run' }
+}
+
+/**
+ * A cell's stable identity for "Don't ask again": scope + `name` (survives edits, reloads and a re-presented chat
+ * cell), else its ref (the note block or the chat position).
+ */
+export const cellIdentity = (ref: CellRef, cell: CellSpec) => (cell.options.name ? `${scopeKey(scopeOf(ref))}/${cell.options.name}` : refKey(ref))
+
+const SKIP_ASK = 'cells.skip-danger-line-confirm:'
+/** "Don't ask again for this cell": a per-device UI preference in localStorage (like the theme), keyed by `cellIdentity`. */
+export const askSkipped = (id: string) => globalThis.localStorage?.getItem(SKIP_ASK + id) === '1'
+export const skipAsking = (id: string) => localStorage.setItem(SKIP_ASK + id, '1')
+
+/**
+ * An open danger ask (§7.1): everything fixed at the ▶ press — the command's first and last line, what runs, and the
+ * cell text then (`text`; its digest is the `seen` the run sends, so a cell changed since is refused, inv. 5).
+ */
+export type Ask = {
+  line: number
+  last: number
+  mode: CellRunMode
+  what: 'line' | 'selection'
+  text: string
+  reason: string | null
+  identity: string
+}
+
+/** What happens to an open ask: Run (with the "Don't ask again" tick), Cancel / Esc / a press outside it, or the cell's text now. */
+export type AskEvent = { kind: 'run'; skip: boolean } | { kind: 'cancel' } | { kind: 'code'; text: string }
+
+/**
+ * CELLAFTER M1: the ask after `e`, and the run it starts. Only Run starts one, on the press-time text and mode, always
+ * confirmed; a tick is persisted then. Any change of the cell's text closes the ask without running.
+ */
+export function askStep(ask: Ask, e: AskEvent): { ask: Ask | null; run: { line: number; mode: CellRunMode; text: string } | null } {
+  if (e.kind === 'run') {
+    if (e.skip) skipAsking(ask.identity)
+    return { ask: null, run: { line: ask.line, mode: ask.mode, text: ask.text } }
+  }
+  if (e.kind === 'code' && e.text === ask.text) return { ask, run: null }
+  return { ask: null, run: null }
+}
+
+/**
+ * The gutter mark of one cell. `run(line, start, warning)` presses `line` (`start` sends it) unless that line's run
+ * is in flight, or `warning` (`lineGuard`'s warn) makes this the first press, which only shows it (`warn`); returns whether
+ * it pressed.
  */
 export function useLineRun(latest: CellRun | null) {
   const [mark, setMark] = useState<LineMark | null>(null)
@@ -80,8 +156,23 @@ export function useLineRun(latest: CellRun | null) {
     const t = setTimeout(() => update((m) => (m === mark ? null : m)), FEEDBACK_MS)
     return () => clearTimeout(t)
   }, [mark])
-  const run = (line: number, start: () => Promise<CellRun> | undefined): boolean => {
+  const [warn, setWarn] = useState<{ line: number; text: string } | null>(null)
+  const warned = useRef<Warned | null>(null)
+  useEffect(() => {
+    if (!warn) return
+    const t = setTimeout(() => setWarn(null), WARN_MS)
+    return () => clearTimeout(t)
+  }, [warn])
+  const run = (line: number, start: () => Promise<CellRun> | undefined, warning: string | null = null): boolean => {
     if (busy(now.current, line)) return false
+    if (warning) {
+      const g = pastGate(warned.current, line, Date.now())
+      warned.current = g.warned
+      setWarn(g.warned && { line, text: warning })
+      // S3: spoken through the one live region on <body> (CELLHIST: never aria-live inside a note's node view).
+      if (g.warned) announce(warning)
+      if (!g.run) return false
+    }
     update((m) => pressed(m, line))
     start()?.then(
       (r) => update((m) => settled(started(m, line, r), last.current)),
@@ -89,5 +180,5 @@ export function useLineRun(latest: CellRun | null) {
     )
     return true
   }
-  return { mark, run }
+  return { mark, warn, run }
 }

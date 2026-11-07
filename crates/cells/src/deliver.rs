@@ -114,6 +114,10 @@ pub(crate) fn parts(
     }
 
     let mut b = String::new();
+    // §7.6: Run anyway past an unarmed `after` gate, said once, private runs included.
+    if let Some(p) = &run.ran_past {
+        let _ = writeln!(b, "{p}");
+    }
     for e in &run.expect {
         let item = match &e.item {
             Expect::Text(t) => t.clone(),
@@ -408,6 +412,7 @@ mod tests {
             private: false,
             name: Some("preview-ir-prod1".into()),
             input: None,
+            ran_past: None,
         }
     }
 

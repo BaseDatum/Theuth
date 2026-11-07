@@ -74,12 +74,14 @@ test('171F4 N1: an edit re-reads the record once it settles; the footer then say
   }
 })
 
-test('a press sends the Note ref, the digest of the text on screen, no edit, and member_ack only when given', async () => {
+test('a press sends the Note ref, the digest of the text on screen, no edit, member_ack and confirmed only when given', async () => {
   const { api, calls } = fakeApi()
-  await pressNote(api, ref, TEXT, { type: 'line', line: 2 }, 'AbCdEf12')
+  await pressNote(api, ref, TEXT, { type: 'line', line: 2 }, 'AbCdEf12', true)
+  await pressNote(api, ref, TEXT, { type: 'cell' }, null, false)
+  // CELLAFTER F1: nothing derives the override — a press that does not pass it sends `false`, gate or no gate.
   await pressNote(api, ref, TEXT, { type: 'cell' }, null)
-  const [first, second] = calls.map(([, args]) => args)
-  expect(calls.map(([m]) => m)).toEqual(['cell_run', 'cell_run'])
+  const [first, second, third] = calls.map(([, args]) => args)
+  expect(calls.map(([m]) => m)).toEqual(['cell_run', 'cell_run', 'cell_run'])
   expect(first?.[0]).toEqual({ type: 'note', doc: DOC, key: { kind: 'name', value: 'rotate-key' } })
   expect(first?.[1]).toBe(await digest(TEXT))
   expect(first?.[2]).toEqual({ type: 'line', line: 2 })
@@ -87,6 +89,7 @@ test('a press sends the Note ref, the digest of the text on screen, no edit, and
   expect(first?.[4]).toBeNull()
   expect(first?.[5]).toBe('AbCdEf12')
   expect(second?.[5]).toBeNull()
+  expect([first?.[6], second?.[6], third?.[6]]).toEqual([true, false, false])
 })
 
 test('member edit since the last run: the member by name, Review diff, the button reads "Run Alice\'s edit"', () => {

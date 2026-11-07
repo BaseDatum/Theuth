@@ -743,6 +743,7 @@ mod tests {
             private: false,
             name: None,
             input: None,
+            ran_past: None,
         }
     }
 

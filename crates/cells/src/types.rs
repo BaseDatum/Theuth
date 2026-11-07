@@ -291,6 +291,10 @@ wire! {
         /// Set while the run's kernel waits on `input()`; cleared once `cell_input` answers.
         #[serde(default)]
         pub input: Option<InputPrompt>, // 171:E1-ADD (L11)
+        /// The press ran past an unarmed `after` gate (Run anyway, §7.6): one line,
+        /// `ran past after: preview — <why it was not armed>`.
+        #[serde(default)]
+        pub ran_past: Option<String>,
     }
 }
 
@@ -385,6 +389,10 @@ wire! {
         /// `None` = this engine. Filled by the RPC layer.
         #[serde(default)]
         pub host: Option<String>, // 171:E1-ADD (L11)
+        /// §7.6: why the `after` gate is not armed (`None` = armed or no `after`); the cell
+        /// warns with it and offers Run anyway.
+        #[serde(default)]
+        pub disarmed: Option<String>,
     }
 }
 
@@ -551,6 +559,10 @@ pub struct RunRequest {
     pub edited: Option<String>,
     /// Member pub8 acknowledged (invariant 6).
     pub member_ack: Option<String>,
+    /// The user's second press past a warning (§7.1, §7.6): Run anyway past an unarmed
+    /// `after` gate, or a danger cell's line/selection ▶. Skips those two refusals only.
+    #[serde(default)]
+    pub confirmed: bool,
     /// Device id + client kind, filled by the RPC layer.
     pub pressed_by: String,
 }

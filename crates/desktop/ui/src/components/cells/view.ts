@@ -14,7 +14,7 @@ export function viewOf(state: CellState | null, cell: CellSpec, edited: boolean,
   if (run?.state === 'running') return 'running'
   if (run?.state === 'lost') return 'lost'
   if (edited) return 'edited'
-  if (cell.options.after && !state?.armed) return 'disarmed'
+  if (disarmedReason(state, cell) !== null) return 'disarmed'
   if (state?.stale) return 'stale'
   switch (run?.state) {
     case 'done':
@@ -28,6 +28,19 @@ export function viewOf(state: CellState | null, cell: CellSpec, edited: boolean,
   }
   return state?.armed ? 'armed' : 'ready'
 }
+
+/**
+ * 171 §7.6 (CELLAFTER): why an `after` cell's gate is not armed (the engine's reason), `null` when it is or there is no
+ * `after`. The cell warns with it and offers `RUN_ANYWAY`; a press then sends `confirmed`.
+ */
+export function disarmedReason(state: CellState | null, cell: CellSpec): string | null {
+  const after = cell.options.after
+  if (!after || state?.armed) return null
+  return state?.disarmed ?? `after: ${after} is not armed`
+}
+
+/** The Run button of a disarmed cell. */
+export const RUN_ANYWAY = 'Run anyway'
 
 /** The button's text and accessible name (§11.9): the label, else `Run`. */
 export const labelOf = (cell: CellSpec) => cell.options.label ?? 'Run'

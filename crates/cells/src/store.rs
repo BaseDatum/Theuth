@@ -65,7 +65,7 @@ macro_rules! select {
             "SELECT id, scope, cell, lineage, mode, pass, kernel, interpreter, cwd, env_names, \
              presented_sha, code_sha, edited, pressed_by, state, exit, signal, secs, expect, \
              summary, output_sha, output_bytes, log, log_from, log_to, queued_ms, started_ms, \
-             ended_ms, delivery, consumed_ms, typed, masked, private, name FROM cell_runs ",
+             ended_ms, delivery, consumed_ms, typed, masked, private, name, ran_past FROM cell_runs ",
             $rest
         )
     };
@@ -117,6 +117,7 @@ fn decode(r: &SqliteRow) -> std::result::Result<Row, sqlx::Error> {
         private: r.try_get::<i64, _>("private")? != 0,
         name: r.try_get("name")?,
         input: None,
+        ran_past: r.try_get("ran_past")?,
     };
     Ok(Row {
         run,
@@ -218,7 +219,7 @@ impl Store {
         sqlx::query(
             "INSERT INTO cell_runs (id, scope, cell, lineage, mode, pass, kernel, interpreter, cwd, \
              env_names, presented_sha, code_sha, edited, pressed_by, state, queued_ms, private, \
-             name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             name, ran_past) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(run.id.as_str())
         .bind(scope)
@@ -238,6 +239,7 @@ impl Store {
         .bind(run.queued_ms)
         .bind(i64::from(run.private))
         .bind(run.name.as_deref())
+        .bind(run.ran_past.as_deref())
         .execute(&self.pool)
         .await
         .map_err(db)?;
@@ -590,6 +592,7 @@ mod tests {
             private: false,
             name: None,
             input: None,
+            ran_past: None,
         }
     }
 
@@ -635,10 +638,11 @@ mod tests {
             "ended_ms",
             "delivery",
             "consumed_ms",
+            "ran_past",
         ] {
             assert!(cols.contains(&c), "{c} missing from {cols:?}");
         }
-        assert_eq!(MIGRATOR.iter().count(), 4);
+        assert_eq!(MIGRATOR.iter().count(), 5);
     }
 
     /// Every D17 audit field round-trips; env stores names only.

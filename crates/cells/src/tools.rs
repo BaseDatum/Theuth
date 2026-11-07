@@ -76,7 +76,8 @@ impl Tool for CellRunsTool {
 
     fn description(&self) -> String {
         "Runs of user cells, newest first: scope \"this\" (this chat's cells, default) or a note's doc id. \
-         Returns [{run, name, cell, state, exit, secs, at, expect, summary, edited, private, pressed}]. Reads only: \
+         Returns [{run, name, cell, state, exit, secs, at, expect, summary, edited, private, pressed, ran_past}] \
+         (ran_past: the user ran it past an unarmed `after:` gate, and why; else null). Reads only: \
          the user runs cells, you never do."
             .into()
     }
@@ -139,6 +140,7 @@ fn run_row(r: &CellRun) -> Value {
         "edited": r.edited,
         "private": r.private,
         "pressed": r.pressed_by,
+        "ran_past": r.ran_past,
     })
 }
 
@@ -304,6 +306,7 @@ mod tests {
             private: true,
             name: Some("check-lag".into()),
             input: None,
+            ran_past: Some("ran past after: preview — it had not run".into()),
         };
         let row = run_row(&run);
         let keys: Vec<&str> = row
@@ -314,13 +317,23 @@ mod tests {
             .collect();
         for k in [
             "run", "name", "cell", "state", "exit", "secs", "at", "expect", "summary", "edited",
-            "private", "pressed",
+            "private", "pressed", "ran_past",
         ] {
             assert!(keys.contains(&k), "{k}");
         }
         assert_eq!(
-            (&row["name"], &row["private"], &row["exit"]),
-            (&json!("check-lag"), &json!(true), &json!(0))
+            (
+                &row["name"],
+                &row["private"],
+                &row["exit"],
+                &row["ran_past"]
+            ),
+            (
+                &json!("check-lag"),
+                &json!(true),
+                &json!(0),
+                &json!("ran past after: preview — it had not run")
+            )
         );
     }
 }

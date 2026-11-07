@@ -2282,6 +2282,9 @@ pub trait Api {
     ) -> RpcResult<autoresearch::MechanismInfo>;
     // 171:C cells (design 171 §15.2). Bodies: `crate::cells` (E1), `crate::cells_latest` (E2).
     /// 171: run one cell. Press guard (§12.1 inv. 1) + `authorize`; idempotent per `run`.
+    /// `confirmed: true` is the user's second press past a warning (§7.1, §7.6): Run anyway
+    /// past an unarmed `after` gate, or a danger cell's line/selection ▶; omitted or `false`,
+    /// both are refused as before.
     #[method(name = "cell_run", with_extensions)]
     async fn cell_run(
         &self,
@@ -2291,6 +2294,7 @@ pub trait Api {
         run: cells::RunId,
         edited: Option<String>,
         member_ack: Option<String>,
+        confirmed: Option<bool>,
     ) -> RpcResult<cells::CellRun>;
     /// 171: Run all as an engine pass (§7.2); returns the pass id.
     #[method(name = "cell_run_all", with_extensions)]
@@ -7813,8 +7817,12 @@ impl ApiServer for Server {
         run: cells::RunId,
         edited: Option<String>,
         member_ack: Option<String>,
+        confirmed: Option<bool>,
     ) -> RpcResult<cells::CellRun> {
-        crate::cells::run(self, ext, cell, seen, mode, run, edited, member_ack).await
+        crate::cells::run(
+            self, ext, cell, seen, mode, run, edited, member_ack, confirmed,
+        )
+        .await
     }
 
     async fn cell_run_all(

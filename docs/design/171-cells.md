@@ -113,7 +113,7 @@ Then, after the licence finding: *"why do we care if there's no license. the foc
 - The step-by-step mode ("go one step at a time … allow me to review the output, and then tell you what to do next") ran on an agent PTY: `start('exec "$SHELL" -i')`, `send()` per block, `wait(pattern=<prompt>)`, OSC/CSI escapes and pulumi spinner frames hand-stripped with regexes, output scanned by hand for `AKIA…`, `eyJ…`, `aws_session_token` before showing, a scratch file plus `show`, a comparison with "You should see", and the agent typing `yes` into pulumi's arrow-key prompt. When Sky typed himself, theuth only saw the screen through the ~1 min idle wake.
 - The field agrees on the failure class: Cursor's Shell Mode lists the same traps — `$SHELL`, 30 s timeout, no prompts, no `cd` persistence (`https://cursor.com/docs/cli/shell-mode`); a human approval did not stop the 2026 `terraform destroy` because the consequence was not on screen (`https://botmonster.com/ai/terraform-incident-claude-code-wiped-production-database/`).
 
-**What changes for Sky.** He says "prep the preview and up, don't apply" and the agent's reply holds three cells: export the state, preview, apply. Each shows its folder, its shell and what it will do; the apply button reads "Apply to ir-prod1", stays disarmed until the preview succeeded with the expected "3 to update", and then shows that preview's counts on itself. He presses; the output streams into the cell in a real terminal, he answers pulumi's prompt in place, and when the run ends the agent has a clean, capped, credential-masked copy and checks it against the expectation. Long or repeatable procedures land in a note as the same cells, so a run sheet *runs* and records who ran what, when, with which exit — instead of being ticked by hand.
+**What changes for Sky.** He says "prep the preview and up, don't apply" and the agent's reply holds three cells: export the state, preview, apply. Each shows its folder, its shell and what it will do; the apply button reads "Apply to ir-prod1", warns until the preview succeeded with the expected "3 to update" (he can still run it anyway), and then shows that preview's counts on itself. He presses; the output streams into the cell in a real terminal, he answers pulumi's prompt in place, and when the run ends the agent has a clean, capped, credential-masked copy and checks it against the expectation. Long or repeatable procedures land in a note as the same cells, so a run sheet *runs* and records who ran what, when, with which exit — instead of being ticked by hand.
 
 **What this is NOT.** Not a tool: no registry entry, no `tools.policy` row, no approval card, no double involvement, no MCP exposure. Not agent execution: the agent presents, edits and reads; it never runs, types into a kernel, or ticks a run sheet. Not a coding feature: no editor integration, no test runner. Nothing in tools, MCP, policy or approvals changes (§17.4 must-not-regress).
 
@@ -196,8 +196,8 @@ The parser is one pure Rust module, `surface::cell` (`parse(lang, body) -> Optio
 | `cwd` | absolute path or `~/…`; relative only under a note default | note default; in chat **required** | folder the cell runs in; must exist at press (D6) | `#\| cwd: ~/dr-t6/frp-integration/stacks/sa-frp-integration` |
 | `name` | slug `[a-z0-9-]{1,48}` | none (identity falls back to position, §3.4) | stable id; the same name presented later supersedes | `#\| name: preview-ir-prod1` |
 | `label` | text ≤ 40 chars | `Run` | the Run button's text, naming the consequence | `#\| label: Apply to ir-prod1` |
-| `danger` | bool | `false` | red outline; never in Run all; no keyboard run; phone shows the label in full | `#\| danger` |
-| `after` | a `name` in the same scope | none | arms only when that cell's latest run succeeded (exit 0, every expect met) **and** ran its current code; the armed button shows that run's summary | `#\| after: preview-ir-prod1` |
+| `danger` | bool | `false` | red outline; never in Run all; no keyboard run; a line/selection ▶ asks first (§7.1); phone shows the label in full | `#\| danger` |
+| `after` | a `name` in the same scope | none | arms only when that cell's latest run succeeded (exit 0, every expect met) **and** ran its current code; the armed button shows that run's summary; unarmed, the cell warns and offers Run anyway (§7.6) | `#\| after: preview-ir-prod1` |
 | `expect` | text, or `/regex/` (repeatable) | none | must appear in the cleaned output; met/missed per item | `#\| expect: 3 to update` |
 | `env` | `KEY=value` (repeatable) | none | exported before a whole-cell run; values may hold `{{secret:NAME}}` | `#\| env: AWS_PROFILE=ir-prod1` |
 | `python` | `monty` \| `auto` \| `.venv` \| `uv` \| absolute path | note default, else `auto` | which interpreter runs a python cell (§6) | `#\| python: .venv` |
@@ -237,7 +237,7 @@ The **cell digest** is SHA-256 over the cell's full text (header + code) with LF
 
 - **Chat.** A later assistant message in the same session that presents the same `name` supersedes every earlier cell with that name: its Run is disabled with "Replaced by a newer version ↓" (a link scrolls to it), its outputs stay. `after` always refers to the newest version of a name. A cell re-presented after a `<cell_error>` in the same turn supersedes the broken one the same way. A regenerated reply has a new `entry`; runs of the old reply stay in the run store and show in the session's run list as "from an earlier version of this reply".
 - **Notes.** The block is the cell. Editing its text after a run turns the latest run **stale**: "ran an earlier version" with the old code one click away; nothing re-runs.
-- **`after` and edits.** An `after` gate checks that the gating run's code digest equals the gating cell's *current* code digest, so editing the preview disarms the apply until the edited preview has run.
+- **`after` and edits.** An `after` gate checks that the gating run's code digest equals the gating cell's *current* code digest, so editing the preview disarms the apply (it warns, §7.6) until the edited preview has run.
 
 ### 3.6 Validation
 
@@ -309,7 +309,7 @@ pulumi up -s ir-prod1 --refresh=false --diff
 ```
 `````
 
-What the engine and UI make of it: a runbook bar "Run all · stops before Apply to ir-prod1" (danger boundary, §7.2); one `bash` kernel for the session; the apply disarmed with "after: Preview" until the preview exits 0 with its expect met, then armed with "armed by preview ✓ 14:31 · ~3 update · 0 replace · 0 delete" (the counts come from the gating run's cleaned output, §7.5); no `--yes` on the danger cell, so pulumi's own arrow-key prompt appears in the live terminal and Sky answers it in place (mock panel B); `review` on the apply makes the agent read the result and report in one or two lines (§9.3).
+What the engine and UI make of it: a runbook bar "Run all · stops before Apply to ir-prod1" (danger boundary, §7.2); one `bash` kernel for the session; the apply warns "after: preview-ir-prod1 — run it first" with a Run anyway button until the preview exits 0 with its expect met, then armed with "armed by preview ✓ 14:31 · ~3 update · 0 replace · 0 delete" (the counts come from the gating run's cleaned output, §7.5); no `--yes` on the danger cell, so pulumi's own arrow-key prompt appears in the live terminal and Sky answers it in place (mock panel B); `review` on the apply makes the agent read the result and report in one or two lines (§9.3).
 
 ## 4. Where cells live
 
@@ -556,12 +556,13 @@ sequenceDiagram
 | mode | how | what runs | CWD rule |
 |---|---|---|---|
 | cell | the Run button (label text); Shift+Enter in the editor (then focus moves to the next cell) | the whole code | prologue always |
-| line | hover ▶ in the line gutter; Mod+Enter with no selection | the caret's line | prologue only if the previous run came from another cell (§5.6) |
+| line | hover ▶ in the line gutter; Mod+Enter with no selection | the **command** holding the hovered or caret line (below) — a one-line command as `line`, a longer one as `selection` of exactly its lines | prologue only if the previous run came from another cell (§5.6) |
 | selection | the "Run selection ⌘↵" pill on a selection; Mod+Enter with a selection | exactly the selected text | as line |
 | Run all | the runbook bar (chat) or the note header | every cell in order, as `cell` runs | always |
 
 - **Edited cells (F4).** A chat cell is editable (CodeMirror) until a run starts; an edit shows the "edited" badge and the press sends `edited: <code>`; line and selection runs use the edited text. The engine still checks `seen` against the presented text (the guard is against stale presentation, not against the user's own edit), runs the edited code, and records both digests with `edited = true`, operator = the pressing device.
-- **Danger cells** run only from their button: no Shift+Enter, no line, no selection, never in Run all. The keyboard shortcut on a danger cell shows "press Apply to ir-prod1 to run this".
+- **The line ▶ runs a command** (CELLAFTER, `units.ts` `commandUnits`). Soft-wrapped rows are one logical line: hovering any row shows one ▶ at the line's first row. Shells (bash, zsh, sh) join a backslash continuation, a trailing `|`/`&&`, an unclosed quote, a heredoc to its terminator, and an open `(`/`{` or `if…fi`/`for|while|until|select…done`/`case…esac`; python joins open brackets, triple quotes, `\` and a `:` header with its indented body and its `elif`/`else`/`except`/`finally` clauses (a decorator takes its `def`); pwsh joins a backtick continuation and open brackets. When unsure the unit is the bigger one. The running mark and ✓/✗ sit on the command's first line.
+- **Danger cells** run whole from their labelled button (one press), never from the keys and never in Run all. The keyboard shortcut on a danger cell shows "press Apply to ir-prod1 to run this". Their line ▶ and selection ▶ show, danger-toned, and **ask first** (CELLAFTER): an inline box under the command — "Run this line of Apply to ir-prod1?", "Run lines 3–5 of …?" for a multi-line command, or "Run this selection of …?", the unarmed `after` reason when there is one (§7.6, no separate warning then), a "Don't ask again for this cell" checkbox, **Cancel** (focused) and **Run line** / **Run lines** / **Run selection**. Esc, Cancel, a press outside the box or any change of the cell's text closes it without running; Run sends `cell_run`'s `confirmed: true` with the text of the ▶ press as `seen` (chat: as `edited`), so a cell changed since is refused (inv. 5). Ticked, later ▶ presses on that cell run at once (an unarmed gate still warns first); the choice is a per-device UI preference in localStorage keyed by scope + `name` (else the cell's ref) and never changes the button, the keys or Run all. The box is an inline, non-modal element: no Radix modal (`hideOthers`) and no `aria-live` inside a note's node view (CELLHIST); the two-press warning is spoken through the one live region on `<body>`.
 
 ### 7.2 Run all and its stop rules
 
@@ -587,7 +588,7 @@ The engine pass (`cell_run_all{scope, cells, pass}`, §5.10) runs the scope's ce
 
 ### 7.6 `after` gates
 
-The engine computes `armed` and pushes it with the cell's state: the named cell's latest run succeeded, ran the cell's current code (§3.5), in the same scope (chat: the newest version of the name), and is younger than `cells.after_max_age_mins` (60). Disarmed, the button reads "after: Preview" and is disabled; armed, a green line above the code reads "armed by preview ✓ 14:31 · ~3 update · 0 replace · 0 delete". An older preview disarms: "the preview is more than 1 h old — run it again".
+The engine computes `armed` and pushes it with the cell's state: the named cell's latest run succeeded, ran the cell's current code (§3.5), in the same scope (chat: the newest version of the name), and is younger than `cells.after_max_age_mins` (60). Armed, a green line above the code reads "armed by preview ✓ 14:31 · ~3 update · 0 replace · 0 delete". Not armed, the gate **warns, it does not lock** (CELLAFTER, `docs/design/cellafter-notes.md`): `cell_state.disarmed` carries the reason ("after: preview — run it first", "the preview run is more than 1 h old — run it again"), the cell shows it as a red strip, and the button reads **Run anyway** (warning tone; danger styling kept) with the reason as its description — one press runs, the strip was the warning. A line or selection ▶ on a non-danger cell first shows the reason by the line for 5 s, its "— run it again" advice replaced by "— press ▶ again to run anyway" ("the preview run is more than 1 h old — press ▶ again to run anyway"); the same ▶ again within that runs (a danger cell asks instead, §7.1). Keyboard runs only hint "press Run anyway to run this". The press sends `cell_run`'s `confirmed: true`, which skips this gate and the danger line/selection rule (§7.1) and nothing else (validation, cwd, member ack, lint and secrets as before); without it the engine refuses `disarmed` as before. The run records `ran_past` ("ran past after: preview — the preview run is more than 1 h old"), shown in its history entry and as the first body line of its `<cell_result>`. Run all never overrides (§7.2).
 
 ### 7.7 Timeouts and notifications
 
@@ -757,7 +758,7 @@ Registered by the cells plugin as `Risk::ReadOnly` runtime functions; they read,
 
 ```python
 cell_runs(scope="this", name=None, limit=20)      # scope: "this" (the session) or a note doc id
-# -> [{run, name, cell, state, exit, secs, at, expect, summary, edited, private, pressed}]
+# -> [{run, name, cell, state, exit, secs, at, expect, summary, edited, private, pressed, ran_past}]   # ran_past: "ran past after: preview — …" or null (§7.6)
 cell_output(run, offset=0, limit=8000)            # cleaned, vault-redacted, credential-masked text
 # -> {text, offset, total_bytes, next}            # refused for private runs
 interpreters(cwd)                                 # -> [Interpreter] (§6.4)
@@ -788,7 +789,7 @@ A user cell is a fenced block the user runs with one press in theuth: ```bash, `
 Present cells instead of running anything when the user asks you to prepare but not run ("prep it, don't apply", "give me the commands", "I'll run it", "step by step, I'll review each output", "make me a run sheet"), when a step changes production or shared state you were not told to change, needs their login, SSO or MFA, is interactive, or they want to watch it.
 That mode is sticky for the work until the user lifts it: read-only checks stay yours (unless they said hands off entirely); every changing step becomes a cell.
 Every cell gets `#| cwd:` (absolute). One action per cell, checks before changes, explicit --profile, --context or -s on every command.
-Every changing step gets `#| label:` naming its consequence ("Apply to ir-prod1") and `#| danger`; an apply gets `#| after:` naming its preview's `#| name:`; take `#| expect:` from the run sheet's "You should see"; add `#| review` when you promised to read the output.
+Every changing step gets `#| label:` naming its consequence ("Apply to ir-prod1") and `#| danger`; an apply gets `#| after:` naming its preview's `#| name:` (only an apply: `after:` is no ordering hint for read-only steps); take `#| expect:` from the run sheet's "You should see"; add `#| review` when you promised to read the output.
 Secrets go in `#| env: KEY={{secret:NAME}}` and the code uses $KEY. Never add --yes or -auto-approve to a danger cell unless asked.
 Python: `#| python: monty` for pure computation on the standard library (no packages, no network, no subprocess, no files outside the cwd); otherwise the project's interpreter (auto, .venv, uv or a path) — interpreters(cwd) lists them.
 Up to five one-off steps go in chat. Longer or repeatable procedures go in a note (doc_insert the same fences) with one line in chat linking it.
@@ -806,7 +807,7 @@ Binary-owned: `crates/cells/cells.md` (`include_str!`), one tuple `("cells.md", 
 2. **When to present** — the triggers and the not-triggers (§10.3), the sticky mode, what "hands off entirely" means.
 3. **Writing rules** — cwd, one action, checks first, explicit context flags, label/danger/after/expect/review/private/env/timeout, names that read like steps (`preview-ir-prod1`), no `cd` lines in place of `cwd`, no `bash -c` wrappers.
 4. **Interpreters** — Monty when sufficient, else the project's; how to read `interpreters(cwd)`; one python interpreter per note.
-5. **Chat or note** — the placement rule (§4.6); run sheets as notes: a heading per step, a cell per action, "You should see" becomes `expect`, stop lines become `after` and Run all's boundaries.
+5. **Chat or note** — the placement rule (§4.6); run sheets as notes: a heading per step, a cell per action, "You should see" becomes `expect`; stop lines need nothing (Run all stops at a failed step), and `after` stays on applies (CELLAFTER: never an ordering hint).
 6. **After a result** — check expect; one or two lines of what matters; propose the next cell; supersede by `name` only when the cell changes; `exit="lost"` means check the real state (a stack lock, a half-applied change) before proposing anything; never ask "shall I run it?".
 7. **Anti-patterns** (§10.5).
 8. **Three worked examples**:
@@ -865,7 +866,7 @@ One `Cell` component (`crates/desktop/ui/src/components/cells/Cell.tsx`) serves 
 | header | state dot · **label** (or name) · chips: language, interpreter, cwd (mono, middle-ellipsis), host (only when not this device), name, `after:`, `expect:`, lint/danger chips · execution count `[3]` · the Run button (label text) | elements `CellHeader`, nteract `ExecutionCount`, our chips (shadcn `Badge`) |
 | armed line | "armed by preview ✓ 14:31 · ~3 update · 0 replace · 0 delete" (green) or a notice row: folder not found, replaced by a newer version, changed by Alice, Monty can't run this | ours (one row component) |
 | editor | chat: CodeMirror (`basicSetup: false`, line numbers, theuth theme, shiki colours) read-only until edited; note: BlockNote's code content (§4.2); both highlighted by one shiki (`crates/desktop/ui/src/lib/shiki.ts`) with the message fences' grammars and github-light/dark themes | `@uiw/react-codemirror` (`crates/desktop/ui/package.json:39`) + `shiki` |
-| gutter | line numbers; a ▶ on the hovered line (run line); "Run selection ⌘↵" pill on a selection | ours (CM `gutter()`/`GutterMarker`; for notes a positioned overlay) |
+| gutter | line numbers; a ▶ on the hovered command's first line (run line); "Run selection ⌘↵" pill on a selection; on a danger cell both danger-toned, without the key, asking first (§7.1) | ours (CM `gutter()`/`GutterMarker`; for notes a positioned overlay) |
 | output | live: xterm with an accent outline and "the terminal is live — type or use arrows"; finished: static ANSI text, rich outputs, the input line for `input()` | `Terminal` (`crates/desktop/ui/src/components/chat/TerminalViewer.tsx:98`, new `source` prop), nteract `OutputArea` + `ansi-output` + media router, `HtmlPage` for HTML |
 | footer | exit badge (✓ exit 0 / ✗ exit 1), duration, expect badge, "ran 14:02" (notes), "edited", "2 masked for theuth", private note, **Ask theuth**, show/hide output, history ▾ (this cell's runs) | elements `ExecutionStatus` (re-coloured), ours |
 | fold | finished cells fold to one line: state · label · `exit 0 · 41 s · expect ✓` · summary · "show output"; the latest cell in a reply stays open | ours |
@@ -889,7 +890,7 @@ One `Cell` component (`crates/desktop/ui/src/components/cells/Cell.tsx`) serves 
 | edited | italic "edited" chip, "theuth will see the code that actually ran" | label | F4 edit in chat |
 | invalid | red notice row with the reason (§3.6) | none | validation error |
 | armed | green armed line | label, enabled | `after` satisfied (§7.6) |
-| disarmed | "after: Preview" | disabled | `after` not satisfied |
+| disarmed | "Run anyway" (warning tone), the reason as a red strip | enabled | `after` not satisfied (§7.6) |
 | guest | latest output, "latest run · owner · 14:31", "Only the owner can run cells" | none | a guest or member view (§13) |
 
 A read-only rendering (archive, search) shows code and chips with no button (fact 3).
@@ -952,8 +953,8 @@ The Run button's accessible name is its label ("Apply to ir-prod1"); disabled bu
 4. **Not the double, routines, subagents, ACP children, guests or channels.** A run raises no `ApprovalRequested`/`AskRequested`, the two events the double can answer (`docs/design/126-double.md:112-113`); routines, subagents and ACP children have no RPC peer; guests fail invariant 1; channel adapters have no cell methods (a link only, §14.3).
 5. **What you saw runs.** The engine reads the source from its own record (the stored message, the live Y.Doc) and compares its digest with the press's `seen`; a mismatch, a superseded cell or a non-final message is refused "this cell changed — look again". The button payload carries no code except the user's own edit (F4), which is recorded as `edited` with both digests.
 6. **Member text is acknowledged.** A note cell whose block was last written by a member since the owner's last run requires `member_ack = <pub8>` on the press (the "Run Alice's edit" button sends it).
-7. **Danger is enforced in the engine.** A `danger` cell refuses `mode != cell` and is never enqueued by `cell_run_all`, whatever the client sends.
-8. **`after` is enforced in the engine.** An unarmed `after` cell is refused `disarmed` (§7.6).
+7. **Danger is enforced in the engine.** A `danger` cell refuses `mode != cell` unless the press carries `confirmed` (its line/selection ▶ confirmed, §7.1), and is never enqueued by `cell_run_all`, whatever the client sends.
+8. **`after` is checked in the engine.** An unarmed `after` cell is refused `disarmed` unless the press carries `confirmed` (Run anyway, §7.6), which the run records; Run all never overrides.
 9. **Secrets at the boundary.** Placeholders are allowed only in `env` (§3.6) and expanded only into the run file's prologue (mode 0600, deleted at mark D); the editor, the record, events, outputs, the agent's copy and replication only ever hold the placeholder; vault values are scrubbed on the log path and exactly at finish (§9.4); audit stores env **names**.
 10. **Redaction for the agent.** Every agent-bound and replicated text passes the credential patterns (§9.4); a `private` cell's output never leaves the run store except to the owner's own clients.
 11. **No automatic re-run.** Only `cell_run`/`cell_run_all` create runs; a lost run is never retried or resumed; Run all never continues after a restart; "Run again" is a new press.
@@ -976,7 +977,7 @@ The Run button's accessible name is its label ("Apply to ir-prod1"); disabled bu
 | a secret value persists on disk | prologue-only expansion; 0600; deleted at D; record keeps the placeholder | cells actor | run file gone after the run; `code` file holds the placeholder |
 | a familiar script name hides a payload (64.7 % approved, `https://scalex.dev/blog/ai-agent-permissions-stats/`) | "calls a script theuth edited" chip with the diff | lint + `tool_calls` journal | agent edits `deploy.sh`, cell runs it → chip |
 | `curl … \| sh`, invisible characters | chips; Run all stops | lint | fixtures |
-| apply on a stale or different preview (the 2026 `terraform destroy`) | `after` with digest, age and summary on the button | cells actor | edited preview → disarmed; 61-min-old preview → disarmed |
+| apply on a stale or different preview (the 2026 `terraform destroy`) | `after` with digest, age and summary on the button; unarmed, a red strip with the reason and **Run anyway** (a press past the warning, recorded as `ran_past`); a danger cell's line/selection ▶ asks first (§7.1) | cells actor + UI | edited preview → disarmed (refused without `confirmed`); 61-min-old preview → disarmed; Run all stops before it |
 | double press, replayed RPC | client-minted run id | cells actor | same id twice → one run |
 | engine restart mid-apply leaves a locked stack | quit/update wait (F6 a); `lost` with last screen; no replay | desktop + cells | live proof §17 |
 | an output flood starves Stop | separate lifecycle lane | cells actor | `yes` flood, Stop < 500 ms |
@@ -1096,7 +1097,7 @@ Changes to existing types: `tools::pty::StartPty` gains `program: Option<(PathBu
 
 | method | params | returns | auth | routing |
 |---|---|---|---|---|
-| `cell_run` | `cell: CellRef, seen: String, mode: RunMode, run: RunId, edited: Option<String>, member_ack: Option<String>` | `CellRun` | press guard (invariant 1) + `authorize` (chat) / owner (doc) | `forward::route` (chat) / hub (doc) |
+| `cell_run` | `cell: CellRef, seen: String, mode: RunMode, run: RunId, edited: Option<String>, member_ack: Option<String>, confirmed: Option<bool>` | `CellRun` | press guard (invariant 1) + `authorize` (chat) / owner (doc) | `forward::route` (chat) / hub (doc) |
 | `cell_run_all` | `scope: Scope, cells: Vec<(CellRef, String)>, pass: String` | `String` (pass id) | press guard | as above |
 | `cell_stop` | `run: RunId, kill: bool` | `()` | press guard | as above |
 | `cell_input` | `run: RunId, data: String` (base64) | `()` | press guard | as above |

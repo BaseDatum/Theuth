@@ -1275,8 +1275,12 @@ export interface Api {
   'autoresearch.mechanism'(op: MechanismOp): Promise<MechanismInfo>
   // 171:C — 171 §15.2; the `cell_attach` / `cell_detach` subscription (items `PtyChunk` from mark C) is
   // `client.stream<PtyChunk>('cell_attach', [run], 'cell_detach', onChunk)`, like `subscribe_pty`.
-  /** Run one cell: `seen` is the digest the press was made on, `edited` the F4 text, `member_ack` a member's consent. */
-  cell_run(cell: CellRef, seen: string, mode: CellRunMode, run: CellRunId, edited: string | null, member_ack: string | null): Promise<CellRun>
+  /**
+   * Run one cell: `seen` is the digest the press was made on, `edited` the F4 text, `member_ack` a member's consent,
+   * `confirmed` the second press past a warning — Run anyway past an unarmed `after` gate, or a danger cell's
+   * line/selection ▶ (CELLAFTER; nothing else is skipped).
+   */
+  cell_run(cell: CellRef, seen: string, mode: CellRunMode, run: CellRunId, edited: string | null, member_ack: string | null, confirmed: boolean): Promise<CellRun>
   /** Run `cells` top to bottom under one pass id (`pass`); answers the pass id. */
   cell_run_all(scope: CellScope, cells: [CellRef, string][], pass: string): Promise<string>
   /** Ctrl-C the run; `kill: true` after 5 s is SIGKILL. */

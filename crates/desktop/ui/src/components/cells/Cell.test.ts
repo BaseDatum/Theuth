@@ -5,7 +5,7 @@ import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import type { CellState } from '@/rpc/bindings/CellState'
 import type { Interpreter } from '@/rpc/bindings/Interpreter'
 import { announce, Cell, CellExtras, ensureLiveRegion, trimBlankTail } from './Cell'
-import { keyRun } from './CellEditor'
+import { gutterMark, keyRun } from './CellEditor'
 import { cellOf } from './grammar'
 import { hoverAfter } from './line-run'
 import { refKey } from './store'
@@ -114,7 +114,19 @@ test('every §11.2 state renders its look and button', () => {
         expect(button(x, 'Apply to ir-prod1')).not.toContain('aria-disabled="true"')
       },
     ],
-    ['disarmed', cell(2, state(ref), { extras: { afterLabel: 'Preview' } }), (x) => expect(button(x, 'after: Preview')).toContain('aria-disabled="true"')],
+    [
+      'disarmed',
+      cell(2, state(ref, { disarmed: 'the preview-ir-prod1 run is more than 1 h old — run it again' }), { extras: { afterLabel: 'Preview' } }),
+      (x) => {
+        // CELLAFTER: the warning strip, and the button runs anyway (danger styling kept) with the reason as its description.
+        const b = button(x, 'Run anyway')
+        expect(b).toBeDefined()
+        expect(b).not.toContain('aria-disabled="true"')
+        expect(b).toContain('aria-description="the preview-ir-prod1 run is more than 1 h old — run it again"')
+        expect(b).toContain('data-variant="destructive"')
+        expect(x).toMatch(/bg-danger-bg text-danger">the preview-ir-prod1 run is more than 1 h old — run it again</)
+      },
+    ],
     [
       'guest',
       cell(1, state(ref, { latest: run() }), { guest: true, extras: { open: true } }),
@@ -200,14 +212,33 @@ test('danger is never colour-only and the Run button is named by the label (§11
   expect(button(html, 'Apply to ir-prod1')).toBeDefined()
 })
 
-test('danger cells refuse keyboard runs and explain; other cells run (§7.1)', () => {
+test('danger and disarmed cells refuse keyboard runs and explain; other cells run (§7.1, CELLAFTER)', () => {
   const calls: string[] = []
-  const cellOf = (danger: boolean, runnable = true) => ({ runnable, danger, onRun: () => calls.push('run'), onRefused: () => calls.push('refused') })
+  const cellOf = (danger: boolean, runnable = true, disarmed: string | null = null) => ({ runnable, danger, disarmed, onRun: () => calls.push('run'), onRefused: () => calls.push('refused') })
   keyRun(cellOf(true), { type: 'cell' })
   keyRun(cellOf(true), { type: 'line', line: 1 })
   keyRun(cellOf(false), { type: 'line', line: 1 })
   keyRun(cellOf(false, false), { type: 'cell' })
-  expect(calls).toEqual(['refused', 'refused', 'run'])
+  keyRun(cellOf(false, true, 'after: prepare — run it first'), { type: 'cell' })
+  expect(calls).toEqual(['refused', 'refused', 'run', 'refused'])
+})
+
+test('CELLAFTER: a danger chat cell shows the ► on its hovered line, danger-toned; a run mark still wins', () => {
+  const danger = gutterMark(null, 2, 2, true)
+  expect(danger).toMatchObject({ text: '►', tone: 'text-danger' })
+  expect(gutterMark(null, 2, 2, false)).toMatchObject({ text: '►', tone: '' })
+  expect(gutterMark(null, 2, 3, true)).toBeNull()
+  expect(gutterMark(null, 2, false, true)).toBeNull()
+  expect(gutterMark({ line: 2, phase: 'running', run: null, queued_ms: null }, 2, 2, true)).toMatchObject({ text: '◌' })
+})
+
+test('CELLAFTER F2: past an unarmed gate a member’s edit still names whose text runs — "Run Alice’s edit anyway"', () => {
+  const { html } = cell(2, state(ref, { disarmed: 'after: preview-ir-prod1 — run it first' }), { extras: { runText: "Run Alice's edit" } })
+  expect(button(html, 'Run Alice&#x27;s edit anyway')).not.toContain('aria-disabled="true"')
+  expect(button(html, 'Run anyway')).toBeUndefined()
+  // Armed again, the member's own label is back.
+  const armed = cell(2, state(ref, { armed: { by: 'r_x', at_ms: 0, summary: 's' } }), { extras: { runText: "Run Alice's edit" } })
+  expect(button(armed.html, 'Run Alice&#x27;s edit')).toBeDefined()
 })
 
 test('L11 fields render when present and nothing when absent', () => {

@@ -14,9 +14,10 @@ import { setEdit, useEdit } from './edits'
 import { bodyKey, type ReplyCell, replyCells } from './fences'
 import { cellOf, digest } from './grammar'
 import { openAsNote } from './open-as-note'
+import { cellIdentity } from './line-run'
 import { followSuperseded, RunbookBar, runAllPairs } from './RunbookBar'
 import { errorText, lastPass, mintId, press, refKey, refresh, register, registeredCells, scopeKey, scopeOf, setNotice, useCellRecord, useScope, useStates } from './store'
-import { chatEditable, labelOf, titleOf, viewOf } from './view'
+import { chatEditable, disarmedReason, labelOf, RUN_ANYWAY, titleOf, viewOf } from './view'
 
 /** 171 §4.1: the fence languages `CellFence` registers for. */
 export const CELL_LANGUAGES = ['bash', 'zsh', 'sh', 'pwsh', 'powershell', 'python', 'py']
@@ -124,6 +125,8 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
   const host = state?.host ?? null
   const view = viewOf(state, spec, edited !== null)
   const runnable = !!cellRef && !pending
+  // CELLAFTER (§7.6): the unarmed gate's reason; the button and a second ▶ run anyway, the keys hint.
+  const gate = disarmedReason(state, spec)
 
   // §11.1 fold: the latest cell of the reply that has run stays open.
   const lastRun = replyStates.reduce((best, s, i) => (s?.latest ? i + 1 : best), 0)
@@ -150,13 +153,15 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
       },
     )
   }
-  const run = (mode: CellRunMode, next?: boolean) => {
+  // `confirmed` only from the presses past a warning: Run anyway, the second ▶, the danger confirm (or its "Don't ask again").
+  // `at`: the code the press was made on (a danger ask's press-time code, M1), so what was confirmed is what runs.
+  const run = (mode: CellRunMode, next?: boolean, confirmed = false, at?: string) => {
     if (!cellRef) return
-    const text = edited
+    const text = at === undefined ? edited : at === spec.code ? null : at
     // `seen` (§3.4, D3): the digest of the text on screen; the engine refuses a mismatch with "this cell changed".
     const pressed = (async () => {
       const seen = await digest(code)
-      return press(mintId('r_'), (id) => api.cell_run(cellRef, seen, mode, id, text, null))
+      return press(mintId('r_'), (id) => api.cell_run(cellRef, seen, mode, id, text, null, confirmed))
     })()
     act(() => pressed)
     if (next) {
@@ -169,8 +174,8 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     return pressed
   }
   const callbacks = {
-    // The edited text rides the component's own edit state (F4); the frozen `edited` argument is for hosts without one.
-    onRun: (mode: CellRunMode) => run(mode),
+    // The edited text rides the component's own edit state (F4).
+    onRun: (mode: CellRunMode, confirmed?: boolean) => run(mode, false, confirmed),
     onStop: (kill: boolean) => {
       if (latest) act(() => api.cell_stop(latest.id, kill))
     },
@@ -240,13 +245,16 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
             <CellEditor
               lang={spec.lang}
               code={edited ?? spec.code}
-              runnable={runnable && view !== 'disarmed'}
+              runnable={runnable}
+              disarmed={gate}
+              title={title}
+              identity={cellRef ? cellIdentity(cellRef, spec) : ''}
               latest={latest}
               danger={spec.options.danger}
               locked={locked}
               onChange={callbacks.onEdit}
               onRun={run}
-              onRefused={() => setHint(`press ${label} to run this`)}
+              onRefused={() => setHint(`press ${gate !== null ? RUN_ANYWAY : label} to run this`)}
             />
           }
         />

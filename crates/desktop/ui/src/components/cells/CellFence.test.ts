@@ -90,6 +90,19 @@ test('the host chip (§14.2, L11 `CellState.host`) shows only when the record na
   cells.setState({ scopes: {} })
 })
 
+test('CELLAFTER: a disarmed chat cell stays runnable — Run anyway, enabled, with the engine’s reason', () => {
+  const ref = chatRef(3)
+  const why = 'after: preview-ir-prod1 — run it first'
+  cells.setState({ scopes: { [scopeKey({ type: 'session', id: SESSION })]: { states: { [refKey(ref)]: state(ref, { disarmed: why }) as never }, kernels: [], error: null, notices: {} } } })
+  const html = render(assistant(md(REPLY, withCells)))
+  cells.setState({ scopes: {} })
+  const b = html.match(/<button[^>]*>Run anyway<\/button>/)?.[0]
+  expect(b).toBeDefined()
+  expect(b).not.toContain('aria-disabled="true"')
+  expect(b).toContain(`aria-description="${why}"`)
+  expect(html).not.toContain('>after: Preview<')
+})
+
 test('the runbook bar sits in the transcript’s flow after the reply’s last cell, never sticky (171F B1)', () => {
   const html = render(assistant(md(REPLY, withCells)))
   const bar = html.indexOf('role="toolbar"')

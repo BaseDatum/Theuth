@@ -51,12 +51,13 @@ export function run(over: Partial<CellRun> = {}): CellRun {
     private: false,
     name: null,
     input: null,
+    ran_past: null,
     ...over,
   }
 }
 
 export function state(cell: CellRef, over: Partial<CellState> = {}): CellState {
-  return { cell, digest: 'a', problems: [], chips: [], armed: null, superseded_by: null, latest: null, stale: false, member_edit: null, interpreter: null, host: null, ...over }
+  return { cell, digest: 'a', problems: [], chips: [], armed: null, superseded_by: null, latest: null, stale: false, member_edit: null, interpreter: null, host: null, disarmed: null, ...over }
 }
 
 /** An `Api` whose every method resolves `null`, with `calls` recorded; `over` answers specific methods. */

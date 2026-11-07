@@ -115,7 +115,7 @@ fn press_refusals() {
     };
     let home = Some(d.as_str());
     let i = Cells::inspect(&t, &chat(s, 5, 1), home).unwrap();
-    let cwd = refuse(&i, &i.presented.digest, &RunMode::Cell).unwrap();
+    let cwd = refuse(&i, &i.presented.digest, &RunMode::Cell, false).unwrap();
     assert_eq!(cwd, dir.path());
     assert!(
         i.chips
@@ -124,32 +124,32 @@ fn press_refusals() {
     );
     // The text on screen differs from the engine's record → refused.
     assert_eq!(
-        refuse(&i, "stale-digest", &RunMode::Cell).unwrap_err(),
+        refuse(&i, "stale-digest", &RunMode::Cell, false).unwrap_err(),
         CellsError::Changed
     );
     // Danger: only the whole cell from its button.
     let i = Cells::inspect(&t, &chat(s, 5, 2), home).unwrap();
     let seen = i.presented.digest.clone();
-    assert!(refuse(&i, &seen, &RunMode::Cell).is_ok());
+    assert!(refuse(&i, &seen, &RunMode::Cell, false).is_ok());
     for mode in [
         RunMode::Line { line: 1 },
         RunMode::Selection { from: 0, to: 2 },
     ] {
         assert_eq!(
-            refuse(&i, &seen, &mode).unwrap_err(),
+            refuse(&i, &seen, &mode, false).unwrap_err(),
             CellsError::Danger("Apply".into())
         );
     }
     let i = Cells::inspect(&t, &chat(s, 5, 3), home).unwrap();
     let seen = i.presented.digest.clone();
     assert!(matches!(
-        refuse(&i, &seen, &RunMode::Cell),
+        refuse(&i, &seen, &RunMode::Cell, false),
         Err(CellsError::FolderNotFound(_))
     ));
     let i = Cells::inspect(&t, &chat(s, 5, 4), home).unwrap();
     let seen = i.presented.digest.clone();
     assert_eq!(
-        refuse(&i, &seen, &RunMode::Cell).unwrap_err(),
+        refuse(&i, &seen, &RunMode::Cell, false).unwrap_err(),
         CellsError::Invalid("a chat cell needs `cwd`".into())
     );
     // No such message / ordinal → nothing to run.
@@ -170,7 +170,7 @@ fn press_refusals() {
     assert_eq!(i.superseded_by, Some(chat(s, 9, 1)));
     let seen = i.presented.digest.clone();
     assert_eq!(
-        refuse(&i, &seen, &RunMode::Cell).unwrap_err(),
+        refuse(&i, &seen, &RunMode::Cell, false).unwrap_err(),
         CellsError::Changed
     );
 }
@@ -289,6 +289,7 @@ fn finished(id: &str, cell: CellRef, code_sha: &str, ended_ms: i64, state: RunSt
         private: false,
         name: None,
         input: None,
+        ran_past: None,
     }
 }
 
@@ -322,7 +323,7 @@ async fn after_gate_with_edited_and_old_previews() {
         .digest;
     let store = cells.store().unwrap().clone();
     let lineage = format!("{}/preview", scope.key());
-    let check = |i: &Inspected| refuse(i, &i.presented.digest, &RunMode::Cell);
+    let check = |i: &Inspected| refuse(i, &i.presented.digest, &RunMode::Cell, false);
 
     // Never ran → disarmed.
     let mut i = Cells::inspect(&t, &chat(s, 3, 2), home).unwrap();
@@ -390,6 +391,126 @@ async fn after_gate_with_edited_and_old_previews() {
     let mut i = Cells::inspect(&t, &chat(s2, 3, 2), home).unwrap();
     cells.arm(&scope2, &mut i).await.unwrap();
     assert!(matches!(check(&i), Err(CellsError::Disarmed(why)) if why.contains("old")));
+}
+
+/// CELLAFTER (§7.1, §7.6): without `confirmed` an unarmed `after` cell, and a danger cell's
+/// line or selection, are refused as before; with it only those two checks are skipped — the
+/// run records why and its `<cell_result>` says so. An invalid cell and a missing cwd refuse
+/// either way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_anyway_skips_only_the_after_gate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let cells = cells_in(&dir).await;
+    // Shell kernels need the jobs actor (only `e2e_real_shells` owns one); a python kernel does not.
+    if !python_here(&cells, &dir).await {
+        return;
+    }
+    let d = dir.display().to_string();
+    let cwd = format!("cwd: {d}");
+    let s = SessionId(uuid::Uuid::new_v4());
+    let scope = Scope::Session(s);
+    let text = [
+        fence("python", &[&cwd, "name: prepare"], "print('prepare ok')"),
+        fence(
+            "python",
+            &[&cwd, "name: commands", "after: prepare"],
+            "print('commands ok')",
+        ),
+        fence(
+            "bash",
+            &["cwd: /definitely/not/here", "name: away", "after: prepare"],
+            "ls",
+        ),
+        fence("bash", &[&cwd, "name: orphan", "after: nothing"], "ls"),
+        fence(
+            "bash",
+            &[
+                &cwd,
+                "name: apply",
+                "danger",
+                "label: Apply",
+                "after: prepare",
+            ],
+            "echo apply",
+        ),
+    ]
+    .concat();
+    let t = Transcript {
+        messages: vec![(1, text)],
+        edited: Vec::new(),
+    };
+    let env = cells.login_env().await;
+    let press = |ordinal: u32, mode: RunMode, confirmed: bool| {
+        let i = Cells::inspect(&t, &chat(s, 1, ordinal), Some(d.as_str())).unwrap();
+        let seen = i.presented.digest.clone();
+        let (cells, scope, env) = (cells.clone(), scope.clone(), env.clone());
+        async move {
+            cells
+                .prepare_from(i, &scope, &seen, &mode, None, &env, confirmed)
+                .await
+                .map(|p| (p, seen))
+        }
+    };
+
+    let refused = press(2, RunMode::Cell, false).await.err();
+    assert!(
+        matches!(&refused, Some(CellsError::Disarmed(why)) if why == "after: prepare — run it first"),
+        "{refused:?}"
+    );
+    for (ordinal, want) in [(3, "folder"), (4, "invalid")] {
+        let e = press(ordinal, RunMode::Cell, true).await.err();
+        let ok = match &e {
+            Some(CellsError::FolderNotFound(_)) => want == "folder",
+            Some(CellsError::Invalid(_)) => want == "invalid",
+            _ => false,
+        };
+        assert!(ok, "cell {ordinal}: want {want}, got {e:?}");
+    }
+    // The danger cell (also behind `after: prepare`): its line/selection needs the second press.
+    for (mode, code) in [
+        (RunMode::Line { line: 1 }, "echo apply"),
+        (RunMode::Selection { from: 0, to: 4 }, "echo"),
+    ] {
+        let e = press(5, mode.clone(), false).await.err();
+        assert!(
+            matches!(&e, Some(CellsError::Danger(l)) if l == "Apply"),
+            "{e:?}"
+        );
+        let (p, _) = press(5, mode, true).await.unwrap();
+        assert_eq!(p.code, code);
+        assert_eq!(
+            p.ran_past.as_deref(),
+            Some("ran past after: prepare — it had not run")
+        );
+    }
+
+    let mode = RunMode::Line { line: 1 };
+    let (p, seen) = press(2, mode.clone(), true).await.unwrap();
+    let (queued, finished) = cells
+        .enqueue(
+            RunId("r_anyway".into()),
+            chat(s, 1, 2),
+            mode,
+            None,
+            None,
+            seen,
+            "desktop · test".into(),
+            p,
+        )
+        .await
+        .unwrap();
+    let want = "ran past after: prepare — it had not run";
+    assert_eq!(queued.ran_past.as_deref(), Some(want));
+    let done = finished.await.unwrap();
+    assert_eq!(done.state, RunState::Done);
+    let stored = cells.store().unwrap().get(&done.id).await.unwrap().unwrap();
+    assert_eq!(stored.run.ran_past.as_deref(), Some(want));
+    let res = crate::deliver::cell_result(&stored.run, "commands ok\n", cells.config());
+    assert!(res.contains(&format!(">\n{want}\n")), "{res}");
+    for k in cells.kernels_of(&scope) {
+        cells.kernel_close(k.id).await.unwrap();
+    }
 }
 
 /// A kernel that only records what is typed into it.
@@ -579,6 +700,7 @@ async fn idempotent_run_ids() {
         run: RunId("r_same".into()),
         edited: None,
         member_ack: None,
+        confirmed: false,
         pressed_by: "desktop · t".into(),
     };
     let again = cells.run(req(chat(s, 1, 1), "digest-1")).await.unwrap();
@@ -690,7 +812,7 @@ impl Bench {
         let seen = i.presented.digest.clone();
         let p = self
             .cells
-            .prepare_from(i, &cell.scope(), &seen, &mode, None, &env)
+            .prepare_from(i, &cell.scope(), &seen, &mode, None, &env, false)
             .await?;
         self.cells
             .enqueue(
@@ -1080,8 +1202,18 @@ async fn pass_end(cells: Cells, req: RunAllRequest) -> PassEnd {
     }
 }
 
-/// The document side of note scope: blocks by name, no markdown, the owner wrote them.
+/// The document side of note scope: blocks by name, the markdown their fences, the owner
+/// wrote them.
 struct Blocks(HashMap<String, String>);
+
+/// A block's language from its key's prefix.
+fn lang_of(block: &str) -> &'static str {
+    match block.get(..2) {
+        Some("ps") => "pwsh",
+        Some("py") => "python",
+        _ => "bash",
+    }
+}
 
 #[async_trait::async_trait]
 impl note::Docs for Blocks {
@@ -1090,12 +1222,7 @@ impl note::Docs for Blocks {
         let text = self.0.get(n).ok_or_else(|| format!("no block {n}"))?;
         Ok(note::NoteSource {
             block: n.clone(),
-            language: match n.get(..2) {
-                Some("ps") => "pwsh",
-                Some("py") => "python",
-                _ => "bash",
-            }
-            .into(),
+            language: lang_of(n).into(),
             text: text.clone(),
             last_author: crate::types::Principal::Owner { device: None },
         })
@@ -1103,8 +1230,10 @@ impl note::Docs for Blocks {
     async fn hub(&self) -> Result<Option<String>, String> {
         Ok(None)
     }
+    /// The note's other cells (their names and `after` edges, §3.6) come from it.
     async fn markdown(&self, _: &DocId) -> Option<String> {
-        None
+        let fence = |(k, t): (&String, &String)| format!("```{}\n{t}\n```\n\n", lang_of(k));
+        Some(self.0.iter().map(fence).collect())
     }
     async fn title(&self, _: &DocId) -> Option<String> {
         None
@@ -1300,6 +1429,70 @@ async fn note_pass_end_carries_the_pass_attributes() {
     py_passes(&cells, &list[..3], &doc, 1).await;
 }
 
+/// CELLAFTER: Run all has no override — a pass stops before an unarmed `after` cell with the
+/// gate's reason (which `cell_state` shows too); a pass from the top runs the gate first,
+/// which arms the cell on the way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_all_still_stops_before_an_unarmed_after() {
+    let _one = note::DOCS_TEST.lock().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let cells = cells_in(&dir).await;
+    if !python_here(&cells, &dir).await {
+        return;
+    }
+    // `py…` blocks are python (`lang_of`): no jobs actor needed.
+    let cwd = format!("#| cwd: {}", dir.display());
+    let blocks: HashMap<String, String> = [
+        (
+            "py-prepare",
+            format!("#| name: py-prepare\n{cwd}\nprint('prepare ok')"),
+        ),
+        (
+            "py-commands",
+            format!("#| name: py-commands\n#| after: py-prepare\n{cwd}\nprint('commands ok')"),
+        ),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v))
+    .collect();
+    note::set_docs(Arc::new(Blocks(blocks.clone())));
+    let doc = DocId("d-after".into());
+    let scope = Scope::Doc(doc.clone());
+    let cell = |n: &str| {
+        let c = CellRef::Note {
+            doc: doc.clone(),
+            key: NoteKey::Block(n.into()),
+        };
+        (c, surface::cell::digest(&blocks[n]))
+    };
+    let pass = |id: &str, names: &[&str]| RunAllRequest {
+        scope: scope.clone(),
+        cells: names.iter().map(|n| cell(n)).collect(),
+        pass: id.into(),
+        pressed_by: "desktop · test".into(),
+    };
+    let disarmed = || async {
+        let s = cells
+            .state(scope.clone(), vec![cell("py-commands").0])
+            .await;
+        s.unwrap().cells[0].disarmed.clone()
+    };
+    let why = "after: py-prepare — run it first";
+    assert_eq!(disarmed().await.as_deref(), Some(why));
+
+    let p = pass_end(cells.clone(), pass("p_alone", &["py-commands"])).await;
+    let stop = p.stopped.expect("stopped");
+    assert_eq!((stop.before, stop.why.as_str(), p.ran), (true, why, 0));
+
+    let p = pass_end(cells.clone(), pass("p_top", &["py-prepare", "py-commands"])).await;
+    assert_eq!((p.stopped, p.ran), (None, 2));
+    assert_eq!(disarmed().await, None);
+    for k in cells.kernels_of(&scope) {
+        cells.kernel_close(k.id).await.unwrap();
+    }
+}
+
 /// B19: a cell whose interpreter is missing is invalid on `cell_state`, with the reason —
 /// and 171F3 R4: the agent's reply / note-write check ([`Cells::program_missing`]) gives the
 /// same reason, nothing for a shell that resolves or a non-shell language.
@@ -1396,6 +1589,7 @@ async fn member_edit_needs_the_members_ack() {
         run: RunId(id.into()),
         edited: None,
         member_ack: ack.map(Into::into),
+        confirmed: false,
         pressed_by: "desktop · t".into(),
     };
     let alice = CellsError::MemberAck("QUxJQ0VL".into());
