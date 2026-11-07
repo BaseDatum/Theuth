@@ -17402,7 +17402,6 @@ dependencies = [
  "chrono",
  "document",
  "figment",
- "gray_matter",
  "kameo",
  "knowledge",
  "mesh",

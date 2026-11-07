@@ -33,7 +33,7 @@ import { AttachmentsEditor } from './Attachments'
 import { rememberOpenedTask } from './boardMemory'
 import { OwnerSelect } from './OwnerSelect'
 import { TaskChips } from './TaskChips'
-import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId, stateChip } from './helpers'
+import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId, stateChip, wakePhrase } from './helpers'
 import { useAgents, useInvalidateTasks, useMoveTask, useTask, useTaskEvents, useTasks } from './queries'
 
 /**
@@ -281,6 +281,7 @@ function Thread({ task: t }: { task: Task }) {
   const api = useApi()
   const invalidate = useInvalidateTasks()
   const [text, setText] = useState('')
+  const agents = useAgents()
   const comment = useMutation({
     mutationFn: () => api.task_comment(t.id, text.trim()),
     onSuccess: () => {
@@ -299,7 +300,7 @@ function Thread({ task: t }: { task: Task }) {
           if (text.trim()) comment.mutate()
         }}
       >
-        <Textarea rows={2} placeholder={t.owner.type === 'agent' ? `Comment — wakes ${t.owner.name}` : 'Comment'} value={text} onChange={(e) => setText(e.target.value)} />
+        <Textarea rows={2} placeholder={t.owner.type === 'agent' ? `Comment — ${wakePhrase(t.owner.name, agents.data)}` : 'Comment'} value={text} onChange={(e) => setText(e.target.value)} />
         {t.owner.type === 'user' && (
           <Badge variant="outline" className="self-start">
             owner is you — no wake
@@ -402,7 +403,7 @@ function Actions({ task: t }: { task: Task }) {
         )}
         {a.unblock && (
           <Button size="sm" disabled={busy} onClick={() => move.mutate({ id: t.id, state: 'todo' })}>
-            Unblock{t.owner.type === 'agent' && ` — wake ${t.owner.name}`}
+            Unblock{t.owner.type === 'agent' && ` — ${wakePhrase(t.owner.name, agents.data, 'wake')}`}
           </Button>
         )}
         {a.sendBack && (

@@ -301,6 +301,15 @@ pub struct AgentSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
     pub waiting_on: Vec<String>,
+    /// 179 D9: while paused, its wakes waiting for the un-pause.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub held_wakes: u32,
+    /// 179 D9: while paused, a turn of its desk tree is suspended mid-way
+    /// (it resumes on the un-pause).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub suspended: bool,
 }
 
 impl AgentSummary {
@@ -312,6 +321,20 @@ impl AgentSummary {
             0 => format!("waiting on {first}"),
             n => format!("waiting on {first} +{n}"),
         })
+    }
+
+    /// 179 D9: `Paused · N wakes held` (`· suspended mid-turn`), or `None`
+    /// when not paused; the UI chip says the same.
+    pub fn paused_label(&self) -> Option<String> {
+        if self.status != AgentStatus::Paused {
+            return None;
+        }
+        let n = self.held_wakes;
+        let mut s = format!("Paused · {n} wake{} held", if n == 1 { "" } else { "s" });
+        if self.suspended {
+            s.push_str(" · suspended mid-turn");
+        }
+        Some(s)
     }
 }
 

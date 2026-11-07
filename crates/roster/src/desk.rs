@@ -651,6 +651,9 @@ struct State {
     desks: HashMap<String, SessionId>,
     /// Session → the agent it works for: desks and every descendant.
     sessions: HashMap<SessionId, String>,
+    /// 179 D2: un-paused agents whose desk resumed its suspended turn; their
+    /// held wakes wait for that turn's end.
+    resuming: HashSet<String>,
 }
 
 /// The roster's shared read model.
@@ -727,6 +730,28 @@ impl Shared {
     /// The agent's current desk session.
     pub fn desk(&self, agent: &str) -> Option<SessionId> {
         self.read().desks.get(agent).copied()
+    }
+
+    /// 179 D3: the agent's wakes are held — its file says `paused`, or its
+    /// desk is finishing the turn a pause suspended.
+    pub fn is_paused(&self, agent: &str) -> bool {
+        let s = self.read();
+        s.resuming.contains(agent)
+            || s.files
+                .get(agent)
+                .is_some_and(|r| r.as_ref().is_ok_and(|f| f.paused))
+    }
+
+    /// 179 D2: `agent`'s desk is (`true`) / is no longer finishing a resumed turn.
+    /// `true` when this call ended the hold.
+    pub fn set_resuming(&self, agent: &str, on: bool) -> bool {
+        let mut s = self.write();
+        if on {
+            s.resuming.insert(agent.to_owned());
+            false
+        } else {
+            s.resuming.remove(agent)
+        }
     }
 
     /// A child of an agent's session is the agent's too (67 §6.3: caps and

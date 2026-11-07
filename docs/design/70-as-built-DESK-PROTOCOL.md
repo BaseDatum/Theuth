@@ -48,7 +48,7 @@ Sky's three observations and where each landed:
   - `DeliverWake` — (f) gates on every wake: paused agent, or a `blocked` task with blockers (except comment/mention/answer/manual wakes) → one `wake … held: …` diagnostic in the thread per wake key (`Roster.diagnosed`), and `Err("held: …")` so the ledger leaves the wake pending and retries (5 s → 5 min) until the gate opens. (e) the roster block on assignments. Snapshots `Serving` (state, owner, `task_events` count).
   - `judge_turn(name)` on every desk `TurnFinished` (not the closing turn): looks up the row for the wake reason; if unhandled and a child is live (running, or spawned and not yet finished) → wait (the child's result lands in this session); else first time → thread `nudged: ‹row› — …` + `SendInput` of the nudge (with a "rounds spent" sentence once `rounds ≥ max_rounds`); second time → `tasks::NoContinuation`. Handled → `serving` cleared.
   - `SubagentSpawned` from a desk → `serving.rounds += 1`.
-  - `close_desk` now sends `tasks::EpisodeClosing` (the dormant rule had no sender).
+  - `close_desk` now sends `tasks::EpisodeClosing` (the dormant rule had no sender). 179: not for a pause — a pause closes the episode without the journal turn or this rule, and the dispatcher no longer offers a paused agent's wakes (the `DeliverWake` gate is a backstop; `179-pause-suspend.md`).
   - `thread_note` = system progress note (wakes nobody).
 
 ### Item 4 — child result continues the same episode

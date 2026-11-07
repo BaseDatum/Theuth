@@ -27,7 +27,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 tracing = { workspace = true }
-gray_matter = { workspace = true }
 notify = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }

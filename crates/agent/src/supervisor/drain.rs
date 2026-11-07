@@ -34,6 +34,17 @@ pub fn draining() -> bool {
     DRAINING.load(Ordering::SeqCst)
 }
 
+/// Held by tests that set [`draining`] or need it unset: the flag is
+/// process-wide, so they would see each other's.
+#[cfg(test)]
+pub(crate) static DRAIN_FLAG: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Clear [`draining`] (under [`DRAIN_FLAG`]).
+#[cfg(test)]
+pub(crate) fn reset_draining() {
+    DRAINING.store(false, Ordering::SeqCst);
+}
+
 /// `ask` → [`DrainReport`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drain {
@@ -62,10 +73,18 @@ impl Message<OpenTurns> for Agents {
     type Reply = Vec<(SessionId, TurnId, DateTime<Utc>)>;
 
     async fn handle(&mut self, m: OpenTurns, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.store.open_turns(m.0).await.unwrap_or_else(|e| {
+        let open = self.store.open_turns(m.0).await.unwrap_or_else(|e| {
             tracing::error!("109: open_turns: {e:#}");
             Vec::new()
-        })
+        });
+        // 179 D8: a paused agent's turns are not offered for a Resume.
+        let mut out = Vec::with_capacity(open.len());
+        for row in open {
+            if self.paused_root(row.0).await.is_none() {
+                out.push(row);
+            }
+        }
+        out
     }
 }
 
@@ -88,6 +107,9 @@ impl Message<Drain> for Agents {
             .map(|l| l.actor.clone())
             .collect();
         let (store, rt, pool) = (self.store.clone(), self.rt.clone(), self.pool.clone());
+        // 179: a paused agent's tree was suspended by its pause; a second
+        // `suspended` row without a run clock would count the paused time.
+        let held = self.held_roots();
         tokio::spawn(async move {
             // Mark first (§9.2 step 4), durably: a kill inside the window
             // still leaves the planned-stop wording; `turn_finished` closes
@@ -97,6 +119,7 @@ impl Message<Drain> for Agents {
                 tracing::error!("109: drain: open_turns: {e:#}");
                 Vec::new()
             });
+            let open = not_held(&store, &held, open).await;
             for (session, turn, _) in &open {
                 // 178 F1: the turn's accrued run time (cumulative across
                 // resumes) rides on the row; a turn not running here has none.
@@ -132,7 +155,13 @@ impl Message<Drain> for Agents {
             );
             // Still open after the window: the UI's planned-stop wording (§8.2).
             let mut suspended = 0;
-            for (session, turn, _) in store.open_turns(Scope::Here).await.unwrap_or_default() {
+            for (session, turn, _) in not_held(
+                &store,
+                &held,
+                store.open_turns(Scope::Here).await.unwrap_or_default(),
+            )
+            .await
+            {
                 suspended += 1;
                 rt.publish(AgentEvent::TurnSuspended {
                     session,
@@ -160,6 +189,25 @@ impl Message<Drain> for Agents {
         });
         reply
     }
+}
+
+/// `open` minus the turns of sessions under a `held` root (179).
+async fn not_held(
+    store: &Store,
+    held: &std::collections::HashSet<SessionId>,
+    open: Vec<(SessionId, TurnId, DateTime<Utc>)>,
+) -> Vec<(SessionId, TurnId, DateTime<Utc>)> {
+    if held.is_empty() {
+        return open;
+    }
+    let mut out = Vec::with_capacity(open.len());
+    for row in open {
+        match store.root_of(row.0).await {
+            Ok(root) if held.contains(&root) => {}
+            _ => out.push(row),
+        }
+    }
+    out
 }
 
 /// A turn whose end the drain waits for.
@@ -394,6 +442,8 @@ mod tests {
     /// process is a no-op.
     #[tokio::test]
     async fn drain_suspends_own_open_turns_once() {
+        let _flag = DRAIN_FLAG.lock().await;
+        reset_draining();
         let (_dir, b, foreign, foreign_turn) = b_holding_a_turn(false).await;
         let (store, rt) = (b.store.clone(), b.rt.clone());
         let (tx, mut events) = unbounded_channel();
@@ -458,6 +508,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again, DrainReport::default());
+        reset_draining();
     }
 
     /// `Loaded.resume` for the same open turn: `resumed: false` while ask

@@ -12292,12 +12292,15 @@ pub fn agents_table(rows: &[roster::AgentSummary]) -> String {
     }
     let mut out = vec!["name · status · open".to_owned()];
     out.extend(rows.iter().map(|a| {
-        let status = a.waiting_label().unwrap_or_else(|| {
-            serde_json::to_value(a.status)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_owned))
-                .unwrap_or_default()
-        });
+        let status = a
+            .paused_label()
+            .or_else(|| a.waiting_label())
+            .unwrap_or_else(|| {
+                serde_json::to_value(a.status)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default()
+            });
         format!("{} · {status} · {}", a.file.name.as_str(), a.open_tasks)
     }));
     out.join("\n")
@@ -16114,6 +16117,8 @@ mod tests {
             spent_month: 0.0,
             error: None,
             waiting_on: vec!["scout".into(), "probe".into()],
+            held_wakes: 0,
+            suspended: false,
         };
         assert_eq!(
             agents_table(&[agent]),

@@ -34,7 +34,7 @@ export function useAgentActions() {
     put: useAction((f: AgentFile) => api.agent_put(f), { keys: roster, onSuccess: (_, f) => toast(`Saved ${f.name}`) }),
     pause: useAction(({ name, paused }: { name: string; paused: boolean }) => api.agent_pause(name, paused), {
       keys: roster,
-      onSuccess: (_, v) => toast(v.paused ? `Paused ${v.name}` : `Resumed ${v.name}`),
+      onSuccess: (_, v) => toast(v.paused ? `Paused ${v.name} — its work is suspended` : `${v.name} resumed`),
     }),
     approve: useAction(h.approve, { keys: roster, onSuccess: (_, name) => toast(`Hired ${name}`) }),
     reject: useAction(({ name, note }: { name: string; note: string }) => h.reject(name, note), { keys: roster, onSuccess: (_, v) => toast(`Declined ${v.name}`) }),

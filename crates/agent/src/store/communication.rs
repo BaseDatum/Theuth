@@ -1127,6 +1127,27 @@ impl Store {
         Ok(Some((seq, message)))
     }
 
+    /// 179: re-admit a still-`accepted` exchange under `generation` — a
+    /// paused agent's message kept across a restart is delivered under the
+    /// policy as it is now (the caller checked the route); the admission
+    /// counter does not survive the restart. `false` when it is no longer
+    /// `accepted`.
+    pub async fn readmit_exchange(&self, id: Uuid, generation: i64) -> anyhow::Result<bool> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE peer_exchanges SET generation = ?, updated_at = ? \
+             WHERE id = ? AND state = 'accepted' AND history_seq IS NULL",
+        )
+        .bind(generation)
+        .bind(now())
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(n == 1)
+    }
+
     /// Suppress one still-`accepted` exchange (admission failed at intake).
     /// Idempotent when already suppressed; `Terminal` for any other state.
     pub async fn suppress_exchange(&self, id: Uuid, reason: &str) -> anyhow::Result<PeerReceipt> {
@@ -1461,16 +1482,32 @@ impl Store {
     /// child's finished result (`request_id = result:<turn>` from a
     /// `session:*` sender) stays `accepted` and is delivered on resume.
     pub async fn fail_interrupted(&self, reason: &str) -> anyhow::Result<Interrupted> {
+        self.fail_interrupted_except(reason, &[]).await
+    }
+
+    /// [`Self::fail_interrupted`] sparing the exchanges addressed to `spare`
+    /// (179 D6: a paused agent's sessions — they stay `accepted` and are
+    /// delivered when the agent is un-paused).
+    pub async fn fail_interrupted_except(
+        &self,
+        reason: &str,
+        spare: &[SessionId],
+    ) -> anyhow::Result<Interrupted> {
+        let spare =
+            serde_json::to_string(&spare.iter().map(|s| s.to_string()).collect::<Vec<_>>())?;
         let mut tx = self.begin_write().await?;
         let ts = now();
         let rows: Vec<ExchangeRow> = sqlx::query_as(concat!(
             "UPDATE peer_exchanges SET state = 'failed', error = ?, updated_at = ? \
              WHERE state = 'accepted' \
-               AND NOT (sender LIKE 'session:%' AND request_id LIKE 'result:%') RETURNING ",
+               AND NOT (sender LIKE 'session:%' AND request_id LIKE 'result:%') \
+               AND (recipient_session IS NULL \
+                    OR recipient_session NOT IN (SELECT value FROM json_each(?))) RETURNING ",
             exchange_cols!()
         ))
         .bind(reason)
         .bind(&ts)
+        .bind(&spare)
         .fetch_all(&mut *tx)
         .await?;
         let exchanges = rows

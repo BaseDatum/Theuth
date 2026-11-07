@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
-import { ActivityChip, waitingLabel } from './identity'
+import { ActivityChip, PausedChip, pausedLabel, waitingLabel } from './identity'
 
 const chip = (waiting?: string[]) => renderToStaticMarkup(createElement(ActivityChip, { status: 'working', waiting }))
 
@@ -18,4 +18,12 @@ test('178: no waiting children: the bare status', () => {
   expect(chip([])).toContain('>working<')
   expect(chip()).toContain('>working<')
   expect(chip()).not.toContain('waiting on')
+})
+
+test('179: a paused agent says how many wakes it holds and whether a turn is suspended', () => {
+  const paused = (held_wakes: number, suspended: boolean) => renderToStaticMarkup(createElement(PausedChip, { agent: { held_wakes, suspended } }))
+  expect(paused(2, true)).toContain('>Paused · 2 wakes held · suspended mid-turn<')
+  expect(paused(1, false)).toContain('>Paused · 1 wake held<')
+  expect(paused(0, false)).not.toContain('suspended mid-turn')
+  expect(pausedLabel({})).toBe('Paused · 0 wakes held')
 })

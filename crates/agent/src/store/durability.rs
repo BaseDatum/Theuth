@@ -712,6 +712,23 @@ impl Store {
             .transpose()
     }
 
+    /// 179 D9: whether any session of `root`'s tree (itself and every
+    /// descendant) has an open turn — one query, only the tree's rows.
+    pub async fn tree_has_open_turn(&self, root: SessionId) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "WITH RECURSIVE tree(id) AS ( \
+                 SELECT ?1 UNION ALL SELECT s.id FROM sessions s JOIN tree t ON s.parent = t.id) \
+             SELECT 1 FROM (SELECT kind, ROW_NUMBER() OVER (PARTITION BY session_id, turn_id \
+                 ORDER BY (kind = 'assistant_partial'), n DESC) AS rn \
+               FROM turn_steps WHERE session_id IN (SELECT id FROM tree)) \
+             WHERE rn = 1 AND kind != 'turn_finished' LIMIT 1",
+        )
+        .bind(root.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.is_some())
+    }
+
     /// 178 W1/F1: `turn`'s run time before an interruption ([`run_ms`] over
     /// its rows, `n` order); only rows at or before `until` when given (a
     /// resumed turn's own new rows never count). 0 without rows.
@@ -764,6 +781,33 @@ impl Store {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Test seam (179): `turn`'s `suspended` rows as `(reason, ran_ms)`, oldest first.
+    #[cfg(test)]
+    pub async fn suspended_rows(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+    ) -> anyhow::Result<Vec<(String, Option<u64>)>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT payload FROM turn_steps \
+             WHERE session_id = ? AND turn_id = ? AND kind = 'suspended' ORDER BY n",
+        )
+        .bind(session.to_string())
+        .bind(turn.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(p,)| {
+                let p = json(&p);
+                (
+                    p["reason"].as_str().unwrap_or_default().to_owned(),
+                    p["ran_ms"].as_u64(),
+                )
+            })
+            .collect())
     }
 
     /// 146 D9: the ACP child's journal. An ACP child owes work from the

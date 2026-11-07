@@ -151,6 +151,12 @@ impl Agents {
         if plan.last == crate::durability::LastStep::Finished {
             return;
         }
+        // 179 D8: a paused agent's turns resume on its un-pause
+        // (`ResumeTree` lifts the hold first), never from the scan, the
+        // Resume button or the RPC.
+        if let Some(desk) = self.paused_root(session).await {
+            return tracing::info!(session = %session, %turn, %desk, "179: agent is paused; turn stays suspended");
+        }
         let row = match self.store.session(session).await {
             Ok(Some(row)) if row.here => row,
             Ok(Some(row)) => {

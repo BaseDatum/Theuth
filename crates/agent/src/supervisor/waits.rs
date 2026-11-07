@@ -270,10 +270,11 @@ impl Agents {
     }
 
     /// Deliver one spared child result into its parent (§7.2), the tail of
-    /// `hand_off` without the live-child bookkeeping. 139 §5.1 item 11: a
+    /// `hand_off` without the live-child bookkeeping — 179: also any local
+    /// peer's `accepted` exchange a paused tree kept. 139 §5.1 item 11: a
     /// parent owned elsewhere (taken since the child finished) is never
     /// woken here — the result goes to its owner as `Agents::deliver` does.
-    async fn deliver_spared(&mut self, record: PeerRecord) {
+    pub(super) async fn deliver_spared(&mut self, record: PeerRecord) {
         let id = record.receipt.id;
         let (Some(child), Some(parent)) = (
             PeerAddress::local(&record.from),
@@ -359,6 +360,12 @@ impl Agents {
             let parent = PeerAddress::local(&record.receipt.to);
             if let (Some(c), Some(p)) = (child, parent)
                 && awaited.contains(&(p, c))
+            {
+                continue;
+            }
+            // 179 D6: a paused agent's result stays `accepted` for its un-pause.
+            if let Some(p) = parent
+                && self.paused_root(p).await.is_some()
             {
                 continue;
             }

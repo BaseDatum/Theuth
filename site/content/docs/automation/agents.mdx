@@ -34,7 +34,7 @@ For every agent that is active (not paused, not an unapproved proposal) theuth k
 - Every turn woken for a task must end with a disposition: `done`, `review`, `blocked`, `delegated` or `continuing`. A turn that leaves its task unmoved gets one nudge; a second miss sets the task `blocked: "no continuation"` and wakes the manager.
 - At most `roster.max_rounds` (3) child rounds per task per episode.
 
-A desk's work is grouped into **episodes**. An episode closes when the desk is idle for `roster.episode_idle_secs` (21600 s = 6 h), reaches `roster.episode_context_pct` (60 %) of its context window, the thread ends, the hub lease moves, or theuth shuts down. The closing turn writes a journal (Done / Open / Next / Notes, capped at `roster.journal_max_bytes` = 8192) to `~/.theuth/roster/journal/<name>.md`, which the next episode reads back. Tasks still checked out at close without a `continuing` disposition become `blocked: no continuation`.
+A desk's work is grouped into **episodes**. An episode closes when the desk is idle for `roster.episode_idle_secs` (21600 s = 6 h), reaches `roster.episode_context_pct` (60 %) of its context window, the thread ends, the hub lease moves, or theuth shuts down. The closing turn writes a journal (Done / Open / Next / Notes, capped at `roster.journal_max_bytes` = 8192) to `~/.theuth/roster/journal/<name>.md`, which the next episode reads back. Tasks still checked out at close without a `continuing` disposition become `blocked: no continuation`. A pause closes the episode too, but without the journal turn and without blocking anything (see [Pausing](#pausing)).
 
 Desks and the task board are tightly coupled; [Tasks](/docs/automation/tasks) covers wakes, checkouts and dispositions in detail.
 
@@ -48,9 +48,22 @@ Each agent shows one **Active / Paused** switch and an activity chip:
 | `working` | Its desk is handling a wake right now (green dot in the Desks group) |
 | `blocked` | Every open task it owns is blocked |
 | `invalid file` | `agents/<name>.md` does not parse; the error is shown on the card; the agent takes no wakes |
-| `paused` | Switch off, or auto-paused by budget; no desk, no wakes |
+| `Paused · N wakes held` | Switch off, or auto-paused by budget; `· suspended mid-turn` when a turn was cut short (see [Pausing](#pausing)) |
 
 A proposal awaiting approval appears only in the **Hiring inbox**, not as a chip. There is no "retired" state: removing an agent deletes its file.
+
+### Pausing
+
+Switching an agent off — or its budget cap — suspends it the way quitting theuth does. Its desk's turn and every subagent turn under it stop at the next safe point (a model call in flight gets `durability.drain_secs`, default 10 s, to finish); the journal records where each stood and how long it had run. While it is paused nothing of it runs:
+
+- wakes are still raised but not delivered; the task thread says `queued for <name> (paused)`;
+- a routine with `agent: <name>` records its fire as `skipped: agent paused` and creates no task;
+- a child's result or a peer's message sent to one of its sessions is accepted and waits (across a restart too); its reminders wait and fire after the un-pause;
+- text you type into one of its sessions is refused: `<name> is paused — un-pause it to send`;
+- checked-out tasks stay checked out — no "presumed lost", no `blocked: no continuation`;
+- restarting theuth resumes nothing; removing a paused agent closes its suspended turns instead of resuming them.
+
+Switching it back on resumes those turns where they stopped (a subagent keeps the run time it had used against `agent.subagents.max_runtime_secs`), delivers what waited, and once the resumed desk turn ends the queued wakes arrive in priority order. A wake the desk was serving when it was paused is not delivered a second time. Saving the agent's file from another window or the budget card never changes `paused`; only the switch does.
 
 ## Walkthrough: hiring in chat
 

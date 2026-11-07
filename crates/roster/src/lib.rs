@@ -213,6 +213,22 @@ const SERVING_GRACE_MS: u64 = 2 * TICK.as_millis() as u64;
 /// A closing turn that never finishes is given up after this.
 const CLOSING_GRACE_MS: u64 = 10 * 60 * 1000;
 
+/// 179: the episode-close reason of a pause, and the tree suspension's.
+const PAUSED: &str = agent::supervisor::pause::PAUSED;
+
+/// 179: a paused agent's desk tree, on hold in the agent actor until the
+/// un-pause resumes it.
+struct PausedDesk {
+    /// The desk session (the tree's root).
+    session: runtime::SessionId,
+    /// The wake the desk served when the pause closed it (D2: its claim
+    /// stands and the resumed work continues it).
+    serving: Option<desk::Serving>,
+    /// The desk turn's stop reason when it finished inside the pause's
+    /// drain window instead of being suspended: judged at the un-pause.
+    finished: Option<String>,
+}
+
 /// A desk whose closing turn is in flight (67 §6.2).
 struct Closing {
     agent: String,
@@ -253,6 +269,10 @@ pub struct Roster {
     unreleased: Vec<runtime::SessionId>,
     /// 178 F4: `AgentSummary::waiting_on` per desk ([`Self::refresh_waiting`]).
     waiting: HashMap<String, Vec<String>>,
+    /// 179: agents whose desk tree this process holds paused.
+    held: HashMap<String, PausedDesk>,
+    /// 179: paused agents found without a desk session (not asked again).
+    deskless: HashSet<String>,
 }
 
 /// The `agent` config section's `endless` key alone (the roster reads
@@ -402,6 +422,8 @@ impl Roster {
             probe: Arc::new(tasks::AgentProbe),
             unreleased: Vec::new(),
             waiting: HashMap::new(),
+            held: HashMap::new(),
+            deskless: HashSet::new(),
         };
         // ponytail: the previous run's open episodes are closed without a
         // journal turn (their sessions may be gone); their journals are the
@@ -511,8 +533,10 @@ impl Roster {
             && (name == AgentName::DEFAULT || self.wanted().iter().any(|f| f.name.as_str() == name))
     }
 
-    /// Open the desks that are missing, close the ones no longer wanted.
+    /// Open the desks that are missing, close the ones no longer wanted;
+    /// 179: first suspend or resume the trees of agents paused or un-paused.
     async fn sync_desks(&mut self) {
+        self.sync_pauses().await;
         let wanted = self.wanted();
         for f in &wanted {
             if !self.desks.contains_key(f.name.as_str()) && !self.is_closing(f.name.as_str()) {
@@ -525,9 +549,206 @@ impl Roster {
             .filter(|n| !self.allowed(n))
             .cloned()
             .collect();
+        // A paused agent's desk was closed by `sync_pauses`: these are
+        // removed files, proposals and a lease moved away.
         for name in stale {
-            self.close_desk(&name, "paused").await;
+            self.close_desk(&name, "closed").await;
         }
+    }
+
+    /// 179 D1/D2: an agent whose file says `paused` gets its desk closed and
+    /// its session tree suspended and held (once per pause, at boot too); one
+    /// whose file no longer says so is resumed, then its desk reopens. Holds
+    /// the agent actor has that this roster did not place (the boot hold, an
+    /// invalid file) are reconciled too; a removed agent's is released.
+    async fn sync_pauses(&mut self) {
+        let files = self.shared.files();
+        for (name, parsed) in &files {
+            let Ok(f) = parsed else { continue };
+            match (f.paused, self.held.contains_key(name)) {
+                (true, false) if !self.deskless.contains(name) => self.pause_tree(name).await,
+                (false, true) => self.resume_tree(f).await,
+                (false, false) => {
+                    self.deskless.remove(name);
+                }
+                _ => {}
+            }
+        }
+        let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+            return;
+        };
+        // A removed agent: its hold goes without a resume (no charter would
+        // run them); the agent actor closes its open turns.
+        let gone: Vec<String> = self
+            .held
+            .keys()
+            .filter(|n| !files.contains_key(*n))
+            .cloned()
+            .collect();
+        for name in gone {
+            if let Some(p) = self.held.remove(&name) {
+                tracing::info!(agent = %name, desk = %p.session, "179: paused agent removed; its hold released");
+                let _ = agents
+                    .ask(agent::supervisor::ReleaseTree { desk: p.session })
+                    .await;
+            }
+        }
+        let held = agents
+            .ask(agent::supervisor::HeldDesks)
+            .await
+            .unwrap_or_default();
+        for (desk, agent) in held {
+            let Some(name) = agent.filter(|n| !self.held.contains_key(n)) else {
+                continue;
+            };
+            match files.get(&name) {
+                None => {
+                    tracing::info!(agent = %name, %desk, "179: held desk of a removed agent released");
+                    let _ = agents.ask(agent::supervisor::ReleaseTree { desk }).await;
+                }
+                Some(Ok(f)) => {
+                    self.shared.set_desk(&name, desk);
+                    self.held.insert(
+                        name.clone(),
+                        PausedDesk {
+                            session: desk,
+                            serving: None,
+                            finished: None,
+                        },
+                    );
+                    if !f.paused {
+                        let f = f.clone();
+                        self.resume_tree(&f).await;
+                    }
+                }
+                // An invalid file: its text still decides; a lifted hold
+                // resumes the tree, the desk stays shut until the file parses.
+                Some(Err(_)) => {
+                    let paused = self
+                        .read_text(&name)
+                        .is_ok_and(|t| agent::supervisor::pause::agent_file_paused(&t));
+                    if !paused {
+                        tracing::info!(agent = %name, %desk, "179: invalid file no longer paused; hold lifted");
+                        let _ = agents.ask(agent::supervisor::ResumeTree { desk }).await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// 179 D1: close the desk without its journal turn or the episode's
+    /// "no continuation" rule (D4: checkouts survive), keep the agent ↔ desk
+    /// mapping (D8), and have the agent actor suspend the tree.
+    async fn pause_tree(&mut self, name: &str) {
+        if self.desks.contains_key(name) {
+            self.close_desk(name, PAUSED).await;
+        }
+        let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+            return;
+        };
+        let session = match self.shared.desk(name) {
+            Some(s) => Some(s),
+            None => agents
+                .ask(agent::DeskSession(name.to_owned()))
+                .await
+                .ok()
+                .flatten(),
+        };
+        // Never had a desk: nothing runs, nothing to hold — and a paused
+        // agent gets none, so it is not asked again until un-paused.
+        let Some(session) = session else {
+            self.deskless.insert(name.to_owned());
+            return;
+        };
+        self.shared.set_desk(name, session);
+        self.held.entry(name.to_owned()).or_insert(PausedDesk {
+            session,
+            serving: None,
+            finished: None,
+        });
+        tracing::info!(agent = %name, desk = %session, "179: paused: desk closed, its session tree suspending");
+        if let Err(e) = agents
+            .tell(agent::supervisor::PauseTree { desk: session })
+            .await
+        {
+            tracing::warn!(agent = %name, "179: tree not suspended: {e}");
+        }
+    }
+
+    /// 179 D2: resume the tree (the suspended turns continue with their
+    /// remaining caps; an un-pause inside the pause's drain waits for it),
+    /// then reopen the desk through the [`Self::wanted`] gates. The served
+    /// wake's claim stands when work resumed or the desk's turn ended inside
+    /// the drain window (judged here) — so it is not delivered again; a
+    /// resumed desk turn holds the agent's other wakes until it ends
+    /// ([`desk::Shared::set_resuming`]).
+    async fn resume_tree(&mut self, f: &AgentFile) {
+        let name = f.name.as_str();
+        let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+            return;
+        };
+        let Some(p) = self.held.remove(name) else {
+            return;
+        };
+        let report = match agents
+            .ask(agent::supervisor::ResumeTree { desk: p.session })
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(agent = %name, "179: tree not resumed: {e}");
+                Default::default()
+            }
+        };
+        let desk_turn = report.resumed.iter().any(|(s, _)| *s == p.session);
+        let keep = !report.resumed.is_empty() || p.finished.is_some();
+        tracing::info!(agent = %name, desk = %p.session, turns = report.resumed.len(), replayed = report.replayed, desk_turn, "179: un-paused: tree resumed, desk reopening");
+        if self.wanted().iter().any(|w| w.name == f.name) {
+            self.open_desk_with(f, !keep).await;
+        }
+        let serving = match (keep, p.serving) {
+            (false, _) => None,
+            (true, Some(s)) => Some(s),
+            (true, None) => Self::claimed_serving(p.session).await,
+        };
+        if let Some(d) = self.desks.get_mut(name) {
+            d.primed |= serving.is_some() || desk_turn;
+            d.serving = serving;
+            d.working |= desk_turn;
+        }
+        if desk_turn {
+            self.shared.set_resuming(name, true);
+        } else if let Some(t) = tasks::actor() {
+            let _ = t.tell(tasks::Unpaused(name.to_owned())).await;
+        }
+        if let Some(stop) = p.finished {
+            self.judge_turn(name, &stop).await;
+        }
+    }
+
+    /// 179 D2 after a restart: the wake a desk's claim still names, as the
+    /// `serving` it was (its delivery-time task event count unknown: 0).
+    async fn claimed_serving(session: runtime::SessionId) -> Option<desk::Serving> {
+        let t = tasks::actor()?;
+        let wake = t
+            .ask(tasks::ClaimedWake(session.to_string()))
+            .await
+            .ok()??;
+        let task = match &wake.task {
+            Some(id) => t.ask(tasks::GetTask(id.clone())).await.ok(),
+            None => None,
+        };
+        Some(desk::Serving {
+            state: task.as_ref().map(|t| t.state),
+            owner: task.as_ref().map(|t| t.owner.clone()),
+            wake,
+            events: 0,
+            nudged: false,
+            rounds: 0,
+            children: HashSet::new(),
+            logged_live_child: false,
+            turn_seen: false,
+        })
     }
 
     /// One pinned session titled `<name> · desk`, marked as the agent's desk on
@@ -537,6 +758,13 @@ impl Roster {
     /// there is none (or the last was retired for context, [`Self::put_away`]).
     /// Silently skipped when the agent actor is not up yet (`Tick` retries).
     async fn open_desk(&mut self, f: &AgentFile) {
+        self.open_desk_with(f, true).await;
+    }
+
+    /// [`Self::open_desk`]; `release: false` (179 D2, an un-pause whose
+    /// suspended work resumed) keeps the reopened desk's claims — they are
+    /// the resumed turns' wake, not a dead turn's.
+    async fn open_desk_with(&mut self, f: &AgentFile, release: bool) {
         let name = f.name.as_str();
         let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
             return;
@@ -619,6 +847,7 @@ impl Roster {
             // starts; the release then waits for `TasksUp` — without it the
             // dead turn's claim held the agent's queue for good.
             match tasks::actor() {
+                _ if !release => {}
                 Some(t) => {
                     let _ = t.tell(tasks::ReleaseClaims(session.to_string())).await;
                 }
@@ -873,10 +1102,26 @@ impl Roster {
     /// a primed desk gets the journal turn and finishes in `finish_closing`,
     /// an empty one is put away at once. The agent → session mapping is kept
     /// (STALE-WAKE-DESKS): the desk is closed in memory, not severed.
+    /// 179: a pause (`reason` [`PAUSED`]) is a clean quit for the desk — no
+    /// journal turn, no "no continuation" rule; the claim and the served
+    /// wake are kept for the un-pause ([`PausedDesk`]).
     async fn close_desk(&mut self, name: &str, reason: &str) {
         let Some(d) = self.desks.remove(name) else {
             return;
         };
+        if reason == PAUSED {
+            self.held.insert(
+                name.to_owned(),
+                PausedDesk {
+                    session: d.session,
+                    serving: d.serving,
+                    finished: None,
+                },
+            );
+            self.put_away(name, d.session, &d.episode, reason, None)
+                .await;
+            return;
+        }
         // 67 §7.3 last rule (70 DESK-PROTOCOL 3): a task the episode leaves in
         // `doing` with no continuation is blocked and the manager woken.
         if d.primed
@@ -1376,6 +1621,12 @@ impl Roster {
             .filter(|d| d.serving.is_some() && !d.working)
             .and_then(|_| self.waiting.get(&name).cloned())
             .unwrap_or_default();
+        // 179 D9: what a paused agent holds.
+        let (held_wakes, suspended) = if status == AgentStatus::Paused {
+            self.paused_state(&name, desk).await
+        } else {
+            (0, false)
+        };
         AgentSummary {
             file: f,
             status,
@@ -1388,7 +1639,31 @@ impl Roster {
                 .unwrap_or(0.0),
             error: None,
             waiting_on,
+            held_wakes,
+            suspended,
         }
+    }
+
+    /// 179 D9: a paused agent's unclaimed wakes, and whether a turn of its
+    /// desk tree is suspended; `(0, false)` without the actors.
+    async fn paused_state(&self, name: &str, desk: Option<runtime::SessionId>) -> (u32, bool) {
+        let held = match tasks::actor() {
+            Some(t) => t.ask(tasks::HeldWakes(name.to_owned())).await.unwrap_or(0),
+            None => 0,
+        };
+        let suspended = match (
+            desk,
+            ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                .ok()
+                .flatten(),
+        ) {
+            (Some(d), Some(a)) => a
+                .ask(agent::supervisor::TreeSuspended(d))
+                .await
+                .unwrap_or(false),
+            _ => false,
+        };
+        (held, suspended)
     }
 
     /// A wake is being handled on the desk (178 W4: a turn runs on it, or it
@@ -1455,6 +1730,15 @@ impl Roster {
             &file::set_key(&text, "paused", paused.then_some("true")),
         )
         .await
+    }
+
+    /// 67 §6.4 at 100 %: the file says `paused`, and — 179 D1 — the pause is
+    /// applied at once, as the switch's is: the desk closes, its tree suspends.
+    async fn budget_pause(&mut self, name: &str) {
+        if let Err(e) = self.set_paused(name, true).await {
+            tracing::warn!(agent = %name, "not paused at the budget cap: {e}");
+        }
+        self.sync_desks().await;
     }
 
     /// File a task; `None` (logged) when the tasks plugin is down or refuses.
@@ -1598,10 +1882,7 @@ impl Roster {
                 {
                     return;
                 }
-                if let Err(e) = self.set_paused(&name, true).await {
-                    tracing::warn!(agent = %name, "not paused at the budget cap: {e}");
-                }
-                self.sync_desks().await;
+                self.budget_pause(&name).await;
                 self.file_task(
                     task(
                         format!("Budget override: {name} spent {after:.2} of {amount:.2} {currency} in {month}"),
@@ -1700,6 +1981,21 @@ impl Message<Tick> for Roster {
         for s in overdue {
             tracing::warn!(%s, "closing turn gave no journal in time");
             self.finish_closing(s).await;
+        }
+        // 179 D2 backstop: a resumed desk turn whose end was never seen (the
+        // 178 W5 rule above cleared `working`) no longer holds the wakes.
+        let idle: Vec<String> = self
+            .desks
+            .iter()
+            .filter(|(_, d)| !d.working)
+            .map(|(n, _)| n.clone())
+            .collect();
+        for name in idle {
+            if self.shared.set_resuming(&name, false)
+                && let Some(t) = tasks::actor()
+            {
+                let _ = t.tell(tasks::Unpaused(name)).await;
+            }
         }
         // Desks that could not open earlier (the agent actor was not up).
         self.sync_desks().await;
@@ -1898,6 +2194,13 @@ impl Message<agent::AgentEvent> for Roster {
                     return;
                 }
                 let Some(name) = self.desk_name(session) else {
+                    // 179: a paused desk's turn finished inside the pause's
+                    // drain window instead of being suspended — judged at the
+                    // un-pause, so its wake is neither lost nor delivered again.
+                    if let Some(p) = self.held.values_mut().find(|p| p.session == session) {
+                        p.finished = Some(stop_reason);
+                        return;
+                    }
                     self.child_turn_event(session).await;
                     return;
                 };
@@ -1914,6 +2217,13 @@ impl Message<agent::AgentEvent> for Roster {
                 };
                 // 70 DESK-PROTOCOL 3: the nudge point.
                 self.judge_turn(&name, &stop_reason).await;
+                // 179 D2: the turn an un-pause resumed is over; the agent's
+                // held wakes go now, in rank order.
+                if self.shared.set_resuming(&name, false)
+                    && let Some(t) = tasks::actor()
+                {
+                    let _ = t.tell(tasks::Unpaused(name.clone())).await;
+                }
                 self.refresh_waiting(&name).await;
                 // 137 R1-D7: the idle moment a pending memory switch waits for.
                 self.apply_pending_memory(&name).await;
@@ -2170,6 +2480,8 @@ impl Message<ListAgents> for Roster {
                         spent_month: 0.0,
                         error: Some(e),
                         waiting_on: Vec::new(),
+                        held_wakes: 0,
+                        suspended: false,
                     });
                 }
             }
@@ -2255,7 +2567,11 @@ impl Message<SetTheuthModel> for Roster {
 impl Message<PutAgent> for Roster {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: PutAgent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        mut m: PutAgent,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if m.0.name.is_default() {
             return Err(
                 "theuth is the built-in default agent: edit prompt.md, not the roster; \
@@ -2263,11 +2579,18 @@ impl Message<PutAgent> for Roster {
                     .into(),
             );
         }
+        // 179 D7: `paused` and `proposed_by` of an existing file are the
+        // switch's and the approval's — a stale copy (the budget card, a
+        // second window) never flips them. A new file ("Hire paused") sets them.
+        let old = self.shared.file(m.0.name.as_str());
+        if let Some(o) = &old {
+            m.0.paused = o.paused;
+            m.0.proposed_by.clone_from(&o.proposed_by);
+        }
         // Validate through the parser so the file on disk is always readable.
         file::parse(m.0.name.as_str(), &file::render(&m.0))?;
         // 148 F1: `write_file` updates the read model, so the reconcile below
         // cannot see the `model:` change — apply it here.
-        let old = self.shared.file(m.0.name.as_str());
         let old_model = old.as_ref().and_then(|f| f.model.clone());
         let old_memory_model = old.and_then(|f| f.memory_model);
         self.write_file(&m.0).await?;
@@ -2287,7 +2610,7 @@ impl Message<PutAgent> for Roster {
 impl Message<PauseAgent> for Roster {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: PauseAgent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: PauseAgent, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if m.name == AgentName::DEFAULT {
             return Err("theuth cannot be paused: it is the built-in default agent".into());
         }
@@ -2317,7 +2640,9 @@ impl Message<PauseAgent> for Roster {
             ),
         )
         .await;
-        let _ = ctx.actor_ref().tell(Reconcile).await;
+        // 179: applied before the reply — a queued `Reconcile` left the desk
+        // open (judged, nudged, woken) until it ran.
+        self.sync_desks().await;
         Ok(())
     }
 }
@@ -2637,6 +2962,12 @@ impl tasks::DeskRouter for Desks {
             .collect();
         v.push(AgentName::DEFAULT.to_owned());
         v
+    }
+
+    /// 179 D3: the file's `paused:`, or an un-paused desk still finishing
+    /// the turn its pause suspended.
+    fn is_paused(&self, agent: &str) -> bool {
+        self.0.is_paused(agent)
     }
 }
 
@@ -3966,6 +4297,8 @@ mod tests {
             spent_month: 0.0,
             error: None,
             waiting_on,
+            held_wakes: 0,
+            suspended: false,
         };
         assert_eq!(
             row(names).waiting_label().as_deref(),
@@ -4119,6 +4452,352 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(agent::AGENT_ACTOR);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// Forget actors a test registered under global names (their runtime dies with the test).
+    fn unregister(names: &[&str]) {
+        let mut reg = kameo::registry::ACTOR_REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for n in names {
+            reg.remove(*n);
+        }
+    }
+
+    /// A todo task owned by `agent:ops`, through the tasks actor.
+    async fn ops_task(t: &ActorRef<tasks::Tasks>) -> tasks::Task {
+        t.ask(tasks::CreateTask {
+            input: tasks::TaskCreate {
+                state: tasks::TaskState::Todo,
+                title: "fix deploy".into(),
+                brief: "the flaky one".into(),
+                owner: tasks::Owner::Agent("ops".into()),
+                reviewer: None,
+                parent: None,
+                project: None,
+                where_: None,
+                harness: None,
+                external: vec![],
+                done_when: None,
+                attachments: vec![],
+                priority: None,
+            },
+            created_by: "user".into(),
+            session: None,
+        })
+        .await
+        .unwrap()
+    }
+
+    /// 179 D3 backstop: a wake reaching a paused agent whose desk is still
+    /// open (the dispatch pass raced the pause) is refused `held:` and the
+    /// desk does not start serving it.
+    #[test]
+    fn deliver_wake_to_a_paused_agent_is_held_with_an_open_desk() {
+        with_engine_lock(async {
+            let (data, r, _, _) = desk_rig("paused-held", None, 0).await;
+            r.set_paused("ops", true).await.unwrap();
+            assert!(r.desks.contains_key("ops"), "not synced: the desk is open");
+            let actor = Roster::spawn(r);
+            let refused = actor
+                .ask(DeliverWake {
+                    agent: "ops".into(),
+                    wake: plain_serving().wake,
+                    task: None,
+                })
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("held: agent is paused"), "{refused}");
+            let rows = actor.ask(ListAgents).await.unwrap();
+            let ops = rows.iter().find(|a| a.file.name.as_str() == "ops").unwrap();
+            assert_eq!(ops.status, AgentStatus::Paused);
+            actor.kill();
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 179 D4: a pause closes the desk without the episode's "no
+    /// continuation" rule — the checked-out `doing` task keeps its state and
+    /// checkout, no manager is woken — and keeps what the desk served.
+    #[test]
+    fn pause_closes_the_desk_and_keeps_checkouts() {
+        with_engine_lock(async {
+            use runtime::Plugin as _;
+            let (data, mut r, session, _) = desk_rig("pause-keeps", Some(plain_serving()), 0).await;
+            Box::new(tasks::TasksPlugin).start(&r.rt).await.unwrap();
+            let t = tasks::actor().expect("tasks up");
+            let task = ops_task(&t).await;
+            t.ask(tasks::CheckoutTask {
+                id: task.id.clone(),
+                session: session.to_string(),
+                actor: "agent:ops".into(),
+            })
+            .await
+            .unwrap();
+            r.desks.get_mut("ops").unwrap().primed = true;
+            let manager = r.shared.file("ops").unwrap().reports_to;
+            let before = t.ask(tasks::HeldWakes(manager.clone())).await.unwrap();
+
+            r.set_paused("ops", true).await.unwrap();
+            r.sync_desks().await;
+            assert!(!r.desks.contains_key("ops"), "desk closed");
+            assert_eq!(r.shared.desk("ops"), Some(session), "mapping kept");
+            assert_eq!(
+                r.held["ops"].serving.as_ref().map(|s| s.wake.id.as_str()),
+                Some("w1"),
+                "the served wake is kept for the un-pause"
+            );
+            let after = t.ask(tasks::GetTask(task.id.clone())).await.unwrap();
+            assert_eq!(after.state, tasks::TaskState::Doing);
+            assert!(after.blockers.is_empty(), "{:?}", after.blockers);
+            assert_eq!(after.checkout.map(|c| c.session), Some(session.to_string()));
+            assert_eq!(
+                t.ask(tasks::HeldWakes(manager)).await.unwrap(),
+                before,
+                "no manager wake"
+            );
+            t.kill();
+            unregister(&[tasks::TASKS_ACTOR, tasks::activity::ACTIVITY_ACTOR]);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 179 D2: un-pausing an agent whose tree had nothing suspended reopens
+    /// the same desk session and releases its claims (here queued for
+    /// `TasksUp`: no tasks actor in this rig) — they are a dead turn's.
+    #[test]
+    fn unpause_reopens_desk_and_releases_claims() {
+        with_engine_lock(async {
+            let data = tmp("unpause");
+            std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
+                .await
+                .unwrap();
+            let mut r = roster_on(rt.clone(), &data).await;
+            let desk = r.desks["ops"].session;
+            r.set_paused("ops", true).await.unwrap();
+            r.sync_desks().await;
+            assert!(!r.desks.contains_key("ops") && r.held.contains_key("ops"));
+            r.unreleased.clear();
+
+            r.set_paused("ops", false).await.unwrap();
+            r.sync_desks().await;
+            assert_eq!(
+                r.desks.get("ops").map(|d| d.session),
+                Some(desk),
+                "same desk"
+            );
+            assert!(r.held.is_empty());
+            assert_eq!(r.unreleased, vec![desk], "claims released");
+            assert!(!r.shared.is_paused("ops"), "wakes flow at once");
+            agents.kill();
+            unregister(&[agent::AGENT_ACTOR]);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 179 D7: a stale copy of an existing file (the budget card's spread)
+    /// cannot flip `paused` or `proposed_by`; the rest of it is written.
+    #[tokio::test]
+    async fn put_agent_keeps_stored_paused() {
+        let data = tmp("put-paused");
+        std::fs::write(
+            data.join(file::DIR).join("ops.md"),
+            "---\ntitle: Ops\npaused: true\n---\nOps.\n",
+        )
+        .unwrap();
+        let mut r = roster(&data).await;
+        r.reconcile().await;
+        let actor = Roster::spawn(r);
+        let mut stale = actor.ask(GetAgent("ops".into())).await.unwrap();
+        stale.paused = false;
+        stale.proposed_by = Some("agent:lead".into());
+        stale.title = "Ops renamed".into();
+        actor.ask(PutAgent(stale)).await.unwrap();
+        let now = actor.ask(GetAgent("ops".into())).await.unwrap();
+        assert!(now.paused, "still paused");
+        assert_eq!(now.proposed_by, None);
+        assert_eq!(now.title, "Ops renamed");
+        let text = std::fs::read_to_string(data.join(file::DIR).join("ops.md")).unwrap();
+        assert!(text.contains("paused: true"), "{text}");
+        actor.kill();
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// 179 D7: a new file ("Hire paused") is written with the `paused` it carries.
+    #[tokio::test]
+    async fn put_agent_new_file_honours_paused() {
+        let data = tmp("put-new");
+        let actor = Roster::spawn(roster(&data).await);
+        let mut f = file::parse("nap", "Nap.\n").unwrap();
+        f.paused = true;
+        actor.ask(PutAgent(f)).await.unwrap();
+        assert!(actor.ask(GetAgent("nap".into())).await.unwrap().paused);
+        actor.kill();
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// 179 D1: the budget cap's pause is the switch's — the desk closes on
+    /// the pause path (its served wake kept) and the agent actor holds the
+    /// tree: a person's text to the desk is refused until the un-pause.
+    #[test]
+    fn budget_cap_pause_suspends() {
+        with_engine_lock(async {
+            let data = tmp("budget-pause");
+            std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
+                .await
+                .unwrap();
+            let mut r = roster_on(rt.clone(), &data).await;
+            let desk = r.desks["ops"].session;
+            r.desks.get_mut("ops").unwrap().serving = Some(plain_serving());
+            r.budget_pause("ops").await;
+            assert!(r.shared.file("ops").unwrap().paused);
+            assert!(!r.desks.contains_key("ops"), "desk closed");
+            assert!(r.held["ops"].serving.is_some(), "served wake kept");
+            let refused = agents
+                .ask(agent::SendInput {
+                    session: Some(desk),
+                    text: "late".into(),
+                    files: vec![],
+                    delivery: agent::Delivery::default(),
+                    id: None,
+                    channel: None,
+                })
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refused.contains("ops is paused — un-pause it to send"),
+                "{refused}"
+            );
+            agents
+                .ask(agent::supervisor::ResumeTree { desk })
+                .await
+                .unwrap();
+            assert!(
+                agents
+                    .ask(agent::SendInput {
+                        session: Some(desk),
+                        text: "now".into(),
+                        files: vec![],
+                        delivery: agent::Delivery::default(),
+                        id: None,
+                        channel: None,
+                    })
+                    .await
+                    .is_ok(),
+                "accepted after the un-pause"
+            );
+            agents.kill();
+            unregister(&[agent::AGENT_ACTOR]);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// A closure over the live roster (assertions on state no message reads).
+    struct Peek<F>(F);
+
+    impl<F, R> Message<Peek<F>> for Roster
+    where
+        F: FnOnce(&mut Roster) -> R + Send + 'static,
+        R: kameo::reply::Reply + Send + 'static,
+    {
+        type Reply = R;
+
+        async fn handle(&mut self, m: Peek<F>, _: &mut Context<Self, Self::Reply>) -> R {
+            (m.0)(self)
+        }
+    }
+
+    /// 179 SHOULD-FIX 5: the agent crate's boot reading of `paused` is the
+    /// roster's own parse — `True`, a trailing comment and CRLF included.
+    #[test]
+    fn pause_parse_matches_the_roster() {
+        let cases = [
+            ("---\npaused: true\n---\nOps.\n", true),
+            ("---\npaused: True\n---\nOps.\n", true),
+            ("---\npaused: true # held for the audit\n---\nOps.\n", true),
+            ("---\r\ntitle: Ops\r\npaused: true\r\n---\r\nOps.\r\n", true),
+            ("---\npaused: false\n---\nOps.\n", false),
+            ("---\ntitle: Ops\n---\npaused: true\n", false),
+            ("Ops.\n", false),
+        ];
+        for (text, want) in cases {
+            let roster = file::parse("ops", text).unwrap_or_else(|e| panic!("{text:?}: {e}"));
+            assert_eq!(roster.paused, want, "roster: {text:?}");
+            assert_eq!(
+                agent::supervisor::pause::agent_file_paused(text),
+                want,
+                "agent: {text:?}"
+            );
+        }
+    }
+
+    /// 179 SHOULD-FIX 6: a desk turn that ended inside the pause's drain
+    /// window (nothing left to resume) is judged at the un-pause — its wake
+    /// finished, its claim kept — not handed back for a second delivery.
+    #[test]
+    fn turn_that_ends_inside_the_drain_window_is_judged_not_redelivered() {
+        with_engine_lock(async {
+            let data = tmp("drain-window");
+            std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
+                .await
+                .unwrap();
+            let mut r = roster_on(rt.clone(), &data).await;
+            let desk = r.desks["ops"].session;
+            let d = r.desks.get_mut("ops").unwrap();
+            d.serving = Some(plain_serving());
+            d.primed = true;
+            r.set_paused("ops", true).await.unwrap();
+            r.sync_desks().await;
+            let actor = Roster::spawn(r);
+            actor
+                .tell(agent::AgentEvent::TurnFinished {
+                    session: desk,
+                    turn: runtime::TurnId::new(),
+                    stop_reason: "end_turn".into(),
+                    usage: agent::Usage::default(),
+                    context: 0,
+                })
+                .await
+                .unwrap();
+            let recorded = actor
+                .ask(Peek(|r: &mut Roster| {
+                    r.unreleased.clear();
+                    r.held["ops"].finished.as_deref() == Some("end_turn")
+                }))
+                .await
+                .unwrap();
+            assert!(recorded, "the turn's end is kept for the un-pause");
+            actor
+                .ask(PauseAgent {
+                    name: "ops".into(),
+                    paused: false,
+                })
+                .await
+                .unwrap();
+            let (kept, judged) = actor
+                .ask(Peek(|r: &mut Roster| {
+                    (
+                        r.unreleased.is_empty(),
+                        r.desks.get("ops").is_some_and(|d| d.serving.is_none()),
+                    )
+                }))
+                .await
+                .unwrap();
+            assert!(kept, "the claim is not released for a second delivery");
+            assert!(judged, "the wake was judged handled");
+            actor.kill();
+            agents.kill();
+            unregister(&[agent::AGENT_ACTOR]);
             let _ = std::fs::remove_dir_all(&data);
         });
     }

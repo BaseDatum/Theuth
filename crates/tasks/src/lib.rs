@@ -101,6 +101,13 @@ pub trait DeskRouter: Send + Sync {
         let _ = agent;
         Ok(None)
     }
+    /// 179 D3: `agent`'s file says `paused: true`. Its wakes are raised but
+    /// never claimed or attempted while it is (no back-off accrues), the
+    /// sweep leaves its checkouts alone, and a routine's fire is skipped.
+    fn is_paused(&self, agent: &str) -> bool {
+        let _ = agent;
+        false
+    }
 }
 
 /// `ask` → `()`: the roster hands over its router once it is up. Replaces any earlier one.
@@ -433,6 +440,25 @@ pub struct FinishWake(pub Wake);
 /// no longer runs and are released for dispatch.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReleaseClaims(pub String);
+
+/// `tell` (179 D3): `agent` was un-paused — its wakes' back-off is cleared
+/// and a dispatch pass runs now.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Unpaused(pub String);
+
+/// `ask` → `u32` (179 D9): `agent`'s unclaimed wakes — `N wakes held`
+/// while it is paused.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HeldWakes(pub String);
+
+/// `ask` → `Option<Wake>` (179 D2): the wake this desk session holds
+/// claimed — the one its suspended turn serves.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClaimedWake(pub String);
+
+/// `ask` → `bool` (179 D5): the router says `agent` is paused.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IsPaused(pub String);
 
 /// `tell`: the desk turn that took this wake did not yield (a cancel, a
 /// timeout, a provider error — WAKE-LIVE-CHILD D2): the claim is released so
@@ -1089,6 +1115,50 @@ impl Message<ReleaseClaims> for Tasks {
     }
 }
 
+impl Message<Unpaused> for Tasks {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Unpaused, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Err(e) = self.ledger.unpaused(&m.0).await {
+            tracing::error!(agent = %m.0, "back-off not cleared: {e}");
+        }
+        let _ = ctx.actor_ref().tell(Dispatch).await;
+    }
+}
+
+impl Message<HeldWakes> for Tasks {
+    type Reply = u32;
+
+    async fn handle(&mut self, m: HeldWakes, _: &mut Context<Self, Self::Reply>) -> u32 {
+        self.ledger.held_wakes(&m.0).await.unwrap_or_else(|e| {
+            tracing::error!(agent = %m.0, "held wakes not counted: {e}");
+            0
+        })
+    }
+}
+
+impl Message<ClaimedWake> for Tasks {
+    type Reply = Option<Wake>;
+
+    async fn handle(&mut self, m: ClaimedWake, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.claimed_by(&m.0).await.unwrap_or_else(|e| {
+            tracing::error!(session = %m.0, "claimed wake not read: {e}");
+            None
+        })
+    }
+}
+
+impl Message<IsPaused> for Tasks {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: IsPaused, _: &mut Context<Self, Self::Reply>) -> bool {
+        self.ledger
+            .router
+            .as_ref()
+            .is_some_and(|r| r.is_paused(&m.0))
+    }
+}
+
 impl Message<ReleaseWake> for Tasks {
     type Reply = ();
 
@@ -1169,6 +1239,12 @@ impl Message<Dispatch> for Tasks {
                     Ok(()) => {
                         tracing::info!(agent = %d.wake.agent, wake = %d.wake.id, task = ?d.wake.task, reason = d.wake.reason.as_str(), "wake delivered");
                         true
+                    }
+                    // 179 D3: the roster's gate (`held: …`) is the backstop
+                    // for a pause this pass did not see yet.
+                    Err(e) if e.to_string().starts_with("held: ") => {
+                        tracing::debug!(agent = %d.wake.agent, "wake not delivered: {e:#}");
+                        false
                     }
                     Err(e) => {
                         tracing::warn!(agent = %d.wake.agent, "wake not delivered: {e:#}");
@@ -1342,6 +1418,13 @@ impl schedule::TaskCreator for ScheduleTasks {
             })
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    async fn agent_paused(&self, agent: &str) -> bool {
+        match actor() {
+            Some(t) => t.ask(IsPaused(agent.to_owned())).await.unwrap_or(false),
+            None => false,
+        }
     }
 }
 

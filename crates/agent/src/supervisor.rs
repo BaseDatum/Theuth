@@ -131,12 +131,16 @@ mod activity; // 155 W1
 pub(crate) mod advisor; // 125 W1
 pub mod child_waits; // 139 W3
 mod drain;
+pub mod pause; // 179
 mod resume;
 pub mod transfer; // 139 W2
 mod view; // 176 E1
 mod waits;
 pub use acp_resume::LastBootPass; // 146 D4
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
+pub use pause::{
+    HeldDesks, PauseReport, PauseTree, ReleaseTree, ResumeReport, ResumeTree, TreeSuspended,
+}; // 179
 pub use resume::{OpenTurn, ResumeTurn, TakeoverPending};
 pub use transfer::{DrainSession, SessionDrainReport}; // 139 C
 // 109 W3: what a resumed human-wait / peer-wait call asks the supervisor for.
@@ -207,6 +211,18 @@ pub struct Agents {
     /// no `suspended` row) resumes them as `Takeover{from}` and runs the
     /// §7 jobs / child-waits pass instead of reading as a `crash`.
     pending_takeovers: HashMap<SessionId, String>,
+    /// 179: paused agents' desk trees, by desk → the inputs that arrived
+    /// for any session of the tree meanwhile, in arrival order (`route`,
+    /// `enqueue_peer`); replayed by `pause::ResumeTree`.
+    paused: HashMap<SessionId, Vec<(SessionId, Held)>>,
+    /// 179: desks whose pause is still draining → its drain deadline and the
+    /// un-pauses that came meanwhile; answered once the drained actors are
+    /// stopped, or `pause::UNPAUSE_GRACE` past the deadline.
+    pausing: HashMap<SessionId, pause::Pausing>,
+    /// 179: ACP children a pause stopped mid-turn whose `cancelled` end has
+    /// not been seen yet (`pause::cut_by_pause`); cleared by the child's next
+    /// turn start, or by the un-pause when nothing re-prompts it.
+    acp_cut: HashSet<SessionId>,
     /// The communication policy (50 §2.1, §8), shared read-only with the
     /// tool registry; every mutation and admission happens in this mailbox.
     pub(crate) communication: SharedPolicy,
@@ -1363,6 +1379,14 @@ impl Agents {
         origin: InputOrigin,
         delivery: Delivery,
     ) -> Result<(), String> {
+        // 179 D6: a person writing to a paused agent's session is told so
+        // (no hold that a restart could lose, no silent wait).
+        if origin == InputOrigin::External
+            && let Some(root) = self.paused_root(sid).await
+        {
+            let agent = self.agent_of_desk(root).await;
+            return Err(format!("{agent} is paused — un-pause it to send"));
+        }
         let ticket = self.ledger.admit(sid, origin, id);
         let defer = matches!(delivery, Delivery::NextTurn);
         // 145 §0.3: a harness input for an idle talk session waits for the
@@ -1421,6 +1445,24 @@ impl Agents {
                 scope,
                 defer,
             });
+            return Ok(());
+        }
+        // 179 D6: a paused agent's tree starts no turn; the input waits,
+        // flags intact, for `ResumeTree` (the caller's receipt stands).
+        if let Some(root) = self.paused_root(sid).await {
+            self.hold(
+                root,
+                sid,
+                Held::Routed {
+                    id,
+                    text,
+                    files,
+                    channel,
+                    ticket,
+                    scope,
+                    defer,
+                },
+            );
             return Ok(());
         }
         // 139 D16: a session mid-release-drain takes nothing — the fence is
@@ -1677,10 +1719,14 @@ impl Agents {
     }
 
     /// Hand `wrapped` to `sid`'s native session actor as a [`QuietInput`]; `Err` gives it
-    /// back when no native actor can take it (a queued child, a draining session, an ACP
-    /// runner, a closed mailbox) and the caller routes it as a waking input instead.
+    /// back when no native actor can take it (a queued child, a draining session, a paused
+    /// agent's tree — 179: `route` holds it —, an ACP runner, a closed mailbox) and the
+    /// caller routes it as a waking input instead.
     async fn quiet(&mut self, sid: SessionId, wrapped: String) -> Result<(), String> {
-        if self.queued.contains_key(&sid) || self.draining_sessions.contains_key(&sid) {
+        if self.queued.contains_key(&sid)
+            || self.draining_sessions.contains_key(&sid)
+            || self.paused_root(sid).await.is_some()
+        {
             return Err(wrapped);
         }
         let Ok((_, LiveActor::Native(actor))) =
@@ -2020,7 +2066,12 @@ impl Agents {
                 crate::communication::CHAIN_MAX
             ));
         }
-        let actor = self.actor(to).await?;
+        // 179 D6: no actor for a paused agent's tree — the accepted exchange
+        // waits for `ResumeTree`.
+        let actor = match self.paused_root(to).await {
+            Some(root) => Err(root),
+            None => Ok(self.actor(to).await?),
+        };
         let scope = record.request_scope;
         let ticket = self.ledger.admit_chained(to, None, sender);
         if let Some(scope) = scope
@@ -2045,6 +2096,13 @@ impl Agents {
             q.held.push(Held::Peer(Box::new(input)));
             return Ok(());
         }
+        let actor = match actor {
+            Ok(actor) => actor,
+            Err(root) => {
+                self.hold(root, to, Held::Peer(Box::new(input)));
+                return Ok(());
+            }
+        };
         // 146 D9: the harness owes work from this hand-off on.
         if let LiveActor::Acp(_) = &actor {
             self.acp_journal_open(to, "peer", &input.record.text, Some(&input.record.from))
@@ -2645,6 +2703,28 @@ impl Message<AgentEvent> for Agents {
 
     async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
         self.costs.observe(&ev); // 160: ledger / root dimension may have moved
+        // 179: the cancel a pause's stop lands on an ACP child is no turn end
+        // (it has no suspension of its own): no journal close, no result for
+        // the parent — the un-pause re-prompts the open journal turn.
+        if let AgentEvent::TurnFinished {
+            session,
+            stop_reason,
+            ..
+        } = &ev
+            && stop_reason == "cancelled"
+            && self.cut_by_pause(*session).await
+        {
+            tracing::info!(%session, "179: turn cut by the pause; resumes on un-pause");
+            self.running.remove(session);
+            return;
+        }
+        // The re-prompted child's start: any cancel of the stopped actor came
+        // before it on the bus, so a later `cancelled` is a real turn end.
+        if let AgentEvent::TurnStarted { session, .. } | AgentEvent::TurnResumed { session, .. } =
+            &ev
+        {
+            self.acp_cut.remove(session);
+        }
         self.acp_journal_event(&ev).await; // 146 D9
         if self.boot.is_some() {
             self.boot_child_event(&ev).await; // 146 D2
@@ -2784,6 +2864,8 @@ impl Message<ActivityRegistered> for Agents {
         self.rebuild_peer_waits().await; // 155 §5.4
         // 146 D5: one `open_turns(Here)` for the whole pass.
         let open = self.open_here().await;
+        // 179 D8: paused agents' trees were held at construction (from the
+        // agent files), before the reminders above re-armed.
         // 109 §4.6 step 10, in this order: no `ResumeTurn` before the reaper.
         let reaped = crate::durability::jobs::reap_jobs_in(&self.store, &open).await;
         if reaped != crate::durability::jobs::ReapReport::default() {
@@ -2794,6 +2876,7 @@ impl Message<ActivityRegistered> for Agents {
         // prompt when the engine died) is the respawn's, a native one the
         // resume's.
         let (acp_open, native) = self.split_acp_turns(&open).await;
+        let (acp_open, native) = self.unpaused_turns(acp_open, native).await;
         self.resume_scan(&native).await;
         let resuming = match self.cfg.durability.resume {
             crate::durability::ResumeMode::Auto => native.len() as u32,
@@ -2838,6 +2921,11 @@ impl Agents {
                     let _ = self.store.delete_reminder(r.session, &r.id).await;
                     continue;
                 }
+            }
+            // 179 D6: a paused agent's reminders wait for its un-pause
+            // (`ResumeTree` re-arms them); the row stays.
+            if self.paused_root(r.session).await.is_some() {
+                continue;
             }
             let _ = jobs
                 .tell(RearmReminder {
@@ -5048,7 +5136,13 @@ impl Agents {
         let _ = self
             .route(child, None, text, Vec::new(), None, ticket, scope, false)
             .await;
-        let me = me.or_else(|| ActorRef::<Agents>::lookup(AGENT_ACTOR).ok().flatten());
+        // 179: a brief a pause held starts no turn yet — the permit is kept,
+        // the cap's timer is armed when the turn really starts (`turn_began`),
+        // so the paused time never counts.
+        let me = match self.paused_root(child).await {
+            Some(_) => None,
+            None => me.or_else(|| ActorRef::<Agents>::lookup(AGENT_ACTOR).ok().flatten()),
+        };
         self.arm_child_turn(child, permit, chrono::Duration::zero(), me);
     }
 
@@ -5074,7 +5168,12 @@ impl Agents {
         } else {
             0
         };
-        if child && !self.child_turns.contains_key(&session) {
+        if child
+            && self
+                .child_turns
+                .get(&session)
+                .is_none_or(|ct| ct.timer.is_none())
+        {
             let ran_ms = match resumed {
                 Some((turn, at)) => self
                     .store_for(session)
@@ -5141,8 +5240,11 @@ impl Agents {
         if permit.is_some() {
             ct.permit = permit;
         }
-        if ct.timer.is_none() {
+        if ct.timer.is_none() && me.is_some() {
             ct.arm = arm;
+            // 179: an entry kept timer-less while a pause held the brief
+            // counts from now, not from the spawn.
+            ct.started_at = Utc::now().checked_sub_signed(ran).unwrap_or_else(Utc::now);
             ct.timer = me.map(|me| runtime_timer(child, arm, me, budget));
         }
         if !ran.is_zero() {
@@ -10476,15 +10578,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     };
     let communication = SharedPolicy::new(Policy::new(cfg.communication, source));
     load_topology(&store, &communication).await;
-    match store.fail_interrupted("interrupted_by_restart").await {
-        Ok(i) if !i.exchanges.is_empty() || !i.tasks.is_empty() => tracing::info!(
-            "communication: {} accepted exchange(s) and {} task(s) failed: interrupted_by_restart",
-            i.exchanges.len(),
-            i.tasks.len()
-        ),
-        Ok(_) => {}
-        Err(e) => tracing::error!("communication restart accounting: {e:#}"),
-    }
+    // 179 D8: paused agents' trees are held from the start — before the
+    // reminders re-arm and spared results go — and what was sent to them
+    // stays `accepted` for the un-pause (the restart accounting spares it).
+    let boot_paused = pause::boot_accounting(&store, &rt.data_dir).await;
     // 125 §4.14: the Advisors actor loads every link before `resume_scan`
     // (which the activity registration triggers later).
     let advisor_store = store.clone();
@@ -10580,6 +10677,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             last_boot: None,
             draining_sessions: HashMap::new(),
             pending_takeovers: HashMap::new(),
+            paused: boot_paused
+                .iter()
+                .map(|(_, desk)| (*desk, Vec::new()))
+                .collect(),
+            pausing: HashMap::new(),
+            acp_cut: HashSet::new(),
             communication: communication.clone(),
             network: network::NetworkState::default(),
             waits: HashMap::new(),
@@ -11642,6 +11745,8 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         cfg.endless.clone(),
         cfg.title_model.clone(),
     );
+    // 179 D8, as `start` builds it: held from the agent files.
+    let boot_paused = pause::paused_desks(&store, &dir).await;
     Agents {
         rt,
         default_model: cfg.model.clone(),
@@ -11670,6 +11775,12 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         last_boot: None,
         draining_sessions: HashMap::new(),
         pending_takeovers: HashMap::new(),
+        paused: boot_paused
+            .into_iter()
+            .map(|(_, desk)| (desk, Vec::new()))
+            .collect(),
+        pausing: HashMap::new(),
+        acp_cut: HashSet::new(),
         communication: SharedPolicy::new(Policy::new(communication, "config")),
         network: network::NetworkState::default(),
         waits: HashMap::new(),
@@ -17408,6 +17519,744 @@ pub(crate) mod tests {
         agents.tell(started(child, TurnId::new())).await.unwrap();
         let (present, timed, _, _) = child_turn_of(&agents, child).await;
         assert!(present && timed, "the next turn is capped");
+    }
+
+    /// 179 D1: a pause suspends the desk's turn and its child's as a
+    /// graceful quit does — `suspended{paused, ran_ms}` first, the actors
+    /// stopped — and holds the tree for the un-pause.
+    #[tokio::test]
+    async fn pause_suspends_the_desk_tree() {
+        let (_scratch, mut a) = agents().await;
+        Arc::make_mut(&mut a.cfg).durability.drain_secs = 1;
+        let store = a.store.clone();
+        let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, desk, "kid").await;
+        let now = Utc::now();
+        let turns = [(desk, TurnId::new(), 4_000), (child, TurnId::new(), 9_000)];
+        for (s, t, ran) in turns {
+            // Started a minute ago (a `ran_ms` beyond the journal's span reads as corrupt, 178).
+            let ago = now - chrono::Duration::seconds(60);
+            journal_turn(&store, s, t, ago, ago).await;
+            crate::durability::run_clock::start(s, t, ran);
+        }
+        let agents = Agents::spawn(a);
+        let report = agents.ask(PauseTree { desk }).await.unwrap();
+        assert_eq!(
+            report.suspended,
+            turns.iter().map(|(s, t, _)| (*s, *t)).collect::<Vec<_>>(),
+            "desk first"
+        );
+        for (s, t, ran) in turns {
+            let rows = store.suspended_rows(s, t).await.unwrap();
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(rows[0].0, pause::PAUSED);
+            assert!(rows[0].1.is_some_and(|ms| ms >= ran), "ran_ms: {rows:?}");
+            let plan = store.resume_plan(s, t).await.unwrap();
+            assert_eq!(plan.kind, crate::durability::ResumeKind::Suspended);
+            assert!(plan.ran_ms >= ran, "the resume continues the run clock");
+        }
+        let (live, held) = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.live(desk).is_some() || a.live(child).is_some(),
+                    a.paused.contains_key(&desk),
+                )
+            }))
+            .await
+            .unwrap();
+        assert!(!live, "no actor left running");
+        assert!(held, "the tree is held");
+    }
+
+    /// 179 D8: at boot the open turns of a tree whose agent file says
+    /// `paused: true` are held — held from the file at construction, not
+    /// resumed by the scan, not by a Resume press, not offered as a Resume
+    /// item — while another agent's resume.
+    #[tokio::test]
+    async fn resume_scan_skips_a_paused_agents_sessions() {
+        let scratch = crate::TestDir::new("179-scan");
+        let dir = scratch.0.clone();
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        std::fs::write(
+            dir.join("agents").join("nap.md"),
+            "---\npaused: true\n---\nNap.\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("agents").join("ops.md"), "Ops.\n").unwrap();
+        let seed = agents_on(dir.clone(), None, false).await;
+        let store = seed.store.clone();
+        let mut open = Vec::new();
+        for agent in ["nap", "ops"] {
+            let (desk, child) = (SessionId::new(), SessionId::new());
+            store
+                .create_session(desk, "m", None, None, None)
+                .await
+                .unwrap();
+            store.set_desk(desk, Some(agent)).await.unwrap();
+            store
+                .create_session(child, "m", Some(desk), Some("kid"), None)
+                .await
+                .unwrap();
+            for s in [desk, child] {
+                let t = TurnId::new();
+                journal_turn(&store, s, t, Utc::now(), Utc::now()).await;
+                open.push((agent, s, t));
+            }
+        }
+        drop(seed);
+        store.close().await;
+        // The next boot over the same data dir.
+        let mut a = agents_on(dir, None, false).await;
+        Arc::make_mut(&mut a.cfg).durability.resume = crate::durability::ResumeMode::Auto;
+        let rows = a.open_here().await;
+        let (_, native) = a.unpaused_turns(Vec::new(), rows).await;
+        a.resume_scan(&native).await;
+        for (agent, s, _) in &open {
+            assert_eq!(a.sessions.contains_key(s), *agent == "ops", "{agent} {s}");
+        }
+        let (_, nap, t) = open[0];
+        a.resume_turn(nap, t, None, None, None).await;
+        assert!(!a.sessions.contains_key(&nap), "a Resume press waits too");
+        let agents = Agents::spawn(a);
+        let items = agents.ask(OpenTurns(Scope::Here)).await.unwrap();
+        assert!(
+            items
+                .iter()
+                .all(|(s, _, _)| open.iter().any(|(ag, o, _)| o == s && *ag == "ops")),
+            "no Resume item for a paused agent: {items:?}"
+        );
+    }
+
+    /// 179 D2: un-pausing resumes every open turn of the tree, desk first,
+    /// through the normal resume path; each plan carries the run time the
+    /// pause measured (178: a child's cap continues, it does not restart).
+    #[tokio::test]
+    async fn unpause_resumes_the_tree_with_remaining_caps() {
+        use crate::durability::StepKind;
+        let (_scratch, mut a) = agents().await;
+        let store = a.store.clone();
+        let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, desk, "kid").await;
+        let now = Utc::now();
+        let turns = [(desk, TurnId::new()), (child, TurnId::new())];
+        for (s, t) in turns {
+            journal_turn(
+                &store,
+                s,
+                t,
+                now - chrono::Duration::seconds(3600),
+                now - chrono::Duration::seconds(3570),
+            )
+            .await;
+            let p = serde_json::json!({"reason": "paused", "ran_ms": 30_000});
+            store
+                .step(s, t, StepKind::Suspended, None, &p)
+                .await
+                .unwrap();
+            store
+                .set_step_at(s, t, 3, now - chrono::Duration::seconds(3540))
+                .await
+                .unwrap();
+            // The plan the resume runs on: the pause's run time, never the hour paused.
+            assert_eq!(store.resume_plan(s, t).await.unwrap().ran_ms, 30_000);
+        }
+        // As the pause left it: no actors, the tree held.
+        a.unload_session(desk).await;
+        a.unload_session(child).await;
+        a.paused.insert(desk, Vec::new());
+        let mut rx = tap(&a.rt).await;
+        let agents = Agents::spawn(a);
+        let report = agents.ask(ResumeTree { desk }).await.unwrap();
+        assert_eq!(report.resumed, turns.to_vec(), "desk first");
+        // Both turns run again from their journal (in whatever order they publish).
+        let mut seen = std::collections::HashSet::new();
+        while seen.len() < turns.len() {
+            if let AgentEvent::TurnResumed { session, turn, .. } = next_event(&mut rx, |e| {
+                matches!(e, AgentEvent::TurnResumed { session, turn, .. } if turns.contains(&(*session, *turn)))
+            })
+            .await
+            {
+                seen.insert((session, turn));
+            }
+        }
+        let (loaded, held) = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.sessions.contains_key(&desk) && a.sessions.contains_key(&child),
+                    a.paused.contains_key(&desk),
+                )
+            }))
+            .await
+            .unwrap();
+        assert!(loaded && !held, "resumed, hold lifted");
+    }
+
+    /// 179 D6: a harness input to a paused tree (a child's result, a
+    /// reminder, a notice) starts no turn and gets no actor; it is held in
+    /// order and routed once the tree resumes.
+    #[tokio::test]
+    async fn input_to_a_suspended_session_is_held_until_resume() {
+        let (_scratch, mut a) = agents().await;
+        let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, desk, "kid").await;
+        a.unload_session(desk).await;
+        a.unload_session(child).await;
+        a.paused.insert(desk, Vec::new());
+        for (to, text) in [(desk, "notice"), (child, "result")] {
+            a.inject(
+                to,
+                "session:x",
+                text.into(),
+                format!("<message from=\"session:x\">{text}</message>"),
+                None,
+            )
+            .await;
+        }
+        assert!(
+            !a.sessions.contains_key(&desk) && !a.sessions.contains_key(&child),
+            "no actor, no turn"
+        );
+        let held: Vec<SessionId> = a.paused[&desk].iter().map(|(s, _)| *s).collect();
+        assert_eq!(held, [desk, child], "arrival order");
+        let agents = Agents::spawn(a);
+        let report = agents.ask(ResumeTree { desk }).await.unwrap();
+        assert_eq!(report.replayed, 2);
+        let loaded = agents
+            .ask(With(move |a: &mut Agents| {
+                (
+                    a.sessions.contains_key(&desk),
+                    a.sessions.contains_key(&child),
+                    a.paused.is_empty(),
+                )
+            }))
+            .await
+            .unwrap();
+        assert_eq!(loaded, (true, true, true), "routed after the resume");
+    }
+
+    /// 179 D6: a person's text to a paused agent's session is refused with
+    /// words the UI shows — never held where a restart would lose it.
+    #[tokio::test]
+    async fn human_input_to_a_paused_agent_is_refused() {
+        let (_scratch, mut a) = agents().await;
+        let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.store.set_desk(desk, Some("nap")).await.unwrap();
+        let child = kid(&mut a, desk, "kid").await;
+        a.unload_session(desk).await;
+        a.unload_session(child).await;
+        a.paused.insert(desk, Vec::new());
+        for s in [desk, child] {
+            let e = a
+                .human_input(
+                    Some(s),
+                    None,
+                    "hello".into(),
+                    Vec::new(),
+                    None,
+                    Delivery::Steer,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(e, "nap is paused — un-pause it to send");
+        }
+        assert!(a.paused[&desk].is_empty(), "nothing held");
+        assert!(!a.sessions.contains_key(&desk), "no actor");
+        a.paused.remove(&desk);
+        assert!(
+            a.human_input(
+                Some(desk),
+                None,
+                "hello".into(),
+                Vec::new(),
+                None,
+                Delivery::Steer
+            )
+            .await
+            .is_ok(),
+            "un-paused: accepted"
+        );
+    }
+
+    /// An accepted exchange `from` → `to` (`request_id`), as the intake writes it.
+    async fn accepted(a: &Agents, from: SessionId, to: SessionId, request_id: &str) -> Uuid {
+        let generation = a.communication.0.write().route(from, to).unwrap();
+        a.store
+            .accept_exchange(&crate::store::communication::AcceptExchange {
+                sender: &format!("session:{from}"),
+                recipient: &format!("session:{to}"),
+                sender_session: Some(from),
+                recipient_session: Some(to),
+                request_id: Some(request_id),
+                reply_to: None,
+                request_scope: None,
+                generation: generation.revision() as i64,
+                body: "hello desk",
+            })
+            .await
+            .unwrap()
+            .id
+    }
+
+    /// A desk `nap` (paused on disk) with a child, over `dir`'s store.
+    async fn paused_desk(dir: &Path) -> (Agents, SessionId, SessionId) {
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        std::fs::write(
+            dir.join("agents").join("nap.md"),
+            "---\npaused: true\n---\nNap.\n",
+        )
+        .unwrap();
+        let mut a = agents_on(dir.to_path_buf(), None, true).await;
+        let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.store.set_desk(desk, Some("nap")).await.unwrap();
+        let child = kid(&mut a, desk, "kid").await;
+        (a, desk, child)
+    }
+
+    /// 179 D6/D8: a peer's message to a paused tree is not failed by the
+    /// restart accounting; after the restart it is delivered at the un-pause.
+    #[tokio::test]
+    async fn peer_message_to_a_paused_tree_survives_a_restart() {
+        let scratch = crate::TestDir::new("179-peer");
+        let dir = scratch.0.clone();
+        let (a, desk, child) = paused_desk(&dir).await;
+        // The admission counter moves (any policy change); a restart resets it.
+        a.communication.0.write().set_global(true, "command");
+        let id = accepted(&a, child, desk, "msg-1").await;
+        let store = a.store.clone();
+        drop(a);
+        // Boot: the accounting `start` runs, then the supervisor.
+        let held = pause::boot_accounting(&store, &dir).await;
+        assert_eq!(held, vec![("nap".to_owned(), desk)]);
+        let pending = store.pending_exchanges(desk, 10).await.unwrap();
+        assert_eq!(pending.len(), 1, "spared: {pending:?}");
+        store.close().await;
+        let b = agents_on(dir, None, true).await;
+        assert!(b.paused.contains_key(&desk), "held from the file");
+        let bstore = b.store.clone();
+        let agents = Agents::spawn(b);
+        let report = agents.ask(ResumeTree { desk }).await.unwrap();
+        assert_eq!(report.replayed, 1);
+        let (handed, live) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.enqueued.contains(&id), a.sessions.contains_key(&desk))
+            }))
+            .await
+            .unwrap();
+        assert!(handed && live, "delivered to the resumed desk");
+        // Admitted again under the policy as it is now — never suppressed
+        // as revoked by the generation from before the restart.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let state = bstore.exchange_receipt(id).await.unwrap().unwrap().state;
+        assert_ne!(state, PeerMessageState::Suppressed);
+    }
+
+    /// Every `ReminderEvent` published on the runtime.
+    #[derive(kameo::Actor)]
+    struct ReminderTap(tokio::sync::mpsc::UnboundedSender<tools::ReminderEvent>);
+
+    impl Message<tools::ReminderEvent> for ReminderTap {
+        type Reply = ();
+        async fn handle(&mut self, e: tools::ReminderEvent, _: &mut Context<Self, ()>) {
+            let _ = self.0.send(e);
+        }
+    }
+
+    /// A jobs actor on `rt` (evicting a dead one a previous body left registered).
+    fn jobs_on(rt: &Runtime) -> ActorRef<Jobs> {
+        if ActorRef::<Jobs>::lookup(JOBS_ACTOR)
+            .ok()
+            .flatten()
+            .is_some_and(|j| !j.is_alive())
+        {
+            kameo::registry::ACTOR_REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(JOBS_ACTOR);
+        }
+        tools::jobs::start(rt, Duration::ZERO, Duration::from_secs(30)).unwrap()
+    }
+
+    /// `session`'s armed reminder ids.
+    async fn armed_of(jobs: &ActorRef<Jobs>, session: SessionId) -> Vec<String> {
+        jobs.ask(tools::jobs::LiveCounts)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.session == session)
+            .flat_map(|r| r.reminders)
+            .collect()
+    }
+
+    /// 179 MUST-FIX 2: a pause stops the tree's reminder timers (the rows
+    /// stay) and the un-pause arms them again.
+    #[test]
+    fn unpause_rearms_the_trees_reminders() {
+        crate::with_test_registry(async {
+            let (_scratch, mut a) = agents().await;
+            let jobs = jobs_on(&a.rt);
+            let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+            let far = Utc::now().timestamp() + 600;
+            a.store
+                .insert_reminder(&crate::store::ReminderRow {
+                    id: "r1".into(),
+                    session: desk,
+                    message: "x".into(),
+                    set_at: far - 600,
+                    fires_at: far,
+                    seconds: 600,
+                })
+                .await
+                .unwrap();
+            a.rearm_reminders_for(Some(desk)).await;
+            let wait_for = |want: usize| {
+                let jobs = jobs.clone();
+                async move {
+                    for _ in 0..100 {
+                        if armed_of(&jobs, desk).await.len() == want {
+                            return true;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    false
+                }
+            };
+            assert!(wait_for(1).await, "armed before the pause");
+            let agents = Agents::spawn(a);
+            agents.ask(PauseTree { desk }).await.unwrap();
+            assert!(wait_for(0).await, "the pause stops the timer");
+            agents.ask(ResumeTree { desk }).await.unwrap();
+            assert!(wait_for(1).await, "the un-pause arms it again");
+            assert_eq!(armed_of(&jobs, desk).await, ["r1"]);
+        });
+    }
+
+    /// 179 MUST-FIX 3: a paused desk with no open turn, an overdue reminder
+    /// and a spared child result runs nothing at boot — the hold comes from
+    /// the agent file before the reminders re-arm and the results go — and
+    /// at the un-pause both run once.
+    #[test]
+    fn boot_holds_a_paused_desk_without_an_open_turn() {
+        crate::with_test_registry(async {
+            let scratch = crate::TestDir::new("179-boot");
+            let dir = scratch.0.clone();
+            let (a, desk, child) = paused_desk(&dir).await;
+            let past = Utc::now().timestamp() - 60;
+            a.store
+                .insert_reminder(&crate::store::ReminderRow {
+                    id: "r1".into(),
+                    session: desk,
+                    message: "standup".into(),
+                    set_at: past - 600,
+                    fires_at: past,
+                    seconds: 600,
+                })
+                .await
+                .unwrap();
+            let result = accepted(&a, child, desk, &format!("result:{}", TurnId::new())).await;
+            let store = a.store.clone();
+            drop(a);
+            pause::boot_accounting(&store, &dir).await;
+            store.close().await;
+
+            let mut b = agents_on(dir, None, true).await;
+            let jobs = jobs_on(&b.rt);
+            let (tx, mut fired) = tokio::sync::mpsc::unbounded_channel();
+            let tap = ReminderTap::spawn(ReminderTap(tx));
+            b.rt.subscribe::<ReminderTap, tools::ReminderEvent>(&tap)
+                .await;
+            // The boot pass's steps that used to wake it.
+            b.rearm_reminders_for(None).await;
+            let open = b.open_here().await;
+            b.deliver_spared_results(&open).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(armed_of(&jobs, desk).await.is_empty(), "no reminder armed");
+            assert!(fired.try_recv().is_err(), "no reminder fired");
+            assert!(!b.sessions.contains_key(&desk), "no actor, no turn");
+            assert!(!b.enqueued.contains(&result), "the result waits");
+            assert_eq!(b.store.pending_exchanges(desk, 10).await.unwrap().len(), 1);
+
+            let agents = Agents::spawn(b);
+            let report = agents.ask(ResumeTree { desk }).await.unwrap();
+            assert_eq!(report.replayed, 1, "the result, once");
+            let e = tokio::time::timeout(Duration::from_secs(5), fired.recv())
+                .await
+                .expect("the overdue reminder fires")
+                .unwrap();
+            assert!(
+                matches!(&e, tools::ReminderEvent::Fired { session, id } if *session == desk && id == "r1"),
+                "{e:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(fired.try_recv().is_err(), "once");
+            let handed = agents
+                .ask(With(move |a: &mut Agents| a.enqueued.contains(&result)))
+                .await
+                .unwrap();
+            assert!(handed, "the result is handed to the desk");
+            tap.kill();
+        });
+    }
+
+    /// 179 SHOULD-FIX 8: a child's brief held by a pause starts no cap; the
+    /// cap runs from the turn's real start after the un-pause.
+    #[tokio::test]
+    async fn held_child_cap_excludes_paused_time() {
+        let (_scratch, mut a) = agents().await;
+        let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = kid(&mut a, desk, "kid").await;
+        a.paused.insert(desk, Vec::new());
+        let ticket = a.ledger.admit(child, InputOrigin::Automatic, None);
+        a.start_child_turn(child, None, "brief".into(), ticket, None)
+            .await;
+        assert_eq!(a.paused[&desk].len(), 1, "the brief is held");
+        assert!(
+            a.child_turns.get(&child).is_none_or(|c| c.timer.is_none()),
+            "no cap while held"
+        );
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        let agents = Agents::spawn(a);
+        // The brief's turn starts after the un-pause.
+        agents.tell(started(child, TurnId::new())).await.unwrap();
+        let (present, timed, _, age) = child_turn_of(&agents, child).await;
+        assert!(present && timed, "capped from its real start");
+        assert!(age < 2, "the paused time is not counted: {age}");
+    }
+
+    /// A local ACP harness whose first `$HANG` prompts never answer on their
+    /// own (a turn mid-way when the pause lands); a later prompt answers
+    /// `pong`. A cancel after the first prompt ends the pending one
+    /// `cancelled`; the first prompt's (the pause's) is never answered.
+    const HANGING_ACP: &str = r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | grep -o '"id":[^,}]*' | head -n1 | cut -d: -f2-)
+  method=$(printf '%s' "$line" | grep -o '"method":"[^"]*"' | head -n1 | cut -d'"' -f4)
+  [ -n "$method" ] && echo "$method" >> "$DIR/methods"
+  prompts=$(grep -c '^session/prompt$' "$DIR/methods")
+  case "$method" in
+    initialize) echo '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}' ;;
+    session/new) echo '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"fake-1"}}' ;;
+    session/load) echo '{"jsonrpc":"2.0","id":'"$id"',"result":{}}' ;;
+    session/prompt)
+      if [ "$prompts" -gt $HANG ]; then
+        echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pong"}}}}'
+        echo '{"jsonrpc":"2.0","id":'"$id"',"result":{"stopReason":"end_turn"}}'
+      else
+        echo "$id" > "$DIR/pending"
+      fi ;;
+    session/cancel)
+      if [ "$prompts" -gt 1 ]; then
+        echo '{"jsonrpc":"2.0","id":'"$(cat "$DIR/pending")"',"result":{"stopReason":"cancelled"}}'
+      fi ;;
+  esac
+done
+"#;
+
+    /// A root `p` with an ACP child `c` mid-turn on [`HANGING_ACP`] with
+    /// `hang` hanging prompts; the pause drains for 2 s.
+    async fn acp_mid_turn(
+        hang: usize,
+    ) -> (
+        crate::TestDir,
+        ActorRef<Agents>,
+        Store,
+        SessionId,
+        SessionId,
+        tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    ) {
+        let (scratch, mut a) = agents().await;
+        Arc::make_mut(&mut a.cfg).durability.drain_secs = 2;
+        let dir = scratch.0.clone();
+        let script = dir.join("hang-acp.sh");
+        std::fs::write(
+            &script,
+            HANGING_ACP
+                .replace("$DIR", &dir.display().to_string())
+                .replace("$HANG", &hang.to_string()),
+        )
+        .unwrap();
+        let yaml = format!(
+            "fake:\n  command: /bin/sh\n  args: [\"{}\"]\n  mcp: false\n  skills: false\n",
+            script.display()
+        );
+        acp::save(&a.rt.data_dir, &serde_yaml::from_str(&yaml).unwrap()).unwrap();
+        // Results reach the parent (a cancelled one says so).
+        a.communication.0.write().set_global(true, "command");
+        let (rt, store) = (a.rt.clone(), a.store.clone());
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, c, _) = agents
+            .ask(SpawnChild {
+                agent: Some("fake".into()),
+                cwd: Some(dir.clone()),
+                ..spawn(p, "c", "ping")
+            })
+            .await
+            .unwrap();
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == c),
+        )
+        .await;
+        let methods = dir.join("methods");
+        for _ in 0..200 {
+            if std::fs::read_to_string(&methods).is_ok_and(|m| m.contains("session/prompt")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        (scratch, agents, store, p, c, rx)
+    }
+
+    /// How many prompts the harness of [`acp_mid_turn`] has read.
+    fn prompts(scratch: &crate::TestDir) -> usize {
+        std::fs::read_to_string(scratch.0.join("methods"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| *l == "session/prompt")
+            .count()
+    }
+
+    /// 179 SHOULD-FIX 7: an ACP child cut by the pause keeps its journal
+    /// turn open (its cancel hands the paused parent nothing) and is
+    /// re-prompted on the un-pause.
+    #[tokio::test]
+    async fn paused_acp_child_resumes_on_unpause() {
+        let (scratch, agents, store, p, c, mut rx) = acp_mid_turn(1).await;
+        let report = agents.ask(PauseTree { desk: p }).await.unwrap();
+        assert!(report.suspended.iter().any(|(s, _)| *s == c), "{report:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            store.open_turn(c).await.unwrap().is_some(),
+            "journal left open"
+        );
+        assert!(
+            store.peer_records(p, None, 10).await.unwrap().is_empty(),
+            "no `[child turn cancelled]` for the paused parent"
+        );
+        let report = agents.ask(ResumeTree { desk: p }).await.unwrap();
+        assert!(report.resumed.iter().any(|(s, _)| *s == c), "{report:?}");
+        next_event(&mut rx, |e| {
+            matches!(e, AgentEvent::TurnFinished { session, stop_reason, .. }
+                if *session == c && stop_reason == "end_turn")
+        })
+        .await;
+        assert_eq!(prompts(&scratch), 2, "re-prompted once");
+    }
+
+    /// 179 MUST-FIX 1: an un-pause sent while the pause still drains waits
+    /// for the stop, then resumes the suspended turn — never skipping the
+    /// draining actor as live and leaving the turn unheld.
+    #[tokio::test]
+    async fn unpause_during_the_pause_drain_resumes_after_the_stop() {
+        let _flag = drain::DRAIN_FLAG.lock().await;
+        drain::reset_draining();
+        let (scratch, agents, store, p, c, mut rx) = acp_mid_turn(1).await;
+        let t0 = Instant::now();
+        agents.tell(PauseTree { desk: p }).await.unwrap();
+        let report = agents.ask(ResumeTree { desk: p }).await.unwrap();
+        assert!(
+            t0.elapsed() >= Duration::from_millis(1500),
+            "answered after the drain: {:?}",
+            t0.elapsed()
+        );
+        assert!(report.resumed.iter().any(|(s, _)| *s == c), "{report:?}");
+        next_event(&mut rx, |e| {
+            matches!(e, AgentEvent::TurnFinished { session, stop_reason, .. }
+                if *session == c && stop_reason == "end_turn")
+        })
+        .await;
+        assert_eq!(prompts(&scratch), 2);
+        // The supervisor closes the ACP journal turn off the same event.
+        assert!(journal_closes(&store, c).await, "the turn ended");
+        let (live, held) = agents
+            .ask(With(move |a: &mut Agents| {
+                (a.live(c).is_some(), a.paused.contains_key(&p))
+            }))
+            .await
+            .unwrap();
+        assert!(live && !held, "the resumed actor is kept, the hold lifted");
+    }
+
+    /// Whether `session`'s open journal turn closes within 5 s.
+    async fn journal_closes(store: &Store, session: SessionId) -> bool {
+        for _ in 0..200 {
+            if store.open_turn(session).await.unwrap().is_none() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    /// 179 PAUSE3: the cut marker of a child the pause stopped (whose own
+    /// `cancelled` end never came) goes with its re-prompt; the next real
+    /// cancel is a turn end — journal closed, parent told, cap released.
+    #[tokio::test]
+    async fn acp_cancel_after_unpause_is_not_swallowed() {
+        let _flag = drain::DRAIN_FLAG.lock().await;
+        drain::reset_draining();
+        let (scratch, agents, store, p, c, mut rx) = acp_mid_turn(2).await;
+        agents.ask(PauseTree { desk: p }).await.unwrap();
+        let report = agents.ask(ResumeTree { desk: p }).await.unwrap();
+        assert!(report.resumed.iter().any(|(s, _)| *s == c), "{report:?}");
+        let AgentEvent::TurnStarted { turn, .. } = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == c),
+        )
+        .await
+        else {
+            unreachable!()
+        };
+        // The child's `PeerTurnFinished` goes to the registered supervisor
+        // (none in a unit test); its text is seeded as the native tests do.
+        agents
+            .ask(With(move |a: &mut Agents| {
+                a.turn_text.insert((c, turn), "partial".into());
+            }))
+            .await
+            .unwrap();
+        for _ in 0..200 {
+            if prompts(&scratch) == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(prompts(&scratch), 2, "re-prompted, hanging");
+        agents
+            .ask(Cancel {
+                session: c,
+                keep: None,
+                scope: CancelScope::Root,
+            })
+            .await
+            .unwrap();
+        next_event(&mut rx, |e| {
+            matches!(e, AgentEvent::TurnFinished { session, stop_reason, .. }
+                if *session == c && stop_reason == "cancelled")
+        })
+        .await;
+        assert!(journal_closes(&store, c).await, "the journal turn closed");
+        // Recorded for the parent as a cancelled result (an idle parent with
+        // no tool registry never consumes it).
+        let mut told = Vec::new();
+        for _ in 0..200 {
+            told = store.peer_records(p, None, 10).await.unwrap();
+            if !told.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            told.iter()
+                .any(|r| r.from == format!("session:{c}")
+                    && r.text.contains("[child turn cancelled]")),
+            "the parent is told: {told:?}"
+        );
+        let (present, timed, permit, _) = child_turn_of(&agents, c).await;
+        assert!(
+            !present && !timed && !permit,
+            "cap timer and permit released"
+        );
     }
 
     /// 178 W6: a child turn that ended in an error, a cancel or with nothing

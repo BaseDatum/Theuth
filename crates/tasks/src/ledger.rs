@@ -339,6 +339,11 @@ impl Ledger {
             .map_or(Owner::User, Owner::Agent)
     }
 
+    /// 179 D3: the roster says `agent` is paused.
+    fn paused(&self, agent: &str) -> bool {
+        self.router.as_ref().is_some_and(|r| r.is_paused(agent))
+    }
+
     // ---- events, thread, wakes -------------------------------------------
 
     async fn event(
@@ -386,7 +391,9 @@ impl Ledger {
     }
 
     /// Raise a wake for `who` about `t` (nothing for the user or the harness)
-    /// and record it: a `wake` event and a `woke <agent> (<reason>)` thread line.
+    /// and record it: a `wake` event and a `woke <agent> (<reason>)` thread
+    /// line — 179 D3: `queued for <agent> (paused) (<reason>)` while the
+    /// agent is paused (the wake waits for the un-pause).
     /// A reason with no purpose in the task's state (STALE-WAKE-DESKS:
     /// a `comment` on a done task) raises nothing.
     pub async fn wake(&self, t: &Task, who: &Owner, reason: WakeReason, actor: &str) {
@@ -411,11 +418,19 @@ impl Ledger {
             before: None,
             after: Some(agent.to_owned()),
         };
-        let line = format!(
-            "- {} **{actor}** woke {agent} ({})",
-            stamp(e.at_ms),
-            reason.as_str()
-        );
+        let line = if self.paused(agent) {
+            format!(
+                "- {} **{actor}** queued for {agent} (paused) ({})",
+                stamp(e.at_ms),
+                reason.as_str()
+            )
+        } else {
+            format!(
+                "- {} **{actor}** woke {agent} ({})",
+                stamp(e.at_ms),
+                reason.as_str()
+            )
+        };
         self.record(t, &e, &line).await;
     }
 
@@ -1922,6 +1937,12 @@ impl Ledger {
         // 178 W7: counters outlive deliveries; a wake that left the table
         // (finished, completed, stale) takes its counter with it.
         self.retry.retain(|id, _| wakes.iter().any(|w| w.id == *id));
+        // 179 D3: a paused agent's wakes stay in the table, unclaimed and
+        // unattempted: no delivery, no back-off, no "held" line.
+        let wakes: Vec<Wake> = wakes
+            .into_iter()
+            .filter(|w| !self.paused(&w.agent))
+            .collect();
         let busy: HashSet<&str> = wakes
             .iter()
             .filter(|w| w.claimed_by.is_some())
@@ -2120,6 +2141,33 @@ impl Ledger {
             .map_err(db)
     }
 
+    /// 179 D3: `agent` was un-paused — the delivery back-off of its wakes
+    /// (from before the pause) is forgotten, so the next pass delivers.
+    pub async fn unpaused(&mut self, agent: &str) -> R<()> {
+        let wakes = self.store.wakes().await.map_err(db)?;
+        self.retry
+            .retain(|id, _| !wakes.iter().any(|w| w.id == *id && w.agent == agent));
+        Ok(())
+    }
+
+    /// 179 D9: `agent`'s wakes waiting to be delivered (unclaimed).
+    pub async fn held_wakes(&self, agent: &str) -> R<u32> {
+        let wakes = self.store.wakes().await.map_err(db)?;
+        Ok(wakes
+            .iter()
+            .filter(|w| w.agent == agent && w.claimed_by.is_none())
+            .count() as u32)
+    }
+
+    /// 179 D2: the wake `session` (a desk) holds claimed, if any — the one
+    /// its suspended turn was serving when the agent was paused.
+    pub async fn claimed_by(&self, session: &str) -> R<Option<Wake>> {
+        let wakes = self.store.wakes().await.map_err(db)?;
+        Ok(wakes
+            .into_iter()
+            .find(|w| w.claimed_by.as_deref() == Some(session)))
+    }
+
     // ---- orphan sweep, disposition enforcement -----------------------------------------
 
     /// 67 §7.5 every 30 s. `reachable`: the connected engines (self included)
@@ -2171,7 +2219,9 @@ impl Ledger {
             let Some(c) = t.checkout.clone() else {
                 continue;
             };
-            if c.orphaned {
+            // 179 D4: a paused owner's checkout is suspended with its turn,
+            // not lost — no "presumed lost" note, no `resume` wake.
+            if c.orphaned || agent_name(&t.owner).is_some_and(|a| self.paused(a)) {
                 continue;
             }
             let mut last_active_ms = None;
@@ -2261,7 +2311,8 @@ impl Ledger {
         if let Some(router) = &self.router {
             for w in self.store.wakes().await.map_err(db)? {
                 let Some(by) = &w.claimed_by else { continue };
-                if by == DISPATCHING {
+                // 179 D2: a paused agent's claim is its suspended turn's wake.
+                if by == DISPATCHING || router.is_paused(&w.agent) {
                     continue;
                 }
                 if router.desk_for(&w.agent).is_none_or(|d| d != *by) {
@@ -2452,7 +2503,8 @@ pub(crate) mod tests {
         thread.0.lock().unwrap().insert(id.to_owned(), blocks);
     }
 
-    /// A roster: `agent → manager`, `agent → desk`, `session → agent`, delivery log.
+    /// A roster: `agent → manager`, `agent → desk`, `session → agent`, delivery log,
+    /// paused agents.
     #[derive(Default)]
     pub struct MemRouter {
         pub managers: HashMap<String, String>,
@@ -2460,6 +2512,7 @@ pub(crate) mod tests {
         pub sessions: HashMap<String, String>,
         pub delivered: Mutex<Vec<(String, WakeReason)>>,
         pub fail: Mutex<bool>,
+        pub paused: Mutex<HashSet<String>>,
     }
 
     #[async_trait::async_trait]
@@ -2489,6 +2542,9 @@ pub(crate) mod tests {
             v.sort();
             v.dedup();
             v
+        }
+        fn is_paused(&self, agent: &str) -> bool {
+            self.paused.lock().unwrap().contains(agent)
         }
     }
 
@@ -4521,6 +4577,104 @@ pub(crate) mod tests {
         let b = r.ledger.dispatch().await.unwrap();
         assert_eq!((b.len(), b[0].wake.reason), (1, WakeReason::Comment));
         assert!(!r.ledger.reported_busy.contains_key("ops"));
+    }
+
+    /// 179 D3: a paused agent's wakes are raised but never claimed or
+    /// attempted — three passes deliver nothing and leave no back-off.
+    #[tokio::test]
+    async fn dispatch_leaves_a_paused_agents_wakes_unclaimed() {
+        let mut r = rig().await;
+        r.router.paused.lock().unwrap().insert("ops".into());
+        let t = r.task("agent:ops").await;
+        r.ledger
+            .comment(&t.id, "ping", false, "user", None)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            assert!(r.ledger.dispatch().await.unwrap().is_empty());
+            r.tick(10_000);
+        }
+        let wakes = r.ledger.wakes().await.unwrap();
+        assert_eq!(wakes.len(), 2, "raised, nothing lost");
+        assert!(wakes.iter().all(|w| w.claimed_by.is_none()), "{wakes:?}");
+        assert!(r.ledger.retry.is_empty(), "no back-off accrued");
+        assert!(r.router.delivered.lock().unwrap().is_empty());
+        assert_eq!(r.ledger.held_wakes("ops").await.unwrap(), 2);
+    }
+
+    /// 179 D3: an un-pause forgets the back-off a wake had from before the
+    /// pause — the next pass delivers it at once.
+    #[tokio::test]
+    async fn unpause_dispatches_held_wakes_at_once() {
+        let mut r = rig().await;
+        r.task("agent:ops").await;
+        let w = r.ledger.dispatch().await.unwrap().remove(0).wake;
+        for _ in 0..2 {
+            r.ledger.delivery_failed(&w).await.unwrap();
+        }
+        r.router.paused.lock().unwrap().insert("ops".into());
+        r.tick(1_000);
+        assert!(r.ledger.dispatch().await.unwrap().is_empty(), "paused");
+        r.router.paused.lock().unwrap().remove("ops");
+        assert!(
+            r.ledger.dispatch().await.unwrap().is_empty(),
+            "without the un-pause the 10 s back-off still runs"
+        );
+        r.ledger.unpaused("ops").await.unwrap();
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].wake.id, w.id);
+    }
+
+    /// 179 D4: a paused owner's checkout is suspended with its turn — the
+    /// sweep writes no "presumed lost" and raises no `resume`; un-paused,
+    /// the same stale checkout is the sweep's again.
+    #[tokio::test]
+    async fn sweep_skips_a_paused_owners_checkout() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        r.ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap();
+        r.router.paused.lock().unwrap().insert("ops".into());
+        r.tick(48 * 3_600_000);
+        assert!(r.ledger.sweep(None).await.unwrap().is_empty());
+        let c = r.ledger.get(&t.id).await.unwrap().checkout.unwrap();
+        assert!(!c.orphaned && c.epoch == 1 && c.session == "s-ops", "{c:?}");
+        assert!(
+            !r.ledger
+                .wakes()
+                .await
+                .unwrap()
+                .iter()
+                .any(|w| w.reason == WakeReason::Resume)
+        );
+        r.router.paused.lock().unwrap().remove("ops");
+        assert_eq!(r.ledger.sweep(None).await.unwrap(), vec![t.id]);
+    }
+
+    /// 179 D3: a wake raised for a paused owner says it waits, not that it woke.
+    #[tokio::test]
+    async fn thread_line_says_queued_for_a_paused_owner() {
+        let mut r = rig().await;
+        r.router.paused.lock().unwrap().insert("ops".into());
+        let t = r.task("agent:ops").await;
+        let blocks = r
+            .thread
+            .0
+            .lock()
+            .unwrap()
+            .get(t.thread.as_ref().unwrap())
+            .cloned()
+            .unwrap();
+        assert!(
+            blocks
+                .iter()
+                .any(|b| b.contains("**user** queued for ops (paused) (assigned)")),
+            "{blocks:?}"
+        );
+        assert!(!blocks.iter().any(|b| b.contains("woke ops")), "{blocks:?}");
     }
 
     #[tokio::test]

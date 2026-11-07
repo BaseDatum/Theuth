@@ -32,7 +32,7 @@ import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import { CharterDoc } from './CharterDoc'
 import { CharterEditor } from './CharterEditor'
 import { AccessFields, Field, RuntimeFields } from './RuntimeAccessFields'
-import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar } from './identity'
+import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, PausedChip } from './identity'
 import { useAgentActions, useAgentFile } from './queries'
 import { budgetUsed } from './tree'
 
@@ -81,6 +81,7 @@ export function AgentDetail({ name, tab }: { name: string; tab: Tab }) {
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-fg-secondary">
                 {summary && !proposed && <ActiveSwitch agent={summary} />}
+                {summary?.status === 'paused' && <PausedChip agent={summary} />}
                 {summary && !summary.file.paused && !proposed && <ActivityChip status={summary.status} waiting={summary.waiting_on} />}
                 {proposed && <Badge>proposed by {file.data.proposed_by ?? '—'}</Badge>}
                 <span>reports to {root ? 'you' : file.data.reports_to}</span>

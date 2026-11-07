@@ -74,6 +74,26 @@ export function ActivityChip({ status, waiting, className }: { status: AgentStat
   )
 }
 
+/** 179: what a paused agent holds, as the chip says it ("Paused · 2 wakes held · suspended mid-turn"). */
+export function pausedLabel(a: Pick<AgentSummary, 'held_wakes' | 'suspended'>): string {
+  const n = a.held_wakes ?? 0
+  const held = `Paused · ${n} wake${n === 1 ? '' : 's'} held`
+  return a.suspended ? `${held} · suspended mid-turn` : held
+}
+
+/** 179: the chip of a paused agent, in place of its activity. */
+export function PausedChip({ agent: a, className }: { agent: Pick<AgentSummary, 'held_wakes' | 'suspended'>; className?: string }) {
+  return (
+    <span
+      className={cn('inline-flex min-w-0 max-w-72 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-fg-tertiary', className)}
+      title={a.suspended ? 'Its turn is suspended where it stopped; switching it back on resumes it.' : undefined}
+    >
+      <span className="size-1.5 shrink-0 rounded-full bg-fg-tertiary" aria-hidden />
+      <span className="truncate">{pausedLabel(a)}</span>
+    </span>
+  )
+}
+
 /** Active ⇄ Paused, on the card and in the detail header. `theuth` is always active and has no switch. */
 export function ActiveSwitch({ agent: a, withLabel = true, className }: { agent: AgentSummary; withLabel?: boolean; className?: string }) {
   const { pause } = useAgentActions()

@@ -425,6 +425,12 @@ pub trait TaskCreator: Send + Sync {
     /// The schedule's `until` passed (`why` = the end row text): its open
     /// tasks are `done` with reviewer `system`.
     async fn close_for_schedule(&self, schedule: &str, why: &str) -> anyhow::Result<()>;
+    /// 179 D5: `agent` is paused — its routine's fire is recorded
+    /// `skipped: agent paused` and creates no task.
+    async fn agent_paused(&self, agent: &str) -> bool {
+        let _ = agent;
+        false
+    }
 }
 
 /// `ask` → `()`: the tasks plugin hands over its [`TaskCreator`]. Replaces any earlier one.
@@ -1110,6 +1116,35 @@ impl Schedule {
         })
     }
 
+    /// A fire that does not run: `skipped: <reason>` recorded, `next`
+    /// advanced, `Skipped` published; returns `reason` for the caller's `Err`.
+    async fn skip(
+        &mut self,
+        name: &str,
+        session: Option<runtime::SessionId>,
+        now: DateTime<Local>,
+        reason: &str,
+    ) -> String {
+        if let Err(e) = self
+            .store
+            .insert_run(name, session, now, Some(&format!("skipped: {reason}")))
+            .await
+        {
+            tracing::error!(%name, "skip not recorded: {e:#}");
+        }
+        if let Some(e) = self.entries.get_mut(name) {
+            e.next = next_of(&e.spec, now, Some(now));
+        }
+        self.rt
+            .publish(ScheduleEvent::Skipped {
+                name: name.to_owned(),
+                at: now,
+                reason: reason.to_owned(),
+            })
+            .await;
+        reason.to_owned()
+    }
+
     /// 34 §4 steps 1–5 with 33 §3.1–3.2's stop before them. `forced`
     /// (`/schedules run`) skips the stop: *run* means run. The caller has
     /// checked the entry exists and parsed. With `agent:` (67 §7.4) the
@@ -1168,24 +1203,14 @@ impl Schedule {
         let is_loop = until.is_some() || max_runs.is_some();
 
         if self.is_running(entry) {
-            if let Err(e) = self
-                .store
-                .insert_run(name, session, now, Some("skipped: busy"))
-                .await
-            {
-                tracing::error!(%name, "skip not recorded: {e:#}");
-            }
-            if let Some(e) = self.entries.get_mut(name) {
-                e.next = next_of(&e.spec, now, Some(now));
-            }
-            self.rt
-                .publish(ScheduleEvent::Skipped {
-                    name: name.to_owned(),
-                    at: now,
-                    reason: "busy".to_owned(),
-                })
-                .await;
-            return Err("busy".to_owned());
+            return Err(self.skip(name, session, now, "busy").await);
+        }
+        // 179 D5: a paused agent takes no routine work; the fire is recorded
+        // like a busy one and no task is created.
+        if let (Some(agent), Some(creator)) = (&agent, self.task_creator.clone())
+            && creator.agent_paused(agent).await
+        {
+            return Err(self.skip(name, session, now, "agent paused").await);
         }
 
         // 33 §3.1–3.2: `until` first (a passing check is `done`, not capped),
@@ -2939,11 +2964,12 @@ mod fire_tests {
     /// One `create_for_schedule` call: `(schedule, fire_ms, agent, prompt, project, cwd)`.
     pub(super) type Call = (String, u64, String, String, Option<String>, Option<String>);
 
-    /// Records every call; answers a fixed task id.
+    /// Records every call; answers a fixed task id; `paused` is every agent's pause.
     #[derive(Default)]
     pub(super) struct Recorder {
         pub(super) calls: Mutex<Vec<Call>>,
         closed: Mutex<Vec<String>>,
+        paused: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -2970,6 +2996,9 @@ mod fire_tests {
         async fn close_for_schedule(&self, schedule: &str, _: &str) -> anyhow::Result<()> {
             self.closed.lock().unwrap().push(schedule.to_owned());
             Ok(())
+        }
+        async fn agent_paused(&self, _: &str) -> bool {
+            self.paused.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -3033,6 +3062,41 @@ mod fire_tests {
             rec.calls.lock().unwrap()[1].1,
             now.timestamp_millis() as u64
         );
+    }
+
+    /// 179 D5: a routine whose `agent:` is paused records `skipped: agent
+    /// paused` (as `skipped: busy` is) and creates no task; the next fire
+    /// after the un-pause creates one.
+    #[tokio::test]
+    async fn fire_for_a_paused_agent_is_skipped_and_creates_no_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(
+            dir.path(),
+            &[(
+                "nightly",
+                "---\nevery: 1h\nagent: ops\n---\ncheck the deploy\n",
+            )],
+        )
+        .await;
+        rec.paused.store(true, std::sync::atomic::Ordering::SeqCst);
+        let now = Local::now();
+        assert_eq!(
+            s.fire("nightly", now, true, None).await.unwrap_err(),
+            "agent paused"
+        );
+        assert!(rec.calls.lock().unwrap().is_empty(), "no task");
+        let h = s.store.history("nightly", 5).await.unwrap();
+        assert_eq!(h[0].result.as_deref(), Some("skipped: agent paused"));
+        assert!(
+            s.entries["nightly"].next.is_some(),
+            "the next fire is scheduled"
+        );
+        rec.paused.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            s.fire("nightly", now, true, None).await,
+            Ok(Fired::Task(_))
+        ));
+        assert_eq!(rec.calls.lock().unwrap().len(), 1);
     }
 
     /// 136 §2.3: a `FireWith` payload rides inside the envelope as `<request>`,

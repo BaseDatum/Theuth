@@ -2024,6 +2024,8 @@ mod tests {
             spent_month: spent,
             error: None,
             waiting_on: Vec::new(),
+            held_wakes: 0,
+            suspended: false,
         }
     }
 

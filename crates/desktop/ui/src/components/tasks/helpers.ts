@@ -22,6 +22,10 @@ export const THEUTH = 'theuth'
 export const USER: Owner = { type: 'user' }
 export const agent = (name: string): Owner => ({ type: 'agent', name })
 
+/** 179 D9: what an action does to agent `name`'s desk: `wakes ops`, or `queues a wake for ops (paused)` while it is paused. */
+export const wakePhrase = (name: string, agents: readonly AgentSummary[] | undefined, verb: 'wakes' | 'wake' = 'wakes'): string =>
+  agents?.some((a) => a.file.name === name && a.status === 'paused') ? `queues a wake for ${name} (paused)` : `${verb} ${name}`
+
 /** `Owner` → its text form (`agent:ops` | `user` | `system`), the shape filters, `created_by` and `actor` carry. */
 export const ownerText = (o: Owner): string => (o.type === 'agent' ? `agent:${o.name}` : o.type)
 

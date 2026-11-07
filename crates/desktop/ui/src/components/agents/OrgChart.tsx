@@ -9,7 +9,7 @@ import { THEUTH } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { AgentInfo } from '@/rpc/extra'
-import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, statusDot } from './identity'
+import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, PausedChip, statusDot } from './identity'
 import { CARD_STRIP_CAP, dotLabel } from './sessions'
 import { CARD, type Node, layout } from './tree'
 import { useAgentSessions, useLingering } from './useAgentSessions'
@@ -121,7 +121,7 @@ function Card({ name, agent: a, style }: { name: string; agent: AgentSummary | n
           {name === THEUTH ? <Badge variant="outline">built-in</Badge> : a && <ActiveSwitch agent={a} withLabel={false} />}
         </div>
         <div className="flex items-center gap-1.5 text-xs text-fg-secondary">
-          {a && (a.file.paused ? <span className="text-fg-tertiary">paused</span> : <ActivityChip status={a.status} waiting={a.waiting_on} />)}
+          {a && (a.status === 'paused' ? <PausedChip agent={a} /> : a.file.paused ? <span className="text-fg-tertiary">paused</span> : <ActivityChip status={a.status} waiting={a.waiting_on} />)}
           {a && <span className="ml-auto shrink-0 tabular-nums">{a.open_tasks} open</span>}
         </div>
         {a && <BudgetBar agent={a} />}

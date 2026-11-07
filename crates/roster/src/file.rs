@@ -38,19 +38,12 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
     if name.as_str() == AgentName::DEFAULT {
         return Err("theuth is reserved: the default agent has no roster file".into());
     }
-    let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
-    let parsed = matter
-        .parse::<FrontMatter>(text)
-        .map_err(|e| format!("front matter: {e}"))?;
-    let fm = parsed.data.unwrap_or_default();
+    // 179: the agent crate reads `paused` at boot with this same parse.
+    let (data, content) = agent::supervisor::pause::front_matter::<FrontMatter>(text)?;
+    let fm = data.unwrap_or_default();
     // gray_matter returns empty `content` for input no longer than its `---`
     // delimiter; a three-byte charter ("QA.") is still a charter.
-    let body = if text.len() <= 3 {
-        text
-    } else {
-        &parsed.content
-    }
-    .trim();
+    let body = if text.len() <= 3 { text } else { &content }.trim();
     if body.is_empty() {
         return Err("empty charter".into());
     }
