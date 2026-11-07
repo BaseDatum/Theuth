@@ -539,3 +539,183 @@ async fn apply_with_one_failing_table_still_lands_cost_owners() {
     assert_eq!(n_of(&b.pool, "z").await, Some(5));
     assert_eq!(parked(&b).await, 0);
 }
+
+/// A side whose data file runs `schema` (one statement each) and attaches `tables`.
+async fn side_of_schema(schema: &[&str], tables: &[&str]) -> Side {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(&dir.path().join("replica.sqlite"))
+        .await
+        .unwrap();
+    let pool = open_pool(&dir.path().join("data.sqlite")).await;
+    for stmt in schema {
+        exec(&pool, stmt).await;
+    }
+    let handle = engine.attach(&pool, tables).await.unwrap();
+    Side {
+        engine,
+        pool,
+        handle,
+        dir,
+    }
+}
+
+async fn parked_count(side: &Side) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM parked")
+        .fetch_one(side.engine.store.pool())
+        .await
+        .unwrap()
+}
+
+/// 180 follow-up 1 (three origins): B applies X's child before its parent,
+/// so B's trigger writes a stand-in parent; Y's partial update of the parent
+/// then raises the stand-in row's `hlc` to a real stamp on B. B's snapshot
+/// must ship the stand-in's placeholder columns under the stand-in stamp —
+/// not under Y's — or they overwrite the parent's real row on X.
+#[tokio::test]
+async fn trigger_stand_in_never_ships_placeholder_columns_under_a_real_stamp() {
+    const SCHEMA: [&str; 2] = [
+        "CREATE TABLE owners (id TEXT PRIMARY KEY, parent TEXT REFERENCES owners(id), \
+         kind TEXT NOT NULL, note TEXT, hlc TEXT)",
+        "CREATE TRIGGER owners_stand_in BEFORE INSERT ON owners \
+         WHEN NEW.parent IS NOT NULL AND NOT EXISTS (SELECT 1 FROM owners WHERE id = NEW.parent) \
+         BEGIN INSERT OR IGNORE INTO owners (id, parent, kind, hlc) \
+         VALUES (NEW.parent, NULL, 'stand-in', '0000000000000000-00000000-0'); END",
+    ];
+    let (x, y, b) = (
+        side_of_schema(&SCHEMA, &["owners"]).await,
+        side_of_schema(&SCHEMA, &["owners"]).await,
+        side_of_schema(&SCHEMA, &["owners"]).await,
+    );
+    exec(
+        &x.pool,
+        "INSERT INTO owners (id, parent, kind) VALUES ('g', NULL, 'real'), ('p', 'g', 'real')",
+    )
+    .await;
+    let parents = x.handle.flush().await.unwrap().unwrap();
+    exec(
+        &x.pool,
+        "INSERT INTO owners (id, parent, kind) VALUES ('c', 'p', 'real')",
+    )
+    .await;
+    let child = x.handle.flush().await.unwrap().unwrap();
+
+    // Y holds the parents and edits P's note: a partial update.
+    assert!(y.engine.apply(&parents).await.unwrap());
+    exec(&y.pool, "UPDATE owners SET note = 'from y' WHERE id = 'p'").await;
+    let note = y.handle.flush().await.unwrap().unwrap();
+
+    // B gets the child first (stand-in P), then Y's note.
+    assert!(b.engine.apply(&child).await.unwrap());
+    assert!(b.engine.apply(&note).await.unwrap());
+    let (kind, hlc): (String, String) =
+        sqlx::query_as("SELECT kind, hlc FROM owners WHERE id = 'p'")
+            .fetch_one(&b.pool)
+            .await
+            .unwrap();
+    assert_eq!(kind, "stand-in");
+    assert_ne!(
+        hlc,
+        crate::Hlc::stand_in().to_text(),
+        "the row hlc is real now"
+    );
+
+    let snapshot = b.engine.snapshot_batch().await.unwrap().unwrap();
+    for col in ["parent", "kind"] {
+        let c = snapshot
+            .changes
+            .iter()
+            .find(|c| c.pk == "p" && c.column.as_deref() == Some(col))
+            .unwrap();
+        assert_eq!(c.hlc, crate::Hlc::stand_in(), "{col}");
+    }
+    assert!(x.engine.apply(&snapshot).await.unwrap());
+    let real: (Option<String>, String) =
+        sqlx::query_as("SELECT parent, kind FROM owners WHERE id = 'p'")
+            .fetch_one(&x.pool)
+            .await
+            .unwrap();
+    assert_eq!(real, (Some("g".to_owned()), "real".to_owned()));
+}
+
+/// 180 follow-up 2: a parked entry that cannot be retried (here: unreadable)
+/// is that entry's problem — the batch that triggered the retry still
+/// applies and `apply` returns `Ok`, so the stream does not end.
+#[tokio::test]
+async fn parked_retry_error_does_not_end_the_stream() {
+    let (a, b) = (side().await, side().await);
+    sqlx::query(
+        "INSERT INTO parked (origin, seq, tbl, changes, parked_at) VALUES ('z', 1, 'tasks', x'ff', ?)",
+    )
+    .bind(i64::try_from(now_ms()).unwrap())
+    .execute(b.engine.store.pool())
+    .await
+    .unwrap();
+    exec(
+        &a.pool,
+        "INSERT INTO tasks (id, title, state, n) VALUES ('t1', 'x', 'todo', 1)",
+    )
+    .await;
+    let batch = a.handle.flush().await.unwrap().unwrap();
+    assert!(b.engine.apply(&batch).await.unwrap());
+    assert_eq!(rows(&b.pool).await.len(), 1);
+    assert_eq!(parked_count(&b).await, 0, "the unreadable entry is dropped");
+}
+
+/// 180 follow-up 3: a table that fails for good parks every batch it gets;
+/// at most 256 per `(origin, table)` are kept (oldest dropped), and entries
+/// older than 7 days expire.
+#[tokio::test]
+async fn parked_is_bounded_and_ages_out() {
+    let a = side_of_schema(
+        &["CREATE TABLE agents (id TEXT PRIMARY KEY, n INTEGER, hlc TEXT)"],
+        &["agents"],
+    )
+    .await;
+    let b = side_of_schema(
+        &["CREATE TABLE agents (id TEXT PRIMARY KEY, n INTEGER CHECK (n >= 0), hlc TEXT)"],
+        &["agents"],
+    )
+    .await;
+    exec(&b.pool, "INSERT INTO agents (id, n) VALUES ('x', 1)").await;
+    b.handle.flush().await.unwrap();
+    // Every batch A emits (by flush or by its own poll) reaches B.
+    let mut feed = a.engine.subscribe();
+    async fn ship(
+        a: &Side,
+        b: &Side,
+        feed: &mut tokio::sync::broadcast::Receiver<crate::ChangeBatch>,
+    ) {
+        a.handle.flush().await.unwrap();
+        while let Ok(batch) = feed.try_recv() {
+            assert!(b.engine.apply(&batch).await.unwrap());
+        }
+    }
+    for i in 1..=260 {
+        exec(
+            &a.pool,
+            &format!(
+                "INSERT INTO agents (id, n) VALUES ('x', -{i}) ON CONFLICT(id) DO UPDATE SET n = -{i}"
+            ),
+        )
+        .await;
+        ship(&a, &b, &mut feed).await;
+    }
+    assert_eq!(parked_count(&b).await, 256);
+    let oldest: i64 = sqlx::query_scalar("SELECT MIN(seq) FROM parked")
+        .fetch_one(b.engine.store.pool())
+        .await
+        .unwrap();
+    assert_eq!(oldest, 5, "the four oldest went");
+
+    sqlx::query("UPDATE parked SET parked_at = 0")
+        .execute(b.engine.store.pool())
+        .await
+        .unwrap();
+    exec(&a.pool, "UPDATE agents SET n = -999 WHERE id = 'x'").await;
+    ship(&a, &b, &mut feed).await;
+    assert_eq!(
+        parked_count(&b).await,
+        1,
+        "only the new one is younger than 7 days"
+    );
+}

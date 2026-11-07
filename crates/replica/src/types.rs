@@ -40,6 +40,18 @@ pub struct Hlc {
 }
 
 impl Hlc {
+    /// 180: the stamp of a stand-in row (what an engine writes for a row it
+    /// needs before the owner's arrives, `0000000000000000-00000000-0`); it
+    /// sorts below every real stamp, so any real write beats it everywhere.
+    /// Also what a column without a shadow clock ships under.
+    pub fn stand_in() -> Self {
+        Self {
+            wall_ms: 0,
+            counter: 0,
+            origin: PeerId("0".to_owned()),
+        }
+    }
+
     /// Sortable text form stored in the `hlc` column and the clock tables:
     /// `<wall_ms hex16>-<counter hex8>-<origin>`; lexicographic order equals
     /// the derived `Ord`.

@@ -20,6 +20,11 @@ use crate::store;
 use crate::types::{Change, ChangeBatch, Hlc};
 use crate::value::Val;
 
+/// 180: parked change sets kept per `(origin, table)`; the oldest go first.
+const PARKED_MAX: i64 = 256;
+/// 180: a parked change set older than this is dropped.
+const PARKED_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 86_400);
+
 impl Engine {
     /// Apply `batch` unless it is ours or already applied. Returns whether it
     /// was applied now. Never fails on one bad row: a row that cannot be
@@ -94,14 +99,16 @@ impl Engine {
                 Err(e) => {
                     let changes: Vec<&Change> = rows.values().flatten().copied().collect();
                     sqlx::query(
-                        "INSERT OR IGNORE INTO parked (origin, seq, tbl, changes) VALUES (?, ?, ?, ?)",
+                        "INSERT OR IGNORE INTO parked (origin, seq, tbl, changes, parked_at) VALUES (?, ?, ?, ?, ?)",
                     )
                     .bind(&batch.origin.0)
                     .bind(i64::try_from(batch.seq)?)
                     .bind(*table)
                     .bind(postcard::to_allocvec(&changes)?)
+                    .bind(i64::try_from(now_ms())?)
                     .execute(&mut *book)
                     .await?;
+                    self.bound_parked(&mut book, &batch.origin, table).await?;
                     parked.push((*table).to_owned());
                     self.note(
                         &batch.origin,
@@ -132,10 +139,18 @@ impl Engine {
             .copied()
             .filter(|t| !parked.iter().any(|p| p == t))
             .collect();
-        reannounce.extend(self.retry_parked_locked(&touched).await?);
+        // 180: a retry problem is the parked entry's, not this batch's — it
+        // is committed; ending the stream here would end it after every batch.
+        match self.retry_parked_locked(&touched).await {
+            Ok(again) => reannounce.extend(again),
+            Err(e) => tracing::warn!("replica: retry parked {touched:?}: {e:#}"),
+        }
 
         for (attached, table, pk) in reannounce {
-            match self.row_as_changes(&attached, &table, &pk).await {
+            match self
+                .row_as_changes(&attached, &table, &pk, &Hlc::stand_in())
+                .await
+            {
                 Ok(changes) if !changes.is_empty() => {
                     self.emit_locked(changes).await?;
                 }
@@ -187,8 +202,50 @@ impl Engine {
         }
     }
 
-    /// Retry every parked change of `tables` (last-writer-wins makes a late
-    /// apply safe: what newer writes superseded loses); drop what applies.
+    /// Expire what was parked more than [`PARKED_TTL`] ago and keep at most
+    /// [`PARKED_MAX`] entries per `(origin, table)`, dropping the oldest —
+    /// a table that fails for good would otherwise park every batch it gets.
+    async fn bound_parked(
+        &self,
+        book: &mut sqlx::SqliteConnection,
+        origin: &crate::PeerId,
+        table: &str,
+    ) -> anyhow::Result<()> {
+        let cutoff = i64::try_from(now_ms().saturating_sub(PARKED_TTL.as_millis() as u64))?;
+        let expired = sqlx::query("DELETE FROM parked WHERE parked_at < ?")
+            .bind(cutoff)
+            .execute(&mut *book)
+            .await?
+            .rows_affected();
+        if expired > 0 {
+            tracing::warn!(
+                "replica: {expired} parked change set(s) older than {} days dropped",
+                PARKED_TTL.as_secs() / 86_400
+            );
+        }
+        let over = sqlx::query(
+            "DELETE FROM parked WHERE origin = ?1 AND tbl = ?2 AND seq IN \
+             (SELECT seq FROM parked WHERE origin = ?1 AND tbl = ?2 ORDER BY seq DESC LIMIT -1 OFFSET ?3)",
+        )
+        .bind(&origin.0)
+        .bind(table)
+        .bind(PARKED_MAX)
+        .execute(&mut *book)
+        .await?
+        .rows_affected();
+        if over > 0 {
+            tracing::warn!(
+                "replica: {origin} {table}: more than {PARKED_MAX} batches parked; dropped the oldest {over}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Retry the parked changes of `tables` (last-writer-wins makes a late
+    /// apply safe: what newer writes superseded loses), oldest first per
+    /// `(origin, table)`, stopping at the first that still fails — one
+    /// failing attempt per table and arrival, not one per parked entry.
+    /// Applied entries are dropped, undecodable ones too (with a warning).
     /// Returns the rows to re-announce. Caller holds `write_lock`.
     pub(crate) async fn retry_parked_locked(
         &self,
@@ -204,34 +261,54 @@ impl Engine {
             .bind(table)
             .fetch_all(self.store.pool())
             .await?;
+            let mut blocked: Option<String> = None;
             for (origin, seq, bytes) in parked {
-                let changes: Vec<Change> = postcard::from_bytes(&bytes)?;
-                let mut rows: BTreeMap<&str, Vec<&Change>> = BTreeMap::new();
-                for c in &changes {
-                    rows.entry(c.pk.as_str()).or_default().push(c);
+                if blocked.as_deref() == Some(origin.as_str()) {
+                    continue;
                 }
-                let origin = crate::PeerId(origin);
                 let mut book = self.store.pool().begin_with("BEGIN IMMEDIATE").await?;
-                match self
-                    .apply_table_saved(&mut book, &attached, &origin, table, &rows)
-                    .await?
-                {
-                    Ok(lost) => {
-                        sqlx::query("DELETE FROM parked WHERE origin = ? AND seq = ? AND tbl = ?")
-                            .bind(&origin.0)
-                            .bind(seq)
-                            .bind(table)
-                            .execute(&mut *book)
-                            .await?;
-                        tracing::info!("replica: parked {origin}#{seq} {table} applied");
-                        reannounce.extend(
-                            lost.into_iter()
-                                .map(|pk| (attached.clone(), table.to_owned(), pk)),
-                        );
-                    }
+                let done = match postcard::from_bytes::<Vec<Change>>(&bytes) {
                     Err(e) => {
-                        tracing::debug!("replica: parked {origin}#{seq} {table} still fails: {e:#}")
+                        tracing::warn!(
+                            "replica: parked {origin}#{seq} {table} cannot be read ({e}); dropped"
+                        );
+                        true
                     }
+                    Ok(changes) => {
+                        let mut rows: BTreeMap<&str, Vec<&Change>> = BTreeMap::new();
+                        for c in &changes {
+                            rows.entry(c.pk.as_str()).or_default().push(c);
+                        }
+                        let peer = crate::PeerId(origin.clone());
+                        match self
+                            .apply_table_saved(&mut book, &attached, &peer, table, &rows)
+                            .await?
+                        {
+                            Ok(lost) => {
+                                tracing::info!("replica: parked {origin}#{seq} {table} applied");
+                                reannounce.extend(
+                                    lost.into_iter()
+                                        .map(|pk| (attached.clone(), table.to_owned(), pk)),
+                                );
+                                true
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    "replica: parked {origin}#{seq} {table} still fails: {e:#}"
+                                );
+                                blocked = Some(origin.clone());
+                                false
+                            }
+                        }
+                    }
+                };
+                if done {
+                    sqlx::query("DELETE FROM parked WHERE origin = ? AND seq = ? AND tbl = ?")
+                        .bind(&origin)
+                        .bind(seq)
+                        .bind(table)
+                        .execute(&mut *book)
+                        .await?;
                 }
                 book.commit().await?;
             }
@@ -239,12 +316,17 @@ impl Engine {
         Ok(reannounce)
     }
 
-    /// The row as it stands, one change per column with the clock it holds.
+    /// The row as it stands, one change per column with the clock it holds;
+    /// a column without a shadow clock ships under `unclocked` — the stamp
+    /// the caller just wrote (the announce), else [`Hlc::stand_in`]: such a
+    /// column was written by no replicated write (a trigger's stand-in), and
+    /// the row's `hlc`, raised by a later partial update, is not its stamp.
     pub(crate) async fn row_as_changes(
         &self,
         attached: &Attached,
         table: &str,
         pk: &str,
+        unclocked: &Hlc,
     ) -> anyhow::Result<Vec<Change>> {
         let cols = attached
             .info
@@ -267,14 +349,9 @@ impl Engine {
         };
         let mut conn = self.store.pool().acquire().await?;
         let clocks = store::col_clocks(&mut conn, table, pk).await?;
-        let row_hlc = row.try_get::<Option<&str>, _>("hlc")?.and_then(Hlc::parse);
         let mut out = Vec::with_capacity(attached.info.columns.len());
         for (i, col) in attached.info.columns.iter().enumerate() {
-            let hlc = clocks
-                .get(col)
-                .or(row_hlc.as_ref())
-                .cloned()
-                .unwrap_or_else(|| self.clock.tick(now_ms()));
+            let hlc = clocks.get(col).unwrap_or(unclocked).clone();
             let value = Val::from_row(&row, i)?.encode();
             out.push(Change {
                 table: table.to_owned(),
@@ -313,7 +390,7 @@ impl Engine {
             .fetch_all(&a.pool)
             .await?;
             for (pk,) in &pks {
-                changes.extend(self.row_as_changes(a, table, pk).await?);
+                changes.extend(self.row_as_changes(a, table, pk, &Hlc::stand_in()).await?);
             }
         }
         let tombs: Vec<(String, String, String)> =
@@ -362,6 +439,31 @@ async fn apply_table(
         {
             lost.push((*pk).to_owned());
         }
+    }
+    // 180: a local trigger may have written other rows as a side effect (the
+    // agent's parent stand-in for a child applied before its parent). They
+    // carry their writer's stamp in `hlc` but got no shadow clock; give them
+    // that stamp, so a later partial update that raises the row's `hlc` can
+    // never become the clock of a placeholder column.
+    let side: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT tbl, pk, col, hlc FROM _replica_log WHERE seq > ? AND col IS NOT NULL AND hlc IS NOT NULL",
+    )
+    .bind(base_seq)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (tbl, pk, col, hlc) in side {
+        if (tbl == table && rows.contains_key(pk.as_str())) || Hlc::parse(&hlc).is_none() {
+            continue;
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO col_clock (table_name, pk, column_name, hlc) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&tbl)
+        .bind(&pk)
+        .bind(&col)
+        .bind(&hlc)
+        .execute(&mut *book)
+        .await?;
     }
     // The writes above fired the capture triggers: they are not local writes.
     sqlx::query("DELETE FROM _replica_log WHERE seq > ?")

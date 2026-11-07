@@ -204,3 +204,22 @@ second start: no repair line, check still empty, remote_turns 2
 ```
 
 All processes started for the re-proof were stopped.
+
+## Follow-up (branch `fix/replica-park-followups` off `a1b7407f`): the reviewer's three non-blocking findings
+
+1. **Trigger-made stand-ins never ship placeholder columns under a real stamp.** `apply_table` gives every row a
+   local trigger wrote as a side effect of the apply (the 0052 parent stand-in) shadow clocks from the stamp its
+   writer put in `hlc` (`INSERT OR IGNORE`, so a real clock is never replaced; rows of the applied pks are skipped).
+   `row_as_changes` no longer falls back to the row's `hlc` for a column without a clock: snapshots and re-announces
+   use `Hlc::stand_in()`; the announce passes the stamp it just wrote. Generic — the replica still knows nothing of
+   `cost_owners`; no agent code changed.
+2. **A retry problem no longer ends the stream.** `apply` logs a `retry_parked_locked` error at warn and returns
+   `Ok` (the batch is committed by then), as the attach site does; an unreadable parked entry is dropped with a warn.
+3. **Parked is bounded.** At most 256 change sets per `(origin, table)` (the oldest are dropped, one warn with the
+   count), entries older than 7 days expire (`parked_at`, replica migration 0004; pre-existing entries count from
+   the upgrade), and a retry pass stops at the first entry of an `(origin, table)` that still fails, so a table that
+   fails for good costs one attempt per arriving batch, not one per parked entry.
+
+Tests: `trigger_stand_in_never_ships_placeholder_columns_under_a_real_stamp` (three origins: X's child before its
+parent on B, Y's partial update of the parent, B's snapshot applied back on X), `parked_retry_error_does_not_end_the_stream`,
+`parked_is_bounded_and_ages_out` (260 failing batches → 256 kept, oldest seq 5; all aged → only the newest stays).

@@ -306,7 +306,9 @@ impl Engine {
             match self.retry_parked_locked(&tables).await {
                 Ok(again) => {
                     for (attached, table, pk) in again {
-                        let changes = self.row_as_changes(&attached, &table, &pk).await?;
+                        let changes = self
+                            .row_as_changes(&attached, &table, &pk, &crate::Hlc::stand_in())
+                            .await?;
                         if !changes.is_empty() {
                             self.emit_locked(changes).await?;
                         }
@@ -777,15 +779,20 @@ impl ReplicaHandle {
             if pks.is_empty() {
                 continue;
             }
+            let stamp = self.engine.clock.tick(now_ms());
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "UPDATE {t} SET \"hlc\" = ? WHERE \"hlc\" IS NULL"
             )))
-            .bind(self.engine.clock.tick(now_ms()).to_text())
+            .bind(stamp.to_text())
             .execute(&self.pool)
             .await?;
             let mut changes = Vec::with_capacity(pks.len() * attached.info.columns.len());
             for (pk,) in &pks {
-                changes.extend(self.engine.row_as_changes(&attached, table, pk).await?);
+                changes.extend(
+                    self.engine
+                        .row_as_changes(&attached, table, pk, &stamp)
+                        .await?,
+                );
             }
             self.engine.emit_locked(changes).await?;
             n += pks.len() as u64;
