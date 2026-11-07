@@ -120,14 +120,16 @@ function ProjectItems({ current, onPick, onNew }: { current: string | null; onPi
   )
 }
 
-/** Engine chip (68 §5): the owner's mesh name, muted, on a session owned elsewhere; hover names owner and epoch. */
-export function EngineChip({ owner, epoch, className }: { owner: string; epoch: number; className?: string }) {
+/** Engine chip (68 §5): the owner's mesh name, muted, on a session owned elsewhere; hover names owner and epoch.
+ * `prefix`: the chat header's `on ` (181 D4). */
+export function EngineChip({ owner, epoch, className, prefix = '' }: { owner: string; epoch: number; className?: string; prefix?: string }) {
   const label = useEngineLabel(owner)
   return (
     <span
       title={`owned by ${owner || '?'} · epoch ${epoch}`}
       className={cn('shrink-0 rounded-[4px] bg-sidebar-accent px-1 text-[10px] leading-4 text-fg-tertiary', className)}
     >
+      {prefix}
       {label}
     </span>
   )

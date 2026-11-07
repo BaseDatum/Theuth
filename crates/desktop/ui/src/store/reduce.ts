@@ -767,10 +767,13 @@ export function apply(
         resume: { turn: e.turn, kind: "interrupted", at: Date.now(), resumed: false, ...whose(slice.resume), cause: "takeover", from: e.from },
       };
     // 139 §9.3: the banner follows ownership — "Moving to B…" on the old owner's clients once B's row lands.
-    case "SessionOwnerChanged":
-      return slice.resume
-        ? { ...slice, resume: { ...slice.resume, here: e.here, owner: e.here ? undefined : e.owner } }
-        : slice;
+    // 181 D4: `moved_from` on the taker's own event says it was a move; the origin's record (`setMoved`) stands
+    // while the owner is the engine it moved to; any other change ends both.
+    case "SessionOwnerChanged": {
+      const moved = e.moved_from && e.here ? { from: e.moved_from, at: Date.now() } : slice.moved?.to === e.owner ? slice.moved : undefined;
+      const next = moved === slice.moved ? slice : { ...slice, moved };
+      return next.resume ? { ...next, resume: { ...next.resume, here: e.here, owner: e.here ? undefined : e.owner } } : next;
+    }
     case "PartialDropped":
       return slice;
     case "TitleChanged": {

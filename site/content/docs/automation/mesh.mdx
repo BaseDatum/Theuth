@@ -57,6 +57,10 @@ One engine **owns** each session and is the only one that writes to it. In the s
 - Your own sessions are **taken**: when the owner is unreachable the composer shows `Owned by <engine>, last seen <ago>. Continue here now?` with a **Continue here** button; the same item is in a session's menu, and `/take` in the composer does it directly. Turns the old owner had not yet shipped stay there.
 - Agent desks are **forwarded** to their owner rather than taken.
 
+To send a session you own to another engine on purpose, open its **⋯** menu and pick **Move to ▸ \<engine\>**. The list shows every paired engine with a dot for online; an offline one is greyed out with how long it has been gone. One click moves it: a turn that is running pauses here and resumes there, and running jobs stay behind (the subtitle says how many). Afterwards the header shows `on <engine>` and a line reads `Moved to <engine> at HH:MM — it runs there. Sending a message here brings it back.` with a **Continue here** button; the other engine shows `The session moved here at HH:MM — moved from <engine>.` Errors come back in plain words: `<engine> is offline`, `this session is not owned here`, `<engine> refused: …`. Opening or reading a session on another engine never moves it.
+
+Some sessions cannot move, and the menu item says why: a paused agent's desk and everything under it (`<agent> is paused — un-pause it before moving`), an agent desk (it stays on the engine that runs its agent), and an external harness session such as omp (a process on this engine). If the other engine refuses after the running turn was paused here, the turn resumes here and the message ends `It continues here.`; if it does not answer within the take's time limit you get `no answer from <engine> yet — the move may still land`, and the sidebar shows where the session ended up.
+
 An automatic takeover on write is refused until the owner has been unseen for `sessions.takeover_secs` (300 s).
 
 ### The hub
@@ -105,7 +109,7 @@ t --install-service --no-pair
 
 The model calls `mesh_peers`, sees `build-box … repos=~/src/app`, and calls `spawn_subagent{agent: "build-box", cwd: "~/src/app", task: "…"}`. The child session appears under the parent in the sidebar with the server's engine chip. When it wants to run `cargo test`, the approval card shows up in *your* chat on the laptop — Allow or Deny as usual; it is the same Allow/Deny model described in [Tools and permissions](/docs/reference/tools-permissions). The child's result arrives as a message in the parent session.
 
-If you would rather hand the whole conversation to the server, open the session's menu and choose **Continue here** from a UI connected to the server, or type `/take` there.
+If you would rather hand the whole conversation to the server, open the session's menu and choose **Move to ▸ build-box**, or **Continue here** from a UI connected to the server, or type `/take` there.
 
 **4. Follow it from the phone.** On the laptop, Settings › **Link**: turn the relay on (or `/link on` in the terminal UI), then **Pair a device**. Scan the QR with the phone's camera. The phone's **Pair with a mesh** screen pairs it with the mesh, and the switcher shows one row for the mesh (`2 of 2 nodes online`). Open the running session from the phone: you see the same transcript, and an approval that is still pending can be answered there. Once the server can hold the lease (past probation, or preferred), closing the laptop does not cut the phone off: the server takes the hub, the phone shows `reconnecting…` briefly and redials the same mesh id.
 
@@ -216,7 +220,7 @@ All `t mesh …` subcommands are RPC calls on the running engine on this machine
 - Settings › **Mesh**: "This node" (name, `hub` badge, mesh name, **Prefer this node as hub**, Sessions here/elsewhere, replication log), "Nodes in this mesh", **Add a node** (pairing string show/paste, **On another computer over SSH**), sandbox VMs.
 - Settings › **Link**: relay toggle, "This node" link identity, hub status (`this node is the hub: serving the mesh's devices` or `another node holds the hub lease`), **Devices** with **Pair a device**, rename, revoke, and **Legacy devices**.
 - Engine switcher (header): the local daemon as `LOCAL`, mesh rows with `N of M nodes online`, nodes nested under their parent; chips `reconnecting…` and `revoked — pair again`.
-- Session menu and sidebar item: **Continue here**.
+- Session menu: **Continue here** (owned elsewhere) or **Move to ▸** (owned here, with paired engines); sidebar item: **Continue here**.
 
 ## Safety and permissions
 

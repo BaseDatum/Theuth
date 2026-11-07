@@ -43,7 +43,7 @@ A second engine on the same data dir is refused with:
 engine already running (pid N, tui, since HH:MM, ws://127.0.0.1:P) — run `t` to attach, or set THEUTH_DATA_DIR for a separate store
 ```
 
-With several engines in a [mesh](/docs/automation/mesh), every session is readable everywhere but has one **owner** engine that writes it. The `/sessions` picker and the desktop sidebar show an engine chip on sessions owned elsewhere; **Continue here** (desktop) or `/take` (terminal) moves ownership to the engine you are on. Typing into a session owned by another engine takes it over automatically when that engine is reachable.
+With several engines in a [mesh](/docs/automation/mesh), every session is readable everywhere but has one **owner** engine that writes it. The `/sessions` picker and the desktop sidebar show an engine chip on sessions owned elsewhere; **Continue here** (desktop) or `/take` (terminal) moves ownership to the engine you are on, and **Move to ▸ \<engine\>** in the desktop session menu sends a session this engine owns to another one (a running turn resumes there). Typing into a session owned by another engine takes it over automatically when that engine is reachable; opening it does not.
 
 ## Rewriting the conversation
 

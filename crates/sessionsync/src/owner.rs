@@ -55,6 +55,9 @@ pub struct Take {
     /// 139 Q10: a `Write` take for a client's write here counts as the
     /// user's for the resume policy (`TakeSession::by_user`).
     pub by_user: bool,
+    /// 181: the engine that asked for this take over the mesh (`Forwarded`);
+    /// `None` for a local client. `Moved` binds to it: only the owner moves.
+    pub caller: Option<PeerId>,
 }
 
 /// 139 §6.2 step 9: what the taker did about the taken open turn.
@@ -74,6 +77,8 @@ pub enum ResumeOnTake {
 /// `durability.resume`; a takeover resumes only when the user asked for it
 /// — `User`, or a `Write` take the front door made for a client's input
 /// (`by_user`); system takes (`Write` from plumbing, `Orphan`) leave the item.
+/// 181 D3: a move is the user's ask to run it there, so it resumes whatever
+/// `durability.resume` says.
 fn resume_policy(
     transferred: bool,
     reason: TakeReason,
@@ -82,6 +87,7 @@ fn resume_policy(
 ) -> ResumeOnTake {
     if transferred {
         match mode {
+            _ if reason == TakeReason::Moved => ResumeOnTake::Resume(ResumeCause::Transfer),
             ResumeMode::Auto => ResumeOnTake::Resume(ResumeCause::Transfer),
             ResumeMode::Ask => ResumeOnTake::Pending,
             ResumeMode::Off => ResumeOnTake::Nothing,
@@ -117,6 +123,13 @@ impl Take {
         if owner.is_empty() || owner == me {
             return Ok(((owner, epoch), ResumeOnTake::NoOpenTurn));
         }
+        // 181: `moved` is the owner's own ask; from anyone else it is the user's take.
+        let reason =
+            if reason == TakeReason::Moved && self.caller.as_ref().map(|c| &c.0) != Some(&owner) {
+                TakeReason::User
+            } else {
+                reason
+            };
         if me.is_empty() {
             return Err("this engine has no mesh identity".to_owned());
         }
@@ -131,6 +144,9 @@ impl Take {
                 }
                 Err(e) => return Err(format!("owner {owner} busy: {e:#}")),
             }
+        } else if reason == TakeReason::Moved {
+            // 181 D2: a move is a handover, never a takeover.
+            return Err(format!("owner {owner} is not connected here"));
         } else if reason == TakeReason::Write {
             self.unseen_long_enough(&owner)?;
         }
@@ -160,6 +176,7 @@ impl Take {
                 owner: me.clone(),
                 epoch: next,
                 here: true,
+                moved_from: (reason == TakeReason::Moved).then(|| owner.clone()),
             })
             .await;
         // 139 R2 D4: the session's reminder rows (replicated here) fire here now.
@@ -322,6 +339,126 @@ impl Take {
     }
 }
 
+/// 181 D2: why a move's `ask` (the target's `session_take(moved)`) did not
+/// answer with the new owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MoveFailure {
+    /// The target answered with an error (its words).
+    Refused(String),
+    /// No answer within the take's worst case: the move may still land.
+    NoAnswer,
+}
+
+/// 181 D2, the origin side of "Move to ▸": `id` must be ours, not a desk, an
+/// ACP harness or a paused agent's tree (`held`: `HeldDesks`, the per-engine
+/// pause map the target would not know), and `to` a connected peer; then
+/// `ask` — the target's `session_take(id, "moved")`, sent over the mesh by
+/// the caller — runs the ordinary take there, which releases (drains) the
+/// session here and lands the new epoch. `ask` answers `Ok(None)` when it
+/// could not reach `to`. A refusal leaves the session here: the drained turn
+/// resumes here ([`continue_here`]). `name` is `to`'s display name.
+pub async fn move_to(
+    store: &Store,
+    id: SessionId,
+    to: &PeerId,
+    name: &str,
+    connected: &[PeerId],
+    held: &[(SessionId, Option<String>)],
+    ask: impl Future<Output = Result<Option<(String, u32)>, MoveFailure>>,
+) -> Result<(String, u32), String> {
+    let me = store.engine();
+    match store.fence(id).await.map_err(|e| format!("{e:#}"))? {
+        Some((_, owner)) if !me.is_empty() && owner == me => {}
+        Some(_) => return Err("this session is not owned here".to_owned()),
+        None => return Err(format!("{id}: no such session")),
+    }
+    if to.0 == me {
+        return Err("this session already runs here".to_owned());
+    }
+    // A paused agent's tree (179): its turns are held here and would resume there.
+    let root = store.root_of(id).await.unwrap_or(id);
+    if let Some((_, agent)) = held.iter().find(|(desk, _)| *desk == id || *desk == root) {
+        let agent = agent.as_deref().unwrap_or("the agent");
+        return Err(format!("{agent} is paused — un-pause it before moving"));
+    }
+    let row = store
+        .session(id)
+        .await
+        .map_err(|e| format!("{e:#}"))?
+        .ok_or_else(|| format!("{id}: no such session"))?;
+    // The front door never takes these either (`forward::classify`): their
+    // process or roster state lives on this engine.
+    if let Some(harness) = &row.agent {
+        return Err(format!(
+            "this session runs the {harness} harness as a process on this engine, so it cannot move"
+        ));
+    }
+    if let Some(agent) = &row.desk {
+        return Err(format!(
+            "this is {agent}'s desk: a desk stays on the engine that runs its agent, so it cannot move"
+        ));
+    }
+    if !connected.contains(to) {
+        return Err(format!("{name} is offline"));
+    }
+    match ask.await {
+        Ok(Some(owned)) => Ok(owned),
+        Ok(None) => Err(format!("{name} is offline")),
+        Err(MoveFailure::NoAnswer) => Err(format!(
+            "no answer from {name} yet — the move may still land"
+        )),
+        Err(MoveFailure::Refused(why)) => {
+            let ours = matches!(store.fence(id).await, Ok(Some((_, o))) if o == me);
+            if !ours {
+                return Err(format!("{name} refused: {why}"));
+            }
+            continue_here(store, id).await;
+            Err(format!(
+                "Move to {name} failed: {name} refused: {why}. It continues here."
+            ))
+        }
+    }
+}
+
+/// 181: a move the target refused after our release drain — the session is
+/// still ours: stop refusing inputs (D16 hold) and resume the turn the drain
+/// suspended (`suspended{release}` newest), here. Returns that turn.
+/// ponytail: a target that failed *after* its `set_owner` (a fence write
+/// error) would leave two owners at e+1; the take writes nothing after it
+/// that can fail but `set_fence`.
+pub(crate) async fn continue_here(store: &Store, id: SessionId) -> Option<runtime::TurnId> {
+    let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten();
+    if let Some(a) = &agents {
+        let _ = a.tell(transfer::ClearDraining(id)).await;
+    }
+    let (turn, _) = store.open_turn(id).await.ok().flatten()?;
+    let plan = store.resume_plan(id, turn).await.ok()?;
+    if plan.kind != agent::durability::ResumeKind::Suspended || plan.cause != ResumeCause::Transfer
+    {
+        return None;
+    }
+    match agents {
+        Some(a) => {
+            // A planned local stop that ended: the boot causes' no-op transfer pass.
+            let _ = a
+                .tell(agent::supervisor::ResumeTurn {
+                    session: id,
+                    turn,
+                    cause: Some(ResumeCause::Shutdown),
+                    from: None,
+                })
+                .await;
+        }
+        None => {
+            tracing::warn!("sessions: move of {id} refused; no supervisor to resume turn {turn}")
+        }
+    }
+    tracing::info!("sessions: move of {id} refused; turn {turn} continues here");
+    Some(turn)
+}
+
 /// Owner side of a take (68 §4.2 step 1; 139 §6.1 D3): drain the session —
 /// its open turn is `turn_finished` or `suspended{release}` before the
 /// reply — flush the write connection, answer with `MAX(seq)` of the
@@ -374,6 +511,7 @@ pub async fn demote(rt: &Runtime, store: &Store, m: Demote) -> anyhow::Result<u6
         owner,
         epoch,
         here: false,
+        moved_from: None,
     })
     .await;
     if n > 0 {
@@ -654,6 +792,7 @@ mod tests {
                 connected,
                 peers,
                 by_user: false,
+                caller: None,
             }
         }
 
@@ -998,6 +1137,13 @@ mod tests {
                 );
             }
         }
+        // 181 D3: a move resumes whatever `durability.resume` says.
+        for mode in [ResumeMode::Auto, ResumeMode::Ask, ResumeMode::Off] {
+            assert_eq!(
+                resume_policy(true, TakeReason::Moved, true, mode),
+                Resume(ResumeCause::Transfer)
+            );
+        }
         for mode in [ResumeMode::Auto, ResumeMode::Ask, ResumeMode::Off] {
             assert_eq!(
                 resume_policy(false, TakeReason::User, false, mode),
@@ -1330,5 +1476,496 @@ mod tests {
     #[tokio::test]
     async fn origin_retake_keeps_its_row_after_snapshot() {
         origin_retake(true).await;
+    }
+
+    // ---- 181: Move to ▸ (the origin's `move_to`, the target's `Moved` take) ----
+
+    /// A moves `id` to B over a loopback mesh: B's `Moved` take is
+    /// `move_to`'s `ask` (what `session_move` sends as `session_take(moved)`);
+    /// A answers B's `Release` and (`ship`) ships its log right after, as the
+    /// shipper does — unshipped, B's take fails after A's drain. Returns the
+    /// move's answer and what B did about the open turn.
+    async fn move_over(
+        a: &Engine,
+        b: &Engine,
+        id: SessionId,
+        ship: bool,
+    ) -> (Result<(String, u32), String>, Option<ResumeOnTake>) {
+        let switch = Arc::new(Switch::default());
+        let (la, lb) = (Loop::new("a", &switch), Loop::new("b", &switch));
+        let shipper = crate::ship::Shipper::new(a.store.clone(), None, &SessionsConfig::default());
+        let served = tokio::spawn(async move {
+            let (peer, stream) = la.accept(ALPN_SESSIONS).await.unwrap();
+            crate::SessionSync::serve(shipper, peer, stream)
+                .await
+                .unwrap();
+        });
+        let (sb, sa, bid) = (b.store.clone(), a.store.clone(), b.id());
+        let ship = tokio::spawn(async move {
+            if !ship {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            for row in sa.log_after(0).await.unwrap() {
+                let seq = row.seq;
+                if apply_log_row(&sb, &PeerId("a".into()), &row.into())
+                    .await
+                    .unwrap()
+                    == Applied::Applied
+                {
+                    sa.set_cursor("a", &bid.0, seq).await.unwrap();
+                }
+            }
+        });
+        let mut resumed = None;
+        let ask = async {
+            let mut take = b.take(Some(lb.clone()), vec![a.id()], vec![]);
+            take.caller = Some(a.id());
+            let (owned, r) = take
+                .take(id, TakeReason::Moved)
+                .await
+                .map_err(MoveFailure::Refused)?;
+            resumed = Some(r);
+            Ok(Some(owned))
+        };
+        let got = move_to(&a.store, id, &b.id(), "b", &[b.id()], &[], ask).await;
+        served.await.unwrap();
+        ship.await.unwrap();
+        (got, resumed)
+    }
+
+    /// A's side once B's take row lands: what the apply path's `Demote` does.
+    async fn demote_on(a: &Engine, b: &Engine, id: SessionId, old_epoch: u32) {
+        assert!(a.pull(b).await.iter().all(|r| *r != Applied::StaleEpoch));
+        let m = Demote {
+            session: id,
+            old_epoch,
+            by: b.id(),
+        };
+        assert_eq!(demote(&a.rt, &a.store, m).await.unwrap(), 0);
+    }
+
+    /// 181 D2: the move is a take by the target — epoch + 1 there, the origin
+    /// demoted and fenced out, `SessionOwnerChanged{moved_from}` on the
+    /// target only; calls book on the target and 180's owner rows hold.
+    #[tokio::test]
+    async fn move_hands_the_session_to_the_target() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        let events = sink(&b.rt).await;
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &agent_msg("u1")).await.unwrap();
+        book(&a.store, id).await;
+        b.pull(&a).await;
+        a.store
+            .append(id, &agent_msg("u2, not on b yet"))
+            .await
+            .unwrap();
+
+        let (got, resumed) = move_over(&a, &b, id, true).await;
+        assert_eq!(got, Ok(("b".into(), 2)));
+        assert_eq!(resumed, Some(ResumeOnTake::NoOpenTurn));
+        assert_eq!(b.store.fence(id).await.unwrap(), Some((2, "b".into())));
+        assert_eq!(
+            b.store.messages(id).await.unwrap().len(),
+            2,
+            "the tail moved with it"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            events.lock().iter().any(|e| matches!(
+                e,
+                AgentEvent::SessionOwnerChanged { session, owner, epoch: 2, here: true, moved_from: Some(from) }
+                    if *session == id && owner == "b" && from == "a"
+            )),
+            "{:?}",
+            events.lock()
+        );
+
+        book(&b.store, id).await;
+        assert_eq!(b.calls(id).await, 2, "A's call and B's");
+        assert!(b.ledger_orphans().await.is_empty());
+        demote_on(&a, &b, id, 1).await;
+        assert_eq!(a.store.fence(id).await.unwrap(), Some((2, "b".into())));
+        assert!(
+            a.store.append(id, &agent_msg("late")).await.is_err(),
+            "A is fenced out"
+        );
+        assert_eq!(a.calls(id).await, 2);
+        assert!(a.ledger_orphans().await.is_empty());
+        a.close().await;
+        b.close().await;
+    }
+
+    /// 181 D3: a turn open on the origin is suspended by the release drain
+    /// and resumed on the target as a transfer — even under
+    /// `durability.resume: ask`, where a plain take only leaves it pending.
+    #[tokio::test]
+    async fn move_mid_turn_resumes_on_the_target() {
+        let a = engine("a").await;
+        let mut b = engine("b").await;
+        b.rt = Runtime::new(
+            figment::Figment::from(figment::providers::Serialized::default(
+                "durability",
+                serde_json::json!({ "resume": "ask" }),
+            )),
+            b.dir.clone(),
+        );
+        assert_eq!(
+            b.rt.section::<DurabilityConfig>("durability")
+                .unwrap()
+                .resume,
+            ResumeMode::Ask
+        );
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &agent_msg("u1")).await.unwrap();
+        let turn = open_turn_on(&a.store, id).await;
+        b.pull(&a).await;
+
+        let (got, resumed) = move_over(&a, &b, id, true).await;
+        assert_eq!(got, Ok(("b".into(), 2)));
+        assert_eq!(resumed, Some(ResumeOnTake::Resume(ResumeCause::Transfer)));
+        let plan = b.store.resume_plan(id, turn).await.unwrap();
+        assert_eq!(
+            (plan.kind, plan.cause),
+            (ResumeKind::Suspended, ResumeCause::Transfer),
+            "suspended{{release}} by A's drain, shipped before B's epoch"
+        );
+        demote_on(&a, &b, id, 1).await;
+        a.close().await;
+        b.close().await;
+    }
+
+    /// 181 D2: only the owner moves a session; nothing is asked of the
+    /// target otherwise. A `Moved` take never takes over: the owner must be
+    /// connected to release.
+    #[tokio::test]
+    async fn move_refused_when_not_owner() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        b.pull(&a).await;
+        let mut asked = false;
+        let got = move_to(&b.store, id, &a.id(), "a", &[a.id()], &[], async {
+            asked = true;
+            Ok(Some(("a".to_owned(), 2)))
+        })
+        .await;
+        assert_eq!(got, Err("this session is not owned here".to_owned()));
+        assert!(!asked);
+        let got = move_to(&a.store, id, &a.id(), "a", &[], &[], async { Ok(None) }).await;
+        assert_eq!(got, Err("this session already runs here".to_owned()));
+
+        let mut take = b.take(None, vec![], vec![peer("a", false, 0)]);
+        take.caller = Some(a.id());
+        let e = take.run(id, TakeReason::Moved).await.unwrap_err();
+        assert!(e.contains("not connected"), "{e}");
+        assert_eq!(b.store.fence(id).await.unwrap(), Some((1, "a".into())));
+        a.close().await;
+        b.close().await;
+    }
+
+    /// 181 D2: an unconnected target is offline before anything is sent;
+    /// one the mesh could not reach is offline too; a target's refusal comes
+    /// back in its words. The session stays put each time.
+    #[tokio::test]
+    async fn move_to_offline_peer_says_so() {
+        let a = engine("a").await;
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        let xeus = PeerId("x".into());
+        let mut asked = false;
+        let got = move_to(&a.store, id, &xeus, "xeus", &[], &[], async {
+            asked = true;
+            Ok(None)
+        })
+        .await;
+        assert_eq!(got, Err("xeus is offline".to_owned()));
+        assert!(!asked);
+        let connected = std::slice::from_ref(&xeus);
+        let got = move_to(&a.store, id, &xeus, "xeus", connected, &[], async {
+            Ok(None)
+        })
+        .await;
+        assert_eq!(got, Err("xeus is offline".to_owned()));
+        let got = move_to(&a.store, id, &xeus, "xeus", connected, &[], async {
+            Err(MoveFailure::NoAnswer)
+        })
+        .await;
+        assert_eq!(
+            got,
+            Err("no answer from xeus yet — the move may still land".to_owned())
+        );
+        let got = move_to(&a.store, id, &xeus, "xeus", connected, &[], async {
+            Err(MoveFailure::Refused(
+                "owner a busy: release timed out".into(),
+            ))
+        })
+        .await;
+        assert_eq!(
+            got,
+            Err("Move to xeus failed: xeus refused: owner a busy: release timed out. It continues here.".to_owned())
+        );
+        assert_eq!(a.store.fence(id).await.unwrap(), Some((1, "a".into())));
+        a.close().await;
+    }
+
+    /// 181 D3 / 139 §8: children follow their root as on a take — the root
+    /// moves, its child stays owned (and writable) where it runs, both
+    /// engines keep the lineage, and each books where it runs with every
+    /// ledger row in place on the child's engine.
+    #[tokio::test]
+    async fn move_keeps_child_sessions_with_their_root() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        let (root, child) = (SessionId::new(), SessionId::new());
+        a.store
+            .create_session(root, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .create_session(child, "m", Some(root), None, None)
+            .await
+            .unwrap();
+        book(&a.store, child).await;
+        b.pull(&a).await;
+
+        let (got, _) = move_over(&a, &b, root, true).await;
+        assert_eq!(got, Ok(("b".into(), 2)));
+        demote_on(&a, &b, root, 1).await;
+        for e in [&a, &b] {
+            assert_eq!(e.store.fence(root).await.unwrap(), Some((2, "b".into())));
+            assert_eq!(e.store.fence(child).await.unwrap(), Some((1, "a".into())));
+            let row = e.store.session(child).await.unwrap().unwrap();
+            assert_eq!(row.parent, Some(root));
+        }
+        a.store
+            .append(child, &agent_msg("child runs on"))
+            .await
+            .unwrap();
+        book(&a.store, child).await;
+        book(&b.store, root).await;
+        b.pull(&a).await;
+        a.pull(&b).await;
+        assert_eq!((a.calls(child).await, a.calls(root).await), (2, 1));
+        assert!(a.ledger_orphans().await.is_empty());
+        // B never took the child: its ledger row reaches B over the record
+        // replica (not in this harness), as for any session B only mirrors.
+        assert_eq!(b.calls(root).await, 1);
+        assert_eq!(
+            b.ledger_row(root).await.map(|r| r.0),
+            Some(root.to_string())
+        );
+        a.close().await;
+        b.close().await;
+    }
+
+    /// `move_to` refusing before anything is asked of the target; the session stays put.
+    async fn refused_locally(
+        a: &Engine,
+        id: SessionId,
+        held: &[(SessionId, Option<String>)],
+    ) -> String {
+        let x = PeerId("x".into());
+        let mut asked = false;
+        let got = move_to(
+            &a.store,
+            id,
+            &x,
+            "xeus",
+            std::slice::from_ref(&x),
+            held,
+            async {
+                asked = true;
+                Ok(Some(("x".to_owned(), 2)))
+            },
+        )
+        .await;
+        assert!(!asked, "{got:?}");
+        assert_eq!(a.store.fence(id).await.unwrap(), Some((1, "a".into())));
+        got.unwrap_err()
+    }
+
+    /// 181 fix round: the pause map is this engine's alone (179), so a paused
+    /// agent's desk and every session under it are refused here.
+    #[tokio::test]
+    async fn move_refused_for_a_paused_agents_session() {
+        let a = engine("a").await;
+        let (desk, child) = (SessionId::new(), SessionId::new());
+        a.store
+            .create_session(desk, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.set_desk(desk, Some("ops")).await.unwrap();
+        a.store
+            .create_session(child, "m", Some(desk), None, None)
+            .await
+            .unwrap();
+        let held = [(desk, Some("ops".to_owned()))];
+        for id in [desk, child] {
+            assert_eq!(
+                refused_locally(&a, id, &held).await,
+                "ops is paused — un-pause it before moving"
+            );
+        }
+        // Not paused: the child moves like any session (the ask runs).
+        let x = PeerId("x".into());
+        let got = move_to(
+            &a.store,
+            child,
+            &x,
+            "xeus",
+            std::slice::from_ref(&x),
+            &[],
+            async { Ok(Some(("x".to_owned(), 2))) },
+        )
+        .await;
+        assert_eq!(got, Ok(("x".into(), 2)));
+        a.close().await;
+    }
+
+    /// 181 fix round: a roster desk is forwarded, never taken; it does not move.
+    #[tokio::test]
+    async fn move_refused_for_a_desk_session() {
+        let a = engine("a").await;
+        let desk = SessionId::new();
+        a.store
+            .create_session(desk, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.set_desk(desk, Some("ops")).await.unwrap();
+        let e = refused_locally(&a, desk, &[]).await;
+        assert_eq!(
+            e,
+            "this is ops's desk: a desk stays on the engine that runs its agent, so it cannot move"
+        );
+        a.close().await;
+    }
+
+    /// 181 fix round: an ACP harness session is a process on this engine.
+    #[tokio::test]
+    async fn move_refused_for_a_harness_session() {
+        let a = engine("a").await;
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.set_acp(id, "omp", None, &[]).await.unwrap();
+        let e = refused_locally(&a, id, &[]).await;
+        assert_eq!(
+            e,
+            "this session runs the omp harness as a process on this engine, so it cannot move"
+        );
+        a.close().await;
+    }
+
+    /// 181 fix round: the target fails after A's release drain (here: A's tail
+    /// never reaches B). A still owns the session at its epoch, says so, and
+    /// the drained `suspended{release}` turn is the one it resumes here.
+    #[tokio::test]
+    async fn failed_move_resumes_on_the_origin() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        b.pull(&a).await;
+        let turn = open_turn_on(&a.store, id).await;
+
+        let (got, resumed) = move_over(&a, &b, id, false).await;
+        let e = got.unwrap_err();
+        assert!(
+            e.starts_with("Move to b failed: b refused: owner a busy: tail not replicated")
+                && e.ends_with(". It continues here."),
+            "{e}"
+        );
+        assert_eq!(resumed, None);
+        assert_eq!(a.store.fence(id).await.unwrap(), Some((1, "a".into())));
+        assert_eq!(b.store.fence(id).await.unwrap(), Some((1, "a".into())));
+        let plan = a.store.resume_plan(id, turn).await.unwrap();
+        assert_eq!(
+            (plan.kind, plan.cause),
+            (ResumeKind::Suspended, ResumeCause::Transfer)
+        );
+        assert_eq!(continue_here(&a.store, id).await, Some(turn));
+        a.store
+            .append(id, &agent_msg("still writable on a"))
+            .await
+            .unwrap();
+        a.close().await;
+        b.close().await;
+    }
+
+    /// 181 fix round: `moved` binds to the owner. From anyone else (a local
+    /// client: no caller; another peer) it is the user's take — at once, the
+    /// open turn resumed as a takeover — never the owner's handover.
+    #[tokio::test]
+    async fn moved_reason_from_a_non_owner_is_treated_as_user() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        for caller in [None, Some(PeerId("c".into()))] {
+            let id = SessionId::new();
+            a.store
+                .create_session(id, "m", None, None, None)
+                .await
+                .unwrap();
+            open_turn_on(&a.store, id).await;
+            b.pull(&a).await;
+            let mut take = b.take(None, vec![], vec![peer("a", false, now_ms())]);
+            take.caller = caller;
+            let (got, resumed) = take.take(id, TakeReason::Moved).await.unwrap();
+            assert_eq!(got, ("b".into(), 2));
+            assert_eq!(resumed, ResumeOnTake::Resume(ResumeCause::Takeover));
+        }
+        a.close().await;
+        b.close().await;
+    }
+
+    /// 181 fix round, pinned as it is today (no tie-break; `181-notes.md`): A
+    /// moves S to B while C takes it too — both from epoch 1, so both write
+    /// epoch 2. Each applies the other's row (an equal epoch passes the
+    /// fence), neither demotes, each keeps its own fence and writes on, and
+    /// each `sessions` row names the *other* engine: two owners at epoch 2.
+    #[tokio::test]
+    async fn concurrent_take_at_equal_epoch_is_not_tie_broken() {
+        let (a, b, c) = (engine("a").await, engine("b").await, engine("c").await);
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        c.pull(&a).await;
+        b.pull(&a).await;
+        let (got, _) = move_over(&a, &b, id, true).await;
+        assert_eq!(got, Ok(("b".into(), 2)));
+        let got = c
+            .take(None, vec![], vec![peer("a", false, now_ms())])
+            .run(id, TakeReason::User)
+            .await;
+        assert_eq!(got, Ok(("c".into(), 2)));
+        assert_eq!(b.pull(&c).await, [Applied::Applied]);
+        assert_eq!(c.pull(&b).await, [Applied::Applied]);
+        assert_eq!(b.store.fence(id).await.unwrap(), Some((2, "b".into())));
+        assert_eq!(c.store.fence(id).await.unwrap(), Some((2, "c".into())));
+        assert_eq!(b.store.owner(id).await.unwrap(), Some(("c".into(), 2)));
+        assert_eq!(c.store.owner(id).await.unwrap(), Some(("b".into(), 2)));
+        assert!(b.store.append(id, &agent_msg("b writes")).await.is_ok());
+        assert!(c.store.append(id, &agent_msg("c writes")).await.is_ok());
+        a.close().await;
+        b.close().await;
+        c.close().await;
     }
 }

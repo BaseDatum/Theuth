@@ -3413,6 +3413,11 @@ pub enum AgentEvent {
         epoch: u32,
         /// `owner` is this engine.
         here: bool,
+        /// 181 D4: the taker's event for a move (`TakeReason::Moved`): the
+        /// engine that sent the session here. `None` for every other change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        moved_from: Option<String>,
     },
     /// The session's effective context changed outside a normal turn
     /// (design doc 48 §3.2): a [`RemoveContext`] commit, a settled turn /

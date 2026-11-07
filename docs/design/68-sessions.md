@@ -57,10 +57,15 @@ Why not the alternatives: the stage-1 record replica needs single-column PKs and
 A session is created on the engine the client is attached to; `owner = self`, `epoch = 1`. Task-driven sessions (desks, delegated harnesses) are created where 67's placement put them.
 
 ### 4.2 Transfer
-`session_take(id, reason)` on engine B — `reason ∈ {user, write, orphan}`:
+`session_take(id, reason)` on engine B — `reason ∈ {user, write, orphan, moved}` (`moved`: step 4, 181):
 1. B checks the replica's `sessions` row: owner A, epoch e. If A is reachable (mesh peer connected) B **asks A to release** over `theuth/sessions/1` (`Release{session}`); A stops the actor, flushes its log, replies with its last seq for the session; B waits for its cursor to reach it (bounded by `sessions.release_wait_secs`, 10). If A is unreachable, B checks `availability`: A must have been unseen ≥ `takeover_secs` (300) unless `reason = user` (the user asked; the user may take at once and accept the tail loss shown in §4.3).
 2. B writes `owner = B, epoch = e+1` — a normal write through its own store, so it is the first log row of the new epoch and reaches every replica, A included.
 3. B starts the actor from its replica of the transcript; the client that asked is attached.
+4. **181 (Move to ▸)**: `reason = moved` is the owner's own ask. `session_move(id, to)` on the owner checks it owns
+   `id` and `to` is connected, then sends `to` its `session_take(id, "moved")` over `theuth/rpc/1`; `to` runs steps
+   1–3 unchanged, but never as a takeover (the owner must be connected and release), and the drained open turn
+   resumes there whatever `durability.resume` says. `SessionOwnerChanged.moved_from` names the origin on the
+   taker's event (`181-move-to-node.md`).
 
 ### 4.3 The stale owner
 A comes back (or was never gone, only partitioned). Its replica applies B's row: owner B, epoch e+1 > its own e. A **demotes**: kills its actor, marks every unshipped `session_log` row for `(session, e)` as `orphaned`, and never ships them. Those rows are surfaced once — a system message in the session on A's copy ("N turns from <time> were not delivered; view") reachable by `session_orphans(id)` — and pruned after 7 days. Replicas that receive a stale row (epoch < seen) drop it. There is no merge, ever; the user chose B.
@@ -112,7 +117,7 @@ sessions:
 
 ## 10. RPC and tools
 
-RPC: `list_sessions` (+`owner`, `here`), `session_take(id, reason)`, `session_orphans(id)`, `session_owner(id)`; every existing session RPC works on any engine (forwarded when not the owner). Events: `SessionOwnerChanged{session, owner, epoch}`. TUI `/sessions` shows the owner chip; `/take` takes the current session here. Desktop: engine chip in the sidebar row, "Continue here" in the session menu, the owner-unreachable card.
+RPC: `list_sessions` (+`owner`, `here`), `session_take(id, reason)`, `session_move(id, to)` (181), `session_orphans(id)`, `session_owner(id)`; every existing session RPC works on any engine (forwarded when not the owner). Events: `SessionOwnerChanged{session, owner, epoch, here, moved_from?}`. TUI `/sessions` shows the owner chip; `/take` takes the current session here. Desktop: engine chip in the sidebar row (`on <engine>` in the chat header), "Continue here" and "Move to ▸" in the session menu, the owner-unreachable card. **181:** reads never take — cell reads (`cell_state`, `cell_runs`) ask the owner instead of going through the taking front door.
 
 ## 11. Single-engine invariants (extend 67's smoke)
 

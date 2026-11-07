@@ -106,6 +106,46 @@ async fn route_scope<T: DeserializeOwned>(
     }
 }
 
+/// [`route_scope`] for a read (`cell_state`, `cell_runs`, a forwarded run's reads): a chat
+/// owned elsewhere is asked of its owner and never taken — viewing a chat must not move it
+/// (181: a moved session stayed put only until the origin reopened it). Owner not connected →
+/// `Ok(None)`: this engine answers from what it has.
+async fn read_scope<T: DeserializeOwned>(
+    server: &Server,
+    ext: &Extensions,
+    scope: &Scope,
+    method: &str,
+    params: impl Serialize,
+) -> RpcResult<Option<T>> {
+    let Scope::Session(s) = scope else {
+        return route_scope(server, ext, scope, method, params).await;
+    };
+    server.authorize(ext, *s).await?;
+    let Ok(store) =
+        crate::api::ask::<agent::Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await
+    else {
+        return Ok(None);
+    };
+    read_via(ext, &store, *s, method, params).await
+}
+
+/// [`read_scope`]'s chat branch over `store`: the owner's answer when another engine owns
+/// `s` and is connected, else `Ok(None)`. Never a take: nothing here writes `store`.
+async fn read_via<T: DeserializeOwned>(
+    ext: &Extensions,
+    store: &agent::store::Store,
+    s: SessionId,
+    method: &str,
+    params: impl Serialize,
+) -> RpcResult<Option<T>> {
+    match store.owner(s).await {
+        Ok(Some((owner, _))) if !owner.is_empty() && owner != store.engine() => {
+            crate::forward::to_peer(ext, &replica::PeerId(owner), method, params).await
+        }
+        _ => Ok(None),
+    }
+}
+
 /// `cell_run`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
@@ -311,7 +351,7 @@ pub(crate) async fn state(
 ) -> RpcResult<StateReply> {
     cells_guard::read(ext)?;
     if let Some(mut r) =
-        route_scope::<StateReply>(server, ext, &scope, "cell_state", (&scope, &cells)).await?
+        read_scope::<StateReply>(server, ext, &scope, "cell_state", (&scope, &cells)).await?
     {
         // §14.2 (L11): another engine runs these cells — the host chip names it.
         let host = host_of(&scope).await;
@@ -377,7 +417,7 @@ async fn read_run<T: DeserializeOwned>(
     match local {
         Ok(v) => Ok(v),
         Err(CellsError::NotFound(_)) => match forwarded_scope(run) {
-            Some(scope) => match route_scope(server, ext, &scope, method, params).await? {
+            Some(scope) => match read_scope(server, ext, &scope, method, params).await? {
                 Some(r) => Ok(r),
                 None => Err(cells_err(CellsError::NotFound(run.0.clone()))),
             },
@@ -443,7 +483,7 @@ pub(crate) async fn runs(
     limit: u32,
 ) -> RpcResult<Vec<CellRun>> {
     cells_guard::read(ext)?;
-    if let Some(r) = route_scope(server, ext, &scope, "cell_runs", (&scope, limit)).await? {
+    if let Some(r) = read_scope(server, ext, &scope, "cell_runs", (&scope, limit)).await? {
         return Ok(r);
     }
     match ::cells::Cells::lookup().await {
@@ -836,5 +876,46 @@ mod tests {
         );
         assert_ne!(six, jsonrpsee::types::error::INVALID_PARAMS_CODE);
         assert_eq!((six, null), (unconfirmed, unconfirmed));
+    }
+
+    /// 181: the chat view's cell reads on an engine that does not own the chat ask the owner
+    /// (here: not connected → answered locally) and leave ownership where it is — they used
+    /// to go through the taking front door, so viewing a moved session pulled it back.
+    #[tokio::test]
+    async fn cell_reads_of_a_chat_owned_elsewhere_leave_its_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.sqlite");
+        let (theirs, mine) = (runtime::SessionId::new(), runtime::SessionId::new());
+        let them = agent::store::Store::open(&path, Some(mesh::EngineId("them".into())))
+            .await
+            .unwrap();
+        them.create_session(theirs, "m", None, None, None)
+            .await
+            .unwrap();
+        them.close().await;
+        let store = agent::store::Store::open(&path, Some(mesh::EngineId("me".into())))
+            .await
+            .unwrap();
+        store
+            .create_session(mine, "m", None, None, None)
+            .await
+            .unwrap();
+        let ext = Extensions::new();
+        for s in [theirs, mine] {
+            let scope = Scope::Session(s);
+            let got: Option<StateReply> = read_via(
+                &ext,
+                &store,
+                s,
+                "cell_state",
+                (&scope, Vec::<CellRef>::new()),
+            )
+            .await
+            .unwrap();
+            assert!(got.is_none(), "answered here");
+        }
+        assert_eq!(store.owner(theirs).await.unwrap(), Some(("them".into(), 1)));
+        assert_eq!(store.owner(mine).await.unwrap(), Some(("me".into(), 1)));
+        store.close().await;
     }
 }

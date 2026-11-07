@@ -228,6 +228,7 @@ pub async fn route<T: DeserializeOwned>(
                     id: session,
                     reason: sessionsync::TakeReason::Write,
                     by_user: true,
+                    caller: None,
                 })
                 .await;
             return match taken {
@@ -263,6 +264,17 @@ pub async fn to_peer<T: DeserializeOwned>(
     method: &str,
     params: impl Serialize,
 ) -> RpcResult<Option<T>> {
+    to_peer_within(ext, peer, method, params, TIMEOUT).await
+}
+
+/// [`to_peer`] waiting `wait` for the answer (181: a move's take outlasts [`TIMEOUT`]).
+pub async fn to_peer_within<T: DeserializeOwned>(
+    ext: &Extensions,
+    peer: &PeerId,
+    method: &str,
+    params: impl Serialize,
+    wait: Duration,
+) -> RpcResult<Option<T>> {
     if ext.get::<Forwarded>().is_some() {
         return Ok(None);
     }
@@ -274,7 +286,7 @@ pub async fn to_peer<T: DeserializeOwned>(
         return Ok(None);
     };
     let params = serde_json::value::to_raw_value(&params).map_err(|e| internal(e.to_string()))?;
-    match forward(transport.as_ref(), peer, method, &params).await {
+    match forward_within(transport.as_ref(), peer, method, &params, wait).await {
         Ok(raw) => serde_json::from_str(raw.get())
             .map(Some)
             .map_err(|e| internal(e.to_string())),
@@ -292,6 +304,17 @@ pub async fn forward(
     owner: &PeerId,
     method: &str,
     params: &RawValue,
+) -> Result<Box<RawValue>, Result<String, ErrorObjectOwned>> {
+    forward_within(transport, owner, method, params, TIMEOUT).await
+}
+
+/// [`forward`] waiting `wait` for the answer.
+pub async fn forward_within(
+    transport: &dyn Transport,
+    owner: &PeerId,
+    method: &str,
+    params: &RawValue,
+    wait: Duration,
 ) -> Result<Box<RawValue>, Result<String, ErrorObjectOwned>> {
     let exchange = async {
         let stream = transport
@@ -318,10 +341,10 @@ pub async fn forward(
         }
         Ok(reply)
     };
-    let reply = match tokio::time::timeout(TIMEOUT, exchange).await {
+    let reply = match tokio::time::timeout(wait, exchange).await {
         Ok(Ok(r)) => r,
         Ok(Err(why)) => return Err(Ok(why)),
-        Err(_) => return Err(Ok(format!("no answer within {}s", TIMEOUT.as_secs()))),
+        Err(_) => return Err(Ok(format!("no answer within {}s", wait.as_secs()))),
     };
     let rp: Response<&RawValue> =
         serde_json::from_str(reply.trim_end()).map_err(|e| Ok(format!("malformed reply: {e}")))?;

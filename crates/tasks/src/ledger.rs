@@ -96,6 +96,7 @@ impl SessionTaker for MeshTaker {
                 id,
                 reason: sessionsync::TakeReason::Orphan,
                 by_user: false,
+                caller: None,
             })
             .await
             .map(|_| ())

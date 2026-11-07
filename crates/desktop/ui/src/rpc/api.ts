@@ -603,6 +603,8 @@ export interface Api {
   session_context_breakdown(session: SessionId): Promise<ContextBreakdown>
   /** Take `session` here (68 §4.2): `user` at once, `orphan` for a resumed checkout, `write` after `takeover_secs`. `SessionOwnerChanged` follows. */
   session_take(session: SessionId, reason: 'user' | 'orphan' | 'write'): Promise<SessionOwner>
+  /** 181: send `session`, owned here, to the paired engine `to` (mesh id); a running turn resumes there. Errors are plain words (`xeus is offline`). */
+  session_move(session: SessionId, to: string): Promise<SessionOwner>
   /** Who owns `session` and whether that is this engine (68 §5). */
   session_owner(session: SessionId): Promise<SessionOwner>
   /** Turns this engine wrote as a superseded owner and never delivered (68 §4.3), one entry per epoch. */
@@ -1724,6 +1726,7 @@ export const METHODS = [
   'session_context_breakdown',
   'session_cost',
   'session_memory',
+  'session_move',
   'session_orphans',
   'session_owner',
   'session_set_notebook',

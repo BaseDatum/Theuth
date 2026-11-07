@@ -1,11 +1,20 @@
+import { toast } from 'sonner'
 import { useMesh } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { useAttentionActions } from '@/components/hud/queries'
 import { engineLabel } from '@/lib/owner'
-import type { ResumeBanner as State } from '@/store/sessions'
+import { useApi } from '@/lib/rpc'
+import type { Moved, ResumeBanner as State } from '@/store/sessions'
 import { useSessionField } from '@/store/sessions'
 
 const hhmm = (ms: number): string => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+
+/** 181 D4: the line a deliberate move leaves — on the origin (`to`, with Continue here beside it) and on the target (`from`). */
+export function movedText(m: Moved, label: (engine: string) => string = (e) => e): string {
+  const at = hhmm(m.at)
+  if (m.to) return `Moved to ${label(m.to)} at ${at} — it runs there. Sending a message here brings it back.`
+  return `The session moved here at ${at} — moved from ${m.from ? label(m.from) : 'another engine'}.`
+}
 
 /** The counts once the `ResumeReport` lands: ` (2 tool calls replayed, 1 skipped: …, 1 job lost)`; empty before. */
 function counts(r: State): string {
@@ -50,24 +59,47 @@ export function resumeText(r: State, label: (engine: string) => string = (e) => 
 /** 139 §9.3: the takeover left the turn open here (D5); the Resume beside the line is the `resume_turn` call. */
 export const offersResume = (r: State): boolean => r.here && r.cause === 'takeover' && !r.resumed
 
-/** Above the composer, one line, no modal (71/101): what the restart did to this session. Nothing when no turn was open. */
+/** Above the composer, one line each, no modal (71/101): a move (181 D4), then what the restart did to this session. */
 export function ResumeBanner({ session }: { session: string }) {
+  const api = useApi()
   const resume = useSessionField(session, 'resume')
+  const moved = useSessionField(session, 'moved')
   const { data: mesh } = useMesh()
   const { resume: resumeTurn } = useAttentionActions()
-  if (!resume) return null
-  const text = resumeText(resume, (e) => engineLabel(e, mesh?.peers))
-  const tone = resume.report?.skipped.length ? 'text-warning' : 'text-fg-tertiary'
+  if (!resume && !moved) return null
+  const label = (e: string) => engineLabel(e, mesh?.peers)
+  const text = resume && resumeText(resume, label)
+  const tone = resume?.report?.skipped.length ? 'text-warning' : 'text-fg-tertiary'
   return (
-    <div className="mx-auto flex w-full shrink-0 items-center gap-2 px-4 py-1 text-xs md:max-w-[768px]">
-      <span role="status" className={`min-w-0 flex-1 truncate ${tone}`} title={text}>
-        {text}
-      </span>
-      {offersResume(resume) && (
-        <Button size="sm" variant="outline" disabled={resumeTurn.isPending} onClick={() => resumeTurn.mutate(session)}>
-          Resume
-        </Button>
+    <>
+      {moved && (
+        <div className="mx-auto flex w-full shrink-0 items-center gap-2 px-4 py-1 text-xs md:max-w-[768px]">
+          <span role="status" className="min-w-0 flex-1 truncate text-fg-secondary" title={movedText(moved, label)}>
+            {movedText(moved, label)}
+          </span>
+          {moved.to && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void api.session_take(session, 'user').catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))}
+            >
+              Continue here
+            </Button>
+          )}
+        </div>
       )}
-    </div>
+      {resume && text && (
+        <div className="mx-auto flex w-full shrink-0 items-center gap-2 px-4 py-1 text-xs md:max-w-[768px]">
+          <span role="status" className={`min-w-0 flex-1 truncate ${tone}`} title={text}>
+            {text}
+          </span>
+          {offersResume(resume) && (
+            <Button size="sm" variant="outline" disabled={resumeTurn.isPending} onClick={() => resumeTurn.mutate(session)}>
+              Resume
+            </Button>
+          )}
+        </div>
+      )}
+    </>
   )
 }

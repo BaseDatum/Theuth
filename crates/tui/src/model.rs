@@ -6442,6 +6442,7 @@ impl Model {
                 owner,
                 epoch,
                 here,
+                ..
             } => {
                 if let Some(Menu::Sessions { items, .. }) = &mut self.menu {
                     for row in items.iter_mut() {
@@ -16161,6 +16162,7 @@ mod tests {
             owner: "me".into(),
             epoch: 2,
             here: true,
+            moved_from: None,
         }));
         match &m.menu {
             Some(Menu::Sessions { items, .. }) => {

@@ -267,7 +267,7 @@ export function Header({
         mode === 'row' ? (
           <MenuRow icon={Network} label="Owner" detail={<OwnerDetail owner={row.owner} epoch={row.epoch} />} />
         ) : (
-          <EngineChip owner={row.owner} epoch={row.epoch} />
+          <EngineChip owner={row.owner} epoch={row.epoch} prefix="on " />
         )
       ) : null,
     desktop: (mode) =>

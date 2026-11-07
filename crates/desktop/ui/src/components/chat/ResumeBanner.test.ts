@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { ResumeBanner } from '@/store/sessions'
-import { offersResume, resumeText } from './ResumeBanner'
+import { movedText, offersResume, resumeText } from './ResumeBanner'
 
 const at = Date.UTC(2026, 9, 6, 12, 5)
 const hhmm = new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
@@ -55,4 +55,10 @@ test('resumeText: 139 §9.3 — the owner side of a transfer / takeover, with th
   expect(offersResume({ ...takeover, resumed: false, here: false })).toBe(false)
   expect(offersResume({ ...taken, resumed: false })).toBe(false)
   expect(offersResume(base)).toBe(false)
+})
+
+test('movedText: 181 D4 — the origin says where it runs and how to bring it back; the target says where it came from', () => {
+  const label = (e: string) => (e === 'b1' ? 'xeus' : e)
+  expect(movedText({ to: 'b1', at }, label)).toBe(`Moved to xeus at ${hhmm} — it runs there. Sending a message here brings it back.`)
+  expect(movedText({ from: 'b1', at }, label)).toBe(`The session moved here at ${hhmm} — moved from xeus.`)
 })

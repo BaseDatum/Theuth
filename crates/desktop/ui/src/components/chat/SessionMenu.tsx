@@ -30,16 +30,57 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { age } from '@/components/tasks/helpers'
+import { useAgents, useMesh } from '@/components/tasks/queries'
 import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
 import { usePanes } from '@/lib/panes'
 import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { cn } from '@/lib/utils'
+import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
+import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { type Ctx, openSurface, run, settings, type Surface, surfaceOf } from './slash'
 import { PopoutTerminalButton } from './TerminalViewer'
 
 const STYLES: CompactStyle[] = ['summary', 'cut', 'snap']
+
+/** One row of Move to ▸ (181 D1). */
+export type MoveTarget = { id: string; name: string; online: boolean; detail: string }
+
+/** 181 D1: every paired engine but this one, by name; an offline one says for how long (and is disabled); an online one
+ * says what stays behind when `running` jobs are live here. */
+export function moveTargets(mesh: Pick<MeshStatus, 'self_id' | 'peers'> | undefined, running: number, now = Date.now()): MoveTarget[] {
+  const jobs = running === 0 ? '' : `${running} running ${running === 1 ? 'job stays' : 'jobs stay'} here`
+  return (mesh?.peers ?? [])
+    .filter((p) => p.id !== mesh?.self_id)
+    .map((p) => {
+      const seen = Number(p.last_seen_ms)
+      return {
+        id: p.id,
+        name: p.name || p.id.slice(0, 8),
+        online: p.reachable,
+        detail: p.reachable ? jobs : seen > 0 ? `offline ${age(seen, now)}` : 'offline',
+      }
+    })
+}
+
+type MoveRow = Pick<SessionSummary, 'id' | 'parent' | 'agent' | 'desk'>
+
+/** 181 fix round: why this session cannot move, in the engine's words (`move_to`), or `null`. A paused agent's tree is
+ * found by walking `parent` to the root and matching that desk in `agents_list`. */
+export function moveBlocked(row: MoveRow | undefined, rows: readonly MoveRow[], agents: readonly Pick<AgentSummary, 'status' | 'desk' | 'file'>[]): string | null {
+  if (!row) return null
+  let root = row
+  for (let up = rows.find((r) => r.id === root.parent); up; up = rows.find((r) => r.id === root.parent)) root = up
+  const paused = agents.find((a) => a.status === 'paused' && (a.desk === root.id || a.desk === row.id))
+  if (paused) return `${paused.file.name} is paused — un-pause it before moving`
+  if (row.agent) return `runs the ${row.agent} harness as a process here, so it cannot move`
+  if (row.desk) return `${row.desk}'s desk stays on the engine that runs its agent`
+  return null
+}
 
 /** Rename a session; `rename_session` fires `TitleChanged`, which updates the slice and the list. */
 export function RenameDialog({
@@ -213,6 +254,25 @@ export function SessionMenu({ session }: { session: string }) {
   const meeting = useMeetingForSession(session)
   const [rename, setRename] = useState(false)
   const [sheet, setSheet] = useState<Surface | null>(null)
+  // 181 D1: the paired engines and this session's live jobs, read while the menu is open.
+  const [open, setOpen] = useState(false)
+  const mesh = useMesh()
+  const agents = useAgents()
+  const jobs = useQuery({ queryKey: queryKeys.jobs(session), queryFn: () => api.list_jobs(session), enabled: open && here })
+  const targets = here ? moveTargets(mesh.data, (jobs.data ?? []).filter((j) => j.state === 'running').length) : []
+  const blocked = moveBlocked(row, sessions.data ?? [], agents.data ?? [])
+  const queryClient = useQueryClient()
+  const move = async (t: MoveTarget) => {
+    try {
+      await api.session_move(session, t.id)
+      useSessions.getState().setMoved(session, t.id)
+      toast(`Moved to ${t.name}`)
+    } catch (e) {
+      // The engine's words: offline, refused ("… It continues here."), or no answer yet (the move may still land).
+      toast.error(e instanceof Error ? e.message : String(e))
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+    }
+  }
 
   const focused = usePanes((s) => s.focused === session)
   useEffect(() => {
@@ -243,7 +303,12 @@ export function SessionMenu({ session }: { session: string }) {
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu
+        onOpenChange={(o) => {
+          setOpen(o)
+          if (o) void mesh.refetch()
+        }}
+      >
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
@@ -286,6 +351,28 @@ export function SessionMenu({ session }: { session: string }) {
           >
             Continue here
           </DropdownMenuItem>
+          {targets.length > 0 && blocked && (
+            <DropdownMenuItem disabled className="flex-col items-start gap-0">
+              Move to
+              <span className="text-[11px] text-fg-tertiary">{blocked}</span>
+            </DropdownMenuItem>
+          )}
+          {targets.length > 0 && !blocked && (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Move to</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-60">
+                {targets.map((t) => (
+                  <DropdownMenuItem key={t.id} disabled={!t.online} onSelect={() => void move(t)} className="flex-col items-start gap-0">
+                    <span className="flex items-center gap-1.5">
+                      <span className={cn('size-1.5 rounded-full', t.online ? 'bg-success' : 'bg-fg-tertiary')} />
+                      Move to {t.name}
+                    </span>
+                    {t.detail && <span className="pl-3 text-[11px] text-fg-tertiary">{t.detail}</span>}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>Compact</DropdownMenuSubTrigger>

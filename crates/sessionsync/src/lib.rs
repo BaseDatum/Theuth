@@ -44,15 +44,19 @@ pub enum TakeReason {
     Orphan,
     /// This engine needs to write and the owner has been unreachable ≥ `takeover_secs`.
     Write,
+    /// 181 D2: the owner asked this engine to take the session (Move to ▸):
+    /// the owner must be connected and release; the open turn always resumes here.
+    Moved,
 }
 
 impl TakeReason {
-    /// Parse the RPC spelling (`user` | `orphan` | `write`).
+    /// Parse the RPC spelling (`user` | `orphan` | `write` | `moved`).
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "user" => Some(Self::User),
             "orphan" => Some(Self::Orphan),
             "write" => Some(Self::Write),
+            "moved" => Some(Self::Moved),
             _ => None,
         }
     }
@@ -86,6 +90,9 @@ pub struct TakeSession {
     /// Only the resume policy reads it — 68's `unseen_long_enough` gate
     /// still keys on `reason`.
     pub by_user: bool,
+    /// 181: the engine that forwarded this take (`rpc::forward::Forwarded`);
+    /// `Moved` is honoured only from the session's owner, else it is `User`.
+    pub caller: Option<PeerId>,
 }
 
 /// `ask` → the connected peers, as the transport reports them.
@@ -268,6 +275,7 @@ impl Message<TakeSession> for SessionSync {
             connected: self.peers.keys().cloned().collect(),
             peers,
             by_user: m.by_user,
+            caller: m.caller,
         };
         // Off the mailbox: waits on the owner's release and on the tail replicating.
         tokio::spawn(async move { tx.send(take.run(m.id, m.reason).await) });

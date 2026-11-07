@@ -189,6 +189,7 @@ impl Node {
             owner,
             epoch,
             here,
+            moved_from: None,
         })
         .await;
     }

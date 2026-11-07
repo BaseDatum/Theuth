@@ -193,6 +193,9 @@ export type ResumeBanner = {
   from?: string;
 };
 
+/** 181 D4: one deliberate move of the session, as this client saw it (ms since epoch; lost on reload). */
+export type Moved = { to?: string; from?: string; at: number };
+
 /** What the status dot says. `harvesting` is never stored in `activity`: a
  * detached harvest (10 §5.2 as built) sets `harvesting` and shows only while
  * the session is otherwise idle — see `shownActivity`. */
@@ -321,6 +324,9 @@ export type SessionSlice = {
   todosShown: boolean;
   /** 109 §8.2: the interruption banner above the composer; cleared by the next turn that is not the resumed one. */
   resume?: ResumeBanner;
+  /** 181 D4: a deliberate move — `to` on the origin (set by Move to ▸), `from` on the target (`SessionOwnerChanged.moved_from`);
+   * dropped by the next ownership change that is not this move. */
+  moved?: Moved;
 };
 
 /** What a page or settled snapshot must still match when it lands (48 §5): `historyGeneration` and `live` at request time. */
@@ -366,6 +372,8 @@ type SessionsStore = {
   setChildren(id: string, agents: AgentInfo[]): void;
   /** Open or close the live browser dialog. */
   setBrowserLive(id: string, open: boolean): void;
+  /** 181: this client moved the session to `to` (`session_move` answered). */
+  setMoved(id: string, to: string): void;
   /** Replace the artifacts from `list_artifacts` (session load). */
   setArtifacts(id: string, artifacts: Artifact[]): void;
   /** Open the artifact panel on `callId`, or close it with `null`. */
@@ -610,6 +618,12 @@ export const createSessions = (): SessionsApi =>
           return {
             sessions: { ...st.sessions, [id]: { ...cur, browserLive: open } },
           };
+        });
+      },
+      setMoved(id, to) {
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id);
+          return { sessions: { ...st.sessions, [id]: { ...cur, moved: { to, at: Date.now() } } } };
         });
       },
       setArtifacts(id, artifacts) {

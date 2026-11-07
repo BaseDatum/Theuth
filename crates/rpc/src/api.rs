@@ -585,11 +585,18 @@ pub trait Api {
     #[method(name = "delete_session", with_extensions)]
     async fn delete_session(&self, session: SessionId) -> RpcResult<()>;
     /// Take `session` here (68 §4.2): `reason` is `user` (continue here, at
-    /// once), `orphan` (a resumed checkout) or `write` (owner unreachable ≥
-    /// `sessions.takeover_secs`). Returns the new owner/epoch;
+    /// once), `orphan` (a resumed checkout), `write` (owner unreachable ≥
+    /// `sessions.takeover_secs`) or `moved` (181: the owner asked, see
+    /// `session_move`). Returns the new owner/epoch;
     /// `SessionOwnerChanged` follows on the stream.
     #[method(name = "session_take", with_extensions)]
     async fn session_take(&self, session: SessionId, reason: String) -> RpcResult<SessionOwner>;
+    /// 181: send `session`, owned here, to the paired engine `to` (its mesh
+    /// id): `to` takes it (`session_take(moved)` over the mesh), this engine
+    /// releases it, a running turn resumes there. Errors in plain words
+    /// (`xeus is offline`, `this session is not owned here`, `xeus refused: …`).
+    #[method(name = "session_move", with_extensions)]
+    async fn session_move(&self, session: SessionId, to: String) -> RpcResult<SessionOwner>;
     /// Who owns `session` and whether that is this engine (68 §5).
     #[method(name = "session_owner", with_extensions)]
     async fn session_owner(&self, session: SessionId) -> RpcResult<SessionOwner>;
@@ -4666,7 +4673,7 @@ impl ApiServer for Server {
         let reason = sessionsync::TakeReason::parse(&reason).ok_or_else(|| {
             ErrorObjectOwned::owned(
                 jsonrpsee::types::error::INVALID_PARAMS_CODE,
-                format!("reason {reason:?}: expected user | orphan | write"),
+                format!("reason {reason:?}: expected user | orphan | write | moved"),
                 None::<()>,
             )
         })?;
@@ -4677,6 +4684,8 @@ impl ApiServer for Server {
                 reason,
                 // The explicit `reason` is the caller's intent (`user` resumes).
                 by_user: false,
+                // 181: `moved` counts only from the session's owner (the engine forwarding it).
+                caller: ext.get::<forward::Forwarded>().map(|f| f.0.clone()),
             },
         )
         .await?;
@@ -4684,6 +4693,75 @@ impl ApiServer for Server {
             owner,
             epoch,
             here: true,
+        })
+    }
+
+    async fn session_move(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        to: String,
+    ) -> RpcResult<SessionOwner> {
+        self.authorize(ext, session).await?;
+        let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+        let connected =
+            ask::<sessionsync::SessionSync, _>(sessionsync::SESSIONS_ACTOR, sessionsync::Peers)
+                .await?;
+        // The pause map is this engine's, in memory: the target could not refuse it.
+        let held = ask::<Agents, _>(agent::AGENT_ACTOR, agent::supervisor::HeldDesks).await?;
+        let peers = match mesh_actor() {
+            Ok(m) => m
+                .ask(mesh::Status)
+                .await
+                .map(|s| s.peers)
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        let name = peers
+            .iter()
+            .find(|p| p.id.0 == to)
+            .map(|p| p.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| to.get(..8).unwrap_or(&to).to_owned());
+        let to = replica::PeerId(to);
+        // The take's worst case: release reply (release wait + drain), then the tail wait.
+        let sessions = self
+            .rt
+            .section::<sessionsync::SessionsConfig>("sessions")
+            .unwrap_or_default();
+        let drain = self
+            .rt
+            .section::<agent::durability::DurabilityConfig>("durability")
+            .unwrap_or_default()
+            .drain_secs;
+        let wait = std::time::Duration::from_secs(2 * sessions.release_wait_secs + drain + 15);
+        // The target's own take: it releases from us (drain) and lands epoch + 1.
+        let ask_target = async {
+            let call = forward::to_peer_within::<SessionOwner>(
+                ext,
+                &to,
+                "session_take",
+                (session, "moved"),
+                wait + std::time::Duration::from_secs(5),
+            );
+            match tokio::time::timeout(wait, call).await {
+                Err(_) => Err(sessionsync::owner::MoveFailure::NoAnswer),
+                Ok(Ok(o)) => Ok(o.map(|o| (o.owner, o.epoch))),
+                Ok(Err(e)) if e.code() == forward::OWNER_UNREACHABLE => Ok(None),
+                Ok(Err(e)) => Err(sessionsync::owner::MoveFailure::Refused(
+                    e.message().to_owned(),
+                )),
+            }
+        };
+        let (owner, epoch) =
+            sessionsync::owner::move_to(&store, session, &to, &name, &connected, &held, ask_target)
+                .await
+                .map_err(failed)?;
+        tracing::info!(%session, to = %name, epoch, "181: session moved");
+        Ok(SessionOwner {
+            owner,
+            epoch,
+            here: false,
         })
     }
 

@@ -1241,6 +1241,18 @@ test('139 §9.3: the banner carries owner/here/cause/from — from Loaded.resume
   expect(after.resume).toMatchObject({ resumed: true, cause: 'takeover', from: 'A', here: true })
 })
 
+test('181 D4: a move is remembered on both ends until ownership changes again', () => {
+  // Target: the taker's own event names the origin; relayed to a replica (`here: false`) it is just an owner change.
+  const b = apply(empty(S), { type: 'SessionOwnerChanged', session: S, owner: 'B', epoch: 2, here: true, moved_from: 'A' }, ctx())
+  expect(b.moved).toMatchObject({ from: 'A' })
+  expect(apply(empty(S), { type: 'SessionOwnerChanged', session: S, owner: 'B', epoch: 2, here: false, moved_from: 'A' }, ctx()).moved).toBeUndefined()
+  expect(apply(b, { type: 'SessionOwnerChanged', session: S, owner: 'C', epoch: 3, here: false }, ctx()).moved).toBeUndefined()
+  // Origin: `setMoved` recorded `to`; A's demote (owner B) keeps it, taking it back ends it.
+  const a = { ...empty(S), moved: { to: 'B', at: 1 } }
+  expect(apply(a, { type: 'SessionOwnerChanged', session: S, owner: 'B', epoch: 2, here: false }, ctx())).toBe(a)
+  expect(apply(a, { type: 'SessionOwnerChanged', session: S, owner: 'A', epoch: 3, here: true }, ctx()).moved).toBeUndefined()
+})
+
 test('109 LIVE: a child\u2019s TurnResumed shows it running (own slice and the parent\u2019s row, no chat line) until TurnFinished', () => {
   const at = '2026-10-06T12:05:00Z'
   const draft: Record<string, SessionSlice> = { [S]: empty(S) }
