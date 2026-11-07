@@ -176,6 +176,7 @@ mod tests {
             text: "user: [meeting 00:00:00] started. context: none".into(),
             built: true,
             at: None,
+            mechanical: false,
         };
         assert_eq!(
             earlier(&Double::View(vec![line.clone()]), s, 32_000).await,

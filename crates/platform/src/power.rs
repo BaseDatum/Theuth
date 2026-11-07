@@ -188,7 +188,7 @@ mod imp {
                 continue;
             }
             seen = true;
-            if std::fs::read_to_string(p.join("online")).map(|o| o.trim() == "1") == Ok(true) {
+            if std::fs::read_to_string(p.join("online")).is_ok_and(|o| o.trim() == "1") {
                 return Power::Ac;
             }
         }

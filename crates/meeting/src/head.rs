@@ -325,6 +325,7 @@ mod tests {
             text: text.into(),
             built: true,
             at: None,
+            mechanical: false,
         }
     }
 
