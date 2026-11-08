@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mesh and remote sessions — UI proposal</title><style>
+body{--fg:var(--foreground,#1a1612);--bg:var(--background,#e8dcc8);--raise:var(--card,#f3eadf);--wash:var(--muted,#d4c4a8);--hov:var(--accent,#d4c4a8);--line:var(--border,#d4c4a8);--ink:var(--primary,#1a1612);--ink-fg:var(--primary-foreground,var(--bg));--r:var(--radius,.75rem);--c1:var(--chart-1,#3d6b66);--c2:var(--chart-2,#8a6f42);--c3:var(--chart-3,#3c5a86);--c4:var(--chart-4,#2f5d4a);--c5:var(--chart-5,#7d3f5c);--c6:var(--chart-6,#566472);--ok:var(--c4);--warn:var(--status-warning-fg,var(--ring,#8a3e16));--fg2:color-mix(in srgb,var(--fg) 66%,transparent);--fg3:color-mix(in srgb,var(--fg) 48%,transparent);--soft:color-mix(in srgb,var(--line) 55%,transparent);--l3:color-mix(in srgb,var(--wash) 90%,var(--fg))}
+@media (prefers-color-scheme:dark){body{--fg:var(--foreground,#e8dcc8);--bg:var(--background,#12100e);--raise:var(--card,#1c1915);--wash:var(--muted,#2a241c);--hov:var(--accent,#2a241c);--line:var(--border,#2a241c);--ink:var(--primary,#e8dcc8);--c1:var(--chart-1,#5b8f8a);--c2:var(--chart-2,#b89a63);--c3:var(--chart-3,#6f8fc0);--c4:var(--chart-4,#4a8a6e);--c5:var(--chart-5,#b0708f);--c6:var(--chart-6,#8a9aaa);--warn:var(--status-warning-fg,var(--ring,#c47a2c))}.sw:not(.on) i{background:var(--fg)}}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.43 var(--font-sans,-apple-system,ui-sans-serif,system-ui,"Segoe UI",sans-serif);color:var(--fg);-webkit-font-smoothing:antialiased}
+h2,h3,p,ul{margin:0;padding:0}
+ul{list-style:none}
+section{margin:0 0 32px}
+section:last-child{margin:0}
+.cap{margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--fg2)}
+.cap span{margin-left:8px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--fg3)}
+svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.pane{border:1px solid var(--soft);border-radius:var(--r);background:var(--bg);overflow:hidden}
+.mono,code{font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
+.mu{color:var(--fg2)}
+.mu3{color:var(--fg3)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 12px;border:1px solid var(--line);border-radius:calc(var(--r) - 2px);background:var(--bg);font-size:14px;font-weight:500;white-space:nowrap;box-shadow:0 1px 2px #0000000d}
+.btn.pri{border-color:var(--ink);background:var(--ink);color:var(--ink-fg);box-shadow:none}
+.btn.g{border-color:transparent;background:none;box-shadow:none}
+.btn.ic{width:32px;padding:0}
+.btn.on{background:var(--hov)}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid var(--line);border-radius:99px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--fg2)}
+.chip.ok{border-color:color-mix(in srgb,var(--ok) 40%,transparent);color:var(--ok)}
+.dot{display:inline-block;flex:none;width:6px;height:6px;border-radius:50%;background:var(--fg3)}
+.dot.ok{background:var(--ok)}
+.dot.sd{background:var(--c2)}
+.dot.hol{background:none;box-shadow:inset 0 0 0 1.5px var(--fg3)}
+.sw{display:inline-flex;align-items:center;flex:none;width:32px;height:18px;padding:1px;border-radius:99px;background:var(--line)}
+.sw i{width:16px;height:16px;border-radius:50%;background:var(--bg)}
+.sw.on{justify-content:flex-end;background:var(--ink)}
+.sw.on i{background:var(--ink-fg)}
+.bar{display:flex;align-items:center;gap:8px;min-height:44px;padding:4px 16px;border-bottom:1px solid var(--soft)}
+.bar h2{font-size:14px;font-weight:600}
+.st{padding:8px 24px 12px}
+.sec{margin-bottom:28px}
+.sec.mute{margin:0;opacity:.78}
+.sh{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px}
+.sh h3{font-size:16px;font-weight:600}
+.sh h3 span{font-size:13px;font-weight:400;color:var(--fg3)}
+.rw{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;padding:14px 0;border-bottom:1px solid var(--soft)}
+.rw:last-child{border-bottom:0}
+.ds{margin-top:2px;font-size:13px;color:var(--fg2)}
+.id{display:flex;flex:1 1 13rem;align-items:center;gap:10px;min-width:0}
+.nm{font-weight:500}
+.rt{display:flex;align-items:center;gap:10px;margin-left:auto}
+.lb{font-size:13px;color:var(--fg2)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.tile{display:grid;place-items:center;flex:none;width:32px;height:32px;border-radius:calc(var(--r) - 2px);background:color-mix(in srgb,var(--tc) 16%,transparent);color:var(--tc)}
+.t1{--tc:var(--c1)}.t3{--tc:var(--c3)}.t5{--tc:var(--c5)}.t6{--tc:var(--c6)}
+.tile.dash{border:1px dashed var(--tc);background:none}
+.hub{margin-left:4px;padding:0 6px;border-radius:99px;background:var(--l3);font-size:12px;font-weight:400;color:var(--fg2)}
+.inp{display:inline-flex;align-items:center;min-width:11rem;height:32px;padding:0 10px;border:1px solid var(--line);border-radius:calc(var(--r) - 2px);font-weight:500}
+.rw.off{opacity:.6}
+.rw.m{display:grid;grid-template-columns:minmax(0,1fr) 7.5rem 14.5rem}
+.rw.m .rt{justify-content:flex-end}
+code{font-size:.92em}
+.back{display:grid;place-items:center;padding:28px 16px;background:color-mix(in srgb,#000 42%,var(--bg))}
+.dlg{display:grid;gap:16px;width:100%;max-width:32rem;padding:24px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg);box-shadow:0 10px 15px -3px #0000001a,0 4px 6px -4px #0000001a}
+.dh{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.dh h2{font-size:18px;line-height:1;font-weight:600}
+.dh .mu3{margin-top:6px}
+.code{padding:18px 12px;border:1px solid var(--soft);border-radius:12px;background:var(--raise);text-align:center}
+.digits{font:600 44px/1.1 var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);letter-spacing:.14em;font-variant-numeric:tabular-nums}
+.code p{margin-top:6px;font-size:13px;color:var(--fg2)}
+.chk{display:flex;align-items:center;gap:8px}
+.cb{display:inline-grid;place-items:center;flex:none;width:16px;height:16px;border-radius:4px;background:var(--ink);color:var(--ink-fg)}
+.cb svg{width:12px;height:12px;stroke-width:3}
+.wn{display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);border-radius:12px;background:color-mix(in srgb,var(--warn) 12%,transparent);color:var(--warn);font-size:13px}
+.wn svg{margin-top:2px}
+.ft{display:flex;gap:8px}
+.rc{display:flex;flex-wrap:wrap;align-items:flex-start;gap:16px}
+.chatp{flex:1 1 22rem;min-width:0}
+.hd{display:flex;align-items:center;gap:8px;height:52px;padding:0 12px;border-bottom:1px solid var(--soft)}
+.ttl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.eng{display:inline-flex;align-items:center;gap:6px;padding:1px 8px;border-radius:6px;background:var(--hov);font-size:11px;line-height:18px;white-space:nowrap;color:var(--fg2)}
+.tr{display:flex;flex-direction:column;gap:12px;padding:16px}
+.ub{align-self:flex-end;max-width:80%;padding:10px 16px;border-radius:22px;background:var(--l3)}
+.as{line-height:1.6}
+.caret{display:inline-block;width:2px;height:1.1em;margin-left:2px;vertical-align:-.2em;background:var(--fg);animation:bl 1s step-end infinite}
+.cx{padding:12px 16px;border:1px solid var(--soft);border-radius:12px;background:var(--raise)}
+.cx .h{display:flex;align-items:center;gap:8px;font-weight:500}
+.cx .h span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cx .h svg:nth-child(2){width:14px;height:14px;color:var(--fg2)}
+.spin{flex:none;width:14px;height:14px;border:2px solid var(--fg3);border-top-color:transparent;border-radius:50%;animation:sp .8s linear infinite}
+@keyframes bl{50%{opacity:0}}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.caret,.spin{animation:none}}
+.ap{padding:12px 16px;border:1px solid var(--warn);border-radius:12px;background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.ap .tt{font-weight:500;color:var(--warn)}
+.ap code{font-size:12px}
+.ap .sm{margin-top:2px;font-size:12px;line-height:20px;color:var(--fg2)}
+.ap .b{display:flex;gap:8px;margin-top:12px}
+.cmp{display:flex;align-items:center;gap:8px;margin:0 16px 16px;padding:6px 6px 6px 12px;border:1px solid var(--line);border-radius:24px;background:var(--raise)}
+.cmp .ph{flex:1;font-size:16px;color:var(--fg3)}
+.snd{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:var(--ink);color:var(--ink-fg)}
+.menu,.dd{padding:4px;border:1px solid var(--line);border-radius:calc(var(--r) - 2px);background:var(--popover,var(--raise));box-shadow:0 4px 6px -1px #0000001a,0 2px 4px -2px #0000001a}
+.menu{flex:0 0 20rem;margin-top:46px}
+.it{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:calc(var(--r) - 4px)}
+.it.hl{background:var(--hov)}
+.ch{margin-left:auto;color:var(--fg3)}
+.sep{height:1px;margin:4px -4px;background:var(--line)}
+.ml{padding:6px 8px;font-size:11px;color:var(--fg3)}
+.mvw{display:flex;flex-direction:column;gap:12px;padding:16px}
+.hc{padding:12px 16px;border:1px solid var(--soft);border-radius:12px;background:var(--raise)}
+.hc .hh{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500}
+.hc .hh svg{width:14px;height:14px;color:var(--fg2)}
+.hc .sub{margin-top:4px;font-size:12px;color:var(--fg3)}
+.hc .dsc{display:flex;align-items:center;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--soft);font-size:12px;font-weight:500;color:var(--fg2)}
+.hc .dsc svg{width:14px;height:14px}
+.ncb{padding:8px 12px 20px}
+.nct{display:flex;align-items:center;gap:8px;font-weight:500}
+.dd,.fp{width:21rem;max-width:100%;margin-left:88px}
+.dd{margin-top:6px}
+.mi{align-items:flex-start;gap:10px;padding:8px}
+.mi .dot{margin-top:7px}
+.mi>div{min-width:0;flex:1}
+.mi .rm{flex:none;display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12px;color:var(--fg3)}
+.mi.dis{opacity:.6}
+.mi.dis .rm{color:var(--fg2)}
+.fp{margin-top:16px;border:1px solid var(--soft);border-radius:12px;background:var(--raise)}
+.fh b{font-weight:500}
+.fh{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:10px 12px 6px}
+.fr{display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--soft)}
+.fr.sel{background:var(--hov)}
+.fr svg{color:var(--fg2)}
+.fr .mono{flex:1;min-width:0;font-size:13px}
+.fr .ck{color:var(--ink)}
+@media (max-width:640px){.menu{margin-top:0}.dd,.fp{margin-left:0}.rw.m{display:flex}}
+</style></head><body>
+<svg style="position:absolute;width:0;height:0" aria-hidden="true"><defs><symbol id="cmd" viewBox="0 0 24 24"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></symbol>
+<symbol id="term" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6M12 19h8"/></symbol>
+<symbol id="ubu" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="5.5" r="1.6" fill="currentColor"/><circle cx="17.6" cy="15.2" r="1.6" fill="currentColor"/><circle cx="6.4" cy="15.2" r="1.6" fill="currentColor"/></symbol>
+<symbol id="mo" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+<symbol id="dn" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="rt" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="ck" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="al" viewBox="0 0 24 24"><path d="m21.7 18-8-14a2 2 0 0 0-3.5 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3zM12 9v4M12 17h.01"/></symbol>
+<symbol id="wr" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"/></symbol>
+<symbol id="sw" viewBox="0 0 24 24"><path d="m16 3 4 4-4 4M20 7H4M8 21l-4-4 4-4M4 17h16"/></symbol>
+<symbol id="fo" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></symbol>
+<symbol id="pl" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+<symbol id="up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7M12 19V5"/></symbol>
+</defs></svg>
+<section><p class="cap">1 · Settings › Network<span>replaces Settings › Mesh</span></p><div class="pane"><div class="bar"><h2>Network</h2></div>
+<div class="st"><div class="sec"><div class="sh"><h3>This machine</h3></div>
+<div class="rw"><div class="id"><span class="tile t3"><svg><use href="#cmd"/></svg></span><span class="inp">Sky's MacBook</span><span class="mono mu3">7f3a9c21</span></div>
+<div class="chips"><span class="chip ok">LAN · mDNS ✓</span><span class="chip ok">Relay · iroh.relay.theuth.io · 38 ms ✓</span></div>
+</div>
+<div class="rw"><div><div>Let nearby machines find this one while pairing</div>
+<div class="ds">Announces this machine on your LAN via mDNS.</div>
+</div>
+<span class="sw on"><i></i></span></div>
+</div>
+<div class="sec"><div class="sh"><h3>Nearby <span>found on this network, not paired</span></h3></div>
+<div class="rw"><div class="id"><span class="tile t1 dash"><svg><use href="#term"/></svg></span><div><span class="nm">xeus-2</span> · Arch Linux · <span class="mono">192.168.8.140</span></div>
+</div>
+<span class="btn">Pair…</span></div>
+<p class="ds mu3" style="margin:0;padding-top:8px">Only shown while this page is open.</p></div>
+<div class="sec"><div class="sh"><h3>Machines in this mesh</h3></div>
+<div class="rw m"><div class="id"><span class="tile t3"><svg><use href="#cmd"/></svg></span><div><div class="nm">Sky's MacBook</div>
+<div class="ds">macOS · laptop</div>
+</div>
+</div>
+<span><span class="chip">this machine</span></span></div>
+<div class="rw m"><div class="id"><span class="tile t1"><svg><use href="#term"/></svg></span><div><div class="nm">xeus <span class="hub">hub</span></div>
+<div class="ds">Arch Linux · desktop</div>
+</div>
+</div>
+<span><span class="chip"><i class="dot ok"></i>LAN 2 ms</span></span><div class="rt"><span class="lb">Agents can message</span><span class="sw on"><i></i></span><span class="btn g ic" title="Rename · Unpair"><svg><use href="#mo"/></svg></span></div>
+</div>
+<div class="rw m"><div class="id"><span class="tile t5"><svg><use href="#ubu"/></svg></span><div><div class="nm">cloud-1</div>
+<div class="ds">Ubuntu · cloud node</div>
+</div>
+</div>
+<span><span class="chip"><i class="dot sd"></i>Relay 41 ms</span></span><div class="rt"><span class="lb">Agents can message</span><span class="sw on"><i></i></span><span class="btn g ic" title="Rename · Unpair"><svg><use href="#mo"/></svg></span></div>
+</div>
+<div class="rw m off"><div class="id"><span class="tile t6"><svg><use href="#cmd"/></svg></span><div><div class="nm">studio</div>
+<div class="ds">macOS · desktop</div>
+</div>
+</div>
+<span><span class="chip"><i class="dot hol"></i>offline 3 h</span></span><div class="rt"><span class="lb">Agents can message</span><span class="sw on"><i></i></span><span class="btn g ic" title="Rename · Unpair"><svg><use href="#mo"/></svg></span></div>
+</div>
+<p class="ds mu3" style="margin:0;padding-top:8px">⋯ menu: Rename · Unpair</p></div>
+<div class="sec mute"><div class="sh"><h3>Contacts <span>(other people's machines)</span></h3><span class="btn">Add contact…</span></div>
+<p class="ds">limited trust: no vault, no sessions, only the agents you share</p><p class="ds mu3" style="margin-top:10px">No contacts yet.</p></div>
+</div>
+</div>
+</section>
+<section><p class="cap">2 · Pair dialog for xeus-2<span>opened by Nearby › Pair…</span></p><div class="pane back"><div class="dlg"><div class="dh"><div><h2>Pair with xeus-2</h2><p class="mu3">Arch Linux · 192.168.8.140</p></div>
+<span class="mu3"><svg><use href="#x"/></svg></span></div>
+<div class="code"><div class="digits">482 913</div>
+<p>Check that xeus-2 shows the same code</p></div>
+<div class="chk"><span class="cb"><svg><use href="#ck"/></svg></span>Let agents on both machines message each other</div>
+<div class="wn"><svg><use href="#al"/></svg><p>Pairing shares your secrets vault, sessions and tasks — only pair your own machines.</p></div>
+<div class="ft"><span class="btn pri">Pair</span><span class="btn">Cancel</span></div>
+</div>
+</div>
+</section>
+<section><p class="cap">3 · A remote session<span>operated from this Mac; nothing moves</span></p><div class="rc"><div class="pane chatp"><div class="hd"><span class="ttl">Fix replica parking</span><span class="eng"><i class="dot ok"></i>on cloud-1 · live</span><span class="btn g ic on" title="Session menu"><svg><use href="#mo"/></svg></span></div>
+<div class="tr"><div class="ub">Why is the replica parking test flaky on cloud-1?</div>
+<p class="as">The failure only shows up when two snapshots overlap, so I am reading how the replica parks writers while a snapshot runs and checking the park timeout first<span class="caret"></span></p><div class="cx"><div class="h"><svg><use href="#rt"/></svg><svg><use href="#wr"/></svg><span>Reading crates/replica/src/parking.rs</span><i class="spin"></i></div>
+</div>
+<div class="ap"><div class="tt">cloud-1 asks: run shell <code>cargo test -p replica</code></div>
+<div class="sm">mutating · relayed from cloud-1</div>
+<div class="b"><span class="btn pri">Allow</span><span class="btn">Deny</span></div>
+</div>
+</div>
+<div class="cmp"><span class="btn g ic"><svg><use href="#pl"/></svg></span><span class="ph">Message — runs on cloud-1</span><span class="snd"><svg><use href="#up"/></svg></span></div>
+</div>
+<div class="menu"><div class="ml">Settings for this session on cloud-1</div>
+<div class="it">Approvals: Ask before risky tools<span class="ch"><span class="sw on"><i></i></span></span></div>
+<div class="it">Agent messaging<span class="ch"><span class="sw on"><i></i></span></span></div>
+<div class="it">Model: Opus 5.5 <span class="ch">›</span></div>
+<div class="sep"></div>
+<div class="it">Continue here (move to this Mac)</div>
+<div class="it hl">Move to <span class="ch">▸</span></div>
+</div>
+</div>
+</section>
+<section><p class="cap">4 · "Moved" notice card<span>a harness card in the transcript, not a chat bubble</span></p><div class="pane"><div class="mvw"><p class="as">Run finished: 41 tests passed, 1 parked. I will wait for your call on the parked one.</p><div class="hc"><div class="hh"><svg><use href="#sw"/></svg><span>Session moved to xeus · Arch Linux · <code>~/Develop/theuth</code></span></div>
+<p class="sub">from Sky's MacBook · 11:42 · Python runtime reset · 1 job left on MacBook · approvals kept: Ask</p><div class="dsc"><svg><use href="#rt"/></svg>What the agent was told</div>
+</div>
+<p class="as">Noted: I am on xeus now. The Python runtime was reset, so I will reload the test results before the next step.</p></div>
+</div>
+</section>
+<section><p class="cap">5 · New chat on a machine<span>the picker also decides whose folders you browse</span></p><div class="pane"><div class="hd"><span class="nct">New chat on <span class="btn">Sky's MacBook ▾</span></span></div>
+<div class="ncb"><div class="dd"><div class="it mi"><i class="dot ok"></i><div><div class="nm">Sky's MacBook</div>
+<div class="ds">macOS · laptop</div>
+</div>
+<span class="rm">this machine <svg><use href="#ck"/></svg></span></div>
+<div class="it mi hl"><i class="dot ok"></i><div><div class="nm">xeus</div>
+<div class="ds">Arch Linux · desktop</div>
+</div>
+<span class="rm">LAN</span></div>
+<div class="it mi"><i class="dot ok"></i><div><div class="nm">cloud-1</div>
+<div class="ds">Ubuntu · cloud node</div>
+</div>
+<span class="chip">via relay</span></div>
+<div class="it mi dis"><i class="dot hol"></i><div><div class="nm">studio</div>
+<div class="ds">macOS · desktop</div>
+</div>
+<span class="rm">offline 3 h</span></div>
+</div>
+<div class="fp"><div class="fh"><b>Folder on xeus</b><span class="mu3">when xeus is chosen</span></div>
+<div class="fr sel"><svg><use href="#fo"/></svg><span class="mono">~/Develop/theuth</span><span class="chip">git · main</span><span class="ck"><svg><use href="#ck"/></svg></span></div>
+<div class="fr"><svg><use href="#fo"/></svg><span class="mono">~/src/dotfiles</span><span class="chip">git · main</span></div>
+<div class="fr mu">Browse xeus…</div>
+</div>
+</div>
+</div>
+</section>
+</body></html>
