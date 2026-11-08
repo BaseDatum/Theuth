@@ -589,3 +589,185 @@ connection; the Phase 2 worker confirms the API before freezing). Rename edits t
   nearby machine, which is the mDNS risk (§8.2).
 - The dialog keeps the warning "Pairing shares your secrets vault, sessions and tasks — only pair your own
   machines." The string/QR path stays for machines not on the LAN.
+
+## 7. Phase 3 — Contacts: separate harnesses over an A2A standard
+
+### 7.0 What the standards give, and the calls
+
+`183-research-a2a-standards.md` finds no pairing standard: A2A 1.0.1 defines the Agent Card and leaves
+credentials "out-of-band" (research §1, spec §7.3); the only DNS-SD text is the individual draft
+draft-zhao-a2a-dns-sd-00 (`_a2a._tcp`, research §2); LAD-A2A contributes consent rules (research §3); the
+ceremony has to be composed from KDE Connect's mutual accept and Bluetooth/Signal numeric comparison (research
+§4). Per D3 ("use some kind of a2a standard for pairing if one exists") theuth uses every standard piece that
+exists and defines only what none covers (research recommendation 7).
+
+- **W-20** LAN discovery is draft-zhao `_a2a._tcp`, advertised **only while an Add contact window is open**
+  (mDNS is unauthenticated and leaks presence, draft-zhao §6), with TXT `card`, `proto`, `v`, `tls` plus the
+  theuth hints `eid` and `pair=1`. Browse also lists `_agent._tcp` (`proto=a2a`) and `_lad-a2a._tcp` so other
+  vendors' agents appear. The service types live in config (`a2a.mdns_types`) because DAWN may pick one.
+- **W-21** Reach is A2A over a new iroh ALPN `theuth/a2a/1`, one HTTP/1.1 request per bidirectional stream (the
+  `iroh-http-proxy/1` shape, research §6, without depending on that crate), same path on LAN and relay. It is
+  declared in the card as the custom binding `https://theuth.io/a2a/bindings/iroh/v1`. The iroh endpoint id
+  authenticates the channel, so there is no bearer and no WebPKI. No HTTPS tunnel.
+- **W-22** Identity is the iroh `EndpointId` (Ed25519). The theuth Agent Card is signed with JWS (EdDSA, `kid` =
+  endpoint id) over the JCS-canonical card (spec §8.4) and verified against the pinned id.
+- **W-23** The ceremony is mutual accept plus a 6-digit numeric comparison derived from both endpoint ids and
+  both nonces; from afar, an invite ticket (string or QR) starts the same ceremony over the relay. TOFU-pinned
+  thereafter; a different id is a different contact.
+- **W-24** Contact state lives in `<data_dir>/a2a/peers.yaml`, which becomes UI-managed; no new table. The
+  existing engine-local `peer_bindings` and `a2a_contexts` (`crates/agent/migrations/0011_communication.sql:47-64`)
+  carry bindings and inbox sessions.
+- **W-25** Contacts reach **agents**, never existing sessions: every inbound context opens a fresh session for
+  (contact, export). Exporting a live session would bind its owner by the contact's cap.
+- **W-26** `peer:<name>` to a contact needs `agent.communication` and the contact, not `a2a.enabled`;
+  `a2a.enabled` keeps gating only the HTTP listener (`crates/a2a/src/lib.rs:591-594`).
+- **W-27** First contact is per (contact, export): an Attention item with Allow once / Always / Block; the A2A
+  task waits in `TASK_STATE_AUTH_REQUIRED` (spec §7.6, research §1) until answered.
+
+### 7.1 LAN discovery
+
+| Field | Value |
+|---|---|
+| Service | `_a2a._tcp` (draft-zhao §3); instance name = the card `name` |
+| Port | a LAN listener bound only while the window is open, serving only `GET /.well-known/agent-card.json` (the signed public card) |
+| TXT `card` | `/.well-known/agent-card.json` |
+| TXT `proto` | `https://theuth.io/a2a/bindings/iroh/v1` |
+| TXT `v` | `1.0` |
+| TXT `tls` | absent (the card is a signed hint; the channel is iroh) |
+| TXT `eid` | first 16 base32 chars of the endpoint id (hint only) |
+| TXT `pair` | `1` while the window is open |
+
+- Results are hints: nothing is stored from an advertisement alone (draft-zhao §4). The Nearby agents list
+  fetches the card on click, not eagerly, with LAD's limits (256 KiB, 8 fetches, 30 s; research §3).
+- A card whose JWS does not verify against the endpoint id in its iroh interface is shown "unverified" and
+  cannot start the ceremony.
+- Foreign agents (no iroh interface): Add opens the HTTP A2A form prefilled with the card URL and
+  `allow_private: true` (`crates/a2a/src/config.rs:290-323`), then the LAD-style consent card.
+
+### 7.2 Reach: `theuth/a2a/1`
+
+```mermaid
+flowchart LR
+  Model[send_message to peer:bob] --> Policy[Policy remote gate]
+  Policy --> Route[PeerRoute for bob]
+  Route -->|endpoint set| Iroh[IrohSender: theuth/a2a/1 stream]
+  Route -->|card_url set| Http[HTTP A2A client as today]
+  Iroh --> Gate[bob engine: contact gate on remote id]
+  Gate --> Disp[same A2A dispatch: principal from remote id]
+  Disp --> Inbox[fresh capped inbox session]
+```
+
+- **ALPN.** `theuth/a2a/1` is not in `STREAM_ALPNS` (`crates/mesh/src/net.rs:344-353`), whose handler closes
+  any unpaired peer (`:1237-1238`). It gets its own handler: a remote id that is a live contact passes; a
+  stranger passes only for the `pair` exchange while a window is open; a family peer is refused (family uses
+  `peer_deliver`). The listener exists only when the engine has a contact or an open window.
+- **Network join.** `join_network` (`crates/mesh/src/net.rs:475`) also runs when the engine has contacts, so a
+  contact-only engine is reachable over the relay.
+- **Inbound.** Each stream carries one HTTP/1.1 request into the same axum router the HTTP listener serves. A
+  layer strips any client `x-theuth-a2a-principal` (`crates/a2a/src/server.rs:45`, `:252-255`) and inserts the
+  contact's binding id derived from the remote endpoint id — the bearer step of `dispatch` is replaced, the
+  export check, rate (10 req/s), concurrency (8) and 64 KiB body limits stay (`crates/a2a/src/server.rs:49-57`).
+- **Outbound.** `IrohSender` implements `PeerSender` (`crates/agent/src/communication/network.rs:201-205`) and is
+  registered per contact alias through `PeerRoute` (`:281`), so `peer:<name>`, receipts and grant epochs work
+  as built.
+- **Streaming.** `SendStreamingMessage` (SSE) and `SubscribeToTask` over the same stream kind; no push webhooks
+  (unreachable between LAN or relay peers, research §1).
+
+### 7.3 Identity
+
+- A contact is pinned by its `EndpointId`; `peer_bindings.endpoint` = `iroh:<endpoint id>`.
+- The theuth card lists `supportedInterfaces[0] = {url: "iroh:<endpoint id>", protocolBinding:
+  "https://theuth.io/a2a/bindings/iroh/v1", protocolVersion: "1.0"}` and, when `a2a.public_url` is set, the HTTPS
+  interface second. `signatures[0]` is the JWS of §7.0 W-22.
+- The contact detail shows a fingerprint: the endpoint id in groups of 4 base32 characters, first 20 characters.
+
+### 7.4 The pairing ceremony
+
+```mermaid
+sequenceDiagram
+  participant A as engine A, inviter
+  participant B as engine B, invitee
+  A->>A: Add contact: open window, mDNS advert or invite ticket
+  B->>A: theuth/a2a/1 PairRequest name nonce_b ticket
+  A-->>B: PairChallenge name nonce_a card
+  A->>A: show code and Accept
+  B->>B: verify card JWS against A id, show code and Accept
+  A-->>B: PairAccept exports
+  B-->>A: PairAccept exports
+  A->>A: pin B id, write contact, close window
+  B->>B: pin A id, write contact
+```
+
+| Step | Rule |
+|---|---|
+| Window | Opened by Add contact; closes on success, Cancel or 10 min; one ceremony at a time |
+| Invite ticket | `theuth-contact:1.<base32 json{eid, name, relay, addrs, nonce, exp}>`; single use, expires in 10 min; carries no secret that grants anything |
+| Code | `u32(sha256("theuth-contact-v1" ‖ min(id_a,id_b) ‖ max(id_a,id_b) ‖ nonce_a ‖ nonce_b)[0..4]) mod 10^6`, shown `482 913` |
+| Consent | both users press Accept after comparing; either side's Reject or a timeout of 120 s ends it; nothing but the ceremony frames flows before both Accepts (LAD §4.3) |
+| Attempts | 3 failed ceremonies per window close it (RFC 8628 §5.1-style rate limit) |
+| Pinning | each side stores the other's endpoint id; a later connection from another id is a stranger |
+| Rotation | an engine's identity does not rotate today; if it ever does, the contact shows "key changed" and must re-pair (Signal-style alert) |
+| Revocation | Remove or Block deletes the binding (`peer_bindings.revoked_at`), refuses the id at the ALPN gate, closes its tasks, and sends a best-effort `Revoke` frame |
+
+`PairRequest`, `PairChallenge`, `PairAccept`, `Revoke` are JSON lines on a `theuth/a2a/1` stream whose first line
+is `{"pair":…}` instead of an HTTP request line (§10.2).
+
+### 7.5 Limited trust
+
+| Contact gets | Does not get |
+|---|---|
+| A2A on `theuth/a2a/1` to the exports granted to it | the vault key, `peers` membership, gossip |
+| A fresh capped inbox session per (contact, export) | session replication, tasks, roster, knowledge |
+| Task status and streamed replies for its own tasks | `theuth/rpc/1`, `ListSessions`, any console RPC |
+| Its own card and our signed public card | our contact list, our machines |
+
+Contact rows are local: `peers.yaml` is not mirrored (`crates/replica/src/files.rs:31-34` mirrors agents,
+schedules, skills and mcp only) and `peer_*`/`a2a_*` tables are never attached
+(`crates/agent/src/store/capture.rs:3-5`). Each machine in the family has its own contacts.
+
+### 7.6 Exports, cap, first contact, inbox (W-25, W-27)
+
+- **Exports.** The export picker lists this machine's agents (desk roots, `<agent>@<engine>`) and `theuth`.
+  `ExportEntry` (`crates/a2a/src/config.rs:125-133`) gains `agent: Option<String>` beside `session`; a contact
+  export sets `agent`, the existing hand-configured `session` exports stay for HTTP vendors.
+- **Inbox.** The first context from (contact, export) creates a root with `CreateSessionOptions{cap:
+  Some(contact.cap), …}` (`crates/agent/src/lifecycle.rs:52`) in `isolated` scope, titled "bob · research", with the
+  exported agent's persona, and records it in `a2a_contexts` (`crates/agent/migrations/0011_communication.sql:57-64`).
+  Later contexts of the same contact and export reuse it.
+- **Cap.** `PeerEntry.cap: Risk` (`read_only` default, or `mutating`; `destructive` is not offered). Applied with
+  `SetCap{session, cap}` (`crates/tools/src/registry.rs:492-502`) when the inbox opens and on every actor start of
+  a session found in `a2a_contexts`; lowering it applies to live inbox sessions at once. The cap check precedes the
+  approvals rewrite (`crates/tools/src/registry.rs:980-991`), so it holds with approvals off; children inherit it
+  (`:904`).
+- **First contact.** The first inbound task for (contact, export) is answered `TASK_STATE_AUTH_REQUIRED` and
+  raises an Attention item: "bob (Bob's MacBook) wants to reach research — Allow once · Always · Block". Always
+  writes `first_contact: allow` for that export; Block writes `blocked: true`. The sender sees "waiting for bob to
+  allow".
+- **Untrusted input.** Inbox text is wrapped as a peer message (as A2A inbound is today,
+  `crates/agent/src/communication/network.rs:899-1071`) and labelled with the contact's name, never as the user.
+
+### 7.7 Outbound and interop
+
+- `peer:<name>` resolves to `PeerAddress::Remote` (`crates/agent/src/communication.rs:733-754`), then the
+  contact's `PeerRoute`: `IrohSender` when `endpoint` is set, the HTTP client when `card_url` is set.
+- `Policy::remote` (`crates/agent/src/communication.rs:1159-1171`) stops requiring `a2a.enabled` for a peer with
+  `endpoint` (W-26); `agent.communication` and the per-session opt-out still gate it.
+- HTTP A2A for non-theuth agents stays as built: loopback listener, TLS proxy, bearer, `public_url`.
+- `discover_peers` lists contacts as today's `peer:` rows (`crates/agent/src/supervisor.rs:6235`), with the
+  contact's exports as tags.
+
+### 7.8 peers.yaml becomes UI-managed
+
+`PeerEntry` (`crates/a2a/src/config.rs:107-120`) gains `endpoint`, `name`, `cap`, `first_contact`, `blocked`,
+`paired_ms` (§9.4). New RPCs write the file atomically and run the existing reload (`crates/a2a/src/lib.rs:269`)
+(§10.1). Secrets for HTTP peers are still vault names; the UI generates them with the secrets actor. The A2A card
+in Settings › Communication (`crates/desktop/ui/src/components/settings/Communication.tsx:250-371`) stops saying
+"Edit the file" (`:314`) and links to Settings › Network › Contacts.
+
+### 7.9 Design 50 overturned
+
+Design 50 rejected an mDNS scan (`docs/design/50-agent-communication.md:662-664`), key exchange or an agent PKI
+(`:760`) and an A2A relay mode (`:774-775`). Sky's D3 ("we should use some kind of a2a standard for pairing if
+one exists") and D5 ("Design it now too") overturn all three for contacts: mDNS advertising and browsing during
+an Add contact window, an Ed25519 key-pinning ceremony, and A2A carried over the iroh relay. Design 50's
+bearer-only HTTP profile is unchanged for foreign agents.
