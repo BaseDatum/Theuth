@@ -29,4 +29,14 @@
 | D4 | When a session moves, its approvals and agent-messaging settings… | **Go with the session.** They are saved on the session row. | no |
 | D5 | Other people's machines (the contacts tier, limited trust)… | **Design it now too.** All three phases go in one design. | YES. The recommendation was to design it later. |
 
-Sky has NOT said go for the build. This design is the contract the build will follow when he does.
+Sky has NOT said go for the build. This design is the contract the build will follow when he does. (As of 11:56; D10 below, 12:33–12:36, says go.)
+
+## Later rulings (12:33–12:36)
+
+| # | Question | Sky's answer |
+|---|---|---|
+| D6 | §17 Q1: with mesh messaging on by default, spawn_subagent is also on, because both use one switch | First answer: "This question is not clear, clarify". After clarification: **Yes, one setting.** |
+| D7 | §17 Q2: unpair does not rotate the vault key | First answer: "Unpairing A2A over network or mesh? Clarify". The clarification: this is the mesh, where secrets and the key are shared. Answer: **Also rotate the key now.** On unpair the remaining machines re-encrypt with a new key, AND unpair warns and lists the secrets to replace at their providers |
+| D8 | §17 Q3: a remote session with approvals on, nobody answers | **Deny after 5 min.** Same as local; W-6 stands |
+| D9 | §17 Q4: what contacts can reach | First answer: "Also chosen chats". Clarified: **Their agents message it.** Another harness's agents can send into a chat you pick, as the A2A plugin's exact-session exports already allow. There is NO live view for the other person, and no typing from their app |
+| D10 | Build? | **Go: all phases in order** |
