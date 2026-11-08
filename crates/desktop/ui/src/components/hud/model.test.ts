@@ -28,6 +28,7 @@ const task = (id: string, state: Task['state'], extra: Partial<Task> = {}): Task
   parent: null,
   project: null,
   where: null,
+  home: null,
   harness: null,
   external: [],
   thread: null,

@@ -55,6 +55,9 @@ pub const DB: &str = "mesh.sqlite";
 /// How long the start-up rows wait for the replica plugin before they are written local-only.
 const ATTACH_WAIT: Duration = Duration::from_secs(10);
 
+/// 182 S9: how long past `lapse` a just-started engine follows an elder holder.
+const RESTART_HOLD_MS: u64 = 30_000;
+
 /// Directory under `data_dir` holding the endpoint identity (67 §4.1).
 pub const DIR: &str = "mesh";
 
@@ -72,6 +75,67 @@ pub fn set_hub(hub: bool) {
 /// Is this engine the hub? `true` when no mesh is running.
 pub fn is_hub() -> bool {
     HUB.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 182 M2a: the first sync with the mesh is done (or there is nothing to sync
+/// with). `true` without a mesh or without paired peers; an engine with peers
+/// starts `false` until every connected peer's first replica exchange landed.
+static SYNCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The mesh plugin flips this at start and once the first sync is done.
+pub fn set_synced(done: bool) {
+    SYNCED.store(done, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Task work (dispatch, sweeps, owner writes, desk-turn resumes) may run on this
+/// engine's rows: the first sync is done (182 M2a).
+pub fn synced() -> bool {
+    SYNCED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 182 M1: re-announce `table`'s rows matching `filter` (one `?`, bound to
+/// `""`) — only `columns` when given — when a peer connects, at most once per
+/// peer a minute (a flapping link). A peer that attached a column after our
+/// writes went by recorded them unapplied; this sends them again under their
+/// own clocks (LWW-safe, a no-op elsewhere).
+/// ponytail: the whole matching set per connect; a per-peer digest if tables grow large.
+pub fn reannounce_on_connect(
+    rt: &Runtime,
+    handle: replica::ReplicaHandle,
+    table: &'static str,
+    filter: &'static str,
+    columns: Option<&'static [&'static str]>,
+) {
+    let rt = rt.clone();
+    tokio::spawn(async move {
+        let Some(mesh) = rt.lookup_when::<Mesh>(MESH_ACTOR).await else {
+            return;
+        };
+        let Ok(mut events) = mesh.ask(Subscribe).await else {
+            return;
+        };
+        let mut last: HashMap<String, tokio::time::Instant> = HashMap::new();
+        loop {
+            match events.recv().await {
+                Ok(MeshEvent::Peer(replica::PeerEvent::Connected(p))) => {
+                    let now = tokio::time::Instant::now();
+                    if last
+                        .get(&p.0)
+                        .is_some_and(|t| now - *t < Duration::from_secs(60))
+                    {
+                        continue;
+                    }
+                    last.insert(p.0, now);
+                    match handle.reannounce(table, filter, "", columns).await {
+                        Ok(n) => tracing::debug!(table, n, "182: rows re-announced on connect"),
+                        Err(e) => tracing::warn!(table, "182: re-announce: {e:#}"),
+                    }
+                }
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
 }
 
 /// This engine's display name once the plugin read `mesh.name` (67 §8); empty
@@ -92,6 +156,54 @@ pub fn self_name() -> String {
     } else {
         n.clone()
     }
+}
+
+/// This engine's mesh id once the plugin read its identity (182: the
+/// `engine:` key a new schedule is stamped with); `None` before or without a mesh.
+static SELF_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The mesh plugin sets this at start.
+pub fn set_self_id(id: &str) {
+    let _ = SELF_ID.set(id.to_owned());
+}
+
+/// This engine's mesh id; `None` before the mesh plugin started or without one.
+pub fn self_id() -> Option<String> {
+    SELF_ID.get().cloned()
+}
+
+/// The bound endpoint, for [`is_paired`]; set once at plugin start.
+static NET: std::sync::OnceLock<Arc<Net>> = std::sync::OnceLock::new();
+
+/// 182 S3/S8: `id` (a mesh engine id) is a paired peer of this engine;
+/// `None` (unknown) before the mesh plugin bound its endpoint.
+pub fn is_paired(id: &str) -> Option<bool> {
+    NET.get()
+        .map(|n| n.paired_ids().iter().any(|p| p.to_string() == id))
+}
+
+/// 182 M2a/S11: `data_dir`'s mesh store lists a paired peer — readable before
+/// the mesh plugin starts (read-only; `false` without a store).
+pub async fn has_stored_peers(data_dir: &std::path::Path) -> bool {
+    let path = data_dir.join(DB);
+    if !path.exists() {
+        return false;
+    }
+    let opts = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&path)
+        .read_only(true);
+    let Ok(pool) = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+    else {
+        return false;
+    };
+    let n: Result<(i64,), _> = sqlx::query_as("SELECT COUNT(*) FROM peers")
+        .fetch_one(&pool)
+        .await;
+    pool.close().await;
+    n.is_ok_and(|(n,)| n > 0)
 }
 
 /// `ask` → `Result<MeshStatus, String>`: this engine, its peers, the lease.
@@ -147,6 +259,8 @@ enum GossipMsg {
 struct Seen {
     last_hb_ms: u64,
     stats_hlc: String,
+    /// 182 D5: its last heartbeat said it holds the lease.
+    is_hub: bool,
 }
 
 struct Live {
@@ -292,15 +406,19 @@ impl Ctx {
         // iroh-gossip delivery between two peers proved to pause for 30–60 s at a time (69 smoke),
         // which split the lease — two hubs, the mesh id flapping at the relay every few seconds.
         // A heartbeat still carries `is_hub`/`stats_hlc`; its absence is logged, not acted on.
+        let mut claimers = Vec::new();
         for (id, since_ms) in self.net.connected() {
-            if let Some(s) = seen.get(&id)
-                && now.saturating_sub(s.last_hb_ms) > lapse_ms
-            {
-                tracing::debug!(
-                    "mesh: no heartbeat from {id} for {} s while connected (last stats {}); gossip lagging",
-                    (now - s.last_hb_ms) / 1000,
-                    s.stats_hlc
-                );
+            if let Some(s) = seen.get(&id) {
+                if now.saturating_sub(s.last_hb_ms) > lapse_ms {
+                    tracing::debug!(
+                        "mesh: no heartbeat from {id} for {} s while connected (last stats {}); gossip lagging",
+                        (now - s.last_hb_ms) / 1000,
+                        s.stats_hlc
+                    );
+                }
+                if s.is_hub {
+                    claimers.push(id.clone());
+                }
             }
             match self.store.candidate(&id, since_ms, now).await {
                 Ok(Some(c)) => cands.push(c),
@@ -308,18 +426,38 @@ impl Ctx {
                 Err(e) => tracing::warn!("mesh: engine_stats for {id}: {e:#}"),
             }
         }
-        let holder = lease::elect(
-            &cands,
-            incumbent.as_ref(),
-            now,
-            cfg.probation_secs * 1000,
-            cfg.handover_secs * 1000,
-        );
+        let dual = incumbent.as_ref() == Some(&self.net.id) && !claimers.is_empty();
+        // 182 S9: for its first `lapse` + 30 s a (re)started engine does not take
+        // the lease from a connected holder that has been up longer — it follows
+        // it; rank decides later, under the handover grace (no churn on restart).
+        let elder = (now.saturating_sub(self.started_ms) < lapse_ms + RESTART_HOLD_MS)
+            .then(|| {
+                cands
+                    .iter()
+                    .filter(|c| claimers.contains(&c.id) && c.uptime_since_ms < self.started_ms)
+                    .min_by_key(|c| (c.uptime_since_ms, c.id.0.clone()))
+                    .map(|c| c.id.clone())
+            })
+            .flatten();
+        let holder = match elder {
+            Some(h) => Some(h),
+            None => lease::resolve(
+                &cands,
+                incumbent.as_ref(),
+                &self.net.id,
+                &claimers,
+                now,
+                cfg.probation_secs * 1000,
+                cfg.handover_secs * 1000,
+            ),
+        };
         if holder == incumbent {
             return;
         }
         let reason = match (&holder, &incumbent) {
             (None, _) => "none",
+            // 182 D5: two holders met; the loser releases at once.
+            _ if dual => "two holders",
             (Some(h), _)
                 if cands
                     .iter()
@@ -349,7 +487,12 @@ impl Ctx {
 
     /// Record a heartbeat. The stats themselves arrive by replication.
     fn on_heartbeat(&self, hb: GossipMsg) {
-        let GossipMsg::Heartbeat { id, stats_hlc, .. } = hb else {
+        let GossipMsg::Heartbeat {
+            id,
+            stats_hlc,
+            is_hub,
+        } = hb
+        else {
             return;
         };
         if id == self.net.id {
@@ -360,6 +503,7 @@ impl Ctx {
             Seen {
                 last_hb_ms: now_ms(),
                 stats_hlc,
+                is_hub,
             },
         );
     }
@@ -392,7 +536,7 @@ impl Ctx {
             }
         }
         // An engine with stored peers does not elect itself at start: it says "no holder" (every
-        // follower stops serving) until a peer connects or `lapse_secs` pass. Before (69 smoke) a
+        // follower stops serving) until a peer's first heartbeat arrives or `lapse_secs` pass. Before (69 smoke) a
         // restarted engine elected itself over the candidate set {self} in 0.3 s, registered the
         // mesh id at the relay and bounced every device five times before the incumbent's view
         // reached it; a lone engine (no peers) still elects itself at once.
@@ -447,7 +591,11 @@ impl Ctx {
                     Some(Ok(GossipEvent::Received(msg))) => match serde_json::from_slice::<GossipMsg>(&msg.content) {
                         Ok(hb @ GossipMsg::Heartbeat { .. }) => {
                             self.on_heartbeat(hb);
-                            if !warming { self.recompute("heartbeat").await; }
+                            // 182 D5: a starting engine elects on the first heartbeat (not the
+                            // connect): a holder's `is_hub` makes it the incumbent, so the
+                            // handover grace keeps it instead of two holders meeting.
+                            warming = false;
+                            self.recompute("heartbeat").await;
                         }
                         Ok(GossipMsg::LeaseRelease { id }) => {
                             Self::lock(&self.live).seen.remove(&id);
@@ -469,10 +617,6 @@ impl Ctx {
                         let _ = self.store.availability_open(&self.net.id, &id, up, now).await;
                         Self::lock(&self.live).touches.wrote(&id, now);
                         self.emit(MeshEvent::Peer(ev)).await;
-                        if up && warming {
-                            warming = false;
-                            self.recompute("connect").await;
-                        }
                         if !up {
                             Self::lock(&self.live).seen.remove(&id);
                             self.recompute("disconnect").await;
@@ -661,6 +805,7 @@ impl runtime::Plugin for MeshPlugin {
             n => n.to_owned(),
         };
         set_self_name(&name);
+        set_self_id(&identity.id().0);
         let net = match Net::bind(
             net::BindOpts {
                 secret: identity.secret,
@@ -689,6 +834,7 @@ impl runtime::Plugin for MeshPlugin {
             cfg.relay,
             cfg.discovery
         );
+        let _ = NET.set(net.clone());
         // 79 §6.6: secrets stamps its replicated rows with the engine id; it starts
         // before us and cannot ask the mesh (mesh depends on secrets), so we tell it.
         tokio::spawn(tell_secrets_engine(rt.clone(), net.id.clone()));
@@ -814,6 +960,49 @@ impl runtime::Plugin for MeshPlugin {
             c.run_lease(stop.child_token()).await;
             n.shutdown().await;
         });
+        // 182 M2a: with paired peers, the first sync gates task work here (no dispatch,
+        // sweep, owner write or desk-turn resume on stale rows) until every connected
+        // peer's first replica exchange completed, or `lapse_secs` passed with none.
+        if !net.paired_ids().is_empty() {
+            set_synced(false);
+            let (n, lapse, stop) = (
+                net.clone(),
+                ctx.cfg().lapse_secs.max(1),
+                rt.shutdown.clone(),
+            );
+            tokio::spawn(async move {
+                let start = tokio::time::Instant::now();
+                let mut every = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        _ = every.tick() => {}
+                    }
+                    let connected = n.connected();
+                    let waited = start.elapsed().as_secs();
+                    let why = if connected.is_empty() {
+                        (waited >= lapse).then_some("no peer connected")
+                    } else if connected
+                        .iter()
+                        .all(|(id, _)| replica::caught_up_with(&id.0))
+                    {
+                        Some("caught up with every connected peer")
+                    } else {
+                        // ponytail: a peer that never completes its first exchange (an
+                        // incompatible build) stops gating after 5 × lapse_secs.
+                        (waited >= 5 * lapse)
+                            .then_some("timed out waiting for a peer's first exchange")
+                    };
+                    if let Some(why) = why {
+                        tracing::info!(
+                            "182: first sync done after {waited} s ({why}); task work starts"
+                        );
+                        set_synced(true);
+                        return;
+                    }
+                }
+            });
+        }
         let rt2 = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt2

@@ -531,6 +531,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                     state,
                     engine,
                     project,
+                    ..Default::default()
                 };
                 client.request("tasks_list", rpc_params![filter]).await
             }
@@ -2047,6 +2048,9 @@ async fn start_plugins(rt: &Runtime, plugins: Vec<Box<dyn Plugin>>) -> anyhow::R
             .map_err(|e| anyhow::anyhow!("plugin {name} failed to start: {e:#}"))?;
         tracing::info!(plugin = name, "started");
     }
+    // 182: a table still unattached now has no plugin here — its parked changes no
+    // longer hold the first sync. Here, so the TUI takeover's `start_engine` gets it too.
+    replica::plugins_started();
     Ok(())
 }
 

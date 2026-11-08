@@ -5,7 +5,7 @@ import { USER, actionsFor, age, agent, awaitsMyReview, canDrag, columns, default
 
 const task = (t: Partial<Task>): Task => ({
   id: 'x', title: 't', brief: '', done_when: null, attachments: [], owner: USER, state: 'todo', reviewer: null, blockers: [], blocks: [], parent: null, project: null,
-  where: null, harness: null, external: [], thread: null, checkout: null, schedule: null, created_by: 'user',
+  where: null, home: null, harness: null, external: [], thread: null, checkout: null, schedule: null, created_by: 'user',
   created_ms: 0, updated_ms: 0, no_progress_count: 0, next_wake_after_ms: null, priority: 'medium', ...t,
 })
 const summary = (name: string, reports_to: string): AgentSummary => ({

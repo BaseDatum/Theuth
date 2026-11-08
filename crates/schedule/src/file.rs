@@ -398,6 +398,10 @@ pub struct Spec {
     /// `project:` — the project label of the task an `agent:` fire creates
     /// (67 §7.1); absent = inferred from `cwd`, else none.
     pub project: Option<String>,
+    /// `engine:` (182 D6) — the engine (mesh id) the schedule fires on,
+    /// stamped by the creating engine; absent = a legacy schedule, fired by
+    /// the hub lease holder.
+    pub engine: Option<String>,
     /// `when:` — the sensor whose check says *go* (40 §1.1); `None` for a plain
     /// 34 file. Named `sensor` because `when` is the clock clause above.
     pub sensor: Option<Sensor>,
@@ -445,6 +449,7 @@ struct FrontMatter {
     approvals: Option<bool>,
     agent: Option<String>,
     project: Option<String>,
+    engine: Option<String>,
     when: Option<String>,
     fire: Option<String>,
     #[serde(rename = "for")]
@@ -719,6 +724,10 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
             .project
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty()),
+        engine: fm
+            .engine
+            .map(|e| e.trim().to_string())
+            .filter(|e| !e.is_empty()),
         sensor,
         fire,
         for_,
@@ -817,6 +826,8 @@ pub struct FileArgs<'a> {
     pub agent: Option<&'a str>,
     /// `project:` — written only when present (67 §7.1).
     pub project: Option<&'a str>,
+    /// `engine:` — written only when present (182 D6).
+    pub engine: Option<&'a str>,
     /// `when:` — the sensor line (40 §2); written only when present.
     pub when: Option<&'a str>,
     /// `fire:` — written only when present (non-default).
@@ -881,6 +892,10 @@ pub struct ScheduleFile {
     pub agent: Option<String>,
     /// `project:`.
     pub project: Option<String>,
+    /// `engine:` (182 D6): the engine id it fires on; absent = the lease holder's.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub engine: Option<String>,
     /// `when:` as written (40 §2): `<file>.py key=value …`.
     pub when: Option<String>,
     /// `fire:` as written.
@@ -938,6 +953,7 @@ impl ScheduleFile {
             approvals: fm.approvals.unwrap_or(true),
             agent: fm.agent,
             project: fm.project,
+            engine: fm.engine,
             when: fm.when,
             fire: fm.fire,
             for_: fm.for_,
@@ -974,6 +990,7 @@ impl ScheduleFile {
             missed_run: self.missed_run,
             agent: some(&self.agent),
             project: some(&self.project),
+            engine: some(&self.engine),
             when: some(&self.when),
             fire: some(&self.fire),
             for_: some(&self.for_),
@@ -1080,6 +1097,9 @@ pub fn render(a: &FileArgs<'_>) -> String {
     }
     if let Some(v) = a.project {
         s.push_str(&format!("project: {}\n", yaml_str(v.trim())));
+    }
+    if let Some(v) = a.engine {
+        s.push_str(&format!("engine: {}\n", v.trim()));
     }
     s.push_str("---\n\n");
     s.push_str(a.prompt.trim());
@@ -1272,6 +1292,7 @@ mod tests {
         missed_run: false,
         agent: None,
         project: None,
+        engine: None,
         when: None,
         fire: None,
         for_: None,

@@ -16,6 +16,7 @@ import type { WireEvent } from '@/rpc/events'
 import { on } from '@/store/sessions'
 import { HANDOFFS_KEY } from '@/store/sandboxes'
 import { toast } from 'sonner'
+import { movedToast } from '@/components/tasks/home'
 import { ACTIVITY_CAP, appendActivity } from './model'
 import { sceneFixture } from './scene/fixtures'
 import { type Ctx, contextFill, DAY_MS, sessionPresence, startOfDay } from './scene/model'
@@ -225,6 +226,14 @@ export function useAttentionActions() {
     decline: useAction((name: string) => api.agent_remove(name, null), { keys }),
     /** 101 D9: Approve → done / Send back → doing carry the reviewer's note into the thread. 132 D3: `next` (a review's picked next move) rides along only when picked, so an older engine sees the old three params. */
     move: useAction(({ id, state, note = null, next }: { id: string; state: 'todo' | 'done' | 'doing'; note?: string | null; next?: number }) => (next === undefined ? api.task_move(id, state, note) : api.task_move(id, state, note, next)), { keys }),
+    /** 182: the `home:<engine>` item's button — every task waiting on the offline engine moves to this one. */
+    moveHome: useAction(({ from }: { from: string; to: string }) => api.task_move_home_waiting(from), {
+      keys: [ATTENTION_KEY, taskKeys.tasks],
+      onSuccess: (r, v) => {
+        const m = movedToast(r, v.to)
+        ;(m.error ? toast.error : toast)(m.title, { description: m.description })
+      },
+    }),
     unpause: useAction((name: string) => api.agent_pause(name, false), { keys }),
     /** 79 §6.6: Done / Cancel on a hand-off card; the pop-out's banner and the row's chip read the same list. */
     handoff: useAction(({ id, outcome }: { id: string; outcome: 'done' | 'cancelled' }) => api.handoff_resolve(id, outcome), { keys: [ATTENTION_KEY, HANDOFFS_KEY] }),

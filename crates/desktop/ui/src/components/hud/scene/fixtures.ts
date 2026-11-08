@@ -36,6 +36,7 @@ const task = (id: string, title: string, owner: string, state: Task['state'], up
   parent: null,
   project,
   where: null,
+  home: null,
   harness: null,
   external: [],
   thread: null,

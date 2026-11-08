@@ -204,8 +204,21 @@ pub struct Ledger {
     pub thread: Arc<dyn Thread>,
     /// Now.
     pub clock: Clock,
-    /// This engine, written into every checkout.
+    /// This engine, written into every checkout and (182 D2) every new task's `home`.
     pub engine: String,
+    /// 182 D2: `engine` is the mesh id (`SetEngine` arrived); until then a
+    /// create leaves `home` unset and [`Self::set_engine`] stamps it.
+    pub homed: bool,
+    /// 182 D3: this engine holds the hub lease — it works the legacy
+    /// (`home` NULL) rows. [`mesh::is_hub`] outside tests.
+    pub lease: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// 182 M2a: the first sync with the mesh is done — owner writes, checkouts,
+    /// dispatch and sweeps wait for it. [`mesh::synced`] outside tests.
+    pub synced: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// 182: engine id → display name (the mesh's peers), for refusal texts.
+    pub names: HashMap<String, String>,
+    /// When this ledger was made: creates since then are this process's.
+    started_ms: u64,
     /// Takes a lost engine's session here before its `Resume` wake (68 §4.4).
     pub taker: Arc<dyn SessionTaker>,
     /// Whether a checkout's session still works (WAKE-LIVE-CHILD D4).
@@ -221,6 +234,9 @@ pub struct Ledger {
     /// Agent → the claimed wake id its waiting wakes were last reported held
     /// behind (WAKE-LIVE-CHILD D3): one log line per blocking wake.
     reported_busy: HashMap<String, String>,
+    /// 182 S1: wakes already noted in their thread as undeliverable here
+    /// (the agent lives on another engine).
+    misplaced: HashSet<String>,
 }
 
 type R<T> = Result<T, String>;
@@ -247,6 +263,26 @@ pub fn window_text(secs: u64) -> String {
 /// `user` or `user@<client>` (130 E4: the client the user acted from).
 fn is_user(actor: &str) -> bool {
     actor == "user" || actor.starts_with("user@")
+}
+
+/// 182 M2a: an owner's write before the engine's first sync with the mesh.
+pub const NOT_SYNCED: &str = "this machine is still catching up with the others (first sync after a restart); try again in a minute";
+
+/// 182 M2c: a checkout no longer holds — orphaned, or its engine is not the
+/// task's home (moved away; robust to a stale `checkout` arriving late).
+fn fenced(t: &Task, c: &Checkout) -> bool {
+    c.orphaned || t.home.as_deref().is_some_and(|h| h != c.engine)
+}
+
+/// 182 D10: how [`Ledger::move_home`] moves (see [`crate::MoveHome`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MoveHow<'a> {
+    /// The calling session: an agent's move spends the cross-task write cap.
+    pub session: Option<&'a str>,
+    /// Only check; change nothing.
+    pub check_only: bool,
+    /// The checkout's session moved to the new home first and keeps the checkout.
+    pub session_moved: bool,
 }
 
 /// 132 D4: `priority` from anyone but the user.
@@ -307,6 +343,7 @@ impl Ledger {
         clock: Clock,
         engine: String,
     ) -> Self {
+        let started_ms = clock();
         Self {
             store,
             cfg,
@@ -314,13 +351,151 @@ impl Ledger {
             thread,
             clock,
             engine,
+            homed: true,
+            lease: Arc::new(mesh::is_hub),
+            synced: Arc::new(mesh::synced),
+            names: HashMap::new(),
+            started_ms,
             taker: Arc::new(MeshTaker),
             probe: Arc::new(crate::AgentProbe),
             delivered: HashMap::new(),
             retry: HashMap::new(),
             unreachable_since: HashMap::new(),
             reported_busy: HashMap::new(),
+            misplaced: HashSet::new(),
         }
+    }
+
+    /// 182 D3: this engine works `t` — it is homed here, or it is a legacy
+    /// row and this engine holds the lease.
+    pub fn works(&self, t: &Task) -> bool {
+        match &t.home {
+            Some(h) => *h == self.engine,
+            None => (self.lease)(),
+        }
+    }
+
+    /// An engine's display name; its short id when the mesh never named it.
+    pub fn engine_name(&self, id: &str) -> String {
+        if id == self.engine {
+            return mesh::self_name();
+        }
+        self.names
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.get(..8).unwrap_or(id).to_owned())
+    }
+
+    /// 182 S3: an engine this one knows — itself or a paired peer.
+    fn known(&self, id: &str) -> bool {
+        id == self.engine || self.names.contains_key(id)
+    }
+
+    /// 182 D3: the checkout refusal of a task this engine does not work.
+    fn lives_elsewhere(&self, t: &Task) -> String {
+        match &t.home {
+            Some(h) => format!(
+                "task {} lives on {} — move it here first",
+                short(&t.id),
+                self.engine_name(h)
+            ),
+            None => format!(
+                "task {} has no home yet; the hub lease holder works it — move it here first",
+                short(&t.id)
+            ),
+        }
+    }
+
+    /// 182 D10: the owner's own writes (its desk's task tools) on a task this
+    /// engine does not work — it moved to another machine. Every other actor
+    /// (the user, a manager, the system) may still write it from here.
+    /// M2a: before the first sync, an owner's write is refused outright — the
+    /// task may have moved while this engine was away.
+    fn check_home(&self, actor: &str, t: &Task) -> R<()> {
+        if agent_name(&t.owner).is_none_or(|a| actor != format!("agent:{a}")) {
+            return Ok(());
+        }
+        if !(self.synced)() {
+            return Err(NOT_SYNCED.to_owned());
+        }
+        if self.works(t) {
+            return Ok(());
+        }
+        Err(self.moved_away(t))
+    }
+
+    /// 182 D10: why work on `t` stops here — it lives on another engine.
+    fn moved_away(&self, t: &Task) -> String {
+        match &t.home {
+            Some(h) => format!(
+                "task {} moved to {}; stop, it is worked there",
+                short(&t.id),
+                self.engine_name(h)
+            ),
+            None => self.lives_elsewhere(t),
+        }
+    }
+
+    /// 182 D2/D7: the mesh named this engine. Tasks this process created
+    /// before are homed here now; once per engine (a marker row), legacy
+    /// rows are homed too — `doing` on its checkout's engine, a task with a
+    /// local `created` event here; every other row stays legacy (NULL).
+    pub async fn set_engine(&mut self, id: String) -> R<()> {
+        // A checkout this process took before the mesh named us carries the placeholder.
+        let before = std::mem::replace(&mut self.engine, id);
+        self.homed = true;
+        let first = !self.store.backfilled(&self.engine).await.map_err(db)?;
+        let here = self
+            .store
+            .created_here(if first { 0 } else { self.started_ms })
+            .await
+            .map_err(db)?;
+        let (mut doing, mut created, mut legacy) = (0u32, 0u32, 0u32);
+        for mut t in self.store.list(&TaskFilter::default()).await.map_err(db)? {
+            if t.home.is_some() {
+                continue;
+            }
+            t.home = match &t.checkout {
+                // 182 S3: never a home this engine does not know (a hostname
+                // checkout of an older build, an engine unpaired since).
+                Some(c) if first && t.state == TaskState::Doing && self.known(&c.engine) => {
+                    doing += 1;
+                    Some(c.engine.clone())
+                }
+                _ if here.contains(&t.id.0) => {
+                    created += 1;
+                    Some(self.engine.clone())
+                }
+                _ => {
+                    legacy += 1;
+                    continue;
+                }
+            };
+            if t.home.as_deref() == Some(self.engine.as_str())
+                && let Some(c) = t.checkout.as_mut().filter(|c| c.engine == before)
+            {
+                c.engine = self.engine.clone();
+            }
+            self.store.put(&t).await.map_err(db)?;
+        }
+        if first {
+            self.store
+                .mark_backfilled(&self.engine, self.now())
+                .await
+                .map_err(db)?;
+            tracing::info!(
+                doing,
+                created,
+                legacy,
+                "182: home backfill: doing homed on their checkout's engine, created here homed here, the rest stay legacy"
+            );
+        } else if created > 0 {
+            tracing::info!(
+                created,
+                "182: tasks created before the mesh named this engine homed here"
+            );
+        }
+        Ok(())
     }
 
     fn now(&self) -> u64 {
@@ -569,6 +744,15 @@ impl Ledger {
             return Ok(());
         };
         if c.session == session {
+            // 182 M2c: the task moved — the checkout's own session is superseded
+            // too (unless it moved along: then its engine is the home).
+            if let Some(h) = t.home.as_ref().filter(|h| **h != c.engine) {
+                return Err(format!(
+                    "superseded: task {} moved to {}; stop, it is worked there",
+                    short(&t.id),
+                    self.engine_name(h)
+                ));
+            }
             return Ok(());
         }
         let held = self.store.events(&t.id).await.map_err(db)?.iter().any(|e| {
@@ -594,9 +778,13 @@ impl Ledger {
         self.with_blocks(t).await
     }
 
-    /// Tasks by filter, project then oldest first.
+    /// Tasks by filter, project then oldest first; `here` keeps the ones this engine works.
     pub async fn list(&self, f: &TaskFilter) -> R<Vec<Task>> {
-        self.store.list(f).await.map_err(db)
+        let mut v = self.store.list(f).await.map_err(db)?;
+        if f.here {
+            v.retain(|t| self.works(t));
+        }
+        Ok(v)
     }
 
     /// Events, oldest first.
@@ -632,6 +820,11 @@ impl Ledger {
             ),
             None => None,
         };
+        // 182 D2/S1: where the owner's agent is — here, else the one engine with it.
+        let home = match self.homed {
+            true => Some(self.home_for(&input.owner).await),
+            false => None,
+        };
         let reviewer = input.reviewer.or_else(|| match &input.owner {
             Owner::Agent(a) => Some(self.manager_of(a)),
             _ => Some(Owner::User),
@@ -664,6 +857,8 @@ impl Ledger {
                 .filter(|d| !d.is_empty()),
             attachments: dedupe_attachments(input.attachments),
             priority: input.priority.unwrap_or_default(),
+            // 182 D2: before the mesh named us, `set_engine` stamps it.
+            home,
             id,
         };
         t.thread = self
@@ -743,6 +938,23 @@ impl Ledger {
         Ok(t)
     }
 
+    /// 182 D2/D6/S1: where a new task of `owner` lives — here when this engine
+    /// has its agent (theuth is everywhere; a user-owned task is the creating
+    /// engine's), else the one engine that has it, else here (Attention then
+    /// names the missing agent and dispatch never delivers it here).
+    async fn home_for(&self, owner: &Owner) -> String {
+        let here = self.engine.clone();
+        let (Some(agent), Some(router)) = (agent_name(owner), self.router.as_ref()) else {
+            return here;
+        };
+        if agent == UNCAPPED_AGENT || router.has_agent(agent) != Some(false) {
+            return here;
+        }
+        let mut on = router.engines_with(agent).await;
+        on.retain(|e| *e != self.engine);
+        if on.len() == 1 { on.remove(0) } else { here }
+    }
+
     /// The schedule's `until` passed (67 §7.4): its open tasks are `done`,
     /// reviewer `system`.
     pub async fn close_for_schedule(&self, schedule: &str, why: &str) -> R<()> {
@@ -812,7 +1024,7 @@ impl Ledger {
     /// `t` left its blocked state: back to `doing` under a live checkout, else `todo`.
     async fn unblock(&self, t: &mut Task, actor: &str, reason: WakeReason) -> R<()> {
         let to = match &t.checkout {
-            Some(c) if !c.orphaned => TaskState::Doing,
+            Some(c) if !fenced(t, c) => TaskState::Doing,
             _ => TaskState::Todo,
         };
         let before = t.state;
@@ -977,6 +1189,7 @@ impl Ledger {
         session: Option<&str>,
     ) -> R<Task> {
         let mut t = self.load(id).await?;
+        self.check_home(actor, &t)?;
         self.charge(session, &t).await?;
         self.check_epoch(session, &t).await?;
         let before = t.clone();
@@ -1232,6 +1445,7 @@ impl Ledger {
         session: Option<&str>,
     ) -> R<Task> {
         let mut t = self.load(id).await?;
+        self.check_home(actor, &t)?;
         let mut next_move = None;
         if let Some(n) = next {
             if !(to == TaskState::Done && t.state == TaskState::Review) {
@@ -1336,6 +1550,7 @@ impl Ledger {
         session: Option<&str>,
     ) -> R<Task> {
         let mut t = self.load(id).await?;
+        self.check_home(actor, &t)?;
         if !acts_for(actor, &t.owner) {
             return Err(format!(
                 "only the owner ({}) or the user reassigns",
@@ -1418,15 +1633,234 @@ impl Ledger {
         self.with_blocks(t).await
     }
 
+    /// 182 D10 `task_move_home`: the task lives on `to` from now on — its
+    /// checkout (if any) is fenced (`orphaned`, `epoch + 1`: the old session
+    /// is superseded) unless its session moved along (`how.session_moved`, S4:
+    /// it keeps the checkout there), and its owner is woken `reassigned` there.
+    /// `to` must be this engine or a connected one (`reachable`) whose roster
+    /// has the owner and an agent reviewer (182 D8; theuth is everywhere). The
+    /// user moves from any engine; an agent (S6) only a task it acts for — its
+    /// own or a report's — from the engine that works it, under the write cap.
+    /// Applied here, so a move off an offline home lands at once and
+    /// replicates when it returns. `how.check_only`: the checks alone.
+    pub async fn move_home(
+        &mut self,
+        id: &TaskId,
+        to: &str,
+        actor: &str,
+        reachable: Option<&HashSet<String>>,
+        how: MoveHow<'_>,
+    ) -> R<Task> {
+        let mut t = self.load(id).await?;
+        if matches!(t.state, TaskState::Done | TaskState::Cancelled) {
+            return Err(format!("task is {}", t.state.as_str()));
+        }
+        let name = self.engine_name(to);
+        if t.home.as_deref() == Some(to) {
+            return Err(format!("task {} already lives on {name}", short(&t.id)));
+        }
+        if !is_user(actor) && actor != "system" {
+            let agent = actor.strip_prefix("agent:").unwrap_or(actor);
+            if !self.works(&t) || !(acts_for(actor, &t.owner) || self.in_line(agent, &t.owner)) {
+                return Err(format!(
+                    "only the user, or its owner or the owner's manager on the engine it lives on, moves task {}",
+                    short(&t.id)
+                ));
+            }
+            if !how.check_only {
+                self.charge(how.session, &t).await?;
+            }
+        }
+        if to != self.engine && !reachable.is_some_and(|r| r.contains(to)) {
+            return Err(format!("{name} is offline"));
+        }
+        for (who, role) in [
+            (Some(&t.owner), ""),
+            (t.reviewer.as_ref(), ", the reviewer"),
+        ] {
+            if let Some(agent) = who.and_then(agent_name)
+                && agent != UNCAPPED_AGENT
+                && !self.agent_on(agent, to).await
+            {
+                return Err(format!("{name} — no {agent} agent there{role}"));
+            }
+        }
+        if how.check_only {
+            return Ok(t);
+        }
+        let before = t.home.replace(to.to_owned());
+        if let Some(c) = t.checkout.as_mut()
+            && !c.orphaned
+        {
+            if how.session_moved {
+                c.engine = to.to_owned();
+            } else {
+                c.orphaned = true;
+                c.epoch += 1;
+            }
+        }
+        t.updated_ms = self.now();
+        self.save(&t).await?;
+        // Delivered to the old home's desks: not delivered again here (the move's
+        // `reassigned` wake below is the new home's), and no claim holds its agent busy.
+        self.store.drop_claimed_wakes(&t.id).await.map_err(db)?;
+        let from = before
+            .as_deref()
+            .map_or_else(|| "the hub".to_owned(), |h| self.engine_name(h));
+        self.event(
+            &t,
+            actor,
+            None,
+            "home",
+            Some(from.clone()),
+            Some(name.clone()),
+        )
+        .await;
+        self.say(&t, actor, &format!("moved from {from} to {name}"))
+            .await;
+        // A session that moved along keeps working it; nobody new is woken.
+        if !how.session_moved {
+            self.wake(&t, &t.owner, WakeReason::Reassigned, actor).await;
+        }
+        tracing::info!(task = %t.id, from, to = %name, %actor, "182: task moved");
+        self.with_blocks(t).await
+    }
+
+    /// 182 D8: `engine`'s roster has `agent`.
+    async fn agent_on(&self, agent: &str, engine: &str) -> bool {
+        match &self.router {
+            Some(r) if engine == self.engine => r.has_agent(agent) == Some(true),
+            Some(r) => r.engines_with(agent).await.iter().any(|e| e == engine),
+            None => false,
+        }
+    }
+
+    /// 182 D9: the paired engines as the mesh sees them (`(id, name,
+    /// reachable)`): names for refusal texts, and the clock of each one
+    /// unreachable starts at the first sight (the orphan sweep's clock).
+    pub fn note_peers(&mut self, peers: &[(String, String, bool)]) {
+        let now = self.now();
+        for (id, name, up) in peers {
+            let name = match name.is_empty() {
+                true => id.get(..8).unwrap_or(id).to_owned(),
+                false => name.clone(),
+            };
+            self.names.insert(id.clone(), name);
+            if *up {
+                self.unreachable_since.remove(id);
+            } else {
+                self.unreachable_since.entry(id.clone()).or_insert(now);
+            }
+        }
+    }
+
+    /// 182 D9: every paired engine unreachable for `home_offline_ask_secs`
+    /// with tasks waiting on it — agent-owned tasks homed there in `todo` or
+    /// `doing`, or `blocked` with a wake pending. Nothing moves on its own.
+    /// S3: a home that is neither this engine nor a paired one is an unknown
+    /// machine — listed the same way, its clock from the first sight.
+    pub async fn homes_offline(
+        &mut self,
+        peers: &[(String, String, bool)],
+    ) -> R<Vec<crate::HomeOffline>> {
+        self.note_peers(peers);
+        let now = self.now();
+        let wait_ms = self.cfg.home_offline_ask_secs * 1000;
+        let waiting = self.waiting_on().await?;
+        for h in waiting.iter().filter_map(|t| t.home.as_ref()) {
+            if *h != self.engine && !peers.iter().any(|(id, _, _)| id == h) {
+                self.unreachable_since.entry(h.clone()).or_insert(now);
+            }
+        }
+        let mut out = Vec::new();
+        for (engine, since_ms) in &self.unreachable_since {
+            let name = match peers.iter().find(|(id, _, _)| id == engine) {
+                Some((_, _, true)) => continue,
+                Some(_) => self.engine_name(engine),
+                None => format!("an unknown machine ({})", engine.get(..8).unwrap_or(engine)),
+            };
+            if now.saturating_sub(*since_ms) < wait_ms {
+                continue;
+            }
+            let tasks: Vec<Task> = waiting
+                .iter()
+                .filter(|t| t.home.as_ref() == Some(engine))
+                .cloned()
+                .collect();
+            if !tasks.is_empty() {
+                out.push(crate::HomeOffline {
+                    engine: engine.clone(),
+                    name,
+                    since_ms: *since_ms,
+                    tasks,
+                });
+            }
+        }
+        out.sort_by_key(|h| h.since_ms);
+        Ok(out)
+    }
+
+    /// 182 D9: tasks that wait for their home engine — agent-owned, in
+    /// `todo` or `doing`, or `blocked` with a wake pending.
+    async fn waiting_on(&self) -> R<Vec<Task>> {
+        let wakes = self.store.wakes().await.map_err(db)?;
+        let mut tasks = self.store.list(&TaskFilter::default()).await.map_err(db)?;
+        tasks.retain(|t| {
+            t.home.is_some()
+                && agent_name(&t.owner).is_some()
+                && match t.state {
+                    TaskState::Todo | TaskState::Doing => true,
+                    TaskState::Blocked => wakes.iter().any(|w| w.task.as_ref() == Some(&t.id)),
+                    _ => false,
+                }
+        });
+        Ok(tasks)
+    }
+
+    /// 182 D9 "Move them to <this engine>": every task waiting on `from`
+    /// moved to `to` ([`Self::move_home`]); the ones that cannot (no such
+    /// agent there) are named with the reason.
+    pub async fn move_waiting(
+        &mut self,
+        from: &str,
+        to: &str,
+        actor: &str,
+        reachable: Option<&HashSet<String>>,
+    ) -> R<crate::MovedHome> {
+        let mut out = crate::MovedHome::default();
+        for t in self.waiting_on().await? {
+            if t.home.as_deref() != Some(from) {
+                continue;
+            }
+            match self
+                .move_home(&t.id, to, actor, reachable, MoveHow::default())
+                .await
+            {
+                Ok(_) => out.moved.push(t.id),
+                Err(e) => out.refused.push(format!("{}: {e}", t.title)),
+            }
+        }
+        Ok(out)
+    }
+
     /// `task_checkout`: `todo`/`blocked`/unheld `doing` → `doing` under
     /// `session` on this engine, `epoch + 1`. A held checkout is `conflict`.
+    /// 182 D3: only the engine that works the task checks it out; a legacy
+    /// row checked out by the lease holder is homed here from then on.
     pub async fn checkout(&self, id: &TaskId, session: &str, actor: &str) -> R<Task> {
         let mut t = self.load(id).await?;
         if !acts_for(actor, &t.owner) {
             return Err(format!("not the owner ({})", t.owner));
         }
+        if !self.works(&t) {
+            return Err(self.lives_elsewhere(&t));
+        }
+        if !is_user(actor) && !(self.synced)() {
+            return Err(NOT_SYNCED.to_owned());
+        }
         match (t.state, &t.checkout) {
-            (TaskState::Doing, Some(c)) if !c.orphaned => {
+            // 182 M2c: a checkout of an engine the task moved away from never holds.
+            (TaskState::Doing, Some(c)) if !fenced(&t, c) => {
                 return Err(format!(
                     "conflict: checked out by {} on {} (epoch {})",
                     c.session, c.engine, c.epoch
@@ -1434,6 +1868,9 @@ impl Ledger {
             }
             (TaskState::Todo | TaskState::Blocked | TaskState::Doing, _) => {}
             (s, _) => return Err(format!("task is {}", s.as_str())),
+        }
+        if t.home.is_none() && self.homed {
+            t.home = Some(self.engine.clone());
         }
         if t.state == TaskState::Blocked && !t.blockers.is_empty() {
             return Err(format!("still blocked on {}", t.blockers.join(", ")));
@@ -1489,6 +1926,7 @@ impl Ledger {
         session: Option<&str>,
     ) -> R<()> {
         let mut t = self.load(id).await?;
+        self.check_home(actor, &t)?;
         // 99 D3: notes are free — a desk woken by a mention must be able to answer.
         self.check_epoch(session, &t).await?;
         let now = self.now();
@@ -1934,30 +2372,35 @@ impl Ledger {
     /// this is also the startup sweep over rows left by earlier builds.
     pub async fn dispatch(&mut self) -> R<Vec<Delivery>> {
         let now = self.now();
-        let wakes = self.store.wakes().await.map_err(db)?;
+        let all = self.store.wakes().await.map_err(db)?;
         // 178 W7: counters outlive deliveries; a wake that left the table
         // (finished, completed, stale) takes its counter with it.
-        self.retry.retain(|id, _| wakes.iter().any(|w| w.id == *id));
+        self.retry.retain(|id, _| all.iter().any(|w| w.id == *id));
+        self.misplaced.retain(|id| all.iter().any(|w| w.id == *id));
+        // 182 D3: only wakes of tasks this engine works; a peer's claims
+        // (its desks serving its tasks) never make a local agent busy.
         // 179 D3: a paused agent's wakes stay in the table, unclaimed and
         // unattempted: no delivery, no back-off, no "held" line.
-        let wakes: Vec<Wake> = wakes
+        let wakes: Vec<(Wake, Option<Task>)> = self
+            .ours(all)
+            .await?
             .into_iter()
-            .filter(|w| !self.paused(&w.agent))
+            .filter(|(w, _)| !self.paused(&w.agent))
             .collect();
         let busy: HashSet<&str> = wakes
             .iter()
-            .filter(|w| w.claimed_by.is_some())
-            .map(|w| w.agent.as_str())
+            .filter(|(w, _)| w.claimed_by.is_some())
+            .map(|(w, _)| w.agent.as_str())
             .collect();
         // WAKE-LIVE-CHILD D3: say once, per blocking wake, that an agent's
         // newer wakes wait behind a claim its desk still holds.
         // ponytail: O(claimed × wakes) scan; the table holds a handful of rows.
         self.reported_busy
             .retain(|agent, _| busy.contains(agent.as_str()));
-        for w in wakes.iter().filter(|w| w.claimed_by.is_some()) {
+        for (w, _) in wakes.iter().filter(|(w, _)| w.claimed_by.is_some()) {
             let waiting = wakes
                 .iter()
-                .filter(|x| x.agent == w.agent && x.claimed_by.is_none())
+                .filter(|(x, _)| x.agent == w.agent && x.claimed_by.is_none())
                 .count();
             if waiting == 0 || self.reported_busy.get(&w.agent) == Some(&w.id) {
                 continue;
@@ -1976,7 +2419,7 @@ impl Ledger {
         // agent → ((rank, answer-class), delivery); wakes come oldest first, so a
         // later wake replaces the pick only when its key is strictly higher.
         let mut picked: HashMap<String, ((u32, bool), Delivery)> = HashMap::new();
-        for w in &wakes {
+        for (w, task) in &wakes {
             if w.claimed_by.is_some() || busy.contains(w.agent.as_str()) {
                 continue;
             }
@@ -1987,10 +2430,6 @@ impl Ledger {
             {
                 continue;
             }
-            let task = match &w.task {
-                Some(id) => self.store.get(id).await.map_err(db)?,
-                None => None,
-            };
             if let Some(id) = &w.task {
                 let stale = match &task {
                     Some(t) => (!w.reason.applies_to(t.state))
@@ -2015,6 +2454,35 @@ impl Ledger {
                     continue;
                 }
             }
+            // 182 S1: an agent this engine's roster lacks never gets the wake
+            // here — it waits, unclaimed, for a move to an engine that has the
+            // agent; one thread line says so (Attention names the task too).
+            let here = self
+                .router
+                .as_ref()
+                .map_or(Some(true), |r| r.has_agent(&w.agent));
+            // An invalid file here (an edit in flight): skip quietly, no note.
+            if here.is_none() {
+                continue;
+            }
+            if here == Some(false) {
+                if let Some(t) = task
+                    && self.misplaced.insert(w.id.clone())
+                {
+                    tracing::info!(agent = %w.agent, task = %t.id, "182: wake not delivered: no such agent here");
+                    let here = self.engine_name(&self.engine);
+                    self.say(
+                        t,
+                        "system",
+                        &format!(
+                            "{} isn't on {here}; this task waits until it is moved to a machine that has {} (Move to ▸)",
+                            w.agent, w.agent
+                        ),
+                    )
+                    .await;
+                }
+                continue;
+            }
             if task
                 .as_ref()
                 .and_then(|t| t.next_wake_after_ms)
@@ -2037,7 +2505,7 @@ impl Ledger {
                     key,
                     Delivery {
                         wake: w.clone(),
-                        task,
+                        task: task.clone(),
                     },
                 ),
             );
@@ -2059,6 +2527,42 @@ impl Ledger {
                     .insert((d.wake.agent.clone(), t.id.clone()), t.updated_ms);
             }
             out.push(d);
+        }
+        Ok(out)
+    }
+
+    /// 182 D3: the wakes this engine works, each with its task — homed here,
+    /// or (a legacy row, a task-less wake) while it holds the lease; a wake
+    /// whose task has not replicated here is nobody's for an hour (then the
+    /// holder drops it as gone). Oldest first, as [`Store::wakes`].
+    async fn ours(&self, wakes: Vec<Wake>) -> R<Vec<(Wake, Option<Task>)>> {
+        let mut tasks: HashMap<TaskId, Option<Task>> = HashMap::new();
+        let mut out = Vec::with_capacity(wakes.len());
+        for w in wakes {
+            let task = match &w.task {
+                Some(id) => match tasks.get(id) {
+                    Some(t) => t.clone(),
+                    None => {
+                        let t = self.store.get(id).await.map_err(db)?;
+                        tasks.insert(id.clone(), t.clone());
+                        t
+                    }
+                },
+                None => None,
+            };
+            let works = match (&w.task, &task) {
+                (_, Some(t)) => self.works(t),
+                // 182 S2: a task not replicated here yet is its home's to work;
+                // the lease holder drops the wake as gone only after an hour.
+                // ponytail: fixed hour, far past any replication lag seen.
+                (Some(_), None) => {
+                    (self.lease)() && self.now().saturating_sub(w.created_ms) >= 3_600_000
+                }
+                (None, None) => (self.lease)(),
+            };
+            if works {
+                out.push((w, task));
+            }
         }
         Ok(out)
     }
@@ -2151,12 +2655,15 @@ impl Ledger {
         Ok(())
     }
 
-    /// 179 D9: `agent`'s wakes waiting to be delivered (unclaimed).
+    /// 179 D9: `agent`'s wakes waiting to be delivered (unclaimed) — 182 D3:
+    /// on the tasks this engine works.
     pub async fn held_wakes(&self, agent: &str) -> R<u32> {
         let wakes = self.store.wakes().await.map_err(db)?;
-        Ok(wakes
+        Ok(self
+            .ours(wakes)
+            .await?
             .iter()
-            .filter(|w| w.agent == agent && w.claimed_by.is_none())
+            .filter(|(w, _)| w.agent == agent && w.claimed_by.is_none())
             .count() as u32)
     }
 
@@ -2222,7 +2729,12 @@ impl Ledger {
             };
             // 179 D4: a paused owner's checkout is suspended with its turn,
             // not lost — no "presumed lost" note, no `resume` wake.
-            if c.orphaned || agent_name(&t.owner).is_some_and(|a| self.paused(a)) {
+            // 182 D3: another engine's task is that engine's to sweep; M2c: a
+            // checkout of an engine the task moved away from is fenced.
+            if fenced(&t, &c)
+                || !self.works(&t)
+                || agent_name(&t.owner).is_some_and(|a| self.paused(a))
+            {
                 continue;
             }
             let mut last_active_ms = None;
@@ -2309,8 +2821,12 @@ impl Ledger {
         // here: a moved desk, or none at all (a fresh hub before the agent's
         // desk opened — theuth's opens on its first delivered wake, which a
         // stale claim would otherwise hold back for ever), releases it.
-        if let Some(router) = &self.router {
-            for w in self.store.wakes().await.map_err(db)? {
+        // 182 D3: only claims on the tasks this engine works — a peer's
+        // claims are its own desks'.
+        if self.router.is_some() {
+            let wakes = self.store.wakes().await.map_err(db)?;
+            for (w, _) in self.ours(wakes).await? {
+                let Some(router) = &self.router else { break };
                 let Some(by) = &w.claimed_by else { continue };
                 // 179 D2: a paused agent's claim is its suspended turn's wake.
                 if by == DISPATCHING || router.is_paused(&w.agent) {
@@ -2347,7 +2863,8 @@ impl Ledger {
         let mut blocked = vec![];
         for mut t in doing {
             let Some(c) = &t.checkout else { continue };
-            if !sessions.contains(&c.session) {
+            // 182 D10: a task moved away is its new home's; this desk's end does not block it.
+            if !sessions.contains(&c.session) || !self.works(&t) {
                 continue;
             }
             let continuing = self
@@ -2407,9 +2924,14 @@ impl Ledger {
         Ok(())
     }
 
-    /// [`Self::no_continuation`] by id (the actor's `NoContinuation`).
+    /// [`Self::no_continuation`] by id (the actor's `NoContinuation`) —
+    /// 182 D10: not on a task another engine works (a desk here judging the
+    /// turn it ran before the task moved).
     pub async fn no_continuation_by_id(&mut self, id: &TaskId, agent: &str, why: &str) -> R<Task> {
         let mut t = self.load(id).await?;
+        if !self.works(&t) {
+            return Err(self.moved_away(&t));
+        }
         self.no_continuation(&mut t, agent, why).await?;
         self.with_blocks(t).await
     }
@@ -2423,6 +2945,7 @@ impl Ledger {
         session: Option<&str>,
     ) -> R<()> {
         let t = self.load(id).await?;
+        self.check_home(actor, &t)?;
         self.event(
             &t,
             actor,
@@ -2514,6 +3037,8 @@ pub(crate) mod tests {
         pub delivered: Mutex<Vec<(String, WakeReason)>>,
         pub fail: Mutex<bool>,
         pub paused: Mutex<HashSet<String>>,
+        /// 182 D8: agent → the engines whose roster has it.
+        pub engines: Mutex<HashMap<String, Vec<String>>>,
     }
 
     #[async_trait::async_trait]
@@ -2546,6 +3071,21 @@ pub(crate) mod tests {
         }
         fn is_paused(&self, agent: &str) -> bool {
             self.paused.lock().unwrap().contains(agent)
+        }
+        async fn engines_with(&self, agent: &str) -> Vec<String> {
+            self.engines
+                .lock()
+                .unwrap()
+                .get(agent)
+                .cloned()
+                .unwrap_or_default()
+        }
+        /// Here unless the test placed the agent on other engines only.
+        fn has_agent(&self, agent: &str) -> Option<bool> {
+            Some(
+                !self.engines.lock().unwrap().contains_key(agent)
+                    || self.agents().iter().any(|a| a == agent),
+            )
         }
     }
 
@@ -4831,7 +5371,8 @@ pub(crate) mod tests {
     /// 68 §4.4: the sweep takes a lost engine's session here before the
     /// `Resume` wake; the checkout then names this engine and is marked
     /// `taken`. A refused take keeps the progress-note fallback; a hung local
-    /// session is never taken.
+    /// session is never taken. 182: a legacy (unhomed) row on the lease holder —
+    /// a homed task's checkout on another engine is fenced (M2c), not lost.
     #[tokio::test]
     async fn resume_takes_the_lost_engines_session() {
         let mut r = rig().await;
@@ -4844,7 +5385,9 @@ pub(crate) mod tests {
         c.engine = "build-a".into();
         let mut moved = r.ledger.get(&t.id).await.unwrap();
         moved.checkout = Some(c);
+        moved.home = None;
         r.ledger.save(&moved).await.unwrap();
+        r.lease(true);
         let others: HashSet<String> = HashSet::from(["mac".to_owned()]);
         r.ledger.sweep(Some(&others)).await.unwrap();
         r.tick(120_000);
@@ -4891,6 +5434,7 @@ pub(crate) mod tests {
             .unwrap();
         let mut moved = r.ledger.get(&t2.id).await.unwrap();
         moved.checkout.as_mut().unwrap().engine = "build-a".into();
+        moved.home = None;
         r.ledger.save(&moved).await.unwrap();
         *r.taker.fail.lock().unwrap() = true;
         // build-a has been unreachable since the first sweep: orphaned at once.
@@ -6444,5 +6988,669 @@ pub(crate) mod tests {
         r.ledger.finish_wake(&d[0].wake).await.unwrap();
         let d = r.ledger.dispatch().await.unwrap();
         assert_eq!(d[0].wake.task.as_ref(), Some(&plain.id));
+    }
+
+    // ---- 182 TASK-HOME ------------------------------------------------------------
+
+    impl Rig {
+        /// Rewrite `id`'s home as a replicated row would land it.
+        pub async fn rehome(&self, id: &TaskId, home: Option<&str>) -> Task {
+            let mut t = self.ledger.get(id).await.unwrap();
+            t.home = home.map(str::to_owned);
+            self.ledger.store.put(&t).await.unwrap();
+            t
+        }
+
+        /// The lease as the mesh would say it.
+        pub fn lease(&mut self, holding: bool) {
+            self.ledger.lease = Arc::new(move || holding);
+        }
+
+        /// The id of the one wake on `task`.
+        pub async fn wake_of(&self, task: &TaskId) -> Wake {
+            self.ledger
+                .wakes()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|w| w.task.as_ref() == Some(task))
+                .expect("a wake on the task")
+        }
+    }
+
+    fn set(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// 182 D2: a create stamps this engine; one made before the mesh named
+    /// the engine is stamped when it does — never with the placeholder.
+    #[tokio::test]
+    async fn create_stamps_home_with_the_engine() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        assert_eq!(t.home.as_deref(), Some("mac"));
+        assert_eq!(
+            r.ledger.get(&t.id).await.unwrap().home.as_deref(),
+            Some("mac")
+        );
+        r.ledger.homed = false;
+        let early = r.task("agent:ops").await;
+        assert_eq!(early.home, None, "no placeholder home before SetEngine");
+        r.ledger.set_engine("eng-a".into()).await.unwrap();
+        assert_eq!(
+            r.ledger.get(&early.id).await.unwrap().home.as_deref(),
+            Some("eng-a")
+        );
+        assert_eq!(
+            r.ledger.get(&t.id).await.unwrap().home.as_deref(),
+            Some("mac"),
+            "a home is never rewritten"
+        );
+    }
+
+    /// 182 D6/S7: a schedule fire's task lives on the firing engine when it has
+    /// the agent, else on the one engine that has it, else here (never legacy).
+    #[tokio::test]
+    async fn schedule_task_is_homed_on_the_firing_engine() {
+        let r = rig().await;
+        let fire = |agent: &'static str, ms: u64| {
+            let l = &r.ledger;
+            async move {
+                l.create_for_schedule("minute", ms, agent, "go", None)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(fire("ops", 1).await.home.as_deref(), Some("mac"));
+        assert_eq!(
+            fire("theuth", 2).await.home.as_deref(),
+            Some("mac"),
+            "theuth is everywhere"
+        );
+        assert_eq!(
+            fire("hans", 3).await.home.as_deref(),
+            Some("mac"),
+            "no engine has hans: here"
+        );
+        r.router
+            .engines
+            .lock()
+            .unwrap()
+            .insert("hans".into(), vec!["eng-b".into()]);
+        assert_eq!(fire("hans", 4).await.home.as_deref(), Some("eng-b"));
+        r.router
+            .engines
+            .lock()
+            .unwrap()
+            .insert("hans".into(), vec!["eng-b".into(), "eng-c".into()]);
+        assert_eq!(
+            fire("hans", 5).await.home.as_deref(),
+            Some("mac"),
+            "two engines have hans: ambiguous, here"
+        );
+    }
+
+    /// 182 D3: a wake on a task another engine works is not delivered here.
+    #[tokio::test]
+    async fn dispatch_skips_wakes_for_tasks_homed_elsewhere() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        r.rehome(&t.id, Some("eng-b")).await;
+        assert!(r.ledger.dispatch().await.unwrap().is_empty());
+        assert_eq!(r.wake_of(&t.id).await.claimed_by, None, "left for its home");
+        assert_eq!(
+            r.ledger.held_wakes("ops").await.unwrap(),
+            0,
+            "not held here either"
+        );
+        r.rehome(&t.id, Some("mac")).await;
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].wake.task.as_ref(), Some(&t.id));
+    }
+
+    /// 182 D3: a claim by a peer's desk (its own task) does not make the
+    /// same-named agent here busy.
+    #[tokio::test]
+    async fn peer_claims_do_not_make_a_local_agent_busy() {
+        let mut r = rig().await;
+        let theirs = r.task("agent:ops").await;
+        r.rehome(&theirs.id, Some("eng-b")).await;
+        let w = r.wake_of(&theirs.id).await;
+        r.ledger
+            .store
+            .claim(&w.id, Some("b-desk"), 0)
+            .await
+            .unwrap();
+        let ours = r.task("agent:ops").await;
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d.len(), 1, "ops is not busy here");
+        assert_eq!(d[0].wake.task.as_ref(), Some(&ours.id));
+    }
+
+    /// 182 D3: the claim sweep releases only claims on tasks this engine
+    /// works — a peer's desk keeps its claim.
+    #[tokio::test]
+    async fn claim_sweep_leaves_peer_homed_claims() {
+        let mut r = rig().await;
+        let theirs = r.task("agent:ops").await;
+        r.rehome(&theirs.id, Some("eng-b")).await;
+        let w = r.wake_of(&theirs.id).await;
+        r.ledger
+            .store
+            .claim(&w.id, Some("b-desk"), 0)
+            .await
+            .unwrap();
+        let ours = r.task("agent:ops").await;
+        let mine = r.wake_of(&ours.id).await;
+        r.ledger
+            .store
+            .claim(&mine.id, Some("gone-desk"), 0)
+            .await
+            .unwrap();
+        r.ledger.sweep(None).await.unwrap();
+        assert_eq!(
+            r.wake_of(&theirs.id).await.claimed_by.as_deref(),
+            Some("b-desk")
+        );
+        assert_eq!(
+            r.wake_of(&ours.id).await.claimed_by,
+            None,
+            "our stale claim goes"
+        );
+    }
+
+    /// 182 D3: a checkout on a task homed elsewhere is its home's to orphan,
+    /// however long its engine looks unreachable from here.
+    #[tokio::test]
+    async fn orphan_sweep_ignores_tasks_homed_elsewhere() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        let mut c = r
+            .ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap();
+        c.checkout.as_mut().unwrap().engine = "eng-b".into();
+        c.home = Some("eng-b".into());
+        r.ledger.store.put(&c).await.unwrap();
+        let here = set(&["mac"]);
+        assert!(r.ledger.sweep(Some(&here)).await.unwrap().is_empty());
+        r.tick(3_600_000);
+        assert!(r.ledger.sweep(Some(&here)).await.unwrap().is_empty());
+        let o = r.ledger.get(&t.id).await.unwrap();
+        assert!(!o.checkout.unwrap().orphaned);
+        assert!(
+            r.taker.taken.lock().unwrap().is_empty(),
+            "its session is not taken"
+        );
+    }
+
+    /// 182 D3: `task_checkout` refuses a task homed elsewhere.
+    #[tokio::test]
+    async fn checkout_refuses_a_task_homed_elsewhere() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        r.rehome(&t.id, Some("eng-b")).await;
+        r.ledger.names.insert("eng-b".into(), "xeus".into());
+        let e = r
+            .ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e,
+            format!("task {} lives on xeus — move it here first", short(&t.id))
+        );
+        assert_eq!(r.ledger.get(&t.id).await.unwrap().state, TaskState::Todo);
+    }
+
+    /// 182 D3: a legacy (NULL-home) row is worked by the lease holder only;
+    /// its checkout homes it there.
+    #[tokio::test]
+    async fn null_home_is_worked_by_the_lease_holder_only() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        r.rehome(&t.id, None).await;
+        r.lease(false);
+        assert!(r.ledger.dispatch().await.unwrap().is_empty());
+        let e = r
+            .ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap_err();
+        assert!(e.contains("has no home yet"), "{e}");
+        r.lease(true);
+        assert_eq!(r.ledger.dispatch().await.unwrap().len(), 1);
+        let c = r
+            .ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap();
+        assert_eq!(
+            c.home.as_deref(),
+            Some("mac"),
+            "the lease holder's checkout homes it"
+        );
+        r.lease(false);
+        assert!(r.ledger.works(&c), "homed: the lease no longer matters");
+    }
+
+    /// 182 D7: once per engine, legacy rows are homed — `doing` on its
+    /// checkout's engine when this engine knows it (S3: itself or a paired
+    /// peer), created here (a local event) here; a replicated row stays
+    /// legacy. Later starts stamp only this process's creates.
+    #[tokio::test]
+    async fn backfill_homes_doing_by_checkout_and_created_by_self() {
+        let mut r = rig().await;
+        let doing = r.task("agent:ops").await;
+        let mut d = r
+            .ledger
+            .checkout(&doing.id, "s-ops", "agent:ops")
+            .await
+            .unwrap();
+        d.checkout.as_mut().unwrap().engine = "eng-b".into();
+        d.home = None;
+        r.ledger.store.put(&d).await.unwrap();
+        let local = r.task("agent:ops").await;
+        r.rehome(&local.id, None).await;
+        let mut foreign = r.task("agent:lead").await;
+        foreign.id = TaskId::new();
+        foreign.home = None;
+        r.ledger.store.put(&foreign).await.unwrap();
+        let mut ghost = foreign.clone();
+        ghost.id = TaskId::new();
+        ghost.state = TaskState::Doing;
+        ghost.checkout = d.checkout.clone().map(|mut c| {
+            c.engine = "ghost".into();
+            c
+        });
+        r.ledger.store.put(&ghost).await.unwrap();
+        r.ledger.names.insert("eng-b".into(), "B".into());
+        r.ledger.set_engine("mac".into()).await.unwrap();
+        let home = |t: Task| t.home;
+        assert_eq!(
+            home(r.ledger.get(&doing.id).await.unwrap()).as_deref(),
+            Some("eng-b")
+        );
+        assert_eq!(
+            home(r.ledger.get(&local.id).await.unwrap()).as_deref(),
+            Some("mac")
+        );
+        assert_eq!(
+            home(r.ledger.get(&foreign.id).await.unwrap()),
+            None,
+            "no local event: legacy"
+        );
+        assert_eq!(
+            home(r.ledger.get(&ghost.id).await.unwrap()),
+            None,
+            "never homed on an engine nobody knows"
+        );
+        // Once: a later start leaves old legacy rows alone.
+        r.rehome(&doing.id, None).await;
+        r.rehome(&local.id, None).await;
+        r.tick(1);
+        let mut again = Ledger::new(
+            r.ledger.store.clone(),
+            TasksConfig::default(),
+            r.thread.clone(),
+            r.ledger.clock.clone(),
+            "host".into(),
+        );
+        again.router = Some(r.router.clone());
+        again.homed = false;
+        let fresh = again
+            .create(
+                TaskCreate {
+                    state: TaskState::Backlog,
+                    title: "made before SetEngine".into(),
+                    brief: "b".into(),
+                    owner: "agent:ops".parse().unwrap(),
+                    reviewer: None,
+                    parent: None,
+                    project: None,
+                    where_: None,
+                    harness: None,
+                    external: vec![],
+                    done_when: None,
+                    attachments: vec![],
+                    priority: None,
+                },
+                "user",
+                None,
+                WakeReason::Assigned,
+            )
+            .await
+            .unwrap();
+        again.set_engine("mac".into()).await.unwrap();
+        assert_eq!(
+            home(again.get(&fresh.id).await.unwrap()).as_deref(),
+            Some("mac")
+        );
+        assert_eq!(home(again.get(&doing.id).await.unwrap()), None);
+        assert_eq!(home(again.get(&local.id).await.unwrap()), None);
+    }
+
+    /// 182 D10: the target must be online and have the agent (and an agent
+    /// reviewer); closed tasks stay; only the user (or the home engine's agents) moves.
+    #[tokio::test]
+    async fn move_home_refuses_offline_target_and_missing_agent() {
+        let mut r = rig().await;
+        r.ledger.names.insert("eng-b".into(), "xeus".into());
+        let t = r.task("agent:ops").await;
+        let here = set(&["mac"]);
+        let both = set(&["mac", "eng-b"]);
+        let e = r
+            .ledger
+            .move_home(&t.id, "eng-b", "user", Some(&here), MoveHow::default())
+            .await
+            .unwrap_err();
+        assert_eq!(e, "xeus is offline");
+        let e = r
+            .ledger
+            .move_home(&t.id, "eng-b", "user", None, MoveHow::default())
+            .await
+            .unwrap_err();
+        assert_eq!(e, "xeus is offline", "no mesh: nothing is online but here");
+        let e = r
+            .ledger
+            .move_home(&t.id, "eng-b", "user", Some(&both), MoveHow::default())
+            .await
+            .unwrap_err();
+        assert_eq!(e, "xeus — no ops agent there");
+        r.router
+            .engines
+            .lock()
+            .unwrap()
+            .insert("ops".into(), vec!["eng-b".into()]);
+        let e = r
+            .ledger
+            .move_home(&t.id, "eng-b", "user", Some(&both), MoveHow::default())
+            .await
+            .unwrap_err();
+        assert_eq!(e, "xeus — no lead agent there, the reviewer");
+        r.router
+            .engines
+            .lock()
+            .unwrap()
+            .insert("lead".into(), vec!["eng-b".into()]);
+        let e = r
+            .ledger
+            .move_home(&t.id, "mac", "user", Some(&both), MoveHow::default())
+            .await
+            .unwrap_err();
+        assert!(e.contains("already lives on"), "{e}");
+        let moved = r
+            .ledger
+            .move_home(
+                &t.id,
+                "eng-b",
+                "user@desktop",
+                Some(&both),
+                MoveHow::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(moved.home.as_deref(), Some("eng-b"));
+        assert!(
+            r.ledger
+                .wakes()
+                .await
+                .unwrap()
+                .iter()
+                .any(|w| w.task.as_ref() == Some(&t.id) && w.reason == WakeReason::Reassigned)
+        );
+        let e = r
+            .ledger
+            .move_home(&t.id, "mac", "agent:ops", Some(&both), MoveHow::default())
+            .await
+            .unwrap_err();
+        assert!(
+            e.starts_with("only the user"),
+            "an agent here cannot pull a task homed elsewhere: {e}"
+        );
+        let theuth = r.task("agent:theuth").await;
+        r.ledger
+            .move_home(
+                &theuth.id,
+                "eng-b",
+                "agent:theuth",
+                Some(&both),
+                MoveHow::default(),
+            )
+            .await
+            .expect("theuth is everywhere; the home engine's agent may move");
+        let done = r.task("user").await;
+        r.ledger
+            .update(
+                &done.id,
+                TaskPatch {
+                    state: Some(TaskState::Cancelled),
+                    ..Default::default()
+                },
+                "user",
+                None,
+            )
+            .await
+            .unwrap();
+        let e = r
+            .ledger
+            .move_home(&done.id, "eng-b", "user", Some(&both), MoveHow::default())
+            .await
+            .unwrap_err();
+        assert_eq!(e, "task is cancelled");
+    }
+
+    /// 182 D10: with the home engine offline, a user's move on another engine
+    /// lands there at once (checkout fenced, epoch + 1); when the old home
+    /// returns it neither dispatches nor checks out nor writes as the owner.
+    #[tokio::test]
+    async fn move_home_while_old_home_offline_and_old_home_does_not_continue() {
+        let mut a = rig().await; // the old home, engine "mac"
+        let t = a.task("agent:ops").await;
+        let d = a.ledger.dispatch().await.unwrap();
+        a.ledger.finish_wake(&d[0].wake).await.unwrap();
+        a.ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap();
+        // B over the same rows (what replication gives it), A unreachable from there.
+        let mut b = Ledger::new(
+            a.ledger.store.clone(),
+            TasksConfig::default(),
+            a.thread.clone(),
+            a.ledger.clock.clone(),
+            "eng-b".into(),
+        );
+        b.router = Some(a.router.clone());
+        b.names.insert("mac".into(), "A".into());
+        a.ledger.names.insert("eng-b".into(), "B".into());
+        let only_b = set(&["eng-b"]);
+        assert!(
+            b.dispatch().await.unwrap().is_empty(),
+            "B works nothing of A's"
+        );
+        // A's desk held a wake on t when A went away.
+        let held = a
+            .ledger
+            .store
+            .raise("ops", Some(&t.id), WakeReason::Mention, 0)
+            .await
+            .unwrap();
+        a.ledger
+            .store
+            .claim(&held.id, Some("a-desk"), 0)
+            .await
+            .unwrap();
+        let moved = b
+            .move_home(&t.id, "eng-b", "user", Some(&only_b), MoveHow::default())
+            .await
+            .unwrap();
+        let c = moved.checkout.clone().unwrap();
+        assert_eq!(
+            (moved.home.as_deref(), c.orphaned, c.epoch),
+            (Some("eng-b"), true, 2)
+        );
+        assert!(
+            b.wakes().await.unwrap().iter().all(|w| w.id != held.id),
+            "the wake A's desk had taken goes with the move: not delivered twice, B's ops not busy behind it"
+        );
+        // A comes back: nothing of t runs there.
+        assert!(
+            a.ledger.dispatch().await.unwrap().is_empty(),
+            "A delivers no wake of t"
+        );
+        let e = a
+            .ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap_err();
+        assert!(e.contains("lives on B"), "{e}");
+        let e = a
+            .ledger
+            .comment(&t.id, "still on it", true, "agent:ops", Some("s-ops"))
+            .await
+            .unwrap_err();
+        assert!(e.contains("moved to B"), "{e}");
+        let e = a
+            .ledger
+            .update(
+                &t.id,
+                TaskPatch {
+                    state: Some(TaskState::Review),
+                    ..Default::default()
+                },
+                "agent:ops",
+                Some("s-ops"),
+            )
+            .await
+            .unwrap_err();
+        assert!(e.contains("moved to B"), "{e}");
+        a.ledger
+            .comment(&t.id, "the user may still write", false, "user", None)
+            .await
+            .unwrap();
+        // B works it.
+        let d = b.dispatch().await.unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].wake.task.as_ref(), Some(&t.id));
+        assert!(
+            b.wakes()
+                .await
+                .unwrap()
+                .iter()
+                .any(|w| w.task.as_ref() == Some(&t.id) && w.reason == WakeReason::Reassigned)
+        );
+        let c = b.checkout(&t.id, "s-desk-ops", "agent:ops").await.unwrap();
+        assert_eq!(c.checkout.unwrap().epoch, 3);
+    }
+
+    /// 182 M2c: once a task moved, what the old home still holds never wins
+    /// it back — a late copy of the old checkout (its fencing write lost to a
+    /// replication race) neither lets the old session write, on either
+    /// engine, nor conflicts the new home's checkout.
+    #[tokio::test]
+    async fn stale_owner_write_cannot_revert_a_move() {
+        let mut a = rig().await; // the old home, "mac"
+        let t = a.task("agent:ops").await;
+        let d = a.ledger.dispatch().await.unwrap();
+        a.ledger.finish_wake(&d[0].wake).await.unwrap();
+        let held = a
+            .ledger
+            .checkout(&t.id, "s-ops", "agent:ops")
+            .await
+            .unwrap();
+        let old = held.checkout.clone().unwrap();
+        let mut b = Ledger::new(
+            a.ledger.store.clone(),
+            TasksConfig::default(),
+            a.thread.clone(),
+            a.ledger.clock.clone(),
+            "eng-b".into(),
+        );
+        b.router = Some(a.router.clone());
+        b.move_home(
+            &t.id,
+            "eng-b",
+            "user",
+            Some(&set(&["eng-b"])),
+            MoveHow::default(),
+        )
+        .await
+        .unwrap();
+        let mut stale = a.ledger.store.get(&t.id).await.unwrap().unwrap();
+        stale.checkout = Some(old);
+        a.ledger.store.put(&stale).await.unwrap();
+        for (l, at) in [(&a.ledger, "the old home"), (&b, "the new home")] {
+            let e = l
+                .comment(&t.id, "still mine", true, "agent:ops", Some("s-ops"))
+                .await
+                .unwrap_err();
+            assert!(e.contains("moved to"), "{at}: {e}");
+        }
+        let c = b
+            .checkout(&t.id, "s-desk-ops", "agent:ops")
+            .await
+            .expect("a stale checkout of the old home does not hold");
+        let c = c.checkout.unwrap();
+        assert_eq!(
+            (c.session.as_str(), c.engine.as_str()),
+            ("s-desk-ops", "eng-b")
+        );
+    }
+
+    /// 182 D9: one entry per offline engine once it has been unreachable for
+    /// `home_offline_ask_secs` with tasks waiting on it; gone when it returns
+    /// or its tasks moved.
+    #[tokio::test]
+    async fn home_offline_ask_raised_once_after_threshold_and_cleared_on_return() {
+        let mut r = rig().await;
+        let one = r.task("agent:ops").await;
+        let two = r.task("agent:lead").await;
+        let mine = r.task("agent:ops").await;
+        r.rehome(&one.id, Some("eng-b")).await;
+        r.rehome(&two.id, Some("eng-b")).await;
+        let down = [("eng-b".to_owned(), "B".to_owned(), false)];
+        let up = [("eng-b".to_owned(), "B".to_owned(), true)];
+        assert!(
+            r.ledger.homes_offline(&down).await.unwrap().is_empty(),
+            "first sight starts the clock"
+        );
+        r.tick(299_000);
+        assert!(r.ledger.homes_offline(&down).await.unwrap().is_empty());
+        r.tick(1_000);
+        let h = r.ledger.homes_offline(&down).await.unwrap();
+        assert_eq!(h.len(), 1, "one item for the engine, not one per task");
+        assert_eq!((h[0].engine.as_str(), h[0].name.as_str()), ("eng-b", "B"));
+        let ids: Vec<&TaskId> = h[0].tasks.iter().map(|t| &t.id).collect();
+        assert_eq!(ids, [&one.id, &two.id]);
+        assert!(!ids.contains(&&mine.id));
+        assert_eq!(
+            r.ledger.homes_offline(&down).await.unwrap().len(),
+            1,
+            "asked again: still one"
+        );
+        assert!(
+            r.ledger.homes_offline(&up).await.unwrap().is_empty(),
+            "back: gone"
+        );
+        assert!(
+            r.ledger.homes_offline(&down).await.unwrap().is_empty(),
+            "down again: the clock restarts"
+        );
+        r.tick(300_000);
+        assert_eq!(r.ledger.homes_offline(&down).await.unwrap().len(), 1);
+        let moved = r
+            .ledger
+            .move_waiting("eng-b", "mac", "user", None)
+            .await
+            .unwrap();
+        assert_eq!(moved.moved, [one.id.clone(), two.id.clone()]);
+        assert!(moved.refused.is_empty());
+        assert!(
+            r.ledger.homes_offline(&down).await.unwrap().is_empty(),
+            "moved: gone"
+        );
     }
 }

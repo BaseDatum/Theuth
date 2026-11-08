@@ -108,10 +108,10 @@ export function latestDraft(entries: readonly Entry[]): Draft | null {
 
 /** A `ScheduleFile` back as the markdown the engine wrote (front matter + body), for Edit by chat (§6.6). */
 export function fileText(f: ScheduleFile): string {
-  const keys: (keyof ScheduleFile)[] = ['cron', 'every', 'at', 'when', 'fire', 'for', 'cooldown', 'mode', 'memory', 'timeout', 'until', 'max_runs', 'expires', 'quiet', 'approvals', 'agent', 'project', 'model', 'cwd', 'run_timeout', 'enabled', 'created']
+  const keys: (keyof ScheduleFile)[] = ['cron', 'every', 'at', 'when', 'fire', 'for', 'cooldown', 'mode', 'memory', 'timeout', 'until', 'max_runs', 'expires', 'quiet', 'approvals', 'agent', 'project', 'model', 'cwd', 'run_timeout', 'engine', 'enabled', 'created']
   const lines = keys.flatMap((k) => {
     const v = f[k]
-    if (v === null || v === '' || (k === 'quiet' && v === false) || (k === 'approvals' && v === true) || (k === 'enabled' && v === true)) return []
+    if (v === null || v === undefined || v === '' || (k === 'quiet' && v === false) || (k === 'approvals' && v === true) || (k === 'enabled' && v === true)) return []
     return [`${k}: ${typeof v === 'string' && /[:#]/.test(v) ? JSON.stringify(v) : String(v)}`]
   })
   if (f.missed_run) lines.push('missed: run')

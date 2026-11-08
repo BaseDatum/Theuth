@@ -77,6 +77,67 @@ impl Store {
         Ok(rows.into_iter().map(|(n,)| n).collect())
     }
 
+    /// 182 D8: `engine`'s roster is `files`: rows written where they changed
+    /// (each write replicates), rows of agents it no longer has removed.
+    pub async fn put_engine_agents(&self, engine: &str, files: &[AgentFile]) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for f in files {
+            let mut fm = serde_json::to_value(f)?;
+            if let Some(o) = fm.as_object_mut() {
+                o.remove("body");
+            }
+            sqlx::query(
+                "INSERT INTO engine_agents (id, engine, name, file_json) VALUES (?, ?, ?, ?) \
+                 ON CONFLICT(id) DO UPDATE SET file_json = excluded.file_json \
+                 WHERE file_json IS NOT excluded.file_json",
+            )
+            .bind(format!("{engine}/{}", f.name.as_str()))
+            .bind(engine)
+            .bind(f.name.as_str())
+            .bind(fm.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
+        let keep =
+            serde_json::to_string(&files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>())?;
+        sqlx::query(
+            "DELETE FROM engine_agents WHERE engine = ? AND name NOT IN (SELECT value FROM json_each(?))",
+        )
+        .bind(engine)
+        .bind(keep)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 182 D8: every engine's agents as `(engine, file without body)`, by
+    /// name then engine; rows that no longer parse are skipped.
+    pub async fn engine_agents(&self) -> anyhow::Result<Vec<(String, AgentFile)>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT engine, file_json FROM engine_agents ORDER BY name, engine")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(e, j)| {
+                let mut v: serde_json::Value = serde_json::from_str(&j).ok()?;
+                v.as_object_mut()?.insert("body".into(), "".into());
+                Some((e, serde_json::from_value(v).ok()?))
+            })
+            .collect())
+    }
+
+    /// 182 D8: the engines whose roster has `name`.
+    pub async fn engines_with(&self, name: &str) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT engine FROM engine_agents WHERE name = ? ORDER BY engine")
+                .bind(name)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(e,)| e).collect())
+    }
+
     /// A desk opened (67 §6.2).
     pub async fn open_episode(
         &self,

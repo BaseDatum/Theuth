@@ -57,7 +57,7 @@ says why (`done_because`: criteria met, intent met, or follow-ups filed). Your o
 task is `task_checkout()`; finishing it is `task_update()` with a disposition; handing it to the agent whose \
 capabilities fit it better is `task_reassign()`.";
 
-/// Register the eleven tools on `reg`.
+/// Register the twelve tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>) {
     let _ = reg.ask(RegisterTool(Arc::new(TaskCreateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskInboxTool))).await;
@@ -66,6 +66,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>) {
     let _ = reg.ask(RegisterTool(Arc::new(TaskUpdateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskMoveTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskReassignTool))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(TaskMoveHomeTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskNoteTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskPlaceTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(EscalateTool))).await;
@@ -295,6 +296,8 @@ impl Tool for TaskInboxTool {
             ),
             engine: None,
             project: a.project,
+            // 182 D3: a desk sees the tasks homed on its own engine.
+            here: true,
         };
         let tasks = match flat(actor.ask(ListTasks(filter)).await) {
             Ok(t) => t,
@@ -1001,6 +1004,71 @@ impl Tool for TaskReassignTool {
     }
 }
 
+/// Arguments for [`TaskMoveHomeTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TaskMoveHomeArgs {
+    /// Task id.
+    pub task: TaskId,
+    /// The paired engine (machine) to move it to: its name or id.
+    pub to: String,
+}
+
+/// `task_move_home` (182 D10): the task lives on another machine from now on.
+pub struct TaskMoveHomeTool;
+
+#[async_trait::async_trait]
+impl Tool for TaskMoveHomeTool {
+    const NAME: &'static str = "task_move_home";
+    const RISK: Risk = Risk::Mutating;
+    type Args = TaskMoveHomeArgs;
+
+    fn description(&self) -> String {
+        "Move a task to another paired machine (engine): only that machine's desk works it from then on. \
+         The target must be online and have the task's agent (theuth is on every machine); a done or \
+         cancelled task does not move. Its checkout is released and the owner there is woken `reassigned`; \
+         a work session it had stays here — the user moves one with the board's Move to. Only for tasks that \
+         live on this machine."
+            .into()
+    }
+
+    async fn call(&self, a: TaskMoveHomeArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let actor = actor()?;
+        let me = caller(&actor, &cx).await;
+        let to = match mesh::actor() {
+            Some(m) => match m.ask(mesh::Status).await {
+                Ok(s) if s.self_name == a.to || s.self_id.0 == a.to => s.self_id.0,
+                Ok(s) => s
+                    .peers
+                    .into_iter()
+                    .find(|p| p.name == a.to || p.id.0 == a.to)
+                    .map_or(a.to, |p| p.id.0),
+                Err(_) => a.to,
+            },
+            None => a.to,
+        };
+        let r = flat(
+            actor
+                .ask(crate::MoveHome {
+                    id: a.task,
+                    to,
+                    actor: me,
+                    session: Some(cx.session.to_string()),
+                    check_only: false,
+                    session_moved: false,
+                })
+                .await,
+        );
+        Ok(match r {
+            Ok(t) => ToolOutput::ok(format!(
+                "task {} now lives on {}",
+                t.id,
+                t.home.as_deref().unwrap_or("?")
+            )),
+            Err(e) => ToolOutput::err(e),
+        })
+    }
+}
+
 /// Arguments for [`TaskNoteTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TaskNoteArgs {
@@ -1620,7 +1688,6 @@ mod review_gate_tests {
             .unwrap();
         let actor = Tasks::spawn(Tasks {
             ledger: r.ledger,
-            dispatching: false,
             escalations: Default::default(),
         });
 

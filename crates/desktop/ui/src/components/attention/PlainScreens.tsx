@@ -142,6 +142,11 @@ export function NodeScreen({ item }: { item: AttentionItem }) {
   )
 }
 
+/** 182: tasks waiting on an engine that stayed offline: the engine's hint (or which tasks cannot move here); Move them here · Keep waiting. */
+export function HomeScreen({ item }: { item: AttentionItem }) {
+  return <Plain item={item}>{item.detail && <p className="text-sm text-fg-secondary">{item.detail}</p>}</Plain>
+}
+
 /** Blocked: the task's blockers as chips; Unblock. */
 export function BlockedScreen({ item }: { item: AttentionItem }) {
   const task = useTask(item.task ?? '', item.task !== null)

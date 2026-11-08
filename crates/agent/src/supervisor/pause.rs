@@ -165,14 +165,54 @@ pub(super) async fn paused_desks(store: &Store, data_dir: &Path) -> Vec<(String,
     out
 }
 
+/// 182 M2a: on an engine with paired mesh peers, every desk tree with an open
+/// turn here is held at boot like a paused one — the roster lifts each hold
+/// once the first sync with the mesh is done (it resumes the tree, or closes
+/// the turn when the task it served moved to another engine meanwhile).
+/// Without peers nothing is held. `(agent, desk)`, `already` skipped.
+pub(super) async fn sync_held(
+    store: &Store,
+    data_dir: &Path,
+    already: &[(String, SessionId)],
+) -> Vec<(String, SessionId)> {
+    if !mesh::has_stored_peers(data_dir).await {
+        return Vec::new();
+    }
+    let open = match store.open_turns(crate::store::Scope::Here).await {
+        Ok(open) => open,
+        Err(e) => {
+            tracing::error!("182: open turns: {e:#}");
+            return Vec::new();
+        }
+    };
+    let mut out: Vec<(String, SessionId)> = Vec::new();
+    for (session, _, _) in open {
+        let root = store.root_of(session).await.unwrap_or(session);
+        if already.iter().chain(out.iter()).any(|(_, d)| *d == root) {
+            continue;
+        }
+        if let Ok(Some(row)) = store.session(root).await
+            && let Some(agent) = row.desk
+        {
+            out.push((agent, root));
+        }
+    }
+    out
+}
+
 /// 179 D8, the engine start's restart accounting: every `accepted` exchange
 /// fails `interrupted_by_restart` (50 §7) except those addressed to a paused
-/// agent's tree, which its un-pause delivers. Returns [`paused_desks`].
+/// agent's tree, which its un-pause delivers. Returns [`paused_desks`] plus
+/// (182 M2a) [`sync_held`].
 pub(super) async fn boot_accounting(store: &Store, data_dir: &Path) -> Vec<(String, SessionId)> {
-    let paused = paused_desks(store, data_dir).await;
+    let mut paused = paused_desks(store, data_dir).await;
+    for (agent, desk) in sync_held(store, data_dir, &paused).await {
+        tracing::info!(%agent, %desk, "182: desk tree with an open turn held until the first sync with the mesh");
+        paused.push((agent, desk));
+    }
     let mut spare = Vec::new();
     for (agent, desk) in &paused {
-        tracing::info!(%agent, %desk, "179: agent is paused; its desk tree is held");
+        tracing::info!(%agent, %desk, "179: desk tree held at boot");
         spare.extend(tree_in(store, *desk).await);
     }
     match store

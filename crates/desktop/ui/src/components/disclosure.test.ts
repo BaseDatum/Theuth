@@ -45,6 +45,7 @@ const CHROME: Record<string, true> = {
   'chat/ModelCombobox.tsx': true,
   'chat/ModelMenu.tsx': true,
   'chat/OrphansBanner.tsx': true,
+  'chat/SessionMenu.tsx': true,
 }
 
 function sources(dir: string): string[] {

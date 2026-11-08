@@ -70,13 +70,18 @@ pub enum AttentionKind {
     /// 130 E3: a root or desk session's turn ended cleanly — the receipt, with
     /// `summary` and the agent's `## Next` suggestions.
     Finished,
+    /// 182 D9: a task's home engine is offline (or unknown) with tasks waiting
+    /// on it (`node:<engine id>`, raised by the lease holder) — move them here,
+    /// or keep waiting; nothing runs elsewhere on its own. S1: a task homed
+    /// here whose agent lives elsewhere (`misplaced:<task>`).
+    Home,
 }
 
 /// One inbox item. `id` is stable across derivations (dismiss / snooze key).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AttentionItem {
-    /// `approval:<id>` | `decision:<task>:<decision>` | `hire:<agent>` | `blocked:<task>` | `review:<task>` | `budget:<agent>` | `node:<id>` | `handoff:<id>` | `secret:<id>` | `ask:<id>` | `show:<call_id>` | `resume:<session>:<turn>`.
+    /// `approval:<id>` | `decision:<task>:<decision>` | `hire:<agent>` | `blocked:<task>` | `review:<task>` | `budget:<agent>` | `node:<id>` | `misplaced:<task>` | `handoff:<id>` | `secret:<id>` | `ask:<id>` | `show:<call_id>` | `resume:<session>:<turn>`.
     pub id: String,
     /// What.
     pub kind: AttentionKind,
@@ -325,6 +330,24 @@ pub struct Inputs {
     /// 149 E6: session id → its last exchange, for the sessions behind
     /// session-born items (the actor reads the agent store; tests build it).
     pub session_context: HashMap<String, ItemContext>,
+    /// 182 D9: engines offline past `tasks.home_offline_ask_secs` with tasks
+    /// waiting on them — gathered only while this engine holds the lease.
+    pub homes_offline: Vec<tasks::HomeOffline>,
+    /// 182 S1: open tasks homed here whose agent this engine lacks.
+    pub misplaced: Vec<Misplaced>,
+}
+
+/// 182 S1: a task homed on this engine whose owner agent lives elsewhere.
+#[derive(Clone, Debug)]
+pub struct Misplaced {
+    /// The task.
+    pub task: tasks::Task,
+    /// Its owner agent's name.
+    pub agent: String,
+    /// This engine's display name.
+    pub here: String,
+    /// Display names of the engines whose roster has the agent.
+    pub there: Vec<String>,
 }
 
 /// Dismissed / snoozed state per item id.
@@ -708,7 +731,14 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         }
     }
 
+    // 182 D9: one item per unreachable engine, id `node:<id>` — kind `home`
+    // when tasks wait on it (the lease holder's view, past
+    // `home_offline_ask_secs`): move them here, or keep waiting; nothing moves
+    // on its own. Kind `node` otherwise. S3: an unknown home gets the `home` item.
     for p in inputs.peers.iter().filter(|p| !p.reachable) {
+        if inputs.homes_offline.iter().any(|h| h.engine == p.id.0) {
+            continue;
+        }
         out.push(item(
             format!("node:{}", p.id.0),
             AttentionKind::Node,
@@ -716,6 +746,71 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             Some(format!("last seen {}", stamp(p.last_seen_ms))),
             p.last_seen_ms,
         ));
+    }
+    for h in &inputs.homes_offline {
+        let stuck: Vec<String> = h
+            .tasks
+            .iter()
+            .filter_map(|t| match &t.owner {
+                tasks::Owner::Agent(a)
+                    if a != crate::AgentName::DEFAULT
+                        && !inputs.agents.iter().any(|s| s.file.name.as_str() == a) =>
+                {
+                    Some(format!("{} (no {a} agent here)", t.title))
+                }
+                _ => None,
+            })
+            .collect();
+        let n = h.tasks.len();
+        let mut waiting = h
+            .tasks
+            .iter()
+            .take(5)
+            .map(|t| t.title.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if n > 5 {
+            waiting.push_str(&format!(" and {} more", n - 5));
+        }
+        let advice = if stuck.is_empty() {
+            "Nothing runs elsewhere while it is off. Move them here, or keep waiting.".to_owned()
+        } else {
+            format!("Not movable here: {}.", stuck.join("; "))
+        };
+        out.push(item(
+            format!("node:{}", h.engine),
+            AttentionKind::Home,
+            format!(
+                "{} is offline — {n} {} waiting",
+                h.name,
+                if n == 1 { "task is" } else { "tasks are" },
+            ),
+            Some(format!("Waiting: {waiting}. {advice}")),
+            h.since_ms,
+        ));
+    }
+    // 182 S1: a task homed here whose agent lives on another engine waits for a move.
+    for m in &inputs.misplaced {
+        let title = match m.there.as_slice() {
+            [] => format!("{} isn't on {}, or on any machine", m.agent, m.here),
+            there => format!(
+                "{} isn't on {}; it's on {}",
+                m.agent,
+                m.here,
+                there.join(", ")
+            ),
+        };
+        out.push(AttentionItem {
+            task: Some(m.task.id.clone()),
+            agent: Some(m.agent.clone()),
+            ..item(
+                format!("misplaced:{}", m.task.id),
+                AttentionKind::Home,
+                title,
+                Some("Move it there with Move to \u{25b8}".to_owned()),
+                m.task.updated_ms,
+            )
+        });
     }
 
     let engine_name = |id: &str| {
@@ -1146,6 +1241,46 @@ impl Attention {
             },
             None => (vec![], HashMap::new()),
         };
+        // 182 S1: open tasks homed here whose agent this engine lacks.
+        let mut misplaced = Vec::new();
+        if let Some(me) = mesh::self_id() {
+            let name = |e: &str| {
+                engines
+                    .get(e)
+                    .cloned()
+                    .unwrap_or_else(|| e.get(..8).unwrap_or(e).to_owned())
+            };
+            for t in tasks
+                .iter()
+                .filter(|t| t.home.as_deref() == Some(me.as_str()))
+            {
+                let tasks::Owner::Agent(a) = &t.owner else {
+                    continue;
+                };
+                if a == crate::AgentName::DEFAULT
+                    || agents.iter().any(|s| s.file.name.as_str() == a)
+                {
+                    continue;
+                }
+                let rows: Vec<(String,)> = sqlx::query_as(
+                    "SELECT engine FROM engine_agents WHERE name = ? ORDER BY engine",
+                )
+                .bind(a)
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
+                misplaced.push(Misplaced {
+                    task: t.clone(),
+                    agent: a.clone(),
+                    here: name(&me),
+                    there: rows
+                        .iter()
+                        .filter(|(e,)| *e != me && crate::known_engine(e))
+                        .map(|(e,)| name(e))
+                        .collect(),
+                });
+            }
+        }
         let handoffs = crate::handoff::list(&self.pool, true)
             .await
             .unwrap_or_else(|e| {
@@ -1310,6 +1445,12 @@ impl Attention {
                 .map(|c| c.project_order)
                 .unwrap_or_default(),
             session_context,
+            // 182 D9: one item mesh-wide — the lease holder raises it.
+            homes_offline: match tasks::actor() {
+                Some(t) if mesh::is_hub() => t.ask(tasks::HomesOffline).await.unwrap_or_default(),
+                _ => vec![],
+            },
+            misplaced,
         }
     }
 
@@ -1970,6 +2111,7 @@ mod tests {
             done_when: None,
             attachments: vec![],
             priority: tasks::Priority::Medium,
+            home: None,
             owner,
             state,
             reviewer,
@@ -2446,6 +2588,67 @@ mod tests {
         let items = derive(&inputs, &states, 100);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].kind, AttentionKind::Blocked);
+    }
+
+    /// 182 D9: one `node:<id>` item per unreachable engine — kind `home` with a
+    /// short title when tasks wait on it (the first five named in the detail),
+    /// kind `node` otherwise.
+    #[test]
+    fn offline_home_is_one_node_item_with_a_short_title() {
+        let peer = |id: &str, name: &str| mesh::Peer {
+            id: mesh::EngineId(id.into()),
+            name: name.into(),
+            addrs: vec![],
+            reachable: false,
+            last_seen_ms: 5,
+            hub_pref: mesh::HubPref::Eligible,
+        };
+        let waiting: Vec<tasks::Task> = (1..=7)
+            .map(|i| {
+                task(
+                    &format!("t{i}"),
+                    tasks::TaskState::Todo,
+                    tasks::Owner::Agent("theuth".into()),
+                    &[],
+                    None,
+                    1,
+                )
+            })
+            .collect();
+        let inputs = Inputs {
+            peers: vec![peer("A", "a"), peer("C", "c")],
+            homes_offline: vec![tasks::HomeOffline {
+                engine: "A".into(),
+                name: "a".into(),
+                since_ms: 2,
+                tasks: waiting,
+            }],
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        let mut mesh: Vec<(&str, AttentionKind)> = items
+            .iter()
+            .filter(|i| i.id.starts_with("node:"))
+            .map(|i| (i.id.as_str(), i.kind))
+            .collect();
+        mesh.sort_by_key(|(id, _)| *id);
+        assert_eq!(
+            mesh,
+            [
+                ("node:A", AttentionKind::Home),
+                ("node:C", AttentionKind::Node)
+            ]
+        );
+        let a = items.iter().find(|i| i.id == "node:A").unwrap();
+        assert_eq!(a.title, "a is offline — 7 tasks are waiting");
+        assert!(
+            a.detail
+                .as_deref()
+                .unwrap()
+                .starts_with("Waiting: t1, t2, t3, t4, t5 and 2 more."),
+            "{:?}",
+            a.detail
+        );
     }
 
     /// 106 F-2: a forward chain lists the newest decision addressed to the

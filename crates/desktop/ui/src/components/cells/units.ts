@@ -1,5 +1,5 @@
-// CELLAFTER (Sky, 2026-11-07): the line ▶ runs a COMMAND, not a visual or physical line. `commandUnits` groups a cell's
-// code lines into the units one ▶ runs: a backslash continuation, an open quote, a heredoc, an open bracket or
+// CELLAFTER (Sky, 2026-11-07): the line ► runs a COMMAND, not a visual or physical line. `commandUnits` groups a cell's
+// code lines into the units one ► runs: a backslash continuation, an open quote, a heredoc, an open bracket or
 // compound statement (shells); open brackets and a `:` block with its indented body (python); a backtick
 // continuation or open brace (pwsh). When unsure it keeps the bigger unit. Soft wrap needs nothing here: a wrapped
 // row is still its logical line.
@@ -229,10 +229,10 @@ function pythonUnits(lines: string[]): Unit[] {
 /** The unit holding code line `line` (1-based); a line past the end is its own unit. */
 export const unitOf = (units: Unit[], line: number): Unit => units.find(([a, b]) => a <= line && line <= b) ?? [line, line]
 
-/** The ▶'s accessible name: `Run line 3`, `Run lines 3–5`. */
+/** The ►'s accessible name: `Run line 3`, `Run lines 3–5`. */
 export const unitLabel = ([a, b]: Unit) => (a === b ? `Run line ${a}` : `Run lines ${a}–${b}`)
 
-/** What one ▶ on `unit` runs: the line itself, or the unit's lines as a selection (UTF-8 byte offsets of `code`). */
+/** What one ► on `unit` runs: the line itself, or the unit's lines as a selection (UTF-8 byte offsets of `code`). */
 export function unitMode(code: string, [a, b]: Unit): CellRunMode {
   if (a === b) return { type: 'line', line: a }
   const lines = code.split('\n')

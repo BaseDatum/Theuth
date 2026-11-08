@@ -39,7 +39,9 @@ use serde::{Deserialize, Serialize};
 
 pub use config::RosterConfig;
 pub use desk::Shared;
-pub use types::{AgentFile, AgentName, AgentStatus, AgentSummary, Budget, Episode, RunsIn};
+pub use types::{
+    AgentFile, AgentName, AgentStatus, AgentSummary, Budget, EngineAgent, Episode, RunsIn,
+};
 
 /// Registry name of the [`Roster`] actor.
 pub const ROSTER_ACTOR: &str = "roster";
@@ -52,6 +54,12 @@ pub const DB: &str = "roster.sqlite";
 /// live status.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListAgents;
+
+/// `ask` → `Result<Vec<EngineAgent>, String>`: 182 D8 — every engine's
+/// agents from the replicated per-engine list (this engine's rows included),
+/// by name then engine.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListEngineAgents;
 
 /// `ask` → `u32`: desks with a turn running now (178 F4: a desk only
 /// serving a wake — waiting on a child — does not count; the dreaming gate).
@@ -190,9 +198,14 @@ pub struct Routable {
 #[derive(Clone, Debug)]
 struct SetSelf(String);
 
-/// Internal `tell`: the tasks actor is up — tell it whether we dispatch.
+/// Internal `tell`: the tasks actor is up — its claims of desks reopened before it.
 #[derive(Clone, Copy, Debug)]
 struct TasksUp;
+
+/// Internal `tell` (182 M2a): the first sync with the mesh is done — lift the
+/// boot holds and open the desks.
+#[derive(Clone, Copy, Debug)]
+struct Synced;
 
 /// Internal `tell`: the directory changed (watcher) — re-read it.
 #[derive(Clone, Copy, Debug)]
@@ -499,6 +512,7 @@ impl Roster {
             files,
             file::default_agent(&self.rt.data_dir, self.cfg.theuth_model.clone()),
         );
+        self.publish_agents().await;
         self.sync_desks().await;
         for (name, model) in remodelled {
             self.apply_desk_model(&name, model).await;
@@ -508,16 +522,31 @@ impl Roster {
         }
     }
 
+    /// 182 D8: this engine's row set in the replicated per-engine agent list
+    /// — every valid file plus theuth — once the mesh named the engine.
+    async fn publish_agents(&self) {
+        let Some(engine) = self.lease.self_id.clone() else {
+            return;
+        };
+        let mut files: Vec<AgentFile> = self
+            .shared
+            .files()
+            .into_values()
+            .filter_map(Result::ok)
+            .collect();
+        files.extend(self.shared.theuth());
+        if let Err(e) = self.store.put_engine_agents(&engine, &files).await {
+            tracing::warn!("engine_agents not written: {e:#}");
+        }
+    }
+
     /// Agents whose desk opens eagerly: every valid, unpaused, approved file
-    /// (67 §6.2, §6.5) — none while another engine holds the hub lease
-    /// (67 §4.4), so nothing here reopens a desk after a lease close.
+    /// (67 §6.2, §6.5). 182 D4: every engine runs its own roster's desks —
+    /// for the tasks homed on it — whoever holds the lease.
     /// `theuth`'s desk is not here: it opens on the first wake addressed to
     /// it ([`DeliverWake`]), so an engine with no `agents/*.md` creates no
     /// session at all (67 decision 5: a one-laptop user never sees any of this).
     fn wanted(&self) -> Vec<AgentFile> {
-        if !self.lease.holding {
-            return Vec::new();
-        }
         self.shared
             .files()
             .into_values()
@@ -526,18 +555,22 @@ impl Roster {
             .collect()
     }
 
-    /// Whether a desk for `name` may stay open: wanted, or `theuth`'s while
-    /// this engine holds the lease.
+    /// Whether a desk for `name` may stay open: wanted, or `theuth`'s.
     fn allowed(&self, name: &str) -> bool {
-        self.lease.holding
-            && (name == AgentName::DEFAULT || self.wanted().iter().any(|f| f.name.as_str() == name))
+        name == AgentName::DEFAULT || self.wanted().iter().any(|f| f.name.as_str() == name)
     }
 
     /// Open the desks that are missing, close the ones no longer wanted;
     /// 179: first suspend or resume the trees of agents paused or un-paused.
+    /// 182 M2a: no desk opens before the first sync with the mesh (its tasks'
+    /// homes may have moved while this engine was away); [`Synced`] runs this again.
     async fn sync_desks(&mut self) {
         self.sync_pauses().await;
-        let wanted = self.wanted();
+        let wanted = if mesh::synced() {
+            self.wanted()
+        } else {
+            Vec::new()
+        };
         for f in &wanted {
             if !self.desks.contains_key(f.name.as_str()) && !self.is_closing(f.name.as_str()) {
                 self.open_desk(f).await;
@@ -550,7 +583,7 @@ impl Roster {
             .cloned()
             .collect();
         // A paused agent's desk was closed by `sync_pauses`: these are
-        // removed files, proposals and a lease moved away.
+        // removed files and proposals.
         for name in stale {
             self.close_desk(&name, "closed").await;
         }
@@ -593,6 +626,11 @@ impl Roster {
                     .await;
             }
         }
+        // 182 M2a: the desk trees the agent actor held at boot wait for the first
+        // sync with the mesh — their turns may serve a task that moved meanwhile.
+        if !mesh::synced() {
+            return;
+        }
         let held = agents
             .ask(agent::supervisor::HeldDesks)
             .await
@@ -601,13 +639,23 @@ impl Roster {
             let Some(name) = agent.filter(|n| !self.held.contains_key(n)) else {
                 continue;
             };
-            match files.get(&name) {
+            let file = if name == AgentName::DEFAULT {
+                self.shared.theuth().map(Ok)
+            } else {
+                files.get(&name).cloned()
+            };
+            match file {
                 None => {
                     tracing::info!(agent = %name, %desk, "179: held desk of a removed agent released");
                     let _ = agents.ask(agent::supervisor::ReleaseTree { desk }).await;
                 }
                 Some(Ok(f)) => {
                     self.shared.set_desk(&name, desk);
+                    if !f.paused && self.serves_moved_task(desk).await {
+                        tracing::info!(agent = %name, %desk, "182: the held turn served a task now worked on another engine; closed, not resumed");
+                        let _ = agents.ask(agent::supervisor::ReleaseTree { desk }).await;
+                        continue;
+                    }
                     self.held.insert(
                         name.clone(),
                         PausedDesk {
@@ -617,7 +665,6 @@ impl Roster {
                         },
                     );
                     if !f.paused {
-                        let f = f.clone();
                         self.resume_tree(&f).await;
                     }
                 }
@@ -723,6 +770,39 @@ impl Roster {
         }
         if let Some(stop) = p.finished {
             self.judge_turn(name, &stop).await;
+        }
+    }
+
+    /// 182 M2a: the open turn of `desk`'s tree (held since boot) served a task
+    /// that another engine works now — the last input to the desk names it
+    /// (`Wake: task <id>` / a nudge `Task <id>`).
+    async fn serves_moved_task(&self, desk: runtime::SessionId) -> bool {
+        let (Some(t), Ok(Some(agents))) = (
+            tasks::actor(),
+            ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR),
+        ) else {
+            return false;
+        };
+        let Ok(store) = agents.ask(agent::DurableStore).await else {
+            return false;
+        };
+        let Ok((Some(request), _)) = store.last_exchange(desk).await else {
+            return false;
+        };
+        let Some(id) = task_id_in(&request) else {
+            return false;
+        };
+        t.ask(tasks::GetTask(tasks::TaskId(id.to_owned())))
+            .await
+            .is_ok_and(|task| !self.works_here(&task))
+    }
+
+    /// 182 D3: this engine works `task` — homed here, or legacy while it holds the lease.
+    fn works_here(&self, task: &tasks::Task) -> bool {
+        match &task.home {
+            // Before the mesh named this engine: nothing is known to have moved.
+            Some(h) => self.lease.self_id.as_deref().is_none_or(|me| me == h),
+            None => self.lease.holding,
         }
     }
 
@@ -1079,9 +1159,6 @@ impl Roster {
             self.shared.file(name)
         }
         .ok_or_else(|| "no such agent".to_owned())?;
-        if !self.lease.holding {
-            return Err("another engine holds the hub lease; desks open there".into());
-        }
         if file.paused {
             return Err("agent is paused".into());
         }
@@ -1431,6 +1508,15 @@ impl Roster {
             kids = Self::children_of(session).await;
             judged = Some((task, mine));
         }
+        // 182 S5: the task moved to another engine meanwhile — its work and its
+        // nudges are that engine's; this desk is done with the wake.
+        if let Some((task, _)) = &judged
+            && !self.works_here(task)
+        {
+            tracing::info!(agent = %name, task = %task.id, "182: turn not judged: the task moved to another engine");
+            self.clear_serving(name).await;
+            return;
+        }
         let live_child = desk::nudges::live_child(&s, &kids);
         let verdict = desk::nudges::verdict(
             stop_reason,
@@ -1674,43 +1760,18 @@ impl Roster {
             .any(|d| d.session == desk && (d.working || d.serving.is_some()))
     }
 
-    /// A lease event is acted on unless this engine is shutting down: the
-    /// desks then simply stop with the process and reopen on the same
-    /// sessions at the next start; their tasks are not blocked and their
-    /// wakes not released as if the hub had moved.
-    fn lease_event_applies(&self) -> bool {
-        if self.rt.shutdown.is_cancelled() {
-            tracing::info!(
-                "lease event during shutdown ignored: desks stay mapped, wakes stay claimed"
-            );
-            return false;
-        }
-        true
-    }
-
-    /// 67 §4.4: the hub duties move with the lease (mirrors [`lease::apply`]).
-    async fn lease_changed(&mut self, change: Option<bool>) {
+    /// 182 D4: the lease no longer moves desks — every engine keeps its own
+    /// open for the tasks homed on it. Only legacy (NULL-home) rows follow
+    /// the lease, and that gate is the ledger's (`Ledger::works`); a legacy
+    /// task this engine checked out is homed here by that checkout, so a
+    /// loss leaves nothing of ours to block.
+    fn lease_changed(&self, change: Option<bool>) {
         match change {
-            Some(true) => {
-                tracing::info!("hub lease held: desks open, wakes dispatch");
-                self.dispatching(true).await;
-                self.sync_desks().await;
-            }
+            Some(true) => tracing::info!("hub lease held: legacy (unhomed) tasks dispatch here"),
             Some(false) => {
-                tracing::info!("hub lease elsewhere: desks close, wakes held");
-                let open: Vec<String> = self.desks.keys().cloned().collect();
-                for name in open {
-                    self.close_desk(&name, "lease").await;
-                }
-                self.dispatching(false).await;
+                tracing::info!("hub lease elsewhere: desks stay open for the tasks homed here")
             }
             None => {}
-        }
-    }
-
-    async fn dispatching(&self, on: bool) {
-        if let Some(t) = tasks::actor() {
-            let _ = t.ask(tasks::SetDispatching(on)).await;
         }
     }
 
@@ -2031,10 +2092,23 @@ impl Message<DeliverWake> for Roster {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: DeliverWake, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // 182 D3 backstop: a task another engine works is never delivered here.
+        if let Some(t) = &m.task {
+            let here = match &t.home {
+                Some(h) => self.lease.self_id.as_deref() == Some(h.as_str()),
+                None => self.lease.holding,
+            };
+            if !here {
+                return Err(format!(
+                    "task {} lives on {}, not here",
+                    t.id,
+                    t.home.as_deref().unwrap_or("the hub lease holder")
+                ));
+            }
+        }
         if m.agent == AgentName::DEFAULT
             && !self.desks.contains_key(&m.agent)
             && !self.is_closing(&m.agent)
-            && self.lease.holding
             && let Some(t) = self.shared.theuth()
         {
             self.open_desk(&t).await;
@@ -2304,20 +2378,15 @@ impl Message<agent::AgentEvent> for Roster {
     }
 }
 
-/// 67 §4.4: the hub duties follow the lease. `Peer` events are not ours.
-/// Our own shutdown is not a lease loss (STALE-WAKE-DESKS): the mesh emits
-/// `Lease { holder: None, reason: "release" }` while tearing itself down,
-/// after `rt.shutdown` fired; acting on it closed every desk and blocked
-/// their tasks on the way out. See [`Roster::lease_event_applies`].
+/// 67 §4.4: the lease is followed for the legacy (NULL-home) rows and the
+/// DeliverWake backstop only (182 D4); `Peer` events are not ours.
 impl Message<mesh::MeshEvent> for Roster {
     type Reply = ();
 
     async fn handle(&mut self, ev: mesh::MeshEvent, _: &mut Context<Self, Self::Reply>) {
-        if let mesh::MeshEvent::Lease(l) = ev
-            && self.lease_event_applies()
-        {
+        if let mesh::MeshEvent::Lease(l) = ev {
             let change = self.lease.observe(&l);
-            self.lease_changed(change).await;
+            self.lease_changed(change);
         }
     }
 }
@@ -2332,7 +2401,8 @@ impl Message<sandbox::SandboxEvent> for Roster {
         let sandbox::SandboxEvent::Changed { sandbox: info } = ev else {
             return;
         };
-        if !self.lease.holding || !pin::takes_work(&info.state) {
+        // 182 M3: the sandbox event is local to the engine hosting it — not a lease duty.
+        if !pin::takes_work(&info.state) {
             return;
         }
         let Some(tasks) = tasks::actor() else {
@@ -2341,6 +2411,8 @@ impl Message<sandbox::SandboxEvent> for Roster {
         let blocked = tasks
             .ask(tasks::ListTasks(tasks::TaskFilter {
                 state: Some(vec![tasks::TaskState::Blocked]),
+                // 182: a same-named sandbox elsewhere is that engine's to report.
+                here: true,
                 ..Default::default()
             }))
             .await
@@ -2383,8 +2455,38 @@ impl Message<SetSelf> for Roster {
 
     async fn handle(&mut self, m: SetSelf, _: &mut Context<Self, Self::Reply>) {
         let change = self.lease.set_self(m.0);
-        self.lease_changed(change).await;
+        self.lease_changed(change);
+        self.publish_agents().await;
     }
+}
+
+impl Message<Synced> for Roster {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Synced, _: &mut Context<Self, Self::Reply>) {
+        tracing::info!("182: first sync done — boot holds lifted, desks open");
+        self.sync_desks().await;
+    }
+}
+
+/// 182 M2a: the task id a desk input names — `task <uuid>` (a wake, a nudge).
+fn task_id_in(text: &str) -> Option<&str> {
+    let lower = text.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(i) = lower[from..].find("task ") {
+        let start = from + i + 5;
+        let id = text.get(start..start + 36);
+        if let Some(id) = id
+            && id.bytes().enumerate().all(|(k, b)| match k {
+                8 | 13 | 18 | 23 => b == b'-',
+                _ => b.is_ascii_hexdigit(),
+            })
+        {
+            return Some(id);
+        }
+        from = start;
+    }
+    None
 }
 
 impl Message<TasksUp> for Roster {
@@ -2397,7 +2499,6 @@ impl Message<TasksUp> for Roster {
                 let _ = t.tell(tasks::ReleaseClaims(session.to_string())).await;
             }
         }
-        self.dispatching(self.lease.holding).await;
     }
 }
 
@@ -2438,6 +2539,34 @@ impl Message<DesksRunning> for Roster {
     async fn handle(&mut self, _: DesksRunning, _: &mut Context<Self, Self::Reply>) -> u32 {
         self.desks.values().filter(|d| d.working).count() as u32
     }
+}
+
+impl Message<ListEngineAgents> for Roster {
+    type Reply = Result<Vec<EngineAgent>, String>;
+
+    async fn handle(
+        &mut self,
+        _: ListEngineAgents,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        Ok(self
+            .store
+            .engine_agents()
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            .into_iter()
+            .filter(|(engine, _)| known_engine(engine))
+            .map(|(engine, file)| EngineAgent { engine, file })
+            .collect())
+    }
+}
+
+/// 182 S3: `engine` is this one or a paired peer — the replicated rosters of
+/// engines unpaired since are left in the table (deleting them would replicate
+/// to peers still paired with them) but never read. Everything without a mesh
+/// or before the mesh bound its endpoint (pairing unknown).
+pub(crate) fn known_engine(engine: &str) -> bool {
+    mesh::self_id().is_none_or(|me| me == engine) || mesh::is_paired(engine) != Some(false)
 }
 
 impl Message<ListAgents> for Roster {
@@ -2964,10 +3093,39 @@ impl tasks::DeskRouter for Desks {
         v
     }
 
+    fn has_agent(&self, agent: &str) -> Option<bool> {
+        if agent == AgentName::DEFAULT {
+            return Some(true);
+        }
+        match self.0.files().get(agent) {
+            Some(Ok(_)) => Some(true),
+            Some(Err(_)) => None,
+            None => Some(false),
+        }
+    }
+
     /// 179 D3: the file's `paused:`, or an un-paused desk still finishing
     /// the turn its pause suspended.
     fn is_paused(&self, agent: &str) -> bool {
         self.0.is_paused(agent)
+    }
+
+    /// 182 D8: the replicated per-engine agent list (no actor: tasks asks
+    /// this inside its handlers, and the roster asks tasks in its own).
+    async fn engines_with(&self, agent: &str) -> Vec<String> {
+        let Some(store) = self.0.store.get() else {
+            return Vec::new();
+        };
+        match store.engines_with(agent).await {
+            Ok(mut v) => {
+                v.retain(|e| known_engine(e));
+                v
+            }
+            Err(e) => {
+                tracing::warn!(agent, "engine_agents not read: {e:#}");
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -3100,13 +3258,26 @@ impl runtime::Plugin for RosterPlugin {
                 return Ok(());
             }
         };
-        // 67 §5.1: `agents` and `budget` replicate, 79 §6.6: `handoffs` too; local only without the plugin.
-        match replica::attach(store.pool(), &["agents", "budget", "handoffs"]).await {
-            Ok(_) => tracing::info!("roster: agents, budget and handoffs replicate"),
-            Err(e) => tracing::debug!("roster: local only ({e})"),
-        }
+        // 67 §5.1: `agents` and `budget` replicate, 79 §6.6: `handoffs` too,
+        // 182 D8: `engine_agents` (every engine's roster); local only without the plugin.
+        let replica_handle = match replica::attach(
+            store.pool(),
+            &["agents", "budget", "handoffs", "engine_agents"],
+        )
+        .await
+        {
+            Ok(h) => {
+                tracing::info!("roster: agents, budget, handoffs and engine_agents replicate");
+                Some(h)
+            }
+            Err(e) => {
+                tracing::debug!("roster: local only ({e})");
+                None
+            }
+        };
         let attention_store = store.clone();
         let shared = Arc::new(Shared::default());
+        let _ = shared.store.set(store.clone());
         let max_rounds = cfg.max_rounds;
         let actor = Roster::spawn_with_mailbox(
             Roster::load(rt.clone(), cfg, dir.clone(), store, shared.clone()).await,
@@ -3135,6 +3306,29 @@ impl runtime::Plugin for RosterPlugin {
                 let _ = me.tell(SetSelf(status.self_id.0)).await;
             }
         });
+        // 182 M2a: lift the boot holds and open the desks once the first sync is
+        // done and the tasks actor is up (it answers whether a held turn's task
+        // moved; up to 10 s — without the tasks plugin nothing moved).
+        let me = actor.clone();
+        let stop = rt.shutdown.clone();
+        tokio::spawn(async move {
+            let mut tasks_wait = 10;
+            while !mesh::synced() || (tasks::actor().is_none() && tasks_wait > 0) {
+                if mesh::synced() {
+                    tasks_wait -= 1;
+                }
+                tokio::select! {
+                    () = stop.cancelled() => return,
+                    () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                }
+            }
+            let _ = me.tell(Synced).await;
+        });
+        // 182 M1: every engine's roster rows reach a peer that attached
+        // `engine_agents` late (a staggered upgrade).
+        if let Some(handle) = replica_handle {
+            mesh::reannounce_on_connect(rt, handle, "engine_agents", "id <> ?", None);
+        }
         let me = actor.clone();
         let rt2 = rt.clone();
         tokio::spawn(async move {
@@ -3728,12 +3922,38 @@ mod tests {
             ["ops"]
         );
         assert!(r.allowed("ops") && r.allowed("theuth"));
-        r.lease.holding = false;
-        assert!(
-            !r.allowed("theuth") && r.wanted().is_empty(),
-            "duties follow the lease"
-        );
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// 182 D4: desks do not depend on the lease — an engine that does not
+    /// hold it still wants its own agents' desks, keeps theuth's, and opens
+    /// one on demand.
+    #[test]
+    fn desks_open_without_the_lease() {
+        with_engine_lock(async {
+            let data = tmp("no-lease");
+            std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
+            let mut r = roster(&data).await;
+            r.lease.set_self("me".into());
+            r.lease.observe(&mesh::LeaseState {
+                holder: Some(mesh::EngineId("other".into())),
+                since_ms: 0,
+                reason: "test".into(),
+            });
+            assert!(!r.lease.holding);
+            r.reconcile().await;
+            let wanted: Vec<String> = r
+                .wanted()
+                .iter()
+                .map(|f| f.name.as_str().to_owned())
+                .collect();
+            assert_eq!(wanted, ["ops"]);
+            assert!(r.allowed("ops") && r.allowed("theuth"));
+            // No agent actor here: the open is attempted, not refused for the lease.
+            let e = r.desk_or_open("theuth").await.unwrap_err();
+            assert!(e.contains("not opened"), "{e}");
+            let _ = std::fs::remove_dir_all(&data);
+        });
     }
 
     #[test]
@@ -3773,64 +3993,153 @@ mod tests {
                 },
             );
             assert_eq!(r.desk_or_open("ops").await, Ok(session));
-            r.lease.holding = false;
-            assert_eq!(
-                r.desk_or_open("ops").await,
-                Ok(session),
-                "an open desk is returned regardless"
-            );
-            assert!(
-                r.desk_or_open("theuth")
-                    .await
-                    .unwrap_err()
-                    .contains("lease")
-            );
             let _ = std::fs::remove_dir_all(&data);
         });
     }
 
-    /// STALE-WAKE-DESKS 3: the mesh's own teardown emits `Lease { holder: None }`
-    /// after `rt.shutdown` fired; the roster must not read it as "hub lease
-    /// elsewhere". Before shutdown the same event is a real loss.
+    /// An open desk for tests: no turn, no wake.
+    fn idle_desk(session: runtime::SessionId) -> desk::Desk {
+        desk::Desk {
+            session,
+            episode: String::new(),
+            last_active_ms: 0,
+            working: false,
+            primed: false,
+            model: None,
+            serving: None,
+            memory: agent::MemoryMode::Epochs,
+            pending_memory: None,
+        }
+    }
+
+    /// 182 D4: losing the lease closes no desk — they serve the tasks homed
+    /// here; before 182 every desk closed and its doing tasks were blocked.
     #[test]
-    fn lease_events_are_ignored_during_shutdown() {
+    fn losing_the_lease_keeps_homed_desks_open() {
         with_engine_lock(async {
-            let data = tmp("shutdown-lease");
+            let data = tmp("lease-loss");
+            std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
             let mut r = roster(&data).await;
+            r.reconcile().await;
             r.lease.set_self("me".into());
             assert!(r.lease.holding);
-            let release = mesh::LeaseState {
-                holder: None,
-                since_ms: 0,
-                reason: "release".into(),
-            };
-            // Not shutting down: the loss is applied.
+            let session = runtime::SessionId::new();
+            r.desks.insert("ops".into(), idle_desk(session));
             let actor = Roster::spawn(r);
-            actor
-                .tell(mesh::MeshEvent::Lease(release.clone()))
-                .await
-                .unwrap();
-            let err = actor
-                .ask(OpenDesk("theuth".into()))
-                .await
-                .unwrap_err()
-                .to_string();
-            assert!(err.contains("hub lease"), "{err}");
+            for holder in [Some("other"), None] {
+                actor
+                    .tell(mesh::MeshEvent::Lease(mesh::LeaseState {
+                        holder: holder.map(|h| mesh::EngineId(h.into())),
+                        since_ms: 0,
+                        reason: "test".into(),
+                    }))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    actor.ask(OpenDesk("ops".into())).await.unwrap(),
+                    session,
+                    "lease → {holder:?}: the desk stays open"
+                );
+            }
             actor.kill();
-            // Shutting down: the same event changes nothing — the desks stay mapped for the next start.
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 182 D3 backstop: the roster refuses a wake whose task another engine
+    /// works — homed elsewhere, or a legacy row while the lease is elsewhere.
+    #[test]
+    fn deliver_wake_refuses_a_task_homed_elsewhere() {
+        with_engine_lock(async {
+            let data = tmp("backstop");
             let mut r = roster(&data).await;
             r.lease.set_self("me".into());
-            r.rt.shutdown.cancel();
-            assert!(!r.lease_event_applies());
+            let wake = tasks::Wake {
+                id: "w1".into(),
+                agent: "theuth".into(),
+                task: None,
+                reason: tasks::WakeReason::Assigned,
+                key: "k".into(),
+                count: 1,
+                claimed_by: None,
+                created_ms: 0,
+            };
             let actor = Roster::spawn(r);
-            actor.tell(mesh::MeshEvent::Lease(release)).await.unwrap();
-            let err = actor
-                .ask(OpenDesk("theuth".into()))
+            let ask = |home: Option<&'static str>| {
+                let mut t = desk::tests::task_in(tasks::TaskState::Todo);
+                t.home = home.map(str::to_owned);
+                actor.ask(DeliverWake {
+                    agent: "theuth".into(),
+                    wake: wake.clone(),
+                    task: Some(t),
+                })
+            };
+            let e = ask(Some("other")).await.unwrap_err().to_string();
+            assert!(e.contains("lives on other"), "{e}");
+            // Homed here: past the backstop (no agent actor: theuth's desk is not opened).
+            let e = ask(Some("me")).await.unwrap_err().to_string();
+            assert!(!e.contains("lives on"), "{e}");
+            // A legacy row follows the lease.
+            let e = ask(None).await.unwrap_err().to_string();
+            assert!(!e.contains("lives on"), "lease held here: {e}");
+            actor
+                .tell(mesh::MeshEvent::Lease(mesh::LeaseState {
+                    holder: Some(mesh::EngineId("other".into())),
+                    since_ms: 0,
+                    reason: "test".into(),
+                }))
                 .await
-                .unwrap_err()
-                .to_string();
-            assert!(err.contains("not opened"), "still holding: {err}");
+                .unwrap();
+            let e = ask(None).await.unwrap_err().to_string();
+            assert!(e.contains("lives on the hub lease holder"), "{e}");
             actor.kill();
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 182 D8: each engine publishes its roster (files + theuth) under its id;
+    /// a peer's replicated rows list beside them; a removed file's row goes.
+    #[test]
+    fn agents_are_listed_per_engine() {
+        with_engine_lock(async {
+            let data = tmp("per-engine");
+            std::fs::write(data.join(file::DIR).join("hans.md"), "Notes.\n").unwrap();
+            let mut r = roster(&data).await;
+            r.lease.set_self("A".into());
+            r.reconcile().await;
+            // A peer's rows, as the replica lands them.
+            let theuth = r.shared.theuth().unwrap();
+            r.store.put_engine_agents("B", &[theuth]).await.unwrap();
+            let rows: Vec<(String, String)> = r
+                .store
+                .engine_agents()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(e, f)| (f.name.as_str().to_owned(), e))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("hans".into(), "A".into()),
+                    ("theuth".into(), "A".into()),
+                    ("theuth".into(), "B".into())
+                ]
+            );
+            let desks = Desks(r.shared.clone());
+            let _ = r.shared.store.set(r.store.clone());
+            assert_eq!(tasks::DeskRouter::engines_with(&desks, "hans").await, ["A"]);
+            assert_eq!(
+                tasks::DeskRouter::engines_with(&desks, "theuth").await,
+                ["A", "B"]
+            );
+            std::fs::remove_file(data.join(file::DIR).join("hans.md")).unwrap();
+            r.reconcile().await;
+            assert!(
+                tasks::DeskRouter::engines_with(&desks, "hans")
+                    .await
+                    .is_empty()
+            );
             let _ = std::fs::remove_dir_all(&data);
         });
     }
@@ -4029,7 +4338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lease_gates_desks_and_budget_rows_sum() {
+    async fn budget_rows_sum_and_proposals_answer_once() {
         let data = tmp("lease");
         std::fs::write(
             data.join("agents/ops.md"),
@@ -4038,34 +4347,6 @@ mod tests {
         .unwrap();
         let mut r = roster(&data).await;
         r.reconcile().await;
-        assert_eq!(
-            r.wanted().len(),
-            1,
-            "ops while we hold by default; theuth's desk is lazy (opens on its first wake)"
-        );
-        assert!(
-            r.allowed("theuth"),
-            "theuth's desk is allowed while we hold"
-        );
-
-        let lease = |h: &str| mesh::LeaseState {
-            holder: Some(mesh::EngineId(h.into())),
-            since_ms: 0,
-            reason: "test".into(),
-        };
-        assert_eq!(
-            r.lease.observe(&lease("other")),
-            None,
-            "self unknown: nothing moves"
-        );
-        assert_eq!(r.lease.set_self("me".into()), Some(false));
-        assert!(r.wanted().is_empty(), "no desks wanted on a non-hub");
-        assert_eq!(r.lease.observe(&lease("me")), Some(true));
-        assert_eq!(
-            r.wanted().len(),
-            1,
-            "ops again once we hold; theuth stays lazy"
-        );
 
         // Budget rows: one per engine, the month sums them; the override is per month.
         let month = budget::month(now_ms());

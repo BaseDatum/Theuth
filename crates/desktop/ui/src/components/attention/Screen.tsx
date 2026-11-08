@@ -1,14 +1,14 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronLeft } from 'lucide-react'
 import type { ComponentType } from 'react'
-import { KIND_LABEL } from '@/components/hud/Hud'
+import { itemLabel } from '@/components/hud/Hud'
 import { Button } from '@/components/ui/button'
 import { isMacDesktop } from '@/lib/hotkeys'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { ApprovalScreen } from './ApprovalScreen'
 import { AskScreen } from './AskScreen'
 import { DecisionScreen } from './DecisionScreen'
-import { BlockedScreen, BudgetScreen, DoubleScreen, FinishedScreen, HandoffScreen, HireScreen, NodeScreen, ResumeScreen, SecretScreen } from './PlainScreens'
+import { BlockedScreen, BudgetScreen, DoubleScreen, FinishedScreen, HandoffScreen, HireScreen, HomeScreen, NodeScreen, ResumeScreen, SecretScreen } from './PlainScreens'
 import { ReviewScreen } from './ReviewScreen'
 import { ShowScreen } from './ShowScreen'
 
@@ -26,6 +26,7 @@ const SCREEN: Record<AttentionItem['kind'], ComponentType<{ item: AttentionItem 
   hire: HireScreen,
   budget: BudgetScreen,
   node: NodeScreen,
+  home: HomeScreen,
   blocked: BlockedScreen,
   resume: ResumeScreen,
   double: DoubleScreen,
@@ -43,7 +44,7 @@ export function Screen({ item }: { item: AttentionItem }) {
             <ChevronLeft />
           </Link>
         </Button>
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{TITLE[item.kind] ?? KIND_LABEL[item.kind]}</h2>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{TITLE[item.kind] ?? itemLabel(item)}</h2>
       </header>
       <Kind key={item.id} item={item} />
     </>

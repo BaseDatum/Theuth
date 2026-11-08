@@ -33,6 +33,69 @@ const MAX_FRAME: usize = 64 * 1024 * 1024;
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
+/// 182 M2a: peers this process has caught up with — every batch their
+/// `Hello` said they held has landed here.
+static CAUGHT_UP: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// 182 M2a: this process holds everything `peer` held when one of its
+/// streams opened (its first sync since the start is complete) — and no
+/// change it received waits parked for a table whose plugin has not attached
+/// yet (those land at `attach`).
+pub fn caught_up_with(peer: &str) -> bool {
+    CAUGHT_UP.lock().contains(peer) && AWAITING.lock().is_empty()
+}
+
+/// 182: tables with changes parked before their plugin attached; emptied by
+/// each `attach` and, for tables no plugin here attaches, by [`plugins_started`].
+static AWAITING: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Every plugin has started: later parks for an unattached table are not awaited.
+static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A change of `table` parked before its plugin attached.
+pub(crate) fn await_attach(table: &str) {
+    if !STARTED.load(std::sync::atomic::Ordering::Relaxed) {
+        AWAITING.lock().insert(table.to_owned());
+    }
+}
+
+/// `tables` attached; their parked changes were retried.
+pub(crate) fn attached(tables: &[&str]) {
+    let mut awaiting = AWAITING.lock();
+    for t in tables {
+        awaiting.remove(*t);
+    }
+}
+
+/// The engine started every plugin: a table still unattached has no plugin
+/// here — its parked changes wait out the TTL and no longer hold the first sync.
+pub fn plugins_started() {
+    STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    let left: Vec<String> = AWAITING.lock().drain().collect();
+    if !left.is_empty() {
+        tracing::info!("replica: no plugin here attaches {left:?}; their changes stay parked");
+    }
+}
+
+/// Note `remote` caught up once our version vector covers what its `Hello`
+/// announced (our own origin aside). `true` once it has.
+async fn note_caught_up(
+    engine: &Engine,
+    remote: &PeerId,
+    wanted: &HashMap<PeerId, u64>,
+) -> anyhow::Result<bool> {
+    let have = engine.store.version_vector().await?;
+    let done = wanted
+        .iter()
+        .all(|(o, s)| *o == engine.origin || have.get(o).copied().unwrap_or(0) >= *s);
+    if done && CAUGHT_UP.lock().insert(remote.0.clone()) {
+        tracing::info!("replica: caught up with {remote}");
+    }
+    Ok(done)
+}
+
 /// First frame each way.
 #[derive(Serialize, Deserialize)]
 struct Hello {
@@ -54,7 +117,7 @@ impl Engine {
                     Ok((peer, stream)) => {
                         let engine = engine.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = run_stream(&engine, stream).await {
+                            if let Err(e) = run_stream(&engine, stream, &peer).await {
                                 tracing::warn!("replica: stream from {peer} ended: {e:#}");
                             }
                         });
@@ -131,7 +194,7 @@ async fn dial(engine: Arc<Engine>, t: Arc<dyn Transport>, peer: PeerId) {
         match t.open(&peer, ALPN_RECORDS).await {
             Ok(stream) => {
                 backoff = BACKOFF_MIN;
-                if let Err(e) = run_stream(&engine, stream).await {
+                if let Err(e) = run_stream(&engine, stream, &peer).await {
                     tracing::warn!("replica: stream to {peer} ended: {e:#}");
                 }
             }
@@ -149,8 +212,13 @@ fn frame(tag: u8, body: &[u8]) -> Bytes {
     b.freeze()
 }
 
-/// The symmetric protocol on one stream, opened or accepted.
-async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow::Result<()> {
+/// The symmetric protocol on one stream, opened or accepted; `link` is the
+/// transport's peer (the mesh engine id), `Hello.origin` the replica's.
+async fn run_stream(
+    engine: &Arc<Engine>,
+    stream: Box<dyn ByteStream>,
+    link: &PeerId,
+) -> anyhow::Result<()> {
     let codec = LengthDelimitedCodec::builder()
         .max_frame_length(MAX_FRAME)
         .new_codec();
@@ -173,6 +241,7 @@ async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow
     let theirs: Hello = postcard::from_bytes(&first[1..])?;
     let remote = theirs.origin.clone();
     engine.learn(&remote, &theirs.version_vector);
+    let mut caught = note_caught_up(engine, link, &theirs.version_vector).await?;
 
     // Catch-up: everything we hold above what they hold, in seq order per origin. A peer whose
     // point lies below the oldest batch still held of some origin (a newcomer, an engine away
@@ -229,6 +298,9 @@ async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow
                         let batch: ChangeBatch = postcard::from_bytes(&bytes[1..])?;
                         engine.mark_sent(&remote, &batch);
                         engine.apply(&batch).await?;
+                        if !caught {
+                            caught = note_caught_up(engine, link, &theirs.version_vector).await?;
+                        }
                     }
                     Some(&TAG_HELLO) => {}
                     other => anyhow::bail!("bad frame tag {other:?}"),

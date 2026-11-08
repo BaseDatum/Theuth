@@ -95,6 +95,10 @@ pub fn text(
         s.push_str(&format!("model: {}\n", model.trim()));
     }
     s.push_str("enabled: true\n");
+    // 182 D6: the study's schedule fires on the engine that started it, only.
+    if let Some(e) = schedule::self_engine() {
+        s.push_str(&format!("engine: {e}\n"));
+    }
     if let Some(w) = sensor {
         s.push_str(&format!("when: {}\n", yaml_str(w)));
     }
@@ -245,8 +249,10 @@ pub async fn done(slug: &str, reason: &str) -> Result<()> {
 /// `autoresearch.enabled: false` (140 §12.2 "existing study files stay
 /// paused"): flip `enabled: false` on every `schedules/autoresearch-*.md` so
 /// the schedule plugin, which still runs, fires no study session nobody
-/// confines or binds. Returns the names switched off.
-pub fn disable_all(data_dir: &Path) -> std::io::Result<Vec<String>> {
+/// confines or binds. Returns the names switched off. 182 S11: with paired
+/// mesh `peers`, an unstamped (legacy) file is not this engine's to flip —
+/// the switch-off would replicate to the lease holder that runs it.
+pub fn disable_all(data_dir: &Path, peers: bool) -> std::io::Result<Vec<String>> {
     let dir = data_dir.join(schedule::DIR);
     let mut off = Vec::new();
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -263,6 +269,17 @@ pub fn disable_all(data_dir: &Path) -> std::io::Result<Vec<String>> {
             continue;
         }
         let text = std::fs::read_to_string(&path)?;
+        // 182 D6: another engine's study file is that engine's; flipping it
+        // here would replicate the switch-off to the engine that runs it.
+        let engine = schedule::file::ScheduleFile::read(stem, &text)
+            .ok()
+            .and_then(|f| f.engine);
+        if engine
+            .as_ref()
+            .map_or(peers, |e| Some(e) != schedule::self_engine().as_ref())
+        {
+            continue;
+        }
         let disabled = schedule::file::set_enabled(&text, false);
         if disabled != text {
             schedule::file::write_atomic(&dir, stem, &disabled)?;
@@ -403,7 +420,11 @@ mod tests {
         let sched = data.join(schedule::DIR);
         std::fs::write(sched.join("dreaming.md"), "---\nevery: 1h\n---\nx\n").unwrap();
 
-        let off = disable_all(&data).unwrap();
+        assert!(
+            disable_all(&data, true).unwrap().is_empty(),
+            "182 S11: an engine with peers leaves unstamped study files alone"
+        );
+        let off = disable_all(&data, false).unwrap();
         assert_eq!(off, vec!["autoresearch-sort-speed".to_owned()]);
         let s = std::fs::read_to_string(sched.join("autoresearch-sort-speed.md")).unwrap();
         assert!(
@@ -415,7 +436,11 @@ mod tests {
             std::fs::read_to_string(sched.join("dreaming.md")).unwrap(),
             "---\nevery: 1h\n---\nx\n"
         );
-        assert!(disable_all(&data).unwrap().is_empty(), "idempotent");
-        assert!(disable_all(&dir.path().join("none")).unwrap().is_empty());
+        assert!(disable_all(&data, false).unwrap().is_empty(), "idempotent");
+        assert!(
+            disable_all(&dir.path().join("none"), false)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

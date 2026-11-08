@@ -7,11 +7,10 @@ import { ago } from '@/components/sidebar/AgentTree'
 import { WatchDot } from '@/components/chat/ObservedBar'
 import { THEUTH } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
-import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { AgentInfo } from '@/rpc/extra'
-import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, PausedChip, statusDot } from './identity'
+import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, PausedChip, RemoteChip, statusDot } from './identity'
 import { CARD_STRIP_CAP, dotLabel } from './sessions'
-import { CARD, type Node, layout } from './tree'
+import { CARD, type Node, type NodeInfo, layout } from './tree'
 import { useAgentSessions, useLingering } from './useAgentSessions'
 
 const PAD = 32
@@ -20,7 +19,7 @@ const PAD = 32
  * Paperclip's OrgChart: cards on absolute coordinates from `layout`, elbow edges in an SVG layer underneath, one
  * `translate/scale` transform for pan (drag) and zoom (wheel, buttons). Fits the whole tree on first paint.
  */
-export function OrgChart({ root }: { root: Node }) {
+export function OrgChart({ root, info }: { root: Node; info: (n: Node) => NodeInfo }) {
   const box = useRef<HTMLDivElement>(null)
   const l = layout(root)
   const [view, setView] = useState({ x: PAD, y: PAD, k: 1 })
@@ -33,7 +32,7 @@ export function OrgChart({ root }: { root: Node }) {
     setView({ k: Math.max(0.2, k), x: (el.clientWidth - l.width * k) / 2, y: PAD })
   }
   // Fit once per tree shape; the user's pan/zoom survives data refreshes.
-  const shape = l.cards.map((c) => c.node.name).join(',')
+  const shape = l.cards.map((c) => c.node.key).join(',')
   useEffect(fit, [shape])
 
   const zoom = (f: number, cx?: number, cy?: number) =>
@@ -74,13 +73,13 @@ export function OrgChart({ root }: { root: Node }) {
             const y1 = from.y + CARD.h
             const x2 = to.x + CARD.w / 2
             const my = y1 + CARD.gy / 2
-            return <path key={to.node.name} d={`M${x1} ${y1} L${x1} ${my} L${x2} ${my} L${x2} ${to.y}`} fill="none" className="stroke-border" strokeWidth={1.5} />
+            return <path key={to.node.key} d={`M${x1} ${y1} L${x1} ${my} L${x2} ${my} L${x2} ${to.y}`} fill="none" className="stroke-border" strokeWidth={1.5} />
           })}
         </g>
       </svg>
       <div className="absolute top-0 left-0" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})`, transformOrigin: '0 0' }}>
         {l.cards.map((p) => (
-          <Card key={p.node.name} name={p.node.name} agent={p.node.agent} style={{ left: p.x, top: p.y, width: CARD.w, minHeight: CARD.h }} />
+          <Card key={p.node.key} node={p.node} info={info(p.node)} style={{ left: p.x, top: p.y, width: CARD.w, minHeight: CARD.h }} />
         ))}
       </div>
       <div className="absolute top-2 right-2 flex flex-col gap-1 rounded-lg border border-border-subtle bg-background p-1">
@@ -99,8 +98,29 @@ export function OrgChart({ root }: { root: Node }) {
 }
 
 /** One agent: the card body links to the detail page; under it the live-sessions strip (100 D4) — a sibling, so a dot tap opens the session, not the agent. */
-function Card({ name, agent: a, style }: { name: string; agent: AgentSummary | null; style: React.CSSProperties }) {
-  const title = a?.file.title ?? name
+function Card({ node, info, style }: { node: Node; info: NodeInfo; style: React.CSSProperties }) {
+  const { name, agent: a, remote: r, on } = node
+  const title = a?.file.title ?? r?.title ?? name
+  // 182: another machine's agent — no page, desk or switch here; the file's status, dimmed.
+  if (r)
+    return (
+      <div draggable={false} onPointerDown={(e) => e.stopPropagation()} className="absolute flex flex-col gap-1.5 rounded-lg border border-dashed border-border-subtle bg-background p-2.5 text-sm opacity-[.72]" style={style}>
+        <div className="flex items-center gap-2">
+          <AgentAvatar name={name} title={title} size={32} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-semibold leading-tight">
+              {title}
+              {on && <span className="font-normal text-fg-tertiary"> — on {on}</span>}
+            </span>
+            <span className="block truncate font-mono text-[11px] text-fg-tertiary">{info.where}</span>
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-fg-secondary">
+          <RemoteChip status={r.status} />
+          <span className="ml-auto shrink-0 tabular-nums">{info.open ?? '—'} open</span>
+        </div>
+      </div>
+    )
   return (
     <div
       draggable={false}
@@ -115,14 +135,17 @@ function Card({ name, agent: a, style }: { name: string; agent: AgentSummary | n
             <span className={cn('absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-background', a ? statusDot(a.status) : 'bg-success')} aria-hidden />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate font-semibold leading-tight">{title}</span>
-            <span className="block truncate font-mono text-[11px] text-fg-tertiary">{name}</span>
+            <span className="block truncate font-semibold leading-tight">
+              {title}
+              {on && <span className="font-normal text-fg-tertiary"> — on {on}</span>}
+            </span>
+            <span className="block truncate font-mono text-[11px] text-fg-tertiary">{info.where}</span>
           </span>
           {name === THEUTH ? <Badge variant="outline">built-in</Badge> : a && <ActiveSwitch agent={a} withLabel={false} />}
         </div>
         <div className="flex items-center gap-1.5 text-xs text-fg-secondary">
           {a && (a.status === 'paused' ? <PausedChip agent={a} /> : a.file.paused ? <span className="text-fg-tertiary">paused</span> : <ActivityChip status={a.status} waiting={a.waiting_on} />)}
-          {a && <span className="ml-auto shrink-0 tabular-nums">{a.open_tasks} open</span>}
+          {a && <span className="ml-auto shrink-0 tabular-nums">{info.open ?? a.open_tasks} open</span>}
         </div>
         {a && <BudgetBar agent={a} />}
       </Link>

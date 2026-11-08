@@ -260,6 +260,11 @@ pub struct Task {
     /// How soon it wants attention (132 D4); the user alone sets it.
     #[serde(default)]
     pub priority: Priority,
+    /// 182 D1: the engine (mesh id) that works the task — only it dispatches,
+    /// checks out and sweeps it; `None` = a legacy row, worked by the hub
+    /// lease holder. Stamped at creation; changed only by `task_move_home`.
+    #[serde(default)]
+    pub home: Option<String>,
 }
 
 /// Why an agent is woken (67 §7.3).
@@ -494,6 +499,10 @@ pub struct TaskFilter {
     pub engine: Option<String>,
     /// `project` equals this label.
     pub project: Option<String>,
+    /// 182 D3: only tasks this engine works (homed here; a legacy row while
+    /// it holds the lease) — `task_inbox`.
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub here: bool,
 }
 
 /// `task_create` input. Missing `owner` = `user`; `reviewer` defaults per 67 §7.1;

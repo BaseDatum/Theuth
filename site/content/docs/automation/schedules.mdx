@@ -11,7 +11,7 @@ A schedule is a prompt that theuth runs for you later, without you in the chat: 
 - `schedule.enabled: true` in `config.yaml` (the default). With `false` there is no `schedule` tool, no prompt block, no Routines ticking, and RPC calls answer `schedule is disabled`.
 - Replies are delivered to your chat channels. To get them on your phone, run `t --headless` with Slack, Signal or Telegram set up — see [Channels](/docs/automation/channels). Without a channel the run is still recorded in its session and history.
 - A run uses the same tools and the same approval policy as a chat turn. If nobody will be there to press **Allow**, the schedule needs `approvals: false` (see [Safety and permissions](#safety-and-permissions)).
-- In a mesh, only the hub engine fires schedules — see [Mesh](/docs/automation/mesh).
+- In a mesh, a schedule fires on one machine only: the one it was made on (its `engine:` line), or — for a file without that line — the hub. See [Mesh](/docs/automation/mesh).
 
 ## How it works
 
@@ -162,6 +162,7 @@ For a reminder that only needs to say something and not do anything, `remind_me_
 | `run_timeout:` | `schedule.run_timeout_secs` | humantime, ≥ 30 s, no upper bound. Cancels the run and every subagent it spawned. |
 | `agent:` | — | roster agent name; each fire becomes a task for that agent instead of a turn. |
 | `project:` | inferred from `cwd` | task label when `agent:` is set. |
+| `engine:` | the creating machine | mesh id of the one machine that fires it. `schedule`, an accepted routine draft, **New routine** and an autoresearch study write it; an edit (or `schedule` replacing the file) keeps it. Absent (a hand-written or older file), or naming a machine this mesh does not know: the hub fires it. |
 | `enabled:` | `true` | `false`: listed, never fires (`next: — (disabled)`). |
 | `when:` … | — | watcher keys (`when`, `fire`, `for`, `cooldown`, `mode`, `memory`, `expires`, `timeout`). Documented in [Watchers](/docs/automation/watchers); without `when:` they fail with `<key>: needs when:`. |
 
@@ -261,7 +262,7 @@ Watcher-only rows (`quiet`, `unchanged`, `holding`, `cooldown`, `queued`, `fired
 
 **Restart and sleep.** `cron` with `missed: skip` (default) waits for its next occurrence; with `missed: run` it fires once at start-up if an occurrence fell while the engine was down. `every` is computed as `last + interval`, so an overdue interval fires right after start. An `at:` whose instant has passed becomes `broken` with `at: in the past`. A run interrupted by a stop is recorded as `lost`.
 
-**Mesh.** Only the hub engine ticks. A non-hub engine shows the `not hub` chip on every row and never fires; when it becomes hub again its schedules re-arm and the `missed:` policy applies. **Run now** is deliberately not hub-gated. Schedule files are mirrored across replicas every 120 s. See [Mesh](/docs/automation/mesh).
+**Mesh.** A schedule with an `engine:` line ticks on that machine only, whoever holds the hub lease; the other machines show it and never fire it — unless the line names a machine none of them is paired with, then the hub fires it. A file without the line ticks on the hub only: a non-hub engine shows the `not hub` chip and never fires it; when it becomes hub again those schedules re-arm and the `missed:` policy applies. A task an `agent:` fire files lives on the firing machine when it has that agent, else on the one machine that has it, else on the firing machine. **Run now** is deliberately not gated. Schedule files are mirrored across replicas every 120 s. Every machine must run the same theuth version: an older one does not know `engine:` and lists the file as broken. See [Mesh](/docs/automation/mesh).
 
 ## Troubleshooting
 
@@ -280,7 +281,7 @@ Watcher-only rows (`quiet`, `unchanged`, `holding`, `cooldown`, `queued`, `fired
 | `<key>: needs when:` | a watcher key (`fire`, `mode`, …) on a plain schedule | remove it or make it a [watcher](/docs/automation/watchers) |
 | Unknown key error | front matter rejects unknown fields | check the spelling against the table above |
 | Fired an hour early/late | `cron:` uses the engine machine's local time; there is no timezone key | write the expression in that machine's local time |
-| Row shows `not hub`, nothing fires | this engine is not the mesh hub | wait for the hub or make this engine hub; **Run now** still works here |
+| Row shows `not hub`, nothing fires | the file has no `engine:` line and this engine is not the mesh hub | wait for the hub or make this engine hub; **Run now** still works here |
 | Run never finishes, then `timeout` | it waited on an approval nobody answered (300 s → denied) or exceeded `run_timeout` | add `approvals: false` for unattended runs; raise `run_timeout:` |
 | `busy` from Run now, row `skipped: busy` | a run is already in flight | wait for it or cancel the session |
 | `until broken: exit N` / `until broken: no exit in 120s` | the check exited with something other than 0/1, or hung | make the check return 0 (done) or 1 (again) and finish within 120 s |
@@ -296,7 +297,7 @@ Watcher-only rows (`quiet`, `unchanged`, `holding`, `cooldown`, `queued`, `fired
 - [Watchers](/docs/automation/watchers) — `when:` sensors that fire on a condition
 - [Tasks](/docs/automation/tasks) — what `agent:` fires create
 - [Agents](/docs/automation/agents) and [Delegation](/docs/automation/delegation)
-- [Mesh](/docs/automation/mesh) — hub-only ticking
+- [Mesh](/docs/automation/mesh) — which machine fires a schedule
 - [Channels](/docs/automation/channels) — where replies and approvals reach you
 - [Tools and permissions](/docs/reference/tools-permissions)
 - [Knowledge](/docs/workspace/knowledge) — carry-over between runs

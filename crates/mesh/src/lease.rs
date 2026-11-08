@@ -152,6 +152,57 @@ pub fn elect(
     Some(inc.clone())
 }
 
+/// 182 D5: [`elect`] when the lease may be held twice. `claimers` are the
+/// connected peers whose last heartbeat said they hold the lease.
+/// - This engine holds it and so does a claimer (a first pairing, a
+///   partition heal): no grace — the best of us by rank wins at once (every
+///   side computes the same winner from the same rows); probation still
+///   holds: a proven holder beats one first seen less than `probation_ms`
+///   ago. While a claimer's `engine_stats` row has not replicated, the
+///   lowest engine id among us wins.
+/// - This engine holds nothing but a claimer does (it joined a mesh that has
+///   a holder): the claimer is the incumbent, so the handover grace keeps it.
+/// - The incumbent is a claimer whose row has not replicated yet: it stays.
+pub fn resolve(
+    candidates: &[Candidate],
+    incumbent: Option<&EngineId>,
+    self_id: &EngineId,
+    claimers: &[EngineId],
+    now_ms: u64,
+    probation_ms: u64,
+    handover_ms: u64,
+) -> Option<EngineId> {
+    let known = |id: &EngineId| candidates.iter().any(|c| &c.id == id);
+    match incumbent {
+        Some(inc) if inc == self_id && !claimers.is_empty() => {
+            let mut both: Vec<&EngineId> = claimers.iter().chain([self_id]).collect();
+            if both.iter().all(|id| known(id)) {
+                let mine: Vec<&Candidate> = candidates
+                    .iter()
+                    .filter(|c| both.contains(&&c.id))
+                    .collect();
+                let proven =
+                    |c: &&Candidate| now_ms.saturating_sub(c.first_seen_ms) >= probation_ms;
+                let pool: Vec<Candidate> = if mine.iter().any(proven) {
+                    mine.into_iter().filter(proven).cloned().collect()
+                } else {
+                    mine.into_iter().cloned().collect()
+                };
+                return elect(&pool, None, now_ms, probation_ms, handover_ms);
+            }
+            both.sort();
+            both.first().map(|id| (*id).clone())
+        }
+        Some(inc) if !known(inc) && claimers.contains(inc) => Some(inc.clone()),
+        None => match claimers.iter().min() {
+            Some(c) if known(c) => elect(candidates, Some(c), now_ms, probation_ms, handover_ms),
+            Some(c) => Some(c.clone()),
+            None => elect(candidates, None, now_ms, probation_ms, handover_ms),
+        },
+        _ => elect(candidates, incumbent, now_ms, probation_ms, handover_ms),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +444,63 @@ mod tests {
         assert_eq!(bucket(0.995), 2);
         assert_eq!(bucket(0.96), 1);
         assert_eq!(bucket(0.9), 0);
+    }
+
+    /// 182 D5: two holders that meet (a first pairing, a partition heal)
+    /// resolve at once by rank — both sides compute the same winner, no
+    /// handover grace; before the peer's stats row replicated, by lowest id.
+    /// An engine joining a mesh with a holder keeps that holder (grace).
+    #[test]
+    fn two_lease_holders_resolve_at_once_on_pairing() {
+        let mut a = cand("a-laptop", EngineClass::Laptop);
+        let mut b = cand("b-desktop", EngineClass::Desktop);
+        // Just paired: connected a second ago, B first seen long ago (proven).
+        a.connected_since_ms = NOW - 1_000;
+        b.connected_since_ms = NOW - 1_000;
+        let (ia, ib) = (a.id.clone(), b.id.clone());
+        let both = [a.clone(), b.clone()];
+        // `me` holds (or not: `inc`) and `claimer`'s heartbeat says it holds.
+        let r = |cands: &[Candidate], inc: Option<&EngineId>, me: &EngineId, claimer: &EngineId| {
+            resolve(
+                cands,
+                inc,
+                me,
+                std::slice::from_ref(claimer),
+                NOW,
+                PROBATION,
+                HANDOVER,
+            )
+        };
+        let (on_a, on_b) = (r(&both, Some(&ia), &ia, &ib), r(&both, Some(&ib), &ib, &ia));
+        assert_eq!(
+            on_a,
+            id("b-desktop"),
+            "the desktop outranks the laptop at once"
+        );
+        assert_eq!(on_a, on_b, "both sides pick the same holder");
+        assert_eq!(
+            elect(&both, Some(&ia), NOW, PROBATION, HANDOVER),
+            id("a-laptop"),
+            "plain election would keep both incumbents for the handover grace"
+        );
+        // Probation still holds between two holders: a new server does not beat a proven laptop.
+        let mut fresh = cand("c-server", EngineClass::Server);
+        fresh.first_seen_ms = NOW - 1_000;
+        let ic = fresh.id.clone();
+        let pair = [a.clone(), fresh.clone()];
+        assert_eq!(r(&pair, Some(&ic), &ic, &ia), id("a-laptop"));
+        assert_eq!(r(&pair, Some(&ia), &ia, &ic), id("a-laptop"));
+        // B's row not here yet: the lowest id among the holders, on both sides.
+        assert_eq!(r(&[a.clone()], Some(&ia), &ia, &ib), id("a-laptop"));
+        assert_eq!(r(&[b.clone()], Some(&ib), &ib, &ia), id("a-laptop"));
+        // A holds alone; B joins holding nothing: A stays (the grace), though B ranks higher.
+        assert_eq!(r(&both, None, &ib, &ia), id("a-laptop"));
+        // B's incumbent is A, whose row has not replicated to B yet: still A.
+        assert_eq!(r(&[b.clone()], Some(&ia), &ib, &ia), id("a-laptop"));
+        // No claimers: plain election.
+        assert_eq!(
+            resolve(&both, Some(&ia), &ia, &[], NOW, PROBATION, HANDOVER),
+            elect(&both, Some(&ia), NOW, PROBATION, HANDOVER)
+        );
     }
 }

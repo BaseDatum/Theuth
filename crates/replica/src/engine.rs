@@ -283,6 +283,11 @@ impl Engine {
                 .await
                 .with_context(|| format!("table {t}: install triggers"))?;
         }
+        // 182: `write_lock` before the map insert (the order `apply` takes them):
+        // no batch applies to these tables between their insert and the retry of
+        // their parked changes — a partial update must not land ahead of the
+        // parked insert of its row (it would fail NOT NULL and be skipped).
+        let guard = self.write_lock.lock().await;
         {
             let mut map = self.tables.lock();
             for (t, _) in &infos {
@@ -301,7 +306,6 @@ impl Engine {
         // 180 D1b: changes parked before a restart (a migration may have
         // fixed what broke them) get their retry as the table comes back.
         {
-            let _guard = self.write_lock.lock().await;
             let tables: Vec<&str> = infos.iter().map(|(t, _)| t.as_str()).collect();
             match self.retry_parked_locked(&tables).await {
                 Ok(again) => {
@@ -316,7 +320,9 @@ impl Engine {
                 }
                 Err(e) => tracing::warn!("replica: retry parked {tables:?}: {e:#}"),
             }
+            crate::sync::attached(&tables);
         }
+        drop(guard);
         let names: Arc<[String]> = infos.into_iter().map(|(t, _)| t).collect();
         let handle = ReplicaHandle {
             engine: self.clone(),
@@ -798,6 +804,50 @@ impl ReplicaHandle {
             n += pks.len() as u64;
         }
         Ok(n)
+    }
+
+    /// 182: announce again the rows of `table` matching `filter` (one `?`,
+    /// bound to `arg`) — only `columns` when given — as one batch of this
+    /// origin, each column under the clock it already holds. LWW-safe: a peer
+    /// with a newer write keeps it, a peer that holds the same clock applies a
+    /// no-op; a peer that skipped the column (its schema lacked it when the
+    /// original batch arrived, and it recorded the batch anyway) gets it now.
+    /// Returns the row count.
+    pub async fn reannounce(
+        &self,
+        table: &str,
+        filter: &str,
+        arg: &str,
+        columns: Option<&[&str]>,
+    ) -> anyhow::Result<u64> {
+        let _guard = self.engine.write_lock.lock().await;
+        let attached = self.engine.tables.lock().get(table).cloned();
+        let Some(attached) = attached else {
+            anyhow::bail!("table {table}: not attached");
+        };
+        let pks: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT CAST({} AS TEXT) FROM {} WHERE {filter}",
+            quote(&attached.info.pk),
+            quote(table)
+        )))
+        .bind(arg)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut changes = Vec::new();
+        for (pk,) in &pks {
+            let mut row = self
+                .engine
+                .row_as_changes(&attached, table, pk, &Hlc::stand_in())
+                .await?;
+            if let Some(cols) = columns {
+                row.retain(|c| c.column.as_deref().is_some_and(|n| cols.contains(&n)));
+            }
+            changes.extend(row);
+        }
+        if !changes.is_empty() {
+            self.engine.emit_locked(changes).await?;
+        }
+        Ok(pks.len() as u64)
     }
 
     /// The tables this handle replicates.

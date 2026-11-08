@@ -1,6 +1,6 @@
 import { useMutation, useQueries } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { MessageSquare } from 'lucide-react'
+import { MessageSquare, TriangleAlert } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
@@ -25,16 +25,19 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { useConnection } from '@/store/connection'
 import { cn } from '@/lib/utils'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
 import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
 import { AttachmentsEditor } from './Attachments'
 import { rememberOpenedTask } from './boardMemory'
+import { MoveButton, TaskMenu } from './MoveHome'
 import { OwnerSelect } from './OwnerSelect'
 import { TaskChips } from './TaskChips'
+import { askSecs, engineName, homeLine } from './home'
 import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId, stateChip, wakePhrase } from './helpers'
-import { useAgents, useInvalidateTasks, useMoveTask, useTask, useTaskEvents, useTasks } from './queries'
+import { useAgents, useInvalidateTasks, useMesh, useMoveTask, useTask, useTaskEvents, useTasks } from './queries'
 
 /**
  * `/tasks/$id` (67 §12, 69): brief, blocked-by and blocks (editable chips), placement, the thread document with a
@@ -44,6 +47,9 @@ import { useAgents, useInvalidateTasks, useMoveTask, useTask, useTaskEvents, use
 export function TaskDetail({ id }: { id: string }) {
   const task = useTask(id)
   const events = useTaskEvents(id)
+  const mesh = useMesh()
+  const info = useConnection((s) => s.info)
+  const [confirmCancel, setConfirmCancel] = useState(false)
   // 118: the board scrolls this card into view and rings it when the user comes back.
   useEffect(() => rememberOpenedTask(id), [id])
   if (task.isPending) {
@@ -64,11 +70,18 @@ export function TaskDetail({ id }: { id: string }) {
     )
   }
   const t = task.data
+  const home = homeLine(t, mesh.data, askSecs(info))
   return (
     <Frame
       backTo="/tasks"
       backLabel="Back to tasks"
       backAlways
+      actions={
+        <TaskMenu
+          task={t}
+          onCancel={actionsFor(t).cancel ? () => setConfirmCancel(true) : null}
+        />
+      }
       title={
         <h2 className="flex min-w-0 flex-1 items-center gap-2 truncate text-sm font-semibold">
           <ProjectIcon project={t.project} className="size-4" />
@@ -80,6 +93,29 @@ export function TaskDetail({ id }: { id: string }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-6 p-4 md:flex-row">
           <div className="flex min-w-0 flex-1 flex-col gap-6">
+            {home && (
+              <div className="text-sm">
+                <p>
+                  {home.text}
+                  {home.offline && (
+                    <span className="inline-flex items-center gap-1.5 font-medium text-warning">
+                      <span className="mx-1 font-normal text-fg-tertiary">·</span>
+                      <span className="size-1.5 rounded-full bg-fg-tertiary" aria-hidden />
+                      {home.offline}
+                    </span>
+                  )}
+                </p>
+                {home.callout && (
+                  <div role="alert" className="mt-2 flex flex-col items-start gap-2 rounded-xl border border-warning-border/40 bg-warning-bg p-3">
+                    <p className="flex items-start gap-2 text-[13px]">
+                      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+                      {home.callout}
+                    </p>
+                    <MoveButton task={t} />
+                  </div>
+                )}
+              </div>
+            )}
             <Section title="Brief">
               <Streamdown mode="static" className="text-sm">
                 {t.brief || '_No brief._'}
@@ -113,7 +149,7 @@ export function TaskDetail({ id }: { id: string }) {
             </Section>
           </div>
           <aside className="flex w-full shrink-0 flex-col gap-6 md:w-72">
-            <Actions task={t} />
+            <Actions task={t} confirmCancel={confirmCancel} setConfirmCancel={setConfirmCancel} />
             <Sessions task={t} events={events.data ?? []} />
             <Section title="Record">
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[13px]">
@@ -156,12 +192,13 @@ export function TaskDetail({ id }: { id: string }) {
 
 /** The state chip; while `doing`, "at ops's desk · open session" links to the checkout session on its node. */
 function StateBadge({ task: t }: { task: Task }) {
+  const mesh = useMesh().data
   const text = stateChip(t)
   if (t.state === 'doing' && t.checkout) {
     return (
-      <Link to="/c/$session" params={{ session: t.checkout.session }} title={`open the session on ${t.checkout.engine}`}>
+      <Link to="/c/$session" params={{ session: t.checkout.session }} title={`open the session on ${engineName(mesh, t.checkout.engine)}`}>
         <Badge className="hover:opacity-80">
-          {text} · {t.checkout.engine}
+          {text} · {engineName(mesh, t.checkout.engine)}
         </Badge>
       </Link>
     )
@@ -252,6 +289,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 /** `where` / `harness` and the reason theuth gave — the newest `where`/`placement` event's text until the thread block is parsed. */
 function Placement({ task: t, events }: { task: Task; events: TaskEvent[] }) {
+  const mesh = useMesh().data
   const reason = [...events].reverse().find((e) => e.field === 'placement' || e.field === 'where')
   return (
     <Section title="Placement">
@@ -260,7 +298,7 @@ function Placement({ task: t, events }: { task: Task; events: TaskEvent[] }) {
         {t.harness && <Badge variant="outline">{t.harness}</Badge>}
         {t.checkout && (
           <span className="text-fg-secondary">
-            · checked out on {t.checkout.engine} (epoch {t.checkout.epoch}), progress {age(t.checkout.progress_at_ms)} ago
+            · checked out on {engineName(mesh, t.checkout.engine)} (epoch {t.checkout.epoch}), progress {age(t.checkout.progress_at_ms)} ago
           </span>
         )}
       </div>
@@ -325,6 +363,7 @@ function ThreadDoc({ id }: { id: string }) {
 
 /** Sessions known to the record: the checkout plus every session an event names; each opens in the chat pane. */
 function Sessions({ task: t, events }: { task: Task; events: TaskEvent[] }) {
+  const mesh = useMesh().data
   const api = useApi()
   const navigate = useNavigate()
   const ids = [...new Set([t.checkout?.session, ...events.map((e) => e.session)].filter((s): s is string => !!s))]
@@ -344,7 +383,7 @@ function Sessions({ task: t, events }: { task: Task; events: TaskEvent[] }) {
                 onClick={() => void navigate({ to: '/c/$session', params: { session: s } })}
               >
                 <span className="min-w-0 flex-1 truncate font-mono text-[13px]">{s}</span>
-                {t.checkout?.session === s && <Badge variant="outline">{t.checkout.engine}</Badge>}
+                {t.checkout?.session === s && <Badge variant="outline">{engineName(mesh, t.checkout.engine)}</Badge>}
                 <span className="text-xs text-fg-tertiary tabular-nums">{costs[i]?.data ? costShort(costs[i].data.total) : '—'}</span>
               </button>
             </li>
@@ -361,7 +400,7 @@ function Sessions({ task: t, events }: { task: Task; events: TaskEvent[] }) {
 }
 
 /** State-gated actions (67 §7.2, 69): assign, start / back to backlog, send back with notes, mark done, cancel, move project. */
-function Actions({ task: t }: { task: Task }) {
+function Actions({ task: t, confirmCancel, setConfirmCancel }: { task: Task; confirmCancel: boolean; setConfirmCancel(v: boolean): void }) {
   const api = useApi()
   const agents = useAgents()
   const invalidate = useInvalidateTasks()
@@ -369,7 +408,6 @@ function Actions({ task: t }: { task: Task }) {
   const [owner, setOwner] = useState(ownerText(t.owner))
   const [notes, setNotes] = useState('')
   const [project, setProject] = useState<string | null>(t.project)
-  const [confirmCancel, setConfirmCancel] = useState(false)
   const a = actionsFor(t)
   const patch = useMutation({
     mutationFn: (patch: TaskPatch) => api.task_update(t.id, patch),
@@ -382,7 +420,7 @@ function Actions({ task: t }: { task: Task }) {
     <Section title="Actions">
       <div className="flex flex-col gap-3 text-sm">
         <div className="flex items-center gap-2">
-          <OwnerSelect value={owner} agents={agents.data ?? []} onChange={setOwner} className="min-w-0 flex-1" />
+          <OwnerSelect id="task-owner" value={owner} agents={agents.data ?? []} onChange={setOwner} className="min-w-0 flex-1" />
           <Button size="sm" variant="outline" disabled={busy || owner === ownerText(t.owner)} onClick={() => patch.mutate({ owner: parseOwner(owner) })}>
             {t.owner.type === 'user' && owner === 'user' ? 'Assign' : 'Reassign'}
           </Button>

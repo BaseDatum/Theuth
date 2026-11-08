@@ -60,7 +60,7 @@ export function mountedCells(doc: DocId): { ref: CellRef; text: string }[] {
  * One press of a note cell (§15.2 `cell_run`): the digest of the text on screen as `seen`, a client-minted id retried
  * on transport failures, no edited text (the note IS the text), `member_ack` = the member's pub8 when the engine
  * reported a member edit (invariant 6, "Run Alice's edit"), and `confirmed` = the press past a warning (Run anyway,
- * a danger cell's second ▶).
+ * a danger cell's second ►).
  */
 export async function pressNote(api: Pick<Api, 'cell_run'>, ref: CellRef, text: string, mode: CellRunMode, memberAck: string | null, confirmed = false) {
   const seen = await digest(text)
@@ -222,7 +222,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const member = pub8 ? memberName(pub8, host?.provider.meta?.members) : null
   const view = viewOf(record, cell, false)
   const danger = cell.options.danger
-  // CELLAFTER (§7.1, §7.6): the gate's reason while it is not armed. The button runs anyway; a line/selection ▶ of a
+  // CELLAFTER (§7.1, §7.6): the gate's reason while it is not armed. The button runs anyway; a line/selection ► of a
   // disarmed or danger cell warns first and runs on its second press. Only those presses reach `run` (keys hint).
   const gate = disarmedReason(record, cell)
   const [hint, setHint] = useState<string | null>(null)
@@ -252,7 +252,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
       },
     )
   }
-  // `confirmed` only from the presses past a warning: Run anyway, the second ▶, the danger confirm (or its "Don't ask
+  // `confirmed` only from the presses past a warning: Run anyway, the second ►, the danger confirm (or its "Don't ask
   // again"). `text`: the cell text the press was made on (an ask's press-time text; else what is on screen now).
   const run = (mode: CellRunMode, confirmed = false, text = code) => {
     const pressed = pressNote(api, ref, text, mode, pub8, confirmed)
@@ -270,7 +270,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   }
 
   // 171F4 T2-6: a line/selection run marks its first code line in the gutter (running, then ✓/✗ when it printed
-  // nothing); a repeat press of a line whose run is in flight does nothing. CELLAFTER: the line ▶ runs a command
+  // nothing); a repeat press of a line whose run is in flight does nothing. CELLAFTER: the line ► runs a command
   // (`units.ts`): its mark sits on the command's first line.
   const slot = useRef<HTMLDivElement>(null)
   const lineRun = useLineRun(latest)
@@ -281,13 +281,13 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     markTop.current = top ?? topOf(line)
     lineRun.run(line, () => run(mode, confirmed, text), warning)
   }
-  // A pointer ▶ (§7.1, §7.6): a danger cell asks first (unless "Don't ask again"), a disarmed one warns first.
+  // A pointer ► (§7.1, §7.6): a danger cell asks first (unless "Don't ask again"), a disarmed one warns first.
   const [ask, setAsk] = useState<Ask | null>(null)
   const identity = cellIdentity(ref, cell)
   const pointAt = (line: number, last: number, mode: CellRunMode, what: 'line' | 'selection', top = topOf(line)) => {
     const g = lineGuard(danger, askSkipped(identity), gate)
     if (g.kind === 'confirm') return setAsk({ line, last, mode, what, text: code, reason: g.reason, identity })
-    // A warned ▶ runs on its second press, past the gate; a danger ▶ the user stopped being asked about runs confirmed.
+    // A warned ► runs on its second press, past the gate; a danger ► the user stopped being asked about runs confirmed.
     runAt(line, mode, top, g.kind === 'warn' ? g.text : null, g.kind === 'warn' || danger)
   }
   const step = (e: AskEvent) => {
@@ -334,7 +334,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
       const [from, to] = at.split(':').map(Number) as [number, number]
       const mode = modeOf(k.code, k.cell, from, to)
       const caret = modeOf(k.code, k.cell, from, from)
-      // The caret line runs its whole command, as its ▶ does.
+      // The caret line runs its whole command, as its ► does.
       const unit = mode?.type === 'line' ? unitOf(k.units, mode.line) : null
       if (unit) k.runAt(unit[0], unitMode(k.cell.code, unit))
       else if (mode) k.runAt(caret?.type === 'line' ? caret.line : 1, mode)

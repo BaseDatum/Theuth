@@ -2,7 +2,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
-import { KIND_LABEL } from '@/components/hud/Hud'
+import { itemLabel } from '@/components/hud/Hud'
 import { snoozeUntil } from '@/components/hud/model'
 import { ATTENTION_KEY, useAttentionActions } from '@/components/hud/queries'
 import { Badge } from '@/components/ui/badge'
@@ -30,8 +30,8 @@ export function useResolved(item: AttentionItem): () => void {
   }
 }
 
-export function Chip({ kind }: { kind: AttentionItem['kind'] }) {
-  return <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{KIND_LABEL[kind]}</span>
+export function Chip({ kind, id = '' }: { kind: AttentionItem['kind']; id?: string }) {
+  return <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{itemLabel({ id, kind })}</span>
 }
 
 /** The scrolling column every screen shares: 720 px of content, padded. A size container so `PacketBoard.css` can use its width (`cqi`) and visible height (`cqh`). */

@@ -19,6 +19,15 @@ test('parseBoardSearch keeps the known keys and drops the rest', () => {
   expect(parseBoardSearch({})).toEqual({})
 })
 
+test('182: `machine` (a home engine id) is kept like the other filters, dropped when empty or not text', () => {
+  expect(parseBoardSearch({ machine: 'X', engine: 'mini' })).toEqual({ machine: 'X', engine: 'mini' })
+  expect(parseBoardSearch({ machine: '' })).toEqual({})
+  expect(parseBoardSearch({ machine: 3 })).toEqual({})
+  const s = store()
+  rememberBoard({ machine: 'X' }, s)
+  expect(recallBoard(s)).toEqual({ machine: 'X' })
+})
+
 test('rememberBoard / recallBoard round-trip through storage, {} included', () => {
   const s = store()
   rememberBoard({ project: 'launch', state: 'review' }, s)

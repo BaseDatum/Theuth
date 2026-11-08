@@ -16102,6 +16102,7 @@ mod tests {
             done_when: None,
             attachments: vec![],
             priority: tasks::Priority::Medium,
+            home: None,
         };
         assert_eq!(
             tasks_table(Some("sre"), &[task]),
@@ -16246,6 +16247,7 @@ mod tests {
                 cwd: None,
                 agent: None,
                 project: None,
+                engine: None,
                 when_sensor: None,
                 sensor: None,
                 fire: None,

@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { errorText } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
+import type { EngineAgent } from '@/rpc/bindings/EngineAgent'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { Task } from '@/rpc/bindings/Task'
@@ -19,6 +20,7 @@ export const keys = {
   task: (id: string) => ['tasks', 'get', id] as const,
   taskEvents: (id: string) => ['tasks', 'events', id] as const,
   agents: queryKeys.roster,
+  engineAgents: [...queryKeys.roster, 'engine-agents'] as const,
   mesh: ['mesh'] as const,
 }
 
@@ -57,6 +59,20 @@ export function useAgents() {
   return useQuery({ queryKey: keys.agents, queryFn: (): Promise<AgentSummary[]> | AgentSummary[] => (mockOn() ? AGENTS : api.agents_list()) })
 }
 
+/** 182: every engine's replicated roster (`engine_agents_list`); the mock has no peers. */
+export function useEngineAgents() {
+  const api = useApi()
+  return useQuery({ queryKey: keys.engineAgents, queryFn: (): Promise<EngineAgent[]> | EngineAgent[] => (mockOn() ? [] : api.engine_agents_list()) })
+}
+
+/** Session ids that never move with a task: agent desks and harness (`agent`) sessions. */
+export function useFixedSessions(): string[] {
+  const api = useApi()
+  const agents = useAgents()
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  return [...(agents.data ?? []).flatMap((a) => (a.desk ? [a.desk] : [])), ...(sessions.data ?? []).flatMap((s) => (s.agent || s.desk ? [s.id] : []))]
+}
+
 export function useMesh() {
   const api = useApi()
   return useQuery({ queryKey: keys.mesh, queryFn: (): Promise<MeshStatus> | MeshStatus => (mockOn() ? MESH : api.mesh_status()) })
@@ -79,6 +95,20 @@ export function useMoveTask() {
   return useMutation({
     mutationFn: ({ id, state, note }: { id: string; state: TaskState; note?: string }) => api.task_move(id, state, note?.trim() || null),
     onSuccess: (t) => invalidate(t.id),
+    onError: (e) => toast.error(errorText(e)),
+  })
+}
+
+/** `task_move_home` (182): toasts `Moved to <name>`, or the engine's refusal verbatim; refetches the lists. */
+export function useMoveHome() {
+  const api = useApi()
+  const invalidate = useInvalidateTasks()
+  return useMutation({
+    mutationFn: ({ id, to }: { id: string; to: string; name: string }) => api.task_move_home(id, to),
+    onSuccess: (t, v) => {
+      invalidate(t.id)
+      toast(`Moved to ${v.name}`)
+    },
     onError: (e) => toast.error(errorText(e)),
   })
 }

@@ -476,6 +476,10 @@ pub struct ScheduleInfo {
     pub agent: Option<String>,
     /// `project:` — the project label of that task (67 §7.1).
     pub project: Option<String>,
+    /// `engine:` (182 D6) — the one engine it fires on; `None` = the hub's.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub engine: Option<String>,
     /// `when:` as written for a watcher (40 §2): `pr_watch.py repo=o/r pr=482`; `None` for a clock-only file.
     pub when_sensor: Option<String>,
     /// The sensor file alone (`pr_watch.py`); `None` for a clock-only file.
@@ -979,7 +983,8 @@ pub struct Schedule {
     consumed: HashSet<String>,
     /// Turns `agent:` fires into tasks (67 §7.4); `None` until the tasks plugin registers.
     task_creator: Option<Arc<dyn TaskCreator>>,
-    /// [`mesh::is_hub`] as of the last tick; ticks are a hub duty (67 §4.4).
+    /// [`mesh::is_hub`] as of the last tick; legacy (unstamped) schedules tick
+    /// on the hub only (67 §4.4), stamped ones on their `engine:` (182 D6).
     hub: bool,
     /// Watchers whose sensor check is in flight (40 §1.9: no self-overlap); memory only.
     checking: HashSet<String>,
@@ -1183,6 +1188,7 @@ impl Schedule {
             spec.approvals,
         );
         let (agent, project) = (spec.agent.clone(), spec.project.clone());
+        let stamped = spec.engine.clone();
         let (memory, sensor_file) = (spec.memory, spec.sensor.as_ref().map(|s| s.file.clone()));
         let reset_runtime = resets_runtime(spec);
         let run_timeout = overrides
@@ -1342,6 +1348,21 @@ impl Schedule {
             Confinement::Unconfined => None,
             Confinement::Confined(c) => Some(c),
             Confinement::Orphaned => {
+                // 182 D6: only the schedule's own engine ends it (a legacy file: only a lone
+                // engine) — another engine merely lacks the owner, and the file's
+                // deletion would replicate to the engine that has it.
+                let mine = match &stamped {
+                    Some(e) => mesh::self_id().as_deref() == Some(e.as_str()),
+                    None => match mesh::actor() {
+                        Some(m) => m.ask(mesh::Status).await.is_ok_and(|s| s.peers.is_empty()),
+                        None => true,
+                    },
+                };
+                if !mine {
+                    return Err(
+                        "toolset gone here: the schedule's owner is on another engine".into(),
+                    );
+                }
                 let why = "toolset gone: no owner for this schedule".to_owned();
                 self.end(name, why.clone()).await;
                 return Err(why);
@@ -1665,34 +1686,34 @@ impl Message<Tick> for Schedule {
 }
 
 impl Schedule {
-    /// Fire what is due (34 §3) — on the hub only (67 §4.4). A non-hub
-    /// neither fires nor advances `last`; regaining the hub re-arms every
-    /// entry as at boot, so `missed:` decides what fires for the pause.
+    /// Fire what is due (34 §3) — 182 D6: a schedule stamped `engine:` on
+    /// that engine only, whoever holds the lease; a legacy (unstamped) one on
+    /// the hub only (67 §4.4). A non-hub neither fires a legacy one nor
+    /// advances its `last`; regaining the hub re-arms those as at boot, so
+    /// `missed:` decides what fires for the pause.
     /// A due `when:` file starts its sensor check instead (40 §3.2); the
     /// checks are returned for the caller to spawn, their results come back
     /// as [`CheckDone`].
     async fn tick(&mut self, now: DateTime<Local>) -> Vec<Check> {
         let hub = mesh::is_hub();
+        let me = mesh::self_id();
         if hub != self.hub {
             self.hub = hub;
             if hub {
-                tracing::info!("schedules: hub regained, ticks resumed");
-                for e in self.entries.values_mut() {
+                tracing::info!("schedules: hub regained, legacy (unstamped) ticks resumed");
+                for e in self.entries.values_mut().filter(|e| stamp_of(e).is_none()) {
                     e.arm(now);
                 }
             } else {
-                tracing::info!("schedules: not the hub, ticks paused");
+                tracing::info!("schedules: not the hub, legacy (unstamped) ticks paused");
             }
         }
         let mut checks = Vec::new();
-        if !hub {
-            return checks;
-        }
         // A watcher ticks while its run is in flight: `mode` decides (40 §1.9).
         let due: Vec<(String, bool)> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.next.is_some_and(|t| t <= now))
+            .filter(|(_, e)| e.next.is_some_and(|t| t <= now) && fires_here(e, hub, me.as_deref()))
             .filter_map(|(n, e)| {
                 let watcher = e.spec.as_ref().is_ok_and(|s| s.sensor.is_some());
                 (watcher || !self.is_running(e)).then(|| (n.clone(), watcher))
@@ -1718,13 +1739,15 @@ impl Message<NextWake> for Schedule {
         // Running entries count: a fire due while its run is still going becomes
         // a `skipped: busy` row at that tick, and a run that finished early must
         // not leave the loop asleep until TICK.
-        // A non-hub does not fire: only run deadlines wake it, else TICK.
+        // Only schedules that fire here count (182 D6); otherwise only run
+        // deadlines wake it, else TICK.
+        let (hub, me) = (mesh::is_hub(), mesh::self_id());
         let next = self
             .entries
             .values()
+            .filter(|e| fires_here(e, hub, me.as_deref()))
             .filter_map(|e| e.next)
             .min()
-            .filter(|_| mesh::is_hub())
             .map(|t| (t - now).to_std().unwrap_or_default());
         let deadline = self
             .running
@@ -1737,6 +1760,30 @@ impl Message<NextWake> for Schedule {
             (a, b) => a.or(b),
         }
     }
+}
+
+/// 182 D6: the `engine:` a schedule is stamped with; `None` = legacy.
+fn stamp_of(e: &Entry) -> Option<&str> {
+    e.spec.as_ref().ok()?.engine.as_deref()
+}
+
+/// 182 D6: `e` ticks on this engine — a stamped schedule on its own
+/// `engine:` only, a legacy one on the hub lease holder. S8: a stamp naming
+/// an engine that is neither this one nor a paired peer (a copied data dir,
+/// an engine unpaired since) fires on the lease holder, like a legacy one —
+/// never while the pairing is not known yet.
+fn fires_here(e: &Entry, hub: bool, me: Option<&str>) -> bool {
+    match (stamp_of(e), me) {
+        (Some(engine), Some(me)) => engine == me || (hub && mesh::is_paired(engine) == Some(false)),
+        (Some(_), None) => false,
+        (None, _) => hub,
+    }
+}
+
+/// 182 D6: this engine's mesh id — the `engine:` a new schedule is stamped
+/// with (`schedule`, the editor's create, the autoresearch start).
+pub fn self_engine() -> Option<String> {
+    mesh::self_id()
 }
 
 /// Sessions under `session` whose turn is in flight or awaiting a peer
@@ -2489,6 +2536,7 @@ impl Schedule {
             cwd: spec.and_then(|s| s.cwd.clone()),
             agent: spec.and_then(|s| s.agent.clone()),
             project: spec.and_then(|s| s.project.clone()),
+            engine: spec.and_then(|s| s.engine.clone()),
             when_sensor: sensor.map(file::Sensor::render),
             sensor: sensor.map(|s| s.file.clone()),
             fire: sensor.map(|_| spec_fire.to_string()),
@@ -2722,11 +2770,16 @@ impl Message<Put> for Schedule {
     type Reply = Result<ScheduleInfo, String>;
 
     async fn handle(&mut self, m: Put, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let name = m.0.name.clone();
+        let mut f = m.0;
+        let name = f.name.clone();
         if !file::valid_name(&name) {
             return Err("name: [a-z0-9][a-z0-9-]*, at most 40 chars".into());
         }
-        let text = file::render(&m.0.args());
+        // 182 D6: a schedule the editor creates fires on this engine; an edit keeps the stamp.
+        if f.engine.is_none() && !self.entries.contains_key(&name) {
+            f.engine = mesh::self_id();
+        }
+        let text = file::render(&f.args());
         file::parse(&name, &text)?;
         file::write_atomic(&self.dir, &name, &text).map_err(|e| e.to_string())?;
         self.reconcile(ctx.actor_ref()).await;
@@ -3455,6 +3508,105 @@ mod hub_tests {
         );
         assert!(s.entries["skip"].next.is_some_and(|t| t > back));
         assert_eq!(s.entries["skip"].last, Some(t0));
+    }
+
+    /// This process's engine id (`mesh::self_id` is set once per process).
+    fn me() -> String {
+        mesh::set_self_id("sched-test-engine");
+        mesh::self_id().unwrap()
+    }
+
+    /// 182 D6: a schedule stamped `engine:` ticks on that engine — whoever
+    /// holds the lease. S8: a stamp naming another engine never fires here
+    /// while the pairing is unknown (no mesh endpoint, as in this test) — not
+    /// even on the lease holder; a known-unpaired one would.
+    #[tokio::test]
+    async fn stamped_schedule_fires_on_its_engine_never_while_pairing_unknown() {
+        let _g = hub_lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mine = format!("---\nevery: 1h\nagent: ops\nengine: {}\n---\ngo\n", me());
+        let other = "---\nevery: 1h\nagent: ops\nengine: other-engine\n---\ngo\n";
+        let (mut s, rec) = actor(dir.path(), &[("mine", &mine), ("other", other)]).await;
+        assert_eq!(
+            mesh::is_paired("other-engine"),
+            None,
+            "no endpoint: pairing unknown"
+        );
+        mesh::set_hub(false);
+        let now = Local::now();
+        s.tick(now).await;
+        mesh::set_hub(true);
+        s.tick(now + chrono::Duration::hours(2)).await;
+        let calls: Vec<String> = rec
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c.0.clone())
+            .collect();
+        assert_eq!(
+            calls,
+            ["mine", "mine"],
+            "fires here with or without the lease; never `other`"
+        );
+    }
+
+    /// 182 D6: an unstamped (legacy) schedule fires on the lease holder only
+    /// — its task's home (here when this engine has the agent, else the one
+    /// engine that has it) is the tasks ledger's rule, pinned by
+    /// `tasks::ledger::tests::schedule_task_is_homed_on_the_firing_engine`.
+    #[tokio::test]
+    async fn legacy_schedule_fires_on_the_lease_holder_and_homes_on_an_engine_with_the_agent() {
+        let _g = hub_lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(dir.path(), &[("legacy", DUE)]).await;
+        mesh::set_hub(false);
+        let now = Local::now();
+        s.tick(now).await;
+        mesh::set_hub(true);
+        assert!(
+            rec.calls.lock().unwrap().is_empty(),
+            "a non-holder does not fire it"
+        );
+        s.tick(now).await;
+        assert_eq!(rec.calls.lock().unwrap().len(), 1, "the lease holder does");
+        // A stamped file keeps its `engine:` through the editor's read / write.
+        let me = me();
+        let made = file::render(&file::FileArgs {
+            every: Some("1h"),
+            agent: Some("ops"),
+            engine: Some(&me),
+            prompt: "go",
+            ..file::ScheduleFile::default().args()
+        });
+        assert!(made.contains(&format!("engine: {me}\n")), "{made}");
+        let back = file::ScheduleFile::read("x", &made).unwrap();
+        assert_eq!(back.engine.as_deref(), Some(me.as_str()));
+        assert_eq!(
+            file::parse("x", &made).unwrap().engine.as_deref(),
+            Some(me.as_str())
+        );
+    }
+
+    /// 182 D6: an engine that is not a study schedule's engine never takes the
+    /// missing study for an orphan: the file (whose deletion would replicate
+    /// to the engine that has the study) stays.
+    #[tokio::test]
+    async fn non_home_engine_never_deletes_an_autoresearch_schedule() {
+        let dir = tempfile::tempdir().unwrap();
+        let study = "---\nevery: 0s\nmax_runs: 5\nengine: other-engine\n---\ngo\n";
+        let (mut s, _) = actor(dir.path(), &[("ar182-study", study)]).await;
+        confine("ar182-", Arc::new(|_: &str| Box::pin(async { Ok(None) })));
+        let e = s
+            .fire("ar182-study", Local::now(), true, None)
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("toolset gone here"), "{e}");
+        assert!(dir.path().join(DIR).join("ar182-study.md").exists());
+        assert!(
+            s.store.history("ar182-study", 5).await.unwrap().is_empty(),
+            "no end row"
+        );
     }
 }
 

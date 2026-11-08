@@ -25,6 +25,9 @@ pub struct TasksConfig {
     pub place_prefer: Vec<String>,
     /// Projects whose tasks come first, in order (132 D4); one `rank()` orders the inbox and wake dispatch by it.
     pub project_order: Vec<String>,
+    /// 182 D9: a task's home engine unreachable this long, with tasks waiting on it, raises one
+    /// Attention item asking whether to move them (nothing runs elsewhere on its own).
+    pub home_offline_ask_secs: u64,
 }
 
 impl Default for TasksConfig {
@@ -39,6 +42,7 @@ impl Default for TasksConfig {
             backoff_max_secs: 1800,
             place_prefer: Vec::new(),
             project_order: Vec::new(),
+            home_offline_ask_secs: 300,
         }
     }
 }

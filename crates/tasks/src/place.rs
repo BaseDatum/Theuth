@@ -489,6 +489,7 @@ mod tests {
             done_when: None,
             attachments: vec![],
             priority: Priority::Medium,
+            home: None,
         }
     }
 

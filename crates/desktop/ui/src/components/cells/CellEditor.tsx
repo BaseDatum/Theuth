@@ -94,7 +94,7 @@ export type CellEditorProps = {
   onChange(code: string): void
   /** The cell's latest run: settles a line/selection run's gutter mark. */
   latest: CellRun | null
-  /** `confirmed` only past a warning (the second ▶, the danger confirm or its "Don't ask again"); keys never pass it.
+  /** `confirmed` only past a warning (the second ►, the danger confirm or its "Don't ask again"); keys never pass it.
    * `text`: the code the press was made on (a danger ask's press-time text), else the code on screen. */
   onRun(mode: CellRunMode, next?: boolean, confirmed?: boolean, text?: string): Promise<CellRun> | undefined
   onRefused(): void
@@ -122,7 +122,7 @@ export function CellEditor({ lang, code, runnable, danger, disarmed, title, iden
   const view = useRef<EditorView | null>(null)
   const box = useRef<HTMLDivElement>(null)
   const lineRun = useLineRun(latest)
-  // CELLAFTER: the ▶ runs a command (`units.ts`), marked on its first line.
+  // CELLAFTER: the ► runs a command (`units.ts`), marked on its first line.
   const units = useMemo(() => commandUnits(code, lang), [code, lang])
   const live = useRef({ code, runnable, danger, disarmed, identity, units, onRun, onRefused, lineRun })
   live.current = { code, runnable, danger, disarmed, identity, units, onRun, onRefused, lineRun }
@@ -137,7 +137,7 @@ export function CellEditor({ lang, code, runnable, danger, disarmed, title, iden
     if (!l.runnable) return true
     const g = lineGuard(l.danger, askSkipped(l.identity), l.disarmed)
     if (g.kind === 'confirm') setAsk({ line, last, mode, what, text: l.code, reason: g.reason, identity: l.identity })
-    // A warned ▶ runs on its second press, past the gate; a danger ▶ the user stopped being asked about runs confirmed.
+    // A warned ► runs on its second press, past the gate; a danger ► the user stopped being asked about runs confirmed.
     else l.lineRun.run(line, () => l.onRun(mode, false, g.kind === 'warn' || l.danger), g.kind === 'warn' ? g.text : null)
     return true
   }
@@ -148,7 +148,7 @@ export function CellEditor({ lang, code, runnable, danger, disarmed, title, iden
       const s = v.state.selection.main
       const doc = v.state.doc.toString()
       if (s.empty) {
-        // The caret line runs its whole command, as its ▶ does.
+        // The caret line runs its whole command, as its ► does.
         const unit = unitOf(live.current.units, v.state.doc.lineAt(s.head).number)
         return runAt(unit[0], unitMode(doc, unit))
       }

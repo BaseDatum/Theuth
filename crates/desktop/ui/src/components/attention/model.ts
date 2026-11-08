@@ -17,7 +17,7 @@ export const GROUPS: readonly { key: string; label: string; kinds: readonly Kind
   { key: 'hand', label: 'Needs a hand', kinds: ['handoff', 'secret', 'resume'] },
   { key: 'agents', label: 'Agents', kinds: ['hire', 'budget'] },
   { key: 'blocked', label: 'Blocked', kinds: ['blocked'] },
-  { key: 'mesh', label: 'Mesh', kinds: ['node'] },
+  { key: 'mesh', label: 'Mesh', kinds: ['node', 'home'] },
   // 126 §10: "answered for you" rows (undo during grace) and the L3 daily digest.
   { key: 'double', label: 'Answered by double', kinds: ['double'] },
   /** 130 E3: finished turns — receipts, nothing to decide. */

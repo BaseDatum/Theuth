@@ -22,6 +22,9 @@ use crate::value::Val;
 
 /// 180: parked change sets kept per `(origin, table)`; the oldest go first.
 const PARKED_MAX: i64 = 256;
+/// 182: the same bound for a table no plugin has attached yet — generous: a
+/// whole catch-up after a long absence parks here in the boot window.
+const UNATTACHED_MAX: i64 = 65_536;
 /// 180: a parked change set older than this is dropped.
 const PARKED_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 86_400);
 
@@ -70,13 +73,20 @@ impl Engine {
         for (table, rows) in &by_table {
             let attached = self.tables.lock().get(*table).cloned();
             let Some(attached) = attached else {
-                // ponytail: not parked — an engine that runs without a plugin would park every
-                // batch of its tables forever; a table that attaches late misses what came before.
+                // 182: a table whose plugin attaches later in the boot (tasks after
+                // replica) parks the batch's changes; `attach` retries them. Skipping
+                // them lost everything a peer changed while this engine was down. A
+                // table no plugin here attaches keeps them until the TTL / cap.
+                let changes: Vec<&Change> = rows.values().flatten().copied().collect();
+                self.park(&mut book, batch, table, &changes, UNATTACHED_MAX)
+                    .await?;
+                crate::sync::await_attach(table);
+                parked.push((*table).to_owned());
                 self.note(
                     &batch.origin,
                     table,
                     format_args!(
-                        "batch {}#{} touches unattached table {table}; skipped",
+                        "batch {}#{} touches unattached table {table}; parked until it attaches",
                         batch.origin, batch.seq
                     ),
                 );
@@ -98,17 +108,8 @@ impl Engine {
                 ),
                 Err(e) => {
                     let changes: Vec<&Change> = rows.values().flatten().copied().collect();
-                    sqlx::query(
-                        "INSERT OR IGNORE INTO parked (origin, seq, tbl, changes, parked_at) VALUES (?, ?, ?, ?, ?)",
-                    )
-                    .bind(&batch.origin.0)
-                    .bind(i64::try_from(batch.seq)?)
-                    .bind(*table)
-                    .bind(postcard::to_allocvec(&changes)?)
-                    .bind(i64::try_from(now_ms())?)
-                    .execute(&mut *book)
-                    .await?;
-                    self.bound_parked(&mut book, &batch.origin, table).await?;
+                    self.park(&mut book, batch, table, &changes, PARKED_MAX)
+                        .await?;
                     parked.push((*table).to_owned());
                     self.note(
                         &batch.origin,
@@ -202,14 +203,38 @@ impl Engine {
         }
     }
 
+    /// Park `changes` of `table` from `batch` for a later retry, then bound
+    /// the parked set ([`Self::bound_parked`], `cap` per `(origin, table)`).
+    async fn park(
+        &self,
+        book: &mut sqlx::SqliteConnection,
+        batch: &ChangeBatch,
+        table: &str,
+        changes: &[&Change],
+        cap: i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO parked (origin, seq, tbl, changes, parked_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&batch.origin.0)
+        .bind(i64::try_from(batch.seq)?)
+        .bind(table)
+        .bind(postcard::to_allocvec(changes)?)
+        .bind(i64::try_from(now_ms())?)
+        .execute(&mut *book)
+        .await?;
+        self.bound_parked(book, &batch.origin, table, cap).await
+    }
+
     /// Expire what was parked more than [`PARKED_TTL`] ago and keep at most
-    /// [`PARKED_MAX`] entries per `(origin, table)`, dropping the oldest —
+    /// `cap` entries per `(origin, table)`, dropping the oldest —
     /// a table that fails for good would otherwise park every batch it gets.
     async fn bound_parked(
         &self,
         book: &mut sqlx::SqliteConnection,
         origin: &crate::PeerId,
         table: &str,
+        cap: i64,
     ) -> anyhow::Result<()> {
         let cutoff = i64::try_from(now_ms().saturating_sub(PARKED_TTL.as_millis() as u64))?;
         let expired = sqlx::query("DELETE FROM parked WHERE parked_at < ?")
@@ -229,13 +254,13 @@ impl Engine {
         )
         .bind(&origin.0)
         .bind(table)
-        .bind(PARKED_MAX)
+        .bind(cap)
         .execute(&mut *book)
         .await?
         .rows_affected();
         if over > 0 {
             tracing::warn!(
-                "replica: {origin} {table}: more than {PARKED_MAX} batches parked; dropped the oldest {over}"
+                "replica: {origin} {table}: more than {cap} batches parked; dropped the oldest {over}"
             );
         }
         Ok(())

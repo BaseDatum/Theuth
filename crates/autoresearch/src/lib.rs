@@ -323,7 +323,8 @@ impl runtime::Plugin for AutoresearchPlugin {
         });
         if !cfg.enabled {
             // 140 §12.2 / R-6: the schedule plugin still runs; study files must not fire unconfined.
-            match schedule_file::disable_all(&rt.data_dir) {
+            let peers = mesh::has_stored_peers(&rt.data_dir).await;
+            match schedule_file::disable_all(&rt.data_dir, peers) {
                 Ok(off) if off.is_empty() => {
                     tracing::info!("autoresearch disabled by config; no tools, no actor")
                 }

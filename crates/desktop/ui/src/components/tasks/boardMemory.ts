@@ -6,7 +6,7 @@ import type { TaskState } from '@/rpc/bindings/TaskState'
 import { STATES } from './helpers'
 
 /** Board filters live in the URL so a board survives reload and can be linked. `project: ''` = all projects. */
-export type BoardSearch = { project?: string; agent?: string; engine?: string; state?: TaskState; cancelled?: boolean }
+export type BoardSearch = { project?: string; agent?: string; engine?: string; machine?: string; state?: TaskState; cancelled?: boolean }
 
 /** The one set of rules behind the route's `validateSearch` and `recallBoard`: known keys, no empty agent/node, a real state. */
 export function parseBoardSearch(s: Record<string, unknown>): BoardSearch {
@@ -14,6 +14,7 @@ export function parseBoardSearch(s: Record<string, unknown>): BoardSearch {
     ...(typeof s.project === 'string' && { project: s.project }),
     ...(typeof s.agent === 'string' && s.agent !== '' && { agent: s.agent }),
     ...(typeof s.engine === 'string' && s.engine !== '' && { engine: s.engine }),
+    ...(typeof s.machine === 'string' && s.machine !== '' && { machine: s.machine }),
     ...(typeof s.state === 'string' && (STATES as readonly string[]).includes(s.state) && { state: s.state as TaskState }),
     ...(s.cancelled === true && { cancelled: true }),
   }

@@ -102,3 +102,7 @@ test('urlHost', () => {
   expect(urlHost('https://github.com/x/y/pull/1')).toBe('github.com')
   expect(urlHost('not a url')).toBe('not a url')
 })
+
+test('182: a `node:<engine>` item of kind `home` sits in the Mesh group with the node items', () => {
+  expect(groupItems([item('node:B', 'home', 1), item('node:1', 'node', 2)]).map((g) => [g.key, g.items.length])).toEqual([['mesh', 2]])
+})

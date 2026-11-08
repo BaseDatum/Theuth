@@ -147,6 +147,10 @@ pub struct Info {
     /// overrides it. `0` from an older harness.
     #[serde(default)]
     pub schedule_run_timeout_secs: u64,
+    /// `tasks.home_offline_ask_secs` (182 D9): how long a task's home machine may be
+    /// offline, with tasks waiting on it, before the Attention item asks. `0` from an older harness.
+    #[serde(default)]
+    pub home_offline_ask_secs: u64,
     /// `agent.max_tool_rounds`: tool-call rounds a turn may run before the loop lands.
     pub max_tool_rounds: u32,
     /// `agent.stream_idle_secs`: seconds without a stream event before a model call is abandoned.
@@ -2703,6 +2707,21 @@ pub trait Api {
     /// Tasks whose `blockers` name `id` (the inverse link, computed; 67 §7.1).
     #[method(name = "task_blocks")]
     async fn task_blocks(&self, id: String) -> RpcResult<Vec<tasks::TaskId>>;
+    /// 182 D10: the task lives on engine `to` (a mesh id) from now on — only its desk works it there.
+    /// `to` must be online and have the task's agent (theuth is everywhere); a done or cancelled
+    /// task does not move. A live work session of its checkout owned here moves first
+    /// (`session_move`); that move's refusal refuses this one. Off an offline home the move
+    /// lands here at once and replicates when that engine returns.
+    #[method(name = "task_move_home", with_extensions)]
+    async fn task_move_home(&self, id: String, to: String) -> RpcResult<tasks::Task>;
+    /// 182 D9 "Move them to <this engine>": every task waiting on the offline engine `from`
+    /// moves to this engine; the ones whose agent is not here are named in `refused`.
+    #[method(name = "task_move_home_waiting", with_extensions)]
+    async fn task_move_home_waiting(&self, from: String) -> RpcResult<tasks::MovedHome>;
+    /// 182 D8: every engine's agents (the replicated per-engine roster, this engine's rows
+    /// included), by name then engine — the Agents page rows and the Move to checks.
+    #[method(name = "engine_agents_list")]
+    async fn engine_agents_list(&self) -> RpcResult<Vec<roster::EngineAgent>>;
     /// The activity feed, newest first: `since_ms`, `kinds`, `limit` (default 50, max 500) (70 HUD).
     #[method(name = "activity_list")]
     async fn activity_list(
@@ -3755,6 +3774,11 @@ impl ApiServer for Server {
             compact_style,
             subagent_timeout_secs,
             schedule_run_timeout_secs,
+            home_offline_ask_secs: self
+                .rt
+                .section::<tasks::TasksConfig>("tasks")
+                .map(|c| c.home_offline_ask_secs)
+                .unwrap_or_else(|_| tasks::TasksConfig::default().home_offline_ask_secs),
             max_tool_rounds,
             stream_idle_secs,
             max_salvages,
@@ -8802,6 +8826,69 @@ impl ApiServer for Server {
 
     async fn task_blocks(&self, id: String) -> RpcResult<Vec<tasks::TaskId>> {
         send(&tasks_actor()?, tasks::TaskBlocks(tasks::TaskId(id))).await
+    }
+
+    async fn task_move_home(
+        &self,
+        ext: &Extensions,
+        id: String,
+        to: String,
+    ) -> RpcResult<tasks::Task> {
+        let task = send(&tasks_actor()?, tasks::GetTask(tasks::TaskId(id.clone()))).await?;
+        let actor = crate::Client::actor(ext);
+        let m = |check_only, session_moved| tasks::MoveHome {
+            id: tasks::TaskId(id.clone()),
+            to: to.clone(),
+            actor: actor.clone(),
+            session: None,
+            check_only,
+            session_moved,
+        };
+        // 182 S4: the move is checked before anything moves — a refused move
+        // never leaves its session on the other machine.
+        send(&tasks_actor()?, m(true, false)).await?;
+        // 182 D10: a live work session of its checkout, owned here, moves first (181) so
+        // it continues there; its refusal (a paused tree, the target refusing) refuses
+        // the task's move. A desk or harness session stays: it is this engine's.
+        let mut session_moved = false;
+        if let Some(c) = task.checkout.as_ref().filter(|c| !c.orphaned)
+            && let Ok(session) = c.session.parse::<SessionId>()
+        {
+            let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+            let me = store.engine().to_owned();
+            let owned_here = to != me
+                && matches!(store.fence(session).await, Ok(Some((_, owner))) if owner == me);
+            let movable = owned_here
+                && store
+                    .session(session)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| s.desk.is_none() && s.agent.is_none());
+            if movable {
+                self.session_move(ext, session, to.clone()).await?;
+                session_moved = true;
+            }
+        }
+        send(&tasks_actor()?, m(false, session_moved)).await
+    }
+
+    async fn task_move_home_waiting(
+        &self,
+        ext: &Extensions,
+        from: String,
+    ) -> RpcResult<tasks::MovedHome> {
+        let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+        let m = tasks::MoveWaiting {
+            from,
+            to: store.engine().to_owned(),
+            actor: crate::Client::actor(ext),
+        };
+        send(&tasks_actor()?, m).await
+    }
+
+    async fn engine_agents_list(&self) -> RpcResult<Vec<roster::EngineAgent>> {
+        send(&roster_actor()?, roster::ListEngineAgents).await
     }
 
     async fn activity_list(

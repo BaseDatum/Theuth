@@ -719,3 +719,136 @@ async fn parked_is_bounded_and_ages_out() {
         "only the new one is younger than 7 days"
     );
 }
+
+/// 182 M1: B ran an older schema when A wrote `home`; B skipped the column
+/// and recorded the batch. After B's migration and re-attach nothing ships
+/// it again — until A re-announces its rows, under their own clocks.
+#[tokio::test]
+async fn a_column_a_peer_attached_late_arrives_on_reannounce() {
+    let a = side_with(
+        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, home TEXT, hlc TEXT)",
+        &["tasks"],
+    )
+    .await;
+    let b = side_with(
+        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, hlc TEXT)",
+        &["tasks"],
+    )
+    .await;
+    exec(
+        &a.pool,
+        "INSERT INTO tasks (id, title, home) VALUES ('t1', 'x', 'eng-a'), ('t2', 'y', 'eng-c')",
+    )
+    .await;
+    exchange(&a, &b).await;
+    // B upgrades and restarts: the column appears, the fresh attach picks it up.
+    exec(&b.pool, "ALTER TABLE tasks ADD COLUMN home TEXT").await;
+    let Side { pool, dir, .. } = b;
+    let engine = Engine::open(&dir.path().join("replica.sqlite"))
+        .await
+        .unwrap();
+    let handle = engine.attach(&pool, &["tasks"]).await.unwrap();
+    let b = Side {
+        engine,
+        pool,
+        handle,
+        dir,
+    };
+    exchange(&a, &b).await;
+    let home = |pool: SqlitePool, id: &'static str| async move {
+        sqlx::query_scalar::<_, Option<String>>("SELECT home FROM tasks WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(
+        home(b.pool.clone(), "t1").await,
+        None,
+        "the batch counted as applied"
+    );
+    // A re-announces the rows homed on it — `home` only, under its clock.
+    assert_eq!(
+        a.handle
+            .reannounce("tasks", "home = ?", "eng-a", Some(&["home"]))
+            .await
+            .unwrap(),
+        1
+    );
+    exchange(&a, &b).await;
+    assert_eq!(home(b.pool.clone(), "t1").await.as_deref(), Some("eng-a"));
+    assert_eq!(
+        home(b.pool.clone(), "t2").await,
+        None,
+        "only the filtered rows"
+    );
+    // A newer write on B wins over a re-announce of the old value.
+    exec(
+        &b.pool,
+        "UPDATE tasks SET home = 'eng-b', hlc = NULL WHERE id = 't1'",
+    )
+    .await;
+    while b.handle.flush().await.unwrap().is_some() {}
+    exchange(&a, &b).await;
+    a.handle
+        .reannounce("tasks", "id = ?", "t1", Some(&["home"]))
+        .await
+        .unwrap();
+    exchange(&a, &b).await;
+    assert_eq!(home(a.pool.clone(), "t1").await.as_deref(), Some("eng-b"));
+    assert_eq!(home(b.pool.clone(), "t1").await.as_deref(), Some("eng-b"));
+}
+
+/// 182: batches that arrive before a table's plugin attached (tasks attaches
+/// after the replica at boot) are parked, not skipped: at `attach` the row,
+/// its later state change and the wake all land, in order.
+#[tokio::test]
+async fn batch_for_an_unattached_table_applies_after_attach() {
+    const TABLES: &str = "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT, n INTEGER, hlc TEXT); \
+         CREATE TABLE wakes (id TEXT PRIMARY KEY, task TEXT, hlc TEXT)";
+    let a = side_with(TABLES, &["tasks", "wakes"]).await;
+    let b = side_with(
+        &format!("{TABLES}; CREATE TABLE agents (id TEXT PRIMARY KEY, n INTEGER, hlc TEXT)"),
+        &["agents"],
+    )
+    .await;
+    exec(
+        &a.pool,
+        "INSERT INTO tasks (id, title, state) VALUES ('t1', 'x', 'todo')",
+    )
+    .await;
+    exec(&a.pool, "INSERT INTO wakes (id, task) VALUES ('w1', 't1')").await;
+    pump(&a, &b).await;
+    exec(&a.pool, "UPDATE tasks SET state = 'doing' WHERE id = 't1'").await;
+    pump(&a, &b).await;
+    let count = |sql: &'static str| {
+        let pool = b.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(sql)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        count("SELECT COUNT(*) FROM tasks").await,
+        0,
+        "nothing lands before attach"
+    );
+    assert!(parked_count(&b).await >= 2, "parked, not skipped");
+    b.engine.attach(&b.pool, &["tasks", "wakes"]).await.unwrap();
+    let state: Option<String> = sqlx::query_scalar("SELECT state FROM tasks WHERE id = 't1'")
+        .fetch_one(&b.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        state.as_deref(),
+        Some("doing"),
+        "the row and its later state change"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM wakes WHERE task = 't1'").await,
+        1
+    );
+    assert_eq!(parked_count(&b).await, 0, "the parked entries applied");
+}

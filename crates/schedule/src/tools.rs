@@ -153,6 +153,12 @@ pub struct ScheduleTool {
 /// non-default (a plain file keeps them so `<key>: needs when:` still
 /// surfaces); `created: now` anchors `expires` on every write of a `when:` file.
 pub fn render_args(a: &ScheduleArgs) -> String {
+    render_args_on(a, mesh::self_id().as_deref())
+}
+
+/// [`render_args`] stamped `engine:` with `engine` (182 S8: a replaced file
+/// keeps the engine it fires on).
+fn render_args_on(a: &ScheduleArgs, engine: Option<&str>) -> String {
     let watcher = a.when.is_some();
     let created = watcher.then(|| Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
     file::render(&FileArgs {
@@ -176,6 +182,8 @@ pub fn render_args(a: &ScheduleArgs) -> String {
         missed_run: false,
         agent: a.agent.as_deref(),
         project: a.project.as_deref(),
+        // 182 D6: a schedule fires on the engine that made it (`schedule`, `routine_draft`'s accept).
+        engine,
         when: a.when.as_deref(),
         fire: non_default(a.fire.as_deref(), "on_change", watcher),
         for_: non_default(a.for_.as_deref(), "0s", watcher),
@@ -213,7 +221,14 @@ impl Tool for ScheduleTool {
                 "name: [a-z0-9][a-z0-9-]*, at most 40 chars",
             ));
         }
-        let text = render_args(&a);
+        // 182 S8: replacing a schedule keeps the engine it fires on (a legacy file stays unstamped).
+        let old = std::fs::read_to_string(self.dir.join(format!("{}.md", a.name)))
+            .ok()
+            .and_then(|t| file::parse(&a.name, &t).ok());
+        let text = match old {
+            Some(old) => render_args_on(&a, old.engine.as_deref()),
+            None => render_args(&a),
+        };
         let spec = match file::parse(&a.name, &text) {
             Ok(s) => s,
             Err(e) => return Ok(ToolOutput::err(e)),

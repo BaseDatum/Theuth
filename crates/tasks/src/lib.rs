@@ -11,7 +11,7 @@
 //!   [`AwaitDecision`], [`AnswerDecision`], [`Mention`], [`MarkAnswered`],
 //!   [`GetPacket`], [`ListPackets`], [`EffectiveReviewer`], [`ReviewPacket`],
 //!   [`NoteDisposition`], [`EpisodeClosing`], [`FinishWake`], [`ReleaseClaims`],
-//!   [`WriteBudgetOf`], [`SetDispatching`], [`RegisterDeskRouter`]
+//!   [`WriteBudgetOf`], [`MoveHome`], [`HomesOffline`], [`RegisterDeskRouter`]
 //! - trait [`DeskRouter`] (the roster implements it)
 //!
 //! The rules live in [`ledger`]; this file is the actor around them.
@@ -107,6 +107,19 @@ pub trait DeskRouter: Send + Sync {
     fn is_paused(&self, agent: &str) -> bool {
         let _ = agent;
         false
+    }
+    /// 182 D8: the engines (mesh ids) whose roster has `agent`, from the
+    /// replicated per-engine agent list; empty when unknown.
+    async fn engines_with(&self, agent: &str) -> Vec<String> {
+        let _ = agent;
+        Vec::new()
+    }
+    /// 182 S1: this engine's roster has `agent` (theuth is everywhere):
+    /// `Some(false)` — no file for it here, a wake for it is not delivered
+    /// here; `None` — its file here is momentarily invalid (an edit in flight).
+    fn has_agent(&self, agent: &str) -> Option<bool> {
+        let _ = agent;
+        Some(true)
     }
 }
 
@@ -484,10 +497,69 @@ pub struct NoContinuation {
     pub why: String,
 }
 
-/// `ask` → `()`: run (or stop running) the hub duties — wake dispatch and
-/// the orphan sweep — on this engine. Default on; the mesh lease flips it.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct SetDispatching(pub bool);
+/// `ask` → `Result<Task, String>`: 182 D10 `task_move_home` — the task lives
+/// on engine `to` (a mesh id) from now on ([`ledger::Ledger::move_home`]).
+/// The RPC checks first (`check_only`), then moves a live checkout session
+/// (181 `session_move`), then moves the task (`session_moved`: that session
+/// continues the checkout there — 182 S4).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MoveHome {
+    /// The task.
+    pub id: TaskId,
+    /// Target engine id.
+    pub to: String,
+    /// `user` | `agent:<name>`.
+    pub actor: String,
+    /// The calling session (an agent's: the cross-task write cap).
+    #[serde(default)]
+    pub session: Option<String>,
+    /// Only check the move would be accepted; change nothing.
+    #[serde(default)]
+    pub check_only: bool,
+    /// The checkout's session was moved to `to` first: it keeps the checkout.
+    #[serde(default)]
+    pub session_moved: bool,
+}
+
+/// `ask` → `Result<Vec<HomeOffline>, String>`: 182 D9 — paired engines
+/// unreachable for `tasks.home_offline_ask_secs` with tasks waiting on them.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct HomesOffline;
+
+/// 182 D9: one offline engine and the tasks that wait for it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HomeOffline {
+    /// Engine id.
+    pub engine: String,
+    /// Its display name.
+    pub name: String,
+    /// ms since epoch: first seen unreachable by this engine.
+    pub since_ms: u64,
+    /// Agent-owned tasks homed there in todo / doing, or blocked with a wake pending.
+    pub tasks: Vec<Task>,
+}
+
+/// `ask` → `Result<MovedHome, String>`: 182 D9 "Move them to <this
+/// engine>" — every task waiting on engine `from` moves to `to`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MoveWaiting {
+    /// The offline home (engine id).
+    pub from: String,
+    /// Target engine id.
+    pub to: String,
+    /// `user` | `agent:<name>`.
+    pub actor: String,
+}
+
+/// 182 D9: what [`MoveWaiting`] did.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct MovedHome {
+    /// The tasks moved.
+    pub moved: Vec<TaskId>,
+    /// `<title>: <why>` for each one that could not move (its agent is not there).
+    pub refused: Vec<String>,
+}
 
 /// `ask` → `Result<String, String>`: [`schedule::TaskCreator`] behind the actor.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -524,6 +596,7 @@ struct Sweep;
 /// Internal `tell`: a sweep's probe answers came back; apply them.
 struct SweepProbed {
     reachable: Option<HashSet<String>>,
+    peers: Vec<(String, String, bool)>,
     probed: std::collections::HashMap<TaskId, ledger::Probed>,
 }
 
@@ -545,7 +618,6 @@ struct SetEngine(String);
 /// The [`TASKS_ACTOR`] actor.
 pub struct Tasks {
     ledger: ledger::Ledger,
-    dispatching: bool,
     escalations: escalate::Escalations,
 }
 
@@ -575,16 +647,21 @@ impl Actor for Tasks {
 }
 
 impl Tasks {
-    /// The connected engine set from the mesh; `None` when the mesh is not up
-    /// (the sweep then triggers on staleness alone).
-    async fn reachable() -> Option<HashSet<String>> {
+    /// The mesh's view: the connected engine set (ids and names, self
+    /// included) and every paired peer as `(id, name, reachable)`; `None`
+    /// when the mesh is not up (the sweep then triggers on staleness alone).
+    async fn mesh_view() -> Option<(HashSet<String>, Vec<(String, String, bool)>)> {
         let status = mesh::actor()?.ask(mesh::Status).await.ok()?;
         let mut set: HashSet<String> = HashSet::from([status.self_id.0]);
-        for p in status.peers.into_iter().filter(|p| p.reachable) {
-            set.insert(p.name);
-            set.insert(p.id.0);
+        let mut peers = Vec::with_capacity(status.peers.len());
+        for p in status.peers {
+            if p.reachable {
+                set.insert(p.name.clone());
+                set.insert(p.id.0.clone());
+            }
+            peers.push((p.id.0, p.name, p.reachable));
         }
-        Some(set)
+        Some((set, peers))
     }
 }
 
@@ -605,19 +682,59 @@ impl Message<SetEngine> for Tasks {
 
     async fn handle(&mut self, m: SetEngine, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         store::set_hlc_origin(&m.0);
-        self.ledger.engine = m.0;
+        // 182 S3: the backfill homes `doing` rows only on engines it knows.
+        if let Some((_, peers)) = Self::mesh_view().await {
+            self.ledger.note_peers(&peers);
+        }
+        if let Err(e) = self.ledger.set_engine(m.0).await {
+            tracing::error!("182: home backfill: {e}");
+        }
     }
 }
 
-impl Message<SetDispatching> for Tasks {
-    type Reply = ();
+impl Message<MoveHome> for Tasks {
+    type Reply = Result<Task, String>;
 
-    async fn handle(
-        &mut self,
-        m: SetDispatching,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.dispatching = m.0;
+    /// The mesh is asked here: it never asks tasks back.
+    async fn handle(&mut self, m: MoveHome, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let view = Self::mesh_view().await;
+        if let Some((_, peers)) = &view {
+            self.ledger.note_peers(peers);
+        }
+        let reachable = view.as_ref().map(|(r, _)| r);
+        let how = ledger::MoveHow {
+            session: m.session.as_deref(),
+            check_only: m.check_only,
+            session_moved: m.session_moved,
+        };
+        self.ledger
+            .move_home(&m.id, &m.to, &m.actor, reachable, how)
+            .await
+    }
+}
+
+impl Message<HomesOffline> for Tasks {
+    type Reply = Result<Vec<HomeOffline>, String>;
+
+    async fn handle(&mut self, _: HomesOffline, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some((_, peers)) = Self::mesh_view().await else {
+            return Ok(Vec::new());
+        };
+        self.ledger.homes_offline(&peers).await
+    }
+}
+
+impl Message<MoveWaiting> for Tasks {
+    type Reply = Result<MovedHome, String>;
+
+    async fn handle(&mut self, m: MoveWaiting, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let view = Self::mesh_view().await;
+        if let Some((_, peers)) = &view {
+            self.ledger.note_peers(peers);
+        }
+        self.ledger
+            .move_waiting(&m.from, &m.to, &m.actor, view.as_ref().map(|(r, _)| r))
+            .await
     }
 }
 
@@ -1213,13 +1330,15 @@ impl Message<CloseForSchedule> for Tasks {
 impl Message<Dispatch> for Tasks {
     type Reply = ();
 
+    /// 182 D4: every engine dispatches — the wakes of the tasks it works.
+    /// M2a: not before the first sync with the mesh (a task may have moved).
     async fn handle(&mut self, _: Dispatch, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if !self.dispatching {
-            return;
-        }
         let Some(router) = self.ledger.router.clone() else {
             return;
         };
+        if !(self.ledger.synced)() {
+            return;
+        }
         let deliveries = match self.ledger.dispatch().await {
             Ok(d) => d,
             Err(e) => {
@@ -1275,23 +1394,33 @@ impl Message<Delivered> for Tasks {
 impl Message<Sweep> for Tasks {
     type Reply = ();
 
-    /// Off the mailbox: `reachable()` asks the mesh and the liveness probe
+    /// Off the mailbox: `mesh_view()` asks the mesh and the liveness probe
     /// asks the agent actor, which may be asking tasks back (`ListTasks` from
     /// `roster::Identities` inside its `Identity` handler). The answers
     /// return as [`SweepProbed`] and are applied against the rows as they
-    /// are then.
+    /// are then. 182 D4: every engine sweeps the tasks it works — M2a: once
+    /// the first sync with the mesh is done.
     async fn handle(&mut self, _: Sweep, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if !self.dispatching {
+        if !(self.ledger.synced)() {
             return;
         }
         let prober = self.ledger.prober();
         let now = (self.ledger.clock)();
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
-            let reachable = Self::reachable().await;
+            let (reachable, peers) = match Self::mesh_view().await {
+                Some((r, p)) => (Some(r), p),
+                None => (None, Vec::new()),
+            };
             match prober.probe(now, reachable.as_ref()).await {
                 Ok(probed) => {
-                    let _ = me.tell(SweepProbed { reachable, probed }).await;
+                    let _ = me
+                        .tell(SweepProbed {
+                            reachable,
+                            peers,
+                            probed,
+                        })
+                        .await;
                 }
                 Err(e) => tracing::error!("orphan sweep: {e}"),
             }
@@ -1303,9 +1432,7 @@ impl Message<SweepProbed> for Tasks {
     type Reply = ();
 
     async fn handle(&mut self, m: SweepProbed, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if !self.dispatching {
-            return;
-        }
+        self.ledger.note_peers(&m.peers);
         match self
             .ledger
             .sweep_apply(m.reachable.as_ref(), &m.probed)
@@ -1454,7 +1581,18 @@ impl runtime::Plugin for TasksPlugin {
         };
         let actor_store = store.clone();
         match replica::attach(store.pool(), &["tasks", "wakes", "answered", "packets"]).await {
-            Ok(_) => tracing::info!("tasks: tasks, wakes, answered and packets replicate"),
+            Ok(handle) => {
+                tracing::info!("tasks: tasks, wakes, answered and packets replicate");
+                // 182 M1: homes of open tasks reach a peer that attached the
+                // column late (a staggered upgrade) — under their own clocks.
+                mesh::reannounce_on_connect(
+                    rt,
+                    handle,
+                    "tasks",
+                    "home IS NOT NULL AND state NOT IN ('done', 'cancelled') AND id <> ?",
+                    Some(&["home"]),
+                );
+            }
             Err(e) => tracing::debug!("tasks: local only ({e})"),
         }
         // `roster.decision_wait_secs` (67 §11) without a roster dependency.
@@ -1465,7 +1603,7 @@ impl runtime::Plugin for TasksPlugin {
         {
             escalate::set_wait(Duration::from_secs(secs));
         }
-        let ledger = ledger::Ledger::new(
+        let mut ledger = ledger::Ledger::new(
             store,
             cfg,
             Arc::new(thread::DocThread),
@@ -1476,6 +1614,8 @@ impl runtime::Plugin for TasksPlugin {
             }),
             platform::process::hostname().to_owned(),
         );
+        // 182 D2: creates before `SetEngine` leave `home` unset; `set_engine` stamps them.
+        ledger.homed = false;
         // A `dispatching` placeholder claim only lives between one process's
         // claim and its delivery; one found at start never returned.
         if let Err(e) = ledger.release_claims(ledger::DISPATCHING).await {
@@ -1483,7 +1623,6 @@ impl runtime::Plugin for TasksPlugin {
         }
         let actor = Tasks::spawn(Tasks {
             ledger,
-            dispatching: true,
             escalations: escalate::Escalations::default(),
         });
         actor.register(TASKS_ACTOR)?;
@@ -1620,7 +1759,6 @@ mod tests {
         ask.register(::tools::ASK_ACTOR).unwrap();
         let actor = Tasks::spawn(Tasks {
             ledger: r.ledger,
-            dispatching: false,
             escalations: Default::default(),
         });
         let session = runtime::SessionId::new().to_string();
@@ -1754,7 +1892,6 @@ mod tests {
         r.ledger.probe = probe.clone();
         let actor = Tasks::spawn(Tasks {
             ledger: r.ledger,
-            dispatching: true,
             escalations: Default::default(),
         });
         probe.tasks.set(actor.clone()).ok().unwrap();

@@ -7,7 +7,8 @@ import { title } from '@/components/chat/broadcast'
 import { snoozeUntil } from '@/components/hud/model'
 import { useAttentionActions } from '@/components/hud/queries'
 import { age } from '@/components/tasks/helpers'
-import { useTask } from '@/components/tasks/queries'
+import { itemHome } from '@/components/tasks/home'
+import { useMesh, useTask, useTasks } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
@@ -24,11 +25,12 @@ export function useSessionList() {
 export function Source({ item }: { item: AttentionItem }) {
   const sessions = useSessionList()
   const task = useTask(item.task ?? '', item.task !== null)
+  const on = itemHome(item.task, useTasks().data, useMesh().data)
   const from = item.session ? title(item.session, sessions.data, item.session.slice(0, 8)) : ''
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-tertiary">
-        <Chip kind={item.kind} />
+        <Chip kind={item.kind} id={item.id} />
         <span className="min-w-0 truncate">
           {(from || item.agent) && 'From '}
           {from && <span className="text-fg-secondary">{from}</span>}
@@ -36,6 +38,7 @@ export function Source({ item }: { item: AttentionItem }) {
           {item.agent && <span className="text-fg-secondary">{item.agent}</span>}
           {(from || item.agent) && ' · '}
           <span className="tabular-nums">{age(item.at_ms)}</span>
+          {on && ` · ${on}`}
         </span>
         {item.session && (
           <Button asChild variant="link" size="xs" className="h-auto px-0 text-xs">

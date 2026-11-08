@@ -21,7 +21,7 @@ The UI and the code use slightly different words; here is the mapping.
 |---|---|
 | engine | One running `t`. The desktop UI says **node** wherever the record says engine: Settings › Mesh lists "This node" and "Nodes in this mesh". |
 | mesh | The paired set of engines, with a name (the first node's name until you set one) and a hub lease. |
-| hub | The engine that currently holds the lease: it fires routines, refreshes OAuth tokens, serves paired devices and hosts the live document server. |
+| hub | The engine that currently holds the lease: it fires routines without an `engine:` line, refreshes OAuth tokens, runs the Slack, Signal and Telegram channels, serves paired devices and hosts the live document server. Agent desks are not a hub duty: every engine runs its own, for the tasks homed on it ([Tasks › Machines](/docs/automation/tasks#machines)). |
 | node over SSH | A machine added with a 3-part link key (`/nodes add <key>`), reached over the link relay. It runs sessions for you but keeps its own `~/.theuth`; nothing is synced. |
 | device | A phone, browser or desktop app paired through the link relay. |
 | harness | In `agent:` strings, the external coding harness a child runs in — `native`, `omp`, `opencode` or `claude` — not a machine. `omp@build-box` means "omp on the node build-box". |
@@ -65,7 +65,7 @@ An automatic takeover on write is refused until the owner has been unseen for `s
 
 ### The hub
 
-Connected engines elect one hub. A freshly paired engine is barred from the lease for `mesh.probation_secs` (6 h); a hub that shuts down cleanly hands over within `mesh.handover_secs` (600 s). Your preference is `mesh.hub`: `prefer`, `eligible` (default) or `never`, set with `t mesh hub …` or the **Prefer this node as hub** select in Settings › Mesh. Routines on a non-hub engine show a `not hub` chip: ticks are the hub's duty, that node does not fire them. Settings › Mesh also shows `Sessions: N here · M elsewhere` and the replication log `seq`; the desktop HUD reads `k/n nodes · hub here` or `hub <name>`.
+Connected engines elect one hub. A freshly paired engine is barred from the lease for `mesh.probation_secs` (6 h); a hub that shuts down cleanly hands over within `mesh.handover_secs` (600 s). When two engines that both hold the lease meet — a first pairing, or a network split that heals — the better-ranked one keeps it within a heartbeat and the other lets go at once (`mesh: lease → … (two holders)` in the log); an engine that starts up while another already holds the lease waits for its heartbeat and keeps that holder — for its first `mesh.lapse_secs` + 30 s it follows a connected holder that has been up longer even when it outranks it, so a restart never pulls the hub over. Your preference is `mesh.hub`: `prefer`, `eligible` (default) or `never`, set with `t mesh hub …` or the **Prefer this node as hub** select in Settings › Mesh. A routine without an `engine:` line shows a `not hub` chip on a non-hub engine (ticks are the hub's duty there); one made on another machine shows `other machine` and fires only there. Settings › Mesh also shows `Sessions: N here · M elsewhere` and the replication log `seq`; the desktop HUD reads `k/n nodes · hub here` or `hub <name>`.
 
 ### Running work on another machine
 

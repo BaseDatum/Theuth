@@ -926,6 +926,11 @@ impl Net {
                 return;
             };
             p.conns.retain(|c| c.stable_id() != conn.stable_id());
+            // 182: a disconnected peer was last seen now (`Peer::last_seen_ms`, the
+            // UI's "offline since"); the next connect restarts the clock.
+            if p.conns.is_empty() {
+                p.since_ms = now_ms();
+            }
             p.conns.is_empty()
         };
         if last {

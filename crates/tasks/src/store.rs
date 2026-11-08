@@ -1,6 +1,7 @@
 //! `<data_dir>/tasks.sqlite`: `tasks`, `wakes`, `task_events`, `write_budget`, `packets` (67 §7, 101).
 //! Plain row access; the rules live in [`crate::ledger`].
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -83,6 +84,7 @@ struct Row {
     done_when: Option<String>,
     attachments_json: String,
     priority: String,
+    home: Option<String>,
 }
 
 fn state_of(s: &str) -> TaskState {
@@ -146,6 +148,7 @@ impl From<Row> for Task {
             done_when: r.done_when,
             attachments: serde_json::from_str(&r.attachments_json).unwrap_or_default(),
             priority: Priority::parse(&r.priority).unwrap_or_default(),
+            home: r.home,
         }
     }
 }
@@ -153,7 +156,7 @@ impl From<Row> for Task {
 const COLS: &str = "id, title, brief, owner, state, reviewer, blockers_json, parent, project, where_, \
                     harness, external_json, thread, checkout_json, schedule_name, schedule_fire_ms, \
                     created_by, created_ms, updated_ms, no_progress_count, next_wake_after_ms, done_when, \
-                    attachments_json, priority";
+                    attachments_json, priority, home";
 
 impl Store {
     /// Open or create the file and run the migrations.
@@ -180,11 +183,25 @@ impl Store {
         &self.pool
     }
 
-    /// Insert or fully rewrite `t` (every column, `hlc` stamped now).
+    /// Insert `t`, or update the row to `t` (`hlc` stamped now). 182 M2b: an
+    /// UPSERT, not a replace — the capture logs only the columns that changed,
+    /// so an unrelated write never re-announces a `home` or `checkout` this
+    /// engine merely holds (possibly stale) under a fresh clock.
     pub async fn put(&self, t: &Task) -> anyhow::Result<()> {
+        static SET: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+            COLS.split(',')
+                .map(str::trim)
+                .filter(|c| *c != "id")
+                .chain(["hlc"])
+                .map(|c| format!("{c} = excluded.{c}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "INSERT OR REPLACE INTO tasks ({COLS}, hlc) VALUES \
-             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)"
+            "INSERT INTO tasks ({COLS}, hlc) VALUES \
+             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26) \
+             ON CONFLICT(id) DO UPDATE SET {}",
+            *SET
         )))
         .bind(&t.id.0)
         .bind(&t.title)
@@ -210,6 +227,7 @@ impl Store {
         .bind(&t.done_when)
         .bind(serde_json::to_string(&t.attachments)?)
         .bind(t.priority.as_str())
+        .bind(&t.home)
         .bind(hlc(t.updated_ms))
         .execute(&self.pool)
         .await?;
@@ -486,6 +504,20 @@ impl Store {
         Ok(())
     }
 
+    /// 182 D10: delete the claimed wakes on `task` — it moved, so they were
+    /// delivered to the old home's desks; the move's `reassigned` wake is the
+    /// new home's, and a claim left behind would hold its agent busy.
+    /// Unclaimed wakes stay for the new home to deliver.
+    pub async fn drop_claimed_wakes(&self, task: &TaskId) -> anyhow::Result<u64> {
+        Ok(
+            sqlx::query("DELETE FROM wakes WHERE task = ? AND claimed_by IS NOT NULL")
+                .bind(&task.0)
+                .execute(&self.pool)
+                .await?
+                .rows_affected(),
+        )
+    }
+
     /// Charge a write by `session` to a task outside its line against a budget
     /// of `cap` distinct tasks within `window_ms` (99 WRITE-CAP-LINE; `0` =
     /// the session's lifetime). A repeat write to a task already charged is
@@ -615,6 +647,38 @@ impl Store {
             .into_iter()
             .filter_map(|(j,)| serde_json::from_str(&j).ok())
             .collect())
+    }
+
+    /// 182 D7: ids of tasks with a local `created` event (task_events never
+    /// replicates: the task was created on this engine) at or after `since_ms`.
+    pub async fn created_here(&self, since_ms: u64) -> anyhow::Result<HashSet<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT task FROM task_events WHERE field = 'created' AND at_ms >= ?",
+        )
+        .bind(since_ms as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(t,)| t).collect())
+    }
+
+    /// 182 D7: `engine` ran its home backfill already.
+    pub async fn backfilled(&self, engine: &str) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT at_ms FROM home_backfill WHERE engine = ?")
+                .bind(engine)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.is_some())
+    }
+
+    /// 182 D7: record that `engine` ran its home backfill.
+    pub async fn mark_backfilled(&self, engine: &str, now_ms: u64) -> anyhow::Result<()> {
+        sqlx::query("INSERT OR IGNORE INTO home_backfill (engine, at_ms) VALUES (?, ?)")
+            .bind(engine)
+            .bind(now_ms as i64)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

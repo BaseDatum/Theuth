@@ -63,7 +63,7 @@ An agent takes a `todo` task with `task_checkout`. The checkout records the sess
 - A session that once held the checkout but no longer does is refused on every write: `superseded: task <id> is now checked out by <session> on <engine> (epoch N); stop, your work is stale`.
 - A session may write to at most `tasks.cross_task_write_cap` (20) tasks it does not own; after that: `tasks.cross_task_write_cap: this session has written to 20 tasks it does not own; delegate with task_create instead`.
 - `task_note {progress: true}` from the checkout session refreshes the progress clock. Progress notes wake nobody.
-- An **orphan sweep** runs every 30 s. A `doing` checkout whose engine has been unreachable for `orphan_secs` (120 s) — or, when the mesh is down, that has had no progress note for `stale_secs` (900 s) — is marked orphaned, the epoch is bumped, a thread note is written and the owner is woken to resume. The checkout is kept, so the owner's next `task_checkout` succeeds and the old session is superseded.
+- An **orphan sweep** runs every 30 s on the task's home machine. A `doing` checkout whose engine has been unreachable for `orphan_secs` (120 s) — or, when the mesh is down, that has had no progress note for `stale_secs` (900 s) — is marked orphaned, the epoch is bumped, a thread note is written and the owner is woken to resume. The checkout is kept, so the owner's next `task_checkout` succeeds and the old session is superseded.
 - When a desk's episode closes, every `doing` task it checked out without a `continuing` disposition becomes `blocked: no continuation`, the checkout is cleared and its manager is woken for review. The same happens when a desk twice ends a turn with its woken task unmoved (it gets one nudge in between).
 
 ### Wakes
@@ -73,6 +73,16 @@ Agents learn about tasks through wakes, delivered to the agent's desk session as
 **Back-off.** Two consecutive wakes that change nothing put the task on a timer: the next wake waits `backoff_min_secs` doubling per repeat up to `backoff_max_secs` (120 s → 1800 s). A task in back-off is hidden from `task_inbox`. Any edit or comment by you resets it.
 
 Wakes go to agents only. You are told through the **Queue** strip at the top of the board and the **Attention** page (polled every 60 s): tasks blocked on a decision or a person, reviews where you are the reviewer, pending hires. There is no push or channel notification for ordinary state changes.
+
+### Machines
+
+In a [mesh](/docs/automation/mesh) the board shows every machine's tasks, but a task belongs to one machine — its **home**. Only that machine's desks get its wakes, check it out and sweep it; the same agent name on another machine (theuth is on every machine) never picks it up. You can still comment, move, answer and review any task from any machine.
+
+- **Home.** A task is homed on the machine whose roster has its agent — the creating machine when it has the agent (theuth and tasks you own: always), else the one machine that has it, else the creating machine. A routine's `agent:` task follows the same rule from the machine that fires it. The board card shows `on <machine>`; cards homed on another machine are dimmed but open. The **Any machine** filter narrows the board to one machine. `task_inbox` lists only the tasks homed on the desk's own machine. A task homed on a machine without its agent waits: its thread says so once and Attention shows `<agent> isn't on <machine>; it's on <other>` until you move it.
+- **Moving.** Open the task and pick **⋯ › Move to ▸ \<machine\>** (or ask theuth: `task_move_home {task, to}`). A machine is offered when it is online and has the task's agent (and its reviewer, when that is an agent); otherwise it is greyed out with `— no <agent> agent there` or `offline 5m`. The move is checked first; then a live work session on this machine moves along (the subtitle says `Its session moves too`, [Mesh › Move to](/docs/automation/mesh)) and keeps working the task there. Without a session that moves, the checkout is cleared (the old session is superseded) and the owner on the new machine is woken `reassigned`. A done or cancelled task does not move; an agent can move only tasks homed on its own machine that it owns or that report to it.
+- **Home offline.** Nothing runs elsewhere on its own. The task detail shows `<machine> is offline (since HH:MM)` with a **Move to ▸** callout. After `tasks.home_offline_ask_secs` (300 s) with tasks waiting on it, the machine's Attention item becomes `<machine> is offline — N tasks are waiting`, naming the first five, with **Move them to \<this machine\>** (moves the ones whose agent is here and names the others) and **Keep waiting** (asks again in an hour). It goes away when the machine returns or its tasks have moved. A home naming a machine this mesh does not know shows the same way, as `an unknown machine`, with the offline line and callout.
+- **After a restart.** A machine with paired peers does no task work until its first sync with them is done (or no peer connects within `mesh.lapse_secs`): no wakes, no sweeps, and its desks' task writes answer `this machine is still catching up…`. A desk turn that was running when it stopped waits too; it then resumes, or — when its task moved meanwhile — ends. So the old machine never continues a moved task: it delivers no wake for it, its checkout is refused (`task <id> lives on <machine> — move it here first`) and its desk's task writes are refused (`task <id> moved to <machine>`).
+- **Versions.** Every machine must run the same theuth version: an older one ignores homes and dispatches every task to its own desks. Upgrading one machine after the other is fine: on connect each machine sends its homes again.
 
 ### Dependencies
 
@@ -142,6 +152,7 @@ prints JSON. `--owner` takes `agent:<name>` or `user`; `--state` a comma list (t
 | Key | Default | Meaning |
 |---|---|---|
 | `tasks.orphan_secs` | `120` | A checkout whose engine has been unreachable this long is orphaned and the owner re-woken. |
+| `tasks.home_offline_ask_secs` | `300` | A task's home machine unreachable this long, with tasks waiting on it, raises one Attention item asking whether to move them. |
 | `tasks.stale_secs` | `900` | With the mesh down, a `doing` task with no progress note this long is orphaned. |
 | `tasks.note_secs` | `300` | How often work sessions are expected to write a progress note. Advisory — as of this writing nothing enforces it. |
 | `tasks.cross_task_write_cap` | `20` | Tasks one session may write to that it does not own. |
@@ -165,6 +176,7 @@ Config is read at startup; edits need a restart.
 | `task_update` | `id, disposition?: done\|review{reviewer}\|blocked{on}\|delegated{to}\|continuing{by}, state?: cancelled\|doing, owner?, reviewer?, blockers?[], title?, brief?, external?[], done_when?, attachments?[], done_because?` | The owner's own-work path. Other `state` values answer `goes through disposition`. `delegated` needs an existing child and adds it as a blocker. |
 | `task_move` | `task, state, note?, done_because?` | User-intent moves; refusals list the allowed targets. |
 | `task_reassign` | `task, to, why` | Owner or user; from `todo`, `doing`, `blocked`. Releases the checkout (`doing → todo`); wakes the new owner `reassigned` unless blocked. |
+| `task_move_home` | `task, to` | The task's home becomes machine `to` (name or id): online, has the owner agent, task not done/cancelled; only for tasks homed on the caller's machine. A work session it had stays (the board's **Move to** moves it). |
 | `task_note` | `id, text, progress?` | Comment (wakes owner, reviewer in review, and any agent named in the text) or progress note (wakes nobody). |
 | `task_place` | `id, needs?, where?, harness?, reason?` | Picks an engine by policy, asks theuth's desk when several fit (120 s wait). No fit → `blocked: engine:<missing>`; owner pinned to a VM that is not ready → `blocked: sandbox:<name>`. |
 | `escalate` | `task, question, options?[]` | Agents only; the user gets `you are the top of the line; decide it`. |
@@ -231,6 +243,9 @@ Routine-created tasks: each fire of a routine with an `agent:` line files a `tod
 | `done needs a reviewer other than the owner (self-review is only allowed against an explicit done_when)` | Agent is its own reviewer and the task has no `done_when`. | Set criteria via chat (`task_update {done_when}`) or name another reviewer; or mark done yourself. |
 | `a self-reviewed task is done only because its done_when criteria are met` | Self-reviewer passed `intent_met` / `follow_ups_filed`. | Use `criteria_met`, or have the manager close it. |
 | `conflict: checked out by <session> on <engine> (epoch N)` | Another live session holds the task. | Wait for the orphan sweep (120 s unreachable / 900 s stale), or reassign it; do not create a duplicate. |
+| `task <id> lives on <machine> — move it here first` | `task_checkout` on a task homed on another machine. | Let that machine's desk work it, or move it here with **⋯ › Move to ▸**. |
+| `task <id> moved to <machine>; stop, it is worked there` | The owner's desk on the old home wrote a task that moved away. | Expected; the new home works it. |
+| `<machine> — no <agent> agent there` | **Move to** a machine whose roster lacks the owner. | Hire the agent there, or reassign the task to an agent that machine has. |
 | `superseded: task … stop, your work is stale` | The session lost the checkout to a newer epoch. | That session must stop; the current checkout owner continues. |
 | `tasks.cross_task_write_cap: this session has written to 20 tasks it does not own; delegate with task_create instead` | One session editing many other owners' tasks. | File child tasks and let owners do their own writes; raise `tasks.cross_task_write_cap` only if this is intended. |
 | Task stuck in `blocked` with `decision:…`; **Unblock** missing | An escalation awaits an answer. | Answer it: the ask card in the agent's session, or **Attention › Answer**. |

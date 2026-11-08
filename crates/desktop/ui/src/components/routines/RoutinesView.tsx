@@ -17,6 +17,8 @@ import type { ControlOp } from '@/rpc/bindings/ControlOp'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SensorInfo } from '@/rpc/bindings/SensorInfo'
 import { type Kind, type Result, fromInfo, kindOf, lastCheckText, relative, resultKind, resultLabel, runCount, sentence, sortRoutines, verdictText } from './helpers'
+import { machineUnknown } from '@/components/tasks/home'
+import { useMesh } from '@/components/tasks/queries'
 import { KEY, useNotHub, useRoutines, useRoutinesApi, useSensors } from './queries'
 
 export const RESULT_CLASS: Record<Result, string> = {
@@ -124,6 +126,7 @@ export function StopChip({ s }: { s: ScheduleInfo }) {
 /** Chips shared by the list row and the detail header: last result, running, not-hub, agent, project, approvals off. */
 export function RoutineChips({ s, notHub }: { s: ScheduleInfo; notHub: boolean }) {
   const result = resultKind(s.last_result)
+  const unknown = machineUnknown(s.engine, useMesh().data)
   return (
     <>
       {s.running && (
@@ -136,9 +139,18 @@ export function RoutineChips({ s, notHub }: { s: ScheduleInfo; notHub: boolean }
           {resultLabel(s.last_result)}
         </Badge>
       )}
-      {notHub && s.enabled && (
-        <Badge variant="outline" className="font-normal text-fg-tertiary" title="Ticks are the hub's duty; this node does not fire routines">
-          not hub
+      {unknown && s.enabled && (
+        <Badge variant="outline" className="font-normal text-warning" title="Made on a machine that is not paired here; it fires on the hub">
+          machine unknown
+        </Badge>
+      )}
+      {notHub && s.enabled && !unknown && (
+        <Badge
+          variant="outline"
+          className="font-normal text-fg-tertiary"
+          title={s.engine ? 'Fires on the machine that made it; not on this machine' : "Ticks are the hub's duty; this machine does not fire routines"}
+        >
+          {s.engine ? 'other machine' : 'not hub'}
         </Badge>
       )}
       {s.agent && (
@@ -222,7 +234,7 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
             last check {lastCheckText(s.last_check)}
           </span>
         )}
-        <RoutineChips s={s} notHub={notHub} />
+        <RoutineChips s={s} notHub={notHub(s)} />
       </div>
     </>
   )

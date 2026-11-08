@@ -1,4 +1,5 @@
 import { expect, test } from 'vitest'
+import type { RemoteAgent } from '@/components/tasks/home'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import { type Node, budgetUsed, layout, tree } from './tree'
 
@@ -46,4 +47,17 @@ test('layout centres theuth over its reports and never overlaps siblings', () =>
   expect(at('writer').x).toBe(at('ops').x)
   expect(l.edges.map((e) => `${e.from.node.name}>${e.to.node.name}`).sort()).toEqual(['ops>writer', 'theuth>ops', 'theuth>research'])
   expect(l.height).toBe(210)
+})
+
+test('182: another machine\'s agents are nodes too — its theuth under the root, its agents under it; keys are unique per engine', () => {
+  const r = (engine: string, name: string, reportsTo: string): RemoteAgent => ({ key: `${engine}/${name}`, engine, name, title: name, engineName: engine, reportsTo, status: 'idle', open: 0, subtitle: '' })
+  const t = tree([s('theuth', ''), s('hans', 'theuth')], [r('xeus', 'theuth', 'user'), r('xeus', 'ops', 'theuth'), r('xeus', 'dev', 'ops'), r('xeus', 'loop', 'loop')], 'A')
+  expect(names(t)).toEqual(['theuth', [['hans', []], ['loop', []], ['theuth', [['ops', [['dev', []]]]]]]])
+  expect(t.children.map((c) => c.on)).toEqual(['A', 'xeus', 'xeus'])
+  const keys: string[] = []
+  const walk = (n: Node) => (keys.push(n.key), n.children.forEach(walk))
+  walk(t)
+  expect(new Set(keys).size).toBe(keys.length)
+  expect(keys).toContain('theuth')
+  expect(keys).toContain('xeus/theuth')
 })

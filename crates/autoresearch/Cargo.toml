@@ -10,6 +10,7 @@ runtime = { workspace = true }
 tools = { workspace = true }  # 140 §12.4 the seven tools, `RegisterPrompt`, `Risk`
 agent = { workspace = true }  # 140 §8.2 `SetToolset`, §8.4 the spend ledger, `AgentConfig` model defaults
 schedule = { workspace = true }  # 140 §8.1 the study's schedule file, `ScheduleEvent::Fired`, `SetEnabled`, `Done`
+mesh = { workspace = true }  # 182 S11 `has_stored_peers`
 knowledge = { workspace = true }  # 140 §7.3 the cross-study record (W2 `record.rs`)
 document = { workspace = true }  # 140 §11.3 the report document (W2 `finalize.rs`)
 codeindex = { workspace = true }  # 140 §7.2 `code_map` of the scope in the brief (W6 `brief.rs`)

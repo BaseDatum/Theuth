@@ -54,8 +54,11 @@ export function useSensors() {
   return useQuery({ queryKey: ['sensors'], queryFn: () => api.list_sensors(), staleTime: 60_000 })
 }
 
-/** Ticks are a hub duty (67 §4.4): on a mesh node that is not the hub, `next` is shown but never fires here. */
-export function useNotHub(): boolean {
+/**
+ * Whether a schedule fires on this node (182 D6): one stamped `engine:` fires only there; an unstamped one ticks on
+ * the hub (67 §4.4). `true` = shown but never fired here.
+ */
+export function useNotHub(): (s: { engine?: string | null }) => boolean {
   const m = useMesh().data
-  return !!m && m.lease.holder !== null && m.lease.holder !== m.self_id
+  return (s) => (s.engine ? !!m && s.engine !== m.self_id : !!m && m.lease.holder !== null && m.lease.holder !== m.self_id)
 }

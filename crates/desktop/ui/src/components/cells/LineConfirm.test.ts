@@ -49,7 +49,7 @@ test('CELLAFTER M1/S4: Cancel, Esc or a press outside never runs; a changed cell
     const args = calls[0]?.[1] ?? []
     expect([args[1], args[6]]).toEqual([await digest(TEXT_A), true])
     expect(args[1]).not.toBe(await digest(TEXT_B))
-    // Not ticked: the next ▶ asks again. Ticked: persisted, the next ▶ runs at once.
+    // Not ticked: the next ► asks again. Ticked: persisted, the next ► runs at once.
     expect(lineGuard(true, askSkipped(open.identity), null).kind).toBe('confirm')
     askStep(open, { kind: 'run', skip: true })
     expect(lineGuard(true, askSkipped(open.identity), null).kind).toBe('run')

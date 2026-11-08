@@ -56,6 +56,7 @@ pub fn class_of(item: &AttentionItem) -> Option<AlertClass> {
         K::Handoff => own("handoff:"),
         K::Secret => own("secret:"),
         K::Ask => own("ask:"),
+        K::Home => own("home:"),
         K::Resume => own("resume:") && !own("resume:boot:"),
         K::Budget => {
             own("budget:")
@@ -90,6 +91,7 @@ pub fn why_of(item: &AttentionItem) -> String {
         K::Secret => "a session asked for a secret".into(),
         K::Ask => "a session asked you a question".into(),
         K::Resume => "an interrupted turn needs the Resume button".into(),
+        K::Home => "a machine is offline with tasks waiting on it".into(),
         K::Budget => "an agent is paused at its budget cap".into(),
         K::Finished => {
             let first = item

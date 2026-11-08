@@ -9,7 +9,7 @@ import { simFlag, useSandboxes } from '@/components/settings/sandbox-queries'
 import { useRoutines } from '@/components/routines/queries'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { age } from '@/components/tasks/helpers'
-import { useAgents, useTasks } from '@/components/tasks/queries'
+import { useAgents, useMesh, useTasks } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
@@ -166,7 +166,8 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   blocked: 'blocked',
   review: 'review',
   budget: 'budget',
-  node: 'node',
+  node: 'offline',
+  home: 'offline',
   handoff: 'hand-off',
   secret: 'secret',
   ask: 'question',
@@ -175,6 +176,9 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   double: 'double',
   finished: 'Finished',
 }
+
+/** The chip of one item: a `misplaced:<task>` item (182: the task's agent lives on another machine) is kind `home` but nothing is offline. */
+export const itemLabel = (item: Pick<AttentionItem, 'id' | 'kind'>): string => (item.id.startsWith('misplaced:') ? 'agent elsewhere' : KIND_LABEL[item.kind])
 
 /** The inbox's empty state; `/attention`'s rail says the same (101, 104). */
 export const ATTENTION_EMPTY = 'Nothing needs you. Agents\u2019 questions and what they show you, tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs, secret requests and turns a restart could not finish cleanly land here.'
@@ -223,7 +227,7 @@ function AttentionCard({ item }: { item: AttentionItem }) {
     <li className="flex flex-col gap-2 px-3 py-2 text-[13px] sm:flex-row sm:items-center sm:gap-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{KIND_LABEL[item.kind]}</span>
+          <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{itemLabel(item)}</span>
           <DoubleChip ids={doubleIds(item)} />
           {/* 104 A8: every title opens its screen on the attention surface (101 D12 did this for decisions and reviews). */}
           <Link to="/attention/$id" params={{ id: item.id }} className="truncate font-medium hover:underline">
@@ -240,6 +244,33 @@ function AttentionCard({ item }: { item: AttentionItem }) {
 
 /** 126: every id the double may have keyed this item's card by — the approval, the ask, the packet, or the `double:<question_id>` item itself. */
 export const doubleIds = (item: AttentionItem): (string | null | undefined)[] => [item.approval, item.ask?.id, item.packet, item.decision, item.kind === 'double' ? item.id.replace(/^double:/, '') : null]
+
+/** 182: an offline machine's `node:<engine>` item of kind `home` — Move them here · Keep waiting; a `misplaced:<task>` item opens the task. */
+function HomeActions({ item, size, busy, act, then }: { item: AttentionItem; size: 'xs' | 'sm' | 'default'; busy: boolean; act: ReturnType<typeof useAttentionActions>; then(p: Promise<unknown>): void }) {
+  const mesh = useMesh().data
+  if (item.id.startsWith('misplaced:')) {
+    return (
+      item.task && (
+        <Button asChild size={size}>
+          <Link to="/tasks/$id" params={{ id: item.task }}>
+            Open task
+          </Link>
+        </Button>
+      )
+    )
+  }
+  if (!mesh) return null
+  return (
+    <>
+      <Button size={size} disabled={busy} onClick={() => then(act.moveHome.mutateAsync({ from: item.id.replace(/^node:/, ''), to: mesh.self_name }))}>
+        Move them to {mesh.self_name}
+      </Button>
+      <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.snooze.mutateAsync({ id: item.id, until: Date.now() + 3_600_000 }))}>
+        Keep waiting
+      </Button>
+    </>
+  )
+}
 
 /**
  * The per-kind buttons of an inbox item — the card's inline block and the plain screen's action row (101 D7) share it.
@@ -345,17 +376,22 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
           Unblock
         </Button>
       )}
+      {item.kind === 'home' && <HomeActions item={item} size={size} busy={busy} act={act} then={then} />}
       {item.kind === 'budget' && item.agent && (
         <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.unpause.mutateAsync(item.agent as string))}>
           Un-pause
         </Button>
       )}
-      <Button size={size} variant="ghost" disabled={busy} title="Snooze until 09:00 tomorrow" onClick={() => then(act.snooze.mutateAsync({ id: item.id, until: snoozeUntil('tomorrow') }))}>
-        Snooze
-      </Button>
-      <Button size={size} variant="ghost" disabled={busy} onClick={() => then(act.dismiss.mutateAsync(item.id))}>
-        Dismiss
-      </Button>
+      {item.kind !== 'home' && (
+        <Button size={size} variant="ghost" disabled={busy} title="Snooze until 09:00 tomorrow" onClick={() => then(act.snooze.mutateAsync({ id: item.id, until: snoozeUntil('tomorrow') }))}>
+          Snooze
+        </Button>
+      )}
+      {(item.kind !== 'home' || item.id.startsWith('misplaced:')) && (
+        <Button size={size} variant="ghost" disabled={busy} onClick={() => then(act.dismiss.mutateAsync(item.id))}>
+          Dismiss
+        </Button>
+      )}
     </div>
   )
 }

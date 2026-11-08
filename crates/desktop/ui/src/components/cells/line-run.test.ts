@@ -48,7 +48,7 @@ test('171F4 T2-6: output, a newer run or a refused press clears the mark', () =>
   expect(refused(other, 3)).toBe(other)
 })
 
-test('CELLAFTER: a ▶ on a disarmed cell warns first; the same line again within the window runs, later or elsewhere warns again', () => {
+test('CELLAFTER: a ► on a disarmed cell warns first; the same line again within the window runs, later or elsewhere warns again', () => {
   const first = pastGate(null, 2, T)
   expect(first).toEqual({ run: false, warned: { line: 2, at: T } })
   expect(pastGate(first.warned, 2, T + WARN_MS)).toEqual({ run: true, warned: null })
@@ -60,18 +60,18 @@ test('CELLAFTER: a ▶ on a disarmed cell warns first; the same line again withi
   expect(pastGate(other.warned, 3, T + 200).run).toBe(true)
 })
 
-test('CELLAFTER: a danger ▶ asks (naming the gate when also disarmed) until "Don’t ask again"; a disarmed one warns; else it runs', () => {
+test('CELLAFTER: a danger ► asks (naming the gate when also disarmed) until "Don’t ask again"; a disarmed one warns; else it runs', () => {
   const why = 'after: preview — run it first'
   expect(lineGuard(true, false, null)).toEqual({ kind: 'confirm', reason: null })
   expect(lineGuard(true, false, why)).toEqual({ kind: 'confirm', reason: why })
   expect(lineGuard(true, true, null)).toEqual({ kind: 'run' })
   // Not asking any more never waives the gate's own warning.
-  expect(lineGuard(true, true, why)).toEqual({ kind: 'warn', text: `${why} — press ▶ again to run anyway` })
-  expect(lineGuard(false, false, why)).toEqual({ kind: 'warn', text: `${why} — press ▶ again to run anyway` })
+  expect(lineGuard(true, true, why)).toEqual({ kind: 'warn', text: `${why} — press ► again to run anyway` })
+  expect(lineGuard(false, false, why)).toEqual({ kind: 'warn', text: `${why} — press ► again to run anyway` })
   expect(lineGuard(false, false, null)).toEqual({ kind: 'run' })
   // A reason's own "— run it again" gives way to the offer; the confirm keeps the reason whole.
   const old = 'the prepare run is more than 1 h old — run it again'
-  expect(lineGuard(false, false, old)).toEqual({ kind: 'warn', text: 'the prepare run is more than 1 h old — press ▶ again to run anyway' })
+  expect(lineGuard(false, false, old)).toEqual({ kind: 'warn', text: 'the prepare run is more than 1 h old — press ► again to run anyway' })
   expect(lineGuard(true, false, old)).toEqual({ kind: 'confirm', reason: old })
 })
 

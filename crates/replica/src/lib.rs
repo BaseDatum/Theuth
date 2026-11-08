@@ -29,6 +29,7 @@ use runtime::Runtime;
 use sqlx::SqlitePool;
 
 pub use engine::{Clock, Engine, ReplicaHandle, Stats, stats};
+pub use sync::{caught_up_with, plugins_started};
 pub use types::{ByteStream, Change, ChangeBatch, Hlc, PeerEvent, PeerId, Transport};
 
 /// Registry name of the [`Replica`] actor.

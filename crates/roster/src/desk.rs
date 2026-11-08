@@ -660,6 +660,9 @@ struct State {
 #[derive(Default)]
 pub struct Shared {
     state: RwLock<State>,
+    /// 182 D8: the roster store, for the replicated per-engine agent list
+    /// the tasks router reads (`engines_with`); set once at plugin start.
+    pub store: std::sync::OnceLock<crate::store::Store>,
 }
 
 impl Shared {
@@ -977,6 +980,7 @@ pub(crate) mod tests {
                 meta: "updated Sep 24".into(),
             }],
             priority: tasks::Priority::Medium,
+            home: None,
         };
         let wake = tasks::Wake {
             id: "w1".into(),
@@ -1136,6 +1140,7 @@ Attached (read with the tool for the kind, see Attachments):\n\
             done_when: None,
             attachments: vec![],
             priority: tasks::Priority::Medium,
+            home: None,
         };
         let id = t.id.clone();
         let wake = move |reason| tasks::Wake {
@@ -1330,6 +1335,7 @@ Attached (read with the tool for the kind, see Attachments):\n\
             done_when: None,
             attachments: vec![],
             priority: tasks::Priority::Medium,
+            home: None,
         }
     }
 

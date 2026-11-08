@@ -125,7 +125,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
   const host = state?.host ?? null
   const view = viewOf(state, spec, edited !== null)
   const runnable = !!cellRef && !pending
-  // CELLAFTER (§7.6): the unarmed gate's reason; the button and a second ▶ run anyway, the keys hint.
+  // CELLAFTER (§7.6): the unarmed gate's reason; the button and a second ► run anyway, the keys hint.
   const gate = disarmedReason(state, spec)
 
   // §11.1 fold: the latest cell of the reply that has run stays open.
@@ -153,7 +153,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
       },
     )
   }
-  // `confirmed` only from the presses past a warning: Run anyway, the second ▶, the danger confirm (or its "Don't ask again").
+  // `confirmed` only from the presses past a warning: Run anyway, the second ►, the danger confirm (or its "Don't ask again").
   // `at`: the code the press was made on (a danger ask's press-time code, M1), so what was confirmed is what runs.
   const run = (mode: CellRunMode, next?: boolean, confirmed = false, at?: string) => {
     if (!cellRef) return

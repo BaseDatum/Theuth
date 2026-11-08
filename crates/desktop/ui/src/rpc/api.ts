@@ -1,3 +1,5 @@
+import type { EngineAgent } from '@/rpc/bindings/EngineAgent'
+import type { MovedHome } from '@/rpc/bindings/MovedHome'
 import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
 import type { SetOptionResult } from '@/rpc/bindings/SetOptionResult'
 import type { ChildResumed } from '@/rpc/bindings/ChildResumed'
@@ -754,6 +756,8 @@ export interface Api {
   secret_requests_list(): Promise<SecretRequest[]>
   /** Every roster agent with status, desk, open tasks and month spend (67 §12). */
   agents_list(): Promise<AgentSummary[]>
+  /** 182: every engine's replicated agent roster, this engine's rows included. */
+  engine_agents_list(): Promise<EngineAgent[]>
   /** One agent file (67 §6.1). */
   agent_get(name: string): Promise<AgentFile>
   /** The agent's desk session id, opening the desk when it is not (the Desks row). */
@@ -776,6 +780,10 @@ export interface Api {
   task_update(id: string, patch: TaskPatch): Promise<Task>
   /** Move a task on the user's intent: backlog ↔ todo, → cancelled, review → done | doing | todo (67 §7.2, 69). `Err` names the allowed targets. 132 D3: `next` = the index of the review packet's next move, valid only for review → done; an older engine ignores it. */
   task_move(id: string, state: TaskState, note: string | null, next?: number | null): Promise<Task>
+  /** 182: move a task to engine `to` (mesh id); only that engine's agent desk works it. `Err` is a plain message (offline, no such agent there, done, a refused session move). */
+  task_move_home(id: string, to: string): Promise<Task>
+  /** 182: the Attention item's button: move every task waiting on offline engine `from` to the engine this client talks to. */
+  task_move_home_waiting(from: string): Promise<MovedHome>
   /** Comment on a task's thread as the user (67 §7.3). */
   task_comment(id: string, text: string): Promise<null>
   /** The task's field-level event log (67 §7.2). */
@@ -1280,7 +1288,7 @@ export interface Api {
   /**
    * Run one cell: `seen` is the digest the press was made on, `edited` the F4 text, `member_ack` a member's consent,
    * `confirmed` the second press past a warning — Run anyway past an unarmed `after` gate, or a danger cell's
-   * line/selection ▶ (CELLAFTER; nothing else is skipped).
+   * line/selection ► (CELLAFTER; nothing else is skipped).
    */
   cell_run(cell: CellRef, seen: string, mode: CellRunMode, run: CellRunId, edited: string | null, member_ack: string | null, confirmed: boolean): Promise<CellRun>
   /** Run `cells` top to bottom under one pass id (`pass`); answers the pass id. */
@@ -1508,6 +1516,7 @@ export const METHODS = [
   'endless_settings_get',
   'endless_settings_set',
   'endless_zoom',
+  'engine_agents_list',
   'escalate_model',
   'export_artifact',
   'fire_schedule',
@@ -1811,6 +1820,8 @@ export const METHODS = [
   'task_events',
   'task_get',
   'task_move',
+  'task_move_home',
+  'task_move_home_waiting',
   'task_update',
   'tasks_list',
   'telegram_allow',

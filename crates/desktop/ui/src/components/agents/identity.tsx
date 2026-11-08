@@ -1,4 +1,5 @@
 import { THEUTH } from '@/components/tasks/helpers'
+import type { RemoteAgent } from '@/components/tasks/home'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 import type { AgentStatus } from '@/rpc/bindings/AgentStatus'
@@ -45,6 +46,22 @@ export const ACTIVITY: Partial<Record<AgentStatus, { label: string; dot: string;
   blocked: { label: 'blocked', dot: 'bg-warning', chip: 'border-warning/40 text-warning' },
   unreachable: { label: 'unreachable', dot: 'bg-danger', chip: 'border-danger/40 text-danger' },
   invalid: { label: 'invalid file', dot: 'bg-danger', chip: 'border-danger/40 text-danger' },
+}
+
+/** 182: another machine's agent has only its file's word: idle, paused, proposed — or `offline` when its machine is. Same chip as the local activity. */
+const REMOTE: Record<RemoteAgent['status'], { dot: string; chip: string }> = {
+  idle: { dot: 'bg-fg-tertiary/50', chip: 'border-border text-fg-secondary' },
+  paused: { dot: 'bg-warning', chip: 'border-warning/40 text-warning' },
+  proposed: { dot: 'bg-info', chip: 'border-info/40 text-info' },
+  offline: { dot: 'bg-fg-tertiary', chip: 'border-border text-fg-tertiary' },
+}
+export function RemoteChip({ status, className }: { status: RemoteAgent['status']; className?: string }) {
+  return (
+    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium', REMOTE[status].chip, className)}>
+      <span className={cn('size-1.5 shrink-0 rounded-full', REMOTE[status].dot)} aria-hidden />
+      {status}
+    </span>
+  )
 }
 
 /** The dot on an avatar: activity colour, grey when paused. */

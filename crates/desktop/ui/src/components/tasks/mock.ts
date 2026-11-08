@@ -29,6 +29,7 @@ const task = (n: number, t: Partial<Task> & Pick<Task, 'title' | 'owner' | 'stat
   blocks: [],
   parent: null,
   where: null,
+  home: null,
   harness: null,
   external: [],
   thread: null,

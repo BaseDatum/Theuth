@@ -19,6 +19,8 @@ import { AttachmentCount } from './Attachments'
 import { NewTaskSheet } from './NewTaskSheet'
 import { recallBoardScroll, rememberBoard, rememberBoardScroll, takeOpenedTask } from './boardMemory'
 import { QueueBar, QueueList, useQueue, useQueueOpen } from './Queue'
+import { CardMenu } from './MoveHome'
+import { engines, homeEngine, isMuted, mutedTitle, onMachine } from './home'
 import { DRAG_STATES, STATES, age, canDrag, columns, nodesOf, ownerLabel, parseBlocker, stateChip } from './helpers'
 import { useAgents, useBoardProjects, useMesh, useMoveTask, useTasks } from './queries'
 
@@ -183,12 +185,26 @@ export function Board() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={search.engine ?? ANY} onValueChange={(v) => set({ engine: v === ANY ? undefined : v })}>
-          <SelectTrigger size="sm" className="w-36" aria-label="Node">
-            <SelectValue placeholder="Node" />
+        <Select value={search.machine ?? ANY} onValueChange={(v) => set({ machine: v === ANY ? undefined : v })}>
+          <SelectTrigger size="sm" className="w-36" aria-label="Machine">
+            <SelectValue placeholder="Machine" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ANY}>Any node</SelectItem>
+            <SelectItem value={ANY}>Any machine</SelectItem>
+            {engines(mesh.data).map((e) => (
+              <SelectItem key={e.id} value={e.id}>
+                {e.name}
+                {e.here && <span className="text-fg-tertiary"> · this machine</span>}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={search.engine ?? ANY} onValueChange={(v) => set({ engine: v === ANY ? undefined : v })}>
+          <SelectTrigger size="sm" className="w-44" aria-label="Work session on">
+            <SelectValue placeholder="Work session on" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ANY}>Work session: any node</SelectItem>
             {nodesOf(mesh.data).map((n) => (
               <SelectItem key={n.name} value={n.name}>
                 {n.name}
@@ -246,7 +262,7 @@ export function Board() {
             {tasks.isError && <p className="p-6 text-center text-sm text-fg-tertiary">{tasks.error.message}</p>}
             {tasks.data && (
               <div className="flex h-full snap-x gap-3 p-3">
-                {columns(tasks.data, search.cancelled === true).map(({ state, tasks: col }) => {
+                {columns(tasks.data.filter((t) => onMachine(t, search.machine)), search.cancelled === true).map(({ state, tasks: col }) => {
                   const droppable = drag !== null && canDrag(drag.task.state, state)
                   return (
                     <section
@@ -303,8 +319,16 @@ export function Board() {
 export function TaskCard({ task: t, onStart, drag, returned }: { task: Task; onStart?: () => void; drag?: DragProps; returned?: boolean }) {
   const first = t.blockers[0] ? parseBlocker(t.blockers[0]) : null
   const handlers = useCardDrag(t, drag)
+  const mesh = useMesh().data
+  const home = homeEngine(t, mesh)
+  const muted = isMuted(t, mesh)
   return (
-    <li {...handlers} data-task-id={t.id} className={cn(drag && 'cursor-grab select-none active:cursor-grabbing')}>
+    <li
+      {...handlers}
+      data-task-id={t.id}
+      title={mutedTitle(t, mesh)}
+      className={cn('relative', drag && 'cursor-grab select-none active:cursor-grabbing', muted && 'opacity-[.72] transition-opacity hover:opacity-100')}
+    >
       <Link
         to="/tasks/$id"
         params={{ id: t.id }}
@@ -316,7 +340,7 @@ export function TaskCard({ task: t, onStart, drag, returned }: { task: Task; onS
       >
         <div className="flex items-start gap-1.5">
           {t.checkout && <Circle className="mt-1 size-2 shrink-0 fill-success text-success" aria-label="in progress" />}
-          <span className="min-w-0 flex-1 wrap-anywhere">{t.title}</span>
+          <span className="min-w-0 flex-1 wrap-anywhere pr-5">{t.title}</span>
         </div>
         <div className="mt-1.5 flex items-center gap-1.5 text-xs">
           <Badge variant={t.state === 'doing' ? 'default' : 'outline'} className="max-w-full">
@@ -340,6 +364,12 @@ export function TaskCard({ task: t, onStart, drag, returned }: { task: Task; onS
         <div className="mt-2 flex flex-wrap items-center gap-1 text-xs text-fg-secondary">
           <Badge variant="secondary">{ownerLabel(t.owner)}</Badge>
           {t.reviewer && <span className="text-fg-tertiary">→ {ownerLabel(t.reviewer)}</span>}
+          {home && (
+            <Badge variant="outline" className={cn('gap-1', muted && 'border-dashed')}>
+              <span className={cn('size-1.5 rounded-full', home.online ? 'bg-success' : 'bg-fg-tertiary')} aria-hidden />
+              on {home.name}
+            </Badge>
+          )}
           {t.where && <Badge variant="outline">{t.where}</Badge>}
           {t.harness && <Badge variant="outline">{t.harness}</Badge>}
           <AttachmentCount items={t.attachments} />
@@ -358,6 +388,7 @@ export function TaskCard({ task: t, onStart, drag, returned }: { task: Task; onS
           </div>
         )}
       </Link>
+      <CardMenu task={t} />
     </li>
   )
 }

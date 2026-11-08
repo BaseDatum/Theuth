@@ -1,8 +1,8 @@
-// 171F4 T2-6: the gutter's answer to a line or selection ▶. While the run is in flight the pressed line shows it is
+// 171F4 T2-6: the gutter's answer to a line or selection ►. While the run is in flight the pressed line shows it is
 // running and a repeat press of that line is ignored; a run that ends with no output shows ✓ (exit 0) or ✗ for
 // FEEDBACK_MS, then the normal ►. A run with output answers in the output pane: the mark just clears.
-// CELLAFTER (§7.1, §7.6): a ▶ on a danger cell asks first (`LineConfirm`, unless "Don't ask again" for that cell); on a
-// non-danger cell whose `after` gate is not armed the first ▶ only warns by its line (`pastGate`).
+// CELLAFTER (§7.1, §7.6): a ► on a danger cell asks first (`LineConfirm`, unless "Don't ask again" for that cell); on a
+// non-danger cell whose `after` gate is not armed the first ► only warns by its line (`pastGate`).
 import { useEffect, useRef, useState } from 'react'
 import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
 import type { CellRef } from '@/rpc/bindings/CellRef'
@@ -66,14 +66,14 @@ export function hoverAfter(current: number | null, e: HoverEvent): number | null
 export const noteHover = (current: number | null, x: number, textLeft: number, line: number | null) =>
   hoverAfter(current, x < textLeft ? { kind: 'leave', inEditor: true } : { kind: 'move', line })
 
-/** CELLAFTER: how long a ▶'s warning stays, and waits for the second press. */
+/** CELLAFTER: how long a ►'s warning stays, and waits for the second press. */
 export const WARN_MS = 5000
 
-/** The warned ▶: its line and when. */
+/** The warned ►: its line and when. */
 export type Warned = { line: number; at: number }
 
 /**
- * 171 §7.6 (CELLAFTER): a line or selection ▶ on a non-danger cell whose `after` gate is not armed. The first press
+ * 171 §7.6 (CELLAFTER): a line or selection ► on a non-danger cell whose `after` gate is not armed. The first press
  * only warns; a second press of the same line within `WARN_MS` runs; a later one, or one on another line, warns again.
  */
 export function pastGate(w: Warned | null, line: number, now: number): { run: boolean; warned: Warned | null } {
@@ -81,16 +81,16 @@ export function pastGate(w: Warned | null, line: number, now: number): { run: bo
   return { run: false, warned: { line, at: now } }
 }
 
-/** What a pointer ▶ does (§7.1, §7.6): asks (a danger cell, with the gate's reason when it is also disarmed), warns first (a disarmed cell), or runs. */
+/** What a pointer ► does (§7.1, §7.6): asks (a danger cell, with the gate's reason when it is also disarmed), warns first (a disarmed cell), or runs. */
 export type LineGuard = { kind: 'run' } | { kind: 'confirm'; reason: string | null } | { kind: 'warn'; text: string }
 
 /**
  * `skipAsk`: the user ticked "Don't ask again for this cell" (`askSkipped`); the gate still warns then. The warning
- * drops the reason's own "— run it again" advice, which the "press ▶ again" offer replaces.
+ * drops the reason's own "— run it again" advice, which the "press ► again" offer replaces.
  */
 export function lineGuard(danger: boolean, skipAsk: boolean, disarmed: string | null): LineGuard {
   if (danger && !skipAsk) return { kind: 'confirm', reason: disarmed }
-  if (disarmed !== null) return { kind: 'warn', text: `${disarmed.replace(/ — run it again$/, '')} — press ▶ again to run anyway` }
+  if (disarmed !== null) return { kind: 'warn', text: `${disarmed.replace(/ — run it again$/, '')} — press ► again to run anyway` }
   return { kind: 'run' }
 }
 
@@ -106,7 +106,7 @@ export const askSkipped = (id: string) => globalThis.localStorage?.getItem(SKIP_
 export const skipAsking = (id: string) => localStorage.setItem(SKIP_ASK + id, '1')
 
 /**
- * An open danger ask (§7.1): everything fixed at the ▶ press — the command's first and last line, what runs, and the
+ * An open danger ask (§7.1): everything fixed at the ► press — the command's first and last line, what runs, and the
  * cell text then (`text`; its digest is the `seen` the run sends, so a cell changed since is refused, inv. 5).
  */
 export type Ask = {

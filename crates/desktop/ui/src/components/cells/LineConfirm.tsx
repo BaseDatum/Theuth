@@ -1,4 +1,4 @@
-// CELLAFTER (Sky, 2026-11-07): the ask before a danger cell's line or selection ▶ runs. An inline box positioned under
+// CELLAFTER (Sky, 2026-11-07): the ask before a danger cell's line or selection ► runs. An inline box positioned under
 // the command, never a modal: Radix's `hideOthers` (and any `aria-live`) inside a note's node view loops ProseMirror
 // (CELLHIST). It closes on Cancel, Esc, a press outside it, or (the hosts) any change of the cell's text.
 import { useEffect, useRef, useState } from 'react'

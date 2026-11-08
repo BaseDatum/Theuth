@@ -10,7 +10,7 @@ An agent is a standing role on your roster: a name, a title, a charter, a manage
 - theuth running — the desktop app, `t` in a terminal, or a `t --headless` daemon. The roster is always on; there is no switch to enable it.
 - Desks do their work in child sessions via `spawn_subagent`, which exists only when `agent.communication: true` is set in `config.yaml` (default `false`; `/communication on always` in the terminal UI, or Settings › Communication). Without it an agent can still be hired, but its desk cannot delegate work.
 - At least one model provider configured — see [Models and providers](/docs/getting-started/models). An agent's `model:` must be a catalog id for a configured provider.
-- Desks open only on the engine that holds the **hub lease**. On a single machine that is your own engine; in a [mesh](/docs/automation/mesh) it is the hub.
+- Each machine runs its own agents' desks. In a [mesh](/docs/automation/mesh) an agent file lives on the machine whose `~/.theuth/agents/` holds it, and theuth is on every machine; a task is worked only by the desks of its **home** machine (see [Tasks › Machines](/docs/automation/tasks#machines)). Every machine in the mesh must run the same theuth version: an older one still dispatches every task to its own desks.
 - Hiring and removing need no special permission: the Hire / Approve / Remove buttons are the consent. Tool calls made at a desk follow the ordinary permission model — see [Tools and permissions](/docs/reference/tools-permissions).
 
 ## How it works
@@ -27,14 +27,14 @@ Agents form a tree by `reports_to`, rooted at `theuth` (which reports to you). T
 
 ### Desks
 
-For every agent that is active (not paused, not an unapproved proposal) theuth keeps one session titled `<name> · desk` open on the hub. The desk is the agent: its system prompt is its identity (`You are <Title> (<name>), an agent on this theuth roster; you report to …`), its charter, its capabilities, its journal and an operating manual. Observable rules of that manual:
+For every agent that is active (not paused, not an unapproved proposal) theuth keeps one session titled `<name> · desk` open on that agent's machine. The desk is the agent: its system prompt is its identity (`You are <Title> (<name>), an agent on this theuth roster; you report to …`), its charter, its capabilities, its journal and an operating manual. Observable rules of that manual:
 
 - A desk never does the work in its own session — no files, shells or browsing there. It spawns a child session with a complete brief and the `model` and `tools` from its file.
 - On an `assigned` wake it runs a **fit check** against the roster's capabilities and hands the task to a better-matching agent with `task_reassign` if there is one. theuth's desk is the router by default.
 - Every turn woken for a task must end with a disposition: `done`, `review`, `blocked`, `delegated` or `continuing`. A turn that leaves its task unmoved gets one nudge; a second miss sets the task `blocked: "no continuation"` and wakes the manager.
 - At most `roster.max_rounds` (3) child rounds per task per episode.
 
-A desk's work is grouped into **episodes**. An episode closes when the desk is idle for `roster.episode_idle_secs` (21600 s = 6 h), reaches `roster.episode_context_pct` (60 %) of its context window, the thread ends, the hub lease moves, or theuth shuts down. The closing turn writes a journal (Done / Open / Next / Notes, capped at `roster.journal_max_bytes` = 8192) to `~/.theuth/roster/journal/<name>.md`, which the next episode reads back. Tasks still checked out at close without a `continuing` disposition become `blocked: no continuation`. A pause closes the episode too, but without the journal turn and without blocking anything (see [Pausing](#pausing)).
+A desk's work is grouped into **episodes**. An episode closes when the desk is idle for `roster.episode_idle_secs` (21600 s = 6 h), reaches `roster.episode_context_pct` (60 %) of its context window, the thread ends, or theuth shuts down. The closing turn writes a journal (Done / Open / Next / Notes, capped at `roster.journal_max_bytes` = 8192) to `~/.theuth/roster/journal/<name>.md`, which the next episode reads back. Tasks still checked out at close without a `continuing` disposition become `blocked: no continuation`. A pause closes the episode too, but without the journal turn and without blocking anything (see [Pausing](#pausing)).
 
 Desks and the task board are tightly coupled; [Tasks](/docs/automation/tasks) covers wakes, checkouts and dispositions in detail.
 
@@ -221,8 +221,8 @@ Spend is counted on the engine that charged it; in a mesh, work done on another 
 |---|---|
 | Agent name | `[a-z0-9-]{1,32}`, `theuth` reserved |
 | Number of agents | no cap |
-| Desks per agent | 1, on the hub-lease holder only |
-| Desk episode closes | idle 21600 s, or 60 % of context, or thread end / lease move / shutdown |
+| Desks per agent | 1 per machine that has the agent (theuth: one on every machine) |
+| Desk episode closes | idle 21600 s, or 60 % of context, or thread end / shutdown |
 | Episode closing turn grace | 10 min |
 | Journal | ≤ 8192 bytes, `~/.theuth/roster/journal/<name>.md` |
 | Child rounds per task per episode | 3 (`roster.max_rounds`) |
@@ -241,7 +241,7 @@ Lifecycle: **draft card** → (Hire) **active** ⇄ **paused** → (Remove) **de
 |---|---|---|
 | Activity chip `invalid file` | Front-matter parse error, unknown key, bad `tools` / `budget` / `runs_in`, or empty charter | Read the error on the card; fix the file or re-hire with **Replace** |
 | Agent paused on its own | Hit 100 % of its monthly budget | Read the *Budget override* task; flip to **Active** to override for the month, or raise the cap on the Overview › Budget card |
-| Desk click fails with `another engine holds the hub lease; desks open there` | Desks exist only on the hub | Open it from the hub engine, or move the hub (`t mesh hub prefer`) — see [Mesh](/docs/automation/mesh) |
+| A task shows `on <machine>` and its agent here never picks it up | The task's home is another machine; only that machine's desk works it | Open the task's **⋯ › Move to ▸** to move it here — see [Tasks › Machines](/docs/automation/tasks#machines) |
 | `agent is a proposal awaiting approval` | Trying to open a desk for an unapproved hire | Approve or decline it in the Hiring inbox |
 | `agent is paused` | Opening a paused agent's desk | Flip the switch to **Active** |
 | `desk is closing; try again in a moment` | Episode is in its closing turn | Wait up to 10 minutes and retry |
@@ -260,7 +260,7 @@ Lifecycle: **draft card** → (Hire) **active** ⇄ **paused** → (Remove) **de
 - [Delegation](/docs/automation/delegation) — `spawn_subagent`, tool ceilings, child sessions
 - [Schedules](/docs/automation/schedules) — routines with `agent: <name>` file a task for that agent on every fire
 - [Sandboxes](/docs/automation/sandboxes) — `runs_in: vm`
-- [Mesh](/docs/automation/mesh) — the hub lease that hosts desks
+- [Mesh](/docs/automation/mesh) — several machines, each with its own desks
 - [Channels](/docs/automation/channels) — first-word routing on Slack and Signal (not on Telegram)
 - [Tools and permissions](/docs/reference/tools-permissions)
 - [Configuration](/docs/reference/configuration)

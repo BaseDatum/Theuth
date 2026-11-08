@@ -12,7 +12,8 @@ import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { NativeSelect } from '@/components/routines/NativeSelect'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
-import { useAgents, useBoardProjects } from '@/components/tasks/queries'
+import { routineMachines } from '@/components/tasks/home'
+import { useAgents, useBoardProjects, useMesh } from '@/components/tasks/queries'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -180,7 +181,7 @@ export function RoutineDetail({ name, section, chat }: { name: string | null; se
               <Editor initial={NEW} info={null} section="overview" isNew sensors={sensors} draft={draft} focusForm={focusForm} />
             ) : (
               <>
-                {info && <Facts s={info} notHub={notHub} verdict={verdict} sensors={sensors} prompt={file.data?.prompt ?? null} />}
+                {info && <Facts s={info} notHub={notHub(info)} verdict={verdict} sensors={sensors} prompt={file.data?.prompt ?? null} />}
                 <nav className="flex gap-1 border-b border-border-subtle" aria-label="Routine sections">
                   {SECTIONS.map((s) => (
                     <Link
@@ -399,6 +400,7 @@ function Editor({
   const navigate = useNavigate()
   const chat = (useSearch({ strict: false }) as { chat?: string }).chat
   const agents = useAgents().data ?? []
+  const mesh = useMesh()
   const projects = useBoardProjects()
   const models = useModels()
   const runTimeoutDefault = shortDuration(Number(useConnection((s) => s.info)?.schedule_run_timeout_secs ?? 0))
@@ -637,6 +639,20 @@ function Editor({
                     onChange={(v) => set('agent', v || null)}
                     options={[...new Set([...(f.agent ? [f.agent] : []), ...agents.map((a) => a.file.name)])]}
                     none="run in its own session"
+                  />
+                </Field>
+                <Field label="Machine" id="rt-engine" hint="where it fires; the hub's pick when none">
+                  <NativeSelect
+                    id="rt-engine"
+                    value={f.engine ?? ''}
+                    onChange={(v) =>
+                      setF((x) => {
+                        const { engine: _, ...rest } = x
+                        return v ? { ...rest, engine: v } : rest
+                      })
+                    }
+                    options={routineMachines(mesh.data, f.engine)}
+                    none="the hub (any machine)"
                   />
                 </Field>
                 <Field label="Project" id="rt-project" hint="label of the task; optional">

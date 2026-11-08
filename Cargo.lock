@@ -1559,6 +1559,7 @@ dependencies = [
  "humantime",
  "kameo",
  "knowledge",
+ "mesh",
  "parking_lot",
  "platform",
  "roster",

@@ -11745,8 +11745,11 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         cfg.endless.clone(),
         cfg.title_model.clone(),
     );
-    // 179 D8, as `start` builds it: held from the agent files.
-    let boot_paused = pause::paused_desks(&store, &dir).await;
+    // 179 D8 / 182 M2a, as `start` builds it: held from the agent files, and
+    // desk trees with an open turn while the mesh has peers.
+    let mut boot_paused = pause::paused_desks(&store, &dir).await;
+    let sync = pause::sync_held(&store, &dir, &boot_paused).await;
+    boot_paused.extend(sync);
     Agents {
         rt,
         default_model: cfg.model.clone(),
@@ -17625,6 +17628,74 @@ pub(crate) mod tests {
                 .all(|(s, _, _)| open.iter().any(|(ag, o, _)| o == s && *ag == "ops")),
             "no Resume item for a paused agent: {items:?}"
         );
+    }
+
+    /// 182 M2a: with paired mesh peers a desk tree's open turn is held at
+    /// boot — not resumed by the scan — until the roster lifts the hold after
+    /// the first sync; without peers it resumes as before.
+    #[tokio::test]
+    async fn boot_resume_waits_for_first_sync() {
+        for peers in [true, false] {
+            let scratch = crate::TestDir::new("182-sync-hold");
+            let dir = scratch.0.clone();
+            std::fs::create_dir_all(dir.join("agents")).unwrap();
+            std::fs::write(dir.join("agents").join("ops.md"), "Ops.\n").unwrap();
+            if peers {
+                let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                    .connect_with(
+                        sqlx::sqlite::SqliteConnectOptions::new()
+                            .filename(dir.join(mesh::DB))
+                            .create_if_missing(true),
+                    )
+                    .await
+                    .unwrap();
+                sqlx::query("CREATE TABLE peers (id TEXT PRIMARY KEY)")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                sqlx::query("INSERT INTO peers (id) VALUES ('peer-b')")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+            let seed = agents_on(dir.clone(), None, false).await;
+            let store = seed.store.clone();
+            let desk = SessionId::new();
+            store
+                .create_session(desk, "m", None, None, None)
+                .await
+                .unwrap();
+            store.set_desk(desk, Some("ops")).await.unwrap();
+            let t = TurnId::new();
+            journal_turn(&store, desk, t, Utc::now(), Utc::now()).await;
+            drop(seed);
+            store.close().await;
+            let mut a = agents_on(dir, None, false).await;
+            Arc::make_mut(&mut a.cfg).durability.resume = crate::durability::ResumeMode::Auto;
+            assert_eq!(
+                a.paused.contains_key(&desk),
+                peers,
+                "held at boot iff the mesh has peers"
+            );
+            let rows = a.open_here().await;
+            let (_, native) = a.unpaused_turns(Vec::new(), rows).await;
+            a.resume_scan(&native).await;
+            assert_eq!(
+                a.sessions.contains_key(&desk),
+                !peers,
+                "peers={peers}: resumed by the scan"
+            );
+            if peers {
+                let agents = Agents::spawn(a);
+                let report = agents.ask(ResumeTree { desk }).await.unwrap();
+                assert_eq!(
+                    report.resumed,
+                    vec![(desk, t)],
+                    "the roster's lift after the first sync resumes it"
+                );
+            }
+        }
     }
 
     /// 179 D2: un-pausing resumes every open turn of the tree, desk first,

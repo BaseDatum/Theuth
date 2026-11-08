@@ -278,6 +278,17 @@ pub enum AgentStatus {
     Invalid,
 }
 
+/// 182 D8: one agent on one engine — a row of `engine_agents_list` (the
+/// replicated per-engine roster; theuth is on every engine).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct EngineAgent {
+    /// The engine's mesh id.
+    pub engine: String,
+    /// Its file there, without the charter body.
+    pub file: AgentFile,
+}
+
 /// One row of `agents_list`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]

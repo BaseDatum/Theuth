@@ -55,6 +55,11 @@ subagent_timeout_secs: bigint,
  */
 schedule_run_timeout_secs: bigint, 
 /**
+ * `tasks.home_offline_ask_secs` (182 D9): how long a task's home machine may be
+ * offline, with tasks waiting on it, before the Attention item asks. `0` from an older harness.
+ */
+home_offline_ask_secs: bigint, 
+/**
  * `agent.max_tool_rounds`: tool-call rounds a turn may run before the loop lands.
  */
 max_tool_rounds: number, 
