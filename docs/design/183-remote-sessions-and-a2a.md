@@ -197,3 +197,395 @@ ceremony, limited to exported agents under a per-contact risk cap.
 | path | How a peer is reached now: `lan` (direct), `relay` (iroh relay), `offline` |
 | forward | One unary JSON-RPC call over `theuth/rpc/1` to the owner, one hop, marked `Forwarded` |
 | take / move | An ownership change: `session_take(user)` (Continue here) or `session_move` (Move to) |
+
+## 4. Phase 1a — Operate a remote session without moving it
+
+### 4.1 The front door (D1, D2)
+
+`forward::classify` (`crates/rpc/src/forward.rs:182-195`) stops returning `Take`. The new rule, for a row
+owned by another engine, is the same for user sessions and desks:
+
+| Row | Owner connected (`owner ∈ transport.peers()`) | Owner not connected |
+|---|---|---|
+| missing, `owner = ''`, or `owner = self` | `Here` | `Here` |
+| user session or desk owned by P | `Forward(P)` | `Offline(P)` → `-32010` at once (W-3) |
+
+```rust
+// crates/rpc/src/forward.rs — replaces :86-93
+pub enum Route {
+    Here,
+    Forward(PeerId),
+    Offline(PeerId),
+}
+pub async fn classify(store: &Store, session: SessionId, connected: &[PeerId]) -> anyhow::Result<Route>;
+```
+
+`route` (`:202-254`) loses its `Route::Take` arm and the `TakeSession{Write, by_user: true}` call (`:221-247`):
+`Forward(P)` calls `to_peer` as desks do today (`:248-253`); `Offline(P)` returns
+`unreachable(P, "not connected")` (`:407-428`), the payload the OwnerOfflineCard already parses. The
+`sessions.takeover_secs` wait (`crates/sessionsync/src/owner.rs:150-152`) is no longer reached from a client
+write; it stays for `TakeReason::Write` callers that are not the front door (none in `crates/rpc` after this
+change) and for the orphan sweep.
+
+```mermaid
+flowchart LR
+  UI[UI or phone on A] --> FD[forward route on A]
+  FD -->|owner is A| Local[run on A]
+  FD -->|owner B connected| Fwd[theuth/rpc/1 to B]
+  Fwd --> Bsrv[forward serve on B, Forwarded marker]
+  Bsrv --> Brun[run on B]
+  FD -->|owner B not connected| Off[-32010 OwnerUnreachable]
+  Off --> Card[OwnerOfflineCard: Continue here?]
+  Card -->|accepted| Take[session_take user]
+```
+
+### 4.2 The routed RPCs one by one
+
+The 37 `forward::route` sites in `crates/rpc/src/api.rs`. After this change every one **forwards** when the
+owner is connected and answers `-32010` when it is not; none takes.
+
+| Method | Line | Kind | Note |
+|---|---|---|---|
+| `send_input` | 3812 | write | attachments travel by name (§4.3) |
+| `steer` | 3849 | write | |
+| `withdraw` | 3965 | write | |
+| `cancel` | 3987 | write | |
+| `compact` | 4213 | write | |
+| `undo` / `redo` | 4229 / 4237 | write | |
+| `session_memory` | 4269 | read that took | now a forwarded read |
+| `endless_retry` / `endless_fold` / `endless_pause` | 4281 / 4289 / 4302 | write | |
+| `set_session_compactor_model` | 4315 | write | resolves against the owner's catalog |
+| `endless_zoom` / `endless_recall` | 4340 / 4355 | write | |
+| `set_session_memory` / `set_session_view_bytes` | 4377 / 4401 | write | |
+| `remove_context` / `regenerate` / `edit_turn` | 4420 / 4443 / 4458 | write | |
+| `rename_session` / `pin_session` / `archive_session` | 4834 / 4847 / 4861 | write | the row replicates back |
+| `delete_session` | 4870 | write | the delete replicates as row deletes |
+| `set_session_project` | 4942 | write | |
+| `set_model` / `set_effort` | 5096 / 5126 | write | owner's catalog (`crates/agent/src/supervisor.rs:8682`) |
+| `harness_options` | 5233 | read that took | now a forwarded read |
+| `set_harness_option` / `resume_child` | 5247 / 5270 | write | |
+| `set_mcp_hidden` | 5307 | write | owner's MCP set |
+| `set_approvals` | 5330 | write | persisted on the row (§4.5) |
+| `set_communication` | 5354 | write | persisted on the row (§4.5) |
+| `set_peer_scope` / `answer_peer_request` | 5369 / 5437 | write | |
+| `use_skill` | 5508 | write | the owner's skills directory |
+| `knowledge_harvest` | 6585 | write | |
+| `resume_turn` | 8945 | write | resumes on the owner |
+
+Not routed by `forward::route`, and how each behaves after this change:
+
+| Call | Behaviour |
+|---|---|
+| `session_take(id, "user")` (Continue here, OwnerOfflineCard) | **takes** — the deliberate act |
+| `session_move(id, to)` (Move to ▸) | **moves** (181), on the owner only |
+| OwnerOfflineCard "Continue here and resume" | `session_take(user)`; the take resumes the open turn (`crates/sessionsync/src/owner.rs:95-96`) — **resume-here** |
+| `resolve_approval`, `answer_ask` | forward, as today (`crates/rpc/src/api.rs:3205-3221`) |
+| `path_complete` | forwards, as today (`crates/rpc/src/api.rs:4622-4642`); gains `engine` (W-12) |
+| `load_session`, `list_sessions`, search, `session_owner`, `session_orphans` | local replica |
+| `fork_session` (`crates/rpc/src/api.rs:4481`) | local: the fork is a new session owned here |
+| `get_approvals` (new), `get_communication`, `list_models` | forwarded readers (W-5, §4.5) |
+| `subscribe_pty`, `cell_attach` | owner-local streams (W-1, W-2) |
+| `set_event_focus` | local; now also follows remote owners (§5.1) |
+
+### 4.3 Cells and attachments
+
+- **Cells (W-1).** `route_scope` (`crates/rpc/src/cells.rs:82-107`) already sends a chat-scoped cell call
+  through `forward::route`; with §4.1 it forwards `cell_run`, `cell_run_all`, `cell_stop`, `cell_input`,
+  `cell_ask` and the kernel calls (`crates/rpc/src/cells.rs:164`, `:202`, `:249`, `:269`, `:287`, `:533`,
+  `:559`, `:596`, `:623`) instead of taking. The run id comes back in the forwarded reply and is recorded in
+  `FORWARDED` (`crates/rpc/src/cells.rs:59`, read at `:75-77`) so later reads go to the owner. `CellEvent` reaches the viewer
+  through the widened relay (§5.1). `cell_attach` on a forwarded run answers `-32014 RunsElsewhere{owner}`;
+  the cell header shows "live output on cloud-1"; the final output arrives with the replicated rows.
+- **Attachments.** Already by name: `ByName` turns `<data_dir>/attachments/<sha16>.<ext>` into
+  `attachments/<sha16>.<ext>` and the owner fetches from the forwarder (`crates/rpc/src/forward.rs:16-20`,
+  `:101-165`). No change.
+
+### 4.4 Owner offline (D2)
+
+- A write to a session whose owner is not connected returns `-32010` with
+  `FrontDoorError::OwnerUnreachable{owner, last_seen}` (`crates/rpc/src/forward.rs:42`, `:60-68`). Nothing is
+  queued and nothing runs.
+- The composer shows the existing OwnerOfflineCard ("Owned by cloud-1, last seen 3 h ago. Continue here now?",
+  `crates/desktop/ui/src/components/chat/OwnerOfflineCard.tsx:9-14`). **Continue here** calls
+  `session_take(id, "user")`, then resends the draft; **Wait** keeps the draft.
+- Reads keep working: `load_session` and the transcript come from the replica.
+- ⋯ setters on an offline owner get the same card inline in the menu ("cloud-1 is offline — Continue here to
+  change this").
+- Approval cards relayed from an owner that drops are withdrawn on the viewer when the follow stream ends
+  (§5.1); the owner's own timeout decides them.
+
+### 4.5 Session settings in ⋯ (D4, ask 7)
+
+Setters forward to the owner (§4.2). Readers forward too (W-5), because the effective value mixes the row
+with the owner's engine-local defaults (`tools.approvals`, `agent.communication`). With the owner offline the
+reader answers from the row with `global: null`.
+
+Persistence (D4): two new replicated columns on `sessions` (§9.1), written by the owner's setter and loaded
+by the owner's registry and policy on actor start, on take and on boot:
+
+| Setting | Column | Applied by | Effective rule |
+|---|---|---|---|
+| Approvals | `sessions.approvals TEXT NULL` (`'on'`, `'off'`, `NULL` inherit) | `ToolRegistry` (`crates/tools/src/registry.rs:776-803`) | `on` → asks stay asks even with `tools.approvals: false`; `off` → asks become allow; `NULL` → `tools.approvals` (W-4). The cap check (`:980-982`) still runs first |
+| Agent messaging | `sessions.communication INTEGER NULL` (`0` opted out, `NULL` inherit) | `Policy.opted_out` (`crates/agent/src/communication.rs:942`) | as today, but loaded from the row instead of memory-only (`:1258-1270`) |
+| Model | `sessions.model` (exists) | owner, `crates/agent/src/supervisor.rs:8713` | unchanged |
+| Effort | `sessions.effort` (exists) | owner, `crates/agent/src/supervisor.rs:8751` | unchanged |
+
+`ToolRegistry.bypass: HashSet<SessionId>` (`crates/tools/src/registry.rs:60`) becomes
+`pin: HashMap<SessionId, bool>`; `effective` (`:973-993`) reads the pin before `self.approvals`. A move carries
+the column; the taker's registry applies it before the first tool call; the moved notice reports it (§5.3).
+
+### 4.6 Whose policy; approval cards relayed
+
+- **Policy.** The owner runs the tools, so the owner's `tools.policy` and `tools.approvals`, plus the row's
+  pin, decide (`crates/tools/src/lib.rs:488-497`). A viewer never evaluates policy for a remote session.
+- **Cards.** `ApprovalRequested` and `AskRequested` on the owner reach every viewer following the session
+  (§5.1). The card reads "cloud-1 asks: run shell `cargo test -p replica`" with "mutating · relayed from
+  cloud-1" (mock panel 3).
+- **Answers.** Any viewer's Allow or Deny goes through `resolve_approval` → `route_question` → the owner
+  (`crates/rpc/src/api.rs:3205-3221`, `:5000-5006`). The owner's approval actor takes the first answer;
+  `ApprovalResolved` reaches every viewer and dismisses their card.
+- **Timeout (W-6).** `approval_timeout_secs` (300, `crates/tools/src/lib.rs:495`, `:531`) runs on the owner
+  only. The relayed card shows "denies at 11:47 on cloud-1". A pinned-on cloud session nobody watches still
+  denies after 300 s; that is the owner's setting to change.
+
+### 4.7 The phone and iPad
+
+Devices talk to the hub, which dispatches into its own `Methods` (`docs/design/139-mesh-durability.md:636-654`).
+The hub's front door is the code of §4.1, so a device's send on a session owned by a non-hub engine now
+forwards from the hub instead of taking to the hub. Liveness is the same: the device's `set_event_focus` lands
+on the hub, which follows the owner (§5.1). Nothing changes in `crates/link` or the app.
+
+### 4.8 Authorization of forwarded calls
+
+1. **Paired only.** `theuth/rpc/1` streams are accepted only from `Net.paired`
+   (`crates/mesh/src/net.rs:1226-1238`); contacts (§7) never get this ALPN.
+2. **Owner check.** `route` today returns `Ok(None)` for any `Forwarded` call (`crates/rpc/src/forward.rs:209-211`).
+   It now classifies first: `Forwarded` and the row's owner is not this engine → `-32013 NotOwner{owner}`
+   (new `FrontDoorError` variant, §10.3). The forwarder surfaces it; the replicated owner change follows.
+3. **One hop.** `to_peer_within` refuses to forward a `Forwarded` call (`crates/rpc/src/forward.rs:278-280`);
+   unchanged.
+4. **Identity of `from` (Phase 2).** `peer_deliver` requires the `Forwarded` peer to own `envelope.from` (§6.5).
+
+## 5. Phase 1b — Live remote sessions, the moved notice, new chat on a machine
+
+### 5.1 Follow on focus, widened relay
+
+```mermaid
+sequenceDiagram
+  participant UI as UI on A
+  participant A as engine A, viewer
+  participant B as engine B, owner
+  UI->>A: set_event_focus of S
+  A->>A: hold events follow guard for S
+  A->>B: sessions/1 Watch S from_seq
+  B-->>A: Event and Bus frames for S
+  A->>A: publish on the local bus, keep relayed pending prompts
+  A-->>UI: deltas, tool progress, approvals, asks, jobs, cells
+  UI->>A: set_event_focus without S
+  A->>A: drop guard, stream closes
+```
+
+- **Follow.** `set_event_focus` (`crates/rpc/src/api.rs:9478-9500`) keeps, per connection, a
+  `HashMap<SessionId, sessionsync::events::Following>` for the focused sessions whose row is owned elsewhere;
+  sessions leaving the set drop their guard; `forget_on_close` drops them all. The per-session
+  `subscribe_events` follow (`:9351`) stays.
+- **Widen (W-18).** The owner's `EventRelay` (`crates/sessionsync/src/events.rs:133-146`) also subscribes to
+  `ApprovalRequested`, `ApprovalResolved`, `AskRequested`, `AskResolved`, `JobEvent` and `CellEvent`. The
+  resolved events carry no session (`crates/tools/src/approval.rs:61-68`), so the relay keeps
+  `prompts: HashMap<Uuid, SessionId>` filled from the requests. A viewer that sends the new `Msg::Watch` gets
+  `Msg::Event` (AgentEvent, as today) and `Msg::Bus{kind, bytes}` for the others; `Msg::Events` keeps its
+  AgentEvent-only meaning for old viewers. An old owner fails to decode `Watch` and closes the stream; the
+  viewer then retries that owner with `Events` and remembers the downgrade until `PeerConnected`.
+- **Pending prompts (W-19).** The viewer's relay keeps `relayed: HashMap<SessionId, PendingPrompts>` from
+  `Bus` frames, cleared when the stream ends. `PendingPrompts::collect` (`crates/rpc/src/api.rs:2932-2960`)
+  merges `sessionsync::events::relayed_prompts()`, so the subscribe snapshot and the post-`Lagged` snapshot keep
+  relayed cards instead of dropping them.
+- **Settle.** Event seq is per owner process and rows are ordered by log seq, so the UI keeps the rows as the
+  truth: on `TurnFinished` and on replicated `ContextChanged` the chat runs `settle()` (re-read
+  `load_session(settled_only)`, `crates/desktop/ui/src/routes/c.$session.tsx:255-287`).
+- **Offline fallback: partial redraw.** `partial_upsert` (`crates/agent/src/store/durability.rs:554-590`)
+  bumps `sessions.context_revision` with the upsert, so a replicated 5 s partial passes the reducer's
+  same-revision check (`crates/desktop/ui/src/store/reduce.ts:891`) and redraws. That is the behaviour with no
+  follow stream (owner on the far side of a slow relay, old owner, stream reconnecting).
+- **Cost.** Only focused sessions stream; `ToolCallProgress` is already ≤ 1 per 250 ms per call
+  (`crates/agent/src/lib.rs:3140-3143`); the queue per remote subscriber is 256 frames
+  (`crates/sessionsync/src/events.rs:46`).
+
+### 5.2 Running state in the sidebar (W-7)
+
+Rows only. `list_sessions` reports `running: true` for a row owned elsewhere when the replica holds an open turn
+for it (`Store::open_turn`, `crates/agent/src/store/durability.rs:699`). The UI refetches `list_sessions`
+(debounced 1 s) on `ContextChanged{reason: "replicated"}`, which today refreshes search only
+(`crates/desktop/ui/src/lib/rpc.ts:216`). The glyph moves at commit granularity (user row in, `finished_at`
+out), within the +127 ms LAN append latency (`docs/design/68-sessions.md:160`). A summary event would buy
+sub-commit precision for a glyph; not worth a second stream.
+
+### 5.3 The moved notice (ask 5)
+
+**Engine (W-8).** `Take::take` (`crates/sessionsync/src/owner.rs:111-190`), right after `set_owner` /
+`set_fence` (`:165-172`) and before `resume_on_take` (`:188`), writes one `HistoryEntry::Moved` row through the
+taker's store: a user-role row whose text is the model-facing `<session_moved/>` (§11.1) and whose typed
+metadata lives in `messages.moved` (§9.1), the advisory pattern (`crates/agent/src/lib.rs:3018-3029`). It
+never wakes the actor and never opens a turn. It replicates like every row, so the origin shows it too.
+
+| Case | Row | Model reads |
+|---|---|---|
+| Idle Continue here / Move to / orphan take | `Moved`, in context | `<session_moved/>` before the next input |
+| Open turn, resumed now (transfer, or user takeover) | `Moved`, context excluded | extended `<engine_restart/>` on the first tool response (`crates/agent/src/loop_.rs:8568-8585`) |
+| Open turn, resume = ask (`Pending`) | `Moved` with `pending: true`, context excluded; it replaces the local note (`crates/sessionsync/src/owner.rs:229-238`) | `<engine_restart/>` when the user presses Resume |
+| Old owner demoted | its local orphan note, unchanged (`crates/sessionsync/src/owner.rs:517-536`) | nothing |
+
+The taker fills the record from its own facts: `to` and `host` (mesh name and hostname), `os`, `os_name`,
+`arch` (W-11), `from` (the origin's mesh name), `cwd` (the seat's effective cwd, W-9), `at`, `reason`,
+`jobs_left` (replicated `jobs` rows of the session still `running` on the origin), `runtime` (`reset` whenever
+the session ever ran Python, since the heap is a local file, `crates/agent/src/repl.rs:6-7`), and `approvals`
+(the effective value after the row's pin).
+
+`<engine_restart/>` gains `to`, `os` and `cwd` for `transfer | takeover`, and `from` carries the mesh name
+instead of the raw engine id.
+
+**UI.** `Moved` is an entry kind rendered from typed metadata, like `advisory`; `engine_restart` is a text
+wrapper. Files in §12.4. The parity test (`crates/desktop/ui/src/lib/injected-wrappers.test.ts:41-54`) learns
+self-closing openers, so `<engine_restart/>`, `<session_moved/>` and `<time/>` must each have a classifier
+kind or an explicit allow-list entry. The TUI twin (`crates/tui/src/model.rs:1175`, `:1516`) gains
+`CardKind::Moved` and `CardKind::EngineRestart`.
+
+### 5.4 The machine in the system prompt
+
+`baseline_dated` (`crates/agent/src/frame.rs:451`) builds
+`"{persona}\nMachine: {name} ({os_name}, {arch})\nWorking directory: {cwd}"`. The label is computed once per
+process (`platform::process::machine()`, §14.4), next to `platform::process::hostname()`
+(`crates/platform/src/process.rs:120`). A rename shows after a restart. The prompt prefix changes once per
+machine, not per turn, so prompt caching is unaffected.
+
+### 5.5 A cwd that does not exist on the taker (W-9)
+
+The seat (`crates/tools/src/seat.rs:84-89`) checks `sessions.cwd` on take. Missing or not a directory → the
+session is seated at the taker's home; `sessions.cwd` is not rewritten; the moved record has
+`cwd_missing: true` and `cwd` = the fallback; the MovedCard shows "~/Develop/theuth does not exist on xeus —
+working in ~". A later move to a machine where the path exists seats it there again. Blocking the move was
+rejected: Continue here is the user's recovery path when the owner is gone, and a block would strand it.
+
+### 5.6 New chat on a machine (ask 4)
+
+- **RPC (W-10).** `CreateSessionOptions` (`crates/agent/src/lifecycle.rs:23-70`) gains
+  `engine: Option<String>` (mesh id). `create_session` (`crates/rpc/src/api.rs:4876`) with `engine` set to
+  another engine clears the field and calls `forward::to_peer(ext, engine, "create_session", (options,))`. Not
+  connected → error "xeus is offline". The target creates the row with `owner = self`, epoch 1
+  (`docs/design/68-sessions.md:57`), validates `cwd` exists there ("~/x does not exist on xeus") and returns
+  `SessionOpen`.
+- **Waiting for the row.** `classify` answers `Here` for a row it does not have
+  (`crates/rpc/src/forward.rs:183-185`), so the forwarder waits for the new row to replicate before returning
+  (bounded by `sessions.release_wait_secs`, 10 s; `docs/design/68-sessions.md:114`); the first `send_input`
+  then forwards.
+- **Machine facts (W-11).** `EngineStats` gains `os`, `os_name`, `arch`, `host`; `MeshStatus` gains
+  `stats: Vec<EngineStats>` read from the replicated `engine_stats` rows (§9.2, §10.1).
+- **Folders.** The target's `EngineStats.repos`, plus "Browse xeus…" which calls
+  `path_complete(None, input, cursor, engine)` forwarded to the target (W-12).
+- **Models.** `list_models(engine)` forwarded to the target; the default is the target's `agent.model`.
+  Harnesses come from `EngineStats.harnesses`.
+
+## 6. Phase 2 — Messaging across the mesh by default; Settings › Network
+
+### 6.1 Same mesh ⇒ agents can message (D3, W-13)
+
+- `AgentConfig.communication` (`crates/agent/src/lib.rs:3708`) becomes `Option<bool>`. Effective ceiling:
+  explicit value (config, env or `/communication … always`) wins; absent → **on when the engine has at least
+  one paired peer**, else off. `CommunicationState.source` gains `"mesh"`.
+- The supervisor re-evaluates the default on `MeshEvent` peer added or removed and calls
+  `Policy::set_global(on, "mesh")` (`crates/agent/src/communication.rs:1244-1252`) only when the key is absent.
+- The first-run template (`crates/theuth/src/main.rs:879-881`) writes the line commented out. On upgrade, a
+  config whose `communication:` line is byte-identical to the old template line is rewritten to the comment
+  once, with `write_config_atomic`; any edited value is left alone.
+- Unchanged: the per-session opt-out (now persisted, §4.5), root scope `owner | isolated`
+  (`crates/agent/src/communication.rs:1145-1150`), and the receiver's own policy run in `peer_deliver`.
+- The isolated scope stays isolated across the mesh: guest Slack/Telegram roots and `t --acp` roots cannot be
+  reached from another engine, exactly as on one engine.
+
+### 6.2 The per-machine switch (W-14)
+
+`mesh.messaging_off: Vec<String>` (engine ids), default empty, on the engine where the switch is flipped.
+`forward_peer` (sender) and `Agents::peer_deliver` (receiver) refuse when the other engine is on the list:
+`agent messaging between <self> and <peer> is off on <self>`. The switch writes the local config through a new
+`mesh_set_messaging(id, on)` RPC (§10.1).
+
+### 6.3 The forward leg leaves the Agents mailbox
+
+`impl Message<Deliver>` (`crates/agent/src/supervisor.rs:5467-5473`) becomes `DelegatedReply`, the 176 E1 shape
+(`:5974-5991`):
+
+1. In the mailbox: resolve, policy, `accept`, and — when `await_reply` — register the waiter **before** the
+   network leg, so a fast reply finds it (`:5580-5583` relied on mailbox order).
+2. `ctx.spawn`: `peer_mesh::forward` (`crates/agent/src/communication/mesh.rs:89-149`) and, on failure,
+   `receipt_error` with its `mesh::Status` ask (`:169-183`), both off the mailbox.
+3. Back in the mailbox (`ForwardOutcome{id, result}`): settle the receipt; on failure remove the waiter and
+   `fail_exchange`.
+
+Two engines sending to each other at once no longer hold each other's mailbox for 30 s.
+
+### 6.4 Offline owners: fail fast (W-15)
+
+A message to a session whose owner is offline fails at once with `failed {"OwnerUnreachable": …}`, as today.
+New: a retry with the same `request_id` re-forwards when the stored exchange is `failed` with
+`OwnerUnreachable` (`crates/agent/src/store/communication.rs:622-635` currently returns it as-is). Why not
+queue: D2 says nothing runs on a session without its owner's or the user's say-so, and a queued message would
+wake a session hours later, in a context the sender no longer holds, with no `await_reply` possible. A
+failed receipt keeps the decision with the sending model, which can retry, pick another peer or tell the user.
+
+### 6.5 Guards
+
+| Guard | Today | After |
+|---|---|---|
+| Who may send as `from` | any paired engine (`crates/rpc/src/api.rs:3883-3890`) | `Forwarded(peer)` must equal `store.owner(envelope.from)`; else `-32002 peer_deliver: <peer> does not own <from>` |
+| Chain | inherited only locally (`crates/agent/src/supervisor.rs:2060-2068`) | `PeerEnvelope.chain: u32` (serde default 0) = the sender's count; `enqueue_peer` starts from it; 256 holds across engines |
+| Caps | 32 KiB, 16 recipients, 64 pending per recipient, 1024 per engine, 32 waits, 30 s, 120 s | unchanged |
+| Hops | one | one |
+| Refusal text | names the sender's session | names the engine: `denied: communication is off on xeus` |
+
+### 6.6 Addressing and discovery (W-16)
+
+- The roster names each desk root `<agent>@<engine>` with `SetPeerScope{scope: Owner, alias}` after
+  `MarkDesk` (`crates/roster/src/lib.rs:891-899`). The alias replicates with `sessions.alias`.
+- `resolve` (`crates/agent/src/supervisor.rs:1871-1877`): a `Relative(name)` that names no direct child falls
+  back to an owner-scope root whose alias is `name`. `ops@xeus` parses as `Relative` already
+  (`crates/agent/src/communication.rs:745-753`).
+- `discover_peers`: `PeerInfo` gains `reachable: Option<bool>` (remote rows, from the `mesh::Status` ask the
+  listing already makes, `crates/agent/src/communication/mesh.rs:185-201`); `query` also matches tags and
+  engine (`crates/agent/src/supervisor.rs:6019-6021`).
+- Policy refresh: `apply_lineage` (`crates/agent/src/supervisor.rs:1118-1149`) updates scope and alias for a
+  known root when the replicated row changes, so a scope flipped on B reaches A's policy.
+
+### 6.7 Settings › Network (mock panel 1)
+
+Replaces Settings › Mesh (`crates/desktop/ui/src/components/settings/Mesh.tsx`;
+tab at `crates/desktop/ui/src/components/settings/SettingsDialog.tsx:79`, pane `:129`).
+
+| Section | Content | Data |
+|---|---|---|
+| This machine | name (editable, `mesh.name`), short id, chips `LAN · mDNS ✓` and `Relay · iroh.relay.theuth.io · 38 ms ✓`; switch "Let nearby machines find this one while pairing" | `MeshStatus.self_name`, `self_id`, `relay` |
+| Nearby | engines found by mDNS browse, not paired: name, OS, address, **Pair…**; "Only shown while this page is open" | `mesh_nearby` (§10.1) |
+| Machines in this mesh | per machine: OS and class, chip `LAN 2 ms` / `Relay 41 ms` / `offline 3 h`, `hub` badge, switch "Agents can message" (W-14), ⋯ Rename · Unpair | `MeshStatus.peers[].path`, `rtt_ms`, `stats[]`, `lease.holder` |
+| Contacts | §7 | `contact_list` |
+| Advanced (collapsed) | hub preference, SSH add-node, the pairing string and QR | today's `Mesh.tsx:114`, `:165-203`, `:214-266` |
+
+`MeshStatus` gains `relay: RelayState` and per peer `path: PeerPath` and `rtt_ms: Option<u32>` (§10.1).
+Path and RTT come from the iroh connection (`[INFERENCE]` iroh 1.2 exposes the selected path and RTT per
+connection; the Phase 2 worker confirms the API before freezing). Rename edits the peer's display name
+(`peers.name`, replicated) for a remote machine and `mesh.name` for this one.
+
+### 6.8 Family pairing (W-17, mock panel 2)
+
+- **Nearby.** While Settings › Network is open (or `t mesh pair` runs), the engine advertises and browses the
+  DNS-SD service `_theuth-mesh._udp` with TXT `v=1`, `id=<endpoint id>`, `name=`, `os=`. It joins the network
+  for that window even when lone (`crates/mesh/src/net.rs:455-457` keeps lone engines dark otherwise) and
+  leaves it on close.
+- **Ceremony.** Pair… dials the stranger on `theuth/mesh/1` with a new `PairRequest{name, nonce_a}`. Today a
+  stranger must present a token (`crates/mesh/src/net.rs:946-983`); while pairing is open the acceptor instead
+  answers `PairChallenge{nonce_b}` and shows the Attention dialog. Both sides display
+  `code = u32(sha256(min(id_a,id_b) ‖ max(id_a,id_b) ‖ nonce_a ‖ nonce_b)[0..4]) mod 10^6` as `482 913`. Both
+  users press Pair; then the existing `PairHello` path runs with a freshly minted token, vault key and merge
+  unchanged (`crates/mesh/src/pairing.rs:204-222`). Either Cancel, or 120 s, ends it.
+- The QUIC handshake already proves both endpoint ids, so the code defends only against pairing with the wrong
+  nearby machine, which is the mDNS risk (§8.2).
+- The dialog keeps the warning "Pairing shares your secrets vault, sessions and tasks — only pair your own
+  machines." The string/QR path stays for machines not on the LAN.
