@@ -9,7 +9,9 @@
 //! has one stream and rows arrive in order; a relay beside the direct link
 //! or a reconnect overlap may still deliver ahead, which the per-origin
 //! reorder buffer absorbs. Errors end the stream; the dialer backs off and
-//! the `Hello` exchange resynchronizes.
+//! the `Hello` exchange resynchronizes. 183 R1 (E-M3): `Hello` carries the
+//! sender's agent schema; a peer on an older one (or none) is shipped no log
+//! row or snapshot, and its cursors do not move, until it reconnects current.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -27,7 +29,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::apply::{Applied, apply_log_row, build_snapshot};
 use crate::snapshot::{self, AppliedSession};
-use crate::types::{LogRow, Msg};
+use crate::types::{LogRow, Msg, schema_behind, schema_label};
 
 /// Rows per [`Msg::Log`] frame during catch-up.
 pub const BATCH_ROWS: usize = 5000;
@@ -67,6 +69,8 @@ pub struct Node {
     pending: Mutex<HashMap<PeerId, Ahead>>,
     /// `sessions.harness_outbox_ttl_secs`: an outbox row older than this is dropped (139 R2 D3).
     harness_ttl: Duration,
+    /// 183 R1 (E-M3): this binary's agent schema version, sent in `Hello`.
+    schema: u32,
 }
 
 /// Rows from one origin that arrived ahead of the cursor, keyed by seq, and when the first did.
@@ -88,6 +92,7 @@ impl Node {
             origins: Mutex::default(),
             pending: Mutex::default(),
             harness_ttl,
+            schema: agent::store::SESSIONS_WIRE_SCHEMA,
         })
     }
 
@@ -246,6 +251,7 @@ async fn run(
         .send(
             Msg::Hello {
                 cursors: ours.clone(),
+                schema: Some(node.schema),
             }
             .encode()?,
         )
@@ -259,7 +265,11 @@ async fn run(
                 .ok_or_else(|| anyhow::anyhow!("closed before hello"))??,
         )?,
     };
-    let Msg::Hello { cursors: theirs } = first else {
+    let Msg::Hello {
+        cursors: theirs,
+        schema,
+    } = first
+    else {
         anyhow::bail!("expected hello");
     };
     node.learn(&remote, &theirs);
@@ -268,9 +278,24 @@ async fn run(
             .set_cursor(&node.me.0, &remote.0, i64::try_from(*seq)?)
             .await?;
     }
+    // 183 R1 (E-M3): a peer on an older agent schema (or a pre-183 one,
+    // which reports none) cannot apply the 53+ `sessions`/`messages`
+    // columns: `sqlite3changeset_apply` skips such a table yet its cursor
+    // would advance. So no log row or snapshot goes to it on this stream,
+    // and no cursor of its moves; its next `Hello` (after it upgrades)
+    // restarts shipping from the cursors it still holds. Harness frames
+    // carry no rows and still flow.
+    let hold = schema_behind(schema, node.schema);
+    if hold {
+        tracing::warn!(
+            "sessions: holding log for {remote}: its agent schema {} < ours {}",
+            schema_label(schema),
+            node.schema
+        );
+    }
 
-    // Catch-up: every origin we hold above what they hold.
-    for (origin, seq) in &ours {
+    // Catch-up: every origin we hold above what they hold (none while holding).
+    for (origin, seq) in ours.iter().filter(|_| !hold) {
         let after = theirs.iter().find(|(o, _)| o == origin).map(|(_, s)| *s);
         match after {
             Some(a) if a >= *seq => {}
@@ -332,9 +357,15 @@ async fn run(
             }
             changed = log.changed() => {
                 changed?;
-                ship_own(node, &remote, &mut framed).await?;
+                if !hold {
+                    ship_own(node, &remote, &mut framed).await?;
+                }
             }
-            () = node.kick.notified() => ship_own(node, &remote, &mut framed).await?,
+            () = node.kick.notified() => {
+                if !hold {
+                    ship_own(node, &remote, &mut framed).await?;
+                }
+            }
             changed = harness.changed() => {
                 changed?;
                 flush_harness(node, &remote, &mut framed).await?;
@@ -343,7 +374,7 @@ async fn run(
             relayed = relay.recv() => {
                 match relayed {
                     Ok((origin, row)) => {
-                        if origin == remote {
+                        if hold || origin == remote {
                             continue;
                         }
                         match node.holds(&remote, &origin) {
@@ -1471,5 +1502,148 @@ mod tests {
             b.store.harness_mark_seen("u4", 0).await.unwrap(),
             "never sent"
         );
+    }
+
+    // ---- 183 R1 (E-M3): mixed agent schemas ----
+
+    /// A store opened as engine `A` with one session and two messages.
+    async fn engine_a() -> (Store, tempfile::TempDir, SessionId) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            &dir.path().join("sessions.sqlite"),
+            Some(PeerId("A".into()).into()),
+        )
+        .await
+        .unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        store.append(id, &user("hi")).await.unwrap();
+        store.append(id, &asst("hello")).await.unwrap();
+        (store, dir, id)
+    }
+
+    /// Connect a raw peer `Z` to a sync node over `store` and exchange
+    /// `Hello`s: Z claims `schema` (`None` = a pre-183 peer) and holds
+    /// `cursors`. Returns Z's end of the stream and A's `Hello` schema.
+    async fn raw_peer(
+        store: &Store,
+        schema: Option<u32>,
+        cursors: Vec<(PeerId, u64)>,
+    ) -> (
+        super::Stream,
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+        Option<u32>,
+    ) {
+        use futures::{SinkExt as _, StreamExt as _};
+        let node = super::Node::new(store.clone(), None, Duration::from_secs(60));
+        let (mine, theirs) = tokio::io::duplex(1 << 20);
+        let run = tokio::spawn(async move {
+            super::run_stream(&node, PeerId("Z".into()), Box::new(mine)).await
+        });
+        let mut z = crate::events::framed(Box::new(theirs));
+        let hello = crate::types::Msg::decode(&z.next().await.unwrap().unwrap()).unwrap();
+        let crate::types::Msg::Hello { schema: ours, .. } = hello else {
+            panic!("first frame is not a Hello: {hello:?}");
+        };
+        z.send(
+            crate::types::Msg::Hello { cursors, schema }
+                .encode()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        (z, run, ours)
+    }
+
+    /// Every frame Z receives until `quiet` passes with none.
+    async fn drain(z: &mut super::Stream, quiet: Duration) -> Vec<crate::types::Msg> {
+        use futures::StreamExt as _;
+        let mut out = Vec::new();
+        while let Ok(Some(frame)) = tokio::time::timeout(quiet, z.next()).await {
+            out.push(crate::types::Msg::decode(&frame.unwrap()).unwrap());
+        }
+        out
+    }
+
+    /// A peer whose `Hello` has no schema (pre-183) or an older one is shipped
+    /// nothing, neither the log tail nor a snapshot, at connect or live, and
+    /// the cursor A keeps for it stays where its `Hello` put it.
+    #[tokio::test]
+    async fn an_unknown_or_older_peer_is_held_without_moving_its_cursor() {
+        let ours = agent::store::SESSIONS_WIRE_SCHEMA;
+        for schema in [None, Some(ours - 1)] {
+            let (store, _dir, id) = engine_a().await;
+            let a = PeerId("A".into());
+            let (mut z, run, hello) = raw_peer(&store, schema, vec![(a, 1)]).await;
+            assert_eq!(hello, Some(ours), "A announces its own schema");
+            assert!(
+                drain(&mut z, Duration::from_millis(400)).await.is_empty(),
+                "{schema:?}: the tail 2.. is held"
+            );
+            store.append(id, &user("later")).await.unwrap();
+            assert!(
+                drain(&mut z, Duration::from_millis(400)).await.is_empty(),
+                "{schema:?}: a live row is held too"
+            );
+            let cursor = store
+                .cursors()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|c| c.origin == "A" && c.peer == "Z")
+                .map(|c| c.seq);
+            assert_eq!(cursor, Some(1), "{schema:?}: Z's cursor is not advanced");
+            drop(z);
+            let _ = run.await;
+            store.close().await;
+        }
+    }
+
+    /// After the held peer reconnects with the current schema (it upgraded),
+    /// A ships from the cursor it held: every row after it arrives, once and
+    /// in order, and live rows follow.
+    #[tokio::test]
+    async fn an_upgraded_peer_resumes_from_the_held_cursor() {
+        let ours = agent::store::SESSIONS_WIRE_SCHEMA;
+        let (store, _dir, id) = engine_a().await;
+        let a = PeerId("A".into());
+        let (mut z, run, _) = raw_peer(&store, None, vec![(a.clone(), 1)]).await;
+        store.append(id, &asst("while held")).await.unwrap();
+        assert!(drain(&mut z, Duration::from_millis(400)).await.is_empty());
+        drop(z);
+        let _ = run.await;
+
+        // The upgraded Z: same cursors, now with a schema.
+        let (mut z, _run, _) = raw_peer(&store, Some(ours), vec![(a, 1)]).await;
+        let head = u64::try_from(store.log_seq()).unwrap();
+        let mut seqs: Vec<u64> = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while seqs.last() != Some(&head) {
+            assert!(tokio::time::Instant::now() < deadline, "got {seqs:?}");
+            for m in drain(&mut z, Duration::from_millis(200)).await {
+                match m {
+                    crate::types::Msg::Log { rows, .. } => {
+                        seqs.extend(rows.iter().map(|r| r.seq));
+                    }
+                    other => panic!("expected the log tail, got {other:?}"),
+                }
+            }
+        }
+        assert_eq!(seqs, (2..=head).collect::<Vec<_>>());
+        store.append(id, &user("live")).await.unwrap();
+        let live: Vec<u64> = drain(&mut z, Duration::from_millis(500))
+            .await
+            .into_iter()
+            .flat_map(|m| match m {
+                crate::types::Msg::Log { rows, .. } => {
+                    rows.into_iter().map(|r| r.seq).collect::<Vec<_>>()
+                }
+                other => panic!("expected a log row, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(live.first(), Some(&(head + 1)), "{live:?}");
     }
 }

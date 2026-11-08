@@ -20,6 +20,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { leaves, usePanes } from '@/lib/panes'
+import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { notAdvisor, notStudy, rootOf, subtrees } from '@/lib/session-tree'
 import { nextSelection, type SelectMode } from '@/lib/selection'
@@ -245,12 +246,15 @@ export function SessionList({
 
   const remove = async () => {
     const ids = [...selected]
-    const results = await Promise.allSettled(ids.map((id) => api.delete_session(id)))
-    const failed = ids.filter((_, i) => results[i]?.status === 'rejected')
+    // 183 §4.4: one routed call per session; one whose owner is unreachable parks behind its chat's card (fulfils
+    // `undefined`): it stays selected, and is no error.
+    const results = await Promise.allSettled(ids.map((id) => routed(id, async () => (await api.delete_session(id), true))))
+    const failed = ids.filter((_, i) => results[i]?.status !== 'fulfilled' || !results[i].value)
     setSelected(new Set(failed))
-    if (failed.length) {
-      const first = results.find((r) => r.status === 'rejected')?.reason
-      toast.error(`${failed.length} of ${ids.length} not deleted: ${first instanceof Error ? first.message : String(first)}`)
+    const rejected = results.filter((r) => r.status === 'rejected')
+    if (rejected.length) {
+      const first = rejected[0]?.reason
+      toast.error(`${rejected.length} of ${ids.length} not deleted: ${first instanceof Error ? first.message : String(first)}`)
     }
     const root = rootOf(sessions, active)
     if (root && ids.includes(root) && !failed.includes(root)) void navigate({ to: '/' })
@@ -258,12 +262,13 @@ export function SessionList({
 
   const archive = async () => {
     const ids = [...selected]
-    const results = await Promise.allSettled(ids.map((id) => api.archive_session(id, !allArchived)))
-    const failed = ids.filter((_, i) => results[i]?.status === 'rejected')
+    const results = await Promise.allSettled(ids.map((id) => routed(id, async () => (await api.archive_session(id, !allArchived), true))))
+    const failed = ids.filter((_, i) => results[i]?.status !== 'fulfilled' || !results[i].value)
     setSelected(new Set(failed))
-    if (failed.length) {
-      const first = results.find((r) => r.status === 'rejected')?.reason
-      toast.error(`${failed.length} of ${ids.length} not ${allArchived ? 'unarchived' : 'archived'}: ${first instanceof Error ? first.message : String(first)}`)
+    const rejected = results.filter((r) => r.status === 'rejected')
+    if (rejected.length) {
+      const first = rejected[0]?.reason
+      toast.error(`${rejected.length} of ${ids.length} not ${allArchived ? 'unarchived' : 'archived'}: ${first instanceof Error ? first.message : String(first)}`)
     }
     void qc.invalidateQueries({ queryKey: queryKeys.sessions })
   }
@@ -337,6 +342,7 @@ export function SessionList({
                   owner={row.session.owner}
                   epoch={row.session.epoch}
                   here={row.session.here}
+                  running={row.session.running}
                   endless={row.session.memory === 'endless'}
                   subagents={subs.get(row.session.id)}
                   active={row.session.id === active}

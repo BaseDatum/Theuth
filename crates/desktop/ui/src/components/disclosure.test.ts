@@ -9,6 +9,7 @@ import { createElement as h, type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { Streamdown } from 'streamdown'
 import { beforeEach, expect, test, vi } from 'vitest'
+import { classify, type Injected } from '@/lib/injected'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type * as Rpc from '@/lib/rpc'
 import type { WireEvent } from '@/rpc/events'
@@ -19,6 +20,7 @@ import { DisclosureScope, FenceText, toolKey } from './chat/disclosure'
 import { Message } from './chat/Message'
 import { markdownComponents, plugins, rehypePlugins, shikiTheme } from './chat/MessageAssistant'
 import { RosterCard } from './chat/RosterCard'
+import { EngineRestartCard, MovedCard } from './chat/HarnessCards'
 import { Excerpt } from './chat/surface/Excerpt'
 import { JsonRenderFence } from './chat/surface/JsonRenderFence'
 import { ToolRunCard } from './chat/ToolRunCard'
@@ -80,6 +82,8 @@ const tool = (n: number, extra: Partial<Extract<Entry, { kind: 'tool' }>> = {}):
   result: { output: `out ${n}\nmore`, isError: false, files: [] },
   ...extra,
 })
+const movedNote = classify('<session_moved to="xeus" from="mac" os="Arch Linux" arch="x86_64" host="xeus" cwd="/home/sky" at="11:42:07" reason="moved" jobs_left="0" runtime="none" approvals="ask"/>')![0] as Extract<Injected, { kind: 'moved' }>
+const restartNote = classify('<engine_restart at="11:42:07" after="4s" kind="transfer" from="mac" to="xeus" os="Arch Linux" cwd="/x" replayed="0" interrupted="1"/>')![0] as Extract<Injected, { kind: 'engine_restart' }>
 const row = (entry: Entry) => h(Message, { entry, prompts: null, session: 's' })
 const reply = (text: string, code: string, at = text.indexOf(code)) => ({
   el: h(DisclosureScope, { value: 'r1' }, h(FenceText, { value: text }, h(JsonRenderFence, { code, isIncomplete: false, language: 'json-render' }))),
@@ -146,6 +150,9 @@ const rows: Row[] = [
     el: h(DisclosureScope, { value: 'r1' }, h(Excerpt, { path: 'a.ts', text: Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n') })),
     open: (html) => !html.includes('Show all'),
   },
+  // 183 §12.4: the two harness cards fold what the agent was told; the reader's open state lives in the store.
+  { name: 'moved card', key: 'm1|moved', el: h(DisclosureScope, { value: 'm1' }, h(MovedCard, { id: 'm1', ...movedNote })), open: (html) => html.includes('<dt') },
+  { name: 'engine restart card', key: 'x1|restart', el: h(DisclosureScope, { value: 'x1' }, h(EngineRestartCard, restartNote)), open: (html) => html.includes('What the agent was told') && html.includes('<dt') },
   {
     name: 'attachment chip popover',
     key: 'r1|attach|note|D1',

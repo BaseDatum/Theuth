@@ -141,6 +141,7 @@ impl Agents {
                         .tell(SetApprovals {
                             session: Some(id),
                             enabled: false,
+                            clear: false,
                         })
                         .await;
                 }

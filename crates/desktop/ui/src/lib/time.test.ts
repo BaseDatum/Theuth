@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { fmtThought, formatAt, gapLabel, splitTime, withGaps } from './time'
+import { fmtThought, formatAt, gapLabel, splitRestart, splitTime, withGaps } from './time'
 
 // Local wall-clock instants, so the expectations hold in any zone.
 const at = (y: number, mo: number, d: number, h: number, mi: number) => new Date(y, mo - 1, d, h, mi).getTime()
@@ -71,4 +71,15 @@ test('fmtThought: nothing under a second, seconds, minutes, hours (91)', () => {
   expect(fmtThought(120_000)).toBe('2m')
   expect(fmtThought(3_600_000)).toBe('1h')
   expect(fmtThought(3_720_000)).toBe('1h 2m')
+})
+
+test('183 §12.4: splitRestart lifts the restart note (and the time stamp, either order) off a tool result', () => {
+  const note = '<engine_restart at="11:42:07" after="4s" kind="takeover" from="mac" to="xeus" replayed="0" interrupted="1"/>'
+  const stamp = '<time now="2026-11-08 11:42 +00:00 (Sun)"/>'
+  const restart = { clock: '11:42:07', after: 4, cause: 'takeover', from: 'mac', to: 'xeus', replayed: 0, interrupted: 1, text: note }
+  expect(splitRestart(`${note}\nERROR: interrupted`)).toEqual({ text: 'ERROR: interrupted', restart })
+  expect(splitRestart(`${stamp}\n${note}\nok`)).toEqual({ text: 'ok', restart })
+  expect(splitRestart(`${note}\n${stamp}\nok`)).toEqual({ text: 'ok', restart })
+  expect(splitRestart(`${stamp}\nok`)).toEqual({ text: 'ok' })
+  expect(splitRestart('plain <engine_restart at="x"/>')).toEqual({ text: 'plain <engine_restart at="x"/>' })
 })

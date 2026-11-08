@@ -1416,38 +1416,30 @@ impl Schedule {
         {
             tracing::warn!(%name, "budget not set: {e}");
         }
-        // 33 §3.5 / 136 D4: in-memory in the registry, so every fire re-sends
-        // them. The cap is set before the first model turn: with
-        // `approvals: false` it is the only thing keeping destructive tools
-        // (`shell`, `knowledge_delete`) out of an unattended run.
-        if !approvals || cap.is_some() {
-            match ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR) {
-                Ok(Some(reg)) => {
-                    if !approvals
-                        && let Err(e) = reg
-                            .ask(::tools::SetApprovals {
-                                session: Some(session),
-                                enabled: false,
-                            })
-                            .await
-                    {
-                        tracing::warn!(%name, "approvals not switched off: {e}");
-                    }
-                    if let Some(cap) = cap
-                        && let Err(e) = reg
-                            .tell(::tools::SetCap {
-                                session,
-                                cap: Some(cap),
-                            })
-                            .await
-                    {
-                        tracing::warn!(%name, "cap not set: {e}");
-                    }
-                }
-                _ => {
-                    tracing::warn!(%name, "approvals/cap not applied: tool registry is not running")
+        // 33 §3.5 / 136 D4: the cap is in-memory in the registry, so every
+        // fire re-sends it, before the first model turn: with `approvals:
+        // false` it is the only thing keeping destructive tools (`shell`,
+        // `knowledge_delete`) out of an unattended run. 183 §4.5 (D4): the
+        // approvals pin is persisted on the row, so every fire re-applies the
+        // file's value, `true` included.
+        match ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR) {
+            Ok(Some(reg)) => {
+                apply_approvals(&reg, name, session, approvals).await;
+                if let Some(cap) = cap
+                    && let Err(e) = reg
+                        .tell(::tools::SetCap {
+                            session,
+                            cap: Some(cap),
+                        })
+                        .await
+                {
+                    tracing::warn!(%name, "cap not set: {e}");
                 }
             }
+            _ if !approvals || cap.is_some() => {
+                tracing::warn!(%name, "approvals/cap not applied: tool registry is not running")
+            }
+            _ => {}
         }
 
         // 140 §8.3: the toolset lands in the session's mailbox ahead of the
@@ -1835,6 +1827,27 @@ fn deliver(session: Option<SessionId>, name: String, text: String) {
 fn resets_runtime(spec: &file::Spec) -> bool {
     (spec.sensor.is_none() || spec.memory == file::Memory::Clear)
         && spec.runtime == file::Runtime::Clear
+}
+
+/// 183 §4.5 (D4): the file's `approvals:` on the run's session, every fire.
+/// `false` pins it off; `true` clears the pin, which the registry persists on
+/// the row, so a file flipped back to `true` asks again.
+async fn apply_approvals(
+    reg: &ActorRef<::tools::ToolRegistry>,
+    name: &str,
+    session: SessionId,
+    approvals: bool,
+) {
+    if let Err(e) = reg
+        .ask(::tools::SetApprovals {
+            session: Some(session),
+            enabled: approvals,
+            clear: approvals,
+        })
+        .await
+    {
+        tracing::warn!(%name, "approvals not applied: {e}");
+    }
 }
 
 /// 34 §4 step 2, shared by [`Schedule::fire`] and `BindSession` (40 §1.12):
@@ -3073,6 +3086,32 @@ mod fire_tests {
         let rec = Arc::new(Recorder::default());
         s.task_creator = Some(rec.clone());
         (s, rec)
+    }
+
+    /// 183 R1 (E-M2): the pin is persisted on the row now, so a fire with
+    /// `approvals: false` left the reused session unprompted for good. A
+    /// fire with `approvals: true` clears it: the session asks again.
+    #[tokio::test]
+    async fn approvals_true_fire_clears_the_pin_a_false_fire_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let reg = ::tools::registry::start(&rt).await.unwrap();
+        let session = SessionId::new();
+        let read = || async {
+            reg.ask(::tools::GetApprovals {
+                session: Some(session),
+            })
+            .await
+            .unwrap()
+        };
+        apply_approvals(&reg, "nightly", session, false).await;
+        assert_eq!(
+            (read().await.pin, read().await.session),
+            (Some(false), false)
+        );
+        apply_approvals(&reg, "nightly", session, true).await;
+        let st = read().await;
+        assert_eq!((st.pin, st.session), (None, st.global));
     }
 
     #[tokio::test]

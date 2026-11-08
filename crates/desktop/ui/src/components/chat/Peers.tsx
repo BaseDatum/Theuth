@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { PeerRecord } from '@/rpc/bindings/PeerRecord'
 
@@ -240,9 +241,10 @@ function Request({
     enabled: open,
   })
   const [text, setText] = useState('')
-  const send = useAction((t: string) => api.answer_peer_request(session, id, t), {
+  const send = useAction((t: string) => routed(session, () => api.answer_peer_request(session, id, t)), {
     keys: [['peer-messages', session], queryKeys.peerMessage(session, id)],
     onSuccess: (receipt) => {
+      if (!receipt) return // parked behind the chat's OwnerOfflineCard: nothing was answered
       setText('')
       toast(`Answered ${id.slice(0, 8)} · ${receipt.state}`)
     },

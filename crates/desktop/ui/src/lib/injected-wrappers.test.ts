@@ -28,6 +28,7 @@ const NOT_A_ROW: Record<string, string> = {
   workflow: "a section of the advisor's system prompt, never a session row",
   // Not fixed in 171F4 (docs/design/171f4-notes-d.md): the opening brief of an autoresearch experiment's own session.
   study: "an experiment session's opening brief (autoresearch/brief.rs) followed by instructions; see the 171F4-D notes",
+  time: 'the `<time …/>` stamp (clock.rs), stripped by `splitTime` from every user text and tool result, never shown',
 }
 
 function rustFiles(dir: string): string[] {
@@ -39,7 +40,8 @@ function rustFiles(dir: string): string[] {
 }
 
 /** Wrapper names per file: a string literal opening `"<name` (then a space, `>` or an escape) whose `</name>` closes in a
- * string literal of the same file; test modules excluded. */
+ * string literal of the same file; test modules excluded. 183 §5.3: a self-closing opener counts too — its own literal
+ * holds the `/>`, or the file writes a literal starting `/>` (`clock.rs` closes `<time now="…"` with `push_str("/>")`). */
 function wrappers(): Map<string, string> {
   const out = new Map<string, string>()
   for (const krate of CRATES)
@@ -49,6 +51,12 @@ function wrappers(): Map<string, string> {
       if (t >= 0) s = s.slice(0, t)
       const closes = new Set([...s.matchAll(/"(?:[^"\\\n]|\\.)*<\/([a-z][a-z_]*)>/g)].map((m) => m[1]))
       for (const m of s.matchAll(/"<([a-z][a-z_]*)(?=[ >\\])/g)) if (closes.has(m[1] as string)) out.set(m[1] as string, f.slice(ROOT.length))
+      const literals = [...s.matchAll(/"((?:[^"\\\n]|\\.)*)"/g)].map((m) => m[1] as string)
+      const tail = literals.some((l) => l.startsWith('/>'))
+      for (const l of literals) {
+        const open = /^<([a-z][a-z_]*)(?=[ \\])/.exec(l)?.[1]
+        if (open !== undefined && (l.includes('/>') || tail)) out.set(open, f.slice(ROOT.length))
+      }
     }
   return out
 }
@@ -56,7 +64,7 @@ function wrappers(): Map<string, string> {
 test('171F4 T2-8: every engine wrapper is a card, hidden, or listed with its reason', () => {
   const found = wrappers()
   // The scan sees the wrappers it must (a regression in the scan would pass everything).
-  for (const name of ['child_stalled', 'peer_state', 'child_lost', 'job_result', 'cell_result', 'reminder']) expect(found.has(name), name).toBe(true)
+  for (const name of ['child_stalled', 'peer_state', 'child_lost', 'job_result', 'cell_result', 'reminder', 'engine_restart', 'time']) expect(found.has(name), name).toBe(true)
   const raw = [...found].filter(([name]) => !isClassified(name) && !Object.hasOwn(NOT_A_ROW, name)).map(([name, file]) => `<${name}> in ${file}`)
   expect(raw, 'render these (injected.ts CARD/HIDDEN) or list them in NOT_A_ROW with the reason').toEqual([])
   // No stale entries: every listed tag is still written somewhere and not also classified.

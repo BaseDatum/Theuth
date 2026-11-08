@@ -50,8 +50,8 @@ pub use activity::{
     Settle, Tracked,
 };
 pub use approval::{
-    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, PendingApprovals, Resolve,
-    ResolveBy,
+    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, ForgetSession,
+    PendingApprovals, Resolve, ResolveBy,
 };
 pub use ask::{
     Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks,
@@ -84,7 +84,9 @@ pub use registry::{
     SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
     UnregisterTool, UserActivation,
 };
-pub use registry::{CancelCalls, InstallResources, RemoveResources, SetPromoteAfter};
+pub use registry::{
+    CancelCalls, InstallResources, RemoveResources, RestoreApprovals, SetPromoteAfter,
+};
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,
 };

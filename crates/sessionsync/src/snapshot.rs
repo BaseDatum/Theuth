@@ -232,7 +232,8 @@ pub async fn apply(
             Cow::Owned(filter(changeset, idx, fenced)?)
         };
         if !bytes.is_empty() {
-            apply_changeset(&mut tx, &bytes).await?;
+            let skipped = apply_changeset(&mut tx, &bytes).await?;
+            crate::apply::warn_skipped(origin, None, &skipped);
         }
     }
     if move_cursor {

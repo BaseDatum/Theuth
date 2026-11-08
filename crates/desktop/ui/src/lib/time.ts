@@ -2,7 +2,7 @@
  * Wall-clock helpers for the transcript (74 §5): the hover timestamp on a message, the gap divider between
  * distant entries, and the `<time …/>` line the engine prepends to inputs the model sees (never shown as text).
  */
-import { humanSecs } from './injected'
+import { humanSecs, parseRestart, type RestartNote } from './injected'
 
 const DAY = 86_400_000
 /** Entries this far apart get a divider between them. */
@@ -57,6 +57,18 @@ export function splitTime(text: string): { text: string; at?: number } {
   const now = /^<time now="(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) ([+-]\d{2}:\d{2})/.exec(t)
   const at = now ? Date.parse(`${now[1]}T${now[2]}${now[3]}`) : NaN
   return { text: rest.startsWith('\n') ? rest.slice(1) : rest, ...(Number.isNaN(at) ? {} : { at }) }
+}
+
+/** 183 §12.4: a resumed batch's first tool result opens with `<engine_restart …/>` (109 §4.3), around the `<time/>`
+ * stamp either way; `text` is the output without both, `restart` the note for the EngineRestartCard. Never shown raw. */
+export function splitRestart(output: string): { text: string; restart?: RestartNote & { text: string } } {
+  const t = splitTime(output).text
+  if (!t.startsWith('<engine_restart ')) return { text: t }
+  const end = t.indexOf('/>')
+  if (end < 0) return { text: t }
+  const { kind: _, ...restart } = parseRestart(t.slice(0, end + 2))
+  const rest = t.slice(end + 2)
+  return { text: splitTime(rest.startsWith('\n') ? rest.slice(1) : rest).text, restart }
 }
 
 /** The thinking time behind "Thought" (91): `undefined` under a second, `9s` (nearest second) under a minute,

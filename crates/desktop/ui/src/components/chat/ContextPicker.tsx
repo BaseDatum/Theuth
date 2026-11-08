@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { routed } from '@/lib/owner'
 import { useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 import type { ContextItem } from '@/rpc/bindings/ContextItem'
@@ -209,7 +210,9 @@ export function ContextPicker({ session }: { session: string }) {
     }
     setPhase({ at: 'pending', snap, items, selected })
     try {
-      const r = await req.api.remove_context(req.session, snap.revision, targets)
+      // 183 §4.4: the owner's call; unreachable, it waits behind the chat's card and the picker closes.
+      const r = await routed(req.session, () => req.api.remove_context(req.session, snap.revision, targets))
+      if (!r) return setReq(null)
       const parts = [
         r.messages > 0 && `${r.messages} message${r.messages === 1 ? '' : 's'}`,
         r.images > 0 && `${r.images} image${r.images === 1 ? '' : 's'}`,

@@ -140,8 +140,9 @@ pub async fn settle_transferred(store: &Store, session: SessionId, from: &str) -
             Some(log) if !cell => log_tail(log),
             _ => String::new(),
         };
+        // 183 R1 (H2): the machine by its mesh name, never the hex id.
         let reason = LostReason::OwnerChanged {
-            engine: row.engine.clone(),
+            engine: crate::communication::mesh::machine_name_now(&row.engine).await,
         };
         let deliver = (!cell && !in_batch.iter().any(|c| job_of_call(&row.call_id, c)))
             .then(|| lost_body(&row, screen.as_ref(), &tail, now, &reason));
@@ -750,14 +751,19 @@ mod tests {
         assert_eq!(reaped.jobs.len(), 2);
         let by_id = |id: &str| reaped.jobs.iter().find(|j| j.row.id.0 == id).unwrap();
         let j1 = by_id("j1");
-        assert_eq!(j1.reason, LostReason::OwnerChanged { engine: "a".into() });
+        assert_eq!(
+            j1.reason,
+            LostReason::OwnerChanged {
+                engine: "another machine".into()
+            }
+        );
         assert_eq!(
             (j1.row.state, j1.row.exit.clone()),
             (JobState::Lost, Some(JobExit::Lost))
         );
         let body = j1.deliver.as_deref().expect("stub delivered → body");
         assert!(
-            body.starts_with("owner changed (ran on a): the session moved here at "),
+            body.starts_with("owner changed (ran on another machine): the session moved here at "),
             "{body}"
         );
         let j2 = by_id("j2");

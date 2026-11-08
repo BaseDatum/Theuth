@@ -114,13 +114,21 @@ pub(crate) async fn resume_job_call(
         _ => return Some(interrupted_note(call, plan)),
     };
     // 139 §7.1: a job another engine spawned did not die with a restart —
-    // the session moved here and the process stayed behind.
+    // the session moved here and the process stayed behind. 183 §11: a
+    // transfer or takeover says so even when the job row names no other
+    // engine (pre-139 rows, or a row the move outran).
     let me = store.engine();
-    let moved = !job.engine.is_empty() && job.engine != me;
+    let elsewhere = !job.engine.is_empty() && job.engine != me;
+    let moved = elsewhere || matches!(plan.cause, ResumeCause::Transfer | ResumeCause::Takeover);
+    // 183 R1 (H2): the origin by its mesh name, never a hex id.
+    let origin = if elsewhere {
+        crate::communication::mesh::machine_name_now(&job.engine).await
+    } else {
+        "another machine".to_owned()
+    };
     let how = match plan.kind {
         _ if moved => format!(
-            "the session moved here from {} at {}",
-            job.engine,
+            "the session moved here from {origin} at {}",
             hhmmss(plan.interrupted_at)
         ),
         ResumeKind::Interrupted => {
@@ -132,10 +140,7 @@ pub(crate) async fn resume_job_call(
         ),
     };
     let fate = if moved {
-        format!(
-            "the job stayed on {} and its exit code is unknown here",
-            job.engine
-        )
+        format!("the job stayed on {origin} and its exit code is unknown here")
     } else {
         "the job died with the engine and its exit code is unknown".to_owned()
     };
@@ -168,14 +173,17 @@ async fn lost_wait_reply(
     let screen = store.pty_screen(session, &job.id).await.ok().flatten();
     // 139 §7.2: the page is the previous owner's, replicated.
     let (gone, on) = if !job.engine.is_empty() && job.engine != store.engine() {
+        let from = crate::communication::mesh::machine_name_now(&job.engine).await;
         (
             format!(
-                "the session moved from {} at {}",
-                job.engine,
+                "the session moved from {from} at {}",
                 hhmmss(plan.interrupted_at)
             ),
-            format!(" on {}", job.engine),
+            format!(" on {from}"),
         )
+    } else if matches!(plan.cause, ResumeCause::Transfer | ResumeCause::Takeover) {
+        // 183 §11: a move, even when the row names no other engine.
+        (how(plan), String::new())
     } else {
         (
             format!("the engine restarted at {}", hhmmss(plan.interrupted_at)),
@@ -462,8 +470,10 @@ mod tests {
     }
 
     /// 139 §7.1 / §7.2: on engine `b`, the job note and the lost `wait`
-    /// reply for a row with `engine = "a"` say the session moved from `a`
-    /// and that the page was captured there.
+    /// reply for a row with `engine = "a"` say the session moved from that
+    /// machine and that the page was captured there. 183 R1 (H2): by its mesh
+    /// name; `a` is unknown to this test's (absent) mesh, so "another
+    /// machine", never the id.
     #[tokio::test]
     async fn job_note_names_the_engine_that_ran_it() {
         let scratch = crate::TestDir::new("139-w3");
@@ -505,7 +515,7 @@ mod tests {
             .unwrap();
         assert!(
             note.content.starts_with(&format!(
-                "ERROR: interrupted: the session moved here from a at {} while this command ran (job j1, started {}); the job stayed on a and its exit code is unknown here",
+                "ERROR: interrupted: the session moved here from another machine at {} while this command ran (job j1, started {}); the job stayed on another machine and its exit code is unknown here",
                 hhmmss(p.interrupted_at),
                 hhmmss_ms(1_000)
             )),
@@ -517,11 +527,88 @@ mod tests {
             .unwrap();
         assert!(
             wait.content.starts_with(&format!(
-                "job j2 · lost · 8s\n[process gone — the session moved from a at {}; no screen was captured]",
+                "job j2 · lost · 8s\n[process gone — the session moved from another machine at {}; no screen was captured]",
                 hhmmss(p.interrupted_at)
             )),
             "{}",
             wait.content
+        );
+    }
+
+    /// 183 §11 (closer item c): a transfer whose job row names no other
+    /// engine (a pre-139 row) still says the session moved, never "the
+    /// engine restarted"; a crash keeps 109's wording.
+    #[tokio::test]
+    async fn job_note_after_a_move_says_moved_without_an_engine_on_the_row() {
+        let scratch = crate::TestDir::new("183-z-moved");
+        let store = Store::open(
+            &scratch.0.join("sessions.sqlite"),
+            Some(mesh::EngineId("b".into())),
+        )
+        .await
+        .unwrap();
+        let s = SessionId::new();
+        store
+            .create_session(s, "m", None, None, None)
+            .await
+            .unwrap();
+        for (id, call_id, kind) in [("j1", "c1", JobKind::Shell), ("j2", "c2", JobKind::Pty)] {
+            store
+                .job_put(&JobRow {
+                    session: s,
+                    id: tools::JobId(id.into()),
+                    kind,
+                    call_id: call_id.into(),
+                    command: "x".into(),
+                    name: None,
+                    pgid: None,
+                    log: Some(std::path::PathBuf::from("/nonexistent/j.log")),
+                    started_ms: 1_000,
+                    state: JobState::Lost,
+                    exit: Some(JobExit::Lost),
+                    settled_ms: Some(9_000),
+                    engine: String::new(),
+                })
+                .await
+                .unwrap();
+        }
+        let p = plan(ResumeCause::Transfer);
+        let note = resume_job_call(&store, s, &call("c1", "shell", json!({})), &p)
+            .await
+            .unwrap();
+        assert!(
+            note.content.starts_with(&format!(
+                "ERROR: interrupted: the session moved here from another machine at {} while this command ran",
+                hhmmss(p.interrupted_at)
+            )),
+            "{}",
+            note.content
+        );
+        let wait = resume_job_call(&store, s, &call("c5", "wait", json!({"id": "j2"})), &p)
+            .await
+            .unwrap();
+        assert!(
+            wait.content
+                .contains("[process gone — the session moved to this engine at "),
+            "{}",
+            wait.content
+        );
+        let crash = resume_job_call(
+            &store,
+            s,
+            &call("c1", "shell", json!({})),
+            &plan(ResumeCause::Crash),
+        )
+        .await
+        .unwrap();
+        // The fixture plan is `suspended`: 109's stop-and-restart wording, no move.
+        assert!(
+            crash
+                .content
+                .starts_with("ERROR: interrupted: the engine was stopped at ")
+                && !crash.content.contains("moved"),
+            "{}",
+            crash.content
         );
     }
 }

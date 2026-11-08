@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
@@ -66,8 +67,9 @@ export function Communication({ session, focus }: { session: string | null; focu
    * Install a setter's reply when it is still the snapshot this pane shows: the
    * same session and not older than what an event-driven refetch already landed.
    */
-  const install = (next: CommunicationState) => {
-    if (next.session !== session) return
+  const install = (next: CommunicationState | undefined) => {
+    // 183 §4.4: `routed` resolves undefined when the owner is unreachable and the call is parked behind the chat's card.
+    if (!next || next.session !== session) return
     const cur = qc.getQueryData<CommunicationState>(queryKeys.communication(session))
     if (cur && BigInt(next.revision) < BigInt(cur.revision)) return
     qc.setQueryData(queryKeys.communication(session), next)
@@ -80,12 +82,12 @@ export function Communication({ session, focus }: { session: string | null; focu
     },
     { keys: [['communication'], ['peers']], onSuccess: install },
   )
-  const setSession = useAction((on: boolean) => api.set_communication(session, on), {
+  const setSession = useAction((on: boolean) => routed(session ?? '', () => api.set_communication(session, on)), {
     keys: [['communication'], ['peers']],
     onSuccess: install,
   })
   const setScope = useAction(
-    (v: { scope: PeerScope; alias: string | null }) => api.set_peer_scope(session as string, v.scope, v.alias),
+    (v: { scope: PeerScope; alias: string | null }) => routed(session as string, () => api.set_peer_scope(session as string, v.scope, v.alias)),
     { keys: [['communication'], ['peers']], onSuccess: install },
   )
 

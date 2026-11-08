@@ -253,7 +253,11 @@ pub async fn serve_mesh(rt: Runtime) {
         loop {
             match events.recv().await {
                 Ok(mesh::MeshEvent::Peer(_)) | Err(broadcast::error::RecvError::Lagged(_)) => break,
-                Ok(mesh::MeshEvent::Lease(_)) => {}
+                Ok(
+                    mesh::MeshEvent::Lease(_)
+                    | mesh::MeshEvent::Nearby(_)
+                    | mesh::MeshEvent::Pair(_),
+                ) => {}
                 Err(broadcast::error::RecvError::Closed) => return,
             }
         }
@@ -611,6 +615,10 @@ fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
                     .into(),
             ))
         }
+        // 183 §5.3: the moved notice over ACP.
+        HistoryEntry::Moved { moved, .. } => SessionUpdate::UserMessageChunk(ContentChunk::new(
+            format!("[session moved to {}]", moved.to).into(),
+        )),
     }
 }
 
@@ -941,6 +949,8 @@ mod tests {
             reachable: true,
             last_seen_ms: 0,
             hub_pref: mesh::HubPref::Never,
+            path: mesh::PeerPath::Offline,
+            rtt_ms: None,
         };
         let s = mesh::EngineStats {
             id: p.id.clone(),
@@ -952,6 +962,10 @@ mod tests {
             display: true,
             gpu: false,
             accelerator: None,
+            os: String::new(),
+            os_name: String::new(),
+            arch: String::new(),
+            host: String::new(),
         };
         assert_eq!(describe(&p, Some(&s)), "mesh · vm · harnesses: native, omp");
         assert_eq!(describe(&p, None), "mesh");

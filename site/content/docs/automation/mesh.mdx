@@ -52,16 +52,19 @@ The README and the `t --install-service` output still mention "Settings › Node
 
 Every durable session is mirrored to every engine as a changeset log. Besides sessions: tasks, roster agents and their budgets, projects, paired devices, the secrets vault, the document index, and the files under `skills/`, `schedules/` and `mcp/*.json`. Private sessions (the **Private** switch in a new chat) never replicate.
 
-One engine **owns** each session and is the only one that writes to it. In the sidebar a session owned elsewhere carries an engine chip. Sending into it from another engine works two ways:
+One engine **owns** each session and is the only one that runs it. In the sidebar a session owned elsewhere carries an engine chip. Using it from another engine never moves it:
 
-- Your own sessions are **taken**: when the owner is unreachable the composer shows `Owned by <engine>, last seen <ago>. Continue here now?` with a **Continue here** button; the same item is in a session's menu, and `/take` in the composer does it directly. Turns the old owner had not yet shipped stay there.
-- Agent desks are **forwarded** to their owner rather than taken.
+- **Writes forward to the owner.** Sending, steering, stopping, approving, and the session settings in **⋯** (Approvals, Agent messaging, Model, Effort) all run on the owner; the composer reads `Message — runs on <engine>` (`Runs on <engine>` in a narrow window). Agent desks and your own chats follow the same rule.
+- **Live while you watch.** The open chat streams the owner's reply, tool progress, approval cards and questions as they happen; the header chip reads `on <engine> · live`. An approval relayed from the owner reads `<engine> asks: <tool>` with `<risk> · relayed from <engine> · denies at <time>`, and Allow or Deny on any machine answers it on the owner. A chat that is not open shows its running glyph in the sidebar.
+- **Owner offline: nothing runs.** When the owner is not connected the chip reads `on <engine> · offline`, the setters in **⋯** are greyed, and a send shows `Owned by <engine>, last seen <ago>. Continue here now?` at once. **Continue here** takes the session to this engine and then sends; **Wait** keeps your draft. `/take` in the composer does the same.
 
-To send a session you own to another engine on purpose, open its **⋯** menu and pick **Move to ▸ \<engine\>**. The list shows every paired engine with a dot for online; an offline one is greyed out with how long it has been gone. One click moves it: a turn that is running pauses here and resumes there, and running jobs stay behind (the subtitle says how many). Afterwards the header shows `on <engine>` and a line reads `Moved to <engine> at HH:MM — it runs there. Sending a message here brings it back.` with a **Continue here** button; the other engine shows `The session moved here at HH:MM — moved from <engine>.` Errors come back in plain words: `<engine> is offline`, `this session is not owned here`, `<engine> refused: …`. Opening or reading a session on another engine never moves it.
+To send a session to another engine on purpose, open its **⋯** menu and pick **Move to ▸ \<engine\>** (on a chat owned elsewhere the owner does the move). The list shows every paired engine with a dot for online; an offline one is greyed out with how long it has been gone. One click moves it: a turn that is running pauses here and resumes there, and running jobs stay behind (the subtitle says how many). Both machines then show a **Session moved to \<engine\> · \<OS\> · \<folder\>** card (`from <engine> · <time> · approvals kept: Ask`, and "What the agent was told"); the model's next turn is told which machine, OS and folder it now works in. A move during a running turn shows **Resumed on \<engine\> after N s · moved from \<engine\>** above the tool call it interrupted. The origin's header shows `on <engine>` and a line reads `Moved to <engine> at HH:MM — it runs there; what you send here runs there too.` with a **Continue here** button; the other engine shows `The session moved here at HH:MM — moved from <engine>.` Errors come back in plain words: `<engine> is offline`, `this session is not owned here`, `<engine> refused: …`. Opening or reading a session on another engine never moves it.
+
+To start a chat on another machine, use **New chat on [\<engine\> ▾]** at the top of a new chat (shown once you have paired engines), the **▸** beside the sidebar's **Chat**, or **New chat on \<engine\>** in ⌘K. Pick a folder there (`Browse <engine>…` completes paths on that machine); the chat is created on, and owned by, that engine, works in that folder, and its system prompt names the machine (`Machine: <name> (<OS>, <arch>)`).
 
 Some sessions cannot move, and the menu item says why: a paused agent's desk and everything under it (`<agent> is paused — un-pause it before moving`), an agent desk (it stays on the engine that runs its agent), and an external harness session such as omp (a process on this engine). If the other engine refuses after the running turn was paused here, the turn resumes here and the message ends `It continues here.`; if it does not answer within the take's time limit you get `no answer from <engine> yet — the move may still land`, and the sidebar shows where the session ended up.
 
-An automatic takeover on write is refused until the owner has been unseen for `sessions.takeover_secs` (300 s).
+A session's per-chat settings travel with it: the Approvals pin (On, Off, or the machine default) and the Agent messaging opt-out are stored on the session and apply on whichever engine owns it.
 
 ### The hub
 
@@ -109,7 +112,7 @@ t --install-service --no-pair
 
 The model calls `mesh_peers`, sees `build-box … repos=~/src/app`, and calls `spawn_subagent{agent: "build-box", cwd: "~/src/app", task: "…"}`. The child session appears under the parent in the sidebar with the server's engine chip. When it wants to run `cargo test`, the approval card shows up in *your* chat on the laptop — Allow or Deny as usual; it is the same Allow/Deny model described in [Tools and permissions](/docs/reference/tools-permissions). The child's result arrives as a message in the parent session.
 
-If you would rather hand the whole conversation to the server, open the session's menu and choose **Move to ▸ build-box**, or **Continue here** from a UI connected to the server, or type `/take` there.
+If you would rather hand the whole conversation to the server, open the session's menu and choose **Move to ▸ build-box**, or **Continue here** from a UI connected to the server, or type `/take` there. Typing into the server's chat from the laptop runs it on the server without moving it.
 
 **4. Follow it from the phone.** On the laptop, Settings › **Link**: turn the relay on (or `/link on` in the terminal UI), then **Pair a device**. Scan the QR with the phone's camera. The phone's **Pair with a mesh** screen pairs it with the mesh, and the switcher shows one row for the mesh (`2 of 2 nodes online`). Open the running session from the phone: you see the same transcript, and an approval that is still pending can be answered there. Once the server can hold the lease (past probation, or preferred), closing the laptop does not cut the phone off: the server takes the hub, the phone shows `reconnecting…` briefly and redials the same mesh id.
 
@@ -156,8 +159,8 @@ All keys live in `~/.theuth/config.yaml`; any key can be overridden with `THEUTH
 
 | Key | Default | Meaning |
 |---|---|---|
-| `takeover_secs` | `300` | Owner must be unseen this long before a write from another engine may take the session. |
-| `release_wait_secs` | `10` | Wait for the old owner to release on a user-initiated take. |
+| `takeover_secs` | `300` | Owner must be unseen this long before an automatic take (the orphan sweep) claims its sessions. A write from the desktop, TUI or phone never takes: it forwards, or asks you to **Continue here**. |
+| `release_wait_secs` | `10` | Wait for the old owner to release on a user-initiated take; also how long a new chat started on another machine waits for its row to arrive here. |
 | `orphan_keep_days` | `7` | How long orphaned sessions from a removed engine are kept. |
 
 `link:`
@@ -220,7 +223,7 @@ All `t mesh …` subcommands are RPC calls on the running engine on this machine
 - Settings › **Mesh**: "This node" (name, `hub` badge, mesh name, **Prefer this node as hub**, Sessions here/elsewhere, replication log), "Nodes in this mesh", **Add a node** (pairing string show/paste, **On another computer over SSH**), sandbox VMs.
 - Settings › **Link**: relay toggle, "This node" link identity, hub status (`this node is the hub: serving the mesh's devices` or `another node holds the hub lease`), **Devices** with **Pair a device**, rename, revoke, and **Legacy devices**.
 - Engine switcher (header): the local daemon as `LOCAL`, mesh rows with `N of M nodes online`, nodes nested under their parent; chips `reconnecting…` and `revoked — pair again`.
-- Session menu: **Continue here** (owned elsewhere) or **Move to ▸** (owned here, with paired engines); sidebar item: **Continue here**.
+- Session menu: the session's settings (Approvals ▸ On / Off / Machine default, Agent messaging, Model ›, Effort ›; headed `Settings for this session on <engine>` for a chat owned elsewhere), then **Continue here** (owned elsewhere) and **Move to ▸**. New chat: **New chat on [machine ▾]** and its folder; the sidebar's Chat **▸** and ⌘K list the same machines.
 
 ## Safety and permissions
 
@@ -255,7 +258,7 @@ RELAY_HOST=relay.example.com docker compose -f deploy/relay/compose.yaml up -d  
 | Graceful hub handover | 600 s (`mesh.handover_secs`) |
 | Device reconnect after a hub crash | about 31 s measured |
 | Revocation reaching every hub | about 2 s (one replication hop) |
-| Write takeover of a session | owner unseen ≥ 300 s (`sessions.takeover_secs`) |
+| Write takeover of a session | never from a client write: writes forward to a connected owner, and an offline owner asks you to **Continue here** |
 | Orphaned sessions kept | 7 days |
 | Node over SSH control connection | reconnect backoff 1→30 s, keepalive 300 s, presence wait 10 s |
 | Relay per-device idle | 600 s, then `CLOSE 2` |
@@ -275,7 +278,7 @@ Not available as of this writing: a `Settings › Nodes` tab (it is Mesh), devic
 | Routines show `not hub` and never fire here | This node does not hold the lease; ticks are the hub's duty. | Expected: they fire on the hub. To move the hub, `t mesh hub prefer` here and `t mesh hub never` on the other node; a new joiner waits out 6 h probation first. |
 | Phone or browser shows `revoked — pair again` | The engine answered `refused`: every hub forgot this device, usually because it was revoked. | Pair again from Settings › Link › **Pair a device** (or `/mesh devices add`). |
 | Phone shows `reconnecting…` for longer than a minute | Hub failover (`CLOSE 4` / `CLOSE 5`) and no node currently holds the lease, or the surviving node has `link.enabled: false`. | Make sure at least one eligible node is up with the relay enabled; `t mesh status` shows the lease. |
-| Composer says `Owned by <engine>, last seen <ago>. Continue here now?` | The session's owner is unreachable. | **Continue here** takes it (turns not yet shipped from the old owner stay there), **Wait** keeps your draft. |
+| Composer says `Owned by <engine>, last seen <ago>. Continue here now?` | The session's owner is not connected; nothing ran. | **Continue here** takes it and sends (turns not yet shipped from the old owner stay there), **Wait** keeps your draft. |
 | `t --link` says it needs the daemon | Legacy pairing talks to a running engine. | Start `t --headless` first. |
 | Pairing a device fails after 16 devices | `link.max_devices` reached. | Revoke an old device in Settings › Link, or raise `link.max_devices`. |
 | `/nodes add` worked but my sessions are not on the node | Expected: a node over SSH is not synced. | Pair it into the mesh with `t mesh pair` / `t mesh add` as well. |

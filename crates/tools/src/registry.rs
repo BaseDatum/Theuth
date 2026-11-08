@@ -55,14 +55,16 @@ pub struct ToolRegistry {
     policy: Policy,
     /// `tools.approvals`: false turns every `Ask` into `Allow`.
     approvals: bool,
-    /// Sessions that turned prompts off for themselves (and, through
-    /// `parents`, for their subagents).
-    bypass: HashSet<SessionId>,
+    /// 183 §4.5 (W-4): sessions' approval pins (`sessions.approvals`): `true`
+    /// keeps `Ask` an `Ask` even with `tools.approvals: false`, `false` turns
+    /// it into `Allow`; no entry inherits `tools.approvals`. Subagents
+    /// inherit the nearest ancestor's pin through `parents`.
+    pin: HashMap<SessionId, bool>,
     /// Tool names a session (and its subagents) does not see: absent from
     /// [`ListTools`], `unknown tool` on [`Invoke`]. In memory only; the
     /// persistent switch is `off` in `mcp/config.yaml`.
     hidden: HashMap<SessionId, HashSet<String>>,
-    /// child → parent, from [`SetParent`]; a session inherits its ancestors' bypass and hidden set.
+    /// child → parent, from [`SetParent`]; a session inherits its ancestors' pin and hidden set.
     parents: HashMap<SessionId, SessionId>,
     /// Risk ceiling per session from [`SetCap`]: a tool above it is neither
     /// listed for nor runnable by the session or its subagents, except
@@ -370,7 +372,7 @@ pub struct InstallExecutionGate(pub Arc<dyn ExecutionGate>);
 /// (design doc 06 §3.4, §8.8). Timeout and a missing approval actor are `Deny`.
 #[derive(Clone, Debug)]
 pub struct ExternalApproval {
-    /// Session the call belongs to (approval bypass inheritance).
+    /// Session the call belongs to (approval pin inheritance).
     pub session: SessionId,
     /// Tool title, shown in the modal.
     pub tool: String,
@@ -436,14 +438,28 @@ pub struct CheckFence {
 }
 
 /// `ask` → [`ApprovalsState`]. Turn approval prompts on or off: for one
-/// session (in memory) or, with `session: None`, for everyone, persisted to
-/// `tools.approvals` in `<data_dir>/config.yaml`.
+/// session (pinned on its row, 183 §4.5) or, with `session: None`, for
+/// everyone, persisted to `tools.approvals` in `<data_dir>/config.yaml`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SetApprovals {
     /// Session to switch; `None` switches the global default.
     pub session: Option<SessionId>,
     /// `true` prompts as the policy says; `false` never prompts.
     pub enabled: bool,
+    /// 183 §4.5 (W-4): drop the session's pin (`sessions.approvals` back to
+    /// NULL, inherit `tools.approvals`); `enabled` is then ignored.
+    #[serde(default)]
+    pub clear: bool,
+}
+
+/// `ask` → `()`: apply a session's pin loaded from its `sessions.approvals`
+/// row (actor spawn: boot, resume, take) without writing it back. Engine-internal.
+#[derive(Clone, Copy, Debug)]
+pub struct RestoreApprovals {
+    /// The session.
+    pub session: SessionId,
+    /// The row's pin; `None` clears any pin held in memory.
+    pub pin: Option<bool>,
 }
 
 /// `ask` → [`ApprovalsState`]: the switches as they stand, for the global
@@ -622,7 +638,7 @@ pub struct OpenTree(pub TreeOpened);
 /// (a participant past the per-owner timeout or unreachable answers
 /// `ok: false`), plus Jobs' own once it cancelled and reaped the subtree's
 /// jobs and removed their logs. The subtree's shells and this actor's
-/// `resources`/parent/hidden/bypass/cap entries go with it.
+/// `resources`/parent/hidden/pin/cap entries go with it.
 #[derive(Clone, Debug)]
 pub struct CloseTreeAll(pub CloseTree);
 
@@ -754,7 +770,7 @@ impl Message<Forget> for ToolRegistry {
             self.resources.remove(s);
             self.parents.remove(s);
             self.hidden.remove(s);
-            self.bypass.remove(s);
+            self.pin.remove(s);
             self.cap.remove(s);
             crate::seat::forget(*s);
         }
@@ -769,8 +785,15 @@ impl Message<Forget> for ToolRegistry {
 pub struct ApprovalsState {
     /// `tools.approvals`.
     pub global: bool,
-    /// False when the session opted out; meaningful only for a session query.
+    /// Whether the session prompts: its (or the nearest ancestor's) pin, else
+    /// `tools.approvals`; meaningful only for a session query.
     pub session: bool,
+    /// 183 §4.5 (W-4): the session's own pin (`sessions.approvals`): `Some(true)`
+    /// = `'on'`, `Some(false)` = `'off'`, `None` = inherit (or a global query).
+    /// Absent when `None`, as the TS `pin?` says (a `null` read as "off").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub pin: Option<bool>,
 }
 
 impl Message<SetApprovals> for ToolRegistry {
@@ -782,11 +805,12 @@ impl Message<SetApprovals> for ToolRegistry {
         _: &mut Context<Self, Self::Reply>,
     ) -> ApprovalsState {
         match m.session {
-            Some(id) if m.enabled => {
-                self.bypass.remove(&id);
-            }
+            // 183 §4.5 (W-4): the session's own pin, written through to its row
+            // before the reply, so a reader that re-applies the row sees it.
             Some(id) => {
-                self.bypass.insert(id);
+                let pin = (!m.clear).then_some(m.enabled);
+                self.set_pin(id, pin);
+                self.journal.approvals(id, pin).await;
             }
             None => {
                 self.approvals = m.enabled;
@@ -799,6 +823,14 @@ impl Message<SetApprovals> for ToolRegistry {
             }
         }
         self.approvals_state(m.session)
+    }
+}
+
+impl Message<RestoreApprovals> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RestoreApprovals, _: &mut Context<Self, Self::Reply>) {
+        self.set_pin(m.session, m.pin);
     }
 }
 
@@ -839,25 +871,33 @@ impl Message<GetPtyIdle> for ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// The global switch and, for a session, whether it (or an ancestor) opted out.
+    /// Set (`Some`) or drop (`None`, inherit) the session's own pin.
+    fn set_pin(&mut self, id: SessionId, pin: Option<bool>) {
+        match pin {
+            Some(on) => self.pin.insert(id, on),
+            None => self.pin.remove(&id),
+        };
+    }
+
+    /// The global switch and, for a session, its effective value (pin, else global).
     fn approvals_state(&self, session: Option<SessionId>) -> ApprovalsState {
         ApprovalsState {
             global: self.approvals,
-            session: session.is_none_or(|id| !self.bypassed(id)),
+            session: session.map_or(self.approvals, |id| {
+                self.pinned(id).unwrap_or(self.approvals)
+            }),
+            pin: session.and_then(|id| self.pin.get(&id).copied()),
         }
     }
 
-    /// The session or any ancestor opted out of prompts.
-    fn bypassed(&self, mut id: SessionId) -> bool {
+    /// The nearest pin of the session or an ancestor (183 §4.5).
+    fn pinned(&self, mut id: SessionId) -> Option<bool> {
         // ponytail: linear walk per invoke; depth is capped by `max_depth`.
         loop {
-            if self.bypass.contains(&id) {
-                return true;
+            if let Some(&on) = self.pin.get(&id) {
+                return Some(on);
             }
-            match self.parents.get(&id) {
-                Some(p) => id = *p,
-                None => return false,
-            }
+            id = *self.parents.get(&id)?;
         }
     }
 
@@ -968,8 +1008,9 @@ impl ToolRegistry {
     /// The one permission decision (12 §5), before anyone is asked: `Deny`
     /// for a tool above the session's cap ([`SetCap`]), else `tools.policy`
     /// for the risk, at least `Ask` when the args carry a secret placeholder
-    /// (37 §0.4), then `Ask` → `Allow` by the approval switches (global, or
-    /// the session / an ancestor opted out). `Deny` is never rewritten.
+    /// (37 §0.4), then `Ask` → `Allow` unless prompts are on for the session:
+    /// its nearest pin ([`SetApprovals`], 183 §4.5), else `tools.approvals`.
+    /// `Deny` is never rewritten.
     fn effective(
         &self,
         session: Option<SessionId>,
@@ -985,7 +1026,9 @@ impl ToolRegistry {
             action = action.max(PolicyAction::Ask);
         }
         if action == PolicyAction::Ask
-            && (!self.approvals || session.is_some_and(|s| self.bypassed(s)))
+            && !session
+                .and_then(|s| self.pinned(s))
+                .unwrap_or(self.approvals)
         {
             action = PolicyAction::Allow;
         }
@@ -1916,7 +1959,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             fence_checkers: HashMap::new(),
             policy: cfg.policy,
             approvals: cfg.approvals,
-            bypass: HashSet::new(),
+            pin: HashMap::new(),
             hidden: HashMap::new(),
             parents: HashMap::new(),
             cap: HashMap::new(),
@@ -1985,7 +2028,7 @@ mod tests {
             fence_checkers: HashMap::new(),
             policy: Policy::default(),
             approvals: true,
-            bypass: HashSet::new(),
+            pin: HashMap::new(),
             hidden: HashMap::new(),
             parents: HashMap::new(),
             cap: HashMap::new(),
@@ -2535,6 +2578,197 @@ mod tests {
         );
     }
 
+    /// Journal that records every `approvals` write.
+    struct PinLog(Mutex<Vec<(SessionId, Option<bool>)>>);
+
+    impl Journal for PinLog {
+        fn call_started(&self, _: SessionId, _: &str) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn call_finished(
+            &self,
+            _: SessionId,
+            _: &str,
+            _: &ToolOutput,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn question(&self, _: QuestionRow) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn wait(
+            &self,
+            _: Option<crate::WaitRow>,
+            _: SessionId,
+            _: &str,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn job(&self, _: crate::JobRow) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn pty_screen(&self, _: crate::PtyScreenRow) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn approvals(&self, s: SessionId, pin: Option<bool>) -> futures::future::BoxFuture<'_, ()> {
+            // Recorded when awaited: a write left to a spawned task lands late.
+            Box::pin(async move { lock(&self.0).push((s, pin)) })
+        }
+    }
+
+    /// What `wipe` (destructive: `ask` by policy) resolves to for `session`.
+    async fn wipe_action(reg: &ActorRef<ToolRegistry>, session: SessionId) -> PolicyAction {
+        reg.ask(InspectTool {
+            session,
+            name: "wipe".into(),
+            args: Some(serde_json::json!({"target": "db"})),
+        })
+        .await
+        .unwrap()
+        .action
+    }
+
+    async fn pin_session(reg: &ActorRef<ToolRegistry>, session: SessionId, on: bool, clear: bool) {
+        reg.ask(SetApprovals {
+            session: Some(session),
+            enabled: on,
+            clear,
+        })
+        .await
+        .unwrap();
+    }
+
+    /// 183 §4.5 (W-4): a session pin beats `tools.approvals` both ways, a
+    /// child inherits the nearest ancestor's pin, `clear` goes back to the
+    /// global switch, and `ApprovalsState.pin` is the session's own pin.
+    #[tokio::test]
+    async fn session_pin_beats_the_global_switch_and_children_inherit_it() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (parent, child, other) = (SessionId::new(), SessionId::new(), SessionId::new());
+        for global in [true, false] {
+            let reg = ToolRegistry::spawn(ToolRegistry {
+                approvals: global,
+                ..build(vec![Arc::new(Wipe(runs.clone()))], None)
+            });
+            reg.tell(SetParent {
+                session: child,
+                parent,
+            })
+            .await
+            .unwrap();
+            let inherit = if global {
+                PolicyAction::Ask
+            } else {
+                PolicyAction::Allow
+            };
+            assert_eq!(wipe_action(&reg, parent).await, inherit);
+
+            pin_session(&reg, parent, true, false).await;
+            assert_eq!(wipe_action(&reg, parent).await, PolicyAction::Ask);
+            assert_eq!(
+                wipe_action(&reg, child).await,
+                PolicyAction::Ask,
+                "inherited"
+            );
+            assert_eq!(wipe_action(&reg, other).await, inherit, "unrelated session");
+            let st = reg
+                .ask(GetApprovals {
+                    session: Some(child),
+                })
+                .await
+                .unwrap();
+            assert_eq!((st.global, st.session, st.pin), (global, true, None));
+
+            // The nearest pin wins: the child's own `off` beats the parent's `on`.
+            pin_session(&reg, child, false, false).await;
+            assert_eq!(wipe_action(&reg, child).await, PolicyAction::Allow);
+            assert_eq!(wipe_action(&reg, parent).await, PolicyAction::Ask);
+            let st = reg
+                .ask(GetApprovals {
+                    session: Some(child),
+                })
+                .await
+                .unwrap();
+            assert_eq!((st.session, st.pin), (false, Some(false)));
+
+            pin_session(&reg, child, true, true).await;
+            pin_session(&reg, parent, true, true).await;
+            assert_eq!(
+                wipe_action(&reg, child).await,
+                inherit,
+                "cleared: back to global"
+            );
+            let st = reg
+                .ask(GetApprovals {
+                    session: Some(parent),
+                })
+                .await
+                .unwrap();
+            assert_eq!((st.session, st.pin), (global, None));
+
+            // `off` with approvals on: asks become allow.
+            pin_session(&reg, parent, false, false).await;
+            assert_eq!(wipe_action(&reg, parent).await, PolicyAction::Allow);
+        }
+    }
+
+    /// 183 §4.5: a cap still denies a session pinned `on`; `Deny` is never rewritten.
+    #[tokio::test]
+    async fn pin_never_rewrites_a_cap_denial() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reg = registry(vec![Arc::new(Wipe(runs))], None);
+        let session = SessionId::new();
+        reg.tell(SetCap {
+            session,
+            cap: Some(Risk::Mutating),
+        })
+        .await
+        .unwrap();
+        pin_session(&reg, session, true, false).await;
+        assert_eq!(wipe_action(&reg, session).await, PolicyAction::Deny);
+    }
+
+    /// 183 §4.5 (D4): `SetApprovals` with a session writes the pin through the
+    /// installed journal (`clear` → `None`) before it replies, so a reader that
+    /// re-applies the row sees the new pin; `RestoreApprovals` applies a loaded
+    /// pin without writing it back; the global write touches no row.
+    #[tokio::test]
+    async fn session_pin_is_journaled_and_restore_is_not() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let log = Arc::new(PinLog(Mutex::default()));
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            journal: log.clone(),
+            ..build(vec![Arc::new(Wipe(runs))], None)
+        });
+        let session = SessionId::new();
+        pin_session(&reg, session, false, false).await;
+        assert_eq!(
+            *lock(&log.0),
+            [(session, Some(false))],
+            "written before the reply"
+        );
+        pin_session(&reg, session, true, true).await;
+        reg.ask(SetApprovals {
+            session: None,
+            enabled: false,
+            clear: false,
+        })
+        .await
+        .unwrap();
+        reg.ask(RestoreApprovals {
+            session,
+            pin: Some(true),
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            wipe_action(&reg, session).await,
+            PolicyAction::Ask,
+            "restored"
+        );
+        assert_eq!(*lock(&log.0), [(session, Some(false)), (session, None)]);
+    }
+
     /// 136 R-4: `approvals: false` turns every `ask` into `allow`, so a
     /// `SetCap{Mutating}` is what keeps destructive tools out of an
     /// unattended run: the capped-and-bypassed session runs a mutating tool
@@ -2554,6 +2788,7 @@ mod tests {
         reg.ask(SetApprovals {
             session: Some(session),
             enabled: false,
+            clear: false,
         })
         .await
         .unwrap();
@@ -2934,6 +3169,7 @@ mod tests {
         reg.ask(SetApprovals {
             session: Some(session),
             enabled: false,
+            clear: false,
         })
         .await
         .unwrap();

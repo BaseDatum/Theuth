@@ -38,6 +38,12 @@ pub trait Journal: Send + Sync {
     fn job(&self, j: JobRow) -> BoxFuture<'_, ()>;
     /// The last rendered PTY screen (§5.3): upsert by `(s.session, s.job_id)`.
     fn pty_screen(&self, s: PtyScreenRow) -> BoxFuture<'_, ()>;
+    /// 183 §4.5 (W-4): a session's approvals pin was set (`Some`) or cleared
+    /// (`None`): `sessions.approvals`. Default no-op: only the agent's store
+    /// has a row to write.
+    fn approvals(&self, _session: SessionId, _pin: Option<bool>) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
 }
 
 /// `ask` → `()`: install the agent's journal on the registry, which forwards

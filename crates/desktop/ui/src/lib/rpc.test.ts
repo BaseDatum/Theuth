@@ -3,7 +3,8 @@ import { expect, test, vi } from 'vitest'
 import type { EndlessProgress } from '@/rpc/bindings/EndlessProgress'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
 import type { Stalled } from '@/rpc/bindings/Stalled'
-import { applyEndlessProgress, queryKeys } from './rpc'
+import { dispatch } from '@/store/sessions'
+import { applyEndlessProgress, onContextChanged, queryKeys } from './rpc'
 
 const memory = { mode: 'endless', view: [], settling: true, unbuilt: 3, units: 9, model: 'ollama/qwen3:8b', view_bytes: 128_000, backfill: null, stalled: null } as unknown as SessionMemory
 const failing: Stalled = { failures: 2, error: 'timed out', next_retry_at: '2026-11-04T22:00:40Z', model: 'ollama/qwen3:8b', blocking: true }
@@ -37,4 +38,19 @@ test('EndlessProgress with no cached memory writes nothing: the panel fetches th
   applyEndlessProgress(qc, progress(failing))
   expect(qc.getQueryData(queryKeys.sessionMemory('s1'))).toBeUndefined()
   expect(qc.getQueryCache().find({ queryKey: queryKeys.sessionMemory('s1') })?.state.data).toBeUndefined()
+})
+
+test('183 W-7: a replicated ContextChanged refetches the session list; any other reason only searches', () => {
+  const search = vi.fn()
+  const sessions = vi.fn()
+  const off = onContextChanged(search, sessions)
+  dispatch([{ type: 'ContextChanged', session: 's1', revision: '2', reason: 'context_edit' }])
+  expect(search).toHaveBeenCalledTimes(1)
+  expect(sessions).not.toHaveBeenCalled()
+  dispatch([{ type: 'ContextChanged', session: 's1', revision: '3', reason: 'replicated' }])
+  expect(search).toHaveBeenCalledTimes(2)
+  expect(sessions).toHaveBeenCalledTimes(1)
+  off()
+  dispatch([{ type: 'ContextChanged', session: 's1', revision: '4', reason: 'replicated' }])
+  expect(sessions).toHaveBeenCalledTimes(1)
 })

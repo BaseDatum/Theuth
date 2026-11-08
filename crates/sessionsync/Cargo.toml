@@ -11,6 +11,13 @@ replica = { workspace = true }
 agent = { workspace = true }
 # 68 §4.2 (c): an unreachable owner's `last_seen_ms` from `mesh::Status`.
 mesh = { workspace = true }
+# 183 §5.1 (W-19): the relayed approval and ask cards.
+tools = { workspace = true }
+# 183 §5.1 (W-18): `CellEvent`s ride the widened relay too.
+cells = { workspace = true }
+uuid = { workspace = true }
+# 183 §5.3: the taker's machine facts for the Moved row.
+platform = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }

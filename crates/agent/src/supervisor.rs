@@ -31,7 +31,8 @@ use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
     InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId, JobKind, Jobs, ListPrompts,
     ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity, RegisterPrompt,
-    RegisterTool, ReminderEvent, Risk, SetCap, SetParent, SetPromoteAfter, Settle, ToolRegistry,
+    RegisterTool, ReminderEvent, RestoreApprovals, Risk, SetCap, SetParent, SetPromoteAfter,
+    Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -1104,11 +1105,26 @@ impl Agents {
     /// row never routes with a dangling link). Idempotent; a row that cannot
     /// be read stays unknown and every route for it fails closed.
     async fn mirror(&mut self, id: SessionId) {
-        if self.communication.0.read().root_of(id).is_ok() {
-            return;
+        if self.communication.0.read().root_of(id).is_err() {
+            let lineage = self.store.lineage(id).await;
+            self.apply_lineage(id, lineage);
         }
-        let lineage = self.store.lineage(id).await;
-        self.apply_lineage(id, lineage);
+        self.sync_opt_out(id).await;
+    }
+
+    /// 183 R1 (S1): the row's agent-messaging opt-out (`sessions.communication
+    /// = 0`) onto the live policy, both ways. The row is the truth after a
+    /// restart or a move, and an opt-in written on another engine must not
+    /// leave a stale opt-out here (A→B→A). The setter writes the row first.
+    async fn sync_opt_out(&self, id: SessionId) {
+        let Ok(Some((_, communication))) = self.store.session_settings(id).await else {
+            return;
+        };
+        let out = communication == Some(false);
+        let mut p = self.communication.0.write();
+        if p.state(Some(id)).is_ok_and(|s| s.opted_out != out) {
+            let _ = p.set_session(id, !out);
+        }
     }
 
     /// [`Self::mirror`] given its lineage read, which 176 E1 may have done
@@ -1348,10 +1364,15 @@ impl Agents {
         Ok(actor)
     }
 
-    /// Subagents inherit the parent's approval switch.
-    async fn inherit_approvals(&self, id: SessionId, parent: Option<SessionId>) {
+    /// Subagents inherit the parent's approval switch. 183 §4.5 (D4): the
+    /// row's approvals pin and agent-messaging opt-out are applied here, so
+    /// a restart, resume or take keeps them before the first tool call.
+    async fn inherit_approvals(&mut self, id: SessionId, parent: Option<SessionId>) {
+        let reg = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+            .ok()
+            .flatten();
         if let Some(parent) = parent
-            && let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+            && let Some(reg) = &reg
         {
             let _ = reg
                 .tell(SetParent {
@@ -1359,6 +1380,29 @@ impl Agents {
                     parent,
                 })
                 .await;
+        }
+        let (pin, _) = match self.store.session_settings(id).await {
+            Ok(Some(s)) => s,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::error!(session = %id, "session settings: {e:#}");
+                return;
+            }
+        };
+        // `None` too: a pin this registry held from before a move away is stale.
+        if let Some(reg) = &reg {
+            let _ = reg.ask(RestoreApprovals { session: id, pin }).await;
+        }
+        // 183 R1 (S1): the opt-out both ways, as every reader applies it.
+        self.mirror(id).await;
+        // 183 R2: a restart keeps a chat's chosen folder (tools and the
+        // prompt's "Working directory"), as its create and a take seat it;
+        // a seat set already (a schedule's `cwd:`, a worktree) wins.
+        if tools::seat::seat_of(id).cwd.is_none()
+            && let Ok(Some(row)) = self.store.session(id).await
+            && let Some(cwd) = row.cwd.map(PathBuf::from).filter(|c| c.is_dir())
+        {
+            tools::seat::set_cwd(id, Some(cwd));
         }
     }
 
@@ -3907,20 +3951,27 @@ impl Message<ForkSession> for Agents {
         // opted out when the source is effectively off; nothing peer-related
         // is copied (exchanges, tasks, waits).
         self.mirror(m.session).await;
-        let scope = {
+        let (scope, opted_out) = {
             let mut p = self.communication.0.write();
             match p.record_fork(m.session, id) {
-                Ok(()) => p
-                    .root_of(id)
-                    .ok()
-                    .and_then(|r| p.state(Some(r)).ok())
-                    .map(|s| s.scope),
+                Ok(()) => (
+                    p.root_of(id)
+                        .ok()
+                        .and_then(|r| p.state(Some(r)).ok())
+                        .map(|s| s.scope),
+                    p.state(Some(id)).is_ok_and(|s| s.opted_out),
+                ),
                 Err(e) => {
                     tracing::error!(session = %id, "record_fork: {e}");
-                    None
+                    (None, false)
                 }
             }
         };
+        // 183 R1 (S2): the fork's opt-out on its row, as the setter writes
+        // it, so a restart (or the row sync in `mirror`) keeps it off.
+        if opted_out && let Err(e) = self.store.set_session_communication(id, Some(false)).await {
+            tracing::error!(session = %id, "set_session_communication: {e:#}");
+        }
         if let Some(scope) = scope.filter(|s| *s != PeerScope::Isolated)
             && let Err(e) = self.store.set_root_scope(id, scope, None).await
         {
@@ -5507,6 +5558,8 @@ impl Agents {
             text,
             reply_to,
             request_id,
+            // 183 P2: seed `enqueue_peer`'s chain from it (§6.5).
+            chain: _,
         } = m.envelope;
         let d = self
             .deliver(
@@ -5566,6 +5619,8 @@ impl Agents {
             text: body,
             reply_to: m.reply_to,
             request_id: m.request_id.clone(),
+            // 183 P2: the sender's chain count (§6.5).
+            chain: 0,
         };
         let peer = replica::PeerId(owner.clone());
         let outcome = match self.transport().await {
@@ -5909,6 +5964,12 @@ impl Message<SetCommunication> for Agents {
             }
             Some(s) => {
                 self.mirror(s).await;
+                // 183 §4.5 (D4): durable first; the policy only has an opt-out,
+                // so "on" is stored as NULL (inherit).
+                self.store
+                    .set_session_communication(s, (!m.enabled).then_some(false))
+                    .await
+                    .map_err(comm_err)?;
                 self.revoking(|p| p.set_session(s, m.enabled))
                     .await
                     .map_err(|e| e.to_string())?;
@@ -6199,6 +6260,8 @@ impl Agents {
                     } else {
                         me_name.clone()
                     }),
+                    // 183 P2: from the `mesh::Status` ask (§6.6).
+                    reachable: None,
                 };
                 if their_root == root {
                     same.push((r.id, info));
@@ -6256,6 +6319,7 @@ fn remote_parent_row(p: &RemoteParent) -> PeerInfo {
         title: None,
         tags: Vec::new(),
         engine: p.engine.clone(),
+        reachable: None,
     }
 }
 
@@ -6594,6 +6658,11 @@ impl Agents {
                 .set_cwd(id, cwd)
                 .await
                 .map_err(|e| format!("{e:#}"))?;
+            // 183 §12.5: a chat started in a folder works there, as a take
+            // seats it there (§5.5); a path missing here keeps the default.
+            if cwd.is_dir() {
+                tools::seat::set_cwd(id, Some(cwd.to_path_buf()));
+            }
         }
         if scope != PeerScope::Isolated {
             self.store
@@ -7226,6 +7295,13 @@ impl Message<ListSessions> for Agents {
             for r in &mut rows {
                 r.running = running.contains(&r.id);
             }
+            let connected = mesh::connected_ids();
+            if let Err(e) = store
+                .mark_remote_running(&mut rows, connected.as_deref())
+                .await
+            {
+                tracing::warn!("list sessions: remote running: {e:#}");
+            }
             rows
         })
     }
@@ -7313,7 +7389,8 @@ async fn read_session(
         .await
         .map_err(|e| format!("{e:#}"))?;
     let advisories = store.advisories(session).await.unwrap_or_default();
-    let mut out = render_with(&h.messages, &h.entries, &h.thinking, &advisories);
+    let moved = store.moved(session).await.unwrap_or_default();
+    let mut out = render_with(&h.messages, &h.entries, &h.thinking, &advisories, &moved);
     // Peer provenance (50 §9), as `load_session` marks it.
     if let Ok(rows) = store.consumed_exchanges(session).await {
         let peers: HashMap<i64, PeerOrigin> = rows
@@ -7470,7 +7547,8 @@ async fn load_session(
             let mut out = Vec::new();
             // 125 §5.4: Advisory rows render as typed cards (`role: "advisory"`).
             let advisories = store.advisories(m.session).await.unwrap_or_default();
-            for (seq, entry) in render_with(&messages, &entries, &thinking, &advisories) {
+            let moved = store.moved(m.session).await.unwrap_or_default();
+            for (seq, entry) in render_with(&messages, &entries, &thinking, &advisories, &moved) {
                 while let Some(e) = dividers.next_if(|e| e.at_seq < seq) {
                     out.push((e.at_seq, compacted(e, heads.get(&e.n).cloned())));
                 }
@@ -9891,6 +9969,7 @@ pub(crate) fn render_with(
     entries: &BTreeMap<i64, ContextEntry>,
     thinking: &BTreeMap<i64, u64>,
     advisories: &BTreeMap<i64, crate::Advisory>,
+    moved: &BTreeMap<i64, crate::SessionMoved>,
 ) -> Vec<(i64, HistoryEntry)> {
     let mut out = Vec::new();
     // ponytail: linear scan; one round's calls, never more than a handful.
@@ -9899,7 +9978,9 @@ pub(crate) fn render_with(
     // 52 §6: a typed vision note neither opens a turn nor hides the next
     // real user message's handle; the store decides from the metadata.
     let openers = store::turn_openers(messages, |s| {
-        entries.get(&s).is_some_and(|e| e.vision.is_some()) || advisories.contains_key(&s)
+        entries.get(&s).is_some_and(|e| e.vision.is_some())
+            || advisories.contains_key(&s)
+            || moved.contains_key(&s)
     });
     for (seq, m) in messages {
         let opens = openers.contains(seq);
@@ -9912,6 +9993,13 @@ pub(crate) fn render_with(
                 *seq,
                 HistoryEntry::Advisory {
                     advisory: advisories[seq].clone(),
+                    context: context.cloned(),
+                },
+            )),
+            ChatRole::User if moved.contains_key(seq) => out.push((
+                *seq,
+                HistoryEntry::Moved {
+                    moved: moved[seq].clone(),
                     context: context.cloned(),
                 },
             )),
@@ -10035,7 +10123,13 @@ pub(crate) fn render(
     entries: &BTreeMap<i64, ContextEntry>,
     thinking: &BTreeMap<i64, u64>,
 ) -> Vec<(i64, HistoryEntry)> {
-    render_with(messages, entries, thinking, &BTreeMap::new())
+    render_with(
+        messages,
+        entries,
+        thinking,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
 }
 
 /// The UI divider for one epoch: the head text without its
@@ -13738,6 +13832,7 @@ pub(crate) mod tests {
             title: None,
             tags: Vec::new(),
             engine: None,
+            reachable: None,
         };
         let act = |state: PeerLiveState, ptys: u16, secs_ago: i64| PeerActivity {
             state,
@@ -13764,6 +13859,30 @@ pub(crate) mod tests {
         arrange(&mut rows, true);
         let order: Vec<&str> = rows.iter().map(|r| r.address.as_str()).collect();
         assert_eq!(order, ["pty", "running"]);
+    }
+
+    /// 183 §4.5 (D4): the row's messaging opt-out is applied when the actor
+    /// spawns (restart, resume, take); an unset row changes nothing.
+    #[tokio::test]
+    async fn actor_spawn_loads_the_rows_communication_opt_out() {
+        let (_scratch, mut a) = agents_with(true).await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let opted_out = |a: &Agents| {
+            a.communication
+                .0
+                .read()
+                .state(Some(root))
+                .unwrap()
+                .opted_out
+        };
+        a.inherit_approvals(root, None).await;
+        assert!(!opted_out(&a));
+        a.store
+            .set_session_communication(root, Some(false))
+            .await
+            .unwrap();
+        a.inherit_approvals(root, None).await;
+        assert!(opted_out(&a));
     }
 
     /// 50 §5.3, §8: a wait resolves only by its exact id; a disable expires
@@ -14759,6 +14878,35 @@ pub(crate) mod tests {
         assert!(e.contains("view_bytes"), "{e}");
     }
 
+    /// 183 §12.5 (Z live proof): a chat created in a folder that exists here
+    /// works there — the tools' cwd and the prompt's "Working directory" —
+    /// not in the engine's own cwd; a folder missing here keeps the default.
+    #[tokio::test]
+    async fn a_chat_created_in_a_folder_is_seated_there() {
+        let (scratch, a) = agents_with(false).await;
+        let agents = Agents::spawn(a);
+        let create = |cwd: &Path| CreateSession {
+            options: crate::CreateSessionOptions {
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            peer: None,
+        };
+        let here = scratch.0.join("proj");
+        std::fs::create_dir_all(&here).unwrap();
+        let s = agents.ask(create(&here)).await.unwrap().session;
+        assert_eq!(tools::seat::cwd(s).unwrap(), here);
+        let gone = agents
+            .ask(create(&scratch.0.join("missing")))
+            .await
+            .unwrap()
+            .session;
+        assert_eq!(
+            tools::seat::cwd(gone).unwrap(),
+            std::env::current_dir().unwrap()
+        );
+    }
+
     /// 137G G9: `/compact` in an endless session is `endless_fold` — every
     /// unbuilt line folds into a mechanical node, the epoch stays, no
     /// summariser or compactor runs (settling is paused, so nothing else calls).
@@ -15559,6 +15707,7 @@ pub(crate) mod tests {
                     text: "x".into(),
                     reply_to: None,
                     request_id: None,
+                    chain: 0,
                 },
             })
             .await

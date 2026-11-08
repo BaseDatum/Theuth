@@ -1,11 +1,13 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { Command as CommandPrimitive } from 'cmdk'
-import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, Mic, Paperclip, RefreshCw, Search, StickyNote, X } from 'lucide-react'
+import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, Mic, Paperclip, RefreshCw, Search, SquarePen, StickyNote, X } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
 import { Button } from '@/components/ui/button'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
+import { machineRows, openNewChatOn } from '@/components/chat/NewChatPane'
+import { useMesh } from '@/components/tasks/queries'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import {
   DropdownMenu,
@@ -329,6 +331,8 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
     queryFn: () => api.list_sessions(),
     enabled: open && debounced === '' && cats.includes('sessions'),
   })
+  // 183 §12.5: "New chat on <machine>" for each paired engine (this machine is the plain New chat).
+  const machines = machineRows(useMesh().data).filter((m): m is typeof m & { id: string } => m.id !== null)
 
   /**
    * Per selected category: the displayed group (a Show more page wins once it arrived), that page's fetch, and
@@ -679,6 +683,26 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                           {s.archived && <Archived />}
                         </span>
                         <span className="text-xs text-fg-tertiary">{ago(s.updated_at)}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                )}
+                {machines.length > 0 && (
+                  <CommandGroup heading="New chat on">
+                    {machines.map((m) => (
+                      <CommandItem
+                        key={m.id}
+                        value={`new-chat-on:${m.id}`}
+                        disabled={!m.online}
+                        onSelect={() => {
+                          onOpenChange(false)
+                          openNewChatOn(navigate, m.id)
+                        }}
+                        className="min-h-11 gap-3"
+                      >
+                        <SquarePen aria-hidden />
+                        <span className="min-w-0 flex-1 truncate">New chat on {m.name}</span>
+                        <span className="text-xs text-fg-tertiary">{m.status}</span>
                       </CommandItem>
                     ))}
                   </CommandGroup>

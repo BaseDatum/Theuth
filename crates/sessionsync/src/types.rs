@@ -42,9 +42,24 @@ impl From<agent::store::LogRow> for LogRow {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Msg {
     /// First frame each way: the sender's cursors (highest seq applied per origin).
+    ///
+    /// 183 R1 (E-M3): `schema` is the sender's agent schema version
+    /// (`Store::schema_version`), `None` from a pre-183 peer. Wire shape: it
+    /// is **not** part of the serde encoding (`#[serde(skip)]`, so the
+    /// postcard body is byte-identical to the pre-183 `Hello`); [`Msg::encode`]
+    /// appends it as one trailing postcard `u32` and [`Msg::decode`] reads it
+    /// back when there are bytes left. Old → new: no trailer, `None`. New →
+    /// old: `postcard::from_bytes` stops after the last field it knows and
+    /// ignores the rest of the frame (it has no end-of-input check; the
+    /// codec delimits frames), so the old decoder sees the same `Hello`.
+    /// `#[serde(default)]` could not do this: postcard errors at end of
+    /// input instead of reporting the field missing.
     Hello {
         /// `(origin, seq)`; an origin missing here asks for a snapshot.
         cursors: Vec<(PeerId, u64)>,
+        /// Sender's agent schema version; trailer, see above.
+        #[serde(skip)]
+        schema: Option<u32>,
     },
     /// Log rows of one origin, in seq order (own or relayed).
     Log {
@@ -64,9 +79,15 @@ pub enum Msg {
         tables: Vec<(String, Vec<u8>)>,
     },
     /// Taker → owner: stop the actor, flush the log, answer [`Msg::Released`].
+    /// 183 R1 (E-M3): `schema` is the taker's agent schema version, a
+    /// trailer exactly as on [`Msg::Hello`]; an owner on a newer schema
+    /// refuses a taker without one or with an older one.
     Release {
         /// The session.
         session: String,
+        /// Taker's agent schema version; trailer, see [`Msg::Hello`].
+        #[serde(skip)]
+        schema: Option<u32>,
     },
     /// Owner → taker: released; the last seq written for `session`.
     Released {
@@ -133,6 +154,30 @@ pub enum Msg {
         /// Why it was refused, if it was.
         error: Option<String>,
     },
+    /// 183 §5.1 (W-18): subscriber → owner, like [`Msg::Events`] but also
+    /// asks for the session's approvals, asks, jobs and cells as
+    /// [`Msg::Bus`]. An old owner cannot decode it and closes the stream;
+    /// the subscriber then falls back to [`Msg::Events`].
+    Watch {
+        /// The session.
+        session: String,
+        /// First event seq wanted.
+        from_seq: u64,
+    },
+    /// 183 §5.1 (W-18): owner → a [`Msg::Watch`] subscriber: one non-agent
+    /// bus event of the session.
+    Bus {
+        /// The session.
+        session: String,
+        /// Event seq (shared with [`Msg::Event`] on the same stream).
+        seq: u64,
+        /// `ApprovalRequested` | `ApprovalResolved` | `AskRequested` |
+        /// `AskResolved` | `JobEvent` | `CellEvent`; `Watching` (empty
+        /// `bytes`, seq 0) is the owner's first frame, proof it speaks Watch.
+        kind: String,
+        /// The event as JSON.
+        bytes: Vec<u8>,
+    },
 }
 
 impl Msg {
@@ -150,12 +195,24 @@ impl Msg {
             Self::Ack { .. } => 8,
             Self::Harness { .. } => 9,
             Self::HarnessAck { .. } => 10,
+            Self::Watch { .. } => 11,
+            Self::Bus { .. } => 12,
         }
     }
 
-    /// One frame body: tag + postcard.
+    /// One frame body: tag + postcard (+ the agent-schema trailer of a
+    /// [`Msg::Hello`] / [`Msg::Release`] that carries one).
     pub fn encode(&self) -> anyhow::Result<Bytes> {
-        let body = postcard::to_allocvec(self)?;
+        let mut body = postcard::to_allocvec(self)?;
+        if let Self::Hello {
+            schema: Some(v), ..
+        }
+        | Self::Release {
+            schema: Some(v), ..
+        } = self
+        {
+            body.extend(postcard::to_allocvec(v)?);
+        }
         let mut b = BytesMut::with_capacity(1 + body.len());
         b.extend_from_slice(&[self.tag()]);
         b.extend_from_slice(&body);
@@ -167,10 +224,27 @@ impl Msg {
         let (&tag, body) = frame
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("empty frame"))?;
-        let msg: Self = postcard::from_bytes(body)?;
+        let (mut msg, rest): (Self, &[u8]) = postcard::take_from_bytes(body)?;
         anyhow::ensure!(msg.tag() == tag, "frame tag {tag} does not match {msg:?}");
+        // A pre-183 peer's frame ends with the last serde field: `schema` stays `None`.
+        if !rest.is_empty()
+            && let Self::Hello { schema, .. } | Self::Release { schema, .. } = &mut msg
+        {
+            *schema = Some(postcard::from_bytes(rest)?);
+        }
         Ok(msg)
     }
+}
+
+/// 183 R1 (E-M3): is a peer that reported `theirs` behind an engine at
+/// `ours`? A peer that reported nothing is a pre-183 one (schema ≤ 52).
+pub fn schema_behind(theirs: Option<u32>, ours: u32) -> bool {
+    theirs.is_none_or(|v| v < ours)
+}
+
+/// A peer's reported schema for a log line.
+pub fn schema_label(theirs: Option<u32>) -> String {
+    theirs.map_or_else(|| "unknown".to_owned(), |v| v.to_string())
 }
 
 #[cfg(test)]
@@ -215,6 +289,96 @@ mod tests {
         let f = ack.encode().unwrap();
         assert_eq!(f[0], 10);
         assert_eq!(Msg::decode(&f).unwrap(), ack);
+        let watch = Msg::Watch {
+            session: "s".into(),
+            from_seq: 3,
+        };
+        let f = watch.encode().unwrap();
+        assert_eq!(f[0], 11);
+        assert_eq!(Msg::decode(&f).unwrap(), watch);
+        let bus = Msg::Bus {
+            session: "s".into(),
+            seq: 4,
+            kind: "ApprovalRequested".into(),
+            bytes: b"{}".to_vec(),
+        };
+        let f = bus.encode().unwrap();
+        assert_eq!(f[0], 12);
+        assert_eq!(Msg::decode(&f).unwrap(), bus);
+    }
+
+    /// The pre-183 `Msg` up to `Release` (variant indexes 0..=3), as that
+    /// binary's derived serde impls read and write them.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    enum Old {
+        Hello { cursors: Vec<(PeerId, u64)> },
+        Log {},
+        Snapshot {},
+        Release { session: String },
+    }
+
+    /// 183 R1 (E-M3): a pre-183 `Hello` / `Release` frame decodes with no
+    /// schema, and a 183 frame decodes under the old type: the trailer is
+    /// the only difference on the wire.
+    #[test]
+    fn schema_trailer_is_compatible_both_ways() {
+        let cursors = vec![(PeerId("a".into()), 7)];
+        // Bytes the pre-183 encoder writes: tag, variant, vec len, "a", 7.
+        let old_hello = [0, 0, 1, 1, b'a', 7];
+        assert_eq!(
+            Msg::decode(&old_hello).unwrap(),
+            Msg::Hello {
+                cursors: cursors.clone(),
+                schema: None
+            }
+        );
+        let old_release = [3, 3, 1, b's'];
+        assert_eq!(
+            Msg::decode(&old_release).unwrap(),
+            Msg::Release {
+                session: "s".into(),
+                schema: None
+            }
+        );
+
+        // A new frame is the old frame plus one varint, and the old type reads it.
+        let hello = Msg::Hello {
+            cursors: cursors.clone(),
+            schema: Some(53),
+        };
+        let f = hello.encode().unwrap();
+        assert_eq!(&f[..], [0, 0, 1, 1, b'a', 7, 53]);
+        assert_eq!(Msg::decode(&f).unwrap(), hello);
+        assert_eq!(
+            postcard::from_bytes::<Old>(&f[1..]).unwrap(),
+            Old::Hello {
+                cursors: cursors.clone()
+            }
+        );
+        let release = Msg::Release {
+            session: "s".into(),
+            schema: Some(300),
+        };
+        let f = release.encode().unwrap();
+        assert_eq!(&f[..], [3, 3, 1, b's', 0xAC, 0x02]);
+        assert_eq!(Msg::decode(&f).unwrap(), release);
+        assert_eq!(
+            postcard::from_bytes::<Old>(&f[1..]).unwrap(),
+            Old::Release {
+                session: "s".into()
+            }
+        );
+        // The old encoder's own bytes for the same values.
+        let bytes = postcard::to_allocvec(&Old::Hello { cursors }).unwrap();
+        assert_eq!(bytes, old_hello[1..]);
+    }
+
+    #[test]
+    fn schema_behind_treats_a_missing_version_as_old() {
+        assert!(schema_behind(None, 53));
+        assert!(schema_behind(Some(52), 53));
+        assert!(!schema_behind(Some(53), 53));
+        assert!(!schema_behind(Some(54), 53));
     }
 }
 

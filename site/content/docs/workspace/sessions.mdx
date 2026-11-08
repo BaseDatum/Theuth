@@ -43,7 +43,7 @@ A second engine on the same data dir is refused with:
 engine already running (pid N, tui, since HH:MM, ws://127.0.0.1:P) — run `t` to attach, or set THEUTH_DATA_DIR for a separate store
 ```
 
-With several engines in a [mesh](/docs/automation/mesh), every session is readable everywhere but has one **owner** engine that writes it. The `/sessions` picker and the desktop sidebar show an engine chip on sessions owned elsewhere; **Continue here** (desktop) or `/take` (terminal) moves ownership to the engine you are on, and **Move to ▸ \<engine\>** in the desktop session menu sends a session this engine owns to another one (a running turn resumes there). Typing into a session owned by another engine takes it over automatically when that engine is reachable; opening it does not.
+With several engines in a [mesh](/docs/automation/mesh), every session is readable everywhere but has one **owner** engine that runs it. The `/sessions` picker and the desktop sidebar show an engine chip on sessions owned elsewhere. Typing into such a session, or changing its settings in **⋯**, runs on the owner without moving it, and the open chat streams the owner's reply live; if the owner is offline nothing runs and the composer offers **Continue here**. **Continue here** (desktop) or `/take` (terminal) moves ownership to the engine you are on, **Move to ▸ \<engine\>** in the desktop session menu sends a session to another one (a running turn resumes there, and both machines show a "Session moved to …" card), and **New chat on [machine ▾]** starts a chat on another machine in a folder there. Opening a session never moves it.
 
 ## Rewriting the conversation
 
@@ -118,7 +118,7 @@ A failed model call or tool is recorded as an error row anchored to the message 
 
 **`/redo` says `nothing to redo` after an undo.** You sent a message in between; sending commits the cut and deletes the hidden turn. Fork before editing when you may want both branches.
 
-**`session <id> is owned by <engine> (epoch n)` / `session:<id> is owned by <engine>, not here`.** The session belongs to another engine in your mesh. Use **Continue here** / `/take`; if that engine is offline the take waits for `sessions.takeover_secs` (300 s) unless you confirm the prompt to continue now, in which case any turns that engine had not shipped are set aside and listed once in the transcript.
+**`session <id> is owned by <engine> (epoch n)` / `session:<id> is owned by <engine>, not here`.** The session belongs to another engine in your mesh, and that engine is not connected (a connected owner just runs what you send). Use **Continue here** / `/take`; if that engine is offline the take waits for `sessions.takeover_secs` (300 s) unless you confirm the prompt to continue now, in which case any turns that engine had not shipped are set aside and listed once in the transcript.
 
 **`engine already running (pid N, …)`.** You tried to start `t --headless` or a second engine on the same data dir. Run plain `t` to attach, stop the other process, or point `THEUTH_DATA_DIR` at a separate store.
 

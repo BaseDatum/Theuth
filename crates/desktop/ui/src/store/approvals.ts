@@ -18,30 +18,50 @@ export type Prompt = ApprovalRequested | AskRequested | SecretRequested
  * across a reconnect) is ignored. `replace` is the engine's `PendingPrompts` snapshot, sent first on
  * every (re)subscribe: afterwards the set is exactly what the engine reports, nothing more.
  */
-type PendingStore<R extends { id: I }, I> = {
+type PendingStore<R extends { id: I; session: string }, I> = {
   pending: R[]
   resolved: Set<I>
+  /** 183 R1: when each card arrived live (an `Requested` event, not a snapshot); the relayed card's "denies at" counts from it. */
+  arrived: Map<I, number>
   add(request: R): void
   resolve(id: I): void
   replace(requests: R[]): void
+  /** 183 R1: drop every card of these sessions without remembering them as resolved (a relay that ended publishes no `Resolved`). */
+  withdraw(sessions: ReadonlySet<string>): void
 }
 
-const createPending = <R extends { id: I }, I>(): StoreApi<PendingStore<R, I>> =>
+/** 183 R2: the engine flags a relayed prompt that was already pending on the owner when this viewer's stream opened
+ * (`replay: true`, a refocus replay): it did not arrive live, so it has no deadline to count from. */
+const replayed = (request: object): boolean => 'replay' in request && request.replay === true
+
+const createPending = <R extends { id: I; session: string }, I>(): StoreApi<PendingStore<R, I>> =>
   createStore<PendingStore<R, I>>()((set) => ({
     pending: [],
     resolved: new Set(),
+    arrived: new Map(),
     add: (request) =>
       set((s) =>
         s.resolved.has(request.id) || s.pending.some((p) => p.id === request.id)
           ? s
-          : { pending: [...s.pending, request] },
+          : { pending: [...s.pending, request], arrived: replayed(request) ? s.arrived : new Map(s.arrived).set(request.id, Date.now()) },
       ),
     resolve: (id) =>
       set((s) => {
         const pending = s.pending.filter((p) => p.id !== id)
-        return pending.length === s.pending.length ? s : { pending, resolved: new Set(s.resolved).add(id) }
+        if (pending.length === s.pending.length) return s
+        const arrived = new Map(s.arrived)
+        arrived.delete(id)
+        return { pending, arrived, resolved: new Set(s.resolved).add(id) }
       }),
-    replace: (requests) => set({ pending: requests, resolved: new Set() }),
+    replace: (requests) => set({ pending: requests, resolved: new Set(), arrived: new Map() }),
+    withdraw: (sessions) =>
+      set((s) => {
+        const pending = s.pending.filter((p) => !sessions.has(p.session))
+        if (pending.length === s.pending.length) return s
+        const arrived = new Map(s.arrived)
+        for (const p of s.pending) if (sessions.has(p.session)) arrived.delete(p.id)
+        return { pending, arrived }
+      }),
   }))
 
 export type ApprovalsApi = StoreApi<PendingStore<ApprovalRequested, ApprovalId>>

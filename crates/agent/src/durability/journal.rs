@@ -67,4 +67,13 @@ impl Journal for StoreJournal {
     fn pty_screen(&self, s: PtyScreenRow) -> BoxFuture<'_, ()> {
         Box::pin(async move { log("pty_screen", self.0.pty_screen_put(&s).await) })
     }
+
+    fn approvals(&self, session: SessionId, pin: Option<bool>) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            log(
+                "approvals",
+                self.0.set_session_approvals(session, pin).await,
+            )
+        })
+    }
 }

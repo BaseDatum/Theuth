@@ -41,7 +41,7 @@ import type { SelectMode } from '@/lib/selection'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { type Activity, type SessionSlice, shownActivity, useSessionField, useSessions } from '@/store/sessions'
-import { useEngineLabel } from '@/lib/owner'
+import { routed, useEngineLabel } from '@/lib/owner'
 
 /** One glyph per non-idle `Activity`: what the session is doing right now, readable at a glance in the list. */
 const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon | ComponentType<{ className?: string; 'aria-label'?: string; role?: string }>, string]> = {
@@ -54,9 +54,14 @@ const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon | ComponentType<{ 
   vision: [Eye, 'Inspecting images'],
 }
 
-/** Live activity glyph for a session row; nothing while idle. */
-function SessionActivity({ id }: { id: string }) {
-  const activity = shownActivity(useSessionField(id, 'activity'), useSessionField(id, 'harvesting'))
+/** Live activity glyph for a session row; nothing while idle. 183 W-7: a session owned elsewhere streams only while
+ * focused, so for it `list_sessions.running` (refetched on replicated commits) gates the glyph; the slice's activity
+ * only refines which one. `remoteRunning` is `undefined` for a row owned here. */
+export const rowActivity = (shown: Activity, remoteRunning?: boolean): Activity =>
+  remoteRunning === undefined ? shown : !remoteRunning ? 'idle' : shown === 'idle' ? 'thinking' : shown
+
+function SessionActivity({ id, remoteRunning }: { id: string; remoteRunning?: boolean }) {
+  const activity = rowActivity(shownActivity(useSessionField(id, 'activity'), useSessionField(id, 'harvesting')), remoteRunning)
   if (activity === 'idle') return null
   const [Icon, label] = ACTIVITY[activity]
   // The lucide glyphs pulse; the loading-dev ones (thinking, harvesting) animate on their own.
@@ -121,16 +126,18 @@ function ProjectItems({ current, onPick, onNew }: { current: string | null; onPi
 }
 
 /** Engine chip (68 §5): the owner's mesh name, muted, on a session owned elsewhere; hover names owner and epoch.
- * `prefix`: the chat header's `on ` (181 D4). */
-export function EngineChip({ owner, epoch, className, prefix = '' }: { owner: string; epoch: number; className?: string; prefix?: string }) {
+ * `prefix`: the chat header's `on ` (181 D4). 183 §12.1: `state` adds `· live` with a green dot (follow stream up), or `· offline`; `connected` adds nothing. */
+export function EngineChip({ owner, epoch, className, prefix = '', state }: { owner: string; epoch: number; className?: string; prefix?: string; state?: 'live' | 'connected' | 'offline' }) {
   const label = useEngineLabel(owner)
   return (
     <span
       title={`owned by ${owner || '?'} · epoch ${epoch}`}
-      className={cn('shrink-0 rounded-[4px] bg-sidebar-accent px-1 text-[10px] leading-4 text-fg-tertiary', className)}
+      className={cn('inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-sidebar-accent px-1 text-[10px] leading-4 text-fg-tertiary', className)}
     >
+      {state === 'live' && <span className="size-1.5 shrink-0 rounded-full bg-success" aria-hidden="true" />}
       {prefix}
       {label}
+      {(state === 'live' || state === 'offline') && ` · ${state}`}
     </span>
   )
 }
@@ -151,6 +158,7 @@ export const SessionItem = memo(function SessionItem({
   owner,
   epoch,
   here,
+  running,
   endless,
   subagents,
   active,
@@ -169,6 +177,8 @@ export const SessionItem = memo(function SessionItem({
   owner: string
   epoch: number
   here: boolean
+  /** 183 W-7: `list_sessions.running` — for a row owned elsewhere, the replica's open turn. */
+  running: boolean
   /** 137 §11.3: `SessionSummary.memory === 'endless'`; the ∞ glyph after the title. */
   endless: boolean
   /** Its subtree from `list_sessions` (all depths); absent when it has none. */
@@ -203,8 +213,9 @@ export const SessionItem = memo(function SessionItem({
 
   const remove = async () => {
     try {
-      await api.delete_session(id)
-      if (active) void navigate({ to: '/' })
+      // 183 §4.4: a parked delete (owner offline) leaves the chat open — `routed` resolves undefined.
+      const done = await routed(id, async () => (await api.delete_session(id), true))
+      if (done && active) void navigate({ to: '/' })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }
@@ -214,7 +225,7 @@ export const SessionItem = memo(function SessionItem({
     setEditing(null)
     if (!value.trim() || value === shown) return
     try {
-      await api.rename_session(id, value.trim())
+      await routed(id, () => api.rename_session(id, value.trim()))
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -226,7 +237,7 @@ export const SessionItem = memo(function SessionItem({
     const next = value?.trim() || null
     if (next === project) return
     try {
-      await api.set_session_project(id, next)
+      await routed(id, () => api.set_session_project(id, next))
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -235,7 +246,7 @@ export const SessionItem = memo(function SessionItem({
 
   const pin = async () => {
     try {
-      await api.pin_session(id, !pinned)
+      await routed(id, () => api.pin_session(id, !pinned))
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -244,7 +255,7 @@ export const SessionItem = memo(function SessionItem({
 
   const archive = async () => {
     try {
-      await api.archive_session(id, !archived)
+      await routed(id, () => api.archive_session(id, !archived))
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -313,7 +324,7 @@ export const SessionItem = memo(function SessionItem({
                   {selected && <Check className="size-3 stroke-[3]" />}
                 </span>
               )}
-              <SessionActivity id={id} />
+              <SessionActivity id={id} remoteRunning={here ? undefined : running} />
               <SessionPending id={id} />
               <SessionSubagents subagents={subagents} />
               <span className="truncate">{shown}</span>

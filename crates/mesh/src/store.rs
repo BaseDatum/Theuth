@@ -142,12 +142,13 @@ impl Store {
         let hlc = self.hlc(updated_ms);
         sqlx::query(
             "INSERT INTO engine_stats (id, uptime_since_ms, class, harnesses_json, repos_json, display, gpu,
-                                       hub_pref, first_seen_ms, updated_ms, hlc, accelerator)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       hub_pref, first_seen_ms, updated_ms, hlc, accelerator, os, os_name, arch, host)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET uptime_since_ms = excluded.uptime_since_ms, class = excluded.class,
              harnesses_json = excluded.harnesses_json, repos_json = excluded.repos_json, display = excluded.display,
              gpu = excluded.gpu, hub_pref = excluded.hub_pref, first_seen_ms = excluded.first_seen_ms,
-             updated_ms = excluded.updated_ms, hlc = excluded.hlc, accelerator = excluded.accelerator",
+             updated_ms = excluded.updated_ms, hlc = excluded.hlc, accelerator = excluded.accelerator,
+             os = excluded.os, os_name = excluded.os_name, arch = excluded.arch, host = excluded.host",
         )
         .bind(&s.id.0)
         .bind(s.uptime_since_ms as i64)
@@ -161,6 +162,10 @@ impl Store {
         .bind(updated_ms as i64)
         .bind(&hlc)
         .bind(s.accelerator.map(Accelerator::as_str))
+        .bind(&s.os)
+        .bind(&s.os_name)
+        .bind(&s.arch)
+        .bind(&s.host)
         .execute(&self.pool)
         .await?;
         Ok(hlc)
@@ -198,7 +203,7 @@ impl Store {
     /// Every known engine's stats (`availability_30d` filled from the ledger).
     pub async fn stats(&self) -> anyhow::Result<Vec<EngineStats>> {
         let rows = sqlx::query(
-            "SELECT id, uptime_since_ms, class, harnesses_json, repos_json, display, gpu, accelerator FROM engine_stats ORDER BY id",
+            "SELECT id, uptime_since_ms, class, harnesses_json, repos_json, display, gpu, accelerator, os, os_name, arch, host FROM engine_stats ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -222,6 +227,10 @@ impl Store {
                     .get::<Option<String>, _>("accelerator")
                     .as_deref()
                     .and_then(Accelerator::parse),
+                os: r.get("os"),
+                os_name: r.get("os_name"),
+                arch: r.get("arch"),
+                host: r.get("host"),
             });
         }
         Ok(out)
@@ -496,6 +505,10 @@ mod tests {
             display: false,
             gpu: false,
             accelerator: Some(Accelerator::Cuda),
+            os: "linux".into(),
+            os_name: "Arch Linux".into(),
+            arch: "x86_64".into(),
+            host: "xeus".into(),
         };
         let hlc = store
             .put_stats(&stats, HubPref::Prefer, 5, 3_000)
@@ -536,6 +549,14 @@ mod tests {
         let all = store.stats().await.unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].accelerator, Some(Accelerator::Cuda));
+        // 183 §9.2: the machine columns round-trip.
+        assert_eq!(
+            all[0],
+            EngineStats {
+                availability_30d: all[0].availability_30d,
+                ..stats
+            }
+        );
     }
 
     #[tokio::test]

@@ -12,10 +12,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useSidebar } from '@/components/ui/sidebar'
 import { chatName } from '@/lib/attach'
 import { previewText } from '@/lib/channel-origin'
-import { type HeaderId, type Mode, decideTier, headerOrder, layout } from '@/lib/header'
+import { type HeaderId, type Mode, approvalsOff as pillOff, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { canPopout, isPopout, openPopout, type PopoutTarget } from '@/lib/popout'
-import { useEngineLabel } from '@/lib/owner'
+import { ownerState, useEngineLabel, useOwnerOffline } from '@/lib/owner'
+import { useMesh } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { sourceTag } from '@/lib/session-tree'
@@ -87,10 +88,10 @@ function Parent({ id, mode, observed }: { id: string; mode: Mode; observed?: Obs
   )
 }
 
-/** `name · epoch N` for the compact menu's Owner line. */
-function OwnerDetail({ owner, epoch }: { owner: string; epoch: number }) {
+/** `name · epoch N` for the compact menu's Owner line; 183 §12.1 (the phone): `name · live · epoch N`. */
+function OwnerDetail({ owner, epoch, state }: { owner: string; epoch: number; state?: 'live' | 'connected' | 'offline' }) {
   const label = useEngineLabel(owner)
-  return <span title={`owned by ${owner}`}>{`${label} · epoch ${epoch}`}</span>
+  return <span title={`owned by ${owner}`}>{[label, state === 'connected' ? undefined : state, `epoch ${epoch}`].filter(Boolean).join(' · ')}</span>
 }
 
 /** `▣ N`: the session's artifacts, newest first; picking one opens the panel (35 §7.2). `row`: the compact menu's line. */
@@ -201,12 +202,22 @@ export function Header({
   // 79 §6.5: the owner engine is a sandbox VM (`SessionSummary.owner` ↔ `SandboxInfo.engine`) → its desktop is one click away.
   const sandboxes = useSandboxes()
   const vm = row?.owner ? sandboxes.data?.find((s) => s.engine === row.owner && s.vm?.desktop?.enabled) : undefined
+  // 183 §12.1: a remote chat's chip is live only while the follow stream is up (`FollowState`), offline when the owner is
+  // not connected (or a routed call said so).
+  const mesh = useMesh()
+  const parked = useOwnerOffline((s) => !!session && s.by[session] !== undefined)
+  const followed = useSessionField(session ?? '', 'following') === true
+  const chip = row && !row.here ? ownerState(row.owner, mesh.data?.peers, parked, followed) : undefined
   const [sheet, setSheet] = useState(false)
   const [cost, setCost] = useState(false)
   const [terminal, setTerminal] = useState(false)
   const [picker, setPicker] = useState(false)
   const [memory, setMemory] = useState(false)
-  const approvalsOff = info !== null && (!info.approvals.global || !info.approvals.session)
+  // 183 §4.5: the session's effective value on its owner (pin, else that machine's `tools.approvals`), the ⋯ menu's
+  // reader (its setters invalidate the `['approvals', session]` prefix; a flip of this engine's switch re-reads);
+  // this engine's own switch until it answers, or with the owner offline.
+  const effective = useQuery({ queryKey: ['approvals', session, info?.approvals.global], queryFn: () => api.get_approvals(session ?? null), enabled: !!session, retry: false })
+  const approvalsOff = pillOff(effective.data, info?.approvals ?? null)
   const mac = isMacDesktop()
   const ref = useRef<HTMLElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -265,9 +276,9 @@ export function Header({
     owner: (mode) =>
       row && !row.here ? (
         mode === 'row' ? (
-          <MenuRow icon={Network} label="Owner" detail={<OwnerDetail owner={row.owner} epoch={row.epoch} />} />
+          <MenuRow icon={Network} label="Owner" detail={<OwnerDetail owner={row.owner} epoch={row.epoch} state={chip} />} />
         ) : (
-          <EngineChip owner={row.owner} epoch={row.epoch} prefix="on " />
+          <EngineChip owner={row.owner} epoch={row.epoch} prefix="on " state={chip} />
         )
       ) : null,
     desktop: (mode) =>

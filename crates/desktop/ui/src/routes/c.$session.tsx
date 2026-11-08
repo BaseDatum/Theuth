@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -25,9 +25,11 @@ import { chatName } from '@/lib/attach'
 import { isDraft, usePanes } from '@/lib/panes'
 import { isNoSuchSession } from '@/lib/no-such-session'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
+import { ownedElsewhere } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { useScope } from '@/store/engine-scope'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
 import { KernelStrip } from '@/components/cells/KernelStrip'
 
@@ -310,6 +312,9 @@ export function useSessionLoad(session: string): void {
 
   // Reconnect (bare event): everything between is lost, so the visible session is re-fetched in full. A context
   // edit (`ContextChanged`, or the picker's `settled` event) and 129's `Lagged` resync go through the settled path instead.
+  // 183 §5.1: a session owned elsewhere streams relayed events whose seq is its owner's, so the replicated rows are the
+  // truth: its `TurnFinished` settles too (a local turn's own `ContextChanged` does that already).
+  const qc = useQueryClient()
   useEffect(() => {
     const ctl = new AbortController()
     const reload = (ev: Event) => {
@@ -319,15 +324,22 @@ export function useSessionLoad(session: string): void {
       else void load(ctl.signal).catch((e: unknown) => report(e, ctl.signal))
     }
     window.addEventListener('theuth:reload-session', reload)
-    const off = on('ContextChanged', (e) => {
-      if (e.session === session) settle(ctl.signal)
-    })
+    const offs = [
+      on('ContextChanged', (e) => {
+        if (e.session === session) settle(ctl.signal)
+      }),
+      on('TurnFinished', (e) => {
+        if (e.session !== session || !ownedElsewhere(qc.getQueryData<SessionSummary[]>(queryKeys.sessions), session)) return
+        store.getState().markStale(session)
+        settle(ctl.signal)
+      }),
+    ]
     return () => {
       ctl.abort()
       window.removeEventListener('theuth:reload-session', reload)
-      off()
+      for (const off of offs) off()
     }
-  }, [load, settle, session, report])
+  }, [load, settle, session, report, qc, store])
 }
 
 /** `Private` badge for a chat in the owned tree, plus the bounded reconnect countdown while its transport is down (51 §4.3). */

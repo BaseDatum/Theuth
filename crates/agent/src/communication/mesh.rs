@@ -208,6 +208,21 @@ pub fn engine_name(names: &std::collections::HashMap<String, String>, owner: &st
         .unwrap_or_else(|| owner.get(..8).unwrap_or(owner).to_owned())
 }
 
+/// 183 R1 (H2): an engine as text a model or a card reads — its mesh name,
+/// else "another machine"; never a hex id.
+pub fn machine_name(names: &std::collections::HashMap<String, String>, id: &str) -> String {
+    names
+        .get(id)
+        .filter(|n| !n.is_empty())
+        .cloned()
+        .unwrap_or_else(|| "another machine".to_owned())
+}
+
+/// [`machine_name`] with the mesh asked now (one `Status`).
+pub async fn machine_name_now(id: &str) -> String {
+    machine_name(&engine_names().await.1, id)
+}
+
 /// A two-node loopback switch for tests (as `replica/tests/sync_loopback.rs`
 /// and `rpc::forward::tests`): every node sees every other as connected; a
 /// stream opened to a peer lands in its `accept`.
@@ -300,6 +315,7 @@ mod tests {
             text: "hi".into(),
             reply_to: None,
             request_id: None,
+            chain: 0,
         }
     }
 

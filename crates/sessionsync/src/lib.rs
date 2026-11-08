@@ -186,10 +186,17 @@ impl SessionSync {
             types::Msg::Events { session, from_seq } => {
                 let relay =
                     events::actor().ok_or_else(|| anyhow::anyhow!("events relay not running"))?;
-                events::serve(&relay, framed, session, from_seq).await
+                events::serve(&relay, framed, session, from_seq, false).await
             }
-            types::Msg::Release { session } => {
-                owner::answer_release(&shipper.node().store, session, &mut framed).await
+            // 183 §5.1 (W-18): Events plus the session's approvals, asks, jobs and cells.
+            types::Msg::Watch { session, from_seq } => {
+                let relay =
+                    events::actor().ok_or_else(|| anyhow::anyhow!("events relay not running"))?;
+                events::serve(&relay, framed, session, from_seq, true).await
+            }
+            types::Msg::Release { session, schema } => {
+                owner::answer_release(&shipper.node().store, &peer, schema, session, &mut framed)
+                    .await
             }
             other => shipper.serve_with_first(peer, framed, other).await,
         }

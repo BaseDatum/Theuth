@@ -209,12 +209,15 @@ pub trait Api {
     /// cwd). Relative paths resolve against the session's cwd; `~`/`$VAR`
     /// expand for the lookup only. Empty when nothing triggers, the
     /// directory is missing or the owner is unreachable: never an error.
+    /// 183 W-12: `engine` (mesh id) lists on that engine when `session` is
+    /// `None` (New chat on a machine); a missing trailing param is `None`.
     #[method(name = "path_complete", with_extensions)]
     async fn path_complete(
         &self,
         session: Option<SessionId>,
         input: String,
         cursor: usize,
+        engine: Option<String>,
     ) -> RpcResult<PathCompletion>;
     /// Queue a user message after the current tool batch (or, with
     /// `delivery: next_turn`, after the turn); returns the id (minted when
@@ -717,9 +720,10 @@ pub trait Api {
         id: artifact::snapshot::FenceSnapshotId,
         answer: artifact::snapshot::FenceSnapshotAnswer,
     ) -> RpcResult<bool>;
-    /// Every catalog model whose provider is configured.
-    #[method(name = "list_models")]
-    async fn list_models(&self) -> RpcResult<Vec<ModelInfo>>;
+    /// Every catalog model whose provider is configured. 183 W-12: `engine`
+    /// (mesh id) lists that engine's catalog; `None` = this engine.
+    #[method(name = "list_models", with_extensions)]
+    async fn list_models(&self, engine: Option<String>) -> RpcResult<Vec<ModelInfo>>;
     /// AWS SDK-discovered profiles on this harness, plus its inference selection.
     #[method(name = "list_aws_profiles")]
     async fn list_aws_profiles(&self) -> RpcResult<AwsProfiles>;
@@ -839,12 +843,19 @@ pub trait Api {
         hidden: bool,
     ) -> RpcResult<()>;
     /// Turn approval prompts on/off for `session`, or globally (persisted) with `None`.
+    /// 183 §4.5 (W-4): on a session `enabled` pins `sessions.approvals` to
+    /// `'on'`/`'off'`; `clear: true` drops the pin (inherit `tools.approvals`).
     #[method(name = "set_approvals", with_extensions)]
     async fn set_approvals(
         &self,
         session: Option<SessionId>,
         enabled: bool,
+        clear: Option<bool>,
     ) -> RpcResult<ApprovalsState>;
+    /// 183 §4.5 (W-5): the approvals switches as they stand, for `session`
+    /// (answered by its owner) or the global default with `None`.
+    #[method(name = "get_approvals", with_extensions)]
+    async fn get_approvals(&self, session: Option<SessionId>) -> RpcResult<ApprovalsState>;
     /// Effective communication state (50 §10): the global switch alone with
     /// `None`, else `session`'s inherited/opted-out view, scope and alias.
     /// Authoritative: render it, never guess it.
@@ -2294,7 +2305,7 @@ pub trait Api {
     // 171:C cells (design 171 §15.2). Bodies: `crate::cells` (E1), `crate::cells_latest` (E2).
     /// 171: run one cell. Press guard (§12.1 inv. 1) + `authorize`; idempotent per `run`.
     /// `confirmed: true` is the user's second press past a warning (§7.1, §7.6): Run anyway
-    /// past an unarmed `after` gate, or a danger cell's line/selection ▶; omitted or `false`,
+    /// past an unarmed `after` gate, or a danger cell's line/selection ►; omitted or `false`,
     /// both are refused as before.
     #[method(name = "cell_run", with_extensions)]
     async fn cell_run(
@@ -2955,6 +2966,11 @@ impl PendingPrompts {
         {
             out.secrets = admit(v, &mut keep);
         }
+        // 183 W-19: cards relayed from the owners of followed sessions, so this
+        // snapshot (and the one after `Lagged`) keeps them.
+        let relayed = sessionsync::events::relayed_prompts();
+        out.approvals.extend(admit(relayed.approvals, &mut keep));
+        out.asks.extend(admit(relayed.asks, &mut keep));
         out
     }
 }
@@ -2981,6 +2997,12 @@ pub type FocusMap = Arc<RwLock<HashMap<u64, Arc<HashSet<String>>>>>;
 /// alerts for that connection only.
 pub type SeenMap = Arc<RwLock<HashMap<u64, HashSet<String>>>>;
 
+/// 183 §5.1: `connection id → focused sessions` with the relay's follow guard
+/// held for each (a session owned elsewhere streams while focused). Dropped
+/// with the focus and with the connection.
+pub type FollowMap =
+    Arc<parking_lot::Mutex<HashMap<u64, HashMap<SessionId, sessionsync::events::Following>>>>;
+
 /// Server state: the event feed and the runtime (for `shutdown`).
 pub struct Server {
     /// Feed from [`crate::bridge`].
@@ -2993,6 +3015,8 @@ pub struct Server {
     pub focus: FocusMap,
     /// Per-connection finished-seen set; see [`SeenMap`].
     pub seen: SeenMap,
+    /// Per-connection follow guards of focused sessions; see [`FollowMap`].
+    pub follows: FollowMap,
 }
 
 impl Server {
@@ -3006,18 +3030,21 @@ impl Server {
             private: PRIVATE.clone(),
             focus: Default::default(),
             seen: Default::default(),
+            follows: Default::default(),
         }
     }
 
-    /// 129 §3 / 155 §7.5: drop the connection's focus and seen entries when
-    /// it closes. A second waiter for the same peer (either map was fresh)
-    /// removes nothing new; one spawned after the close removes at once.
+    /// 129 §3 / 155 §7.5 / 183 §5.1: drop the connection's focus, seen and
+    /// follow entries when it closes. A second waiter for the same peer (a
+    /// map was fresh) removes nothing new; one spawned after the close
+    /// removes at once.
     fn forget_on_close(&self, peer: link::RpcPeer) {
-        let (focus, seen) = (self.focus.clone(), self.seen.clone());
+        let (focus, seen, follows) = (self.focus.clone(), self.seen.clone(), self.follows.clone());
         tokio::spawn(async move {
             peer.closed().await;
             focus.write().remove(&peer.id());
             seen.write().remove(&peer.id());
+            follows.lock().remove(&peer.id());
         });
     }
 
@@ -3096,6 +3123,27 @@ impl Server {
         }
         map.insert(open.root, (open.root, peer));
         map.insert(open.session, (open.root, peer));
+    }
+
+    /// 183 §5.6: wait, at most `sessions.release_wait_secs`, for a session
+    /// another engine just created to replicate here (§13 row 11: on timeout
+    /// the caller answers anyway).
+    async fn wait_for_row(&self, session: SessionId) {
+        let secs = self
+            .rt
+            .section::<sessionsync::SessionsConfig>("sessions")
+            .unwrap_or_default()
+            .release_wait_secs;
+        let Ok(store) = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await else {
+            return;
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if store.session(session).await.ok().flatten().is_some() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 }
 
@@ -3179,21 +3227,27 @@ fn session_draining(session: SessionId, e: ErrorObjectOwned) -> ErrorObjectOwned
 
 /// 139 §9.2 (D18): the engine owning a question's session, when it is another
 /// one — read from the replicated `questions` row, so an answer typed on any
-/// engine finds the actor holding the oneshot. `None`: no row (a pre-0033
-/// question or a non-journaled kind), or the session is unknown / ours.
+/// engine finds the actor holding the oneshot; 183 W-19: a card relayed from a
+/// followed owner before its row replicated names its session too. `None`: no
+/// row (a pre-0033 question or a non-journaled kind), or the session is
+/// unknown / ours.
 async fn question_owner(
     store: &agent::store::Store,
     id: &Uuid,
 ) -> RpcResult<Option<replica::PeerId>> {
-    let Some(row) = store
+    let session = match store
         .question_get(&id.to_string())
         .await
         .map_err(|e| failed(format!("{e:#}")))?
-    else {
-        return Ok(None);
+    {
+        Some(row) => row.session,
+        None => match sessionsync::events::relayed_session(*id) {
+            Some(s) => s,
+            None => return Ok(None),
+        },
     };
     let Some((owner, _)) = store
-        .owner(row.session)
+        .owner(session)
         .await
         .map_err(|e| failed(format!("{e:#}")))?
     else {
@@ -3717,7 +3771,7 @@ async fn attach_pty(
     job: &JobId,
     size: Option<(u16, u16)>,
 ) -> RpcResult<tools::PtyAttached> {
-    lookup::<Jobs>(JOBS_ACTOR)?
+    let attached = lookup::<Jobs>(JOBS_ACTOR)?
         .ask(PtyAttach {
             session,
             id: job.clone(),
@@ -3727,7 +3781,14 @@ async fn attach_pty(
         .map_err(|e| match e {
             SendError::HandlerError(msg) => failed(msg),
             other => failed(other.to_string()),
-        })
+        });
+    // 183 §10.3 (W-2): a job of a session owned elsewhere streams there only.
+    if attached.is_err()
+        && let Some(owner) = forward::owner_peer(session).await
+    {
+        return Err(forward::runs_elsewhere(owner.0));
+    }
+    attached
 }
 
 #[async_trait]
@@ -4625,9 +4686,26 @@ impl ApiServer for Server {
         session: Option<SessionId>,
         input: String,
         cursor: usize,
+        engine: Option<String>,
     ) -> RpcResult<PathCompletion> {
         peer(ext)?;
         self.authorize_opt(ext, session).await?;
+        // 183 W-12: "Browse xeus…" with no session yet completes on that engine
+        // (nothing when it cannot answer, never this machine's paths).
+        if session.is_none() {
+            match forward::to_engine::<PathCompletion>(
+                ext,
+                engine.as_deref(),
+                "path_complete",
+                (None::<SessionId>, &input, cursor),
+            )
+            .await
+            {
+                Ok(None) => {}
+                Ok(Some(r)) => return Ok(r),
+                Err(_) => return Ok(PathCompletion::default()),
+            }
+        }
         let mut cwd = None;
         if let Some(session) = session {
             if let Some(owner) = forward::owner_peer(session).await {
@@ -4759,10 +4837,42 @@ impl ApiServer for Server {
             .unwrap_or_default()
             .drain_secs;
         let wait = std::time::Duration::from_secs(2 * sessions.release_wait_secs + drain + 15);
-        // The target's own take: it releases from us (drain) and lands epoch + 1.
-        let ask_target = async {
+        // 183 §4.2: Move to on a viewer runs on the owner, which moves it as
+        // today (one hop: a forwarded move for a row not ours is NotOwner).
+        let me = store.engine().to_owned();
+        if let Some((owner, _)) = store
+            .owner(session)
+            .await
+            .map_err(|e| failed(format!("{e:#}")))?
+            && !owner.is_empty()
+            && owner != me
+        {
+            if ext.get::<forward::Forwarded>().is_some() {
+                return Err(forward::not_owner(owner));
+            }
+            let owner = replica::PeerId(owner);
             let call = forward::to_peer_within::<SessionOwner>(
                 ext,
+                &owner,
+                "session_move",
+                (session, &to.0),
+                wait + std::time::Duration::from_secs(10),
+            );
+            return match call.await? {
+                Some(mut o) => {
+                    o.here = o.owner == me;
+                    Ok(o)
+                }
+                None => Err(forward::unreachable(owner.0, "not connected").await),
+            };
+        }
+        // The target's own take: it releases from us (drain) and lands epoch + 1.
+        // Its own call even when this move was forwarded from a viewer (the
+        // take is the target's, bound to us as the owner, not a relay).
+        let direct = Extensions::new();
+        let ask_target = async {
+            let call = forward::to_peer_within::<SessionOwner>(
+                &direct,
                 &to,
                 "session_take",
                 (session, "moved"),
@@ -4879,6 +4989,30 @@ impl ApiServer for Server {
         options: CreateSessionOptions,
     ) -> RpcResult<SessionOpen> {
         let peer = peer(ext)?;
+        // 183 §5.6 (W-10): New chat on another machine: that engine creates and
+        // owns the row from epoch 1; wait (bounded) for it to replicate here
+        // so the first `send_input` forwards instead of failing as unknown.
+        if let Some(engine) = options.engine.clone() {
+            let mut there = options.clone();
+            there.engine = None;
+            if let Some(open) =
+                forward::to_engine::<SessionOpen>(ext, Some(&engine), "create_session", (there,))
+                    .await?
+            {
+                self.wait_for_row(open.session).await;
+                return Ok(open);
+            }
+        }
+        // A forwarded create names a folder of this machine (§13 row 12).
+        if ext.get::<forward::Forwarded>().is_some()
+            && let Some(cwd) = options.cwd.as_deref()
+            && !Path::new(cwd).is_dir()
+        {
+            return Err(failed(format!(
+                "{cwd} does not exist on {}",
+                platform::process::machine().name
+            )));
+        }
         let open = ask::<Agents, _>(
             agent::AGENT_ACTOR,
             CreateSession {
@@ -5071,7 +5205,17 @@ impl ApiServer for Server {
         Ok(artifact::snapshot::answer(id, answer))
     }
 
-    async fn list_models(&self) -> RpcResult<Vec<ModelInfo>> {
+    async fn list_models(
+        &self,
+        ext: &Extensions,
+        engine: Option<String>,
+    ) -> RpcResult<Vec<ModelInfo>> {
+        // 183 W-12: another engine's catalog (New chat on a machine, the ⋯ model list).
+        if let Some(r) =
+            forward::to_engine(ext, engine.as_deref(), "list_models", Vec::<()>::new()).await?
+        {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, ListModels).await
     }
 
@@ -5324,14 +5468,59 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: Option<SessionId>,
         enabled: bool,
+        clear: Option<bool>,
     ) -> RpcResult<ApprovalsState> {
         self.authorize_opt(ext, session).await?;
+        // 183 §4.5: run on the owner, which persists the pin on the row. `clear`
+        // travels only when set, so a pre-183 owner still answers the plain call.
+        if let Some(s) = session {
+            let forwarded = match clear {
+                Some(c) => forward::route(ext, s, "set_approvals", (session, enabled, c)).await?,
+                None => forward::route(ext, s, "set_approvals", (session, enabled)).await?,
+            };
+            if let Some(r) = forwarded {
+                return Ok(r);
+            }
+        }
+        ask::<ToolRegistry, _>(
+            tools::REGISTRY_ACTOR,
+            SetApprovals {
+                session,
+                enabled,
+                clear: clear.unwrap_or(false),
+            },
+        )
+        .await
+    }
+
+    async fn get_approvals(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+    ) -> RpcResult<ApprovalsState> {
+        self.authorize_opt(ext, session).await?;
+        // 183 W-5: the effective value mixes the row's pin with the owner's
+        // `tools.approvals`; owner offline → `-32010` (183-notes deviation 7).
         if let Some(s) = session
-            && let Some(r) = forward::route(ext, s, "set_approvals", (session, enabled)).await?
+            && let Some(r) = forward::route(ext, s, "get_approvals", (session,)).await?
         {
             return Ok(r);
         }
-        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetApprovals { session, enabled }).await
+        // The row is the pin's truth (D4); the registry holds it only once the
+        // session's actor spawned here, so a session idle since a restart or a
+        // move would read "inherit". ponytail: a setter racing this read can be
+        // overwritten by the row it replaced; both are user clicks.
+        if let Some(s) = session
+            && let Ok(store) = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await
+            && let Ok(Some((pin, _))) = store.session_settings(s).await
+        {
+            let _ = ask::<ToolRegistry, _>(
+                tools::REGISTRY_ACTOR,
+                tools::RestoreApprovals { session: s, pin },
+            )
+            .await;
+        }
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session }).await
     }
 
     async fn get_communication(
@@ -5340,6 +5529,12 @@ impl ApiServer for Server {
         session: Option<SessionId>,
     ) -> RpcResult<CommunicationState> {
         self.authorize_opt(ext, session).await?;
+        // 183 W-5: the owner's `agent.communication` decides.
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "get_communication", (session,)).await?
+        {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, GetCommunication { session }).await
     }
 
@@ -8936,12 +9131,11 @@ impl ApiServer for Server {
 
     async fn resume_turn(&self, ext: &Extensions, session: SessionId) -> RpcResult<bool> {
         self.authorize(ext, session).await?;
-        // 139 §9.2 (D18): an action, so it runs on the owner (I1). A desk's
-        // press is forwarded; a user session is taken here (`Write`) and —
-        // Revision 1 Q15 — the press *is* the user's decision, so the take is
-        // followed by `ResumeTurn{Takeover, from}`. Idempotent against W2's
-        // own resume-on-take: a turn already in flight answers "resumed lazily".
-        let from = forward::owner_peer(session).await;
+        // 139 §9.2 (D18): an action, so it runs on the owner (I1). 183 §4.1:
+        // every session's press forwards to a connected owner (`-32010` when
+        // it is not); here it resumes this engine's own open turn. Idempotent
+        // against W2's own resume-on-take: a turn already in flight answers
+        // "resumed lazily".
         if let Some(r) = forward::route(ext, session, "resume_turn", (session,)).await? {
             return Ok(r);
         }
@@ -8955,10 +9149,8 @@ impl ApiServer for Server {
             agent::supervisor::ResumeTurn {
                 session,
                 turn,
-                cause: from
-                    .is_some()
-                    .then_some(agent::durability::ResumeCause::Takeover),
-                from: from.map(|p| p.0),
+                cause: None,
+                from: None,
             },
         )
         .await?;
@@ -9479,6 +9671,21 @@ impl ApiServer for Server {
         let peer = peer(ext)?;
         let set: Arc<HashSet<String>> =
             Arc::new(sessions.iter().map(ToString::to_string).collect());
+        // 183 §5.1: a focused session streams from its owner while focused. The
+        // relay skips one owned here and follows it if it moves away; a session
+        // leaving the focus drops its guard (the stream closes).
+        {
+            let mut follows = self.follows.lock();
+            let held = follows.entry(peer.id()).or_default();
+            held.retain(|s, _| sessions.contains(s));
+            for s in &sessions {
+                if !held.contains_key(s)
+                    && let Some(guard) = sessionsync::events::follow(*s)
+                {
+                    held.insert(*s, guard);
+                }
+            }
+        }
         let fresh = self.focus.write().insert(peer.id(), set.clone()).is_none();
         if fresh {
             self.forget_on_close(peer.clone());
@@ -9788,6 +9995,7 @@ mod tests {
                 owner: Some("engine-a".into()),
                 here: false,
                 cause: Some(agent::durability::ResumeCause::Transfer),
+                from: None,
             }),
             ..Default::default()
         };

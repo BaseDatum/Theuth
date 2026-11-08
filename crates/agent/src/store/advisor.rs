@@ -174,8 +174,14 @@ impl Store {
         // upgrade if a measured session makes the advisor's step slow.
         let h = self.context_history(session).await?;
         let advisories = self.advisories(session).await?;
-        let mut rows =
-            crate::supervisor::render_with(&h.messages, &h.entries, &h.thinking, &advisories);
+        let moved = self.moved(session).await?;
+        let mut rows = crate::supervisor::render_with(
+            &h.messages,
+            &h.entries,
+            &h.thinking,
+            &advisories,
+            &moved,
+        );
         rows.retain(|(seq, _)| *seq >= from_seq);
         Ok(rows)
     }

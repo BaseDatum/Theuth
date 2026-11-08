@@ -521,7 +521,8 @@ pub enum LostReason {
     /// "owner changed (ran on `engine`)" — the session moved to this engine
     /// while the process lived on `engine`.
     OwnerChanged {
-        /// The engine that spawned it (`jobs.engine`).
+        /// The machine that spawned it, as text: its mesh name, else
+        /// "another machine" (183 R1 H2; never the `jobs.engine` id).
         engine: String,
     },
 }

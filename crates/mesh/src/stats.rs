@@ -16,6 +16,7 @@ pub fn probe(
     workspaces: &[String],
     declared: Option<EngineClass>,
 ) -> EngineStats {
+    let m = platform::process::machine();
     let display = has_display();
     let class = declared.unwrap_or_else(|| detect_class(has_battery(), display));
     EngineStats {
@@ -28,6 +29,11 @@ pub fn probe(
         display,
         gpu: has_gpu(),
         accelerator: Some(accelerator()),
+        // 183 §9.2
+        os: m.os.into(),
+        os_name: m.os_name.clone(),
+        arch: m.arch.into(),
+        host: m.host.clone(),
     }
 }
 

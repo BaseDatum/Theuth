@@ -64,6 +64,7 @@ pub mod dreaming;
 pub mod durability;
 pub mod endless;
 pub mod harness;
+mod moved;
 pub mod turn_usage;
 pub use capture::ATTACHED;
 pub use durability::Scope;
@@ -381,6 +382,8 @@ struct Row {
     thinking_ms: Option<i64>,
     /// Raw `messages.advisory` (125 §5.4); `Some` marks an Advisory row.
     advisory: Option<String>,
+    /// Raw `messages.moved` (183 §5.3); `Some` marks a Moved row.
+    moved: Option<String>,
 }
 
 /// Raw `sessions` row; ids and timestamps are TEXT and parsed on the way out.
@@ -652,6 +655,19 @@ pub fn inner_call_id(call_id: &str) -> Option<(&str, u32)> {
 /// Most parent hops `Store::root_of` follows before it gives up on a
 /// corrupt (cyclic) chain; deeper trees than this do not exist.
 const ROOT_HOPS: usize = 32;
+
+/// 183 R1/R2 (E-M3): the schema of the replicated session tables, as
+/// sessionsync sends it in `Hello` and `Release`: a peer on an older value
+/// is not shipped rows whose columns it cannot apply, and its takes are
+/// refused. Named after the migration that last changed them (0053).
+///
+/// **Bump rule:** set this to a new migration's number exactly when that
+/// migration adds, drops or renames a column of a table the session log
+/// replicates (`sessions`, `messages`, `turn_steps`, … — the tables the
+/// `sqlite3session` attaches, see [`Store::open`]). A migration that touches
+/// only local tables leaves it alone; bumping it holds session sync between
+/// mixed versions for nothing.
+pub const SESSIONS_WIRE_SCHEMA: u32 = 53;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -1290,6 +1306,57 @@ impl Store {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// 183 §4.5 (W-4): the session's approvals pin: `Some(true)` = `'on'`,
+    /// `Some(false)` = `'off'`, `None` = inherit `tools.approvals` (NULL).
+    pub async fn set_session_approvals(
+        &self,
+        id: SessionId,
+        pin: Option<bool>,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET approvals = ? WHERE id = ?")
+            .bind(pin.map(|on| if on { "on" } else { "off" }))
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 183 §4.5: the session's agent-messaging setting: `Some(false)` = `0`
+    /// (opted out), `Some(true)` = `1`, `None` = inherit (NULL). The policy
+    /// only has an opt-out, so callers store opt-in as `None`.
+    pub async fn set_session_communication(
+        &self,
+        id: SessionId,
+        enabled: Option<bool>,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET communication = ? WHERE id = ?")
+            .bind(enabled)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 183 §4.5 (D4): `(approvals pin, communication)` of the row, as the
+    /// setters wrote them; `None` when the session does not exist. Read by the
+    /// supervisor when it spawns the actor (start, resume, take).
+    pub async fn session_settings(
+        &self,
+        id: SessionId,
+    ) -> anyhow::Result<Option<(Option<bool>, Option<bool>)>> {
+        self.stall().await;
+        let row: Option<(Option<String>, Option<bool>)> =
+            sqlx::query_as("SELECT approvals, communication FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(row.map(|(a, c)| (a.map(|a| a == "on"), c)))
     }
 
     /// 136 R-22: persist the session's money cap (`None` clears) so a
@@ -2111,7 +2178,7 @@ impl Store {
     /// Rows hidden by undo (`seq >= cut_at`); empty when `cut_at` is NULL.
     async fn hidden(&self, id: SessionId) -> anyhow::Result<Vec<Row>> {
         let rows = sqlx::query_as(
-            "SELECT seq, body, excluded, vision, at, thinking_ms, advisory FROM messages WHERE session_id = ?1 \
+            "SELECT seq, body, excluded, vision, at, thinking_ms, advisory, moved FROM messages WHERE session_id = ?1 \
              AND seq >= (SELECT cut_at FROM sessions WHERE id = ?1) ORDER BY seq",
         )
         .bind(id.to_string())
@@ -2466,8 +2533,8 @@ impl Store {
         }
         accounting::ensure_owner_in(&mut tx, id, None).await?;
         sqlx::query(
-            "INSERT INTO messages (session_id, seq, body, excluded, vision, at, advisory, channel) \
-             SELECT ?1, seq, body, excluded, vision, at, advisory, channel FROM messages WHERE session_id = ?2 AND seq < ?3 \
+            "INSERT INTO messages (session_id, seq, body, excluded, vision, at, advisory, moved, channel) \
+             SELECT ?1, seq, body, excluded, vision, at, advisory, moved, channel FROM messages WHERE session_id = ?2 AND seq < ?3 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
         )
         .bind(&new)
@@ -3513,8 +3580,9 @@ fn turn_starts(rows: &[Row]) -> Vec<usize> {
 
 /// Seqs opening a turn in raw `(seq, message)` rows, for readers outside the
 /// store (history turn handles). `note(seq)` says whether the row is a typed
-/// note, e.g. `entries[seq].vision.is_some() || entries[seq].advisory.is_some()`
-/// from [`Store::context_history`].
+/// note: a vision note, an advisory or (183 §5.3) a moved record, as the
+/// history renderer's closure checks from [`Store::context_history`] and the
+/// advisory and moved maps.
 pub(crate) fn turn_openers(rows: &[(i64, ChatMessage)], note: impl Fn(i64) -> bool) -> Vec<i64> {
     openers(rows.iter().map(|(seq, m)| (m, note(*seq))))
         .into_iter()
@@ -3534,7 +3602,7 @@ fn decode_rows(id: SessionId, rows: Vec<(i64, String)>) -> Vec<(i64, ChatMessage
         .collect()
 }
 
-/// One `messages` row as selected: `(seq, body, excluded, vision, at, thinking_ms, advisory)`.
+/// One `messages` row as selected: `(seq, body, excluded, vision, at, thinking_ms, advisory, moved)`.
 type RawRow = (
     i64,
     String,
@@ -3543,6 +3611,7 @@ type RawRow = (
     Option<String>,
     Option<i64>,
     Option<String>,
+    Option<String>,
 );
 
 /// [`RawRow`]s to [`Row`]s: undecodable bodies are skipped (warned); an
@@ -3550,7 +3619,7 @@ type RawRow = (
 /// the one wrong answer.
 fn decode_masked(id: SessionId, rows: Vec<RawRow>) -> anyhow::Result<Vec<Row>> {
     let mut out = Vec::with_capacity(rows.len());
-    for (seq, body, excluded, vision, at, thinking_ms, advisory) in rows {
+    for (seq, body, excluded, vision, at, thinking_ms, advisory, moved) in rows {
         let mask =
             Mask::decode(excluded.as_deref()).with_context(|| format!("message {seq} of {id}"))?;
         if let Some((seq, message)) = decode_rows(id, vec![(seq, body)]).pop() {
@@ -3562,6 +3631,7 @@ fn decode_masked(id: SessionId, rows: Vec<RawRow>) -> anyhow::Result<Vec<Row>> {
                 at,
                 thinking_ms,
                 advisory,
+                moved,
             });
         }
     }
@@ -3583,7 +3653,7 @@ impl Row {
     /// A typed note (vision consultation or advisory, 52 §6 / 125 §5.4):
     /// never opens a turn, transparent to turn readers.
     fn is_note(&self) -> bool {
-        self.vision.is_some() || self.advisory.is_some()
+        self.vision.is_some() || self.advisory.is_some() || self.moved.is_some()
     }
 }
 
@@ -3695,7 +3765,7 @@ async fn rows_in(
     from: i64,
 ) -> anyhow::Result<Vec<Row>> {
     let rows = sqlx::query_as(
-        "SELECT seq, body, excluded, vision, at, thinking_ms, advisory FROM messages \
+        "SELECT seq, body, excluded, vision, at, thinking_ms, advisory, moved FROM messages \
          WHERE session_id = ?1 AND seq >= ?2 \
          AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
          ORDER BY seq",
@@ -3719,7 +3789,7 @@ async fn last_exchange_in(
     let mut before = i64::MAX;
     loop {
         let raw: Vec<RawRow> = sqlx::query_as(
-            "SELECT seq, body, excluded, vision, at, thinking_ms, advisory FROM messages \
+            "SELECT seq, body, excluded, vision, at, thinking_ms, advisory, moved FROM messages \
              WHERE session_id = ?1 AND seq < ?2 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
              ORDER BY seq DESC LIMIT ?3",
@@ -3923,6 +3993,7 @@ mod tests {
                 &h.entries,
                 &h.thinking,
                 &BTreeMap::new(),
+                &BTreeMap::new(),
             );
             crate::supervisor::mark_channels(&mut out, &store.channels(id).await.unwrap());
             out.into_iter()
@@ -4091,6 +4162,42 @@ mod tests {
         let h = store.context_history(id).await.unwrap();
         assert_eq!(h.thinking, BTreeMap::from([(1, 9_400)]));
         assert_eq!(h.messages.len(), 3);
+        drop(store);
+    }
+
+    /// 183 §9.1: 0053's per-session settings start NULL (inherit) and accept
+    /// only the tri-state values; `messages.moved` starts NULL.
+    #[tokio::test]
+    async fn remote_session_columns_default_null_and_check_values() {
+        let (store, id, _dir) = fresh().await;
+        store.append(id, &ChatMessage::user("hi")).await.unwrap();
+        let row: (Option<String>, Option<i64>) =
+            sqlx::query_as("SELECT approvals, communication FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_one(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(row, (None, None));
+        let moved: Option<String> =
+            sqlx::query_scalar("SELECT moved FROM messages WHERE session_id = ?")
+                .bind(id.to_string())
+                .fetch_one(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(moved, None);
+        let set = |sql: &'static str, v: &'static str| {
+            sqlx::query(sql)
+                .bind(v)
+                .bind(id.to_string())
+                .execute(&store.read)
+        };
+        let approvals = "UPDATE sessions SET approvals = ? WHERE id = ?";
+        let communication = "UPDATE sessions SET communication = ? WHERE id = ?";
+        assert!(set(approvals, "on").await.is_ok());
+        assert!(set(approvals, "off").await.is_ok());
+        assert!(set(approvals, "maybe").await.is_err());
+        assert!(set(communication, "0").await.is_ok());
+        assert!(set(communication, "2").await.is_err());
         drop(store);
     }
 
@@ -6148,6 +6255,47 @@ mod tests {
         drop(store);
     }
 
+    /// 183 §4.5 (D4): the approvals pin and the messaging opt-out live on the
+    /// row: set, cleared and still there after a restart.
+    #[tokio::test]
+    async fn session_settings_round_trip_and_survive_reopen() {
+        let (store, id, dir) = seeded().await;
+        assert_eq!(
+            store.session_settings(id).await.unwrap(),
+            Some((None, None))
+        );
+        store.set_session_approvals(id, Some(true)).await.unwrap();
+        store
+            .set_session_communication(id, Some(false))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.session_settings(id).await.unwrap(),
+            Some((Some(true), Some(false)))
+        );
+        store.set_session_approvals(id, Some(false)).await.unwrap();
+        store.close().await;
+        drop(store);
+
+        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.session_settings(id).await.unwrap(),
+            Some((Some(false), Some(false)))
+        );
+        store.set_session_approvals(id, None).await.unwrap();
+        store.set_session_communication(id, None).await.unwrap();
+        assert_eq!(
+            store.session_settings(id).await.unwrap(),
+            Some((None, None))
+        );
+        assert_eq!(
+            store.session_settings(SessionId::new()).await.unwrap(),
+            None
+        );
+    }
+
     /// A committed removal survives a restart: the reopened store projects the
     /// same effective frame, revision, and inventory from the raw rows.
     #[tokio::test]
@@ -6770,6 +6918,23 @@ mod tests {
         rows.push(
             store
                 .assert_write_pool("set_effort", &mut since)
+                .await
+                .len(),
+        );
+        store.set_session_approvals(id, Some(true)).await.unwrap();
+        rows.push(
+            store
+                .assert_write_pool("set_session_approvals", &mut since)
+                .await
+                .len(),
+        );
+        store
+            .set_session_communication(id, Some(false))
+            .await
+            .unwrap();
+        rows.push(
+            store
+                .assert_write_pool("set_session_communication", &mut since)
                 .await
                 .len(),
         );
@@ -7501,6 +7666,14 @@ mod tests {
         refused!("set_archived", store.set_archived(id, true));
         refused!("set_model", store.set_model(id, "m2"));
         refused!("set_effort", store.set_effort(id, Some("high")));
+        refused!(
+            "set_session_approvals",
+            store.set_session_approvals(id, Some(true))
+        );
+        refused!(
+            "set_session_communication",
+            store.set_session_communication(id, Some(false))
+        );
         refused!(
             "set_acp",
             store.set_acp(id, "codex", Some(Path::new("/tmp")), &[])

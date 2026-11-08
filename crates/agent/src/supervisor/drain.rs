@@ -318,6 +318,22 @@ impl Agents {
                 return (None, None);
             }
         };
+        // 183 R1 (H3): the engine a moved or taken-over session came from.
+        let from = || async {
+            store
+                .moved(session)
+                .await
+                .ok()
+                .and_then(|m| m.into_values().next_back())
+                .map(|m| m.from_id)
+                .filter(|f| !f.is_empty())
+        };
+        let moved = |c: crate::durability::ResumeCause| {
+            matches!(
+                c,
+                crate::durability::ResumeCause::Transfer | crate::durability::ResumeCause::Takeover
+            )
+        };
         let Some((turn, _)) = open else {
             return match store.latest_resume_report(session).await {
                 Ok(Some(row)) => (
@@ -330,6 +346,7 @@ impl Agents {
                         owner,
                         here,
                         cause: Some(row.cause),
+                        from: if moved(row.cause) { from().await } else { None },
                     }),
                     None,
                 ),
@@ -361,6 +378,11 @@ impl Agents {
                     owner,
                     here,
                     cause: Some(plan.cause),
+                    from: if moved(plan.cause) {
+                        from().await
+                    } else {
+                        None
+                    },
                 }),
                 plan.partial.map(|p| HistoryEntry::Interrupted {
                     text: crate::loop_::text_of(&p.content),

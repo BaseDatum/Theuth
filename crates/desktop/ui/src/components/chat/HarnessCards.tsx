@@ -2,14 +2,15 @@
 // is one collapsed card with a section per part; a wake is a card headed by its reason and task chips with the
 // task record as its body. Nothing is hidden: every part stays readable, just folded.
 // 152: the same for a restart's `<resume_handoff>`, a parent's `<child_lost>` and the endless parent's view.
+// 183 §12.4: the same for a move's `<session_moved/>` and a resumed batch's `<engine_restart/>` — fields, never the tag.
 
 import { Link } from '@tanstack/react-router'
-import { Activity, Bot, ChevronRight, FlaskConical, Hourglass, Infinity as InfinityIcon, Radio, RotateCcw, Unplug, Zap } from 'lucide-react'
+import { Activity, ArrowLeftRight, Bot, ChevronRight, FlaskConical, Hourglass, Infinity as InfinityIcon, Radio, RotateCcw, TriangleAlert, Unplug, Zap } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { shortId } from '@/components/tasks/helpers'
 import { Badge } from '@/components/ui/badge'
 import { fmtBytes } from '@/lib/files'
-import { humanSecs, type ResumeSection } from '@/lib/injected'
+import { humanSecs, type MovedNote, type RestartNote, type ResumeSection, tagAttrs } from '@/lib/injected'
 import type { Entry } from '@/store/sessions'
 import { markdownComponents, plugins, shikiTheme } from './MessageAssistant'
 import { Details, FenceText } from './disclosure'
@@ -324,5 +325,117 @@ export function AutoresearchCard({ slug, event, text }: Extract<Entry, { kind: '
         </FenceText>
       </FenceContext>
     </div>
+  )
+}
+
+/** `/home/sky/x` and `/Users/sky/x` as `~/x`: the card is read, not copied. */
+export const tilde = (path: string): string => path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, '~')
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+
+/** Mock panel 4's title: `Session moved to xeus · Arch Linux` (the cwd follows as code). */
+export const movedTitle = (m: MovedNote): string => [`Session moved to ${m.to || 'another machine'}`, m.os].filter(Boolean).join(' · ')
+
+/** Mock panel 4's subline: `from Sky's MacBook · 11:42 · Python runtime reset · 1 job left on Sky's MacBook · approvals kept: Ask`. */
+export function movedLine(m: MovedNote): string {
+  return [
+    m.from && `from ${m.from}`,
+    m.clock.slice(0, 5),
+    m.runtime === 'reset' && 'Python runtime reset',
+    m.jobsLeft > 0 && `${plural(m.jobsLeft, 'job')} left on ${m.from || 'the old machine'}`,
+    m.approvals && `approvals kept: ${m.approvals === 'ask' ? 'Ask' : m.approvals === 'off' ? 'Off' : m.approvals}`,
+    !m.messaging && 'agent messaging off',
+    m.pending && 'the open turn waits for Resume',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/** The collapsed body both 183 cards share: the note the model read, as its fields (never the raw tag). */
+function Told({ text }: { text: string }) {
+  return (
+    <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 border-t border-border-subtle pt-2 text-xs">
+      {tagAttrs(text).map(([k, v]) => (
+        <div key={k} className="contents">
+          <dt className="font-mono text-fg-tertiary">{k}</dt>
+          <dd className="wrap-anywhere text-fg-secondary">{v}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+/** 183 §12.4 / mock panel 4: one move or take, from `messages.moved` (or a `<session_moved/>` input). A cwd missing on
+ * the taker (W-9) says where it works instead; "What the agent was told" folds the note's fields. */
+export function MovedCard(m: Extract<Entry, { kind: 'moved' }>) {
+  return (
+    <div className={SHELL}>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] font-medium">
+        <ArrowLeftRight className="size-3.5 shrink-0 text-fg-secondary" aria-hidden="true" />
+        <span className="min-w-0">{movedTitle(m)}</span>
+        {m.cwd && (
+          <>
+            <span aria-hidden="true">·</span>
+            <code className="min-w-0 truncate font-mono text-xs">{tilde(m.cwd)}</code>
+          </>
+        )}
+      </div>
+      <p className="mt-1 text-xs text-fg-tertiary">{movedLine(m)}</p>
+      {m.cwdMissing && (
+        <p className="mt-1 flex items-start gap-1.5 text-xs text-warning">
+          <TriangleAlert className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+          {tilde(m.cwdWas ?? 'the folder')} does not exist on {m.to} — working in {tilde(m.cwd)}
+        </p>
+      )}
+      <Details
+        part="moved"
+        className="group/moved mt-2 border-t border-border-subtle pt-2"
+        triggerClassName={`${SUMMARY} text-xs font-medium text-fg-secondary`}
+        trigger={
+          <>
+            <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/moved:rotate-90" aria-hidden="true" />
+            What the agent was told
+          </>
+        }
+      >
+        <Told text={m.text} />
+      </Details>
+    </div>
+  )
+}
+
+const CAUSE: Record<string, string> = { crash: 'the engine crashed', shutdown: 'the engine shut down', update: 'the engine updated' }
+
+/** §12.4: `Resumed on xeus after 4 s · moved from Sky's MacBook · 1 call interrupted`; a boot restart names its cause. */
+export function restartLine(r: RestartNote): string {
+  const moved = r.cause === 'transfer' || r.cause === 'takeover'
+  return [
+    moved ? `Resumed on ${r.to ?? 'this machine'} after ${humanSecs(r.after)}` : `Resumed after ${humanSecs(r.after)}`,
+    moved ? r.from && `${r.cause === 'takeover' ? 'taken over' : 'moved'} from ${r.from}` : (CAUSE[r.cause] ?? (r.cause && `${r.cause} restart`)),
+    r.replayed > 0 && `${plural(r.replayed, 'call')} replayed`,
+    r.interrupted > 0 && `${plural(r.interrupted, 'call')} interrupted`,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/** 183 §12.4: the `<engine_restart/>` a resumed batch's first result opened with (`splitRestart`), above that tool card. */
+export function EngineRestartCard(r: RestartNote & { text: string }) {
+  return (
+    <Details
+      part="restart"
+      className={`group/restart ${SHELL}`}
+      triggerClassName={`${SUMMARY} text-xs text-fg-secondary`}
+      trigger={
+        <>
+          <RotateCcw className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1 font-medium">{restartLine(r)}</span>
+          <ChevronRight className="size-4 shrink-0 transition-transform group-data-[state=open]/restart:rotate-90" aria-hidden="true" />
+        </>
+      }
+    >
+      <p className="mt-2 text-xs text-fg-tertiary">What the agent was told</p>
+      <Told text={r.text} />
+    </Details>
   )
 }

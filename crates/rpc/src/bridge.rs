@@ -97,7 +97,29 @@ impl Actor for Bridge {
 impl Message<JobEvent> for Bridge {
     type Reply = ();
     async fn handle(&mut self, ev: JobEvent, _: &mut Context<Self, ()>) {
-        let cell = match &ev {
+        self.job(&ev);
+    }
+}
+
+/// 183 §5.1: a followed remote session's approval, ask, job or cell event,
+/// already JSON: onto the client feed as the owner's bridge would send it.
+impl Message<sessionsync::events::Relayed> for Bridge {
+    type Reply = ();
+    async fn handle(&mut self, ev: sessionsync::events::Relayed, _: &mut Context<Self, ()>) {
+        if ev.kind == "JobEvent" {
+            if let Ok(job) = serde_json::from_value::<JobEvent>(ev.event) {
+                self.job(&job);
+            }
+        } else {
+            drop(self.tx.send(Arc::new(ev.event)));
+        }
+    }
+}
+
+impl Bridge {
+    /// A job event to the feed, unless it is a user-cell kernel's (171F B15).
+    fn job(&mut self, ev: &JobEvent) {
+        let cell = match ev {
             JobEvent::Started {
                 session, id, name, ..
             } => {
@@ -115,7 +137,7 @@ impl Message<JobEvent> for Bridge {
             JobEvent::Finished { session, id, .. } => self.cells.remove(&(*session, id.clone())),
         };
         if !cell {
-            self.forward(&ev);
+            self.forward(ev);
         }
     }
 }
@@ -267,6 +289,8 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, ReminderEvent>(&actor).await;
     rt.subscribe::<Bridge, EndlessProgress>(&actor).await;
     rt.subscribe::<Bridge, CostCubeChanged>(&actor).await;
+    rt.subscribe::<Bridge, sessionsync::events::Relayed>(&actor)
+        .await;
     tx
 }
 

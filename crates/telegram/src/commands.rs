@@ -943,7 +943,11 @@ async fn approvals_cmd(session: Option<SessionId>, arg: &str) -> anyhow::Result<
     };
     let state = ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)?
         .context("tool registry is not running")?
-        .ask(tools::SetApprovals { session, enabled })
+        .ask(tools::SetApprovals {
+            session,
+            enabled,
+            clear: false,
+        })
         .await
         .map_err(err)?;
     text(format!(

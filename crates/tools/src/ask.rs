@@ -408,6 +408,20 @@ impl Message<Expire> for AskUser {
     }
 }
 
+/// 183 R1 (H1): a released session's asks stop waiting here, as
+/// [`crate::approval::ForgetSession`] for approvals; their rows stay `pending`.
+impl Message<crate::approval::ForgetSession> for AskUser {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        m: crate::approval::ForgetSession,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        self.pending.retain(|_, w| w.session != m.0);
+    }
+}
+
 /// `ask` → the still-pending asks. Lets a UI that subscribes (or reconnects
 /// over the relay) *after* the [`AskRequested`] broadcast still be shown the
 /// card it missed, instead of a card that never arrives (31 §7.3).

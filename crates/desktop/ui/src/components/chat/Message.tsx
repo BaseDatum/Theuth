@@ -10,7 +10,7 @@ import type { Entry } from '@/store/sessions'
 import { AdvisorNoteCard } from './AdvisorNoteCard'
 import { ApprovalCard } from './ApprovalCard'
 import { AskCard } from './AskCard'
-import { AutoresearchCard, BroadcastCard, ChildLostCard, ChildStateCard, DeskCard, ParentViewCard, ResumeCard, WakeCard, childLine } from './HarnessCards'
+import { AutoresearchCard, BroadcastCard, ChildLostCard, ChildStateCard, DeskCard, EngineRestartCard, MovedCard, ParentViewCard, ResumeCard, WakeCard, childLine } from './HarnessCards'
 import { MessageAssistant, RemoveButton } from './MessageAssistant'
 import { MessageCompacted } from './MessageCompacted'
 import { MessageError, MessageInfo, MessageInterrupted } from './MessageInfo'
@@ -44,7 +44,15 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
     case 'reasoning':
       return <MessageReasoning id={entry.id} text={entry.text} done={entry.done} ms={entry.ms} />
     case 'tool':
-      return <MessageTool tool={entry} session={session} readOnly={readOnly} />
+      // 183 §12.4: a resumed batch's restart note is its own card above the call, never raw XML in the result.
+      return entry.restart ? (
+        <>
+          <EngineRestartCard {...entry.restart} />
+          <MessageTool tool={entry} session={session} readOnly={readOnly} />
+        </>
+      ) : (
+        <MessageTool tool={entry} session={session} readOnly={readOnly} />
+      )
     case 'peer':
       return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} />
     case 'engine':
@@ -61,6 +69,10 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <ChildStateCard {...entry} />
     case 'autoresearch':
       return <AutoresearchCard {...entry} />
+    case 'moved':
+      return <MovedCard {...entry} />
+    case 'engine_restart':
+      return <EngineRestartCard {...entry} />
     case 'cell_result': // 171:U1-ADD
       return <ResultCard run={entry.run} name={entry.name} label={entry.label} cell={entry.cell} exit={entry.exit} secs={entry.secs} />
     case 'parentView':
@@ -271,8 +283,10 @@ export const Message = memo(function Message({
   readOnly?: boolean
   reveal?: boolean
 }) {
+  // 183 §5.3: a move during an open turn writes its `moved` row outside the context (the model reads `<engine_restart/>`);
+  // it is still the card that says where the chat went, never a "Removed from context" tombstone.
   const card =
-    entry.context?.removed ? (
+    entry.context?.removed && entry.kind !== 'moved' ? (
       <Tombstone entry={entry} session={session} readOnly={readOnly} reveal={reveal} />
     ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision' || entry.kind === 'desk' || entry.kind === 'wake' || entry.kind === 'advisory' || entry.kind === 'resume' || entry.kind === 'lost' || entry.kind === 'child' || entry.kind === 'autoresearch' || entry.kind === 'parentView') ? (
       <Card entry={entry} session={session}>

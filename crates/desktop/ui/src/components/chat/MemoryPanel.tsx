@@ -14,6 +14,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { ago } from '@/lib/costs/format'
 import { fmtBytes } from '@/lib/files'
 import { ENDLESS_DEFAULTS, EARLIER_HISTORY, isFoldedNote, tokenEstimate } from '@/lib/endless'
+import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/api'
@@ -174,10 +175,11 @@ export const SOURCE_HINT: Record<string, string> = { chat: 'this chat', agent: '
 export const SUMMARY_MODEL_ID = 'memory-summary-model'
 const openSummaryModel = () => document.getElementById(SUMMARY_MODEL_ID)?.click()
 
-/** Mutation options for the RPCs that answer the fresh `SessionMemory` (137F/137G): the reply replaces the cached memory; an error toasts and changes nothing. */
+/** Mutation options for the RPCs that answer the fresh `SessionMemory` (137F/137G): the reply replaces the cached memory; an error toasts and changes nothing.
+ * 183 §4.4 (R1): they are the owner's calls, so each goes through `routed` — an unreachable owner parks it (no reply, nothing replaced). */
 export const memoryMutation = <V = void,>(qc: QueryClient, session: string, mutationFn: (v: V) => Promise<SessionMemory>) => ({
-  mutationFn,
-  onSuccess: (next: SessionMemory) => qc.setQueryData(queryKeys.sessionMemory(session), next),
+  mutationFn: (v: V) => routed(session, () => mutationFn(v)),
+  onSuccess: (next: SessionMemory | undefined) => next && qc.setQueryData(queryKeys.sessionMemory(session), next),
   onError: (e: Error) => void toast.error(e.message),
 })
 export const retryMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, () => api.endless_retry(session))
@@ -573,9 +575,10 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
     setCursor(Math.max(0, rows.findIndex((r) => r.key === key)))
     dispatch({ type: 'toggle', key })
     if (opened.has(key) || kids[key]) return
-    api
-      .endless_zoom(session, line.id, line.n)
+    // 183 §4.4: the owner's read; unreachable, it parks behind the chat's card (`undefined`) and the row stays unloaded.
+    routed(session, () => api.endless_zoom(session, line.id, line.n))
       .then((below) => {
+        if (below === undefined) return dispatch({ type: 'failed', key })
         if (below.length === 0) throw new Error(`No line ${line.id}+${line.n}.`)
         dispatch({ type: 'loaded', key, lines: below })
       })
@@ -592,9 +595,9 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
       return
     }
     setSearching(true)
-    api
-      .endless_recall(session, trimmed, 20)
+    routed(session, () => api.endless_recall(session, trimmed, 20))
       .then((lines) => {
+        if (lines === undefined) return
         dispatch({ type: 'hits', hits: { query: trimmed, lines } })
         setCursor(0)
       })

@@ -399,6 +399,11 @@ pub struct PeerInfo {
     /// no session (`peer:<name>`, `parent` over a conn).
     #[serde(default)]
     pub engine: Option<String>,
+    /// 183 §6.6: whether the owning engine is connected now (remote rows
+    /// only); `None` for a local peer or an older engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub reachable: Option<bool>,
 }
 
 /// Reply to [`ListPeers`] / `discover_peers`: one page after permission filtering.
@@ -588,6 +593,10 @@ pub struct PeerEnvelope {
     pub reply_to: Option<Uuid>,
     /// Sender's idempotency key.
     pub request_id: Option<String>,
+    /// 183 §6.5: the sender's chain count, so the 256 limit holds across
+    /// engines; 0 from an older sender.
+    #[serde(default)]
+    pub chain: u32,
 }
 
 /// `ask` → `Result<PeerReceipt, String>`: the owner's intake of a peer
@@ -1251,7 +1260,9 @@ impl Policy {
         self.revision
     }
 
-    /// `/communication on|off` for one session (memory-only). Off installs the
+    /// `/communication on|off` for one session. Memory only: the supervisor
+    /// persists it as `sessions.communication` (183 §4.5) and reapplies it at
+    /// actor spawn. Off installs the
     /// subtree barrier; on removes the opt-out and grants nothing
     /// retroactively (suppressed input stays suppressed). Returns the new
     /// revision; `Err` for an unknown session.

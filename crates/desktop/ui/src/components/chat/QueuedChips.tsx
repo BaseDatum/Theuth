@@ -4,6 +4,7 @@ import { parseAppInput } from '@/components/apps/lifecycle'
 import { ChannelIcon } from '@/components/icons/channels'
 import { originLabel, shownText } from '@/lib/channel-origin'
 import { label as chordLabel } from '@/lib/chord'
+import { routed } from '@/lib/owner'
 import { useApi } from '@/lib/rpc'
 import { classify } from '@/lib/injected'
 import { touch } from '@/lib/platform'
@@ -56,8 +57,9 @@ export type QueuedEdit = (text: string, files: string[]) => void
  */
 export async function withdrawInto(api: Pick<Api, 'withdraw'>, session: string, q: { id: string; files?: string[] }, onEdit: QueuedEdit | null) {
   try {
-    const text = await api.withdraw(session, q.id)
-    onEdit?.(text, q.files ?? [])
+    // 183 §4.4: the owner's call; unreachable, it waits behind the card (`undefined`) and nothing moves into the box.
+    const text = await routed(session, () => api.withdraw(session, q.id))
+    if (text !== undefined) onEdit?.(text, q.files ?? [])
   } catch (e) {
     toast.error(e instanceof Error ? e.message : String(e))
   }

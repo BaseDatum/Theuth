@@ -162,6 +162,14 @@ export function withOwner(
 
 const SESSIONS_DEBOUNCE_MS = 500
 
+/** 183 W-7: a replicated commit is how a remote session's running state reaches this engine's `list_sessions`, so it refetches the list too. */
+export function onContextChanged(search: () => void, sessions: () => void): () => void {
+  return on('ContextChanged', (e) => {
+    search()
+    if (e.reason === 'replicated') sessions()
+  })
+}
+
 /**
  * 137 §11.2: the compactor advanced (throttled server-side to 2 Hz); the ∞ badge and Memory panel re-read the view.
  * 137F: the event's `stalled` lands in the cache at once (the refetch follows), so the failing row appears and clears with it.
@@ -213,7 +221,8 @@ export function useInvalidateOn(): void {
         search()
       }),
       on('Compacted', search),
-      on('ContextChanged', search),
+      // 183 W-7: a replicated commit is how a remote session's running state reaches this engine's `list_sessions`.
+      onContextChanged(search, sessions),
       on('SessionDeleted', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.sessions })
         void qc.invalidateQueries({ queryKey: queryKeys.roster })

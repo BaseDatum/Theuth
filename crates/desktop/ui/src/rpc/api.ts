@@ -595,6 +595,8 @@ export interface Api {
   harness_options(session: SessionId): Promise<ConfigOption[]>
   /** Effective communication state of `session`, or the global switch alone when `null` (50 §2.1); authoritative — render `effective`/`inherited_from`, never guess. */
   get_communication(session: SessionId | null): Promise<CommunicationState>
+  /** 183 §4.5: approvals of `session` (answered by its owner; `pin` = the row's tri-state), or the global switch alone when `null`. */
+  get_approvals(session: SessionId | null): Promise<ApprovalsState>
   /** Base64 of a file under `<data_dir>/{attachments,browser,computer,artifacts}` (31 §6.4), or under `session`'s private scratch root (51 §4.2); `-32000` elsewhere. */
   get_attachment(path: string, session?: SessionId | null): Promise<string>
   /** Latest committed plan of `session` (47 §5.1); works mid-turn; unknown session / failed read rejects, never an empty list. */
@@ -658,7 +660,8 @@ export interface Api {
   list_aws_profiles(): Promise<AwsProfiles>
   list_logins(): Promise<LoginInfo[]>
   list_mcp(session: SessionId | null): Promise<McpServer[]>
-  list_models(): Promise<ModelInfo[]>
+  /** 183 W-12: `engine` (mesh id) lists that engine's catalog; omitted = this engine. */
+  list_models(engine?: string | null): Promise<ModelInfo[]>
   list_providers(): Promise<ProviderInfo[]>
   /** 177 E8: probe the default local-server ports on 127.0.0.1; never adds. */
   local_servers_probe(): Promise<LocalServer[]>
@@ -992,8 +995,8 @@ export interface Api {
   /** `transcript.json` (04 §3). */
   meeting_transcript(id: MeetingId): Promise<MeetingTranscript>
   new_session(): Promise<SessionId>
-  /** PATH-AC: candidates for the path token under `cursor` (a UTF-8 byte offset) in `input`, listed by `session`'s engine; empty, never an error, when nothing applies. */
-  path_complete(session: SessionId | null, input: string, cursor: number): Promise<PathCompletion>
+  /** PATH-AC: candidates for the path token under `cursor` (a UTF-8 byte offset) in `input`, listed by `session`'s engine (183 W-12: else `engine`'s); empty, never an error, when nothing applies. */
+  path_complete(session: SessionId | null, input: string, cursor: number, engine?: string | null): Promise<PathCompletion>
   /** Mesh-internal (62 §0.1): a peer's envelope delivered to `session`; anything but a mesh peer is `UNAUTHORIZED`. */
   peer_deliver(session: SessionId, envelope: PeerEnvelope): Promise<PeerReceipt>
   /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
@@ -1112,7 +1115,8 @@ export interface Api {
   send_message(session: SessionId, to: string, text: string): Promise<PeerReceipt>
   /** Sign every Bedrock call on the engine as `profile` from the next request on; `null` restores the default credential chain. */
   set_aws_profile(profile: string | null): Promise<AwsProfiles>
-  set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
+  /** 183 §4.5: on a session `enabled` pins approvals on/off; `clear: true` drops the pin (inherit `tools.approvals`). */
+  set_approvals(session: SessionId | null, enabled: boolean, clear?: boolean | null): Promise<ApprovalsState>
   /** Global switch (`session: null`, persisted) or one session's memory-only opt-out (50 §2.1); `enabled: true` on a session lifts its own opt-out only, never an ancestor's or the global ceiling. */
   set_communication(session: SessionId | null, enabled: boolean): Promise<CommunicationState>
   set_compact_style(style: CompactStyle): Promise<null>
@@ -1522,6 +1526,7 @@ export const METHODS = [
   'fire_schedule',
   'fork_session',
   'get_app',
+  'get_approvals',
   'get_artifact',
   'get_artifact_listing',
   'get_attachment',

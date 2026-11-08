@@ -30,13 +30,14 @@ const NONE: ReadonlySet<string> = new Set()
  * including assistant text, ends the run) folded into one `Run`. A lone tool call stays a plain entry. A deliverable
  * (`isDeliverable`) is never in a run: it splits one, `[a, b] show [c, d]` → `[[a, b], show, [c, d]]`. So does a
  * `pinned` thinking block (`useToolRuns.pinned`, one the user opened while it streamed): the next tool call must not
- * fold the block the reader is watching into a collapsed card. */
+ * fold the block the reader is watching into a collapsed card. 183 §12.4: a call carrying a restart note splits one too,
+ * so its EngineRestartCard stays in view. */
 export function foldRuns(entries: Entry[], pinned: ReadonlySet<string> = NONE): (Entry | Run)[] {
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < entries.length) {
     const e = entries[i] as Entry
-    if (e.kind !== 'tool' || isDeliverable(e)) {
+    if (e.kind !== 'tool' || isDeliverable(e) || e.restart) {
       out.push(e)
       i++
       continue
@@ -45,7 +46,7 @@ export function foldRuns(entries: Entry[], pinned: ReadonlySet<string> = NONE): 
     let lastTool = i
     while (
       end < entries.length &&
-      ((entries[end]?.kind === 'tool' && !isDeliverable(entries[end] as Tool)) || (entries[end]?.kind === 'reasoning' && !pinned.has(entries[end]!.id)))
+      ((entries[end]?.kind === 'tool' && !isDeliverable(entries[end] as Tool) && !(entries[end] as Tool).restart) || (entries[end]?.kind === 'reasoning' && !pinned.has(entries[end]!.id)))
     ) {
       if (entries[end]?.kind === 'tool') lastTool = end
       end++

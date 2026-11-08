@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useNotebooksApi } from '@/lib/notebooks-rpc'
+import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
 import { cn } from '@/lib/utils'
@@ -185,13 +186,19 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
   )
 }
 
-/** Cut the transcript at `turn` optimistically, then run `rpc`; on failure toast and re-fetch the transcript (29 §3). */
+/** Cut the transcript at `turn` optimistically, then run `rpc`; on failure toast and re-fetch the transcript (29 §3).
+ * 183 §4.4 (R1): through `routed` — an unreachable owner parks the call behind the card, and the transcript comes back
+ * (nothing was cut there). */
 export function rewind(session: string, turn: number, rpc: () => Promise<unknown>) {
+  const reload = () => window.dispatchEvent(new Event('theuth:reload-session'))
   useSessions.getState().truncate(session, turn)
-  rpc().catch((e: unknown) => {
-    toast.error(e instanceof Error ? e.message : String(e))
-    window.dispatchEvent(new Event('theuth:reload-session'))
-  })
+  routed(session, async () => (await rpc(), true)).then(
+    (ran) => ran || reload(),
+    (e: unknown) => {
+      toast.error(e instanceof Error ? e.message : String(e))
+      reload()
+    },
+  )
 }
 
 /** `fork(turn, reply?)`: copy `session` through `turn` (or through its `reply`-th text), refresh the list, open the copy. */

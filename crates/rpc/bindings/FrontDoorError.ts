@@ -24,4 +24,12 @@ reason: string,
 /**
  * The taker, when known (`release`).
  */
-next_owner?: string, } };
+next_owner?: string, } } | { "NotOwner": { 
+/**
+ * The owner as this engine knows it (mesh `EngineId` as text).
+ */
+owner: string, } } | { "RunsElsewhere": { 
+/**
+ * The engine running it (mesh `EngineId` as text).
+ */
+owner: string, } };

@@ -146,8 +146,9 @@ For every call the registry computes an action in this order:
 3. If any string argument contains a `{{secret:` placeholder and the tool
    consumes secrets: at least `ask`. The approval card shows the
    placeholder; the value is substituted only after approval.
-4. If the result is `ask` and approvals are off (`tools.approvals: false`,
-   or the session or an ancestor ran `/approvals off`): `allow`.
+4. If the result is `ask` and approvals are off for the session: its own
+   pin, else the nearest ancestor's, else `tools.approvals` on the engine
+   that owns the session. Off: `allow`.
 
 `deny` is never rewritten by step 4. What the model sees when a call does not
 run:
@@ -180,8 +181,8 @@ tools:
 
 | Command | Scope | Persisted |
 |---|---|---|
-| `/approvals off` | this root session and every subagent under it | no; gone at restart |
-| `/approvals on` | undo the session bypass | no |
+| `/approvals off` | this session and every subagent under it (its pin: `off`) | yes: on the session; it survives a restart and a move to another machine |
+| `/approvals on` | this session and its subagents (pin `on`): asks even when `tools.approvals` is false | yes: on the session |
 | `/approvals off always` | every session | yes: `tools.approvals: false` |
 | `/approvals on always` | every session | yes: `tools.approvals: true` |
 
@@ -189,7 +190,11 @@ The same command exists on Signal and Telegram (`/approvals on|off [always]`, ow
 Telegram's reply is a panel with the three states as buttons) and Slack
 (`/theuth approvals on|off [always]`, owner only; its settings modal offers
 the same three states), and the desktop app's Settings dialog has an
-approvals switch. Children inherit the parent's bypass, hidden tools and cap.
+approvals switch. In the desktop chat's **⋯**, **Approvals ▸** has On, Off and
+**Machine default (on|off)**, which clears the pin. For a chat owned by
+another machine the pin and the default are that machine's, and a relayed
+card reads `<engine> asks: <tool>`. Children inherit the parent's pin,
+hidden tools and cap.
 
 ### Answering
 

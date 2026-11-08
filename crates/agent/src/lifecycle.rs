@@ -67,6 +67,11 @@ pub struct CreateSessionOptions {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub memory: Option<crate::endless::MemoryMode>,
+    /// 183 §5.6 (W-10): the mesh engine id to create the session on; `None`
+    /// (or this engine) = here. The attached engine forwards the whole call.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub engine: Option<String>,
 }
 
 /// Reply to `create_session` / `resume_private`: the opened session, its

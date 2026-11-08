@@ -123,3 +123,12 @@ export function panelGeometry(left: number, right: number, viewport: number): { 
   const centred = (lo + hi) / 2 - width / 2
   return { left: Math.round(Math.min(Math.max(centred, lo), hi - width)), width: Math.round(width) }
 }
+
+/**
+ * 183 §4.5 / §12.2: whether the header shows its `approvals off` pill. The session's effective value on its owner
+ * (`get_approvals(session)`: its pin, an ancestor's, else that machine's switch) when that answered; until it does
+ * (or with the owner offline), this engine's own switch.
+ */
+export function approvalsOff(effective: { session: boolean } | undefined, own: { global: boolean; session: boolean } | null): boolean {
+  return effective ? !effective.session : own !== null && (!own.global || !own.session)
+}

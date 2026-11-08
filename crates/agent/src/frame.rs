@@ -448,7 +448,11 @@ pub fn baseline_dated(
             ),
         ),
     };
-    let mut header = format!("{persona}\nWorking directory: {cwd}");
+    let m = platform::process::machine();
+    let mut header = format!(
+        "{persona}\nMachine: {} ({}, {})\nWorking directory: {cwd}",
+        m.name, m.os_name, m.arch
+    );
     if dated {
         header.push_str(&format!(
             "\nDate: {}",
@@ -1078,7 +1082,7 @@ mod tests {
             false,
         );
         assert!(
-            p.starts_with(&format!("{karol}\nWorking directory: ")),
+            p.starts_with(&format!("{karol}\nMachine: ")) && p.contains("\nWorking directory: "),
             "{p}"
         );
         assert!(

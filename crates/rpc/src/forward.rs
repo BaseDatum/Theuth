@@ -1,17 +1,19 @@
-//! The front door of a session written elsewhere (68 §5, ruling 5): every
-//! session-mutating RPC first asks [`route`]. The owner is here → the call
-//! proceeds. Not here and a **user session** (`sessions.agent` empty) → the
-//! session is taken here (`TakeSession{reason: Write}`), then the call
-//! proceeds. Not here and an **agent desk** (`sessions.agent` set) → the call
-//! is forwarded verbatim to the owner as JSON-RPC over `theuth/rpc/1`: one
-//! request line, one response line, one QUIC stream, 30 s. An owner that
-//! cannot be reached or taken from answers [`OWNER_UNREACHABLE`] with an
+//! The front door of a session written elsewhere (68 §5; 183 §4.1, D1/D2):
+//! every session-mutating RPC first asks [`route`]. The owner is here (or the
+//! row is unknown or unowned) → the call proceeds. Owned by another engine
+//! that is connected → the call is forwarded verbatim to the owner as
+//! JSON-RPC over `theuth/rpc/1`: one request line, one response line, one
+//! QUIC stream, 30 s. This holds for user sessions and agent desks alike;
+//! the front door never takes a session (only `session_take`, `session_move`
+//! and the offline card's resume-here move one). An owner that is not
+//! connected, or gives no answer, is [`OWNER_UNREACHABLE`] at once with an
 //! [`OwnerUnreachable`] payload; the desktop renders the "continue here?" card.
 //!
 //! The owner side ([`serve`]) dispatches each forwarded request into its own
 //! [`crate::api::Server`] as the internal peer, with a [`Forwarded`] marker in
-//! the extensions so the request is never forwarded a second hop: if the owner
-//! moved meanwhile the store's `NotOwner` guard answers, not a relay loop.
+//! the extensions so the request is never forwarded a second hop. A forwarded
+//! call for a row this engine does not own (it moved meanwhile) answers
+//! [`NOT_OWNER`] (183 §4.8), not a relay loop.
 //!
 //! Attachments (68 follow-up A1): a forwarded `files` list carries **names**,
 //! not the forwarder's absolute paths — each `<data_dir>/attachments/<sha16>.<ext>`
@@ -48,6 +50,14 @@ pub const OWNER_UNREACHABLE: i32 = -32010;
 /// maps it here, the composer retries once. `-32011` is `NOT_HUB` (69 Y).
 pub const SESSION_DRAINING: i32 = -32012;
 
+/// JSON-RPC error code (183 §4.8): a forwarded call reached an engine that no
+/// longer owns the row. `data` is [`FrontDoorError::NotOwner`].
+pub const NOT_OWNER: i32 = -32013;
+
+/// JSON-RPC error code (183 §4.3): `cell_attach` / `subscribe_pty` for a run
+/// or job on another engine. `data` is [`FrontDoorError::RunsElsewhere`].
+pub const RUNS_ELSEWHERE: i32 = -32014;
+
 /// How long a forwarded call waits for the owner's answer.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -79,17 +89,28 @@ pub enum FrontDoorError {
         #[cfg_attr(feature = "ts", ts(optional))]
         next_owner: Option<String>,
     },
+    /// 183 §4.8: this engine does not own the forwarded call's session; the
+    /// replicated owner change follows.
+    NotOwner {
+        /// The owner as this engine knows it (mesh `EngineId` as text).
+        owner: String,
+    },
+    /// 183 §4.3: the run or job streams on another engine (live output stays there).
+    RunsElsewhere {
+        /// The engine running it (mesh `EngineId` as text).
+        owner: String,
+    },
 }
 
-/// Where a session-mutating call goes.
+/// Where a session-mutating call goes (183 §4.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
     /// The owner is this engine (or the session is unknown here): proceed locally.
     Here,
-    /// A user session owned elsewhere: take it here, then proceed locally.
-    Take,
-    /// An agent desk owned elsewhere: forward to this engine.
+    /// Owned elsewhere and the owner is connected: forward to it.
     Forward(PeerId),
+    /// 183 §4.4 (D2): owned elsewhere and the owner is not connected: `-32010` at once.
+    Offline(PeerId),
 }
 
 /// Extension marker on a request the owner received over `theuth/rpc/1`:
@@ -175,81 +196,114 @@ pub async fn owner_peer(session: SessionId) -> Option<PeerId> {
     (!owner.is_empty() && owner != store.engine()).then_some(PeerId(owner))
 }
 
-/// Classify `session` from its row: `Here` when unknown, unowned or ours;
-/// `Forward(owner)` for an agent desk — an external harness (`agent` set) or
-/// a roster desk (`desk` set by `roster::open_desk`, replicated with the row);
-/// `Take` for everything else (a user session).
-pub async fn classify(store: &Store, session: SessionId) -> anyhow::Result<Route> {
+/// Classify `session` from its row (183 §4.1): `Here` when unknown, unowned
+/// or ours; otherwise `Forward(owner)` when the owner is in `connected` (the
+/// transport's peers at call time, W-3), else `Offline(owner)`. User sessions
+/// and desks follow the same rule.
+pub async fn classify(
+    store: &Store,
+    session: SessionId,
+    connected: &[PeerId],
+) -> anyhow::Result<Route> {
     let Some(row) = store.session(session).await? else {
         return Ok(Route::Here);
     };
     if row.owner.is_empty() || row.owner == store.engine() {
         return Ok(Route::Here);
     }
-    let desk = row.agent.is_some() || row.desk.is_some();
-    Ok(if desk {
-        Route::Forward(PeerId(row.owner))
+    let owner = PeerId(row.owner);
+    Ok(if connected.contains(&owner) {
+        Route::Forward(owner)
     } else {
-        Route::Take
+        Route::Offline(owner)
     })
 }
 
+/// 183 §4.8.2: the owner side of a forwarded call. A row this engine does not
+/// own answers [`NOT_OWNER`] (the forwarder's view was stale); an unknown row
+/// proceeds to the local "no such session" error.
+pub async fn admit_forwarded(store: &Store, session: SessionId) -> RpcResult<()> {
+    match store
+        .owner(session)
+        .await
+        .map_err(|e| internal(format!("{e:#}")))?
+    {
+        Some((owner, _)) if !owner.is_empty() && owner != store.engine() => Err(not_owner(owner)),
+        _ => Ok(()),
+    }
+}
+
 /// The front door for one call. `Ok(None)`: proceed locally (the owner is
-/// here, or the session was just taken). `Ok(Some(reply))`: the owner
-/// answered the forwarded call. `Err`: the owner's error verbatim, or
-/// [`OWNER_UNREACHABLE`]. `params` is the method's positional parameter
-/// list in trait order, as the generated client sends it.
+/// here). `Ok(Some(reply))`: the owner answered the forwarded call. `Err`:
+/// the owner's error verbatim, [`OWNER_UNREACHABLE`], or (on a forwarded call
+/// for a row owned elsewhere) [`NOT_OWNER`]. `params` is the method's
+/// positional parameter list in trait order, as the generated client sends it.
 pub async fn route<T: DeserializeOwned>(
     ext: &Extensions,
     session: SessionId,
     method: &str,
     params: impl Serialize,
 ) -> RpcResult<Option<T>> {
-    // Lone engine (no sessions plugin) or already forwarded once: local.
-    if ext.get::<Forwarded>().is_some() {
+    // Lone engine (no sessions plugin): local.
+    if sessionsync::actor().is_none() {
         return Ok(None);
     }
-    let Some(sessions) = sessionsync::actor() else {
-        return Ok(None);
-    };
     let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
-    let owner = match classify(&store, session)
+    // Already forwarded once: run here if ours, never a second hop.
+    if ext.get::<Forwarded>().is_some() {
+        return admit_forwarded(&store, session).await.map(|()| None);
+    }
+    let connected = match transport().await {
+        Some(t) => t.peers(),
+        None => Vec::new(),
+    };
+    let owner = match classify(&store, session, &connected)
         .await
         .map_err(|e| internal(format!("{e:#}")))?
     {
         Route::Here => return Ok(None),
-        Route::Take => {
-            // 139 Q10: a take made by the front door is a client's write on
-            // this engine — a human typed here (the one internal peer that
-            // reaches this point is the owner console; forwarded calls
-            // returned above; desk wakes take `Orphan` directly).
-            let taken = sessions
-                .ask(sessionsync::TakeSession {
-                    id: session,
-                    reason: sessionsync::TakeReason::Write,
-                    by_user: true,
-                    caller: None,
-                })
-                .await;
-            return match taken {
-                Ok(_) => Ok(None),
-                Err(kameo::error::SendError::HandlerError(why)) => {
-                    let (owner, _) = store
-                        .owner(session)
-                        .await
-                        .ok()
-                        .flatten()
-                        .unwrap_or_default();
-                    Err(unreachable(owner, &why).await)
-                }
-                Err(e) => Err(internal(e.to_string())),
-            };
-        }
         Route::Forward(owner) => owner,
+        Route::Offline(owner) => return Err(unreachable(owner.0, "not connected").await),
     };
     match to_peer(ext, &owner, method, params).await? {
         Some(v) => Ok(Some(v)),
         None => Err(unreachable(owner.0, "not connected").await),
+    }
+}
+
+/// The mesh transport, when the replica plugin runs and the mesh is up.
+async fn transport() -> Option<Arc<dyn Transport>> {
+    replica::actor()?
+        .ask(replica::GetTransport)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// 183 §5.6 (W-10, W-12): a call aimed at engine `engine` by id. `Ok(None)`:
+/// run it here (`engine` unset, empty, this engine, or this request was itself
+/// forwarded). Otherwise the target's answer, or [`OWNER_UNREACHABLE`] when it
+/// is not connected.
+pub async fn to_engine<T: DeserializeOwned>(
+    ext: &Extensions,
+    engine: Option<&str>,
+    method: &str,
+    params: impl Serialize,
+) -> RpcResult<Option<T>> {
+    let Some(engine) = engine.filter(|e| !e.is_empty()) else {
+        return Ok(None);
+    };
+    if ext.get::<Forwarded>().is_some() {
+        return Ok(None);
+    }
+    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+    if engine == store.engine() {
+        return Ok(None);
+    }
+    let peer = PeerId(engine.to_owned());
+    match to_peer(ext, &peer, method, params).await? {
+        Some(v) => Ok(Some(v)),
+        None => Err(unreachable(peer.0, "not connected").await),
     }
 }
 
@@ -278,11 +332,7 @@ pub async fn to_peer_within<T: DeserializeOwned>(
     if ext.get::<Forwarded>().is_some() {
         return Ok(None);
     }
-    let transport = match replica::actor() {
-        Some(r) => r.ask(replica::GetTransport).await.ok().flatten(),
-        None => None,
-    };
-    let Some(transport) = transport.filter(|t| t.peers().contains(peer)) else {
+    let Some(transport) = transport().await.filter(|t| t.peers().contains(peer)) else {
         return Ok(None);
     };
     let params = serde_json::value::to_raw_value(&params).map_err(|e| internal(e.to_string()))?;
@@ -424,6 +474,26 @@ pub(crate) async fn unreachable(owner: String, why: &str) -> ErrorObjectOwned {
         OWNER_UNREACHABLE,
         format!("owner {short} unreachable: {why}"),
         Some(FrontDoorError::OwnerUnreachable { owner, last_seen }),
+    )
+}
+
+/// A [`NOT_OWNER`] error naming the owner this engine knows (183 §4.8.2).
+pub(crate) fn not_owner(owner: String) -> ErrorObjectOwned {
+    let short = owner.get(..8).unwrap_or(&owner).to_owned();
+    ErrorObjectOwned::owned(
+        NOT_OWNER,
+        format!("not the owner: the session is owned by {short}"),
+        Some(FrontDoorError::NotOwner { owner }),
+    )
+}
+
+/// A [`RUNS_ELSEWHERE`] error: the run's live output stays on `owner` (183 §4.3).
+pub(crate) fn runs_elsewhere(owner: String) -> ErrorObjectOwned {
+    let short = owner.get(..8).unwrap_or(&owner).to_owned();
+    ErrorObjectOwned::owned(
+        RUNS_ELSEWHERE,
+        format!("live output streams on {short}"),
+        Some(FrontDoorError::RunsElsewhere { owner }),
     )
 }
 
@@ -696,8 +766,11 @@ mod tests {
         );
     }
 
+    /// 183 §4.1 (D1/D2): a row owned elsewhere forwards when its owner is
+    /// connected and is `Offline` (→ -32010 at once) when not — user sessions
+    /// and desks alike; nothing classifies as a take any more.
     #[tokio::test]
-    async fn classify_user_vs_desk() {
+    async fn classify_forwards_to_a_connected_owner_and_is_offline_otherwise() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.sqlite");
         let (user, desk, roster, mine) = (
@@ -734,22 +807,76 @@ mod tests {
             .create_session(mine, "m", None, None, None)
             .await
             .unwrap();
-        assert_eq!(classify(&store, mine).await.unwrap(), Route::Here);
+        let them = PeerId("them".into());
+        let up = [them.clone()];
+        assert_eq!(classify(&store, mine, &up).await.unwrap(), Route::Here);
         assert_eq!(
-            classify(&store, SessionId::new()).await.unwrap(),
+            classify(&store, SessionId::new(), &up).await.unwrap(),
             Route::Here,
             "unknown → local error path"
         );
-        assert_eq!(classify(&store, user).await.unwrap(), Route::Take);
+        for s in [user, desk, roster] {
+            assert_eq!(
+                classify(&store, s, &up).await.unwrap(),
+                Route::Forward(them.clone()),
+                "connected owner: forward, never take"
+            );
+            assert_eq!(
+                classify(&store, s, &[]).await.unwrap(),
+                Route::Offline(them.clone()),
+                "owner not connected: offline at once"
+            );
+        }
+        // Classifying never moved anything.
+        assert_eq!(store.owner(user).await.unwrap().unwrap().0, "them");
+        store.close().await;
+    }
+
+    /// 183 §4.8: the owner runs a forwarded call only for a row it owns; a row
+    /// owned elsewhere is `-32013 NotOwner{owner}` (never relayed on).
+    #[tokio::test]
+    async fn a_forwarded_call_for_a_row_owned_elsewhere_is_not_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.sqlite");
+        let (theirs_id, mine) = (SessionId::new(), SessionId::new());
+        let theirs = Store::open(&path, Some(mesh::EngineId("them".into())))
+            .await
+            .unwrap();
+        theirs
+            .create_session(theirs_id, "m", None, None, None)
+            .await
+            .unwrap();
+        theirs.close().await;
+        let store = Store::open(&path, Some(mesh::EngineId("me".into())))
+            .await
+            .unwrap();
+        store
+            .create_session(mine, "m", None, None, None)
+            .await
+            .unwrap();
+        admit_forwarded(&store, mine).await.unwrap();
+        admit_forwarded(&store, SessionId::new()).await.unwrap();
+        let e = admit_forwarded(&store, theirs_id).await.unwrap_err();
+        assert_eq!(e.code(), NOT_OWNER);
+        let data: FrontDoorError = serde_json::from_str(e.data().unwrap().get()).unwrap();
         assert_eq!(
-            classify(&store, desk).await.unwrap(),
-            Route::Forward(PeerId("them".into()))
-        );
-        assert_eq!(
-            classify(&store, roster).await.unwrap(),
-            Route::Forward(PeerId("them".into()))
+            data,
+            FrontDoorError::NotOwner {
+                owner: "them".into()
+            }
         );
         store.close().await;
+    }
+
+    /// 183 §4.8.3: a call that arrived forwarded is never sent on a second hop.
+    #[tokio::test]
+    async fn a_forwarded_call_is_never_forwarded_again() {
+        let mut ext = Extensions::new();
+        ext.insert(Forwarded(PeerId("a".into())));
+        let r: Option<String> = to_peer(&ext, &PeerId("c".into()), "send_input", ("s",))
+            .await
+            .unwrap();
+        assert_eq!(r, None, "the caller keeps its local answer");
     }
 
     /// 69 P: the agent crate's hand-written `peer_deliver` request line is
@@ -798,6 +925,7 @@ mod tests {
             text: "hello".into(),
             reply_to: Some(uuid::Uuid::now_v7()),
             request_id: Some("r1".into()),
+            chain: 0,
         };
         let receipt = pm::forward(a.as_ref(), &b.me, session, &env).await.unwrap();
         assert_eq!(

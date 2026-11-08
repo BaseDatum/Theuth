@@ -18,7 +18,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/BroadcastDialog'
-import { openNewChat } from '@/components/chat/NewChatPane'
+import { NewChatOnMenu, openNewChat } from '@/components/chat/NewChatPane'
 import { createNote } from '@/components/notes/create'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { AttentionBadge } from '@/components/hud/AttentionBadge'
@@ -244,6 +244,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
               </Link>
             </SidebarMenuButton>
+            <NewChatOnMenu />
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton asChild isActive={section === 'talk'} className="h-9 rounded-[10px] px-2.5">

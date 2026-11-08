@@ -305,6 +305,11 @@ pub(crate) async fn attach(
         cells_guard::read(ext)?;
         let cells = handle().await?;
         let Some(scope) = cells.run_scope(&run).await else {
+            // 183 §4.3 (W-1): a run forwarded to the chat's owner streams there only.
+            if let Some(Scope::Session(s)) = forwarded_scope(&run) {
+                let owner = crate::forward::owner_peer(s).await.map(|p| p.0);
+                return Err(crate::forward::runs_elsewhere(owner.unwrap_or_default()));
+            }
             return Err(cells_err(CellsError::NotFound(run.0.clone())));
         };
         if let Scope::Session(s) = scope {

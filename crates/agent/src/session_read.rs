@@ -242,7 +242,8 @@ fn outline_line(s: &mut String, n: usize, turn: &[HistoryEntry]) {
             HistoryEntry::Error { .. }
             | HistoryEntry::Reasoning { .. }
             | HistoryEntry::Interrupted { .. }
-            | HistoryEntry::Advisory { .. } => {}
+            | HistoryEntry::Advisory { .. }
+            | HistoryEntry::Moved { .. } => {}
         }
     }
     if let Some(a) = assistant {
@@ -318,6 +319,10 @@ fn turn_text(s: &mut String, n: usize, turn: &[HistoryEntry], with_tools: bool) 
             // Thinking is the model's scratch work, not part of the transcript another session reads;
             // an interrupted partial (109) is for the human only.
             HistoryEntry::Reasoning { .. } | HistoryEntry::Interrupted { .. } => {}
+            // 183 §5.3: where the session continued is part of its story.
+            HistoryEntry::Moved { moved, .. } => {
+                let _ = writeln!(s, "#{n} [session moved to {}]", moved.to);
+            }
         }
     }
 }

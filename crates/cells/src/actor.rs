@@ -340,7 +340,7 @@ enum Gate {
 /// The pure refusals of a press, in order (§12.1 inv. 5, 7, 8; §5.6): the source changed or
 /// was superseded, the cell is invalid, a `danger` cell pressed other than whole, the cwd
 /// is missing, the `after` gate is disarmed. `confirmed` (the user's second press past a
-/// warning: Run anyway, or a danger cell's line/selection ▶, §7.1, §7.6) skips exactly those
+/// warning: Run anyway, or a danger cell's line/selection ►, §7.1, §7.6) skips exactly those
 /// two checks. Lint never refuses (inv. 12). The cwd on `Ok`.
 fn refuse(i: &Inspected, seen: &str, mode: &RunMode, confirmed: bool) -> Result<PathBuf> {
     if i.presented.digest != seen || i.superseded_by.is_some() {

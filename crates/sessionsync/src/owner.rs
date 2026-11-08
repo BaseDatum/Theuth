@@ -20,7 +20,7 @@ use kameo::message::{Context, Message};
 use replica::{ALPN_SESSIONS, PeerId, Transport};
 use runtime::{Runtime, SessionId};
 
-use crate::types::Msg;
+use crate::types::{Msg, schema_behind, schema_label};
 use crate::{SessionSync, SessionsConfig, TakeReason};
 
 /// How often a taker re-reads its cursor while waiting for the owner's tail.
@@ -185,8 +185,114 @@ impl Take {
                 .tell(agent::supervisor::RearmReminders { session: id })
                 .await;
         }
-        let resumed = self.resume_on_take(id, &owner, transferred, reason).await;
+        let from = self.peer_name(&owner);
+        self.record_move(id, &owner, &from, transferred, reason)
+            .await;
+        let resumed = self
+            .resume_on_take(id, &owner, &from, transferred, reason)
+            .await;
         Ok(((me, next), resumed))
+    }
+
+    /// An engine's mesh name; the first 8 chars of its id when unknown.
+    fn peer_name(&self, engine: &str) -> String {
+        self.peers
+            .iter()
+            .find(|p| p.id.0 == engine)
+            .map_or_else(|| engine.chars().take(8).collect(), |p| p.name.clone())
+    }
+
+    /// 183 §5.3 (W-8): the one Moved row of this take, written before the
+    /// turn resumes. In context only without an open turn; an open turn
+    /// reads the extended `<engine_restart/>` instead (§11.2), and a
+    /// `Pending` one replaces the old local note (the row says so, `pending`).
+    async fn record_move(
+        &self,
+        id: SessionId,
+        owner: &str,
+        from: &str,
+        transferred: bool,
+        reason: TakeReason,
+    ) {
+        let open = matches!(self.store.open_turn(id).await, Ok(Some(_)));
+        let pending = open
+            && resume_policy(transferred, reason, self.by_user, self.durability().resume)
+                == ResumeOnTake::Pending;
+        let m = platform::process::machine();
+        let row = self.store.session(id).await.ok().flatten();
+        let landing = row
+            .as_ref()
+            .and_then(|r| r.cwd.as_deref())
+            .map(|c| tools::seat::land(id, std::path::Path::new(c)));
+        let (cwd, cwd_was) = match landing {
+            Some(l) => (l.cwd, l.was),
+            None => (std::env::current_dir().unwrap_or_default(), None),
+        };
+        let python = self.store.ran_python(id).await.unwrap_or(false);
+        let (approvals, communication) = self
+            .store
+            .session_settings(id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or((None, None));
+        let ask = approvals.unwrap_or_else(|| {
+            self.rt
+                .section::<tools::ToolsConfig>("tools")
+                .map_or(true, |c| c.approvals)
+        });
+        let jobs_left = self.store.jobs_of(id).await.map_or(0, |jobs| {
+            jobs.iter()
+                .filter(|j| j.state == tools::JobState::Running && j.engine == owner)
+                .count() as u32
+        });
+        let moved = agent::SessionMoved {
+            to: m.name.clone(),
+            from: from.to_owned(),
+            to_id: self.store.engine().to_owned(),
+            from_id: owner.to_owned(),
+            os: m.os.to_owned(),
+            os_name: m.os_name.clone(),
+            arch: m.arch.to_owned(),
+            host: m.host.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            cwd_missing: cwd_was.is_some(),
+            cwd_was: cwd_was.map(|p| p.to_string_lossy().into_owned()),
+            at: chrono::Utc::now(),
+            reason: match reason {
+                TakeReason::User => "user",
+                TakeReason::Moved => "moved",
+                TakeReason::Orphan => "orphan",
+                TakeReason::Write => "write",
+            }
+            .to_owned(),
+            jobs_left,
+            runtime: if python { "reset" } else { "none" }.to_owned(),
+            approvals: if ask { "ask" } else { "off" }.to_owned(),
+            messaging: communication != Some(false),
+            pending,
+        };
+        // 183 R1 (S5): `append_moved` picks `in_context` inside its own
+        // transaction, so an input accepted since the `open` read above
+        // cannot land a context-visible row mid-turn.
+        match self
+            .store
+            .append_moved(id, &moved.model_text(), &moved)
+            .await
+        {
+            Ok(_) => {
+                if let Ok(revision) = self.store.context_revision(id).await {
+                    self.rt
+                        .publish(AgentEvent::ContextChanged {
+                            session: id,
+                            revision,
+                            reason: "moved".to_owned(),
+                        })
+                        .await;
+                }
+            }
+            Err(e) => tracing::warn!("sessions: take {id}: moved row: {e:#}"),
+        }
     }
 
     /// 139 §6.2 step 9 / 9′: the open turn on our copy, after `set_owner`,
@@ -195,6 +301,7 @@ impl Take {
     async fn resume_on_take(
         &self,
         id: SessionId,
+        from_id: &str,
         from: &str,
         transferred: bool,
         reason: TakeReason,
@@ -228,14 +335,6 @@ impl Take {
             }
             ResumeOnTake::Pending => {
                 if !transferred {
-                    // ponytail: the owner's next message replaces the note (owner wins).
-                    let note = format!(
-                        "taken from {from} at {} while a turn was running; press Resume to continue it here",
-                        chrono::Local::now().format("%H:%M")
-                    );
-                    if let Err(e) = self.store.append_local_note(id, &note).await {
-                        tracing::warn!("sessions: take {id}: note: {e:#}");
-                    }
                     // The user's Resume press is a `ResumeTurn` with no cause:
                     // the supervisor must know it is this takeover (139 §6.3).
                     if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
@@ -243,7 +342,7 @@ impl Take {
                         let _ = agents
                             .tell(agent::supervisor::TakeoverPending {
                                 session: id,
-                                from: from.to_owned(),
+                                from: from_id.to_owned(),
                             })
                             .await;
                     }
@@ -252,7 +351,7 @@ impl Take {
                     .publish(AgentEvent::ResumePending {
                         session: id,
                         turn,
-                        from: from.to_owned(),
+                        from: from_id.to_owned(),
                     })
                     .await;
             }
@@ -283,6 +382,7 @@ impl Take {
             .send(
                 Msg::Release {
                     session: id.to_string(),
+                    schema: Some(agent::store::SESSIONS_WIRE_SCHEMA),
                 }
                 .encode()?,
             )
@@ -466,16 +566,49 @@ pub(crate) async fn continue_here(store: &Store, id: SessionId) -> Option<runtim
 /// flips `owner` when it lands. Inputs are refused meanwhile (D16).
 pub async fn release(store: &Store, id: SessionId) -> anyhow::Result<u64> {
     drain_session(store, id).await;
+    forget_prompts(id).await;
     store.flush().await?;
     Ok(u64::try_from(store.session_log_seq(id).await?).unwrap_or(0))
 }
 
+/// 183 R1 (H1): the drained turn's approvals and asks stop waiting here —
+/// their cards resolve on every client (a reload no longer lists them) — and
+/// their `questions` rows stay `pending`, so the taker's resume asks again.
+async fn forget_prompts(id: SessionId) {
+    if let Ok(Some(a)) = kameo::actor::ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR) {
+        let _ = a.ask(tools::ForgetSession(id)).await;
+    }
+    if let Ok(Some(a)) = kameo::actor::ActorRef::<tools::AskUser>::lookup(tools::ASK_ACTOR) {
+        let _ = a.ask(tools::ForgetSession(id)).await;
+    }
+}
+
 /// Answer one `Release` frame on an accepted stream.
+///
+/// 183 R1 (E-M3): a taker on an older agent schema (`schema` below ours, or
+/// absent: a pre-183 taker) is refused by closing the stream, before the
+/// session is drained. It could not apply the rows we hold back from it
+/// ([`crate::sync`]), so taking would fork the session from a stale copy.
+/// A pre-183 taker reads the closed stream as "owner closed the stream":
+/// `Take::take` fails a `moved`, `write` or `orphan` take with "owner busy"
+/// and takes nothing; only a `user` take ("continue here", §4.3) goes on
+/// without our tail, as it always does when the release fails.
 pub(crate) async fn answer_release(
     store: &Store,
+    taker: &PeerId,
+    schema: Option<u32>,
     session: String,
     framed: &mut crate::sync::Stream,
 ) -> anyhow::Result<()> {
+    let ours = agent::store::SESSIONS_WIRE_SCHEMA;
+    if schema_behind(schema, ours) {
+        tracing::warn!(
+            "sessions: refusing release of {session} to {taker}: its agent schema {} < ours {ours}; \
+             it would miss rows it cannot apply",
+            schema_label(schema)
+        );
+        return Ok(());
+    }
     let last_seq = release(store, session.parse()?).await?;
     framed
         .send(Msg::Released { session, last_seq }.encode()?)
@@ -810,6 +943,8 @@ mod tests {
             reachable,
             last_seen_ms,
             hub_pref: mesh::HubPref::Eligible,
+            path: mesh::PeerPath::Offline,
+            rtt_ms: None,
         }
     }
 
@@ -868,8 +1003,8 @@ mod tests {
         shipper.await.unwrap();
         assert_eq!(
             b.store.messages(id).await.unwrap().len(),
-            2,
-            "the tail arrived before the take"
+            3,
+            "the tail arrived before the take, then the one Moved row (183 §5.3)"
         );
         assert_eq!(b.store.owner(id).await.unwrap(), Some(("b".into(), 2)));
         assert_eq!(b.store.fence(id).await.unwrap(), Some((2, "b".into())));
@@ -904,8 +1039,8 @@ mod tests {
         assert_eq!(a.store.fence(id).await.unwrap(), Some((2, "b".into())));
         assert_eq!(
             a.store.messages(id).await.unwrap().len(),
-            3,
-            "no note when nothing was lost"
+            4,
+            "no note when nothing was lost (u1, u2, B's Moved row, u3)"
         );
         assert!(
             a.store.append(id, &agent_msg("late")).await.is_err(),
@@ -1074,6 +1209,109 @@ mod tests {
         b.close().await;
     }
 
+    /// 183 §5.3: an idle take writes exactly one Moved row, in context, with
+    /// the taker's facts and the origin's mesh name; taking again (already
+    /// ours) writes none.
+    #[tokio::test]
+    async fn an_idle_take_writes_one_moved_row_in_context() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &agent_msg("u1")).await.unwrap();
+        b.pull(&a).await;
+        let mut named = peer("a", false, now_ms());
+        named.name = "alpha".into();
+        for _ in 0..2 {
+            b.take(None, vec![], vec![named.clone()])
+                .take(id, TakeReason::User)
+                .await
+                .unwrap();
+        }
+        let moved = b.store.moved(id).await.unwrap();
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        let (seq, m) = moved.iter().next().unwrap();
+        assert_eq!(
+            (
+                m.reason.as_str(),
+                m.to_id.as_str(),
+                m.from_id.as_str(),
+                m.from.as_str(),
+                m.pending
+            ),
+            ("user", "b", "a", "alpha", false)
+        );
+        assert!(!b.store.context_history(id).await.unwrap().entries[seq].removed);
+        let text = b.store.effective_message(id, *seq).await.unwrap().unwrap();
+        assert_eq!(
+            text.content.joined_texts().unwrap_or_default(),
+            m.model_text()
+        );
+        a.close().await;
+        b.close().await;
+    }
+
+    /// 183 R1 (E-M3): a taker that reports an older agent schema, or none (a
+    /// pre-183 binary: its `Release` is the old frame), is refused by a
+    /// closed stream before anything is drained or written; the session stays
+    /// owned here. A taker on our schema is answered as before.
+    #[tokio::test]
+    async fn release_from_an_older_schema_taker_is_refused() {
+        use futures::{SinkExt as _, StreamExt as _};
+        let a = engine("a").await;
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &agent_msg("u1")).await.unwrap();
+        open_turn_on(&a.store, id).await;
+        let ours = agent::store::SESSIONS_WIRE_SCHEMA;
+        let before = a.store.session_log_seq(id).await.unwrap();
+        for (schema, refused) in [(None, true), (Some(ours - 1), true), (Some(ours), false)] {
+            let shipper =
+                crate::ship::Shipper::new(a.store.clone(), None, &SessionsConfig::default());
+            let (mine, theirs) = tokio::io::duplex(1 << 16);
+            let served = tokio::spawn(crate::SessionSync::serve(
+                shipper,
+                PeerId("b".into()),
+                Box::new(theirs),
+            ));
+            let mut taker = crate::events::framed(Box::new(mine));
+            taker
+                .send(
+                    Msg::Release {
+                        session: id.to_string(),
+                        schema,
+                    }
+                    .encode()
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let reply = taker.next().await;
+            served.await.unwrap().unwrap();
+            if refused {
+                assert!(
+                    reply.is_none(),
+                    "{schema:?}: no Released, the stream closes"
+                );
+                assert_eq!(a.store.owner(id).await.unwrap(), Some(("a".into(), 1)));
+                assert_eq!(
+                    a.store.session_log_seq(id).await.unwrap(),
+                    before,
+                    "{schema:?}: nothing was drained or written"
+                );
+            } else {
+                let frame = reply.expect("a taker on our schema is answered").unwrap();
+                assert!(matches!(Msg::decode(&frame).unwrap(), Msg::Released { .. }));
+            }
+        }
+        a.close().await;
+    }
+
     fn agent_msg(t: &str) -> genai::chat::ChatMessage {
         genai::chat::ChatMessage::user(t)
     }
@@ -1185,7 +1423,6 @@ mod tests {
         a.store.append(id, &agent_msg("u1")).await.unwrap();
         let turn = open_turn_on(&a.store, id).await;
         b.pull(&a).await;
-        let before = b.store.messages(id).await.unwrap().len();
 
         let old = vec![peer("a", false, now_ms() - 301_000)];
         let (got, resumed) = b
@@ -1203,19 +1440,20 @@ mod tests {
             "{:?}",
             events.lock()
         );
-        let messages = b.store.messages(id).await.unwrap();
-        assert_eq!(messages.len(), before + 1);
-        let text = messages
-            .last()
-            .unwrap()
-            .1
-            .content
-            .joined_texts()
-            .unwrap_or_default();
+        // 183 §5.3: the Moved row replaces the local note; an open turn keeps
+        // it out of context (the model reads `<engine_restart/>`).
+        let moved = b.store.moved(id).await.unwrap();
+        assert_eq!(moved.len(), 1);
+        let (seq, m) = moved.iter().next().unwrap();
         assert!(
-            text.starts_with("taken from a at ") && text.contains("press Resume"),
-            "{text}"
+            (
+                m.pending,
+                m.reason.as_str(),
+                m.to_id.as_str(),
+                m.from_id.as_str()
+            ) == (true, "write", "b", "a")
         );
+        assert!(b.store.context_history(id).await.unwrap().entries[seq].removed);
         // The turn is still open on B: the user's Resume runs it.
         assert_eq!(
             b.store.open_turn(id).await.unwrap().map(|(t, _)| t),
@@ -1571,8 +1809,8 @@ mod tests {
         assert_eq!(b.store.fence(id).await.unwrap(), Some((2, "b".into())));
         assert_eq!(
             b.store.messages(id).await.unwrap().len(),
-            2,
-            "the tail moved with it"
+            3,
+            "the tail moved with it, then the one Moved row (183 §5.3)"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
@@ -1956,8 +2194,9 @@ mod tests {
             .run(id, TakeReason::User)
             .await;
         assert_eq!(got, Ok(("c".into(), 2)));
-        assert_eq!(b.pull(&c).await, [Applied::Applied]);
-        assert_eq!(c.pull(&b).await, [Applied::Applied]);
+        // Each side's take, then its Moved row (183 §5.3).
+        assert_eq!(b.pull(&c).await, [Applied::Applied, Applied::Applied]);
+        assert_eq!(c.pull(&b).await, [Applied::Applied, Applied::Applied]);
         assert_eq!(b.store.fence(id).await.unwrap(), Some((2, "b".into())));
         assert_eq!(c.store.fence(id).await.unwrap(), Some((2, "c".into())));
         assert_eq!(b.store.owner(id).await.unwrap(), Some(("c".into(), 2)));

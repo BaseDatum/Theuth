@@ -2013,8 +2013,10 @@ async fn cancel_while_draining_is_a_suspension(
     assert_eq!(interrupted, [C2]);
     let messages = h.store.messages(h.id).await.unwrap();
     let first = tool_texts(&messages)[0].lines().next().unwrap().to_owned();
+    // 183 §11.2: a transfer also names where it landed.
     assert!(
-        first.contains("kind=\"transfer\" from=\"a\" replayed=\"0\" interrupted=\"1\"/>"),
+        first.contains("kind=\"transfer\" from=\"a\" to=\"")
+            && first.contains("\" replayed=\"0\" interrupted=\"1\"/>"),
         "{first}"
     );
     assert_eq!(

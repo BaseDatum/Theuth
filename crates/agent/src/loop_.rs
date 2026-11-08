@@ -4189,7 +4189,7 @@ impl Turn {
                     interrupted += 1;
                 }
                 let outputs = vec![Some(ToolOutput::ok("")); dangling.len()];
-                let note = restart_note(&plan, None, 0, interrupted);
+                let note = restart_note(&plan, None, &self.cwd, 0, interrupted);
                 self.finish_batch(turn, dangling.clone(), outputs, false, None, Some(note))
                     .await;
                 answered = true;
@@ -4299,6 +4299,7 @@ impl Turn {
         let note = restart_note(
             plan,
             self.resume_from.as_deref(),
+            &self.cwd,
             replayed.len(),
             interrupted.len(),
         );
@@ -8564,18 +8565,30 @@ fn hhmmss(t: chrono::DateTime<chrono::Utc>) -> String {
 /// 109 §4.3 restart note, prepended to the first response of a resumed
 /// batch: the only turn-level trace of the restart. 139 §6.3: `kind` is
 /// the cause (`crash | shutdown | update | transfer | takeover`), and a
-/// transfer/takeover names the engine the turn came `from`.
+/// transfer/takeover names the machine the turn came `from` (mesh name) and
+/// where it landed: `to`, `os`, `cwd` (183 §11.2).
 fn restart_note(
     plan: &ResumePlan,
     from: Option<&str>,
+    cwd: &Path,
     replayed: usize,
     interrupted: usize,
 ) -> String {
     let now = chrono::Utc::now();
     let after = (now - plan.interrupted_at).num_seconds().max(0);
     let kind = plan.cause.as_str();
-    let from = match (plan.cause, from) {
-        (ResumeCause::Transfer | ResumeCause::Takeover, Some(from)) => format!(" from=\"{from}\""),
+    let from = match plan.cause {
+        ResumeCause::Transfer | ResumeCause::Takeover => {
+            let m = platform::process::machine();
+            let from =
+                from.map_or_else(String::new, |f| format!(" from=\"{}\"", crate::esc_attr(f)));
+            format!(
+                "{from} to=\"{}\" os=\"{}\" cwd=\"{}\"",
+                crate::esc_attr(&m.name),
+                crate::esc_attr(&m.os_name),
+                crate::esc_attr(&cwd.to_string_lossy())
+            )
+        }
         _ => String::new(),
     };
     format!(
@@ -8770,6 +8783,42 @@ mod tests {
     use super::*;
     use crate::ModelRole;
     use crate::skills;
+
+    /// 183 §11.2: a transfer/takeover note names where the turn landed and
+    /// `from` as given; a crash note is unchanged.
+    #[test]
+    fn restart_note_names_the_landing_for_transfer_only() {
+        let plan = |cause| ResumePlan {
+            turn: TurnId::new(),
+            kind: crate::durability::ResumeKind::Suspended,
+            cause,
+            interrupted_at: chrono::Utc::now(),
+            ran_ms: 0,
+            bounded: false,
+            last: crate::durability::LastStep::ToolBatch {
+                all_finished: false,
+            },
+            calls: Vec::new(),
+            partial: None,
+        };
+        let m = platform::process::machine();
+        let note = restart_note(
+            &plan(ResumeCause::Transfer),
+            Some("Sky's Mac"),
+            Path::new("/w"),
+            2,
+            1,
+        );
+        assert!(
+            note.contains(&format!(
+                " kind=\"transfer\" from=\"Sky's Mac\" to=\"{}\" os=\"{}\" cwd=\"/w\" replayed=\"2\" interrupted=\"1\"/>",
+                m.name, m.os_name
+            )),
+            "{note}"
+        );
+        let crash = restart_note(&plan(ResumeCause::Crash), None, Path::new("/w"), 0, 0);
+        assert!(crash.contains("kind=\"crash\" replayed=\"0\""), "{crash}");
+    }
 
     /// 46 §8.1: only the direct `app` tool opts into fine-grained input
     /// streaming; every other tool definition is untouched.

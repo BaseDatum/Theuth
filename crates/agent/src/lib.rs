@@ -1365,6 +1365,12 @@ pub struct ResumeState {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub cause: Option<durability::ResumeCause>,
+    /// 183 R1 (H3): for a `transfer` or `takeover`, the engine the session
+    /// came from (its id, from the latest moved record), so the banner reads
+    /// "Moved here from <machine>" across a reload. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub from: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -1810,6 +1816,92 @@ impl Advisory {
         };
         let line = top.note.lines().next().unwrap_or_default().trim();
         Some(format!("advisor · {word} — {line}"))
+    }
+}
+
+/// 183 §5.3 (W-8): the typed record of one move or take, written by the
+/// taker as a user row (`messages.moved`, the [`Advisory`] pattern) whose
+/// text is the model-facing `<session_moved/>` (§11.1). Never opens a turn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SessionMoved {
+    /// The taker's mesh name.
+    pub to: String,
+    /// The origin's mesh name.
+    pub from: String,
+    /// The taker's engine id.
+    pub to_id: String,
+    /// The origin's engine id.
+    pub from_id: String,
+    /// `std::env::consts::OS` of the taker.
+    pub os: String,
+    /// Display OS of the taker (`macOS`, `Arch Linux`, …).
+    pub os_name: String,
+    /// `std::env::consts::ARCH` of the taker.
+    pub arch: String,
+    /// The taker's hostname.
+    pub host: String,
+    /// The effective cwd on the taker (the fallback when `cwd_missing`).
+    pub cwd: String,
+    /// The session's cwd does not exist on the taker (W-9).
+    #[serde(default)]
+    pub cwd_missing: bool,
+    /// The original cwd, set only when `cwd_missing`.
+    #[serde(default)]
+    pub cwd_was: Option<String>,
+    /// When the move happened.
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// `user` (Continue here) | `moved` (Move to) | `orphan` | `write` (old engines only).
+    pub reason: String,
+    /// Running jobs that stayed on the origin.
+    pub jobs_left: u32,
+    /// `reset` | `none` (no Python ever ran).
+    pub runtime: String,
+    /// `ask` | `off`: effective approvals after the row's pin.
+    pub approvals: String,
+    /// Agent messaging is on for the session.
+    pub messaging: bool,
+    /// The open turn waits for Resume (resume = ask); the row is out of context.
+    #[serde(default)]
+    pub pending: bool,
+}
+
+/// An attribute value for the model-facing one-line elements.
+pub(crate) fn esc_attr(v: &str) -> String {
+    v.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+}
+
+impl SessionMoved {
+    /// 183 §11.1: the model-facing `<session_moved …/>` (local time).
+    #[must_use]
+    pub fn model_text(&self) -> String {
+        let esc = esc_attr;
+        let at = self.at.with_timezone(&chrono::Local).format("%H:%M:%S");
+        let missing = match (&self.cwd_was, self.cwd_missing) {
+            (Some(was), true) => format!(" cwd_missing=\"true\" cwd_was=\"{}\"", esc(was)),
+            _ => String::new(),
+        };
+        let messaging = if self.messaging {
+            ""
+        } else {
+            " messaging=\"off\""
+        };
+        format!(
+            "<session_moved to=\"{}\" from=\"{}\" os=\"{}\" arch=\"{}\" host=\"{}\" cwd=\"{}\"{missing} \
+             at=\"{at}\" reason=\"{}\" jobs_left=\"{}\" runtime=\"{}\" approvals=\"{}\"{messaging}/>",
+            esc(&self.to),
+            esc(&self.from),
+            esc(&self.os_name),
+            esc(&self.arch),
+            esc(&self.host),
+            esc(&self.cwd),
+            esc(&self.reason),
+            self.jobs_left,
+            esc(&self.runtime),
+            esc(&self.approvals),
+        )
     }
 }
 
@@ -3027,6 +3119,18 @@ pub enum HistoryEntry {
         #[cfg_attr(feature = "ts", ts(optional))]
         context: Option<ContextEntry>,
     },
+    /// 183 §5.3 (W-8): a move or take of this session, stored as a user row
+    /// with typed `messages.moved` metadata (the Advisory pattern); never
+    /// opens a turn. The row's text is `<session_moved/>`, the card renders
+    /// from `moved`.
+    Moved {
+        /// The typed record.
+        moved: SessionMoved,
+        /// Context membership of the stored row.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
+    },
 }
 
 impl HistoryEntry {
@@ -3040,7 +3144,8 @@ impl HistoryEntry {
             | Self::Compacted { context, .. }
             | Self::Error { context, .. }
             | Self::Interrupted { context, .. }
-            | Self::Advisory { context, .. } => context.as_ref(),
+            | Self::Advisory { context, .. }
+            | Self::Moved { context, .. } => context.as_ref(),
         }
     }
 
@@ -3054,7 +3159,8 @@ impl HistoryEntry {
             | Self::Compacted { context, .. }
             | Self::Error { context, .. }
             | Self::Interrupted { context, .. }
-            | Self::Advisory { context, .. } => context.as_mut(),
+            | Self::Advisory { context, .. }
+            | Self::Moved { context, .. } => context.as_mut(),
         }
     }
 }

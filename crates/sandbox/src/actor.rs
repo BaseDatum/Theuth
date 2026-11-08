@@ -1703,6 +1703,8 @@ mod tests {
                 reachable: true,
                 last_seen_ms: 0,
                 hub_pref: mesh::HubPref::Never,
+                path: mesh::PeerPath::Offline,
+                rtt_ms: None,
             };
             self.peers.lock().push(p.clone());
             Ok(p)
@@ -1720,6 +1722,8 @@ mod tests {
                 },
                 traffic: Vec::new(),
                 replica: None,
+                stats: Vec::new(),
+                relay: None,
             })
         }
         async fn remove_peer(&self, id: mesh::EngineId) -> anyhow::Result<()> {

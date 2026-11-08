@@ -705,7 +705,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             generation,
         } => UiEvent::PathComplete(
             generation,
-            api.path_complete(session, input, cursor).await.ok(),
+            api.path_complete(session, input, cursor, None).await.ok(),
         ),
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
         Command::ListActivity => UiEvent::Activity(msg(api.list_activity().await)?),
@@ -733,7 +733,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 UiEvent::History(session, loaded)
             }
         }
-        Command::ListModels => UiEvent::Models(msg(api.list_models().await)?),
+        Command::ListModels => UiEvent::Models(msg(api.list_models(None).await)?),
         // 148 R1: this session only; the default is the Settings UI's to set.
         Command::SetModel { session, model } => {
             UiEvent::ModelSet(msg(api.set_model(Some(session), model, None).await)?)
@@ -815,7 +815,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::Mcp(msg(api.list_mcp(Some(session)).await)?)
         }
         Command::SetApprovals { session, enabled } => {
-            UiEvent::Approvals(msg(api.set_approvals(session, enabled).await)?)
+            UiEvent::Approvals(msg(api.set_approvals(session, enabled, None).await)?)
         }
         Command::Double(cmd) => UiEvent::Info(match cmd {
             DoubleCmd::Status => double_status_line(&msg(api.double_status().await)?),
@@ -1598,6 +1598,8 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
                 .iter()
                 .try_for_each(|l| writeln!(out, "{l}"))
         }
+        // 183 §5.3: one line.
+        agent::HistoryEntry::Moved { moved, .. } => writeln!(out, "{}", model::moved_title(moved)),
     })
 }
 

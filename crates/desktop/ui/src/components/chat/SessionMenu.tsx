@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { MoreHorizontal } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -13,9 +13,12 @@ import {
 } from '@/components/ui/dialog'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -35,15 +38,75 @@ import { useAgents, useMesh } from '@/components/tasks/queries'
 import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
 import { usePanes } from '@/lib/panes'
 import { canPopout, openPopout } from '@/lib/popout'
+import { engineLabel, ownerUnreachable, parkIfOffline, routed, useOwnerOffline } from '@/lib/owner'
+import { RpcError } from '@/rpc/client'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
+import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useSessionField, useSessions } from '@/store/sessions'
+import { useModels } from './ModelMenu'
 import { type Ctx, openSurface, run, settings, type Surface, surfaceOf } from './slash'
 import { PopoutTerminalButton } from './TerminalViewer'
+
+/** One row of the ⋯ menu's settings block (183 §12.2, mock panel 3), in order; `move` is 181's Move to ▸. */
+export type SettingsRow =
+  | { id: 'header' | 'offline' | 'separator' | 'move'; label: string }
+  | { id: 'approvals'; label: string; value: 'on' | 'off' | 'default' | undefined; options: { value: 'on' | 'off' | 'default'; label: string }[]; disabled: boolean; note?: string }
+  | { id: 'messaging'; label: string; checked: boolean; disabled: boolean }
+  | { id: 'model' | 'continue'; label: string; disabled: boolean }
+  | { id: 'effort'; label: string; value: string; options: string[]; disabled: boolean }
+
+/**
+ * 183 §12.2: the session's own settings, then where it runs. `owner` is the owner's label for a session owned
+ * elsewhere (`undefined` here); `offline` greys every setter with the line that says why (§4.4, edge 13).
+ */
+export function settingsRows(o: {
+  owner?: string
+  self: string
+  offline: boolean
+  approvals?: Pick<ApprovalsState, 'global'> & { session?: boolean; pin?: ApprovalsState['pin'] | null }
+  /** 183 R1 (S7): the owner is pre-183 and answered `get_approvals` -32601; the row says so instead of an error. */
+  oldOwner?: boolean
+  messaging?: Pick<CommunicationState, 'effective'>
+  model: string
+  /** The session's effort (`null` = the model's default) and the levels its model offers. */
+  effort?: { value: string | null; options: string[] }
+}): SettingsRow[] {
+  const off = o.offline && o.owner !== undefined
+  // §12.2 (R1): what inherit gives is the EFFECTIVE value (`session`: an ancestor's pin can differ from the machine's switch)
+  // when this session has no pin of its own; with a pin set, the machine's switch is the best the reader tells us.
+  const inherited = o.approvals ? (o.approvals.pin == null ? (o.approvals.session ?? o.approvals.global) : o.approvals.global) : undefined
+  const machine = inherited === undefined ? '' : ` (${inherited ? 'on' : 'off'})`
+  return [
+    ...(o.owner === undefined ? [] : [{ id: 'header' as const, label: `Settings for this session on ${o.owner}` }]),
+    ...(off ? [{ id: 'offline' as const, label: `${o.owner} is offline · Continue here` }] : []),
+    {
+      id: 'approvals',
+      label: 'Approvals: Ask before risky tools',
+      // W-4 tri-state: the row's own pin (`ApprovalsState.pin`; the engine omits it, older builds sent null) — none inherits.
+      value: o.approvals && (o.approvals.pin == null ? 'default' : o.approvals.pin ? 'on' : 'off'),
+      options: [
+        { value: 'on', label: 'On' },
+        { value: 'off', label: 'Off' },
+        { value: 'default', label: `${o.owner === undefined ? 'Machine' : o.owner} default${machine}` },
+      ],
+      disabled: off || !o.approvals || !!o.oldOwner,
+      note: o.oldOwner && o.owner !== undefined ? `${o.owner} needs an update` : undefined,
+    },
+    { id: 'messaging', label: 'Agent messaging', checked: o.messaging?.effective ?? false, disabled: off || !o.messaging },
+    { id: 'model', label: `Model: ${o.model}`, disabled: off },
+    // §12.2 Effort ›: `set_effort` through the owner; a model without levels has nothing to pick.
+    { id: 'effort', label: 'Effort', value: o.effort?.value ?? 'default', options: o.effort?.options ?? [], disabled: off || !o.effort?.options.length },
+    { id: 'separator', label: '' },
+    { id: 'continue', label: o.owner === undefined ? 'Continue here' : `Continue here (move to ${o.self})`, disabled: o.owner === undefined },
+    { id: 'move', label: 'Move to' },
+  ]
+}
 
 const STYLES: CompactStyle[] = ['summary', 'cut', 'snap']
 
@@ -102,7 +165,8 @@ export function RenameDialog({
   const save = async () => {
     onOpenChange(false)
     try {
-      await api.rename_session(session, value.trim())
+      // 183 §4.4: a rename is the owner's act; with it gone the call waits behind the card.
+      await routed(session, () => api.rename_session(session, value.trim()))
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -259,7 +323,8 @@ export function SessionMenu({ session }: { session: string }) {
   const mesh = useMesh()
   const agents = useAgents()
   const jobs = useQuery({ queryKey: queryKeys.jobs(session), queryFn: () => api.list_jobs(session), enabled: open && here })
-  const targets = here ? moveTargets(mesh.data, (jobs.data ?? []).filter((j) => j.state === 'running').length) : []
+  // 181 D1 / 183 §12.2: a session owned elsewhere moves from its owner (forwarded), so its own engine is no target.
+  const targets = moveTargets(mesh.data, here ? (jobs.data ?? []).filter((j) => j.state === 'running').length : 0).filter((t) => here || t.id !== row?.owner)
   const blocked = moveBlocked(row, sessions.data ?? [], agents.data ?? [])
   const queryClient = useQueryClient()
   const move = async (t: MoveTarget) => {
@@ -273,6 +338,41 @@ export function SessionMenu({ session }: { session: string }) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
     }
   }
+
+  // 183 §12.2: the settings the owner applies, read through it (forwarded readers) while the menu is open; a reader
+  // answering -32010, an unreachable owner or a parked call grey the setters (§4.4).
+  const owner = !here && row ? engineLabel(row.owner, mesh.data?.peers) : undefined
+  const approvals = useQuery({ queryKey: ['approvals', session], queryFn: () => api.get_approvals(session), enabled: open, retry: false })
+  const messaging = useQuery({ queryKey: queryKeys.communication(session), queryFn: () => api.get_communication(session), enabled: open, retry: false })
+  const parked = useOwnerOffline((s) => s.by[session] !== undefined)
+  const unreachable = mesh.data?.peers.find((p) => p.id === row?.owner)?.reachable === false
+  const offline = parked || unreachable || !!ownerUnreachable(approvals.error) || !!ownerUnreachable(messaging.error)
+  // A move is the owner's act (forwarded): with the owner gone, Continue here is the way to take it.
+  const moveWhy = blocked ?? (owner !== undefined && offline ? `${owner} is offline — Continue here first` : null)
+  const models = useModels(session, open)
+  const model = useSessionField(session, 'model')
+  const effort = useSessionField(session, 'effort')
+  const current = models.find((m) => m.id === model)
+  const rows = settingsRows({
+    owner,
+    self: mesh.data?.self_name || 'this machine',
+    offline,
+    oldOwner: owner !== undefined && approvals.error instanceof RpcError && approvals.error.code === -32601,
+    approvals: approvals.data,
+    messaging: messaging.data,
+    model: current?.name ?? model ?? 'default',
+    effort: current && { value: effort ?? null, options: current.efforts },
+  })
+  /** A setter through the owner: -32010 parks it behind the OwnerOfflineCard (nothing runs until Continue here). */
+  const set = (call: () => Promise<unknown>) =>
+    void routed(session, call)
+      .then(() => {
+        void queryClient.invalidateQueries({ queryKey: ['approvals', session] })
+        void queryClient.invalidateQueries({ queryKey: ['communication'] })
+      })
+      .catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
+  const setApprovals = (v: string) =>
+    set(() => (v === 'default' ? api.set_approvals(session, approvals.data?.global ?? true, true) : api.set_approvals(session, v === 'on')))
 
   const focused = usePanes((s) => s.focused === session)
   useEffect(() => {
@@ -297,9 +397,10 @@ export function SessionMenu({ session }: { session: string }) {
     },
   }
   const cmd = (line: string) => () =>
-    void run(line, ctx).catch((e: unknown) =>
-      toast.error(e instanceof Error ? e.message : String(e)),
-    )
+    void run(line, ctx).catch((e: unknown) => {
+      // 183 §4.4: a routed command (compact, undo…) the owner could not take waits behind the card.
+      if (!parkIfOffline(session, e, () => run(line, ctx))) toast.error(e instanceof Error ? e.message : String(e))
+    })
 
   return (
     <>
@@ -318,7 +419,7 @@ export function SessionMenu({ session }: { session: string }) {
             <MoreHorizontal className="size-5" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuContent align="end" className="w-72 max-w-[calc(100vw-1rem)]">
           {tags.length > 0 && (
             <>
               <DropdownMenuLabel className="flex flex-wrap gap-1 py-1.5">
@@ -331,6 +432,90 @@ export function SessionMenu({ session }: { session: string }) {
               <DropdownMenuSeparator />
             </>
           )}
+          {rows.map((r) => (
+            <Fragment key={r.id}>
+              {r.id === 'header' && <DropdownMenuLabel className="text-[11px] font-normal text-fg-tertiary">{r.label}</DropdownMenuLabel>}
+              {r.id === 'offline' && (
+                <DropdownMenuItem onSelect={cmd('/take')} className="text-[12px] text-warning">
+                  {r.label}
+                </DropdownMenuItem>
+              )}
+              {r.id === 'approvals' && (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger disabled={r.disabled} className="data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                    <span className="min-w-0 flex-1">{r.label}</span>
+                    <span className="text-xs text-fg-tertiary">{r.note ?? r.options.find((o) => o.value === r.value)?.label}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56">
+                    <DropdownMenuRadioGroup value={r.value} onValueChange={setApprovals}>
+                      {r.options.map((o) => (
+                        <DropdownMenuRadioItem key={o.value} value={o.value}>
+                          {o.label}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              )}
+              {r.id === 'messaging' && (
+                <DropdownMenuCheckboxItem checked={r.checked} disabled={r.disabled} onCheckedChange={(on) => set(() => api.set_communication(session, on))}>
+                  {r.label}
+                </DropdownMenuCheckboxItem>
+              )}
+              {r.id === 'model' && (
+                <DropdownMenuItem disabled={r.disabled} onSelect={() => openSurface('model')}>
+                  {r.label}
+                  <span className="ml-auto text-fg-tertiary">›</span>
+                </DropdownMenuItem>
+              )}
+              {r.id === 'effort' && (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger disabled={r.disabled} className="data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                    <span className="min-w-0 flex-1">{r.label}</span>
+                    <span className="text-xs text-fg-tertiary">{r.value}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-44">
+                    <DropdownMenuRadioGroup value={r.value} onValueChange={(v) => set(() => api.set_effort(session, v === 'default' ? null : v, true))}>
+                      {['default', ...r.options].map((o) => (
+                        <DropdownMenuRadioItem key={o} value={o}>
+                          {o}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              )}
+              {r.id === 'separator' && <DropdownMenuSeparator />}
+              {r.id === 'continue' && (
+                <DropdownMenuItem disabled={r.disabled} title={r.disabled ? 'This session already runs on this node' : undefined} onSelect={cmd('/take')}>
+                  {r.label}
+                </DropdownMenuItem>
+              )}
+              {r.id === 'move' && targets.length > 0 && moveWhy && (
+                <DropdownMenuItem disabled className="flex-col items-start gap-0">
+                  Move to
+                  <span className="text-[11px] text-fg-tertiary">{moveWhy}</span>
+                </DropdownMenuItem>
+              )}
+              {r.id === 'move' && targets.length > 0 && !moveWhy && (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>Move to</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-60">
+                    {targets.map((t) => (
+                      <DropdownMenuItem key={t.id} disabled={!t.online} onSelect={() => void move(t)} className="flex-col items-start gap-0">
+                        <span className="flex items-center gap-1.5">
+                          <span className={cn('size-1.5 rounded-full', t.online ? 'bg-success' : 'bg-fg-tertiary')} />
+                          Move to {t.name}
+                        </span>
+                        {t.detail && <span className="pl-3 text-[11px] text-fg-tertiary">{t.detail}</span>}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              )}
+            </Fragment>
+          ))}
+          <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => setRename(true)}>Rename</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(session)}>
             Copy id
@@ -343,35 +528,6 @@ export function SessionMenu({ session }: { session: string }) {
               </DropdownMenuItem>
               {canPopout() && <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting })}>Open meeting in new window</DropdownMenuItem>}
             </>
-          )}
-          <DropdownMenuItem
-            disabled={here}
-            title={here ? 'This session already runs on this node' : undefined}
-            onSelect={cmd('/take')}
-          >
-            Continue here
-          </DropdownMenuItem>
-          {targets.length > 0 && blocked && (
-            <DropdownMenuItem disabled className="flex-col items-start gap-0">
-              Move to
-              <span className="text-[11px] text-fg-tertiary">{blocked}</span>
-            </DropdownMenuItem>
-          )}
-          {targets.length > 0 && !blocked && (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Move to</DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-60">
-                {targets.map((t) => (
-                  <DropdownMenuItem key={t.id} disabled={!t.online} onSelect={() => void move(t)} className="flex-col items-start gap-0">
-                    <span className="flex items-center gap-1.5">
-                      <span className={cn('size-1.5 rounded-full', t.online ? 'bg-success' : 'bg-fg-tertiary')} />
-                      Move to {t.name}
-                    </span>
-                    {t.detail && <span className="pl-3 text-[11px] text-fg-tertiary">{t.detail}</span>}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
           )}
           <DropdownMenuSeparator />
           <DropdownMenuSub>

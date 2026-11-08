@@ -75,9 +75,16 @@ export type AgentEvent =
 /** The server dropped `count` events for this subscriber; the gap is unrecoverable. */
 export type Lagged = { type: 'Lagged'; count: number }
 
+/**
+ * 183 §12.1 (R1): client event, added by hand (no binding): this engine's follow stream to `session`'s owner is up and
+ * speaks Watch (`live: true`), or it ended / the owner is pre-183 (`false`).
+ */
+export type FollowState = { type: 'FollowState'; session: string; live: boolean }
+
 /** Every item `subscribe_events` can deliver, discriminated by `type`. */
 export type WireEvent =
   | AgentEvent
+  | FollowState
   | ApprovalRequested
   | ApprovalResolved
   | AskRequested

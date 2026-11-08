@@ -1,9 +1,9 @@
 import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
 import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
-import { classify, type CellResultInput, humanSecs, type Injected, splitLeading, splitParentView } from "@/lib/injected";
+import { classify, type CellResultInput, humanSecs, type Injected, movedFromRecord, splitLeading, splitParentView } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
-import { splitTime } from "@/lib/time";
+import { splitRestart, splitTime } from "@/lib/time";
 import { live, observedState } from "@/lib/session-tree";
 import type { Advisory as AdvisoryRow } from "@/rpc/bindings/Advisory";
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
@@ -319,6 +319,8 @@ function userEntries(
       case "lost":
       case "child":
       case "autoresearch":
+      case "moved":
+      case "engine_restart":
         return { id: nextId(), ...c, context };
       // 171F B4: `turn` when this row opened the turn, so `foldCells` can hand it to the user's words that follow.
       case "cell_result":
@@ -455,7 +457,9 @@ function historyEntries(h: HistoryEntry): Entry[] {
         : [];
     case "reasoning":
       return [{ id: nextId(), kind: "reasoning", text: h.text, done: true, ms: h.thinking_ms ?? undefined }];
-    case "tool":
+    case "tool": {
+      // 183 §12.4: the restart note (and the `<time/>` stamp) leave the output; the note becomes its own card.
+      const out = h.result ? splitRestart(h.result[0]) : undefined;
       return [
         {
           id: nextId(),
@@ -466,17 +470,19 @@ function historyEntries(h: HistoryEntry): Entry[] {
           pending: false,
           child: h.call_id.includes("."),
           context,
-          ...(h.result
+          ...(h.result && out
             ? {
                 result: {
-                  output: splitTime(h.result[0]).text,
+                  output: out.text,
                   isError: h.result[1],
                   files: h.files ?? [],
                 },
+                ...(out.restart ? { restart: out.restart } : {}),
               }
             : {}),
         },
       ];
+    }
     case "compacted":
       return [
         {
@@ -497,6 +503,9 @@ function historyEntries(h: HistoryEntry): Entry[] {
     // 125 §8.3: the typed card; `seq` is the stored row (the `AdvisoryAdded` idempotence key).
     case "advisory":
       return [{ id: nextId(), kind: "advisory", notes: h.advisory.notes, seq: seqOf(context), context, at: h.advisory.at_ms, question: questionOf(h.advisory) }];
+    // 183 §12.4: the typed record of a move or take; the card renders its fields, never the `<session_moved/>` text.
+    case "moved":
+      return [{ id: nextId(), ...movedFromRecord(h.moved), context }];
   }
 }
 
@@ -514,13 +523,19 @@ export function resumeFromLoaded(
   cur: ResumeBanner | undefined,
   loaded: LoadedPage["resume"] | undefined,
 ): ResumeBanner | undefined {
-  if (!loaded) return cur && !cur.resumed ? { ...cur, resumed: true } : cur;
+  // 183 §12.1: a replica's "Running on <owner>" ends with the owner's turn (a remote chat streams every turn now).
+  if (!loaded) return cur && !cur.here ? undefined : cur && !cur.resumed ? { ...cur, resumed: true } : cur;
+  // 183 R2 (live): a replica's page names the owner's last resume report once its turn is over (`resumed` is the
+  // owner's word only for a closed turn here); nothing runs there now, so no "Running on <owner>".
+  if (loaded.here === false && loaded.resumed) return undefined;
   const report = loaded.report ? reportCounts(loaded.report) : undefined;
   const here = loaded.here ?? true;
   if (cur?.turn === loaded.turn) {
     const next = cur.resumed || !loaded.resumed ? cur : { ...cur, resumed: true };
     const owned = next.here === here && next.owner === loaded.owner ? next : { ...next, here, owner: loaded.owner };
-    return cur.report || !report ? owned : { ...owned, report };
+    // 183 R1 (H3): the moved-from engine survives a reload (a live `TurnResumed.from` already set it).
+    const sourced = owned.from || !loaded.from ? owned : { ...owned, from: loaded.from };
+    return cur.report || !report ? sourced : { ...sourced, report };
   }
   const at = Date.parse(loaded.interrupted_at);
   return {
@@ -532,6 +547,7 @@ export function resumeFromLoaded(
     owner: loaded.owner,
     here,
     cause: loaded.cause,
+    ...(loaded.from ? { from: loaded.from } : {}),
   };
 }
 
@@ -670,6 +686,12 @@ function jobGone(s: SessionSlice, key: "ptys" | "jobs" | "reminders", id: string
   const set = new Set(s[key]);
   set.delete(id);
   return { ...s, [key]: set };
+}
+
+/** A reply is streaming into the transcript's last entry (an open assistant text); a settled page cannot hold it yet. */
+export function openTail(s: Pick<SessionSlice, "entries">): boolean {
+  const last = s.entries.at(-1);
+  return last?.kind === "assistant" && last.open === true;
 }
 
 /**
@@ -886,10 +908,16 @@ export function apply(
       return { ...slice, context: e.context, contextEstimated: false, contextSize: e.size ?? slice.contextSize };
     // The store moved past what is on screen (48 §5): controls disable, in-flight pages and snapshots
     // are discarded, and the route reloads through the settled path. The revision we already installed
-    // (our own edit's echo) changes nothing unless a refused reload left us stale.
-    case "ContextChanged":
-      if (slice.contextRevision === e.revision && !slice.contextStale)
+    // (our own edit's echo) changes nothing unless a refused reload left us stale. 183 §5.1: a `replicated` (or
+    // `moved`) one always re-reads — the owner's relayed event may carry the same revision before its rows landed here.
+    case "ContextChanged": {
+      if (slice.contextRevision === e.revision && !slice.contextStale && e.reason !== "replicated" && e.reason !== "moved")
         return slice;
+      // 183 §5.1: a viewer following the owner already shows the text a replicated 5 s partial carries; re-reading it
+      // mid-stream swapped the live reply for a greyed partial, and the next delta restarted it from empty. The owner's
+      // `TurnFinished` settles instead (c.$session). With no follow stream nothing is open here, so the partial redraws.
+      // R2: only while the follow stream is up — once it dropped, no `TurnFinished` is coming to settle the tail.
+      if (e.reason === "replicated" && slice.following === true && openTail(slice)) return slice;
       return {
         ...slice,
         contextRevision: e.revision,
@@ -899,6 +927,20 @@ export function apply(
           e.reason === "settled" ? slice.contextEstimated : true,
         historyGeneration: slice.historyGeneration + 1,
         live: slice.live + 1,
+      };
+    }
+    // 183 §12.1 / R2: the follow stream to the owner came up, or ended. Ended mid-reply (a link blip, a dropped slow
+    // viewer, an owner restart), the owner's `TurnFinished` may never reach this viewer: the tail is no longer live, so
+    // the slice goes stale and the route settles from the replicated rows (`App.tsx` `relayGuards` sends the reload).
+    case "FollowState":
+      if (e.live) return slice.following === true ? slice : { ...slice, following: true };
+      if (slice.following !== true && !openTail(slice)) return slice.following === false ? slice : { ...slice, following: false };
+      return {
+        ...slice,
+        following: false,
+        ...(slice.loaded
+          ? { contextStale: true, todosStale: true, historyGeneration: slice.historyGeneration + 1, live: slice.live + 1 }
+          : {}),
       };
     // An ACP child's harness reported its LLM (06 §8.2): header text, not transcript state — no tail close, no `live` bump.
     case "HarnessModelChanged":
@@ -1077,26 +1119,32 @@ function turn(
       }));
     }
     case "ToolCallFinished": {
+      // 183 §12.4: a resumed batch's first result (relayed from its new owner, or here) opens with `<engine_restart/>`.
+      const split = e.output.startsWith("<engine_restart ") ? splitRestart(e.output) : { text: e.output };
       const result = {
-        output: e.output,
+        output: split.text,
         isError: e.is_error,
         files: e.files ?? [],
       };
       const next = patchTool(
         s,
         (t) => t.callId === e.call_id && !t.result,
-        (t) => ({ ...t, result, finishedAt: Date.now() }),
+        (t) => ({ ...t, result, finishedAt: Date.now(), ...(split.restart ? { restart: split.restart } : {}) }),
       );
+      // 183 R1: followed mid-turn, a replica sees the result of a call it never saw start (the follow stream is live
+      // only from the focus on); a bare "✓ …" line would sit in the transcript until the settle brings the real row.
       const entries =
         next === s
-          ? [
-              ...s.entries,
-              {
-                id: nextId(),
-                kind: "info" as const,
-                text: `${e.is_error ? "✗" : "✓"} ${resultLine(e.output)}`,
-              },
-            ]
+          ? s.resume?.here === false
+            ? s.entries
+            : [
+                ...s.entries,
+                {
+                  id: nextId(),
+                  kind: "info" as const,
+                  text: `${e.is_error ? "✗" : "✓"} ${resultLine(e.output)}`,
+                },
+              ]
           : next.entries;
       return patchDraft(
         {

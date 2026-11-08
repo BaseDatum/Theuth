@@ -332,6 +332,22 @@ impl Message<Expire> for Approval {
     }
 }
 
+/// 183 R1 (H1): `ask` — `session` left this engine (released to a taker),
+/// so its approvals stop waiting here: the waiter sees its sender dropped
+/// and publishes `ApprovalResolved` (deny, not timed out), which clears the
+/// card on every client. The `questions` row is left `pending`, untouched:
+/// the taker's resume re-asks the call. Shared with the ask actor.
+#[derive(Clone, Copy, Debug)]
+pub struct ForgetSession(pub SessionId);
+
+impl Message<ForgetSession> for Approval {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ForgetSession, _: &mut Context<Self, Self::Reply>) {
+        self.pending.retain(|_, p| p.requested.session != m.0);
+    }
+}
+
 /// `ask` → the still-pending approvals, for the `subscribe_events` snapshot a
 /// client gets on (re)subscribe (31 §7.3).
 pub struct PendingApprovals;
@@ -431,6 +447,33 @@ pub(crate) mod tests {
             risk: Risk::Destructive,
             call_id: call_id.map(Into::into),
         }
+    }
+
+    /// 183 R1 (H1): a released session's approval stops waiting on the old
+    /// owner — no longer pending (a reload's snapshot drops it), its card is
+    /// resolved for the clients, and its row stays `pending` for the taker.
+    #[tokio::test]
+    async fn forget_session_drops_the_card_and_keeps_the_row_pending() {
+        let (_rt, actor, journal) = actor(Duration::from_secs(30)).await;
+        let (session, other) = (SessionId::new(), SessionId::new());
+        for s in [session, other] {
+            let a = actor.clone();
+            tokio::spawn(async move { a.ask(request(s, Some("c1"))).await });
+        }
+        while actor.ask(PendingApprovals).await.unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        actor.ask(ForgetSession(session)).await.unwrap();
+        let left = actor.ask(PendingApprovals).await.unwrap();
+        assert_eq!(left.iter().map(|r| r.session).collect::<Vec<_>>(), [other]);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            journal
+                .questions()
+                .iter()
+                .all(|r| r.state == QuestionState::Pending),
+            "no row is settled by the forget"
+        );
     }
 
     /// §6.1: a raised approval is a `pending` row with the card as payload and

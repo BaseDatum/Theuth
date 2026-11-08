@@ -130,6 +130,60 @@ pub fn hostname() -> &'static str {
     &HOSTNAME
 }
 
+/// This machine's facts (183 §5.6): `name` is the mesh name once the mesh
+/// has started (`set_machine_name`), the hostname before.
+pub struct Machine {
+    /// This engine's mesh name (hostname until the mesh starts).
+    pub name: String,
+    /// `hostname()`.
+    pub host: String,
+    /// `std::env::consts::OS`.
+    pub os: &'static str,
+    /// Human OS name (`/etc/os-release` NAME on Linux).
+    pub os_name: String,
+    /// `std::env::consts::ARCH`.
+    pub arch: &'static str,
+}
+
+static MACHINE: std::sync::OnceLock<Machine> = std::sync::OnceLock::new();
+
+fn build_machine(name: &str) -> Machine {
+    let os = std::env::consts::OS;
+    let os_name = match os {
+        "linux" => std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|t| os_release_name(&t)),
+        "macos" => Some("macOS".to_owned()),
+        "windows" => Some("Windows".to_owned()),
+        _ => None,
+    };
+    Machine {
+        name: name.to_owned(),
+        host: hostname().to_owned(),
+        os,
+        os_name: os_name.unwrap_or_else(|| os.to_owned()),
+        arch: std::env::consts::ARCH,
+    }
+}
+
+/// `NAME` from os-release text, quotes stripped.
+fn os_release_name(text: &str) -> Option<String> {
+    let v = text.lines().find_map(|l| l.strip_prefix("NAME="))?;
+    let v = v.trim().trim_matches(['"', '\'']);
+    (!v.is_empty()).then(|| v.to_owned())
+}
+
+/// Computed once per process (the name fixed by the first of `machine` / `set_machine_name`).
+pub fn machine() -> &'static Machine {
+    MACHINE.get_or_init(|| build_machine(hostname()))
+}
+
+/// The mesh calls this at start with its effective name. First call wins:
+/// a no-op once `machine()` has been read.
+pub fn set_machine_name(name: &str) {
+    let _ = MACHINE.set(build_machine(name));
+}
+
 #[cfg(unix)]
 mod imp {
     use std::io;
@@ -526,6 +580,16 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn os_release_name_strips_quotes() {
+        assert_eq!(
+            os_release_name("PRETTY_NAME=\"x y\"\nNAME=\"Ubuntu\"\nID=ubuntu\n").as_deref(),
+            Some("Ubuntu")
+        );
+        assert_eq!(os_release_name("NAME=Arch\n").as_deref(), Some("Arch"));
+        assert_eq!(os_release_name("ID=x\n"), None);
+    }
+
     use std::time::Duration;
 
     use super::*;

@@ -9,10 +9,11 @@ import { useSessionField } from '@/store/sessions'
 
 const hhmm = (ms: number): string => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 
-/** 181 D4: the line a deliberate move leaves — on the origin (`to`, with Continue here beside it) and on the target (`from`). */
+/** 181 D4: the line a deliberate move leaves — on the origin (`to`, with Continue here beside it) and on the target (`from`).
+ * 183 D1: a send from the origin forwards to the new owner, so only Continue here brings the session back. */
 export function movedText(m: Moved, label: (engine: string) => string = (e) => e): string {
   const at = hhmm(m.at)
-  if (m.to) return `Moved to ${label(m.to)} at ${at} — it runs there. Sending a message here brings it back.`
+  if (m.to) return `Moved to ${label(m.to)} at ${at} — it runs there; what you send here runs there too.`
   return `The session moved here at ${at} — moved from ${m.from ? label(m.from) : 'another engine'}.`
 }
 
@@ -33,13 +34,13 @@ function counts(r: State): string {
 export function resumeText(r: State, label: (engine: string) => string = (e) => e): string {
   const at = hhmm(r.at)
   if (!r.here) {
-    const owner = r.owner ? label(r.owner) : 'another engine'
+    const owner = r.owner ? label(r.owner) : 'another machine'
     if (r.kind === 'interrupted' || r.resumed) return `Running on ${owner}`
     if (r.cause === 'transfer') return `Moving to ${owner}…`
     return `Paused on ${owner} — resumes there`
   }
   if (r.cause === 'transfer' || r.cause === 'takeover') {
-    const from = r.from ? label(r.from) : 'another engine'
+    const from = r.from ? label(r.from) : 'another machine'
     const head = `Taken from ${from} at ${at} — `
     if (r.cause === 'takeover') {
       return r.resumed
@@ -48,7 +49,8 @@ export function resumeText(r: State, label: (engine: string) => string = (e) => 
     }
     // The owner side of a release (`TurnSuspended{release}`) and a taker under `resume: ask` share this state.
     if (!r.resumed) return `Paused for a transfer at ${at} — resumes on the new owner`
-    return `${head}resumed here${counts(r)}`
+    // 183 R1 (H3): a move is not a takeover; "Taken from" stays for an orphan or offline take.
+    return `Moved here ${r.from ? `from ${from} ` : ''}at ${at} — resumed here${counts(r)}`
   }
   if (r.kind === 'suspended') return r.resumed ? `Paused for an update at ${at} — resumed` : `Paused for an update at ${at} — resumes after the restart`
   const head = `Interrupted by a restart at ${at} — `

@@ -1,6 +1,6 @@
 import { type StoreApi, createStore } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import type { CellResultInput, Injected, ParentViewLine } from '@/lib/injected';
+import type { CellResultInput, Injected, ParentViewLine, RestartNote } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
@@ -33,6 +33,7 @@ import {
   fromHistory,
   interruptDangling,
   nextId,
+  openTail,
   recordCall,
   reconcileTodos,
   reseedRunning,
@@ -129,6 +130,8 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       finishedAt?: number;
       /** 146 D7: a dead ACP child's trailing call, loaded with `running === false`: greyed, no spinner. */
       interrupted?: true;
+      /** 183 §12.4: the `<engine_restart/>` note the result opened with (the first call of a resumed batch). */
+      restart?: RestartNote & { text: string };
     }
   /** `⟵ from` card: a peer message, a subagent result or a job result. `origin` is the engine-authenticated
    * provenance (50 §9) of a peer exchange, from `PeerDelivered` live or `HistoryEntry::User.peer` on replay; a card
@@ -141,7 +144,7 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       origin?: PeerOrigin;
       seq?: number;
     }
-  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'child' | 'autoresearch' }>
+  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'child' | 'autoresearch' | 'moved' | 'engine_restart' }>
   /** 171 §9.1: a cell result the agent read; `turn` when its stored row opened the turn (`foldCells` hands it on). */
   | (CellResultInput & { turn?: number })
   /** 152 D3: the view an endless parent handed a native child before its brief (137 R1-D1); folded, the lines render
@@ -327,6 +330,10 @@ export type SessionSlice = {
   /** 181 D4: a deliberate move — `to` on the origin (set by Move to ▸), `from` on the target (`SessionOwnerChanged.moved_from`);
    * dropped by the next ownership change that is not this move. */
   moved?: Moved;
+  /** 183 §12.1 / R2: this engine's follow stream to the session's owner is up and speaks Watch (`FollowState`). Only while
+   * it is up may a replicated commit be swallowed or a settled page wait on an open reply: with it down no `TurnFinished`
+   * is coming. */
+  following?: boolean;
 };
 
 /** What a page or settled snapshot must still match when it lands (48 §5): `historyGeneration` and `live` at request time. */
@@ -470,7 +477,11 @@ export const createSessions = (): SessionsApi =>
               moved ||
               cur.live !== fresh.live ||
               !loaded.settled ||
-              loaded.running));
+              loaded.running ||
+              // 183 §5.1: a replica answers `settled` while its owner's turn is open (`resume.here: false`); the
+              // followed stream is drawing a reply that page does not hold yet, so it waits for `TurnFinished`.
+              // R2: only while the follow stream is up; once it dropped, nothing will close the tail.
+              (loaded.resume?.here === false && cur.following === true && openTail(cur))));
         if (refused) {
           if (cur !== before)
             set((st) => ({ sessions: { ...st.sessions, [id]: cur } }));

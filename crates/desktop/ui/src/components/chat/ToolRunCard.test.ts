@@ -30,6 +30,13 @@ test('foldRuns: assistant text splits runs, reasoning rides along, a lone call s
   expect(foldRuns([a, b, e])).toEqual([[a, b], e])
 })
 
+test('183 §12.4: foldRuns splits a run at a call that carries a restart note, so its card stays in view', () => {
+  const [a, b, c, d] = [tool(1), tool(2), tool(3), tool(4)]
+  const restarted = tool(9, { restart: { clock: '09:00:00', after: 9, cause: 'restart', replayed: 1, interrupted: 0, text: '' } })
+  expect(foldRuns([a, b, restarted, c, d])).toEqual([[a, b], restarted, [c, d]])
+  expect(foldRuns([restarted, a, restarted])).toEqual([restarted, a, restarted])
+})
+
 test('foldRuns: a pinned thinking block splits a run like a deliverable; unpinned still rides along; a lone tool beside it stays plain', () => {
   const think: Entry = { id: 'r', kind: 'reasoning', text: 'hm', done: false }
   const other: Entry = { id: 'r2', kind: 'reasoning', text: 'ok', done: true }

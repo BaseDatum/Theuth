@@ -2260,6 +2260,8 @@ mod tests {
                 reachable: false,
                 last_seen_ms: 5,
                 hub_pref: mesh::HubPref::Eligible,
+                path: mesh::PeerPath::Offline,
+                rtt_ms: None,
             }],
             ..Default::default()
         };
@@ -2602,6 +2604,8 @@ mod tests {
             reachable: false,
             last_seen_ms: 5,
             hub_pref: mesh::HubPref::Eligible,
+            path: mesh::PeerPath::Offline,
+            rtt_ms: None,
         };
         let waiting: Vec<tasks::Task> = (1..=7)
             .map(|i| {

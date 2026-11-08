@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SessionSlice } from '@/store/sessions'
-import { runningSubagents } from './SessionItem'
+import { rowActivity, runningSubagents } from './SessionItem'
 import { buildRows, listOffset, newChatLabel, type Row, watchListOffset } from './SessionList'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false, archived = false): SessionSummary => ({
@@ -139,4 +139,15 @@ test('the virtualizer’s scrollMargin is the height of the content above the li
   expect(seen).toEqual([200, 520])
   stop()
   expect(disconnected).toBe(true)
+})
+
+test('183 W-7: a row owned elsewhere shows its running glyph from list_sessions.running; a local row from its own activity', () => {
+  // Local (`remoteRunning` undefined): the slice's activity as is.
+  expect(rowActivity('streaming')).toBe('streaming')
+  expect(rowActivity('idle')).toBe('idle')
+  // Remote: only `running` can light the glyph; the slice's activity (fed while focused) refines which one.
+  expect(rowActivity('idle', true)).toBe('thinking')
+  expect(rowActivity('tool', true)).toBe('tool')
+  expect(rowActivity('tool', false)).toBe('idle')
+  expect(rowActivity('idle', false)).toBe('idle')
 })

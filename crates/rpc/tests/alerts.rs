@@ -32,6 +32,7 @@ impl Conn {
             private: Default::default(),
             focus: focus.clone(),
             seen: seen.clone(),
+            follows: Default::default(),
         }
         .into_rpc()
         .into();

@@ -124,6 +124,8 @@ mod tests {
                 reachable: true,
                 last_seen_ms: 0,
                 hub_pref: mesh::HubPref::Never,
+                path: mesh::PeerPath::Offline,
+                rtt_ms: None,
             }],
             lease: mesh::LeaseState {
                 holder: None,
@@ -132,6 +134,8 @@ mod tests {
             },
             traffic: vec![],
             replica: None,
+            stats: vec![],
+            relay: None,
         }
     }
 

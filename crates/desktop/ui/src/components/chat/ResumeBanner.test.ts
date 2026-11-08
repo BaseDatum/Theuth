@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { ResumeBanner } from '@/store/sessions'
-import { movedText, offersResume, resumeText } from './ResumeBanner'
+import { offersResume, resumeText } from './ResumeBanner'
 
 const at = Date.UTC(2026, 9, 6, 12, 5)
 const hhmm = new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
@@ -31,16 +31,17 @@ test('resumeText: 139 §9.3 — a replica names who runs the turn, never "resumi
   expect(resumeText({ ...theirs, kind: 'suspended', cause: 'transfer', owner: 'b' }, label)).toBe('Moving to B…')
   expect(resumeText({ ...theirs, kind: 'suspended', cause: 'shutdown' }, label)).toBe('Paused on A — resumes there')
   expect(resumeText({ ...theirs, kind: 'suspended' }, label)).toBe('Paused on A — resumes there')
-  expect(resumeText({ ...theirs, owner: undefined })).toBe('Running on another engine')
+  expect(resumeText({ ...theirs, owner: undefined })).toBe('Running on another machine')
   expect(resumeText({ ...theirs, report }, label)).toBe('Running on A')
 })
 
 test('resumeText: 139 §9.3 — the owner side of a transfer / takeover, with the counts', () => {
   const label = (e: string) => e.toUpperCase()
   const taken = { ...base, cause: 'transfer' as const, from: 'a', resumed: true }
-  expect(resumeText(taken, label)).toBe(`Taken from A at ${hhmm} — resumed here`)
-  expect(resumeText({ ...taken, report }, label)).toBe(`Taken from A at ${hhmm} — resumed here (2 tool calls replayed, 1 skipped: git push, effect unknown)`)
-  expect(resumeText({ ...taken, from: undefined })).toBe(`Taken from another engine at ${hhmm} — resumed here`)
+  // 183 R1 (H3): a move reads "Moved here"; "Taken from" is the takeover's (below).
+  expect(resumeText(taken, label)).toBe(`Moved here from A at ${hhmm} — resumed here`)
+  expect(resumeText({ ...taken, report }, label)).toBe(`Moved here from A at ${hhmm} — resumed here (2 tool calls replayed, 1 skipped: git push, effect unknown)`)
+  expect(resumeText({ ...taken, from: undefined })).toBe(`Moved here at ${hhmm} — resumed here`)
   // Before the resume: the releasing owner (TurnSuspended{release}) and a taker under `resume: ask` share the line.
   expect(resumeText({ ...taken, resumed: false, kind: 'suspended' }, label)).toBe(`Paused for a transfer at ${hhmm} — resumes on the new owner`)
   const takeover = { ...taken, cause: 'takeover' as const }
@@ -55,10 +56,4 @@ test('resumeText: 139 §9.3 — the owner side of a transfer / takeover, with th
   expect(offersResume({ ...takeover, resumed: false, here: false })).toBe(false)
   expect(offersResume({ ...taken, resumed: false })).toBe(false)
   expect(offersResume(base)).toBe(false)
-})
-
-test('movedText: 181 D4 — the origin says where it runs and how to bring it back; the target says where it came from', () => {
-  const label = (e: string) => (e === 'b1' ? 'xeus' : e)
-  expect(movedText({ to: 'b1', at }, label)).toBe(`Moved to xeus at ${hhmm} — it runs there. Sending a message here brings it back.`)
-  expect(movedText({ from: 'b1', at }, label)).toBe(`The session moved here at ${hhmm} — moved from xeus.`)
 })

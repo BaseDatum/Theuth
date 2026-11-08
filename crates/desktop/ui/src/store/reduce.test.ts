@@ -1216,6 +1216,16 @@ test('139 §9.3: the banner carries owner/here/cause/from — from Loaded.resume
   const held = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false, here: true }
   expect(resumeFromLoaded(held, theirs)).toEqual({ ...held, owner: 'A', here: false })
   expect(resumeFromLoaded(held, { ...theirs, owner: undefined, here: true })).toBe(held)
+  // 183 §12.1 (Z live proof): the owner's turn closed — a replica's page has no resume and "Running on A" goes; it stuck until a reload.
+  expect(resumeFromLoaded({ ...held, owner: 'A', here: false }, undefined)).toBeUndefined()
+  // 183 R2 (live): after the owner restarted and finished the resumed turn, its page carries the last report
+  // (`resumed: true`); on a replica that is no longer "Running on A".
+  expect(resumeFromLoaded(undefined, { ...theirs, resumed: true })).toBeUndefined()
+  expect(resumeFromLoaded({ ...held, owner: 'A', here: false }, { ...theirs, resumed: true })).toBeUndefined()
+  // 183 R1 (H3): the taker's page after a reload still names the engine it came from.
+  const moved = { turn: T, kind: 'suspended' as const, interrupted_at: at, resumed: true, here: true, cause: 'transfer' as const, from: 'a' }
+  expect(resumeFromLoaded(undefined, moved)).toMatchObject({ cause: 'transfer', from: 'a', here: true })
+  expect(resumeFromLoaded({ ...held, cause: 'transfer' }, moved)).toMatchObject({ from: 'a' })
 
   // TurnResumed on the owner: cause + from.
   const resumed = run([{ type: 'TurnResumed', session: S, turn: T, kind: 'suspended', interrupted_at: at, resumed_at: at, partial_dropped: false, cause: 'transfer', from: 'A' }])
@@ -1483,4 +1493,130 @@ test('171F B4: reload folds the parked rows into the user entry — same shape a
   expect(foldCells(fromHistory({ role: 'user', text: CELL_A, turn: 7 })).map((e) => e.kind)).toEqual(['cell_result'])
   const next = [{ role: 'user' as const, text: CELL_A, turn: 7 }, { role: 'user' as const, text: 'next', turn: 8 }].flatMap(fromHistory)
   expect(foldCells(next).map((e) => e.kind)).toEqual(['cell_result', 'user'])
+})
+
+test('183 §5.1: relayed events of a session owned elsewhere stream like local ones; the restart note becomes a card; rows settle', () => {
+  // A replica's slice: the banner (139 `Loaded.resume`) says another engine owns the turn now open.
+  let s: SessionSlice = { ...empty(S), loaded: true, contextRevision: '7', resume: { turn: T, kind: 'interrupted', at: 0, resumed: false, here: false, owner: 'cloud' } }
+  const c = ctx()
+  c.sent.add('hi')
+  const events: WireEvent[] = [
+    // Our own forwarded send comes back relayed: stamped, not doubled.
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'TextDelta', session: S, turn: T, text: 'Read' },
+    { type: 'TextDelta', session: S, turn: T, text: 'ing' },
+    { type: 'ToolCallPending', session: S, turn: T, call_id: 'c1', name: 'shell' },
+    { type: 'ToolCallProgress', session: S, turn: T, call_id: 'c1', args: '{"command": "cargo' },
+    { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'cargo test' } },
+    { type: 'ApprovalRequested', id: 'ap1', session: S, tool: 'shell', args: {}, risk: 'mutating' },
+    // The owner moved mid-turn: its resumed batch opens the first result with the restart note.
+    { type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: '2026-11-08T11:42:03Z', resumed_at: '2026-11-08T11:42:07Z', partial_dropped: false, cause: 'transfer', from: "Sky's MacBook" },
+    { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c1', output: '<engine_restart at="11:42:07" after="4s" kind="transfer" from="mac" to="xeus" replayed="0" interrupted="1"/>\nERROR: interrupted', is_error: true, files: [] },
+    { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 15 },
+  ]
+  for (const e of events) s = apply(s, e, c)
+  expect(s.entries.filter((e) => e.kind === 'user')).toHaveLength(0)
+  expect(s.entries.find((e) => e.kind === 'assistant')).toMatchObject({ text: 'Reading' })
+  const tool = s.entries.find((e) => e.kind === 'tool')
+  expect(tool).toMatchObject({ callId: 'c1', result: { output: 'ERROR: interrupted', isError: true }, restart: { to: 'xeus', from: 'mac', after: 4, interrupted: 1 } })
+  // A relayed `TurnResumed` never flips a replica's banner to "here".
+  expect(s.resume).toMatchObject({ here: false, owner: 'cloud', cause: 'transfer' })
+  expect(s).toMatchObject({ running: false, activity: 'idle' })
+  // The owner's relayed `ContextChanged` and the replicated one carry the same revision: the replicated one still re-reads.
+  const settled = { ...s, contextStale: false }
+  expect(apply(settled, { type: 'ContextChanged', session: S, revision: '7', reason: 'settled' }, ctx())).toBe(settled)
+  const replicated = apply(settled, { type: 'ContextChanged', session: S, revision: '7', reason: 'replicated' }, ctx())
+  expect(replicated).toMatchObject({ contextStale: true, historyGeneration: settled.historyGeneration + 1 })
+  expect(apply(settled, { type: 'ContextChanged', session: S, revision: '7', reason: 'moved' }, ctx()).contextStale).toBe(true)
+})
+
+test('183 §12.4: a stored moved row and a stored tool result with a restart note reload as their cards', () => {
+  const at = new Date(2026, 10, 8, 11, 42, 7).toISOString()
+  const moved = { to: 'xeus', from: 'mac', to_id: 'x', from_id: 'm', os: 'linux', os_name: 'Arch Linux', arch: 'x86_64', host: 'xeus', cwd: '/home/sky', cwd_missing: false, cwd_was: null, at, reason: 'user', jobs_left: 0, runtime: 'none', approvals: 'ask', messaging: true, pending: false }
+  expect(fromHistory({ role: 'moved', moved, context: msg(4) })).toMatchObject([{ kind: 'moved', to: 'xeus', os: 'Arch Linux', clock: '11:42:07', reason: 'user', context: msg(4) }])
+  const tool = fromHistory({ role: 'tool', call_id: 'c1', name: 'shell', args: {}, result: ['<time now="2026-11-08 11:42 +00:00 (Sun)"/>\n<engine_restart at="11:42:07" after="4s" kind="crash" replayed="1" interrupted="0"/>\nok', false], files: [] })
+  expect(tool).toMatchObject([{ kind: 'tool', result: { output: 'ok' }, restart: { cause: 'crash', replayed: 1 } }])
+  expect(fromHistory({ role: 'tool', call_id: 'c2', name: 'shell', args: {}, result: ['plain', false], files: [] })[0]).not.toHaveProperty('restart')
+})
+
+test('183 §5.1 (Z live proof): a replicated partial mid-stream leaves the followed reply alone; idle, it still re-reads', () => {
+  let s: SessionSlice = { ...empty(S), loaded: true, contextRevision: '7' }
+  const events: WireEvent[] = [
+    { type: 'FollowState', session: S, live: true },
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'TextDelta', session: S, turn: T, text: 'tick0' },
+  ]
+  for (const e of events) s = apply(s, e, ctx())
+  // The owner's 5 s partial replicated here: re-reading it swapped the live text for a greyed partial.
+  const mid = apply(s, { type: 'ContextChanged', session: S, revision: '8', reason: 'replicated' }, ctx())
+  expect(mid).toBe(s)
+  const after = apply(mid, { type: 'TextDelta', session: S, turn: T, text: ' tick1' }, ctx())
+  expect(after.entries.find((e) => e.kind === 'assistant')).toMatchObject({ text: 'tick0 tick1' })
+  // No follow stream (nothing open): the replicated partial still redraws (§5.1 offline fallback).
+  const idle = { ...empty(S), loaded: true, contextRevision: '7' }
+  expect(apply(idle, { type: 'ContextChanged', session: S, revision: '8', reason: 'replicated' }, ctx())).toMatchObject({ contextStale: true })
+})
+
+test('183 §5.1 (Z live proof): a replica\'s settled page waits while the owner\'s followed reply streams; then it lands', () => {
+  const R = 'replica-stream'
+  const st = useSessions.getState()
+  const page = { ...loaded(), history: [{ role: 'user' as const, text: 'hi', turn: 1 }], first_seq: 1, more: false }
+  st.loadHistory(R, page, 'replace')
+  st.applyEvents([
+    { type: 'FollowState', session: R, live: true },
+    { type: 'TurnStarted', session: R, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'TextDelta', session: R, turn: T, text: 'FAKE-REPLY' },
+  ])
+  // The replica says `settled` with the owner's turn still open: installing it dropped the first delta.
+  const open = { turn: T, kind: 'interrupted' as const, interrupted_at: '2026-11-08T16:38:17Z', resumed: false, owner: 'b', here: false, cause: 'crash' as const }
+  const s = useSessions.getState().sessions[R] ?? empty(R)
+  expect(st.loadHistory(R, { ...page, resume: open }, 'settled', freshness(s))).toBe(false)
+  expect(useSessions.getState().sessions[R]?.entries.at(-1)).toMatchObject({ kind: 'assistant', text: 'FAKE-REPLY' })
+  // The owner's turn closed: the rows are the truth again.
+  const done = { ...page, history: [...page.history, { role: 'assistant' as const, text: 'FAKE-REPLY tick0', turn: 1 }] }
+  expect(st.loadHistory(R, done, 'settled', freshness(useSessions.getState().sessions[R] ?? empty(R)))).toBe(true)
+})
+
+test('183 R1: a relayed ToolCallFinished for a call this replica never saw start adds no stray "✓" line; a local one still does', () => {
+  const finished = (call: string): WireEvent => ({ type: 'ToolCallFinished', session: S, turn: T, call_id: call, output: 'done\n', is_error: false, files: [] })
+  const open = { turn: T, kind: 'interrupted' as const, interrupted_at: '2026-11-08T16:38:17Z', resumed: false, owner: 'b', here: false, cause: 'crash' as const }
+  const replica: SessionSlice = { ...empty(S), resume: resumeFromLoaded(undefined, open) }
+  expect(apply(replica, finished('c1'), ctx()).entries).toEqual([])
+  // Its result lands on the row the loaded page already has.
+  const withRow = { ...replica, entries: [{ id: 'e1', kind: 'tool' as const, callId: 'c1', name: 'shell', args: {}, pending: false, child: false }] }
+  expect(apply(withRow, finished('c1'), ctx()).entries[0]).toMatchObject({ kind: 'tool', result: { output: 'done\n' } })
+  // An owned-here session keeps the line (nothing else would show the result).
+  expect(apply(empty(S), finished('c2'), ctx()).entries).toMatchObject([{ kind: 'info' }])
+})
+
+test('183 R2: the follow stream drops mid-reply — the tail goes stale, a replicated ContextChanged is no longer swallowed, and a settled page installs the full reply', () => {
+  const R = 'replica-drop'
+  const st = useSessions.getState()
+  const page = { ...loaded(), history: [{ role: 'user' as const, text: 'hi', turn: 1 }], first_seq: 1, more: false }
+  const open = { turn: T, kind: 'interrupted' as const, interrupted_at: '2026-11-08T16:38:17Z', resumed: false, owner: 'b', here: false, cause: 'crash' as const }
+  st.loadHistory(R, { ...page, resume: open }, 'replace')
+  st.applyEvents([
+    { type: 'FollowState', session: R, live: true },
+    { type: 'TurnStarted', session: R, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'TextDelta', session: R, turn: T, text: 'HALF' },
+    { type: 'ContextChanged', session: R, revision: '2', reason: 'replicated' },
+  ])
+  // Following: the replicated partial is swallowed and the page waits on the open reply.
+  let s = useSessions.getState().sessions[R] ?? empty(R)
+  expect(s.contextStale).toBe(false)
+  expect(st.loadHistory(R, { ...page, resume: open }, 'settled', freshness(s))).toBe(false)
+  // The stream drops, the owner finishes while we are away: nothing closes the tail …
+  st.applyEvents([{ type: 'FollowState', session: R, live: false }])
+  s = useSessions.getState().sessions[R] ?? empty(R)
+  expect(s.following).toBe(false)
+  expect(s.contextStale).toBe(true)
+  // … so a replicated commit now marks the slice stale again rather than being swallowed, and the settled page lands.
+  st.applyEvents([{ type: 'ContextChanged', session: R, revision: '3', reason: 'replicated' }])
+  const done = { ...page, resume: undefined, history: [...page.history, { role: 'assistant' as const, text: 'HALF AND THE REST', turn: 1 }] }
+  s = useSessions.getState().sessions[R] ?? empty(R)
+  expect(st.loadHistory(R, done, 'settled', freshness(s))).toBe(true)
+  expect(useSessions.getState().sessions[R]?.entries.at(-1)).toMatchObject({ kind: 'assistant', text: 'HALF AND THE REST' })
+  // A drop with nothing open and nothing followed leaves the slice alone.
+  const idle = apply({ ...empty(S), following: false }, { type: 'FollowState', session: S, live: false }, ctx())
+  expect(idle.contextStale).toBe(false)
 })

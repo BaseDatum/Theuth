@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { isApple } from '@/lib/chord'
+import { useEngineLabel } from '@/lib/owner'
 import { isDesktop, touch } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
@@ -241,6 +242,9 @@ export function InputLine({ request, onSend }: { request: { prompt: string; pass
 /** The live shell run: the kernel PTY from mark C (`cell_attach`), typed through `cell_input` (§7.4). */
 function LiveTerminal({ run, code, label }: { run: CellRun; code: string; label: string }) {
   const first = code.split('\n').find((l) => l.trim()) ?? ''
+  // 183 §4.3: a run on another engine streams there; this header says where instead of promising a live terminal.
+  const [elsewhere, setElsewhere] = useState<string | null>(null)
+  const where = useEngineLabel(elsewhere ?? '')
   return (
     <div className="flex flex-col gap-1">
       <div className="rounded-md p-0.5 ring-1 ring-fg-accent">
@@ -248,10 +252,10 @@ function LiveTerminal({ run, code, label }: { run: CellRun; code: string; label:
         {/* 171F B12: no fixed height — the terminal sizes itself to the rows in use (12 to the 30-row grid), capped at
             60vh. Its parent is a block, not flex: WebKit does not grow a flex item by its own horizontal scrollbar. */}
         <Suspense fallback={null}>
-          <Terminal source={{ kind: 'cell', run: run.id }} label={label} className="max-h-[60vh]" />
+          <Terminal source={{ kind: 'cell', run: run.id }} label={label} onElsewhere={setElsewhere} className="max-h-[60vh]" />
         </Suspense>
       </div>
-      <p className="text-xs text-fg-accent">the terminal is live — type or use arrows</p>
+      <p className="text-xs text-fg-accent">{elsewhere === null ? 'the terminal is live — type or use arrows' : `live output on ${where}`}</p>
     </div>
   )
 }

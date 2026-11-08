@@ -560,7 +560,7 @@ pub struct RunRequest {
     /// Member pub8 acknowledged (invariant 6).
     pub member_ack: Option<String>,
     /// The user's second press past a warning (§7.1, §7.6): Run anyway past an unarmed
-    /// `after` gate, or a danger cell's line/selection ▶. Skips those two refusals only.
+    /// `after` gate, or a danger cell's line/selection ►. Skips those two refusals only.
     #[serde(default)]
     pub confirmed: bool,
     /// Device id + client kind, filled by the RPC layer.

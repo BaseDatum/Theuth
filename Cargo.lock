@@ -12094,6 +12094,7 @@ dependencies = [
  "tools",
  "tracing",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]
@@ -19420,6 +19421,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "cells",
  "chrono",
  "figment",
  "futures",
@@ -19428,6 +19430,7 @@ dependencies = [
  "libsqlite3-sys",
  "mesh",
  "parking_lot",
+ "platform",
  "postcard",
  "replica",
  "runtime",
@@ -19438,6 +19441,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tools",
  "tracing",
  "ts-rs",
  "uuid",

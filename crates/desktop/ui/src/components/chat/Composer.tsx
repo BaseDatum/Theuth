@@ -20,6 +20,7 @@ import {
   Fragment,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   type SyntheticEvent,
   useEffect,
   useMemo,
@@ -41,7 +42,7 @@ import { attach, attachRef, drop, expand, type Pastes, reconcileShelved, type Sh
 import { pasteText } from '@/lib/paste-markdown'
 import { applyText } from '@/lib/text-edit'
 import { isDesktop, touch } from '@/lib/platform'
-import { engineLabel, type OwnerUnreachable, ownerUnreachable, sessionDraining } from '@/lib/owner'
+import { engineLabel, ownerUnreachable, parkIfOffline, retryNotOwner, routed, sessionDraining, useOwnerOffline } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
@@ -100,6 +101,37 @@ export function createOptions(draft: DraftCreate, pick: { model: string | null; 
     effort: pick.effort,
     memory: draft.endless ? 'endless' : undefined,
   }
+}
+
+/** A machine name the box never breaks inside: no-break spaces, and a word joiner after each hyphen (`cloud-1`). */
+const unbroken = (name: string): string => name.replace(/ /g, '\u00a0').replace(/-/g, '-\u2060')
+
+/** The box width (px) under which the placeholder takes its short form. */
+const NARROW_BOX_PX = 480
+
+/** Whether `ref`'s element is narrower than `max` px, live. */
+function useNarrow(ref: RefObject<HTMLElement | null>, max: number): boolean {
+  const [narrow, setNarrow] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(([e]) => e && setNarrow(e.contentRect.width < max))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [ref, max])
+  return narrow
+}
+
+/** The box's placeholder. An exported session's human input never joins a peer task; it steers a human turn or waits
+ * behind a task (50 §6.3). 183 §12.1 / mock panel 3: a chat owned elsewhere names the machine it runs on, a steer too;
+ * `short` (a narrow window or a touch screen) drops the `Message — ` lead, and the name itself never breaks. */
+export function placeholderFor(o: { readOnly?: boolean; running: boolean; exports: boolean; skill?: string; runsOn?: string; short?: boolean }): string {
+  const on = o.runsOn && unbroken(o.runsOn)
+  const remote = on && (o.short ? `Runs on ${on}` : `Message — runs on ${on}`)
+  if (o.readOnly) return 'Talking — speak, or stop the talk to type'
+  if (o.running) return o.exports ? 'Send privately…' : remote || 'Send to steer…'
+  if (o.skill) return `Words for ${o.skill} (optional)`
+  return remote || 'Ask anything'
 }
 
 const NONE = EMPTY.pastes
@@ -337,11 +369,18 @@ export function Composer({
   /** D15: a harness command picked from the menu that takes arguments; the next send goes to the harness verbatim. */
   const [rawCmd, setRawCmd] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  /** 68 §5: a send the owner could not take; the card above the composer offers to take the session here and resend. */
-  const [offline, setOffline] = useState<OwnerUnreachable | null>(null)
+  /** 68 §5 / 183 §4.4: a routed call the owner could not take (this send, a ⋯ setter, a stop…); the card above the
+   * composer offers to take the session here, then runs it. */
+  const offline = useOwnerOffline((s) => (session ? s.by[session] : undefined))
   /** 139 §9.3: the one automatic retry a `SessionDraining` refusal gets; reset by the next success. */
   const retried = useRef(false)
+  /** 183 §13 row 2: the one automatic resend after a `NotOwner` refusal. */
+  const ownerRetried = useRef(false)
   const { data: mesh } = useMesh()
+  // 183 §12.1: a chat owned elsewhere says where it runs; `list_sessions` is the sidebar's warm cache.
+  const { data: rows } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session })
+  const row = session ? rows?.find((r) => r.id === session) : undefined
+  const runsOn = row && !row.here ? engineLabel(row.owner, mesh?.peers) : undefined
   const voice = speech.useVoice()
   const recorder = useRef<{ rec: MediaRecorder; discard: boolean } | null>(null)
   /** A release (send / cancel) that beat `getUserMedia`: applied the moment the recorder exists. */
@@ -621,6 +660,9 @@ export function Composer({
   const pathWindows = useRef(false)
   const pathSeq = useRef(0)
   const isMobile = useIsMobile()
+  // 183 R1: a narrow desktop pane (a split, a popout) gets the short placeholder by the box's own width, not the window's.
+  const boxWrap = useRef<HTMLDivElement>(null)
+  const narrow = useNarrow(boxWrap, NARROW_BOX_PX)
   const pathChanged = (next: string, caret: number) => {
     const t = pathTrigger(next, caret, pathWindows.current)
     const slashNow = /^\/\S*$/.test(next) && slashMenu(next, harnessMenu).length > 0
@@ -848,6 +890,7 @@ export function Composer({
       }
       useDrafts.getState().acked(draftKey, spoken ?? text)
       retried.current = false
+      ownerRetried.current = false
       shelf.current = new Map()
       setSelected(0)
       // A retry the engine already had starts no turn, so the row shown at once would stay a ghost: drop it. A
@@ -882,8 +925,10 @@ export function Composer({
           { duration: 2000 },
         )
         setTimeout(() => void submit(spoken, interject), 2000)
-      } else if (unreachable && target) setOffline(unreachable)
-      else toast.error(e instanceof Error ? e.message : String(e))
+      } else if (unreachable && target) useOwnerOffline.getState().park(target, unreachable)
+      else if (target && retryNotOwner(e, target, ownerRetried, () => void submit(spoken, interject), () => toast.error(e instanceof Error ? e.message : String(e)))) {
+        // 183 §13 row 2: the owner changed under the send — the draft stays in the box; it goes once more when the new owner is known.
+      } else toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
       refocus()
@@ -907,7 +952,7 @@ export function Composer({
         await api.steer(session, body, id, files)
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
+      if (!parkIfOffline(session, e, flush)) toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
       refocus()
@@ -936,8 +981,11 @@ export function Composer({
   }, [children])
   const stop = (scope: CancelScope) => {
     if (!session) return
-    void api.cancel(session, scope)
-    if (scope === 'tree') toast(`Stopped ${descendants} agent${descendants === 1 ? '' : 's'}`)
+    // 183 R1: a cancel parked behind the OwnerOfflineCard (`routed` resolves undefined) stopped nothing: no "Stopped" toast.
+    routed(session, async () => (await api.cancel(session, scope), true)).then(
+      (ran) => ran && scope === 'tree' && toast(`Stopped ${descendants} agent${descendants === 1 ? '' : 's'}`),
+      (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)),
+    )
   }
   const escState = useRef<StopState>(STOP_IDLE)
   /** The key of the Esc chord while it is down (`null` between presses). */
@@ -1158,7 +1206,12 @@ export function Composer({
     <div className={cn('mx-auto w-full max-w-[768px]', compact ? 'px-2 pb-1' : 'px-4 pb-2')}>
       {!compact && <CommunicationNotice session={session} state={comm} exports={exports} />}
       {session && offline && (
-        <OwnerOfflineCard session={session} offline={offline} onDone={() => setOffline(null)} onResend={() => submit()} />
+        <OwnerOfflineCard
+          session={session}
+          offline={offline}
+          onDone={() => useOwnerOffline.getState().clear(session)}
+          onResend={async () => void (offline.retry ? await offline.retry() : await submit())}
+        />
       )}
       {session && unsent && !busy && !offline && (
         <div
@@ -1293,7 +1346,7 @@ export function Composer({
               </Button>
             </PopoverContent>
           </Popover>
-          <div className="relative min-w-0 flex-1">
+          <div ref={boxWrap} className="relative min-w-0 flex-1">
             {/* 82 §C: while a voice note records the wave is the box; the textarea stays mounted underneath. */}
             <RecordingBox recording={recording} source={noteSource}>
               {dictating && dict.active ? (
@@ -1341,8 +1394,7 @@ export function Composer({
                   onKeyDown={onKeyDown}
                   onPaste={onPaste}
                   rows={1}
-                  // An exported session's human input never joins a peer task; it steers a human turn or waits behind a task (50 §6.3).
-                  placeholder={readOnly ? 'Talking — speak, or stop the talk to type' : running ? (exports.length ? 'Send privately…' : 'Send to steer…') : skill ? `Words for ${skill} (optional)` : 'Ask anything'}
+                  placeholder={placeholderFor({ readOnly, running, exports: exports.length > 0, skill, runsOn, short: isMobile || touch() || narrow })}
                   // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
                   className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
                 />

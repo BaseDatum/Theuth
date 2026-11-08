@@ -4,6 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
 import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
+import { RpcError } from '@/rpc/client'
 import { attachSource, CELL_KEYS, liveRows, Terminal } from './TerminalViewer'
 
 const api = { cell_input: vi.fn(async () => null), pty_input: vi.fn(async () => null), pty_resize: vi.fn(async () => null) }
@@ -18,6 +19,7 @@ vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: typeof
 vi.mock('@/store/sessions', () => ({ useSessionField: () => null }))
 vi.mock('@/lib/platform', () => ({ touch: () => touch() }))
 vi.mock('@/lib/chord', () => ({ isApple: () => true }))
+vi.mock('@/lib/owner', () => ({ useEngineLabel: (owner: string) => owner }))
 vi.mock('@/lib/popout', () => ({ canPopout: () => false, openPopout: async () => undefined }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 
@@ -154,4 +156,24 @@ test('CELLHIST: a cell terminal (inside a note editor) has no live region; a pty
   expect(renderToStaticMarkup(createElement(Terminal, { source: { kind: 'cell', run: 'run-1' }, label: 'bash' }))).not.toContain('aria-live')
   expect(renderToStaticMarkup(createElement(Terminal, { source: { kind: 'pty', session: 's', job: 'j' }, label: 'sh' }))).toContain('aria-live="polite"')
   expect(renderToStaticMarkup(createElement(Terminal, { session: 's', job: 'j', label: 'sh' }))).toContain('aria-live="polite"')
+})
+
+test('183 §4.3: an attach refused -32014 RunsElsewhere names the owner, sends nothing and raises no error (pty and cell)', async () => {
+  for (const src of [{ kind: 'cell', run: 'r' } as const, { kind: 'pty', session: 's', job: 'j' } as const]) {
+    client.stream.mockImplementationOnce(async () => {
+      throw new RpcError(-32014, 'runs elsewhere', { RunsElsewhere: { owner: 'box' } })
+    })
+    const term = fakeTerm()
+    const where = vi.fn()
+    const wire = attachSource(src, term as unknown as Term, api, client, () => {}, where)
+    await flush()
+    wire.send('x')
+    await flush()
+    expect(where).toHaveBeenCalledWith('box')
+    expect(wire.ended()).toBe(true)
+    wire.dispose() // the failed attach left nothing to detach
+    await flush()
+  }
+  expect(api.cell_input).not.toHaveBeenCalled()
+  expect(api.pty_input).not.toHaveBeenCalled()
 })

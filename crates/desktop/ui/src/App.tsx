@@ -26,6 +26,7 @@ import { installFenceSnapshot } from '@/lib/fence-snapshot'
 import { installPagePreview } from '@/lib/page-preview'
 import { container, isDesktop } from '@/lib/platform'
 import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
+import { onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { installSpeechListeners } from '@/lib/speech'
@@ -466,13 +467,31 @@ function visible(session: string): boolean {
 const RESYNC_MS = 5_000
 const LAGGED_TOAST_MS = 60_000
 
+/**
+ * 183 §4.4 / §5.3 / §12.1 (R1): the listeners every window needs for another engine's sessions, popouts included.
+ * A peer drop or return (`onPeerChange`: cards withdrawn, follow state, parked calls); an owner change (Z live proof: a
+ * move suspends the old owner's turn with its approval or ask still parked there, and the new owner asks again on resume
+ * — after this event, so the cards asked before it are the suspended turn's); and `FollowState`.
+ */
+function relayGuards(st: Stores): (() => void)[] {
+  return [
+    on('peer', (e) => onPeerChange(st, st.qc.getQueryData<SessionSummary[]>(queryKeys.sessions), e.data)),
+    on('SessionOwnerChanged', (e) => withdrawRelayed(st, new Set([e.session]))),
+    // R2: the reducer already applied it (`following`). Down: the open reply may never see its `TurnFinished`, so settle.
+    // Back up after a drop: a slice still stale (the owner's turn was open at the first settle) reads again.
+    on('FollowState', (e) => {
+      if (!e.live || st.sessions.getState().sessions[e.session]?.contextStale) settleAfterFollowLoss(e.session)
+    }),
+  ]
+}
+
 /** 25 §4.5 notifications, the `Lagged` resync and the tray badge; per active engine. The island only resyncs; a popout also closes with its chat, PTY's session or meeting. */
 function useEventSideEffects(st: Stores): void {
   const qc = useQueryClient()
   useEffect(() => {
     const resyncs = new Throttle(() => resync(st), RESYNC_MS, true)
     if (AUX) {
-      const offs = [on('Lagged', () => resyncs.call())]
+      const offs = [on('Lagged', () => resyncs.call()), ...relayGuards(st)]
       const session = popoutSession(POPOUT)
       if (session !== null) offs.push(on('SessionDeleted', (e) => e.session === session && closePopout()))
       const meeting = popoutMeeting(POPOUT)
@@ -510,6 +529,7 @@ function useEventSideEffects(st: Stores): void {
         resyncs.call()
         toasts.call()
       }),
+      ...relayGuards(st),
       on(
         'ApprovalRequested',
         (e) => {
@@ -575,6 +595,8 @@ function useEventFocus(st: Stores): void {
       const { send: changed, left } = tracker.update(next)
       if (!changed) return
       for (const s of left) st.sessions.getState().markStale(s)
+      // 183 R1: unfollowing a remote session drops its relayed cards on the engine without a `*Resolved`; refocus re-sends them.
+      withdrawRelayed(st, remoteAmong(st.qc.getQueryData<SessionSummary[]>(queryKeys.sessions), left))
       api.set_event_focus(next).catch(() => undefined)
     }
     const schedule = () => {
@@ -588,6 +610,12 @@ function useEventFocus(st: Stores): void {
         if (s.state !== 'open' || prev.state === 'open') return
         tracker.reset()
         send()
+      }),
+      // 183 §5.1: the engine follows a focused session's owner; when the owner changes, say the set again so it
+      // re-follows the new one (the set itself did not change, so the tracker alone would not send).
+      on('SessionOwnerChanged', () => {
+        tracker.reset()
+        schedule()
       }),
     ]
     send()

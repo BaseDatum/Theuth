@@ -2,12 +2,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { routed } from '@/lib/owner'
 import { Button } from '@/components/ui/button'
 import { Command, CommandDialog, CommandEmpty, type CommandFilter, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { defaultFilter } from 'cmdk'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { useDrafts } from '@/lib/drafts'
+import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { usePanes } from '@/lib/panes'
 import { touch } from '@/lib/platform'
 import { cn } from '@/lib/utils'
@@ -93,6 +94,18 @@ export function useFavorites(): { favorites: string[]; toggleFavorite(id: string
   return { favorites, toggleFavorite }
 }
 
+/** 183 §12.2 / §5.6: the catalog of the engine that would run this chat — a remote session's owner, or the new chat's
+ * machine — via `list_models(engine)`; this engine's own list otherwise (the shared `queryKeys.models` entry). */
+export function useModels(session: string | null, enabled = true): ModelInfo[] {
+  const api = useApi()
+  const { data: rows } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session })
+  const row = session ? rows?.find((r) => r.id === session) : undefined
+  const draft = useDraftTarget((s) => s.engine)
+  const engine = session ? (row && !row.here ? row.owner : null) : draft
+  const { data = [] } = useQuery({ queryKey: engine ? [...queryKeys.models, engine] : queryKeys.models, queryFn: () => api.list_models(engine), enabled })
+  return data
+}
+
 type Props = {
   session: string | null
   /** 157 D1: this picker's pane is the page's own (a notebook's chat column) — `/model` opens it whatever `usePanes` focuses. */
@@ -143,7 +156,7 @@ function useModel({ session }: Props, done: () => void): Model {
   const pick = useDrafts((s) => s.pick)
   const model = (session ? sessionModel : pick.model) ?? info?.default_model
   const effort = session ? sessionEffort : (pick.effort ?? info?.default_effort)
-  const { data: models = [] } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models(), enabled: !agent && !watching })
+  const models = useModels(session, !agent && !watching)
   const current = models.find((m) => m.id === model)
   const acp = !!agent && !!session && !watching
   const { data: harness, isError } = useQuery({
@@ -172,7 +185,7 @@ function useModel({ session }: Props, done: () => void): Model {
       return useDrafts.getState().setPick({ model: id, effort })
     }
     try {
-      await api.set_model(session, id, true)
+      await routed(session, () => api.set_model(session, id, true))
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -182,7 +195,7 @@ function useModel({ session }: Props, done: () => void): Model {
     done()
     if (!session) return useDrafts.getState().setPick({ effort: level })
     try {
-      await api.set_effort(session, level, true)
+      await routed(session, () => api.set_effort(session, level, true))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }

@@ -3,9 +3,14 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { openDraftSession, useDraftTarget, useDrafts } from '@/lib/drafts'
 import type * as Rpc from '@/lib/rpc'
+import type { Api } from '@/rpc/api'
+import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
+import type { EngineStats } from '@/rpc/bindings/EngineStats'
+import type { Peer } from '@/rpc/bindings/Peer'
 import { PLAIN_DRAFT, createOptions } from './Composer'
-import { CreateOptions } from './NewChatPane'
+import { CreateOptions, machineRows, pickMachine, vanishedTarget } from './NewChatPane'
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -65,4 +70,66 @@ test('148 R1: the draft pick rides into create_session as this session\'s model/
   expect(createOptions(PLAIN_DRAFT)).toMatchObject({ retention: 'durable', model: null, effort: null, memory: undefined })
   expect(createOptions(PLAIN_DRAFT, { model: 'openai/gpt-5.4', effort: 'high' })).toMatchObject({ model: 'openai/gpt-5.4', effort: 'high' })
   expect(createOptions({ private: true, project: 'lab', endless: false }, { model: null, effort: 'low' })).toMatchObject({ retention: 'private', project: 'lab', model: null, effort: 'low' })
+})
+
+const H = 3_600_000
+const NOW = Date.UTC(2026, 10, 8, 12)
+const stat = (id: string, os_name: string, cls: EngineStats['class'], repos: string[] = []): EngineStats =>
+  ({ id, uptime_since_ms: 0, class: cls, availability_30d: 1, harnesses: [], repos, display: false, gpu: false, os: '', os_name, arch: '', host: '' })
+const peer = (id: string, name: string, reachable: boolean, path: Peer['path'], last_seen_ms = NOW): Peer => ({ id, name, addrs: [], reachable, last_seen_ms, hub_pref: 'eligible', path, rtt_ms: null })
+const MESH = {
+  self_id: 'mac',
+  self_name: "Sky's MacBook",
+  peers: [peer('xeus', 'xeus', true, 'lan'), peer('cloud', 'cloud-1', true, 'relay'), peer('studio', 'studio', false, 'offline', NOW - 3 * H)],
+  stats: [stat('mac', 'macOS', 'laptop'), stat('xeus', 'Arch Linux', 'desktop', ['/home/sky/Develop/theuth']), stat('cloud', 'Ubuntu', 'server')],
+}
+
+test('183 mock panel 5: this machine first; LAN / via relay / offline with its age, an offline one not pickable', () => {
+  expect(machineRows(MESH, NOW)).toEqual([
+    { id: null, name: "Sky's MacBook", detail: 'macOS · laptop', status: 'this machine', online: true, repos: [] },
+    { id: 'xeus', name: 'xeus', detail: 'Arch Linux · desktop', status: 'LAN', online: true, repos: ['/home/sky/Develop/theuth'] },
+    { id: 'cloud', name: 'cloud-1', detail: 'Ubuntu · server', status: 'via relay', online: true, repos: [] },
+    { id: 'studio', name: 'studio', detail: '', status: 'offline 3h', online: false, repos: [] },
+  ])
+  // A lone engine (or one whose only peer row is itself) shows no picker.
+  expect(machineRows({ ...MESH, peers: [] }, NOW)).toEqual([])
+  expect(machineRows(undefined, NOW)).toEqual([])
+})
+
+test('183 W-10: the chosen machine and folder ride into create_session as engine / cwd, then reset to this machine', async () => {
+  const calls: CreateSessionOptions[] = []
+  const api = { create_session: async (o: CreateSessionOptions) => (calls.push(o), { session: 'new' }), new_session: async () => 'plain' } as unknown as Api
+  useDraftTarget.getState().set({ engine: 'xeus', cwd: '/home/sky/Develop/theuth' })
+  expect((await openDraftSession(api)).id).toBe('new')
+  expect(calls[0]).toMatchObject({ engine: 'xeus', cwd: '/home/sky/Develop/theuth', model: null })
+  expect(useDraftTarget.getState()).toMatchObject({ engine: null, cwd: null })
+  // This machine, nothing picked: still the plain `new_session()`.
+  expect((await openDraftSession(api)).id).toBe('plain')
+  // A New Chat switch builds the options; the machine joins them.
+  useDraftTarget.getState().set({ engine: 'cloud' })
+  await openDraftSession(api, createOptions({ private: false, project: 'lab', endless: false }))
+  expect(calls[1]).toMatchObject({ project: 'lab', engine: 'cloud', cwd: null })
+})
+
+test('183 R1: picking another machine drops the draft\'s model/effort pick (its models differ); re-picking the same keeps it', () => {
+  useDraftTarget.getState().set({ engine: null, cwd: '~/x' })
+  useDrafts.getState().setPick({ model: 'local/m', effort: 'high' })
+  pickMachine(null)
+  expect(useDrafts.getState().pick).toMatchObject({ model: 'local/m', effort: 'high' })
+  pickMachine('peer-b')
+  expect(useDrafts.getState().pick.model ?? null).toBeNull()
+  expect(useDrafts.getState().pick.effort ?? null).toBeNull()
+  expect(useDraftTarget.getState()).toMatchObject({ engine: 'peer-b', cwd: null })
+})
+
+test('183 R1: a target that left the mesh is cleared back to this machine; a present one, this machine and an unloaded roster are kept', () => {
+  const mesh = { self_id: 'me', self_name: 'mac', peers: [peer('b', 'b', true, 'lan')], stats: [] }
+  const rows = machineRows(mesh)
+  expect(vanishedTarget(rows, true, 'b')).toBe(false)
+  expect(vanishedTarget(rows, true, null)).toBe(false)
+  expect(vanishedTarget(rows, true, 'gone')).toBe(true)
+  // The last peer unpaired: no rows at all, the pick would fail the first send.
+  expect(vanishedTarget(machineRows({ ...mesh, peers: [] }), true, 'b')).toBe(true)
+  // The roster has not loaded yet: nothing is known to have vanished.
+  expect(vanishedTarget([], false, 'b')).toBe(false)
 })

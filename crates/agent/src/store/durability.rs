@@ -550,7 +550,9 @@ impl Store {
 
     /// Upsert the one `assistant_partial` row of model call `call_id` (§8.1):
     /// updated in place, never appended, so a streaming session costs one
-    /// short changeset per checkpoint.
+    /// short changeset per checkpoint. 183 §5.1: it bumps
+    /// `sessions.context_revision` too, so a viewer whose replica applies the
+    /// checkpoint sees a new revision and redraws the partial.
     pub async fn partial_upsert(
         &self,
         session: SessionId,
@@ -585,6 +587,10 @@ impl Store {
             )
             .await?;
         }
+        sqlx::query("UPDATE sessions SET context_revision = context_revision + 1 WHERE id = ?")
+            .bind(session.to_string())
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -710,6 +716,34 @@ impl Store {
         .await?;
         row.map(|(t, at)| Ok((parse_turn(&t)?, parse_dt(&at)?)))
             .transpose()
+    }
+
+    /// 183 W-7: `running` of each row owned by another engine = the replica
+    /// holds an open turn for it (rows-only sidebar glyph; one query, and none
+    /// when every row is ours). Rows owned here keep their live flag. 183 R1
+    /// (S8): only while the owner is in `connected` (`None`: no mesh view,
+    /// count it) — an offline owner's open turn is not running anywhere.
+    pub async fn mark_remote_running(
+        &self,
+        rows: &mut [crate::SessionSummary],
+        connected: Option<&[String]>,
+    ) -> anyhow::Result<()> {
+        let me = self.engine();
+        let elsewhere = |r: &crate::SessionSummary| !r.owner.is_empty() && r.owner != me;
+        if !rows.iter().any(elsewhere) {
+            return Ok(());
+        }
+        let open: std::collections::HashSet<SessionId> = self
+            .open_turns(Scope::All)
+            .await?
+            .into_iter()
+            .map(|(s, _, _)| s)
+            .collect();
+        let up = |owner: &str| connected.is_none_or(|c| c.iter().any(|p| p == owner));
+        for r in rows.iter_mut().filter(|r| elsewhere(r)) {
+            r.running = open.contains(&r.id) && up(&r.owner);
+        }
+        Ok(())
     }
 
     /// 179 D9: whether any session of `root`'s tree (itself and every
@@ -2619,5 +2653,73 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// 183 §5.1: each 5 s partial checkpoint bumps `context_revision`, so a
+    /// viewer's same-revision guard lets the replicated partial redraw.
+    #[tokio::test]
+    async fn partial_upsert_bumps_the_context_revision() {
+        let (store, s, _dir) = fresh().await;
+        let t = TurnId::new();
+        let before = store.context_revision(s).await.unwrap();
+        store
+            .partial_upsert(s, t, "mc1", &MessageContent::from_text("hel"), None)
+            .await
+            .unwrap();
+        let first = store.context_revision(s).await.unwrap();
+        store
+            .partial_upsert(s, t, "mc1", &MessageContent::from_text("hello"), None)
+            .await
+            .unwrap();
+        let second = store.context_revision(s).await.unwrap();
+        assert!(
+            before != first && first != second,
+            "{before} → {first} → {second}"
+        );
+    }
+
+    /// 183 W-7: a row owned elsewhere is `running` exactly when the replica
+    /// holds an open turn for it and (R1 S8) its owner is connected; rows
+    /// owned here keep their live flag.
+    #[tokio::test]
+    async fn remote_rows_run_while_their_replicated_turn_is_open() {
+        let (b, foreign, _turn, _dir) = reopened_by_b().await;
+        let mine = SessionId::new();
+        b.create_session(mine, "m", None, None, None).await.unwrap();
+        let _my_open = batch_turn(&b, mine).await;
+        let mut rows = b.list_sessions().await.unwrap();
+        let owner = rows.iter().find(|r| r.id == foreign).unwrap().owner.clone();
+        b.mark_remote_running(&mut rows, Some(std::slice::from_ref(&owner)))
+            .await
+            .unwrap();
+        let running =
+            |rows: &[crate::SessionSummary], id| rows.iter().find(|r| r.id == id).unwrap().running;
+        assert!(running(&rows, foreign), "a's open turn shows on b");
+        assert!(
+            !running(&rows, mine),
+            "b's own row is the live flag's (none here)"
+        );
+        // a went offline with the turn open: nothing runs it now.
+        b.mark_remote_running(&mut rows, Some(&[])).await.unwrap();
+        assert!(
+            !running(&rows, foreign),
+            "an offline owner's turn is not running"
+        );
+
+        // a's turn finishes and replicates: the glyph goes out.
+        let open = b.open_turn(foreign).await.unwrap().unwrap().0;
+        sqlx::query(
+            "INSERT INTO turn_steps (session_id, turn_id, n, kind, call_id, payload, at, at_seq) \
+             SELECT session_id, turn_id, MAX(n) + 1, 'turn_finished', NULL, '{}', at, at_seq \
+             FROM turn_steps WHERE session_id = ? AND turn_id = ?",
+        )
+        .bind(foreign.to_string())
+        .bind(open.to_string())
+        .execute(&b.read)
+        .await
+        .unwrap();
+        let mut rows = b.list_sessions().await.unwrap();
+        b.mark_remote_running(&mut rows, None).await.unwrap();
+        assert!(!running(&rows, foreign));
     }
 }

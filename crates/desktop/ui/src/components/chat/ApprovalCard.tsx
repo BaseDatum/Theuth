@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/sheet'
 import { chatName } from '@/lib/attach'
 import { describe } from '@/lib/describe'
+import { useEngineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
 import type { Decision } from '@/rpc/bindings/Decision'
@@ -26,14 +27,35 @@ const RISK: Record<Risk, string> = {
   destructive: 'destructive',
 }
 
+/** 183 W-6: the owner's `approval_timeout_secs` default; the event carries no deadline, so the card counts from when it
+ * arrived live (`store/approvals` `arrived`; 183 R1: a snapshot or refocus replay has no arrival, so no deadline).
+ * ponytail: assumes the owner kept the 300 s default; an engine-sent deadline replaces this. */
+const OWNER_TIMEOUT_MS = 300_000
+
+/** §12.3 / mock panel 3: `mutating · relayed from cloud-1 · denies at 11:47` under a card whose owner is elsewhere. */
+export function relayedLine(risk: Risk, owner: string, deadline: number | null): string {
+  if (deadline === null) return `${RISK[risk]} · relayed from ${owner}`
+  const at = new Date(deadline).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return `${RISK[risk]} · relayed from ${owner} · denies at ${at}`
+}
+
 /** `approval: tool (risk)`, the described arguments, Allow / Deny. Rendered at the tool row or at the transcript's end.
- * 126 §10: the double's chip beside the title; at L1 its choice is the filled button; at L2 the whole card takes over. */
+ * 126 §10: the double's chip beside the title; at L1 its choice is the filled button; at L2 the whole card takes over.
+ * 183 §12.3: a session owned elsewhere reads `<owner> asks: tool` with the relayed line; the answer forwards. */
 export const ApprovalCard = memo(function ApprovalCard({
   approval,
 }: {
   approval: ApprovalRequested
 }) {
   const api = useApi()
+  // The card's session decides: owner ≠ this engine → relayed (`list_sessions` is the sidebar's warm cache).
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const row = sessions.data?.find((s) => s.id === approval.session)
+  const owner = useEngineLabel(row?.owner ?? '')
+  const relayed = !!row && !row.here
+  // Read, not subscribed: the arrival is set before the card exists and only pruned when it goes.
+  const arrived = useApprovals.getState().arrived.get(approval.id)
+  const deadline = arrived === undefined ? null : arrived + OWNER_TIMEOUT_MS
   const [busy, setBusy] = useState(false)
   const double = useDoubleCard([approval.id])
   // L1+: the double's pick is the filled button (the model has no `recommended` on an approval).
@@ -56,10 +78,11 @@ export const ApprovalCard = memo(function ApprovalCard({
     <DoubleCard ids={[approval.id]} className="my-2 rounded-xl border border-warning-border bg-warning-bg px-4 py-3 text-sm">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <div className="font-medium text-warning">
-          approval: {approval.tool} ({RISK[approval.risk]})
+          {relayed ? `${owner} asks: ${approval.tool}` : `approval: ${approval.tool} (${RISK[approval.risk]})`}
         </div>
         <DoubleChip ids={[approval.id]} />
       </div>
+      {relayed && <div className="mt-0.5 text-xs text-fg-secondary">{relayedLine(approval.risk, owner, deadline)}</div>}
       <pre className="mt-1 max-w-full overflow-x-auto font-mono text-xs leading-5 text-fg-secondary whitespace-pre-wrap">
         {describe(approval.tool, approval.args).join('\n')}
       </pre>

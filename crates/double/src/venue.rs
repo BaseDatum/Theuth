@@ -141,6 +141,8 @@ mod tests {
             reachable,
             last_seen_ms: 0,
             hub_pref: HubPref::Eligible,
+            path: mesh::PeerPath::Offline,
+            rtt_ms: None,
         }
     }
 
@@ -161,6 +163,10 @@ mod tests {
             display: false,
             gpu,
             accelerator: acc,
+            os: String::new(),
+            os_name: String::new(),
+            arch: String::new(),
+            host: String::new(),
         }
     }
 

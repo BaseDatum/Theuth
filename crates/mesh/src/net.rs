@@ -852,6 +852,9 @@ impl Net {
                 last_seen_ms.max(p.added_ms)
             },
             hub_pref: p.hub_pref,
+            // 183 P2: path and RTT from the iroh connection (§6.7).
+            path: crate::PeerPath::default(),
+            rtt_ms: None,
         }
     }
 
@@ -1455,6 +1458,34 @@ mod tests {
         b.remove_peer(&a.id).await.unwrap();
         assert!(!b.is_paired(&a.endpoint.id()));
         assert!(b.store.peer_entries().await.unwrap()[0].removed());
+        // 183 §4.8.1: an engine b no longer pairs with cannot reach b's
+        // forwarded-RPC ALPN: b answers any stream it accepts, yet a's never
+        // yields an answer.
+        let answer = {
+            let b = b.clone();
+            tokio::spawn(async move {
+                while let Ok((_, mut stream)) = b.accept(replica::ALPN_RPC).await {
+                    let _ = stream.write_all(b"x\n").await;
+                    let _ = stream.flush().await;
+                }
+            })
+        };
+        let refused = async {
+            let mut s = a.open(&PeerId(b.id.0.clone()), replica::ALPN_RPC).await?;
+            s.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+                .await?;
+            s.flush().await?;
+            let mut buf = [0u8; 1];
+            anyhow::ensure!(s.read(&mut buf).await? > 0, "closed");
+            anyhow::Ok(())
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), refused)
+                .await
+                .is_ok_and(|r| r.is_err()),
+            "an unpaired engine's rpc stream is refused"
+        );
+        answer.abort();
         a.shutdown().await;
         b.shutdown().await;
     }

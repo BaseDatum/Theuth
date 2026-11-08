@@ -102,6 +102,10 @@ pub fn fingerprint(e: &HistoryEntry) -> u64 {
             text.hash(&mut h);
         }
         HistoryEntry::Advisory { .. } => 7u8.hash(&mut h),
+        HistoryEntry::Moved { moved, .. } => {
+            8u8.hash(&mut h);
+            moved.at.hash(&mut h);
+        }
     }
     h.finish()
 }
@@ -300,7 +304,9 @@ pub fn render_update(rows: &[(i64, HistoryEntry)], opts: UpdateOpts<'_>) -> Stri
                 marker(Role::Agent, &mut role, &mut text);
                 text.push_str(&format!("{}\n_(interrupted)_", t.trim()));
             }
-            HistoryEntry::Error { .. } | HistoryEntry::Advisory { .. } => continue,
+            HistoryEntry::Error { .. }
+            | HistoryEntry::Advisory { .. }
+            | HistoryEntry::Moved { .. } => continue,
         }
         pieces.push(Piece { text, result });
     }

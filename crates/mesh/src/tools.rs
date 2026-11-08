@@ -62,6 +62,8 @@ impl Tool for MeshPeersTool {
             reachable: true,
             last_seen_ms: 0,
             hub_pref: crate::HubPref::Eligible,
+            path: crate::PeerPath::default(),
+            rtt_ms: None,
         };
         for p in std::iter::once(&me).chain(status.peers.iter()) {
             if args.reachable && !p.reachable {
@@ -137,6 +139,8 @@ mod tests {
             reachable: true,
             last_seen_ms: 0,
             hub_pref: crate::HubPref::Never,
+            path: crate::PeerPath::Offline,
+            rtt_ms: None,
         };
         let s = crate::EngineStats {
             id: p.id.clone(),
@@ -148,6 +152,10 @@ mod tests {
             display: true,
             gpu: false,
             accelerator: None,
+            os: String::new(),
+            os_name: String::new(),
+            arch: String::new(),
+            host: String::new(),
         };
         assert_eq!(
             peer_line(&p, Some(&s), None),

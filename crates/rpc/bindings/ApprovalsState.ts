@@ -9,6 +9,13 @@ export type ApprovalsState = {
  */
 global: boolean, 
 /**
- * False when the session opted out; meaningful only for a session query.
+ * Whether the session prompts: its (or the nearest ancestor's) pin, else
+ * `tools.approvals`; meaningful only for a session query.
  */
-session: boolean, };
+session: boolean, 
+/**
+ * 183 §4.5 (W-4): the session's own pin (`sessions.approvals`): `Some(true)`
+ * = `'on'`, `Some(false)` = `'off'`, `None` = inherit (or a global query).
+ * Absent when `None`, as the TS `pin?` says (a `null` read as "off").
+ */
+pin?: boolean, };

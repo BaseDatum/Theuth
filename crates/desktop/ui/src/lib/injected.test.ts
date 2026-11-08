@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { classify, parseBroadcast, parseSpoken, splitLeading, splitParentView } from './injected'
+import { classify, type Injected, isClassified, movedFromRecord, parseBroadcast, parseSpoken, splitLeading, splitParentView, tagAttrs } from './injected'
 
 test('human text is plain', () => {
   expect(classify('hello <b>there</b>')).toBeNull()
@@ -381,4 +381,36 @@ test('171F B20: <cell_result label=…> carries the label; without it there is n
   const tag = (attrs: string) => classify(`<cell_result run="r_1" name="say-hello"${attrs} exit="0" secs="1">\nhello\n</cell_result>`)
   expect(tag(' label="Say &quot;hi&quot;"')).toEqual([{ kind: 'cell_result', run: 'r_1', name: 'say-hello', label: 'Say "hi"', exit: '0', secs: '1', text: 'hello' }])
   expect(tag('')).toEqual([{ kind: 'cell_result', run: 'r_1', name: 'say-hello', exit: '0', secs: '1', text: 'hello' }])
+})
+
+const MOVED = `<session_moved to="xeus" from="Sky's MacBook" os="Arch Linux" arch="x86_64" host="xeus" cwd="/home/sky/Develop/theuth" at="11:42:07" reason="moved" jobs_left="1" runtime="reset" approvals="ask"/>`
+const RESTART = `<engine_restart at="11:42:07" after="4s" kind="transfer" from="Sky's MacBook" to="xeus" os="Arch Linux" cwd="/home/sky/Develop/theuth" replayed="2" interrupted="1"/>`
+
+test('183 §11: the self-closing <session_moved/> and <engine_restart/> are cards, never a you bubble', () => {
+  expect(classify(MOVED)).toEqual([
+    { kind: 'moved', to: 'xeus', from: "Sky's MacBook", os: 'Arch Linux', arch: 'x86_64', host: 'xeus', cwd: '/home/sky/Develop/theuth', cwdMissing: false, clock: '11:42:07', reason: 'moved', jobsLeft: 1, runtime: 'reset', approvals: 'ask', messaging: true, pending: false, text: MOVED },
+  ])
+  expect(classify(RESTART)).toEqual([
+    { kind: 'engine_restart', clock: '11:42:07', after: 4, cause: 'transfer', from: "Sky's MacBook", to: 'xeus', os: 'Arch Linux', cwd: '/home/sky/Develop/theuth', replayed: 2, interrupted: 1, text: RESTART },
+  ])
+  // A boot restart has no `to`/`os`/`cwd`; a missing cwd says where it works and what it was; messaging off is said.
+  expect(classify('<engine_restart at="09:00:00" after="12s" kind="crash" replayed="0" interrupted="1"/>')?.[0]).toMatchObject({ cause: 'crash', after: 12, interrupted: 1 })
+  expect(classify('<engine_restart at="09:00:00" after="12s" kind="crash" replayed="0" interrupted="1"/>')?.[0]).not.toHaveProperty('to')
+  expect(classify('<session_moved to="x" cwd="/home/u" cwd_missing="true" cwd_was="/Users/u/dev" messaging="off"/>')?.[0]).toMatchObject({ cwdMissing: true, cwdWas: '/Users/u/dev', cwd: '/home/u', messaging: false })
+  // Beside other wrappers, each block is its own card; an unterminated note or a human's look-alike stays text.
+  expect(classify(`${MOVED}\n<message from="a">hi</message>`)?.map((c) => c.kind)).toEqual(['moved', 'peer'])
+  expect(classify('<session_moved to="x"')).toBeNull()
+  expect(classify('<session_moved> is a tag I made up')).toBeNull()
+  expect(isClassified('session_moved') && isClassified('engine_restart')).toBe(true)
+})
+
+test('183 §12.4: a typed messages.moved record renders like the note it stands for', () => {
+  const at = new Date(2026, 10, 8, 11, 42, 7).toISOString()
+  const record = { to: 'xeus', from: "Sky's MacBook", to_id: 'x', from_id: 'm', os: 'linux', os_name: 'Arch Linux', arch: 'x86_64', host: 'xeus', cwd: '/home/sky/Develop/theuth', cwd_missing: false, cwd_was: null, at, reason: 'moved', jobs_left: 1, runtime: 'reset', approvals: 'ask', messaging: true, pending: false }
+  const { text: _, ...fromRecord } = movedFromRecord(record)
+  const { text: __, ...fromNote } = classify(MOVED)![0] as Extract<Injected, { kind: 'moved' }>
+  expect(fromRecord).toEqual(fromNote)
+  // A value with a quote survives the round trip; the rebuilt note carries no attribute the record does not set.
+  expect(movedFromRecord({ ...record, cwd: '/tmp/a "b"', cwd_missing: true, cwd_was: '/x', messaging: false, pending: true })).toMatchObject({ cwd: '/tmp/a "b"', cwdMissing: true, cwdWas: '/x', messaging: false, pending: true })
+  expect(tagAttrs(movedFromRecord(record).text).map(([k]) => k)).not.toContain('cwd_missing')
 })

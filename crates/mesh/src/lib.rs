@@ -39,7 +39,7 @@ pub use config::MeshConfig;
 pub use net::ALPN_MESH;
 pub use types::{
     Accelerator, AlpnTraffic, EngineClass, EngineId, EngineStats, HubPref, LeaseState, MeshEvent,
-    MeshStatus, Peer, PeerEvent, PeerId,
+    MeshStatus, NearbyEngine, PairCeremony, Peer, PeerEvent, PeerId, PeerPath, RelayState,
 };
 
 use crate::identity::now_ms;
@@ -182,6 +182,13 @@ pub fn is_paired(id: &str) -> Option<bool> {
         .map(|n| n.paired_ids().iter().any(|p| p.to_string() == id))
 }
 
+/// 183 R1 (S8): the mesh engines connected right now (ids as text); `None`
+/// before the mesh plugin bound its endpoint (or without a mesh).
+pub fn connected_ids() -> Option<Vec<String>> {
+    NET.get()
+        .map(|n| n.connected().into_iter().map(|(id, _)| id.0).collect())
+}
+
 /// 182 M2a/S11: `data_dir`'s mesh store lists a paired peer — readable before
 /// the mesh plugin starts (read-only; `false` without a store).
 pub async fn has_stored_peers(data_dir: &std::path::Path) -> bool {
@@ -318,6 +325,10 @@ impl Ctx {
             lease: self.lease(),
             traffic: self.net.traffic(),
             replica: replica::stats().await,
+            // 183 §9.2: the replicated `engine_stats` rows.
+            stats: self.store.stats().await.map_err(|e| e.to_string())?,
+            // 183 P2: the endpoint's relay state (§6.7).
+            relay: None,
         })
     }
 
@@ -835,6 +846,8 @@ impl runtime::Plugin for MeshPlugin {
             cfg.discovery
         );
         let _ = NET.set(net.clone());
+        // 183 §5.6: the machine facts carry this engine's mesh name.
+        platform::process::set_machine_name(&net.name);
         // 79 §6.6: secrets stamps its replicated rows with the engine id; it starts
         // before us and cannot ask the mesh (mesh depends on secrets), so we tell it.
         tokio::spawn(tell_secrets_engine(rt.clone(), net.id.clone()));
@@ -869,6 +882,10 @@ impl runtime::Plugin for MeshPlugin {
                 display: false,
                 gpu: false,
                 accelerator: None,
+                os: platform::process::machine().os.into(),
+                os_name: platform::process::machine().os_name.clone(),
+                arch: platform::process::machine().arch.into(),
+                host: platform::process::machine().host.clone(),
             })
         };
         // Written after the attach (below): a row that lands before the replica

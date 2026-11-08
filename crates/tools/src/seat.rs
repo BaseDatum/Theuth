@@ -48,6 +48,35 @@ fn update(session: SessionId, f: impl FnOnce(&mut Seat)) {
     }
 }
 
+/// 183 §5.5 (W-9): where a taken session landed. `was` is the recorded cwd
+/// when it did not exist here and the session sits at the home directory
+/// instead; `sessions.cwd` itself is never rewritten.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landing {
+    /// The directory the session is seated at.
+    pub cwd: PathBuf,
+    /// The recorded cwd that was missing or not a directory here.
+    pub was: Option<PathBuf>,
+}
+
+/// Seat `session` at its recorded `cwd`, or at the home directory when that
+/// is missing or not a directory on this machine.
+pub fn land(session: SessionId, cwd: &Path) -> Landing {
+    let landing = if cwd.is_dir() {
+        Landing {
+            cwd: cwd.to_path_buf(),
+            was: None,
+        }
+    } else {
+        Landing {
+            cwd: std::env::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+            was: Some(cwd.to_path_buf()),
+        }
+    };
+    set_cwd(session, Some(landing.cwd.clone()));
+    landing
+}
+
 /// The seat of `session` (default when it has none).
 pub fn seat_of(session: SessionId) -> Seat {
     lock(&SEATS).get(&session).cloned().unwrap_or_default()
@@ -206,6 +235,20 @@ mod tests {
         set_cwd(s, None);
         assert_eq!(seat_of(s), Seat::default());
         assert_eq!(resolve(s, Path::new("a/b")), PathBuf::from("a/b"));
+    }
+
+    #[test]
+    fn a_missing_cwd_lands_at_home_and_says_so() {
+        let scratch = crate::TestDir::new("land");
+        let s = SessionId::new();
+        let here = land(s, &scratch.0);
+        assert_eq!((here.cwd.as_path(), here.was), (scratch.0.as_path(), None));
+        let gone = scratch.0.join("gone");
+        let there = land(s, &gone);
+        assert_eq!(Some(there.cwd.clone()), std::env::home_dir());
+        assert_eq!(there.was, Some(gone));
+        assert_eq!(seat_of(s).cwd, Some(there.cwd));
+        forget(s);
     }
 
     #[test]

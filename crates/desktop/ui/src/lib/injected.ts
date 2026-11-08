@@ -1,3 +1,4 @@
+import type { SessionMoved } from '@/rpc/bindings/SessionMoved'
 import type { AdvisorSeverity } from '@/rpc/bindings/AdvisorSeverity'
 
 /** Mid-turn engine notes share one transcript presentation; context summaries already have their own card. */
@@ -55,6 +56,33 @@ export type Injected =
   | { kind: 'cell_result'; run: string; name?: string; label?: string; cell?: string; message?: string; exit: string; secs: string; text: string }
   /** 137G G10: `<memory>` — the endless view was shrunk to fit this turn; rendered as a muted info line. */
   | { kind: 'memory'; text: string }
+  /** 183 §11.1: `<session_moved …/>` — the session changed machines. `text` is the note the model read (rebuilt from
+   * `messages.moved` for a typed row); the card renders the fields, never the tag. */
+  | ({ kind: 'moved'; text: string } & MovedNote)
+  /** 183 §11.2: `<engine_restart …/>` — a resumed turn's restart note, the head of a tool result (`splitRestart`). */
+  | ({ kind: 'engine_restart'; text: string } & RestartNote)
+
+/** 183 §11.1 as the card reads it. `clock` is the tag's `HH:MM:SS`. */
+export type MovedNote = {
+  to: string
+  from: string
+  os: string
+  arch: string
+  host: string
+  cwd: string
+  cwdMissing: boolean
+  cwdWas?: string
+  clock: string
+  reason: string
+  jobsLeft: number
+  runtime: string
+  approvals: string
+  messaging: boolean
+  pending: boolean
+}
+
+/** 183 §11.2 / 109 §4.3. `after` is the seconds the turn was down; `to`/`os`/`cwd` only on a transfer or takeover. */
+export type RestartNote = { clock: string; after: number; cause: string; from?: string; to?: string; os?: string; cwd?: string; replayed: number; interrupted: number }
 
 export type CellResultInput = Extract<Injected, { kind: 'cell_result' }>
 
@@ -80,13 +108,91 @@ CARD.peer_state = 'child="'
 
 /** The wrapper names `classify` turns into a card or hides (the transcript never shows them as tags). */
 export const isClassified = (name: string): boolean =>
-  Object.hasOwn(CARD, name) || Object.hasOwn(HIDDEN, name) || Object.hasOwn(ENGINE_NOTICES, name) || name === 'budget' || name === 'resume_handoff' || name === 'skill' || name === 'memory'
+  Object.hasOwn(CARD, name) || Object.hasOwn(HIDDEN, name) || Object.hasOwn(ENGINE_NOTICES, name) || Object.hasOwn(SELF, name) || name === 'budget' || name === 'resume_handoff' || name === 'skill' || name === 'memory'
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]
 
 /** Undo the wrappers' XML attribute escape. */
 const unescape = (s: string) => s.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+
+/** 183: the self-closing notes `classify` cards (`<session_moved …/>`, `<engine_restart …/>`); `<time/>` is `splitTime`'s. */
+const SELF: Record<string, true> = { session_moved: true, engine_restart: true }
+
+/** Every `key="value"` of a self-closing tag (`<name …/>`), unescaped, in order. */
+export function tagAttrs(tag: string): [string, string][] {
+  return [...tag.matchAll(/([a-z_]+)="([^"]*)"/g)].map((m) => [m[1] as string, unescape(m[2] as string)])
+}
+
+const int = (v: string | undefined) => (v && /^\d+$/.test(v) ? Number(v) : 0)
+
+/** `<session_moved …/>` (§11.1) as the card's fields; missing attributes read empty, never throw. */
+export function parseMoved(tag: string): Extract<Injected, { kind: 'moved' }> {
+  const a = Object.fromEntries(tagAttrs(tag))
+  return {
+    kind: 'moved',
+    to: a.to ?? '',
+    from: a.from ?? '',
+    os: a.os ?? '',
+    arch: a.arch ?? '',
+    host: a.host ?? '',
+    cwd: a.cwd ?? '',
+    cwdMissing: a.cwd_missing === 'true',
+    ...(a.cwd_was ? { cwdWas: a.cwd_was } : {}),
+    clock: a.at ?? '',
+    reason: a.reason ?? '',
+    jobsLeft: int(a.jobs_left),
+    runtime: a.runtime ?? '',
+    approvals: a.approvals ?? '',
+    messaging: a.messaging !== 'off',
+    pending: a.pending === 'true',
+    text: tag,
+  }
+}
+
+/** `<engine_restart …/>` (§11.2, 109 §4.3) as the card's fields; `after="4s"` → 4. */
+export function parseRestart(tag: string): Extract<Injected, { kind: 'engine_restart' }> {
+  const a = Object.fromEntries(tagAttrs(tag))
+  const opt = (k: string) => (a[k] ? { [k]: a[k] } : {})
+  return {
+    kind: 'engine_restart',
+    clock: a.at ?? '',
+    after: int(a.after?.replace(/s$/, '')),
+    cause: a.kind ?? '',
+    ...opt('from'),
+    ...opt('to'),
+    ...opt('os'),
+    ...opt('cwd'),
+    replayed: int(a.replayed),
+    interrupted: int(a.interrupted),
+    text: tag,
+  }
+}
+
+/** A typed `messages.moved` record (`HistoryEntry::Moved`) as its card: the §11.1 note rebuilt from the record (the
+ * history row carries the record, not the text), then read back by `parseMoved` so both paths render alike. */
+export function movedFromRecord(m: SessionMoved): Extract<Injected, { kind: 'moved' }> {
+  const at = new Date(m.at)
+  const pairs: [string, string | undefined][] = [
+    ['to', m.to],
+    ['from', m.from],
+    ['os', m.os_name || m.os],
+    ['arch', m.arch],
+    ['host', m.host],
+    ['cwd', m.cwd],
+    ['cwd_missing', m.cwd_missing ? 'true' : undefined],
+    ['cwd_was', m.cwd_missing ? (m.cwd_was ?? undefined) : undefined],
+    ['at', Number.isNaN(at.getTime()) ? undefined : [at.getHours(), at.getMinutes(), at.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':')],
+    ['reason', m.reason],
+    ['jobs_left', String(m.jobs_left)],
+    ['runtime', m.runtime],
+    ['approvals', m.approvals],
+    ['messaging', m.messaging ? undefined : 'off'],
+    ['pending', m.pending ? 'true' : undefined],
+  ]
+  // `&` then `"`: the only escapes `tagAttrs`' `"([^"]*)"` needs to read a value back whole.
+  return parseMoved(`<session_moved ${pairs.flatMap(([k, v]) => (v === undefined ? [] : [`${k}="${v.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"`])).join(' ')}/>`)
+}
 
 /** Trimmed text between `<tag>` and `</tag>`; `''` when absent. */
 function inner(s: string, tag: string): string {
@@ -266,6 +372,16 @@ export function classify(text: string): Injected[] | null {
       if (w === null) return null
       out.push(w)
       break
+    }
+    // 183 §11: a self-closing note is a card of its own, ended by `/>` (a bare `>` may sit in a `cwd` value).
+    const self = /^<(session_moved|engine_restart) /.exec(rest)?.[1]
+    if (self !== undefined) {
+      const end = rest.indexOf('/>')
+      if (end < 0) return null
+      const tag = rest.slice(0, end + 2)
+      out.push(self === 'session_moved' ? parseMoved(tag) : parseRestart(tag))
+      rest = rest.slice(end + 2).trimStart()
+      continue
     }
     const gt = rest.indexOf('>')
     if (!rest.startsWith('<') || gt < 0) return null

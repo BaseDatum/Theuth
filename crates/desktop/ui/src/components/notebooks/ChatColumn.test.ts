@@ -12,7 +12,7 @@ vi.mock('@/components/chat/Transcript', () => ({ Transcript: () => null }))
 vi.mock('@/components/sidebar/AgentTree', () => ({ ago: () => '' }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {}, useSessions: { getState: () => ({}) } }))
 vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: unknown }) => unknown) => sel({ client: {} }) }))
-vi.mock('@/lib/rpc', () => ({ useApi: () => ({}), queryKeys: { notes: ['notes'] } }))
+vi.mock('@/lib/rpc', () => ({ useApi: () => ({}), queryKeys: { notes: ['notes'], roster: ['roster'] } }))
 
 const estimate: ContextEstimate = {
   items: [

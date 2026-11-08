@@ -800,6 +800,8 @@ mod tests {
             reachable,
             last_seen_ms: 0,
             hub_pref: mesh::HubPref::Eligible,
+            path: mesh::PeerPath::Offline,
+            rtt_ms: None,
         }
     }
 
@@ -824,6 +826,8 @@ mod tests {
                 },
                 traffic: Vec::new(),
                 replica: None,
+                stats: Vec::new(),
+                relay: None,
             })
         }
         async fn remove_peer(&self, _: mesh::EngineId) -> anyhow::Result<()> {

@@ -430,6 +430,10 @@ mod tests {
                 display,
                 gpu,
                 accelerator: None,
+                os: String::new(),
+                os_name: String::new(),
+                arch: String::new(),
+                host: String::new(),
             },
         }
     }

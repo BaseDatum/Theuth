@@ -10,6 +10,8 @@ import { PtyIcon } from './Indicators'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isApple } from '@/lib/chord'
+import { runsElsewhere } from '@/lib/front-door'
+import { useEngineLabel } from '@/lib/owner'
 import { touch } from '@/lib/platform'
 import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -87,6 +89,8 @@ export function attachSource(
   api: Pick<Api, 'pty_input' | 'cell_input'>,
   client: Pick<RpcClient, 'stream'>,
   onExit: (e: JobExit) => void,
+  /** 183 §4.3: the attach was refused `-32014 RunsElsewhere` — the live output stays on `owner`; nothing is attached or sent. */
+  onElsewhere?: (owner: string) => void,
 ) {
   let ended = false
   let lane: Promise<unknown> = Promise.resolve()
@@ -125,10 +129,17 @@ export function attachSource(
         break
     }
   }
-  const off =
+  const off = (
     src.kind === 'pty'
       ? client.stream<PtyChunk>('subscribe_pty', [src.session, src.job, term.rows, term.cols], 'unsubscribe_pty', chunk)
       : client.stream<PtyChunk>('cell_attach', [src.run], 'cell_detach', chunk)
+  ).catch((e: unknown) => {
+    const r = runsElsewhere(e)
+    if (!r) throw e
+    ended = true
+    onElsewhere?.(r.owner)
+    return async () => {}
+  })
   return {
     send,
     ended: () => ended,
@@ -182,6 +193,8 @@ export type TerminalProps = {
   popped?: boolean
   /** Once, when the stream's `exit` chunk arrives. */
   onExit?: () => void
+  /** 183 §4.3: the run's live output stays on another engine (`-32014`); its id. */
+  onElsewhere?: (owner: string) => void
   className?: string
 } & ((JobRef & { source?: undefined }) | { source: TerminalSource; session?: undefined; job?: undefined })
 
@@ -192,7 +205,7 @@ export type TerminalProps = {
  * strip and the status line (`label` · size · exit). `popped`: this is the window's whole content — it owns the
  * PTY's size (leaves the `mark`, restores the default grid on close) and titles the window.
  */
-export function Terminal({ session, job, label, popped = false, source, onExit, className }: TerminalProps) {
+export function Terminal({ session, job, label, popped = false, source, onExit, onElsewhere, className }: TerminalProps) {
   const api = useApi()
   const client = useConnection((s) => s.client)
   const mobile = useIsMobile()
@@ -200,6 +213,9 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
   const termRef = useRef<Xterm>(null)
   const sendRef = useRef<(d: string) => void>(null)
   const onExitRef = useRef(onExit)
+  const onElsewhereRef = useRef(onElsewhere)
+  const [elsewhere, setElsewhere] = useState<string | null>(null)
+  const elsewhereLabel = useEngineLabel(elsewhere ?? '')
   const [exit, setExit] = useState<JobExit | null>(null)
   const [size, setSize] = useState('')
   // A cell source's height (171F B12): rows shown and the measured row height (px, 0 until xterm has rendered).
@@ -217,13 +233,15 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
   )
   useEffect(() => {
     onExitRef.current = onExit
-  }, [onExit])
+    onElsewhereRef.current = onElsewhere
+  }, [onExit, onElsewhere])
 
   useEffect(() => {
     const el = host.current
     if (!el || !client) return
     const ref = src.kind === 'pty' ? src : null
     setExit(null)
+    setElsewhere(null)
     setRows(CELL_MIN_ROWS)
     const term = new Xterm({
       theme: { background: BG, foreground: FG, cursor: FG, selectionBackground: '#e8dcc855' },
@@ -268,6 +286,9 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
     const wire = attachSource(src, term, api, client, (e) => {
       setExit(e)
       onExitRef.current?.()
+    }, (owner) => {
+      setElsewhere(owner)
+      onElsewhereRef.current?.(owner)
     })
     sendRef.current = wire.send
     // pty source only: size the PTY to the box, and give the default grid back on leaving.
@@ -317,7 +338,7 @@ export function Terminal({ session, job, label, popped = false, source, onExit, 
     }
   }, [src, client, api, mobile, popped])
 
-  const status = [label, size, exit && exitText(exit)].filter(Boolean).join(' · ')
+  const status = [label, size, exit && exitText(exit), elsewhere !== null && `live output on ${elsewhereLabel}`].filter(Boolean).join(' · ')
   useEffect(() => {
     if (popped) document.title = status
   }, [popped, status])

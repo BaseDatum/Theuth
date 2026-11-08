@@ -178,20 +178,32 @@ export const PLAIN_OPTIONS: CreateSessionOptions = {
   harness: null,
 }
 
+/** 183 §5.6 (W-10): the new chat's machine (mesh id) and folder there; `null` = this machine, its default folder. Not
+ * persisted: a relaunch starts on this machine. Spent with the pick by `openDraftSession`. */
+export const useDraftTarget = create<{ engine: string | null; cwd: string | null; set(patch: Partial<{ engine: string | null; cwd: string | null }>): void }>()((set) => ({
+  engine: null,
+  cwd: null,
+  set: (patch) => set(patch),
+}))
+
 /**
  * 148 R1: open the session a draft's first action creates (a send, Talk, `/<skill>`, a parked skill). `options`
  * (a New Chat switch on, built by the composer with the pick in it) or a bare model/effort pick goes through
  * `create_session`; otherwise `new_session()`. The pick is spent either way. `open` is the `create_session` reply
  * when it ran (a private session needs it); `pick` is what was spent, for seeding the transcript header.
+ * 183 §5.6: a chosen machine or folder (`useDraftTarget`) also goes through `create_session`, with `engine` / `cwd`.
  */
 export async function openDraftSession(
   api: Api,
   options: CreateSessionOptions | null = null,
 ): Promise<{ id: string; open: SessionOpen | null; pick: DraftPick }> {
   const { pick, resetPick } = useDrafts.getState()
-  const wanted = options ?? (pick.model || pick.effort ? { ...PLAIN_OPTIONS, ...pick } : null)
+  const target = useDraftTarget.getState()
+  const base = options ?? (pick.model || pick.effort || target.engine || target.cwd ? { ...PLAIN_OPTIONS, ...pick } : null)
+  const wanted = base && { ...base, ...(target.engine ? { engine: target.engine } : {}), ...(target.cwd ? { cwd: target.cwd } : {}) }
   const open = wanted ? await api.create_session(wanted) : null
   const id = open ? open.session : await api.new_session()
   resetPick()
+  target.set({ engine: null, cwd: null })
   return { id, open, pick }
 }

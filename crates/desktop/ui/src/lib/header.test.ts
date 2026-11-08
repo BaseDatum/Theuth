@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { HYSTERESIS, PANEL_GAP, PANEL_MAX, TIERS, decideTier, headerOrder, layout, panelGeometry } from './header'
+import { HYSTERESIS, approvalsOff, PANEL_GAP, PANEL_MAX, TIERS, decideTier, headerOrder, layout, panelGeometry } from './header'
 
 test('the full bar holds until it overflows, then the compact bar; a tier never measured is never entered', () => {
   expect(decideTier(0, 900, [700])).toBe(0)
@@ -136,4 +136,16 @@ test('a pane partly off the viewport is clamped to the visible part', () => {
   expect(panelGeometry(-100, 300, 1000)).toEqual({ left: PANEL_GAP, width: 300 - 2 * PANEL_GAP })
   expect(panelGeometry(900, 1300, 1000)).toEqual({ left: 900 + PANEL_GAP, width: 100 - 2 * PANEL_GAP })
   expect(panelGeometry(0, 10, 1000).width).toBe(0)
+})
+
+test('183 §4.5: the approvals pill follows the session\'s effective value on its owner, not this engine\'s switch', () => {
+  const own = { global: true, session: true }
+  // The owner says prompts are off for this chat (its pin or an ancestor\'s) though this machine\'s switch is on.
+  expect(approvalsOff({ session: false }, own)).toBe(true)
+  // Pinned on under a global-off switch: no pill.
+  expect(approvalsOff({ session: true }, { global: false, session: false })).toBe(false)
+  // Until the reader answers (or the owner is offline): this engine's own switch.
+  expect(approvalsOff(undefined, { global: false, session: true })).toBe(true)
+  expect(approvalsOff(undefined, own)).toBe(false)
+  expect(approvalsOff(undefined, null)).toBe(false)
 })

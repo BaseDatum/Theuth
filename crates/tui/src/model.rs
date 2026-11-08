@@ -1200,6 +1200,10 @@ pub enum CardKind {
     Restart,
     /// 152 D6: the view an endless parent handed a native child (137 R1-D1).
     Memory,
+    /// 183 §5.3: this session moved to (or was taken by) another engine.
+    Moved,
+    /// 183 §11.2: the `<engine_restart/>` note a resumed tool result opens with.
+    EngineRestart,
 }
 
 impl CardKind {
@@ -1217,8 +1221,44 @@ impl CardKind {
             CardKind::Vision => "◉",
             CardKind::Restart => "↻",
             CardKind::Memory => "∞",
+            CardKind::Moved => "⇄",
+            CardKind::EngineRestart => "↻",
         }
     }
+}
+
+/// 183 §5.3: the one-line title of a Moved card.
+pub fn moved_title(m: &agent::SessionMoved) -> String {
+    let from = if m.from.is_empty() {
+        String::new()
+    } else {
+        format!(" · from {}", m.from)
+    };
+    format!(
+        "Session moved to {} · {} · {}{from}",
+        m.to, m.os_name, m.cwd
+    )
+}
+
+/// 183 §11.2: a card for a leading `<engine_restart …/>` line, split off a
+/// resumed tool result; `rest` is the output without it.
+fn split_engine_restart(output: &str) -> Option<(Entry, &str)> {
+    let (note, rest) = output.split_once('\n').unwrap_or((output, ""));
+    let note = note.trim_end();
+    if !note.starts_with("<engine_restart ") || !note.ends_with("/>") {
+        return None;
+    }
+    let get = |k: &str| attr(note, k).map(unescape).unwrap_or_default();
+    let after = get(" after=\"");
+    let title = match attr(note, " to=\"") {
+        Some(to) => {
+            let from = attr(note, " from=\"")
+                .map_or_else(String::new, |f| format!(" · moved from {}", unescape(f)));
+            format!("Resumed on {} after {after}{from}", unescape(to))
+        }
+        None => format!("Resumed after {after} · {}", get(" kind=\"")),
+    };
+    Some((card(CardKind::EngineRestart, title, note), rest))
 }
 
 /// A collapsed [`Entry::Card`] over `text`.
@@ -11370,7 +11410,18 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
                 }
                 return vec![removed_card(&shown, &args.join("\n"))];
             }
-            vec![Entry::Tool {
+            let mut out = Vec::new();
+            let result = match result {
+                Some((output, is_error)) => match split_engine_restart(&output) {
+                    Some((note, rest)) => {
+                        out.push(note);
+                        Some((rest.to_owned(), is_error))
+                    }
+                    None => Some((output, is_error)),
+                },
+                None => None,
+            };
+            out.push(Entry::Tool {
                 args,
                 name: shown,
                 call_id,
@@ -11379,7 +11430,8 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
                 scrape: None,
                 result,
                 expanded: None,
-            }]
+            });
+            out
         }
         HistoryEntry::Compacted {
             epoch,
@@ -11409,6 +11461,14 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             advisory,
             expanded: false,
         }],
+        // 183 §5.3: one collapsed card; the model-facing text on Ctrl+O.
+        HistoryEntry::Moved { moved, .. } => {
+            vec![card(
+                CardKind::Moved,
+                moved_title(&moved),
+                &moved.model_text(),
+            )]
+        }
     }
 }
 
@@ -18562,6 +18622,7 @@ mod tests {
             owner: (!here).then(|| owner.clone()),
             here,
             cause: None,
+            from: None,
         };
         m.apply(UiEvent::History(
             s,
@@ -18663,6 +18724,65 @@ mod tests {
             Some(Entry::Card { kind: CardKind::Vision, title, .. })
                 if title == "vision: prov/eyes failed on 1 image(s)"
         ));
+    }
+
+    /// 183 §5.3, §11.2: a Moved row is a `Moved` card, and a resumed tool
+    /// result's leading `<engine_restart/>` becomes its own card.
+    #[test]
+    fn moved_row_and_engine_restart_render_as_cards() {
+        let opts = markdown::Options::default();
+        let moved = agent::SessionMoved {
+            to: "xeus".into(),
+            from: "mac".into(),
+            to_id: "b".into(),
+            from_id: "a".into(),
+            os: "linux".into(),
+            os_name: "Arch Linux".into(),
+            arch: "x86_64".into(),
+            host: "xeus".into(),
+            cwd: "/w".into(),
+            cwd_missing: false,
+            cwd_was: None,
+            at: chrono::Utc::now(),
+            reason: "moved".into(),
+            jobs_left: 0,
+            runtime: "none".into(),
+            approvals: "ask".into(),
+            messaging: true,
+            pending: false,
+        };
+        let out = from_history(
+            HistoryEntry::Moved {
+                moved,
+                context: None,
+            },
+            &opts,
+        );
+        assert!(matches!(
+            &out[0],
+            Entry::Card { kind: CardKind::Moved, title, .. }
+                if title == "Session moved to xeus · Arch Linux · /w · from mac"
+        ));
+        let out = from_history(
+            HistoryEntry::Tool {
+                call_id: "c".into(),
+                name: "shell".into(),
+                args: serde_json::json!({}),
+                result: Some((
+                    "<engine_restart at=\"11:42:07\" after=\"4s\" kind=\"transfer\" from=\"mac\" to=\"xeus\" os=\"Arch Linux\" cwd=\"/w\" replayed=\"0\" interrupted=\"0\"/>\nok".into(),
+                    false,
+                )),
+                files: Vec::new(),
+                context: None,
+            },
+            &opts,
+        );
+        assert!(matches!(
+            &out[0],
+            Entry::Card { kind: CardKind::EngineRestart, title, .. }
+                if title == "Resumed on xeus after 4s · moved from mac"
+        ));
+        assert!(matches!(&out[1], Entry::Tool { result: Some((r, false)), .. } if r == "ok"));
     }
 
     /// A reloaded note row (`HistoryEntry::User { vision }`) is the vision
