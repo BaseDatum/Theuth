@@ -40,3 +40,4 @@ Sky has NOT said go for the build. This design is the contract the build will fo
 | D8 | §17 Q3: a remote session with approvals on, nobody answers | **Deny after 5 min.** Same as local; W-6 stands |
 | D9 | §17 Q4: what contacts can reach | First answer: "Also chosen chats". Clarified: **Their agents message it.** Another harness's agents can send into a chat you pick, as the A2A plugin's exact-session exports already allow. There is NO live view for the other person, and no typing from their app |
 | D10 | Build? | **Go: all phases in order** |
+| D11 | §17 Q6: the removed machine keeps `mesh/device_key`, so it could pose as this mesh to paired phones and iPads | **Offer a checkbox** (12:59): the Unpair dialog gets "Also reset phone and iPad pairing", off by default. When ticked, the device key is rotated after the vault key and every phone and iPad must re-pair. |

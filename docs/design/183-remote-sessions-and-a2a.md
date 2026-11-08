@@ -59,7 +59,7 @@ Writer's calls:
 - **W-34** Member rule: each key records the engines it was minted for or granted to. Applying a tombstone for an engine in the current key's members starts a rotation after 30 s plus jitter, unless a newer key without that member arrived in the meantime. This settles concurrent unpairs and an initiator that crashed between the tombstone and the mint.
 - **W-35** Pairing carries the keyring (current and unretired keys) beside today's `vault_key`; `key_owner` is unchanged. If the adopting side's current epoch is ≥ the winner's, the winner rotates right after pairing, so both former meshes converge on one key.
 - **W-36** The Unpair dialog lists every user secret with a kept version written no later than the removed engine's `last_seen_ms` + 5 min (clock skew); if the engine is connected, it lists all. OAuth grants are listed as "sign in again". `mesh/*` and `sandbox/*` rows are not listed.
-- **W-37** `mesh/device_key` is not rotated: a new one would re-pair every phone and iPad. The dialog says: "Phones paired to this mesh trust a key xeus knows: re-pair them if xeus is lost." (§17 Q6.)
+- **W-37** (amended by D11) `mesh/device_key` is rotated only when the Unpair dialog's checkbox "Also reset phone and iPad pairing" (off by default) is ticked: after the vault rotation completes, the unpairing engine mints a new device key, distributes it like the mesh key (§6.9), and every phone and iPad must re-pair (scan the QR again). Unticked, the dialog warns: "Phones paired to this mesh trust a key xeus knows: re-pair them if xeus is lost." (§17 Q6, D11.)
 - **W-38** While it waits for a key, an engine keeps the last in-memory value of any row whose `key_id` it does not hold (rather than dropping it, as `refresh` does today) and asks each connected peer for that key. Reads never go blank mid-rotation.
 - **W-39** A contact's message to an exported chat never joins a running turn. It waits (peer queue, 64 per recipient) until the chat is idle, then opens its own turn under a **turn cap** (`SetTurnCap`), which is cleared at `TurnFinished` or cancel. The chat's own cap and the owner's later turns are untouched.
 - **W-40** A chat export owned by another machine is forwarded by the contact's engine with a new `Forwarded`-only RPC, `contact_deliver(ContactEnvelope)`, which carries the cap. A new method, not a field on `PeerEnvelope`: an old owner answers −32601 and the contact is told "cloud-1 needs an update". It is never delivered as an uncapped peer message.
@@ -200,7 +200,7 @@ What ships: **Phase 1** lets any machine (and the phone through the hub) operate
 - **Merging two meshes across owners.** A contact never joins `peers`, never gets the vault key, never replicates.
 - **A second forwarder.** Phase 1 and 2 reuse `forward::to_peer` and `communication::mesh::forward`.
 - **Queueing agent messages for an offline owner** (W-15).
-- **Rotating `mesh/device_key` on unpair** (W-37): it would re-pair every phone; the Unpair dialog warns instead. Vault-key rotation itself is in scope (D7, §6.9).
+- **Rotating `mesh/device_key` on every unpair** (W-37): it would re-pair every phone; per D11 it is an opt-in checkbox in the Unpair dialog instead. Vault-key rotation itself is in scope (D7, §6.9).
 - **Replacing HTTP A2A.** It stays for non-theuth agents.
 
 ### 3.3 Terms
@@ -1149,7 +1149,7 @@ Settings › Network › Advanced gains the button "Rotate vault key" (`vault_ro
 | 45 | Share link made before the rotation | the document actor re-seals it under a `RetireHold`; if the re-seal never landed, the link stops opening at retire and the UI offers Re-share (§6.9.11) |
 | 46 | Phone pairing pending during the rotation | its PSK opens by trial with the retained key; 5 min TTL < 10 min retire grace |
 | 47 | Sandbox VM destroyed | the same rotation (W-28): its snapshots may still hold the key |
-| 48 | `mesh/device_key` is known to C | not rotated (W-37); the dialog warns to re-pair phones if C is lost (§17 Q6) |
+| 48 | `mesh/device_key` is known to C | rotated only if the Unpair checkbox is ticked (W-37, D11); otherwise the dialog warns to re-pair phones if C is lost |
 | 49 | A contact's message arrives while the exported chat is mid-turn | it waits for idle and then opens its own capped turn (W-39); the 65th pending message is refused as today |
 | 50 | The owner types while a contact's capped turn runs | the steer joins that turn and the turn cap still holds; the composer chip says so; cancel ends it and the owner's next turn is uncapped |
 | 51 | The exported chat's owner machine is offline | the task fails at once: "the chat is on cloud-1, which is offline" (W-15) |
@@ -1451,7 +1451,7 @@ Proofs on scratch engines (`docs/design/180-notes.md` recipe): two per phase, th
 3. ~~A pinned-on approval with nobody watching denies after 300 s.~~ **Answered, D8: deny after 5 min, same as local; W-6 stands** (§4.6).
 4. ~~Contacts reach agents only, not existing chats.~~ **Answered, D9: their agents can message chosen chats; no live view, no typing** (§7.10).
 5. **Staggered upgrade.** Sessions columns need every machine on the new build (§13 row 9). A rotation with a pre-183 machine still paired leaves that machine unable to read secrets until it upgrades (§13 row 40). *Recommend: say both in the release note, as for the columns since 0042.*
-6. **`mesh/device_key` after an unpair.** The removed machine knows the mesh's device key, so it could pose as this mesh to the phones and iPads, if it can reach them. Rotating that key would re-pair every device. *Recommend: do not rotate; the Unpair dialog warns (W-37); a "Re-key devices" action can come later if a lost machine makes it matter.*
+6. **`mesh/device_key` after an unpair.** The removed machine knows the mesh's device key, so it could pose as this mesh to the phones and iPads, if it can reach them. Rotating that key would re-pair every device. *Recommend: do not rotate; the Unpair dialog warns (W-37); a "Re-key devices" action can come later if a lost machine makes it matter.* **Answered (D11, Sky 12:59): offer a checkbox** — "Also reset phone and iPad pairing", off by default; ticked, the device key is rotated after the vault key and every phone and iPad re-pairs.
 
 ## 18. Size and order of work
 
@@ -1551,3 +1551,5 @@ Sky, 2026-11-08 12:33–12:36 (verbatim in `183-rulings.md`, "Later rulings"): *
 | §17 | Q1–Q4 answered (D6–D9); Q5 kept and widened; Q6 new (`mesh/device_key`) | D6–D9 |
 | §18 | rotation and exported-chat rows; order per D10; about 14.5 worker-days | D7, D9, D10 |
 | §19 | exported chat, key id, keyring, member rule, retire, sweep, turn cap | D7, D9 |
+
+**D11 (Sky 12:59).** `mesh/device_key` rotation is an opt-in checkbox in the Unpair dialog ("Also reset phone and iPad pairing", off by default). See W-37, §3.2, §13 row 48 and §17 Q6. Phase 2 builds it with the vault rotation, distributing the key over the same `KeyGrant` path, and every link device re-pairs.
