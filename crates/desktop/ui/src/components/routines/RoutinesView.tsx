@@ -218,6 +218,8 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
       <div className="mt-0.5 truncate text-[13px] text-fg-secondary" title={title}>
         {s.error !== null ? <span className="text-danger">{s.error}</span> : s.name === 'dreaming' ? <DreamingSentence fallback={sentence(r, sensorArgs(s, sensors))} /> : study !== null ? <StudySentence slug={study} fallback={sentence(r, sensorArgs(s, sensors))} /> : sentence(r, sensorArgs(s, sensors))}
       </div>
+      {/* XTICK: a legacy routine fires nowhere until a machine claims it. */}
+      {s.waiting && <div className="mt-0.5 text-xs text-fg-tertiary">{s.waiting}</div>}
       <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
         {s.next && (
           <span className="tabular-nums" title={new Date(s.next).toLocaleString()}>

@@ -1126,6 +1126,12 @@ pub fn set_created(text: &str, at: DateTime<Local>) -> String {
     )
 }
 
+/// Rewrite the `engine:` line (182 D6) the way [`set_enabled`] does: the
+/// actor claims a legacy file for the engine that runs it (XTICK).
+pub fn set_engine(text: &str, engine: &str) -> String {
+    set_line(text, "engine:", &format!("engine: {engine}\n"))
+}
+
 /// Replace the front-matter line starting with `key`, else insert `line` right
 /// after the opening `---`. Text without front matter gets one.
 fn set_line(text: &str, key: &str, line: &str) -> String {

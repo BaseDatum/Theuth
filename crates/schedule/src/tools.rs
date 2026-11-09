@@ -498,6 +498,8 @@ fn status_line(s: &ScheduleInfo, now: DateTime<Local>) -> String {
     }
     if !s.enabled {
         line.push_str(" · disabled");
+    } else if let Some(w) = &s.waiting {
+        line.push_str(&format!(" · {w}"));
     }
     line
 }

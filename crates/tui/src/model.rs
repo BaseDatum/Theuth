@@ -16310,6 +16310,7 @@ mod tests {
                 agent: None,
                 project: None,
                 engine: None,
+                waiting: None,
                 when_sensor: None,
                 sensor: None,
                 fire: None,

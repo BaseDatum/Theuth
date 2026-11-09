@@ -181,6 +181,18 @@ pub fn self_id() -> Option<String> {
     SELF_ID.get().cloned()
 }
 
+/// XTICK: this engine's mesh id from `data_dir`'s identity file — readable
+/// before the mesh plugin starts; `None` without one (never creates it).
+pub fn stored_self_id(data_dir: &std::path::Path) -> Option<String> {
+    let dir = data_dir.join(DIR);
+    if !dir.join("identity").exists() {
+        return None;
+    }
+    identity::Identity::load_or_create(&dir)
+        .ok()
+        .map(|i| i.id().0)
+}
+
 /// The bound endpoint, for [`is_paired`]; set once at plugin start.
 static NET: std::sync::OnceLock<Arc<Net>> = std::sync::OnceLock::new();
 
@@ -189,6 +201,12 @@ static NET: std::sync::OnceLock<Arc<Net>> = std::sync::OnceLock::new();
 pub fn is_paired(id: &str) -> Option<bool> {
     NET.get()
         .map(|n| n.paired_ids().iter().any(|p| p.to_string() == id))
+}
+
+/// XTICK: this engine has a paired peer; `None` (unknown) before the mesh
+/// plugin bound its endpoint.
+pub fn has_peers() -> Option<bool> {
+    NET.get().map(|n| !n.paired_ids().is_empty())
 }
 
 /// 183 R1 (S8): the mesh engines connected right now (ids as text); `None`
@@ -227,26 +245,61 @@ pub fn messaging_off(id: &str) -> bool {
         .any(|x| x == id)
 }
 
-/// 182 M2a/S11: `data_dir`'s mesh store lists a paired peer — readable before
-/// the mesh plugin starts (read-only; `false` without a store).
-pub async fn has_stored_peers(data_dir: &std::path::Path) -> bool {
+/// `data_dir`'s mesh store opened read-only (before the mesh plugin starts);
+/// `None` without one.
+async fn stored_pool(data_dir: &std::path::Path) -> Option<sqlx::SqlitePool> {
     let path = data_dir.join(DB);
     if !path.exists() {
-        return false;
+        return None;
     }
     let opts = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(&path)
         .read_only(true);
-    let Ok(pool) = sqlx::sqlite::SqlitePoolOptions::new()
+    sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(opts)
         .await
-    else {
+        .ok()
+}
+
+/// 182 M2a/S11: `data_dir`'s mesh store lists a paired peer — readable before
+/// the mesh plugin starts (read-only; `false` without a store).
+pub async fn has_stored_peers(data_dir: &std::path::Path) -> bool {
+    let Some(pool) = stored_pool(data_dir).await else {
         return false;
     };
     let n: Result<(i64,), _> = sqlx::query_as("SELECT COUNT(*) FROM peers")
         .fetch_one(&pool)
         .await;
+    pool.close().await;
+    n.is_ok_and(|(n,)| n > 0)
+}
+
+/// XTICK: [`has_peers`] before the mesh plugin starts — the stored paired set
+/// as [`store::Store::peers`] reads it (183 R4): not this engine, not
+/// tombstoned, not quarantined. A store from before 183 (no `peer_origin`
+/// yet) has no quarantine to leave out.
+pub async fn has_stored_paired(data_dir: &std::path::Path) -> bool {
+    let Some(pool) = stored_pool(data_dir).await else {
+        return false;
+    };
+    let me = stored_self_id(data_dir).unwrap_or_default();
+    let mut n: Result<(i64,), _> = sqlx::query_as(
+        "SELECT COUNT(*) FROM peers p WHERE p.id != ?1 AND p.removed_ms IS NULL \
+         AND NOT EXISTS (SELECT 1 FROM peer_origin o \
+             WHERE o.id = p.id AND o.quarantined AND NOT o.confirmed)",
+    )
+    .bind(&me)
+    .fetch_one(&pool)
+    .await;
+    if n.is_err() {
+        n = sqlx::query_as(
+            "SELECT COUNT(*) FROM peers p WHERE p.id != ?1 AND p.removed_ms IS NULL",
+        )
+        .bind(&me)
+        .fetch_one(&pool)
+        .await;
+    }
     pool.close().await;
     n.is_ok_and(|(n,)| n > 0)
 }
@@ -1360,6 +1413,43 @@ async fn tell_secrets_engine(rt: Runtime, id: EngineId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// XTICK: before the plugin starts, "peered" is the stored paired set —
+    /// this engine's own row, a tombstone and a quarantined row are no peer.
+    #[tokio::test]
+    async fn stored_paired_leaves_out_self_tombstones_and_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = identity::Identity::load_or_create(&dir.path().join(DIR))
+            .unwrap()
+            .id();
+        assert_eq!(stored_self_id(dir.path()).as_deref(), Some(me.0.as_str()));
+        let store = store::Store::open(&dir.path().join(DB), me.clone())
+            .await
+            .unwrap();
+        let pool = store.pool();
+        for (id, removed) in [(me.0.as_str(), None), ("gone", Some(2)), ("held", None)] {
+            sqlx::query(
+                "INSERT OR REPLACE INTO peers (id, name, added_ms, removed_ms) VALUES (?, ?, 1, ?)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(removed)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("INSERT INTO peer_origin (id, by_engine, at_ms, quarantined) VALUES ('held', 'x', 1, 1)")
+            .execute(pool)
+            .await
+            .unwrap();
+        assert!(has_stored_peers(dir.path()).await, "raw rows");
+        assert!(!has_stored_paired(dir.path()).await);
+        sqlx::query("INSERT INTO peers (id, name, added_ms) VALUES ('live', 'live', 1)")
+            .execute(pool)
+            .await
+            .unwrap();
+        assert!(has_stored_paired(dir.path()).await);
+    }
 
     /// 79 §6.6 (was roster→secrets, now mesh→secrets): once the mesh has its id,
     /// the secrets actor stamps the rows it writes with it, not the hostname.

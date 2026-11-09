@@ -431,6 +431,12 @@ pub trait TaskCreator: Send + Sync {
         let _ = agent;
         false
     }
+    /// XTICK: the engines (mesh ids) whose roster has `agent` (182 D8);
+    /// empty when unknown. Claims a legacy `agent:` file for that engine.
+    async fn engines_with(&self, agent: &str) -> Vec<String> {
+        let _ = agent;
+        Vec::new()
+    }
 }
 
 /// `ask` → `()`: the tasks plugin hands over its [`TaskCreator`]. Replaces any earlier one.
@@ -480,6 +486,11 @@ pub struct ScheduleInfo {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub engine: Option<String>,
+    /// XTICK: `waiting for a machine to claim it (claims in 75s)` — a legacy
+    /// file that fires nowhere until a machine claims it; `None` otherwise.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub waiting: Option<String>,
     /// `when:` as written for a watcher (40 §2): `pr_watch.py repo=o/r pr=482`; `None` for a clock-only file.
     pub when_sensor: Option<String>,
     /// The sensor file alone (`pr_watch.py`); `None` for a clock-only file.
@@ -832,10 +843,18 @@ struct Entry {
     session: Option<SessionId>,
     last: Option<DateTime<Local>>,
     last_result: Option<String>,
+    /// XTICK: this engine has local history for the file — a runs row at
+    /// load, or a fire / check here since. Runs rows never replicate.
+    ran_here: bool,
 }
 
 impl Entry {
-    fn new(raw: String, spec: Result<file::Spec, String>, now: DateTime<Local>) -> Self {
+    fn new(
+        raw: String,
+        spec: Result<file::Spec, String>,
+        now: DateTime<Local>,
+        made_here: bool,
+    ) -> Self {
         let mut e = Self {
             spec,
             raw,
@@ -843,17 +862,26 @@ impl Entry {
             session: None,
             last: None,
             last_result: None,
+            ran_here: false,
         };
-        e.arm(now);
+        e.arm(now, made_here);
         e
+    }
+
+    fn has_history(&self) -> bool {
+        self.ran_here || self.last.is_some()
     }
 
     /// `next` from `last` as at boot (34 §3): a `missed: run` cron occurrence
     /// in `(last, now]` is due now; otherwise the next occurrence after `now`.
     /// Also the handover path: a non-hub does not tick, so regaining the hub
-    /// re-arms every entry through here.
-    fn arm(&mut self, now: DateTime<Local>) {
+    /// re-arms every entry through here. XTICK: an `every:` file not
+    /// [`made_here`] is held one interval ([`Self::hold_first`]).
+    fn arm(&mut self, now: DateTime<Local>, made_here: bool) {
         self.next = next_of(&self.spec, now, self.last);
+        if !made_here {
+            self.hold_first(now);
+        }
         if let (Ok(s), Some(last)) = (&self.spec, self.last)
             && s.enabled
             && s.missed_run
@@ -862,7 +890,34 @@ impl Entry {
             self.next = Some(now);
         }
     }
+
+    /// XTICK (part 3): an armed `every:` file that never fired here first
+    /// fires one interval from `now`, not at once — it arrived by
+    /// replication, so a machine that never ran it does not fire it on arrival.
+    fn hold_first(&mut self, now: DateTime<Local>) {
+        if let (Some(_), None, Ok(s)) = (self.next, self.last, &self.spec)
+            && let file::When::Every(d) = s.when
+        {
+            self.next = Some(now + d);
+        }
+    }
 }
+
+/// XTICK (part 3): as far as the file tells, it was made on this engine
+/// (`me`) — stamped with it (every create path stamps, 182 D6), or a legacy
+/// file on a lone engine. Anything else arrived by replication.
+fn made_here(spec: &Result<file::Spec, String>, peered: bool, me: Option<&str>) -> bool {
+    match spec.as_ref().map(|s| s.engine.as_deref()) {
+        Ok(Some(e)) => me == Some(e),
+        Ok(None) => !peered,
+        Err(_) => true,
+    }
+}
+
+/// XTICK: how long the hub leaves a legacy file unclaimed before it claims
+/// it itself — two ticks for an engine that ran it to claim it, plus
+/// replication slack for that claim to land here.
+const CLAIM_GRACE: Duration = Duration::from_secs(2 * 60 + 30);
 
 /// `next` for an entry: `None` when broken or disabled (34 §3).
 fn next_of(
@@ -993,9 +1048,25 @@ pub struct Schedule {
     /// Watchers loaded or changed since their last check (40 §1.12): the first
     /// check is the file's dry run — a failing one is `check broken`, not a strike.
     unvalidated: HashSet<String>,
+    /// XTICK: this engine has paired peers — [`mesh::has_peers`] once the
+    /// endpoint is bound, the mesh store's peer list before (the mesh plugin
+    /// starts after this one).
+    peered: bool,
+    /// XTICK: this engine's mesh id — [`mesh::self_id`] once the mesh plugin
+    /// set it, the stored identity before (read at load).
+    me: Option<String>,
+    /// XTICK: legacy files seen unclaimed while peered, with when this
+    /// engine first saw them so (reset when it gains the hub): the hub
+    /// claims one itself [`CLAIM_GRACE`] after that.
+    unclaimed: HashMap<String, DateTime<Local>>,
+    /// XTICK: `(what, name)` already logged — one line per file, not per tick.
+    told: HashSet<(&'static str, String)>,
     /// Stands in for `sensors.check` in tests: `(args, state) -> result`.
     #[cfg(test)]
     fake_sensor: Option<FakeSensor>,
+    /// Stands in for [`mesh::is_paired`] in tests (no endpoint there).
+    #[cfg(test)]
+    fake_paired: Option<fn(&str) -> Option<bool>>,
 }
 
 impl Message<RegisterTaskCreator> for Schedule {
@@ -1028,6 +1099,8 @@ impl Schedule {
                 HashMap::new()
             }
         };
+        let peered = mesh::has_stored_paired(&rt.data_dir).await;
+        let me = mesh::stored_self_id(&rt.data_dir).or_else(mesh::self_id);
         let mut entries = BTreeMap::new();
         let mut unvalidated = HashSet::new();
         for (name, raw, spec) in file::load_dir(&dir) {
@@ -1035,12 +1108,14 @@ impl Schedule {
             if spec.as_ref().is_ok_and(|s| s.sensor.is_some()) {
                 unvalidated.insert(name.clone());
             }
-            let mut e = Entry::new(raw, spec, now);
+            let here = made_here(&spec, peered, me.as_deref());
+            let mut e = Entry::new(raw, spec, now, here);
             if let Some(l) = latest.remove(&name) {
                 e.session = l.session;
                 e.last = l.last;
                 e.last_result = l.last_result;
-                e.arm(now);
+                e.ran_here = true;
+                e.arm(now, here);
             }
             // 40 §1.12: a session bound at creation precedes any run row.
             if e.session.is_none()
@@ -1065,8 +1140,14 @@ impl Schedule {
             checking: HashSet::new(),
             pending: HashMap::new(),
             unvalidated,
+            peered,
+            me,
+            unclaimed: HashMap::new(),
+            told: HashSet::new(),
             #[cfg(test)]
             fake_sensor: None,
+            #[cfg(test)]
+            fake_paired: None,
         }
     }
 
@@ -1579,16 +1660,23 @@ impl Schedule {
         for (name, raw, spec) in file::load_dir(&self.dir) {
             seen.insert(name.clone());
             let (raw, spec) = stamp_created(&self.dir, &name, raw, spec, now);
+            let here = made_here(&spec, self.peered, self.me.as_deref());
             match self.entries.get_mut(&name) {
                 Some(e) if e.raw == raw => continue,
                 Some(e) => {
+                    // XTICK: a stamp that changed is a claim from elsewhere, not a create here.
+                    let claimed =
+                        spec.as_ref().ok().and_then(|s| s.engine.as_deref()) != stamp_of(e);
                     e.next = next_of(&spec, now, e.last);
                     e.spec = spec;
                     e.raw = raw;
+                    if claimed || !here {
+                        e.hold_first(now);
+                    }
                 }
                 None => {
                     self.entries
-                        .insert(name.clone(), Entry::new(raw, spec, now));
+                        .insert(name.clone(), Entry::new(raw, spec, now, here));
                 }
             }
             // A new or changed watcher is dry-run by its first check (40 §1.12).
@@ -1682,36 +1770,55 @@ impl Schedule {
     /// that engine only, whoever holds the lease; a legacy (unstamped) one on
     /// the hub only (67 §4.4). A non-hub neither fires a legacy one nor
     /// advances its `last`; regaining the hub re-arms those as at boot, so
-    /// `missed:` decides what fires for the pause.
+    /// `missed:` decides what fires for the pause. XTICK: with paired peers
+    /// a legacy file fires nowhere until it is claimed ([`Self::adopt`]).
     /// A due `when:` file starts its sensor check instead (40 §3.2); the
     /// checks are returned for the caller to spawn, their results come back
     /// as [`CheckDone`].
     async fn tick(&mut self, now: DateTime<Local>) -> Vec<Check> {
         let hub = mesh::is_hub();
-        let me = mesh::self_id();
+        if let Some(id) = mesh::self_id() {
+            self.me = Some(id);
+        }
+        let me = self.me.clone();
+        if let Some(p) = mesh::has_peers() {
+            self.peered = p;
+        }
         if hub != self.hub {
             self.hub = hub;
             if hub {
                 tracing::info!("schedules: hub regained, legacy (unstamped) ticks resumed");
+                // XTICK: the claim grace restarts with the lease.
+                self.unclaimed.clear();
+                let (peered, me) = (self.peered, me.as_deref());
                 for e in self.entries.values_mut().filter(|e| stamp_of(e).is_none()) {
-                    e.arm(now);
+                    let here = made_here(&e.spec, peered, me);
+                    e.arm(now, here);
                 }
             } else {
                 tracing::info!("schedules: not the hub, legacy (unstamped) ticks paused");
             }
+        }
+        if let Some(me) = me.as_deref() {
+            self.adopt(now, hub, me).await;
         }
         let mut checks = Vec::new();
         // A watcher ticks while its run is in flight: `mode` decides (40 §1.9).
         let due: Vec<(String, bool)> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.next.is_some_and(|t| t <= now) && fires_here(e, hub, me.as_deref()))
+            .filter(|(_, e)| {
+                e.next.is_some_and(|t| t <= now) && self.fires_here(e, hub, me.as_deref())
+            })
             .filter_map(|(n, e)| {
                 let watcher = e.spec.as_ref().is_ok_and(|s| s.sensor.is_some());
                 (watcher || !self.is_running(e)).then(|| (n.clone(), watcher))
             })
             .collect();
         for (name, watcher) in due {
+            if let Some(e) = self.entries.get_mut(&name) {
+                e.ran_here = true;
+            }
             if watcher {
                 checks.extend(self.tick_when(&name, now).await);
             } else if let Err(e) = self.fire(&name, now, false, None).await {
@@ -1719,6 +1826,129 @@ impl Schedule {
             }
         }
         checks
+    }
+
+    /// XTICK: with paired peers, claim each legacy file ([`Owner::Nobody`]).
+    /// A non-hub claims at once what it can tell is its own: a plain file it
+    /// has local history for, an `agent:` file for the one engine whose roster
+    /// has the agent. The hub claims nothing for [`CLAIM_GRACE`] after it
+    /// first saw the file unclaimed (or gained the lease), so an engine that
+    /// ran the file claims it first; then, still unclaimed, it claims it —
+    /// for the agent's one engine, else itself, armed one interval out.
+    /// The `engine:` line is the only change to the file, written only over
+    /// the bytes last read; the write replicates, so every engine sees the claim.
+    async fn adopt(&mut self, now: DateTime<Local>, hub: bool, me: &str) {
+        let todo: Vec<(String, Option<String>, bool)> = if self.peered {
+            self.entries
+                .iter()
+                .filter(|(_, e)| self.owner(e, Some(me)) == Owner::Nobody)
+                .filter_map(|(n, e)| {
+                    let agent = e.spec.as_ref().ok()?.agent.clone();
+                    Some((n.clone(), agent, e.has_history()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.unclaimed
+            .retain(|n, _| todo.iter().any(|(t, _, _)| t == n));
+        for (name, agent, history) in todo {
+            let since = *self.unclaimed.entry(name.clone()).or_insert(now);
+            let left = CLAIM_GRACE.saturating_sub((now - since).to_std().unwrap_or_default());
+            if hub && !left.is_zero() {
+                if self.told.insert(("waiting", name.clone())) {
+                    tracing::info!(
+                        %name,
+                        "schedules: legacy routine waits for a machine to claim it; this hub claims it in {}s",
+                        left.as_secs()
+                    );
+                }
+                continue;
+            }
+            let on = match (&agent, &self.task_creator) {
+                (Some(a), Some(tasks)) => tasks.engines_with(a).await,
+                _ => Vec::new(),
+            };
+            let engine = match (on.as_slice(), hub) {
+                ([one], _) if agent.is_some() => one.clone(),
+                (_, true) => me.to_owned(),
+                _ if agent.is_none() && history => me.to_owned(),
+                _ => continue,
+            };
+            let Some(e) = self.entries.get_mut(&name) else {
+                continue;
+            };
+            // A replicated or hand edit inside the watcher's debounce is not overwritten.
+            let path = self.dir.join(format!("{name}.md"));
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(e.raw.as_str()) {
+                continue;
+            }
+            let text = file::set_engine(&e.raw, &engine);
+            match file::write_atomic(&self.dir, &name, &text) {
+                Ok(_) => {
+                    tracing::info!(%name, %engine, "schedules: legacy routine stamped with the engine that runs it");
+                    e.spec = file::parse(&name, &text);
+                    e.raw = text;
+                    if engine == me {
+                        e.hold_first(now);
+                    }
+                    self.unclaimed.remove(&name);
+                }
+                Err(err) => {
+                    if self.told.insert(("unwritten", name.clone())) {
+                        tracing::warn!(%name, "engine: not written: {err}");
+                    }
+                }
+            }
+        }
+    }
+
+    fn is_paired(&self, id: &str) -> Option<bool> {
+        #[cfg(test)]
+        if let Some(f) = self.fake_paired {
+            return f(id);
+        }
+        mesh::is_paired(id)
+    }
+
+    /// 182 D6 / S8: whose `e` is.
+    fn owner(&self, e: &Entry, me: Option<&str>) -> Owner {
+        match (stamp_of(e), me) {
+            (None, _) => Owner::Nobody,
+            (Some(s), Some(me)) if s == me => Owner::Here,
+            (Some(s), Some(_)) if self.is_paired(s) == Some(false) => Owner::Unknown,
+            _ => Owner::Elsewhere,
+        }
+    }
+
+    /// 182 D6: `e` ticks on this engine — its own engine's always; a stamp
+    /// naming an engine not paired here (S8) on the hub lease holder; a
+    /// legacy file on the hub of a lone engine (67 §4.4) — XTICK: with paired
+    /// peers nowhere until claimed. A paired peer's file never fires here,
+    /// offline or not: its engine's `missed:` decides on its return.
+    fn fires_here(&self, e: &Entry, hub: bool, me: Option<&str>) -> bool {
+        match self.owner(e, me) {
+            Owner::Here => true,
+            Owner::Unknown => hub,
+            Owner::Nobody => hub && !self.peered,
+            Owner::Elsewhere => false,
+        }
+    }
+
+    /// XTICK: the `waiting` line of [`ScheduleInfo`] — a legacy file with
+    /// paired peers fires nowhere until a machine claims it.
+    fn waiting(&self, name: &str, e: &Entry, now: DateTime<Local>) -> Option<String> {
+        if !self.peered || self.owner(e, self.me.as_deref()) != Owner::Nobody {
+            return None;
+        }
+        let mut s = "waiting for a machine to claim it".to_owned();
+        if self.hub
+            && let Some(since) = self.unclaimed.get(name)
+        {
+            let left = CLAIM_GRACE.saturating_sub((now - *since).to_std().unwrap_or_default());
+            let _ = write!(s, " (claims in {}s)", left.as_secs());
+        }
+        Some(s)
     }
 }
 
@@ -1733,11 +1963,12 @@ impl Message<NextWake> for Schedule {
         // not leave the loop asleep until TICK.
         // Only schedules that fire here count (182 D6); otherwise only run
         // deadlines wake it, else TICK.
-        let (hub, me) = (mesh::is_hub(), mesh::self_id());
+        let hub = mesh::is_hub();
+        let me = mesh::self_id().or_else(|| self.me.clone());
         let next = self
             .entries
             .values()
-            .filter(|e| fires_here(e, hub, me.as_deref()))
+            .filter(|e| self.fires_here(e, hub, me.as_deref()))
             .filter_map(|e| e.next)
             .min()
             .map(|t| (t - now).to_std().unwrap_or_default());
@@ -1759,17 +1990,18 @@ fn stamp_of(e: &Entry) -> Option<&str> {
     e.spec.as_ref().ok()?.engine.as_deref()
 }
 
-/// 182 D6: `e` ticks on this engine — a stamped schedule on its own
-/// `engine:` only, a legacy one on the hub lease holder. S8: a stamp naming
-/// an engine that is neither this one nor a paired peer (a copied data dir,
-/// an engine unpaired since) fires on the lease holder, like a legacy one —
-/// never while the pairing is not known yet.
-fn fires_here(e: &Entry, hub: bool, me: Option<&str>) -> bool {
-    match (stamp_of(e), me) {
-        (Some(engine), Some(me)) => engine == me || (hub && mesh::is_paired(engine) == Some(false)),
-        (Some(_), None) => false,
-        (None, _) => hub,
-    }
+/// Whose a schedule is ([`Schedule::owner`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    /// Stamped with this engine.
+    Here,
+    /// Stamped with a paired peer, or the pairing is not known yet.
+    Elsewhere,
+    /// Stamped with an engine that is neither this one nor a paired peer
+    /// (S8: a copied data dir, an engine unpaired since).
+    Unknown,
+    /// Legacy: no `engine:` line.
+    Nobody,
 }
 
 /// 182 D6: this engine's mesh id — the `engine:` a new schedule is stamped
@@ -2550,6 +2782,7 @@ impl Schedule {
             agent: spec.and_then(|s| s.agent.clone()),
             project: spec.and_then(|s| s.project.clone()),
             engine: spec.and_then(|s| s.engine.clone()),
+            waiting: self.waiting(name, e, now),
             when_sensor: sensor.map(file::Sensor::render),
             sensor: sensor.map(|s| s.file.clone()),
             fire: sensor.map(|_| spec_fire.to_string()),
@@ -3036,6 +3269,8 @@ mod fire_tests {
         pub(super) calls: Mutex<Vec<Call>>,
         closed: Mutex<Vec<String>>,
         paused: std::sync::atomic::AtomicBool,
+        /// What `engines_with` answers for every agent.
+        pub(super) engines: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -3065,6 +3300,9 @@ mod fire_tests {
         }
         async fn agent_paused(&self, _: &str) -> bool {
             self.paused.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        async fn engines_with(&self, _: &str) -> Vec<String> {
+            self.engines.lock().unwrap().clone()
         }
     }
 
@@ -3646,6 +3884,257 @@ mod hub_tests {
             s.store.history("ar182-study", 5).await.unwrap().is_empty(),
             "no end row"
         );
+    }
+
+    const PLAIN: &str = "---\nevery: 1h\nquiet: true\n---\n\ngo  \n\n  keep these bytes\n";
+
+    fn text(dir: &Path, name: &str) -> String {
+        std::fs::read_to_string(dir.join(DIR).join(format!("{name}.md"))).unwrap()
+    }
+
+    fn fired(rec: &fire_tests::Recorder) -> usize {
+        rec.calls.lock().unwrap().len()
+    }
+
+    fn stamped(text: &str, engine: &str) -> String {
+        text.replacen("---\n", &format!("---\nengine: {engine}\n"), 1)
+    }
+
+    fn min(n: i64) -> chrono::TimeDelta {
+        chrono::Duration::minutes(n)
+    }
+
+    /// XTICK: a legacy file that arrived by replication does not fire on a
+    /// peered hub; after the claim grace the hub claims it itself (no other
+    /// machine did) and arms it one interval out — it never waits for good.
+    #[tokio::test]
+    async fn xtick_replicated_legacy_file_waits_then_the_hub_claims_it() {
+        let _g = hub_lock().await;
+        let me = me();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(dir.path(), &[("x-tick", DUE)]).await;
+        s.peered = true;
+        let t0 = Local::now();
+        s.tick(t0).await;
+        s.tick(t0 + min(2)).await;
+        assert_eq!(fired(&rec), 0, "fired a routine nobody claimed");
+        assert_eq!(text(dir.path(), "x-tick"), DUE, "claimed inside the grace");
+        assert_eq!(
+            s.waiting("x-tick", &s.entries["x-tick"], t0 + min(2))
+                .as_deref(),
+            Some("waiting for a machine to claim it (claims in 30s)")
+        );
+        let t1 = t0 + min(3);
+        s.tick(t1).await;
+        assert_eq!(text(dir.path(), "x-tick"), stamped(DUE, &me));
+        assert_eq!(
+            s.entries["x-tick"].next,
+            Some(t1 + chrono::Duration::hours(1))
+        );
+        assert_eq!(s.waiting("x-tick", &s.entries["x-tick"], t1), None);
+        assert_eq!(fired(&rec), 0, "armed one interval out");
+        s.tick(t1 + chrono::Duration::hours(2)).await;
+        assert_eq!(fired(&rec), 1);
+    }
+
+    /// XTICK MUST 1: both engines ran the legacy file, B holds the hub. B
+    /// neither fires nor claims it inside the grace; A's claim lands, and B
+    /// never fires it nor stamps itself.
+    #[tokio::test]
+    async fn xtick_hub_with_history_yields_to_the_other_engines_claim() {
+        let _g = hub_lock().await;
+        me();
+        let dir = tempfile::tempdir().unwrap();
+        let store = store::Store::open(&dir.path().join(DB)).await.unwrap();
+        let old = Local::now() - chrono::Duration::hours(2);
+        store.insert_run("x-tick", None, old, None).await.unwrap();
+        let (mut s, rec) = actor(dir.path(), &[("x-tick", DUE)]).await;
+        assert!(s.entries["x-tick"].has_history());
+        s.peered = true;
+        s.fake_paired = Some(|id| Some(id == "eng-a"));
+        let t0 = Local::now();
+        s.tick(t0).await;
+        s.tick(t0 + min(1)).await;
+        assert_eq!(fired(&rec), 0, "the hub fired inside the grace");
+        assert_eq!(
+            text(dir.path(), "x-tick"),
+            DUE,
+            "the hub claimed inside the grace"
+        );
+        std::fs::write(
+            dir.path().join(DIR).join("x-tick.md"),
+            stamped(DUE, "eng-a"),
+        )
+        .unwrap();
+        s.rescan(t0 + min(2)).await;
+        s.tick(t0 + min(5)).await;
+        s.tick(t0 + chrono::Duration::hours(3)).await;
+        assert_eq!(fired(&rec), 0, "A's now");
+        assert_eq!(text(dir.path(), "x-tick"), stamped(DUE, "eng-a"));
+    }
+
+    /// XTICK: a lone engine (no paired peers) fires a legacy file as before
+    /// and leaves it unstamped.
+    #[tokio::test]
+    async fn xtick_lone_engine_fires_a_legacy_file_unstamped() {
+        let _g = hub_lock().await;
+        me();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(dir.path(), &[("x-tick", DUE)]).await;
+        assert!(!s.peered, "no mesh store: lone");
+        s.tick(Local::now()).await;
+        assert_eq!(fired(&rec), 1);
+        assert_eq!(text(dir.path(), "x-tick"), DUE);
+    }
+
+    /// XTICK: a non-hub with local runs of a legacy plain file claims it at
+    /// once when it has peers: `engine: <self>` goes into the front matter,
+    /// every other byte stays, and a second tick writes nothing.
+    #[tokio::test]
+    async fn xtick_engine_with_history_stamps_a_legacy_file_once() {
+        let _g = hub_lock().await;
+        let me = me();
+        let dir = tempfile::tempdir().unwrap();
+        let store = store::Store::open(&dir.path().join(DB)).await.unwrap();
+        let recent = Local::now() - min(1);
+        store
+            .insert_run("x-tick", None, recent, Some("end_turn"))
+            .await
+            .unwrap();
+        let (mut s, _) = actor(dir.path(), &[("x-tick", PLAIN)]).await;
+        // As a non-hub (`adopt` straight: the hub flag is process-global).
+        s.adopt(Local::now(), false, &me).await;
+        assert_eq!(text(dir.path(), "x-tick"), PLAIN, "lone: left bare");
+        s.peered = true;
+        s.adopt(Local::now(), false, &me).await;
+        assert_eq!(text(dir.path(), "x-tick"), stamped(PLAIN, &me));
+        assert_eq!(s.owner(&s.entries["x-tick"], Some(&me)), Owner::Here);
+        let path = dir.path().join(DIR).join("x-tick.md");
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        s.adopt(Local::now(), false, &me).await;
+        s.rescan(Local::now()).await;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            mtime,
+            "stamped once"
+        );
+    }
+
+    /// XTICK: a claim is written over the bytes last read only — an edit that
+    /// landed since (inside the watcher's debounce) is not overwritten.
+    #[tokio::test]
+    async fn xtick_claim_does_not_overwrite_an_unread_edit() {
+        let _g = hub_lock().await;
+        let me = me();
+        let dir = tempfile::tempdir().unwrap();
+        let store = store::Store::open(&dir.path().join(DB)).await.unwrap();
+        let recent = Local::now() - min(1);
+        store
+            .insert_run("x-tick", None, recent, None)
+            .await
+            .unwrap();
+        let (mut s, _) = actor(dir.path(), &[("x-tick", PLAIN)]).await;
+        s.peered = true;
+        let edited = PLAIN.replace("keep these bytes", "edited elsewhere");
+        std::fs::write(dir.path().join(DIR).join("x-tick.md"), &edited).unwrap();
+        s.adopt(Local::now(), false, &me).await;
+        assert_eq!(text(dir.path(), "x-tick"), edited);
+        s.rescan(Local::now()).await;
+        s.adopt(Local::now(), false, &me).await;
+        assert_eq!(text(dir.path(), "x-tick"), stamped(&edited, &me));
+    }
+
+    /// XTICK: a non-hub stamps a legacy `agent:` file with the one engine
+    /// whose roster has the agent (`engines_with`); with several it stays bare.
+    #[tokio::test]
+    async fn xtick_legacy_agent_file_is_stamped_from_engines_with() {
+        let _g = hub_lock().await;
+        let me = me();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(dir.path(), &[("x-tick", DUE)]).await;
+        s.peered = true;
+        *rec.engines.lock().unwrap() = vec!["eng-a".into(), "eng-b".into()];
+        s.adopt(Local::now(), false, &me).await;
+        assert_eq!(text(dir.path(), "x-tick"), DUE, "two engines: bare");
+        *rec.engines.lock().unwrap() = vec!["eng-a".into()];
+        s.adopt(Local::now(), false, &me).await;
+        assert_eq!(text(dir.path(), "x-tick"), stamped(DUE, "eng-a"));
+    }
+
+    /// 182 S8 (restored by XTICK R1): a stamp naming an engine not paired
+    /// here fires on the hub, history or not, peers or not, and stays as stamped.
+    #[tokio::test]
+    async fn xtick_unpaired_stamp_fires_on_the_hub() {
+        let _g = hub_lock().await;
+        me();
+        let dir = tempfile::tempdir().unwrap();
+        let gone = stamped(DUE, "gone-engine");
+        let (mut s, rec) = actor(dir.path(), &[("x-tick", &gone)]).await;
+        s.fake_paired = Some(|_| Some(false));
+        s.peered = true;
+        s.tick(Local::now() + chrono::Duration::hours(2)).await;
+        assert_eq!(fired(&rec), 1);
+        assert_eq!(text(dir.path(), "x-tick"), gone);
+    }
+
+    /// XTICK (part 3): an `every:` file with no local `last` arms at now + d
+    /// when it arrived by replication (legacy with peers, or a stamp that
+    /// changed to this engine), at now when made here (stamped with this
+    /// engine, or legacy on a lone engine).
+    #[tokio::test]
+    async fn xtick_replicated_every_file_arms_one_interval_out() {
+        let _g = hub_lock().await;
+        let me = me();
+        let now = Local::now();
+        let hour = chrono::Duration::hours(1);
+        let mine = stamped(DUE, &me);
+        let arm = |text: &str, peered| {
+            let spec = file::parse("n", text);
+            let here = made_here(&spec, peered, Some(&me));
+            Entry::new(text.into(), spec, now, here).next
+        };
+        assert_eq!(arm(DUE, true), Some(now + hour), "replicated legacy");
+        assert_eq!(arm(DUE, false), Some(now), "lone legacy");
+        assert_eq!(arm(&mine, true), Some(now), "made here");
+        // A stamp naming this engine that lands on an existing legacy entry is a claim.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, _) = actor(dir.path(), &[("n", DUE)]).await;
+        assert!(s.entries["n"].next.is_some_and(|t| t <= Local::now()));
+        std::fs::write(dir.path().join(DIR).join("n.md"), &mine).unwrap();
+        let later = Local::now();
+        s.rescan(later).await;
+        assert_eq!(s.entries["n"].next, Some(later + hour));
+    }
+
+    /// XTICK: a file stamped with this engine counts as made here at load,
+    /// before the mesh plugin set its id — the stored identity says who we are.
+    #[tokio::test]
+    async fn xtick_stamped_self_is_made_here_before_the_mesh_starts() {
+        let _g = hub_lock().await;
+        me();
+        let dir = tempfile::tempdir().unwrap();
+        let id = mesh::identity::Identity::load_or_create(&dir.path().join(mesh::DIR))
+            .unwrap()
+            .id()
+            .0;
+        let (s, _) = actor(dir.path(), &[("n", &stamped(DUE, &id))]).await;
+        assert!(
+            s.entries["n"].next.is_some_and(|t| t <= Local::now()),
+            "held"
+        );
+    }
+
+    /// XTICK: a routine created on this engine (stamped with it) still fires
+    /// at once with peers and no history.
+    #[tokio::test]
+    async fn xtick_locally_created_routine_fires_at_once() {
+        let _g = hub_lock().await;
+        let me = me();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(dir.path(), &[("n", &stamped(DUE, &me))]).await;
+        s.peered = true;
+        s.tick(Local::now()).await;
+        assert_eq!(fired(&rec), 1);
     }
 }
 

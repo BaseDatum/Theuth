@@ -11,7 +11,7 @@
 //!   [`AwaitDecision`], [`AnswerDecision`], [`Mention`], [`MarkAnswered`],
 //!   [`GetPacket`], [`ListPackets`], [`EffectiveReviewer`], [`ReviewPacket`],
 //!   [`NoteDisposition`], [`EpisodeClosing`], [`FinishWake`], [`ReleaseClaims`],
-//!   [`WriteBudgetOf`], [`MoveHome`], [`HomesOffline`], [`RegisterDeskRouter`]
+//!   [`WriteBudgetOf`], [`MoveHome`], [`HomesOffline`], [`EnginesWith`], [`RegisterDeskRouter`]
 //! - trait [`DeskRouter`] (the roster implements it)
 //!
 //! The rules live in [`ledger`]; this file is the actor around them.
@@ -472,6 +472,11 @@ pub struct ClaimedWake(pub String);
 /// `ask` → `bool` (179 D5): the router says `agent` is paused.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IsPaused(pub String);
+
+/// `ask` → `Vec<String>` (XTICK): the router's [`DeskRouter::engines_with`];
+/// empty before the roster registered it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnginesWith(pub String);
 
 /// `tell`: the desk turn that took this wake did not yield (a cancel, a
 /// timeout, a provider error — WAKE-LIVE-CHILD D2): the claim is released so
@@ -1276,6 +1281,17 @@ impl Message<IsPaused> for Tasks {
     }
 }
 
+impl Message<EnginesWith> for Tasks {
+    type Reply = Vec<String>;
+
+    async fn handle(&mut self, m: EnginesWith, _: &mut Context<Self, Self::Reply>) -> Vec<String> {
+        match &self.ledger.router {
+            Some(r) => r.engines_with(&m.0).await,
+            None => Vec::new(),
+        }
+    }
+}
+
 impl Message<ReleaseWake> for Tasks {
     type Reply = ();
 
@@ -1551,6 +1567,16 @@ impl schedule::TaskCreator for ScheduleTasks {
         match actor() {
             Some(t) => t.ask(IsPaused(agent.to_owned())).await.unwrap_or(false),
             None => false,
+        }
+    }
+
+    async fn engines_with(&self, agent: &str) -> Vec<String> {
+        match actor() {
+            Some(t) => t
+                .ask(EnginesWith(agent.to_owned()))
+                .await
+                .unwrap_or_default(),
+            None => Vec::new(),
         }
     }
 }
