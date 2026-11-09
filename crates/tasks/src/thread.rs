@@ -2,17 +2,26 @@
 //! one-line event log are blocks appended at its end (67 §7.1).
 
 use document::{
-    Bind, Binding, BlockEdit, Create, DocHeadings, DocId, Edit, Handle, Headings, Markdown,
-    Principal,
+    Bind, Binding, BlockEdit, Create, DocHeadings, DocId, Edit, Handle, Headings, Homing, Markdown,
+    MoveHome, Principal,
 };
 
 /// Where thread text goes. One real implementation ([`DocThread`]); tests
 /// keep blocks in memory.
 #[async_trait::async_trait]
 pub trait Thread: Send + Sync {
-    /// New document bound to task `task`, titled `title` with `body`; its id, or `None` when
-    /// documents are unavailable (the task still exists, without a thread).
-    async fn create(&self, task: &str, title: &str, body: &str) -> Option<String>;
+    /// New document bound to task `task`, titled `title` with `body`, homed on the task's `home`
+    /// (184 §5.1; `None` = hub-served); its id, or `None` when documents are unavailable (the task
+    /// still exists, without a thread).
+    async fn create(
+        &self,
+        task: &str,
+        title: &str,
+        body: &str,
+        home: Option<&str>,
+    ) -> Option<String>;
+    /// 184 §4.8: the thread follows its task to `home` (after `move_home` saved the task).
+    async fn set_home(&self, doc: &str, home: &str);
     /// Append `markdown` as blocks at the end.
     async fn append(&self, doc: &str, markdown: &str);
     /// The whole thread as markdown.
@@ -28,7 +37,13 @@ pub struct DocThread;
 
 #[async_trait::async_trait]
 impl Thread for DocThread {
-    async fn create(&self, task: &str, title: &str, body: &str) -> Option<String> {
+    async fn create(
+        &self,
+        task: &str,
+        title: &str,
+        body: &str,
+        home: Option<&str>,
+    ) -> Option<String> {
         let h = Handle::lookup()?;
         match h
             .actor()
@@ -37,6 +52,9 @@ impl Thread for DocThread {
                 title: title.to_owned(),
                 markdown: body.to_owned(),
                 by: Principal::Owner { device: None },
+                home: home.map_or(Homing::Hub, |e| {
+                    Homing::Engine(mesh::EngineId(e.to_owned()))
+                }),
             })
             .await
         {
@@ -45,6 +63,21 @@ impl Thread for DocThread {
                 tracing::warn!("task thread not created: {e}");
                 None
             }
+        }
+    }
+
+    async fn set_home(&self, doc: &str, home: &str) {
+        let Some(h) = Handle::lookup() else { return };
+        if let Err(e) = h
+            .actor()
+            .ask(MoveHome {
+                doc: DocId(doc.to_owned()),
+                to: mesh::EngineId(home.to_owned()),
+                checks: false,
+            })
+            .await
+        {
+            tracing::warn!(doc, "task thread did not follow its task: {e}");
         }
     }
 
@@ -145,6 +178,11 @@ mod tests {
             authors: Default::default(),
             created_ms: 1,
             updated_ms: 1,
+            home: None,
+            home_ms: 0,
+            serve_epoch: 0,
+            served_by: None,
+            revoked: Default::default(),
         }
     }
 

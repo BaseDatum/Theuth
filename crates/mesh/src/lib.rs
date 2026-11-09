@@ -46,9 +46,9 @@ use tokio_util::sync::CancellationToken;
 pub use config::MeshConfig;
 pub use net::ALPN_MESH;
 pub use types::{
-    Accelerator, AlpnTraffic, EngineClass, EngineId, EngineStats, HubPref, LeaseState, MeshEvent,
-    MeshStatus, NearbyEngine, PairCeremony, Peer, PeerEvent, PeerId, PeerPath, QuarantinedPeer,
-    RelayState, UnpairPreview,
+    Accelerator, AlpnTraffic, DocsGateState, EngineClass, EngineId, EngineStats, HubPref,
+    LeaseState, MeshEvent, MeshStatus, NearbyEngine, PairCeremony, Peer, PeerEvent, PeerId,
+    PeerPath, QuarantinedPeer, RelayState, UnpairPreview,
 };
 
 use crate::identity::now_ms;
@@ -69,6 +69,40 @@ const RESTART_HOLD_MS: u64 = 30_000;
 
 /// Directory under `data_dir` holding the endpoint identity (67 §4.1).
 pub const DIR: &str = "mesh";
+
+/// 184 §8.1: the docs schema this build speaks on `theuth/docs/1` (1 = the 69 docs as built; 2 =
+/// homes, tags 10-14), advertised in the control connection's `DocsSchema` frame.
+pub const DOCS_SCHEMA: u32 = 2;
+
+/// 184 §8.1 (Sky Q5): a paired engine last heard this long ago or more stops counting for the
+/// docs gate's floor.
+pub const DOCS_STALE_MS: u64 = 7 * 86_400_000;
+
+/// 184 §8.1: the floor over this engine's paired set: every peer heard (or, never heard, first
+/// listed) less than [`DOCS_STALE_MS`] ago advertises `docs_schema >= DOCS_SCHEMA`. A counted peer
+/// never heard counts as 0 (off until heard); one with no row at all fails.
+pub(crate) fn docs_floor(peers: &[EngineId], seen: &[store::DocsSeen], now: u64) -> bool {
+    peers
+        .iter()
+        .all(|p| match seen.iter().find(|s| &s.id == p) {
+            Some(s) => {
+                s.docs_schema >= DOCS_SCHEMA
+                    || now.saturating_sub(s.heard_ms.unwrap_or(s.first_ms)) >= DOCS_STALE_MS
+            }
+            None => false,
+        })
+}
+
+/// 184 §8.1, fail-closed: homes are on only when this engine's floor agrees and the holder says
+/// on — this engine itself when it holds the lease, else the holder's frame on its own
+/// authenticated control connection (`None`: no holder, no connection or no frame yet).
+pub(crate) fn docs_homes_on(
+    floor_ok: bool,
+    holder_is_me: bool,
+    holder_frame: Option<bool>,
+) -> bool {
+    floor_ok && (holder_is_me || holder_frame == Some(true))
+}
 
 /// This engine holds the hub lease (67 §4.4). `true` until the mesh actor
 /// says otherwise, so a single engine without the mesh plugin does every hub
@@ -418,6 +452,16 @@ pub struct PreviewUnpair(pub EngineId);
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct RotateVault;
 
+/// 184 §8.1: `ask` → [`DocsGateState`]: this engine's docs floor and `homes_on`. The document
+/// actor asks on every `MeshEvent` and every 30 s.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct DocsGate;
+
+/// 184 §4.9: `ask` → `Vec<EngineId>`: the ids of tombstoned (unpaired) rows in the peer table;
+/// quarantined rows are not removed. The holder re-homes documents homed on them.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct RemovedPeers;
+
 /// What rides on the gossip topic (67 §4.3, §4.6). A heartbeat only confirms
 /// liveness: everything the election needs is the replicated `engine_stats`
 /// row, and `stats_hlc` names the version of that row the sender has written.
@@ -510,7 +554,15 @@ impl Ctx {
             messaging_off: cfg.messaging_off.into_iter().map(EngineId).collect(),
             nearby: cfg.nearby,
             quarantined: self.net.quarantined().await.map_err(|e| e.to_string())?,
+            docs_homes_on: self.docs_gate().await.homes_on,
         })
+    }
+
+    /// 184 §8.1: the docs gate under the current lease ([`Net::docs_gate`]).
+    async fn docs_gate(&self) -> DocsGateState {
+        self.net
+            .docs_gate(self.lease().holder.as_ref(), now_ms())
+            .await
     }
 
     async fn emit(&self, ev: MeshEvent) {
@@ -519,6 +571,8 @@ impl Ctx {
             let hub = l.holder.as_ref() == Some(&self.net.id);
             oauth::set_hub(hub);
             set_hub(hub);
+            // 184 §8.1: the holder decides the docs gate.
+            self.net.docs.changed.notify_one();
         }
         let _ = self.events.send(ev.clone());
         self.rt.publish(ev).await;
@@ -1114,6 +1168,26 @@ impl Message<RotateVault> for Mesh {
     }
 }
 
+impl Message<DocsGate> for Mesh {
+    type Reply = DocsGateState;
+
+    async fn handle(&mut self, _: DocsGate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ctx.docs_gate().await
+    }
+}
+
+impl Message<RemovedPeers> for Mesh {
+    type Reply = Vec<EngineId>;
+
+    async fn handle(&mut self, _: RemovedPeers, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // A failed read re-homes nothing this pass; the next pass retries.
+        self.ctx.store.removed_peers().await.unwrap_or_else(|e| {
+            tracing::warn!("mesh: removed peers: {e:#}");
+            Vec::new()
+        })
+    }
+}
+
 /// The plugin: reads `mesh`, opens the store, binds the endpoint, spawns
 /// [`Mesh`] as [`MESH_ACTOR`], hands the transport to the replica plugin,
 /// registers the `mesh_peers` tool once the registry is up.
@@ -1363,6 +1437,28 @@ impl runtime::Plugin for MeshPlugin {
             c.run_lease(stop.child_token()).await;
             n.shutdown().await;
         });
+        // 184 §8.1: the docs gate pass on every frame, connect, disconnect and lease change, and
+        // every tick (heard_ms, staleness); a flip is sent to every connected peer, and published
+        // on the engine bus (a Rust-only `DocsGateState`) so the document actor reroutes at once.
+        // A lone engine has nobody to tell (its `DocsGate` still answers, computed per ask).
+        let (c, stop) = (ctx.clone(), rt.shutdown.clone());
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(keys::TICK);
+            let mut last = None;
+            loop {
+                tokio::select! {
+                    () = stop.cancelled() => break,
+                    _ = every.tick() => {}
+                    () = c.net.docs.changed.notified() => {}
+                }
+                if !c.net.paired_ids().is_empty() {
+                    let s = c.docs_gate().await;
+                    if last.replace(s.homes_on) != Some(s.homes_on) {
+                        c.rt.publish(s).await;
+                    }
+                }
+            }
+        });
         // 182 M2a: with paired peers, the first sync gates task work here (no dispatch,
         // sweep, owner write or desk-turn resume on stale rows) until every connected
         // peer's first replica exchange completed, or `lapse_secs` passed with none.
@@ -1523,5 +1619,79 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
         assert_eq!(row.engine, "engine-f3");
+    }
+
+    fn seen(id: &str, schema: u32, first_ms: u64, heard_ms: Option<u64>) -> store::DocsSeen {
+        store::DocsSeen {
+            id: EngineId(id.into()),
+            docs_schema: schema,
+            homes_on: false,
+            first_ms,
+            heard_ms,
+        }
+    }
+
+    /// 184 §8.1, Sky Q5: a peer counts unless last heard (never heard: first listed) 7 days ago or
+    /// more; a counted peer below `DOCS_SCHEMA`, or never heard, keeps the floor down.
+    #[test]
+    fn the_floor_counts_every_peer_heard_within_seven_days() {
+        let now = 100 * 86_400_000;
+        let day = 86_400_000;
+        let ids = |v: &[&str]| v.iter().map(|s| EngineId((*s).into())).collect::<Vec<_>>();
+        assert!(docs_floor(&[], &[], now), "a lone engine: on");
+        let new = seen("new", DOCS_SCHEMA, now - day, Some(now - 1));
+        assert!(docs_floor(&ids(&["new"]), std::slice::from_ref(&new), now));
+        // Never heard, listed an hour ago: counted as 0, off until heard.
+        let quiet = seen("quiet", 0, now - 3_600_000, None);
+        assert!(!docs_floor(
+            &ids(&["new", "quiet"]),
+            &[new.clone(), quiet],
+            now
+        ));
+        // An old build last heard 6 days ago counts; at exactly 7 days it stops counting.
+        let old = |heard| seen("old", 0, now - 30 * day, Some(heard));
+        assert!(!docs_floor(
+            &ids(&["new", "old"]),
+            &[new.clone(), old(now - 6 * day)],
+            now
+        ));
+        assert!(docs_floor(
+            &ids(&["new", "old"]),
+            &[new.clone(), old(now - DOCS_STALE_MS)],
+            now
+        ));
+        // Never heard and listed 7 days ago: stale too.
+        let gone = seen("gone", 0, now - 8 * day, None);
+        assert!(docs_floor(
+            &ids(&["new", "gone"]),
+            &[new.clone(), gone],
+            now
+        ));
+        // A paired engine with no row yet fails closed.
+        assert!(!docs_floor(&ids(&["new", "unlisted"]), &[new], now));
+        // A schema-1 engine (the 69 docs) is below the floor.
+        assert!(!docs_floor(
+            &ids(&["one"]),
+            &[seen("one", 1, now, Some(now))],
+            now
+        ));
+    }
+
+    /// 184 §8.1, fail-closed: the holder's own floor decides; a follower needs the holder's frame
+    /// saying on and its own floor; no holder or no frame is off.
+    #[test]
+    fn homes_are_on_only_when_the_holder_and_the_floor_agree() {
+        assert!(docs_homes_on(true, true, None), "the holder: its floor");
+        assert!(!docs_homes_on(false, true, None));
+        assert!(docs_homes_on(true, false, Some(true)));
+        assert!(
+            !docs_homes_on(true, false, Some(false)),
+            "the holder says off"
+        );
+        assert!(
+            !docs_homes_on(true, false, None),
+            "no frame from the holder yet"
+        );
+        assert!(!docs_homes_on(false, false, Some(true)), "own floor fails");
     }
 }

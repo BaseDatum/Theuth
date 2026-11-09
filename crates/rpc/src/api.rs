@@ -1094,6 +1094,18 @@ pub trait Api {
     /// Move a note to `documents/.trash/<id>` (swept after 30 days); subscribers get `Closed{deleted}`. Other kinds: `delete_via_owner`.
     #[method(name = "doc_delete", with_extensions)]
     async fn doc_delete(&self, doc: document::DocId) -> RpcResult<()>;
+    /// 184 §4.8: "Move to ▸ machine" (owner only): the note's server writes `home = to` and hands the
+    /// live copy to `to`. Notes only; boards, meeting notes, task threads and unhomed kinds are refused.
+    #[method(name = "doc_move_home", with_extensions)]
+    async fn doc_move_home(
+        &self,
+        doc: document::DocId,
+        to: String,
+    ) -> RpcResult<document::DocSummary>;
+    /// 184 §7.2: the mesh link id (`mesh/device_key`'s public id), minted only on the lease holder
+    /// (`not the hub` elsewhere). Mesh-internal — accepted only over `theuth/rpc/1` (`Forwarded`).
+    #[method(name = "link_mesh_id", with_extensions)]
+    async fn link_mesh_id(&self) -> RpcResult<String>;
     /// Whether the documents helper (`theuth-documents-<version>` beside `t`, 59 §3.2) is there and how its
     /// process is doing (`process`: `running` | `crashed{stderr}` | `missing` | `starting`); a missing or
     /// crashed helper disables notes, knowledge editing and meeting notes. Answers whether documents run or not.
@@ -3602,6 +3614,204 @@ async fn doc_forward<T: DeserializeOwned>(
     }
 }
 
+/// 184 §4.8, §7.2: an owner call on `doc` re-issued to the engine that serves it (`DocServer`), so
+/// that engine checks its own state (its Link, the home). `Ok(None)`: run it here — this engine
+/// serves it or nobody does, the server is not connected, or this call was itself forwarded.
+async fn to_doc_server<T: DeserializeOwned>(
+    ext: &Extensions,
+    docs: &ActorRef<document::DocumentActor>,
+    doc: &document::DocId,
+    method: &str,
+    params: impl Serialize,
+) -> RpcResult<Option<T>> {
+    let Ok(Some(server)) = doc_send(docs, document::DocServer { doc: doc.clone() }).await else {
+        return Ok(None);
+    };
+    forward::to_peer(ext, &replica::PeerId(server.0), method, params).await
+}
+
+/// `doc_join`'s outcome on the guest's conn (59 §8.3): success scopes it; only a refusal counts
+/// toward its close — the join's own (`JoinError`'s wire codes) and a member call's (Z184-R2/R3):
+/// a retryable `busy` (184 §4.3 step 4), a `hub_moved` during a Move or any transient error never
+/// locks a guest out.
+fn join_outcome<T>(guest: &link::Guest, r: &RpcResult<T>) {
+    const REFUSALS: [&str; 10] = [
+        "not_member",
+        "viewer_readonly",
+        "sharing_disabled",
+        "bad_proof",
+        "link_unknown",
+        "link_revoked",
+        "link_expired",
+        "members_full",
+        "sharing_off",
+        "member_revoked",
+    ];
+    match r {
+        Ok(_) => guest.mark_joined(),
+        Err(e) if REFUSALS.iter().any(|r| e.message().starts_with(r)) => {
+            guest.refuse();
+        }
+        Err(_) => {}
+    }
+}
+
+/// `doc_link_create` with Link off on a lone engine (a mesh makes a mesh link instead).
+const LINK_OFF: &str = "link is off: turn on Settings › Link to share documents";
+
+/// 184 §7.1, §7.2: a share link's ids, the fragment before `.<doc>.<secret>`, and how the guest
+/// gets in. `mesh`: the mesh link id when known. Link off here (only in a mesh, Sky Q3) → the v1
+/// mesh link `1.<mesh link id>`. Link on, `home_here` (this engine is the document's home in a
+/// mesh with peers, W-j) → `2.<home link id>.<mesh link id>`. Otherwise today's v1: the mesh
+/// device id Link serves, else this engine's link id.
+fn link_ids(
+    status: &LinkStatus,
+    mesh: Option<&str>,
+    home_here: bool,
+) -> RpcResult<(String, document::LinkVia)> {
+    use document::LinkVia::{Home, Mesh};
+    if !status.enabled {
+        return mesh
+            .map(|m| (format!("1.{m}"), Mesh))
+            .ok_or_else(|| failed(link::MESH_LINK_UNAVAILABLE));
+    }
+    if home_here && let (Some(m), Some(h)) = (mesh, status.harness_id.as_deref()) {
+        return Ok((format!("2.{h}.{m}"), Home));
+    }
+    match (status.mesh.as_ref(), status.harness_id.as_deref()) {
+        (Some(m), _) => Ok((format!("1.{}", m.device_id), Mesh)),
+        (None, Some(h)) => Ok((format!("1.{h}"), Home)),
+        (None, None) => Err(failed("link has no identity yet")),
+    }
+}
+
+/// The guest page's origin for relay `relay` (`wss://h` → `https://h`).
+fn link_origin(relay: &str) -> String {
+    let relay = relay.trim_end_matches('/');
+    relay
+        .strip_prefix("wss://")
+        .map(|h| format!("https://{h}"))
+        .or_else(|| relay.strip_prefix("ws://").map(|h| format!("http://{h}")))
+        .unwrap_or_else(|| relay.to_owned())
+}
+
+/// 184 §7.2 W-v (Z184-R2): only the synced lease holder mints `mesh/device_key`. `is_hub()` alone
+/// is also true on both sides of a dual-hub window, and two mints would leave the loser's mesh
+/// links dead. The id is read back after the mint, so a row that replicated in meanwhile wins.
+async fn mint_as_holder(vault: &secrets::Vault) -> Result<String, String> {
+    let holder = mesh::is_hub()
+        && mesh::synced()
+        && match mesh_actor() {
+            Ok(m) => send(&m, mesh::Status)
+                .await
+                .is_ok_and(|s| s.lease.holder.as_ref() == Some(&s.self_id)),
+            Err(_) => false,
+        };
+    link::mint_mesh_link_id(vault, holder).await?;
+    link::mesh_link_id(vault)?.ok_or_else(|| "the mesh has no link id yet".to_owned())
+}
+
+/// 184 §7.2 (W-v, Sky Q3): the mesh link id for a mesh link from a Link-off home: Link's pub-only
+/// read; with no `mesh/device_key` yet, the lease holder mints it (this engine when it holds the
+/// lease, else its `link_mesh_id`); [`link::MESH_LINK_UNAVAILABLE`] when no holder answers.
+async fn mesh_link_id(rt: &Runtime) -> RpcResult<String> {
+    if let Ok(id) = send(&link()?, link::MeshLinkId).await {
+        return Ok(id);
+    }
+    if mesh::is_hub() {
+        let vault = secrets::handle(rt)
+            .await
+            .ok_or_else(|| failed("secrets vault unavailable"))?;
+        // Not yet synced or not the holder after all: Retry (the dialog's mesh_link_unavailable).
+        return mint_as_holder(&vault)
+            .await
+            .map_err(|_| failed(link::MESH_LINK_UNAVAILABLE));
+    }
+    let unavailable = || failed(link::MESH_LINK_UNAVAILABLE);
+    let holder = send(&mesh_actor()?, mesh::Status)
+        .await
+        .ok()
+        .and_then(|s| s.lease.holder)
+        .ok_or_else(unavailable)?;
+    // A fresh internal query, not a second hop of the user's (possibly forwarded) call: the
+    // holder answers it itself and never forwards it.
+    match forward::to_peer::<String>(
+        &Extensions::new(),
+        &replica::PeerId(holder.0),
+        "link_mesh_id",
+        [(); 0],
+    )
+    .await
+    {
+        Ok(Some(id)) => Ok(id),
+        _ => Err(unavailable()),
+    }
+}
+
+/// 184 §7.2: `doc_link_create` in a mesh with peers. Off the document's server the call is
+/// forwarded there; on it: Link on → v2 on the home, today's v1 elsewhere; Link off → a v1 mesh
+/// link (Sky Q3), whose id this engine reads and never mints.
+async fn doc_link_create_in_mesh(
+    rt: &Runtime,
+    ext: &Extensions,
+    doc: document::DocId,
+    role: document::Role,
+    name: Option<String>,
+    expires_ms: Option<i64>,
+) -> RpcResult<document::LinkCreated> {
+    let docs = documents()?;
+    let params = (&doc, role, &name, expires_ms);
+    if let Some(v) = to_doc_server(ext, &docs, &doc, "doc_link_create", params).await? {
+        return Ok(v);
+    }
+    let status: LinkStatus = send(&link()?, link::Status).await?;
+    let origin = link_origin(&status.relay);
+    // Every id is known before the link is written: no link without a URL.
+    let (ids, via) = match status.enabled {
+        true => link_ids(&status, None, false)?,
+        false => link_ids(&status, Some(&mesh_link_id(rt).await?), false)?,
+    };
+    let create = document::LinkCreate {
+        doc: doc.clone(),
+        role,
+        name: name.clone(),
+        expires_ms,
+    };
+    let r = match doc_send(&docs, create).await {
+        Ok((share, secret)) => {
+            // v2 only from the home itself (W-j), and only with Link on here.
+            let home_here = status.enabled
+                && doc_send(
+                    &docs,
+                    document::MetaOf {
+                        doc: doc.clone(),
+                        by: document::Principal::Owner { device: None },
+                    },
+                )
+                .await
+                .ok()
+                .and_then(|m| m.home)
+                .is_some_and(|h| mesh::self_id().is_some_and(|me| me == h.0));
+            let mesh_id = match (home_here, status.mesh.as_ref()) {
+                (false, _) => None,
+                (true, Some(m)) => Some(m.device_id.clone()),
+                (true, None) => send(&link()?, link::MeshLinkId).await.ok(),
+            };
+            let (ids, via) = match mesh_id {
+                Some(m) => link_ids(&status, Some(&m), true)?,
+                None => (ids, via),
+            };
+            Ok(document::LinkCreated {
+                url: format!("{origin}/d#{ids}.{doc}.{secret}"),
+                link: share,
+                via,
+            })
+        }
+        Err(e) => Err(e),
+    };
+    doc_forward(ext, "doc_link_create", params, r).await
+}
+
 /// [`doc_send`]'s error mapping for the 144 delegation functions that answer `anyhow::Result`: a
 /// `NotHub:<id>` message becomes [`NOT_HUB`] with the typed payload (so [`doc_forward`] re-issues the
 /// call), anything else `ASK_FAILED` with the message.
@@ -3771,6 +3981,24 @@ pub(crate) fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Re
 /// An `ASK_FAILED` (`-32000`) error with `msg`.
 pub(crate) fn failed(msg: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(ASK_FAILED, msg.into(), None::<()>)
+}
+
+/// 184 §12.4: `msg` with engine id `id` replaced by its machine name, else by the id's first 8
+/// characters, as the UI shows an unknown machine.
+fn named(msg: &str, id: &str, name: Option<&str>) -> String {
+    let short: String = id.chars().take(8).collect();
+    msg.replace(id, name.unwrap_or(&short))
+}
+
+/// `id`'s machine name in `st`: this engine's `self_name` or a peer's `name`.
+fn machine_name<'a>(st: &'a mesh::MeshStatus, id: &str) -> Option<&'a str> {
+    if st.self_id.0 == id {
+        return Some(&st.self_name);
+    }
+    st.peers
+        .iter()
+        .find(|p| p.id.0 == id)
+        .map(|p| p.name.as_str())
 }
 
 /// 160: the engine's cost cube service; `NOT_RUNNING` before the agent plugin started.
@@ -6161,28 +6389,21 @@ impl ApiServer for Server {
         expires_ms: Option<i64>,
     ) -> RpcResult<document::LinkCreated> {
         owner(ext)?;
+        // 184 §7.2: in a mesh the document's server makes the link; a lone engine (paired phones
+        // or not) runs today's code unchanged.
+        if mesh::has_peers() == Some(true) {
+            return doc_link_create_in_mesh(&self.rt, ext, doc, role, name, expires_ms).await;
+        }
         // The URL needs the relay host and an id devices dial (59 §8.2): Link must be on. 69: the mesh
         // device id when this engine has one — the hub, whichever engine it is, answers `/h/<mesh id>`
         // — else the engine id (a single engine before any device paired). Old engine-id links keep
         // resolving: the engine uplink stays registered.
         let status: LinkStatus = send(&link()?, link::Status).await?;
         if !status.enabled {
-            return Err(failed(
-                "link is off: turn on Settings › Link to share documents",
-            ));
+            return Err(failed(LINK_OFF));
         }
-        let harness = status
-            .mesh
-            .as_ref()
-            .map(|m| m.device_id.clone())
-            .or(status.harness_id)
-            .ok_or_else(|| failed("link has no identity yet"))?;
-        let relay = status.relay.trim_end_matches('/');
-        let origin = relay
-            .strip_prefix("wss://")
-            .map(|h| format!("https://{h}"))
-            .or_else(|| relay.strip_prefix("ws://").map(|h| format!("http://{h}")))
-            .unwrap_or_else(|| relay.to_owned());
+        let (ids, via) = link_ids(&status, None, false)?;
+        let origin = link_origin(&status.relay);
         let r = doc_send(
             &documents()?,
             document::LinkCreate {
@@ -6194,8 +6415,9 @@ impl ApiServer for Server {
         )
         .await
         .map(|(link, secret)| document::LinkCreated {
-            url: format!("{origin}/d#1.{harness}.{doc}.{secret}"),
+            url: format!("{origin}/d#{ids}.{doc}.{secret}"),
             link,
+            via,
         });
         doc_forward(ext, "doc_link_create", (&doc, role, &name, expires_ms), r).await
     }
@@ -6247,12 +6469,7 @@ impl ApiServer for Server {
             },
         )
         .await;
-        match &r {
-            Ok(_) => guest.mark_joined(),
-            Err(_) => {
-                guest.refuse();
-            }
-        }
+        join_outcome(guest, &r);
         r
     }
 
@@ -6804,10 +7021,61 @@ impl ApiServer for Server {
                 title: title.trim().to_owned(),
                 markdown: markdown.clone().unwrap_or_default(),
                 by: document::Principal::Owner { device: None },
+                home: document::Homing::Here,
             },
         )
         .await;
         doc_forward(ext, "doc_create", (&title, &markdown), r).await
+    }
+
+    async fn doc_move_home(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        to: String,
+    ) -> RpcResult<document::DocSummary> {
+        owner(ext)?;
+        // §4.8: the note's server runs the checks and hands the live copy over.
+        let docs = documents()?;
+        if let Some(v) = to_doc_server(ext, &docs, &doc, "doc_move_home", (&doc, &to)).await? {
+            return Ok(v);
+        }
+        let r = doc_send(
+            &docs,
+            document::MoveHome {
+                doc,
+                to: mesh::EngineId(to.clone()),
+                checks: true,
+            },
+        )
+        .await;
+        // §12.4: the actor's copy names engine ids; the user reads machine names.
+        match r {
+            Err(e) if e.message().contains(&to) => {
+                let st = match mesh_actor() {
+                    Ok(m) => send(&m, mesh::Status).await.ok(),
+                    Err(_) => None,
+                };
+                let name = st.as_ref().and_then(|st| machine_name(st, &to));
+                Err(failed(named(e.message(), &to, name)))
+            }
+            r => r,
+        }
+    }
+
+    async fn link_mesh_id(&self, ext: &Extensions) -> RpcResult<String> {
+        if ext.get::<forward::Forwarded>().is_none() {
+            return Err(ErrorObjectOwned::owned(
+                UNAUTHORIZED,
+                "link_mesh_id is mesh-internal",
+                None::<()>,
+            ));
+        }
+        // W-v: only the lease holder mints `mesh/device_key`; `not the hub` elsewhere.
+        let vault = secrets::handle(&self.rt)
+            .await
+            .ok_or_else(|| failed("secrets vault unavailable"))?;
+        mint_as_holder(&vault).await.map_err(failed)
     }
 
     async fn documents_status(&self) -> RpcResult<document::HelperStatus> {
@@ -11545,5 +11813,123 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
+    }
+
+    fn link_status(enabled: bool, harness: Option<&str>, mesh: Option<&str>) -> LinkStatus {
+        LinkStatus {
+            enabled,
+            relay: "wss://relay.example/".into(),
+            name: "mac".into(),
+            harness_id: harness.map(Into::into),
+            connected: enabled,
+            devices: vec![],
+            pairing: None,
+            mesh: mesh.map(|m| link::MeshLink {
+                device_id: m.into(),
+                connected: false,
+            }),
+        }
+    }
+
+    /// 184 §7.1, §7.2, W-j: v2 only from the home in a mesh; everywhere else today's v1 —
+    /// including a lone engine with a paired phone (`1.<mesh device id>`); Link off in a mesh is
+    /// the v1 mesh link, whose id Link never holds there.
+    #[test]
+    fn share_links_are_v2_on_the_home_only_and_v1_as_today_elsewhere() {
+        use document::LinkVia::{Home, Mesh};
+        let ids = |s: &LinkStatus, m: Option<&str>, here| link_ids(s, m, here).unwrap();
+        let phone = link_status(true, Some("H"), Some("M"));
+        assert_eq!(
+            ids(&phone, None, false),
+            ("1.M".into(), Mesh),
+            "lone engine + phone"
+        );
+        let alone = link_status(true, Some("H"), None);
+        assert_eq!(
+            ids(&alone, None, false),
+            ("1.H".into(), Home),
+            "before any device"
+        );
+        assert_eq!(
+            ids(&phone, Some("M"), true),
+            ("2.H.M".into(), Home),
+            "the home"
+        );
+        let follower = link_status(true, Some("H"), None);
+        assert_eq!(
+            ids(&follower, Some("M"), true),
+            ("2.H.M".into(), Home),
+            "MeshLinkId read"
+        );
+        assert_eq!(
+            ids(&phone, Some("M"), false),
+            ("1.M".into(), Mesh),
+            "not the home"
+        );
+        let off = link_status(false, Some("H"), None);
+        assert_eq!(
+            ids(&off, Some("M"), true),
+            ("1.M".into(), Mesh),
+            "Link off: a mesh link"
+        );
+        assert_eq!(
+            link_ids(&off, None, true).unwrap_err().message(),
+            link::MESH_LINK_UNAVAILABLE
+        );
+        assert_eq!(
+            link_ids(&link_status(true, None, None), None, false)
+                .unwrap_err()
+                .message(),
+            "link has no identity yet"
+        );
+        assert_eq!(link_origin(&phone.relay), "https://relay.example");
+        assert_eq!(link_origin("ws://127.0.0.1:9/"), "http://127.0.0.1:9");
+    }
+
+    /// 184 §10.4: a `busy` join (a hand-back in flight) is retried by the page and never counts
+    /// toward the guest's three refusals; any other refusal does.
+    #[test]
+    fn a_busy_join_is_not_a_refusal() {
+        let (peer, _guard) = link::RpcPeer::open_guest([7; 32], [9; 32]);
+        let guest = peer.guest().unwrap();
+        // Z184-R2: a move in flight or a transient failure never counts toward the close.
+        for e in [
+            document::share::BUSY,
+            "hub_moved",
+            "server_moved",
+            "NotHub:abc",
+        ] {
+            join_outcome::<()>(guest, &Err(failed(e)));
+        }
+        assert_eq!(guest.refusals(), 0);
+        join_outcome::<()>(guest, &Err(failed("bad_proof")));
+        join_outcome::<()>(guest, &Err(failed("not_member")));
+        assert_eq!(guest.refusals(), 2);
+        // Z184-R3: the join's own refusals count too.
+        join_outcome::<()>(guest, &Err(failed("link_revoked")));
+        join_outcome::<()>(guest, &Err(failed("member_revoked")));
+        assert_eq!(guest.refusals(), 4);
+    }
+
+    /// 184 §12.4: Move to's refusals name the machine, or an unknown id's first 8 characters.
+    #[test]
+    fn move_refusals_name_the_machine() {
+        let id = "0123456789abcdef0123";
+        assert_eq!(
+            named(&format!("{id} is offline"), id, Some("xeus")),
+            "xeus is offline"
+        );
+        assert_eq!(
+            named(&format!("already lives on {id}"), id, None),
+            "already lives on 01234567"
+        );
+        assert_eq!(
+            named(
+                &format!("moved to {id}; it has not taken the note yet"),
+                id,
+                Some("C")
+            ),
+            "moved to C; it has not taken the note yet"
+        );
     }
 }

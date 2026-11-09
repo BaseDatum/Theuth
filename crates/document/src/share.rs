@@ -18,7 +18,7 @@ use rand::Rng as _;
 use sha2::Sha256;
 
 use crate::actor::DocumentActor;
-use crate::hub::DocError;
+use crate::hub::{DocError, Route};
 use crate::meta::{
     DocEvent, DocId, DocKind, Joined, Member, Members, PALETTE, Principal, Role, SOURCE_READONLY,
     ShareLink,
@@ -63,13 +63,12 @@ impl Message<Reseal> for DocumentActor {
 
 impl DocumentActor {
     /// [`Reseal`]'s body; also run when this engine becomes the hub (183 R1), so links sealed
-    /// under a retained key survive a hub move after a rotation.
+    /// under a retained key survive a hub move after a rotation. 184 §7.4: the holder re-seals
+    /// every document, as before; every other engine re-seals the ones it serves or homes, and
+    /// `merge_meta` keeps whichever seal opens. `true` = a pass ran (every engine with a vault).
     pub(crate) async fn reseal(&mut self) -> bool {
-        if !self.hub.holding() {
-            return false;
-        }
         let Some(vault) = self.store.vault() else {
-            return true;
+            return self.hub.holding();
         };
         let _hold = vault.retire_hold("document");
         let docs = match self.store.list(None, u32::MAX).await {
@@ -79,7 +78,14 @@ impl DocumentActor {
                 return false;
             }
         };
+        let all = self.hub.holding();
         for d in docs {
+            if !all
+                && !self.serves(&d.id)
+                && !self.home_of(&d.id).is_some_and(|h| self.hub.is_me(&h))
+            {
+                continue;
+            }
             if let Some(o) = self.open.get_mut(&d.id) {
                 if reseal_links(&vault, &mut o.meta.links) {
                     self.save_members(&d.id).await;
@@ -100,7 +106,7 @@ impl DocumentActor {
 }
 
 /// Re-seal each link sealed under a retained key; `true` when one changed.
-fn reseal_links(vault: &Vault, links: &mut [ShareLink]) -> bool {
+pub(crate) fn reseal_links(vault: &Vault, links: &mut [ShareLink]) -> bool {
     let mut changed = false;
     for l in links {
         if let Some(bytes) = unb64url(&l.secret_hash_sealed)
@@ -120,6 +126,11 @@ fn open_hash(vault: &Vault, link: &ShareLink) -> Option<Vec<u8>> {
     vault
         .open_with_mesh_key(link.id.as_bytes(), &bytes)
         .map(|k| k.to_vec())
+}
+
+/// 184 §7.4: `merge_meta`'s `opens` — the link's seal opens under this engine's mesh key.
+pub(crate) fn seal_opens(vault: Option<&Vault>, link: &ShareLink) -> bool {
+    vault.is_some_and(|v| open_hash(v, link).is_some())
 }
 
 /// `sha256(secret)`, the value a link stores and the proof's key.
@@ -173,6 +184,8 @@ pub enum JoinError {
     Full,
     /// `documents.sharing` is not `on`.
     SharingOff,
+    /// Z184-R3: this key was revoked after the link it presents was made; a newer link admits it.
+    MemberRevoked,
     /// Store or load failure.
     Other(String),
 }
@@ -187,12 +200,24 @@ impl fmt::Display for JoinError {
             Self::BadProof => f.write_str("bad_proof"),
             Self::Full => f.write_str("members_full"),
             Self::SharingOff => f.write_str("sharing_off"),
+            Self::MemberRevoked => f.write_str("member_revoked"),
             Self::Other(e) => f.write_str(e),
         }
     }
 }
 
 impl std::error::Error for JoinError {}
+
+/// 184 §4.3 step 4: the `JoinError::Other` a parked `Join` answers after `JOIN_PARK_MS` while a
+/// hand-back runs; the guest page retries it, and it never counts as a refusal.
+pub const BUSY: &str = "busy";
+
+impl JoinError {
+    /// 184: `Other("busy")`, which the caller retries ([`BUSY`]).
+    pub fn retryable(&self) -> bool {
+        matches!(self, Self::Other(s) if s == BUSY)
+    }
+}
 
 impl DocumentActor {
     /// §8.1, checked on every member call: a `Principal::Member` must be in `doc`'s members
@@ -214,7 +239,11 @@ impl DocumentActor {
             return Err("sharing_disabled".to_owned());
         }
         let o = self.load(doc)?;
-        let role = match o.meta.members.iter().find(|m| m.pub_ == pub_) {
+        // Z184-R2: a member no later than its key's revoke tombstone is not one.
+        let live = |m: &&crate::meta::Member| {
+            m.pub_ == pub_ && o.meta.revoked.get(pub_).is_none_or(|at| m.added_ms > *at)
+        };
+        let role = match o.meta.members.iter().find(live) {
             Some(m) => m.role,
             None => {
                 let kind = o.meta.kind;
@@ -428,10 +457,22 @@ pub struct LinkCreate {
 }
 
 impl Message<LinkCreate> for DocumentActor {
-    type Reply = Result<(ShareLink, String), DocError>;
+    type Reply = DelegatedReply<Result<(ShareLink, String), DocError>>;
 
-    async fn handle(&mut self, m: LinkCreate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.hub.gate()?;
+    async fn handle(&mut self, m: LinkCreate, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        // 184 §4.6, §7.3: a live meta write on the document's server.
+        let doc = m.doc.clone();
+        if let Some((m, tx)) = self.gate_here(&doc, m, tx) {
+            tx.send(self.link_create(m).await);
+        }
+        reply
+    }
+}
+
+impl DocumentActor {
+    async fn link_create(&mut self, m: LinkCreate) -> Result<(ShareLink, String), DocError> {
         if self.cfg.sharing != "on" {
             return Err("sharing_off".into());
         }
@@ -472,10 +513,21 @@ pub struct LinkRevoke {
 }
 
 impl Message<LinkRevoke> for DocumentActor {
-    type Reply = Result<(), DocError>;
+    type Reply = DelegatedReply<Result<(), DocError>>;
 
-    async fn handle(&mut self, m: LinkRevoke, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.hub.gate()?;
+    async fn handle(&mut self, m: LinkRevoke, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let doc = m.doc.clone();
+        if let Some((m, tx)) = self.gate_here(&doc, m, tx) {
+            tx.send(self.link_revoke(m).await);
+        }
+        reply
+    }
+}
+
+impl DocumentActor {
+    async fn link_revoke(&mut self, m: LinkRevoke) -> Result<(), DocError> {
         let o = self.load(&m.doc)?;
         let link = o
             .meta
@@ -515,9 +567,14 @@ impl Message<Join> for DocumentActor {
     async fn handle(&mut self, m: Join, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        match self.hub.route() {
-            Ok(None) => tx.send(self.join(m).await),
-            Ok(Some(hub)) => {
+        match self.route_doc(&m.doc, false) {
+            Ok(Route::Serve) => tx.send(self.join(m).await),
+            // §4.3 step 4: a hand-back is running; the guest retries `busy` inside its deadline.
+            Ok(Route::Park) => {
+                let doc = m.doc.clone();
+                self.park(&doc, m, tx, Some(JoinError::Other(BUSY.to_owned())));
+            }
+            Ok(Route::Forward(hub)) => {
                 let client = Client::Member(b64url(&m.guest_pub));
                 let doc = m.doc.clone();
                 self.forward(hub, &doc, client, Cmd::Join { join: m, reply: tx });
@@ -568,6 +625,15 @@ impl DocumentActor {
         if !link.live(now) {
             return Err(JoinError::LinkExpired);
         }
+        // Z184-R3: a revoke blocks every link that existed then (the guest would just reload it);
+        // only a link made afterwards admits the key again.
+        if o.meta
+            .revoked
+            .get(&pub_)
+            .is_some_and(|at| link.created_ms <= *at)
+        {
+            return Err(JoinError::MemberRevoked);
+        }
         if o.meta.members.len() >= max {
             return Err(JoinError::Full);
         }
@@ -579,12 +645,14 @@ impl DocumentActor {
                 .filter(|n| !n.trim().is_empty())
                 .map(|n| n.trim().to_owned()))
             .unwrap_or_else(|| "Guest".to_owned());
+        // Later than any revoke of this key, so other engines' tombstones keep the new member.
+        let added_ms = o.meta.revoked.get(&pub_).map_or(now, |at| now.max(at + 1));
         let member = Member {
             pub_,
             name,
             color: PALETTE[o.meta.members.len() % PALETTE.len()].to_owned(),
             role: link.role,
-            added_ms: now,
+            added_ms,
             via: Some(link.id.clone()),
             last_seen_ms: now,
         };
@@ -614,10 +682,21 @@ pub struct MemberSet {
 }
 
 impl Message<MemberSet> for DocumentActor {
-    type Reply = Result<(), DocError>;
+    type Reply = DelegatedReply<Result<(), DocError>>;
 
-    async fn handle(&mut self, m: MemberSet, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.hub.gate()?;
+    async fn handle(&mut self, m: MemberSet, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let doc = m.doc.clone();
+        if let Some((m, tx)) = self.gate_here(&doc, m, tx) {
+            tx.send(self.member_set(m).await);
+        }
+        reply
+    }
+}
+
+impl DocumentActor {
+    async fn member_set(&mut self, m: MemberSet) -> Result<(), DocError> {
         let o = self.load(&m.doc)?;
         let member = o
             .meta
@@ -662,16 +741,33 @@ pub struct MemberRevoke {
 }
 
 impl Message<MemberRevoke> for DocumentActor {
-    type Reply = Result<(), DocError>;
+    type Reply = DelegatedReply<Result<(), DocError>>;
 
-    async fn handle(&mut self, m: MemberRevoke, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.hub.gate()?;
-        let o = self.load(&m.doc)?;
-        let before = o.meta.members.len();
-        o.meta.members.retain(|x| x.pub_ != m.pub_);
-        if o.meta.members.len() == before {
-            return Err("not_member".into());
+    async fn handle(
+        &mut self,
+        m: MemberRevoke,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let doc = m.doc.clone();
+        if let Some((m, tx)) = self.gate_here(&doc, m, tx) {
+            tx.send(self.member_revoke(m).await);
         }
+        reply
+    }
+}
+
+impl DocumentActor {
+    async fn member_revoke(&mut self, m: MemberRevoke) -> Result<(), DocError> {
+        let o = self.load(&m.doc)?;
+        let Some(gone) = o.meta.members.iter().find(|x| x.pub_ == m.pub_) else {
+            return Err("not_member".into());
+        };
+        // Z184-R2: a tombstone the merge keeps, so no other engine's copy brings the member back.
+        let at = crate::store::now_ms().max(gone.added_ms);
+        o.meta.revoked.insert(m.pub_.clone(), at);
+        o.meta.members.retain(|x| x.pub_ != m.pub_);
         self.close_member(&m.doc, &m.pub_, "revoked");
         self.members_changed(&m.doc).await;
         // 144 §11: a notebook member loses every derived grant the same way.
@@ -704,9 +800,13 @@ impl Message<SetName> for DocumentActor {
     async fn handle(&mut self, m: SetName, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        match self.hub.route() {
-            Ok(None) => tx.send(self.set_name(m).await),
-            Ok(Some(hub)) => self.forward(
+        match self.route_doc(&m.doc, false) {
+            Ok(Route::Serve) => tx.send(self.set_name(m).await),
+            Ok(Route::Park) => {
+                let doc = m.doc.clone();
+                self.park(&doc, m, tx, None);
+            }
+            Ok(Route::Forward(hub)) => self.forward(
                 hub,
                 &m.doc,
                 Client::of(&m.by),
@@ -749,12 +849,17 @@ pub struct MembersOf {
 }
 
 impl Message<MembersOf> for DocumentActor {
-    type Reply = Result<Members, DocError>;
+    type Reply = DelegatedReply<Result<Members, DocError>>;
 
-    async fn handle(&mut self, m: MembersOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.hub.gate()?;
-        self.load(&m.doc)?;
-        Ok(self.members_of(&m.doc)?)
+    async fn handle(&mut self, m: MembersOf, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let doc = m.doc.clone();
+        if let Some((m, tx)) = self.gate_here(&doc, m, tx) {
+            let r = self.load(&m.doc).map(|_| ()).map_err(DocError::from);
+            tx.send(r.and_then(|()| Ok(self.members_of(&m.doc)?)));
+        }
+        reply
     }
 }
 

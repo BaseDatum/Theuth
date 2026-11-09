@@ -1,5 +1,5 @@
-//! Owner: E2 — note scope (design 171 §5.1, §9.6, §13.2): kernel session ids, hub routing,
-//! source resolution through `document::CodeBlockText`, origin delivery, notebook result lines,
+//! Owner: E2 — note scope (design 171 §5.1, §9.6, §13.2): kernel session ids, source
+//! resolution through `document::CodeBlockText`, origin delivery, notebook result lines,
 //! `cell_latest`, the `doc_read` run annotations. E1's actor calls these at its `// 171:E2`
 //! lines; E2 never edits `actor.rs`.
 //!
@@ -18,15 +18,6 @@ use crate::types::{
     Scope, SessionId,
 };
 
-/// Where a note cell runs (§5.1 W-d): the document's hub.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Route {
-    /// This engine is the hub.
-    Local,
-    /// Forward to the hub engine (its link peer id).
-    Hub(String),
-}
-
 /// The source the engine runs (§3.4): the live Y.Doc's block.
 pub type NoteSource = document::CodeBlockTextReply;
 
@@ -40,17 +31,20 @@ pub fn kernel_session(doc: &DocId) -> SessionId {
 /// The document and agent reads note scope needs. [`Live`] asks the running actors.
 #[async_trait::async_trait]
 pub trait Docs: Send + Sync {
-    /// `CodeBlockText`.
-    async fn code_block(&self, doc: &DocId, key: &NoteKey) -> Result<NoteSource, String>;
-    /// `None` = this engine is the hub; `Some(peer)` = the hub; `Err` = no hub holds the lease.
-    async fn hub(&self) -> Result<Option<String>, String>;
+    /// `CodeBlockText`; `seen` = the press's digest (184 §6.2, W-u: the server waits for it).
+    async fn code_block(
+        &self,
+        doc: &DocId,
+        key: &NoteKey,
+        seen: Option<&str>,
+    ) -> Result<NoteSource, String>;
     /// The note's markdown (for its ```` ```cells ```` defaults block).
     async fn markdown(&self, doc: &DocId) -> Option<String>;
     /// The note's title.
     async fn title(&self, doc: &DocId) -> Option<String>;
     /// Root sessions bound to a notebook containing the note (144 §8).
     async fn bound_sessions(&self, doc: &DocId) -> Vec<SessionId>;
-    /// Upsert one `cell_latest` row (hub).
+    /// Upsert one `cell_latest` row (every engine, after its own runs: 184 §6.4).
     async fn put_latest(&self, row: CellLatest) -> Result<(), String>;
     /// The replicated `cell_latest` rows of a note.
     async fn latest(&self, doc: &DocId) -> Result<Vec<CellLatest>, String>;
@@ -74,26 +68,18 @@ const OWNER: Principal = Principal::Owner { device: None };
 
 #[async_trait::async_trait]
 impl Docs for Live {
-    async fn code_block(&self, doc: &DocId, key: &NoteKey) -> Result<NoteSource, String> {
+    async fn code_block(
+        &self,
+        doc: &DocId,
+        key: &NoteKey,
+        seen: Option<&str>,
+    ) -> Result<NoteSource, String> {
         let msg = document::CodeBlockText {
             doc: doc.clone(),
             key: key.clone(),
+            seen: seen.map(str::to_owned),
         };
         docs_actor()?.actor().ask(msg).await.map_err(ask_err)
-    }
-
-    async fn hub(&self) -> Result<Option<String>, String> {
-        match docs_actor()?.actor().ask(document::ingest::HubGate).await {
-            Ok(()) => Ok(None),
-            Err(kameo::error::SendError::HandlerError(s)) => {
-                match document::DocError::parse(&s).not_hub() {
-                    Some(Some(hub)) => Ok(Some(hub.0.clone())),
-                    Some(None) => Err("no engine holds the documents hub".into()),
-                    None => Err(s),
-                }
-            }
-            Err(e) => Err(ask_err(e)),
-        }
     }
 
     async fn markdown(&self, doc: &DocId) -> Option<String> {
@@ -208,27 +194,24 @@ pub fn install(cells: &crate::Cells) {
     document::set_run_annotations(Arc::new(Annotations));
 }
 
-/// Which engine runs `doc`'s cells.
-pub async fn route(doc: &DocId) -> Result<Route, CellsError> {
-    let _ = doc; // one documents hub per mesh (69): the lease is engine-wide
-    match docs().hub().await {
-        Ok(None) => Ok(Route::Local),
-        Ok(Some(hub)) => Ok(Route::Hub(hub)),
-        Err(e) => Err(CellsError::Failed(e)),
-    }
-}
-
-/// Read a note cell's current text, language and last author (`CodeBlockText`).
-pub async fn source(doc: &DocId, key: &NoteKey) -> Result<NoteSource, CellsError> {
+/// Read a note cell's current text, language and last author (`CodeBlockText`): from the
+/// document's server (184 §6.2), which waits up to `BLOCK_WAIT_MS` for `seen` when it is set.
+pub async fn source(
+    doc: &DocId,
+    key: &NoteKey,
+    seen: Option<&str>,
+) -> Result<NoteSource, CellsError> {
     docs()
-        .code_block(doc, key)
+        .code_block(doc, key, seen)
         .await
         .map_err(CellsError::NotFound)
 }
 
 /// §9.6: the session whose agent last wrote the block; `None` = the owner (or a member) wrote it.
 pub async fn origin(doc: &DocId, block: &str) -> Option<SessionId> {
-    let src = source(doc, &NoteKey::Block(block.to_owned())).await.ok()?;
+    let src = source(doc, &NoteKey::Block(block.to_owned()), None)
+        .await
+        .ok()?;
     author_session(&src.last_author)
 }
 
@@ -356,7 +339,7 @@ pub async fn deliver(run: &CellRun, cleaned: &str, pass_end: bool) -> Result<Str
     };
     let cfg = config();
     let d = docs();
-    let src = d.code_block(doc, key).await.ok();
+    let src = d.code_block(doc, key, None).await.ok();
     let cell = src
         .as_ref()
         .and_then(|s| surface::cell::parse(&s.language, &s.text));
@@ -474,7 +457,8 @@ fn quiet_line(run: &CellRun, key: &NoteKey, in_attr: &str) -> String {
     )
 }
 
-/// §13.2: the row the hub upserts (`text` = cleaned, head+tail capped; `""` when private).
+/// §13.2: the row this engine upserts (`text` = cleaned, head+tail capped; `""` when private),
+/// stamped with this engine's mesh id (184 §6.4).
 fn latest_row(
     run: &CellRun,
     doc: &DocId,
@@ -511,6 +495,7 @@ fn latest_row(
             .ended_ms
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
         text,
+        engine: mesh::self_id().unwrap_or_default(),
     }
 }
 
@@ -704,6 +689,7 @@ mod tests {
             language: "bash".into(),
             text: text.into(),
             last_author: by,
+            markdown: String::new(),
         }
     }
 
@@ -766,6 +752,21 @@ mod tests {
         );
         assert_eq!(member_guard(&member, None, Some("QUxJQ0VL")), Ok(()));
         assert!(member_guard(&member, None, Some("someone")).is_err());
+        // 184 §6.2: an author nobody could tell (`?`) asks for the confirm, which then passes;
+        // `?` never stands in for a known member's ack.
+        let unknown = src(
+            text,
+            Principal::Member {
+                pub_: document::cells::UNKNOWN_AUTHOR.into(),
+                device: None,
+            },
+        );
+        assert_eq!(
+            member_guard(&unknown, None, None),
+            Err(CellsError::MemberAck("?".into()))
+        );
+        assert_eq!(member_guard(&unknown, None, Some("?")), Ok(()));
+        assert!(member_guard(&member, None, Some("?")).is_err());
         // The owner already ran exactly this text: no ack needed.
         let ran = run("d", NoteKey::Name("x".into()), text);
         assert_eq!(member_guard(&member, Some(&ran), None), Ok(()));
@@ -914,11 +915,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Docs for Fake {
-        async fn code_block(&self, _: &DocId, _: &NoteKey) -> Result<NoteSource, String> {
+        async fn code_block(
+            &self,
+            _: &DocId,
+            _: &NoteKey,
+            _: Option<&str>,
+        ) -> Result<NoteSource, String> {
             Ok(self.block.clone())
-        }
-        async fn hub(&self) -> Result<Option<String>, String> {
-            Ok(Some("engine-hub".into()))
         }
         async fn markdown(&self, _: &DocId) -> Option<String> {
             Some("```cells\n#| cwd: /srv\n```\n".into())
@@ -950,9 +953,8 @@ mod tests {
         });
         set_docs(fake.clone());
         let doc = DocId("d-fake".into());
-        assert_eq!(route(&doc).await, Ok(Route::Hub("engine-hub".into())));
         assert_eq!(
-            source(&doc, &NoteKey::Name("preview".into()))
+            source(&doc, &NoteKey::Name("preview".into()), None)
                 .await
                 .unwrap()
                 .text,
@@ -973,6 +975,12 @@ mod tests {
         );
         assert_eq!((rows[0].state.as_str(), rows[0].exit), ("done", Some(0)));
         assert_eq!(rows[0].expect.as_deref(), Some("met 1/1"));
+        // 184 §6.4: the row names the engine that ran it (a process-global id, set once).
+        mesh::set_self_id("engine-a");
+        let me = mesh::self_id().unwrap();
+        deliver(&r, "secret output", false).await.unwrap();
+        let rows = latest(&doc).await.unwrap();
+        assert_eq!(rows.last().unwrap().engine, me);
         // ... and doc_read shows the run line but no output fence.
         let ann = Annotations.note_cell(&doc, "b1", "bash", text).unwrap();
         assert!(

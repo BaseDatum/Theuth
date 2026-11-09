@@ -867,6 +867,7 @@ impl Ledger {
                 &t.id.0,
                 &format!("Task {}: {}", short(&t.id), t.title),
                 &t.brief,
+                t.home.as_deref(),
             )
             .await;
         self.save(&t).await?;
@@ -1701,6 +1702,10 @@ impl Ledger {
         }
         t.updated_ms = self.now();
         self.save(&t).await?;
+        // 184 §4.8: the thread follows its task.
+        if let Some(doc) = t.thread.as_deref() {
+            self.thread.set_home(doc, to).await;
+        }
         // Delivered to the old home's desks: not delivered again here (the move's
         // `reassigned` wake below is the new home's), and no claim holds its agent busy.
         self.store.drop_claimed_wakes(&t.id).await.map_err(db)?;
@@ -2973,7 +2978,13 @@ pub(crate) mod tests {
 
     #[async_trait::async_trait]
     impl Thread for MemThread {
-        async fn create(&self, _task: &str, title: &str, body: &str) -> Option<String> {
+        async fn create(
+            &self,
+            _task: &str,
+            title: &str,
+            body: &str,
+            _home: Option<&str>,
+        ) -> Option<String> {
             let id = format!("doc-{}", self.0.lock().unwrap().len() + 1);
             self.0
                 .lock()
@@ -2981,6 +2992,7 @@ pub(crate) mod tests {
                 .insert(id.clone(), vec![format!("# {title}"), body.to_owned()]);
             Some(id)
         }
+        async fn set_home(&self, _doc: &str, _home: &str) {}
         async fn append(&self, doc: &str, markdown: &str) {
             self.0
                 .lock()

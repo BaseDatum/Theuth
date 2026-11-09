@@ -181,7 +181,8 @@ export function Editor({
   // 59 §10: fingers get the fixed toolbar instead of BlockNote's floating menus; labels on remote cursors need no hover.
   const coarse = usePointerCoarse()
   const [toolbar, setToolbar] = useState(false)
-  const editable = status.kind === 'live' || status.kind === 'offline'
+  // 184 §4.7: a re-sync keeps the caret and the keystrokes (the provider queues them); a first open waits.
+  const editable = status.kind === 'live' || status.kind === 'offline' || (status.kind === 'connecting' && status.resync === true)
   const agentColor = provider.meta?.agent.color ?? '#7c3aed'
   const editor = useCreateBlockNote(
     withCollaboration({

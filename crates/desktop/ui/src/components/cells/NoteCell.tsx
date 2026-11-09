@@ -5,11 +5,16 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, Play } from 'lucide-react'
 import { type CSSProperties, type MouseEvent, type ReactNode, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { machineName, inMesh } from '@/components/notes/machine'
+import { useMesh } from '@/components/tasks/queries'
+import { LOCAL, LOCAL_NAME, useEngines } from '@/link/engines'
 import { isApple } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/api'
+import { RpcError } from '@/rpc/client'
+import type { CellLatest } from '@/rpc/bindings/CellLatest'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRunMode } from '@/rpc/bindings/CellRunMode'
 import type { CellScope } from '@/rpc/bindings/CellScope'
@@ -18,13 +23,14 @@ import type { DocId } from '@/rpc/bindings/DocId'
 import type { NoteKey } from '@/rpc/bindings/NoteKey'
 import { Cell, CellExtras, Chip, Notice } from './Cell'
 import { CodeTokens } from './CodeTokens'
+import { AnsiText } from './Outputs'
 import { digest } from './grammar'
 import { CONFIRM_ROOM, LineConfirm } from './LineConfirm'
 import { type Ask, type AskEvent, askSkipped, askStep, cellIdentity, lineGuard, MARK_LOOK, noteHover, useLineRun } from './line-run'
 import { historyAfter } from './open-as-note'
 import { headerFolded, lineDiff, lineStart, memberName, modeOf, pythonValue, withPython } from './note-edit'
 import { NoteHost } from './note-context'
-import { clock, errorText, lastPass, mintId, press, refKey, refresh, register, scopeKey, scopeOf, setNotice, useCellRecord, useCells } from './store'
+import { clock, errorText, lastPass, mintId, press, refKey, refresh, register, scopeKey, scopeOf, setNotice, useCellRecord, useCells, useLatestRow } from './store'
 import { commandUnits, unitLabel, unitMode, unitOf } from './units'
 import { disarmedReason, interpreterText, labelOf, RUN_ANYWAY, titleOf, viewOf } from './view'
 import './note-cells.css'
@@ -81,6 +87,63 @@ export function rereadAfterEdit(scope: CellScope, ms = 800) {
     },
     stop: () => stop(),
   }
+}
+
+/** `just now`, `4 min ago`, `3 h ago`, `2 d ago`. */
+function ageText(ms: number, now = Date.now()): string {
+  const m = Math.floor(Math.max(0, now - ms) / 60_000)
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)} h ago` : `${Math.floor(m / 1440)} d ago`
+}
+
+/** §6.5, §12.3: a result another engine ran, from `cell_latest`: its text, `ran on xeus · 4 min ago · exit 0`, the expect verdict. Nothing to attach to, stop or open. */
+function ForeignRun({ row, machine }: { row: CellLatest; machine: string }) {
+  const end = row.exit !== null ? `exit ${row.exit}` : row.state.replaceAll('_', ' ')
+  return (
+    <div className="flex flex-col gap-1 border-t border-border-subtle px-3 py-2">
+      {row.text && <AnsiText text={row.text} className="max-h-[28rem] overflow-auto text-xs whitespace-pre" />}
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-fg-secondary">
+        <span className="tabular-nums">
+          <span className="text-fg-primary">ran on {machine}</span> · {ageText(Number(row.ended_ms))} · {end}
+          {row.expect && ` · ${row.expect}`}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+/** §12.3: the press `MemberAck("?")` refused (nobody can say who last edited the text): the member-ack confirm. */
+export function UnsureRun({ server, onRun, onCancel }: { server: string; onRun(): void; onCancel(): void }) {
+  const cancel = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    // Inline, not modal (a modal loops ProseMirror): focus moves in, and back to whatever had it (the cell's run button) on close.
+    // Cancel, never Run: the confirm follows the user's own Run press, so a second Enter must not run unread text.
+    const from = document.activeElement
+    cancel.current?.focus()
+    return () => {
+      if (from instanceof HTMLElement && from.isConnected) from.focus()
+    }
+  }, [])
+  return (
+    <Notice tone="warning">
+      <div
+        role="dialog"
+        aria-label="Run this cell?"
+        className="flex flex-col gap-1.5"
+        onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), onCancel())}
+      >
+        <b>Run this cell?</b>
+        <span>This note is shared and {server} can't be reached, so theuth can't tell who last edited this cell. Read it before you run it.</span>
+        <span className="flex gap-1.5">
+          <button type="button" className="underline underline-offset-2 pointer-coarse:min-h-12" onClick={onRun}>
+            Run
+          </button>
+          <button ref={cancel} type="button" className="underline underline-offset-2 pointer-coarse:min-h-12" onClick={onCancel}>
+            Cancel
+          </button>
+        </span>
+      </div>
+    </Notice>
+  )
 }
 
 const decode = (b64: string) => new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
@@ -216,7 +279,14 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   }, [code, reread])
   useEffect(() => reread.stop, [reread])
 
-  const { state: record, notice } = useCellRecord(ref)
+  const { state: rec, notice } = useCellRecord(ref)
+  // §6.5: the newer, by `ended_ms`, of this engine's run and the replicated row; a running own run is the newest. In a mesh only.
+  const { data: mesh } = useMesh()
+  const local = useEngines((s) => s.active === LOCAL)
+  const row = useLatestRow(scope, `${doc}:${key_.value}`)
+  const own = rec?.latest ?? null
+  const foreign = inMesh(mesh) && row && row.engine !== '' && row.engine !== mesh?.self_id && (!own || (own.ended_ms != null && row.ended_ms > BigInt(own.ended_ms))) ? row : null
+  const record = foreign && rec ? { ...rec, latest: null } : rec
   const latest = record?.latest ?? null
   const pub8 = record?.member_edit ?? null
   const member = pub8 ? memberName(pub8, host?.provider.meta?.members) : null
@@ -242,23 +312,28 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     if (old.length) blocknote.removeBlocks(old)
   }, [hasRun, editable, blocknote, block])
 
-  const act = (f: () => Promise<unknown>) => {
+  const act = (f: () => Promise<unknown>, handled?: (e: unknown) => boolean) => {
     setNotice(ref, null)
     f().then(
       () => refresh(scope),
       (e: unknown) => {
-        setNotice(ref, errorText(e))
+        if (!handled?.(e)) setNotice(ref, errorText(e))
         void refresh(scope)
       },
     )
   }
   // `confirmed` only from the presses past a warning: Run anyway, the second ►, the danger confirm (or its "Don't ask
   // again"). `text`: the cell text the press was made on (an ask's press-time text; else what is on screen now).
-  const run = (mode: CellRunMode, confirmed = false, text = code) => {
-    const pressed = pressNote(api, ref, text, mode, pub8, confirmed)
-    act(() => pressed)
+  const run = (mode: CellRunMode, confirmed = false, text = code, ack = pub8) => {
+    const pressed = pressNote(api, ref, text, mode, ack, confirmed)
+    // §6.2, §12.3: the author is unknown (`MemberAck("?")`): the press waits for the user's go.
+    act(
+      () => pressed,
+      (e) => e instanceof RpcError && (e.data as { reason?: string; member?: string } | null)?.member === '?' && (setUnsure({ mode, confirmed, text }), true),
+    )
     return pressed
   }
+  const [unsure, setUnsure] = useState<{ mode: CellRunMode; confirmed: boolean; text: string } | null>(null)
   const callbacks = {
     onRun: run,
     onStop: (kill: boolean) => latest && act(() => api.cell_stop(latest.id, kill)),
@@ -482,7 +557,9 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
     headerInEditor: true,
     notice,
     hint: hint ?? (monty && latest?.state === 'running' ? 'Monty shows output when the run ends' : null),
-    runText: member ? `Run ${member}'s edit` : undefined,
+    // §12.3: in a mesh the button names the machine it runs on (`this Mac` / `this PC` / `this computer`).
+    runText: member ? `Run ${member}'s edit` : inMesh(mesh) && !cell.options.label ? `Run on ${local ? LOCAL_NAME.replace(/^This/, 'this') : mesh?.self_name}` : undefined,
+    below: foreign ? <ForeignRun row={foreign} machine={machineName(mesh, foreign.engine)} /> : undefined,
     chip: cell.lang === 'python' && editable ? <PythonChip text={chipText} cwd={cwd} at={key} onPick={(v) => blocknote.updateBlock(block, { content: withPython(code, v) })} /> : undefined,
     // 171F4 N1: the stale mark as `doc_read` writes it (`ran 15:08 · … · ran an earlier version`), once: the footer
     // replaces the cell's notice row whenever it shows.
@@ -504,6 +581,9 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
               {latest ? 'Review diff' : 'Review'}
             </button>
           </Notice>
+        )}
+        {unsure && (
+          <UnsureRun server={host?.provider.server ? machineName(mesh, host.provider.server) : 'the hub'} onRun={() => (setUnsure(null), run(unsure.mode, unsure.confirmed, unsure.text, '?'))} onCancel={() => setUnsure(null)} />
         )}
         {member && review && <MemberReview run={latest?.id ?? null} code={cell.code} />}
         {passStop !== null && <Notice tone="danger">Run all stopped here: {passStop}</Notice>}

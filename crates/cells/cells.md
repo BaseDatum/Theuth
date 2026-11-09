@@ -29,11 +29,11 @@ Options (a closed set; an unknown key is a warning):
 
 | option | value | meaning |
 |---|---|---|
-| `cwd` | absolute path or `~/…` (relative only under a note default) | the folder it runs in; required in chat; must exist when pressed |
+| `cwd` | `~/…` or an absolute path in chat; in a note `~/…` or relative to the note's `cells` default | the folder it runs in; required in chat; must exist on the machine that presses it |
 | `name` | slug `[a-z0-9-]`, ≤ 48 | stable id; presenting the same name later replaces the older cell |
 | `label` | text ≤ 40 | the Run button's text: name the consequence ("Apply to ir-prod1") |
 | `danger` | bare | red outline, never in Run all, whole cell from its button only (no keyboard run); a line or selection ▶ asks the user to confirm first |
-| `after` | a `name` in the same chat or note | arms only when that cell's latest run exited 0 with every expect met, on its current code; until then the cell warns and the user can still Run anyway |
+| `after` | a `name` in the same chat or note | arms only when that cell's latest run exited 0 with every expect met, on its current code, on the machine that presses it (a run on another machine does not arm it); until then the cell warns and the user can still Run anyway |
 | `expect` | text or `/regex/`, repeatable | must appear in the output; met or missed per line |
 | `env` | `KEY=value`, repeatable | exported before the run; values may be `{{secret:NAME}}` |
 | `python` | `monty`, `auto`, `.venv`, `uv` or an absolute path | which interpreter runs a python cell |
@@ -43,7 +43,7 @@ Options (a closed set; an unknown key is a warning):
 
 `on` is reserved (a sandbox or another engine, later); do not write it.
 
-Note defaults: the first ```` ```cells ```` block of a note holds header lines only — `cwd` (a cell's relative `cwd` resolves against it), `shell` (the program for `bash`/`zsh`/`sh` cells, e.g. `/opt/homebrew/bin/bash`) and `python`. One per note.
+Note defaults: the first ```` ```cells ```` block of a note holds header lines only — `cwd` (a cell's relative `cwd` resolves against it), `shell` (the program for `bash`/`zsh`/`sh` cells, a program name such as `bash`, resolved on the machine that runs the cell; an absolute path only when every machine has it) and `python`. One per note.
 
 ## 2. When to present cells
 
@@ -61,7 +61,7 @@ The mode is sticky: once asked, every changing step of that work stays a cell un
 
 ## 3. Writing rules
 
-- `#| cwd:` on every cell, absolute in chat. Never a `cd` line in place of `cwd`; never a `bash -c "…"` wrapper.
+- `#| cwd:` on every cell: absolute or `~/…` in chat; in a note `~/…` or relative to the note's `cells` default, never one machine's absolute path (a note's cells run on whichever machine the reader presses them on). Never a `cd` line in place of `cwd`; never a `bash -c "…"` wrapper.
 - One action per cell. Checks before changes: export or back up, preview, then apply.
 - Explicit context on every command: `--profile`, `--context`, `-s <stack>`, `--region`. Never rely on the user's current default.
 - Every changing step: `#| label:` naming the consequence and `#| danger`. An apply gets `#| after:` naming its preview. Only an apply: `after:` is not an ordering hint, so a read-only or non-changing step never gets one.
@@ -76,7 +76,7 @@ The mode is sticky: once asked, every changing step of that work stays a cell un
 
 - `#| python: monty` for pure computation on the standard library: no packages, no network, no subprocess, no files outside the cwd. theuth checks Monty can run it when the reply ends.
 - Anything else uses the project's interpreter: `auto` (nearest `.venv` → uv project → pyenv/conda → `python3` on the login PATH), `.venv`, `uv` or an absolute path.
-- `interpreters(cwd)` lists what can run in a folder, with `why` and the one `auto` picks; read it before choosing.
+- `interpreters(cwd)` lists what can run in a folder, with `why` and the one `auto` picks; read it before choosing. It answers for your own machine; a note may be run on another, so prefer `auto` or `.venv` over a path in a note.
 - Keep one python interpreter per note: cells that name different ones run in different kernels and do not share variables.
 - "Monty can't run this cell: line 1: no module named pandas — Monty runs the standard library only; use a local python" means the cell needs the project's interpreter: re-present it with `#| python: .venv` (or `auto`).
 
@@ -103,7 +103,7 @@ A finished run arrives as `<cell_result run="…" exit="…" expect="met 1/1" �
 - Presenting cells for work the user asked you to do yourself, or asking "shall I run it?".
 - Running the presented command through `shell`/`start` "to check", or typing into a cell's terminal.
 - A cell per line of a script, or one 60-line cell doing five actions.
-- `cd` lines instead of `#| cwd:`; relative paths in chat.
+- `cd` lines instead of `#| cwd:`; relative paths in chat; one machine's absolute path (/Users/…, /opt/homebrew/…) in a note.
 - A changing step without `label` and `danger`; `--yes`/`-auto-approve` on a danger cell.
 - Regex soup in `expect`; expecting text the tool does not print.
 - Re-presenting unchanged cells every turn (supersede only on change).
@@ -160,7 +160,7 @@ After the preview's `<cell_result>`: "Preview matches: 3 updates (secret tags, p
 `````markdown
 ```cells
 #| cwd: ~/dr-t6/frp-integration
-#| shell: /opt/homebrew/bin/bash
+#| shell: bash
 ```
 
 ## 1. Check replica lag

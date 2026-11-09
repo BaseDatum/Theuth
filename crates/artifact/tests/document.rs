@@ -261,6 +261,7 @@ async fn markdown_export_carries_cell_outputs_and_run_lines() {
             title: "Runbook".into(),
             markdown,
             by: Principal::Agent { session: session.0 },
+            home: document::Homing::Here,
         })
         .await
         .unwrap()

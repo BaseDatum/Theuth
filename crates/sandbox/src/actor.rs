@@ -1727,6 +1727,7 @@ mod tests {
                 messaging_off: Vec::new(),
                 nearby: true,
                 quarantined: Vec::new(),
+                docs_homes_on: false,
             })
         }
         async fn remove_peer(&self, id: mesh::EngineId) -> anyhow::Result<()> {

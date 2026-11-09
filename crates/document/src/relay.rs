@@ -36,12 +36,14 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
 
 use crate::actor::{
-    ApplyUpdate, AwarenessUpdateMsg, DocumentActor, Edit, EditOutcome, MAX_UPDATE_B64, OpenDoc,
-    Subscribe,
+    ApplyUpdate, AwarenessUpdateMsg, Create, CreateNote, DocumentActor, Edit, EditOutcome, Ensure,
+    Homing, MAX_UPDATE_B64, MetaOf, OpenDoc, Subscribe,
 };
+use crate::cells::{CodeBlockText, CodeBlockTextReply, NoteKey};
 use crate::helper::{Edit as BlockEdit, EditError};
-use crate::hub::{DocError, HUB_MOVED};
-use crate::meta::{DocEvent, DocId, DocOpen, Joined, Principal};
+use crate::hub::{DocError, HUB_MOVED, Handback, Handover, NOT_OWNER, Relayed};
+use crate::meta::{Binding, DocEvent, DocId, DocMeta, DocOpen, DocSummary, Joined, Principal};
+use crate::notebook::{MayRead, NotebookCreate};
 use crate::share::{Join, JoinError, SetName};
 
 /// Events a forwarded subscriber may leave unread before the leg drops it (as the actor's own queue).
@@ -136,6 +138,49 @@ pub enum Msg {
         /// Who the change stands for (`Agent{session}` from the tools, `Owner{device: None}` otherwise).
         by: Principal,
     },
+    /// 184 §5.2, tag 10. Caller → would-be server: create a document (`req` = [`CreateReq`] JSON).
+    /// No `doc`: the leg is keyed by the id the server derives the same way. Answered by one
+    /// [`Msg::Event`] carrying `Result<DocSummary, String>` (a notebook's summary for
+    /// `CreateReq::Notebook`). Refused on member streams.
+    Create {
+        /// [`CreateReq`], JSON.
+        req: Vec<u8>,
+    },
+    /// 184 §4.3, tag 11. Claimant → source: hand `doc` back past `sv` (Yjs v1 state vector).
+    /// Answered by `Result<HandbackReply, String>` JSON, or `Closed{not_home}`. Refused on member
+    /// streams.
+    Handback {
+        /// The document.
+        doc: String,
+        /// The claimant's Yjs v1 state vector.
+        sv: Vec<u8>,
+    },
+    /// 184 §6.2, tag 12. Reader → server: one code block and the note's markdown (`key` = `NoteKey`
+    /// JSON; `seen` = the press's digest). Answered by `Result<CodeBlockTextReply, String>` JSON.
+    /// Refused on member streams.
+    Block {
+        /// The document.
+        doc: String,
+        /// `NoteKey`, JSON.
+        key: Vec<u8>,
+        /// The digest the press carries.
+        seen: Option<String>,
+    },
+    /// 184 §4.8, tag 13. Old server → new home: take `doc` (`meta` = `DocMeta` JSON, `home` = the
+    /// receiver). Answered by `Result<i64, String>` JSON (the epoch once `Held`). Refused on member
+    /// streams.
+    Handover {
+        /// The document.
+        doc: String,
+        /// `DocMeta`, JSON.
+        meta: Vec<u8>,
+    },
+    /// 184 §7.3, tag 14. Front door → server: may the stream's principal (`Hello{member}`) read
+    /// `doc`? Answered by `Result<(), String>` JSON. Allowed on member streams.
+    MayRead {
+        /// The document.
+        doc: String,
+    },
 }
 
 impl Msg {
@@ -152,6 +197,11 @@ impl Msg {
             Self::Hello { .. } => 7,
             Self::SetName { .. } => 8,
             Self::Edit { .. } => 9,
+            Self::Create { .. } => 10,
+            Self::Handback { .. } => 11,
+            Self::Block { .. } => 12,
+            Self::Handover { .. } => 13,
+            Self::MayRead { .. } => 14,
         }
     }
 
@@ -173,6 +223,57 @@ impl Msg {
         anyhow::ensure!(msg.tag() == tag, "frame tag {tag} does not match {msg:?}");
         Ok(msg)
     }
+}
+
+/// 184 §10.1: the body of [`Msg::Create`] (JSON), the create the would-be server runs as
+/// `Relayed<..>` (§5.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CreateReq {
+    /// `Ensure` of a hub-only kind (knowledge, artifacts): answered with the bound document.
+    Ensure {
+        /// What it is bound to.
+        binding: Binding,
+        /// The derived file's current text.
+        markdown: String,
+    },
+    /// `CreateNote` (`binding: Note`) or `Create`; `home` is the caller's `Homing` resolved
+    /// (`Engine(<home>)` → `Some`, `Hub` → `None`), so `Here` keeps meaning the caller.
+    Create {
+        /// What it is bound to.
+        binding: Binding,
+        /// Display title.
+        title: String,
+        /// Initial body.
+        markdown: String,
+        /// Who created it.
+        by: Principal,
+        /// The new document's home.
+        home: Option<mesh::EngineId>,
+    },
+    /// `NotebookCreate`.
+    Notebook {
+        /// Display title.
+        title: String,
+        /// The notebook's description (its body).
+        description: String,
+        /// Project, if any.
+        project: Option<String>,
+        /// Who created it.
+        by: Principal,
+    },
+}
+
+/// 184 §4.3 step 5: a source's answer to [`Msg::Handback`], as JSON in a [`Msg::Event`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandbackReply {
+    /// base64 v1: the source's state past the claimant's `sv`.
+    pub update: String,
+    /// The source's meta.
+    pub meta: DocMeta,
+    /// The source's `agents.json` (block id → agent session).
+    pub agents: std::collections::BTreeMap<String, uuid::Uuid>,
+    /// The source's fence epoch.
+    pub epoch: i64,
 }
 
 /// The codec every `theuth/docs/1` stream uses.
@@ -273,6 +374,41 @@ pub enum Cmd {
         /// Reply.
         reply: ReplySender<Result<EditOutcome, EditError>>,
     },
+    /// 184 `Create` (tag 10), on the leg keyed by the new document's id.
+    Create {
+        /// The create.
+        req: CreateReq,
+        /// Reply: the server's `DocSummary` (or notebook summary) as JSON.
+        reply: ReplySender<Result<serde_json::Value, String>>,
+    },
+    /// 184 `Handback` (tag 11).
+    Handback {
+        /// The claimant's Yjs v1 state vector.
+        sv: Vec<u8>,
+        /// Reply.
+        reply: ReplySender<Result<HandbackReply, DocError>>,
+    },
+    /// 184 `Block` (tag 12).
+    Block {
+        /// The cell.
+        key: NoteKey,
+        /// The digest the press carries.
+        seen: Option<String>,
+        /// Reply.
+        reply: ReplySender<Result<CodeBlockTextReply, String>>,
+    },
+    /// 184 `Handover` (tag 13).
+    Handover {
+        /// The meta, `home` = the leg's target.
+        meta: Box<DocMeta>,
+        /// Reply: the target's epoch once `Held`.
+        reply: ReplySender<Result<i64, String>>,
+    },
+    /// 184 `MayRead` (tag 14), on the member's own leg.
+    MayRead {
+        /// Reply.
+        reply: ReplySender<Result<(), String>>,
+    },
 }
 
 /// A reply the hub still owes, in send order.
@@ -281,6 +417,11 @@ enum Pending {
     Join(ReplySender<Result<Joined, JoinError>>),
     Unit(ReplySender<Result<(), DocError>>),
     Edit(ReplySender<Result<EditOutcome, EditError>>),
+    Create(ReplySender<Result<serde_json::Value, String>>),
+    Handback(ReplySender<Result<HandbackReply, DocError>>),
+    Block(ReplySender<Result<CodeBlockTextReply, String>>),
+    Handover(ReplySender<Result<i64, String>>),
+    MayRead(ReplySender<Result<(), String>>),
 }
 
 impl Pending {
@@ -288,6 +429,11 @@ impl Pending {
         fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, DocError> {
             serde_json::from_slice(bytes)
                 .map_err(|e| DocError::Other(format!("bad reply from the hub: {e}")))
+        }
+        /// A `Result<T, String>` reply JSON; an undecodable one is an error.
+        fn parse_res<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+            serde_json::from_slice::<Result<T, String>>(bytes)
+                .unwrap_or_else(|e| Err(format!("bad reply from the hub: {e}")))
         }
         match self {
             Self::Open(r) => r.send(parse(bytes)),
@@ -298,6 +444,11 @@ impl Pending {
                     Err(EditError::Other(format!("bad reply from the hub: {e}")))
                 }))
             }
+            Self::Create(r) => r.send(parse_res(bytes)),
+            Self::Handback(r) => r.send(parse_res(bytes).map_err(|e| DocError::parse(&e))),
+            Self::Block(r) => r.send(parse_res(bytes)),
+            Self::Handover(r) => r.send(parse_res(bytes)),
+            Self::MayRead(r) => r.send(parse_res(bytes)),
         }
     }
 
@@ -305,12 +456,17 @@ impl Pending {
         let e = DocError::parse(reason);
         match self {
             Self::Open(r) => r.send(Err(e)),
+            Self::Handback(r) => r.send(Err(e)),
             Self::Unit(r) => r.send(Err(e)),
             Self::Edit(r) => r.send(Err(EditError::Other(e.to_string()))),
             Self::Join(r) => r.send(Err(match e {
                 DocError::NotHub { hub } => JoinError::NotHub(hub),
                 DocError::Other(s) => JoinError::Other(s),
             })),
+            Self::Create(r) => r.send(Err(e.to_string())),
+            Self::Block(r) => r.send(Err(e.to_string())),
+            Self::Handover(r) => r.send(Err(e.to_string())),
+            Self::MayRead(r) => r.send(Err(e.to_string())),
         }
     }
 }
@@ -330,21 +486,29 @@ impl Cmd {
             | Self::Awareness { reply, .. }
             | Self::SetName { reply, .. } => Pending::Unit(reply).fail(&reason),
             Self::Subscribe { reply } => reply.send(Err(DocError::parse(&reason))),
+            Self::Create { reply, .. } => Pending::Create(reply).fail(&reason),
+            Self::Handback { reply, .. } => Pending::Handback(reply).fail(&reason),
+            Self::Block { reply, .. } => Pending::Block(reply).fail(&reason),
+            Self::Handover { reply, .. } => Pending::Handover(reply).fail(&reason),
+            Self::MayRead { reply } => Pending::MayRead(reply).fail(&reason),
         }
     }
 }
 
-/// The legs a non-hub actor holds, by client and document, and the transport they open on.
+/// The legs an actor holds towards other engines, by client and document (with each leg's
+/// target, 184 §4.5), and the transport they open on.
 #[derive(Default)]
 pub struct Legs {
     transport: Option<Arc<dyn Transport>>,
-    legs: HashMap<(Client, DocId), mpsc::Sender<Cmd>>,
+    pub(crate) legs: HashMap<(Client, DocId), (EngineId, mpsc::Sender<Cmd>)>,
 }
 
 impl Legs {
-    /// Drop every leg (a lease flip): each leg's subscriber hears `Closed{hub_moved}`.
-    pub fn clear(&mut self) {
-        self.legs.clear();
+    /// 184 `reachable(e)`: `e` is in the docs transport's connected peer set.
+    pub fn reachable(&self, e: &EngineId) -> bool {
+        self.transport
+            .as_ref()
+            .is_some_and(|t| t.peers().iter().any(|p| p.0 == e.0))
     }
 }
 
@@ -357,33 +521,40 @@ impl Message<SetTransport> for DocumentActor {
 
     async fn handle(&mut self, m: SetTransport, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.legs.transport = Some(m.0);
+        self.reroute();
     }
 }
 
 impl DocumentActor {
-    /// Off the hub: hand `cmd` to the leg of (`client`, `doc`) towards `hub`, opening it when there
-    /// is none or the last one ended. A leg that cannot take it answers `NotHub{hub}`.
-    pub(crate) fn forward(&mut self, hub: EngineId, doc: &DocId, client: Client, cmd: Cmd) {
+    /// Hand `cmd` to the leg of (`client`, `doc`) towards `to`, opening it when there is none, the
+    /// last one ended, or it points at another engine. A leg that cannot take it answers
+    /// `NotHub{to}`.
+    pub(crate) fn forward(&mut self, to: EngineId, doc: &DocId, client: Client, cmd: Cmd) {
         let key = (client, doc.clone());
-        let cmd = match self.legs.legs.get(&key).filter(|tx| !tx.is_closed()) {
-            Some(tx) => match tx.try_send(cmd) {
+        let cmd = match self
+            .legs
+            .legs
+            .get(&key)
+            .filter(|(t, tx)| *t == to && !tx.is_closed())
+        {
+            Some((_, tx)) => match tx.try_send(cmd) {
                 Ok(()) => return,
                 Err(mpsc::error::TrySendError::Full(c)) => {
                     tracing::warn!(doc = %doc, "document forward leg is behind; refused");
-                    return c.fail(&hub);
+                    return c.fail(&to);
                 }
                 Err(mpsc::error::TrySendError::Closed(c)) => c,
             },
             None => cmd,
         };
         let Some(t) = self.legs.transport.clone() else {
-            tracing::debug!(doc = %doc, hub = %hub, "document forward: no mesh transport yet");
-            return cmd.fail(&hub);
+            tracing::debug!(doc = %doc, to = %to, "document forward: no mesh transport yet");
+            return cmd.fail(&to);
         };
         let (tx, rx) = mpsc::channel(QUEUE);
-        tokio::spawn(run_leg(t, hub, doc.clone(), key.0.clone(), rx));
+        tokio::spawn(run_leg(t, to.clone(), doc.clone(), key.0.clone(), rx));
         let _ = tx.try_send(cmd);
-        self.legs.legs.insert(key, tx);
+        self.legs.legs.insert(key, (to, tx));
     }
 }
 
@@ -468,6 +639,22 @@ async fn run_leg(
                         reply.send(Ok(()));
                         (Msg::Awareness { doc: id.clone(), bytes: state.into_bytes() }, None)
                     }
+                    // 184 §10.1: JSON of plain data cannot fail; an empty body would be refused by
+                    // the server.
+                    Cmd::Create { req, reply } => (
+                        Msg::Create { req: serde_json::to_vec(&req).unwrap_or_default() },
+                        Some(Pending::Create(reply)),
+                    ),
+                    Cmd::Handback { sv, reply } => (Msg::Handback { doc: id.clone(), sv }, Some(Pending::Handback(reply))),
+                    Cmd::Block { key, seen, reply } => (
+                        Msg::Block { doc: id.clone(), key: serde_json::to_vec(&key).unwrap_or_default(), seen },
+                        Some(Pending::Block(reply)),
+                    ),
+                    Cmd::Handover { meta, reply } => (
+                        Msg::Handover { doc: id.clone(), meta: serde_json::to_vec(&meta).unwrap_or_default() },
+                        Some(Pending::Handover(reply)),
+                    ),
+                    Cmd::MayRead { reply } => (Msg::MayRead { doc: id.clone() }, Some(Pending::MayRead(reply))),
                 };
                 if let Some(p) = owed {
                     pending.push_back(p);
@@ -565,7 +752,7 @@ pub async fn serve_on(
             Ok((peer, stream)) => {
                 let actor = actor.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = serve_stream(&actor, framed(stream)).await {
+                    if let Err(e) = serve_stream(&actor, framed(stream), &peer).await {
                         tracing::debug!(%peer, error = %e, "document stream ended");
                     }
                 });
@@ -578,6 +765,72 @@ pub async fn serve_on(
     }
 }
 
+/// 184 §5.2: a forwarded create, run here as `Relayed` (`home` as the caller resolved it); the
+/// reply body. `Ensure` answers the bound document's summary.
+async fn create(
+    actor: &ActorRef<DocumentActor>,
+    req: CreateReq,
+) -> Result<serde_json::Value, String> {
+    let homing = |h: Option<EngineId>| h.map_or(Homing::Hub, Homing::Engine);
+    let value = match req {
+        CreateReq::Ensure { binding, markdown } => {
+            let doc = actor
+                .ask(Relayed(Ensure { binding, markdown }))
+                .await
+                .map_err(reason_of)?;
+            let by = Principal::Owner { device: None };
+            let meta = actor.ask(MetaOf { doc, by }).await.map_err(reason_of)?;
+            serde_json::to_value(DocSummary::from(&meta))
+        }
+        CreateReq::Create {
+            binding: Binding::Note,
+            title,
+            markdown,
+            by,
+            home,
+        } => {
+            let m = CreateNote {
+                title,
+                markdown,
+                by,
+                home: homing(home),
+            };
+            serde_json::to_value(actor.ask(Relayed(m)).await.map_err(reason_of)?)
+        }
+        CreateReq::Create {
+            binding,
+            title,
+            markdown,
+            by,
+            home,
+        } => {
+            let m = Create {
+                binding,
+                title,
+                markdown,
+                by,
+                home: homing(home),
+            };
+            serde_json::to_value(actor.ask(Relayed(m)).await.map_err(reason_of)?)
+        }
+        CreateReq::Notebook {
+            title,
+            description,
+            project,
+            by,
+        } => {
+            let m = NotebookCreate {
+                title,
+                description,
+                project,
+                by,
+            };
+            serde_json::to_value(actor.ask(Relayed(m)).await.map_err(reason_of)?)
+        }
+    };
+    value.map_err(|e| e.to_string())
+}
+
 /// The actor's answer as a `Closed` reason: the handler's error, or why the actor did not answer.
 fn reason_of<M, E: std::fmt::Display>(e: kameo::error::SendError<M, E>) -> String {
     match e {
@@ -586,9 +839,14 @@ fn reason_of<M, E: std::fmt::Display>(e: kameo::error::SendError<M, E>) -> Strin
     }
 }
 
-/// One accepted stream: frames in → actor messages as the connection `conn`; replies and the
-/// subscription's events out. Ends on the first refusal (after `Closed`), a protocol error or EOF.
-async fn serve_stream(actor: &ActorRef<DocumentActor>, mut wire: Wire) -> anyhow::Result<()> {
+/// One accepted stream from `peer`: frames in → actor messages as the connection `conn`, each
+/// wrapped in [`Relayed`] (184 §10.1); replies and the subscription's events out. Ends on the first
+/// refusal (after `Closed`), a protocol error or EOF.
+async fn serve_stream(
+    actor: &ActorRef<DocumentActor>,
+    mut wire: Wire,
+    peer: &PeerId,
+) -> anyhow::Result<()> {
     // A connection id of this process, like `RpcPeer` mints them: fan-out skips this stream's own updates.
     let conn = Some(rand::random::<u64>());
     let mut by = Principal::Owner { device: conn };
@@ -623,14 +881,14 @@ async fn serve_stream(actor: &ActorRef<DocumentActor>, mut wire: Wire) -> anyhow
                     Msg::Open { doc, sv } => {
                         doc_of = doc.clone();
                         actor
-                            .ask(OpenDoc { doc: parse(&doc)?, sv, by: by.clone() })
+                            .ask(Relayed(OpenDoc { doc: parse(&doc)?, sv, by: by.clone() }))
                             .await
                             .map(|o| serde_json::to_vec(&o).ok())
                             .map_err(reason_of)
                     }
                     Msg::Subscribe { doc } => {
                         doc_of = doc.clone();
-                        match actor.ask(Subscribe { doc: parse(&doc)?, by: by.clone() }).await {
+                        match actor.ask(Relayed(Subscribe { doc: parse(&doc)?, by: by.clone() })).await {
                             Ok(mut rx) => {
                                 let out = out_tx.clone();
                                 tokio::spawn(async move {
@@ -650,7 +908,7 @@ async fn serve_stream(actor: &ActorRef<DocumentActor>, mut wire: Wire) -> anyhow
                         let update = String::from_utf8(bytes).map_err(|_| "bad update".to_owned());
                         match update {
                             Ok(update) => actor
-                                .ask(ApplyUpdate { doc: parse(&doc)?, update, by: by.clone() })
+                                .ask(Relayed(ApplyUpdate { doc: parse(&doc)?, update, by: by.clone() }))
                                 .await
                                 .map(|()| None)
                                 .map_err(reason_of),
@@ -660,7 +918,7 @@ async fn serve_stream(actor: &ActorRef<DocumentActor>, mut wire: Wire) -> anyhow
                     Msg::Awareness { doc, bytes } => {
                         doc_of = doc.clone();
                         if let Ok(state) = String::from_utf8(bytes)
-                            && let Err(e) = actor.ask(AwarenessUpdateMsg { doc: parse(&doc)?, state, by: by.clone() }).await
+                            && let Err(e) = actor.ask(Relayed(AwarenessUpdateMsg { doc: parse(&doc)?, state, by: by.clone() })).await
                         {
                             tracing::debug!(doc = %doc, error = %reason_of(e), "forwarded awareness dropped");
                         }
@@ -669,7 +927,7 @@ async fn serve_stream(actor: &ActorRef<DocumentActor>, mut wire: Wire) -> anyhow
                     Msg::Join { doc, guest_pub, handshake_hash, proof, name } => {
                         doc_of = doc.clone();
                         actor
-                            .ask(Join { doc: parse(&doc)?, guest_pub, handshake_hash, proof, name })
+                            .ask(Relayed(Join { doc: parse(&doc)?, guest_pub, handshake_hash, proof, name }))
                             .await
                             .map(|j| serde_json::to_vec(&j).ok())
                             .map_err(reason_of)
@@ -677,7 +935,7 @@ async fn serve_stream(actor: &ActorRef<DocumentActor>, mut wire: Wire) -> anyhow
                     Msg::SetName { doc, name } => {
                         doc_of = doc.clone();
                         actor
-                            .ask(SetName { doc: parse(&doc)?, by: by.clone(), name })
+                            .ask(Relayed(SetName { doc: parse(&doc)?, by: by.clone(), name }))
                             .await
                             .map(|()| Some(b"null".to_vec()))
                             .map_err(reason_of)
@@ -688,7 +946,7 @@ async fn serve_stream(actor: &ActorRef<DocumentActor>, mut wire: Wire) -> anyhow
                         // an untyped failure (`Other`, not serialisable) closes it like any handler error.
                         match serde_json::from_slice::<Vec<BlockEdit>>(&edits) {
                             Err(e) => Err(format!("bad edits: {e}")),
-                            Ok(edits) => match actor.ask(Edit { doc: parse(&doc)?, edits, by: who }).await {
+                            Ok(edits) => match actor.ask(Relayed(Edit { doc: parse(&doc)?, edits, by: who })).await {
                                 Ok(o) => Ok(serde_json::to_vec(&Ok::<_, EditError>(o)).ok()),
                                 Err(kameo::error::SendError::HandlerError(EditError::Other(s))) => Err(s),
                                 Err(kameo::error::SendError::HandlerError(e)) => {
@@ -697,6 +955,56 @@ async fn serve_stream(actor: &ActorRef<DocumentActor>, mut wire: Wire) -> anyhow
                                 Err(other) => Err(other.to_string()),
                             },
                         }
+                    }
+                    // 184 §10.1: owner-side calls; a member stream may not send them.
+                    Msg::Create { .. } | Msg::Handback { .. } | Msg::Block { .. } | Msg::Handover { .. }
+                        if by.member().is_some() =>
+                    {
+                        Err(NOT_OWNER.to_owned())
+                    }
+                    Msg::Create { req } => match serde_json::from_slice::<CreateReq>(&req) {
+                        Err(e) => Err(format!("bad create: {e}")),
+                        Ok(req) => Ok(Some(serde_json::to_vec(&create(actor, req).await)?)),
+                    },
+                    Msg::Handback { doc, sv } => {
+                        doc_of = doc.clone();
+                        let from = EngineId(peer.0.clone());
+                        actor
+                            .ask(Relayed(Handback { doc: parse(&doc)?, sv, from }))
+                            .await
+                            .map(|r| serde_json::to_vec(&Ok::<_, String>(r)).ok())
+                            .map_err(reason_of)
+                    }
+                    Msg::Block { doc, key, seen } => {
+                        doc_of = doc.clone();
+                        let r = match serde_json::from_slice::<NoteKey>(&key) {
+                            Err(e) => Err(format!("bad key: {e}")),
+                            Ok(key) => actor
+                                .ask(Relayed(CodeBlockText { doc: parse(&doc)?, key, seen }))
+                                .await
+                                .map_err(reason_of),
+                        };
+                        Ok(Some(serde_json::to_vec(&r)?))
+                    }
+                    Msg::Handover { doc, meta } => {
+                        doc_of = doc.clone();
+                        let r = match serde_json::from_slice::<DocMeta>(&meta) {
+                            Err(e) => Err(format!("bad meta: {e}")),
+                            Ok(meta) => actor
+                                .ask(Handover { doc: parse(&doc)?, meta, from: EngineId(peer.0.clone()) })
+                                .await
+                                .map_err(reason_of),
+                        };
+                        Ok(Some(serde_json::to_vec(&r)?))
+                    }
+                    // §7.3: the stream's principal (`Hello{member}`) asks; a guest's leg may.
+                    Msg::MayRead { doc } => {
+                        doc_of = doc.clone();
+                        let r = actor
+                            .ask(Relayed(MayRead { doc: parse(&doc)?, by: by.clone() }))
+                            .await
+                            .map_err(reason_of);
+                        Ok(Some(serde_json::to_vec(&r)?))
                     }
                     Msg::Event { .. } | Msg::Closed { .. } => anyhow::bail!("client sent a hub frame"),
                 };
@@ -762,6 +1070,24 @@ mod tests {
                     session: uuid::Uuid::from_u128(7),
                 },
             },
+            // 184 §10.1: tags 10-14.
+            Msg::Create {
+                req: b"{}".to_vec(),
+            },
+            Msg::Handback {
+                doc: "d".into(),
+                sv: vec![0],
+            },
+            Msg::Block {
+                doc: "d".into(),
+                key: br#"{"kind":"name","value":"a"}"#.to_vec(),
+                seen: Some("sha".into()),
+            },
+            Msg::Handover {
+                doc: "d".into(),
+                meta: b"{}".to_vec(),
+            },
+            Msg::MayRead { doc: "d".into() },
         ];
         for (i, m) in msgs.iter().enumerate() {
             let f = m.encode().unwrap();
@@ -786,49 +1112,68 @@ mod tests {
     use yrs::updates::encoder::Encode;
     use yrs::{Doc, GetString, ReadTxn, Text, Transact, Update};
 
-    use crate::meta::{AgentStyle, Binding, DocMeta, Who};
+    use crate::meta::{AgentStyle, Binding, DocKind, DocMeta, Who};
     use crate::store::Store;
     use crate::{DocumentsConfig, hub};
 
     type Inbound = (PeerId, Box<dyn ByteStream>);
 
-    /// Two-node loopback switch, as `rpc::forward`'s tests.
+    /// Loopback switch, as `rpc::forward`'s tests; `cut` hides peers from this node (184: a home
+    /// offline as seen from here).
     struct Loop {
         me: PeerId,
         inboxes: Arc<parking_lot::Mutex<Map<PeerId, mpsc::UnboundedSender<Inbound>>>>,
         inbox: tokio::sync::Mutex<mpsc::UnboundedReceiver<Inbound>>,
         events: broadcast::Sender<PeerEvent>,
+        cut: parking_lot::Mutex<Vec<PeerId>>,
     }
 
     fn pair() -> (Arc<Loop>, Arc<Loop>) {
+        let mut n = nodes(&["a", "b"]);
+        let b = n.pop().unwrap();
+        (n.pop().unwrap(), b)
+    }
+
+    fn nodes(names: &[&str]) -> Vec<Arc<Loop>> {
         let inboxes = Arc::new(parking_lot::Mutex::new(Map::new()));
-        let mk = |name: &str| {
-            let me = PeerId(name.to_owned());
-            let (tx, rx) = mpsc::unbounded_channel();
-            inboxes.lock().insert(me.clone(), tx);
-            Arc::new(Loop {
-                me,
-                inboxes: inboxes.clone(),
-                inbox: tokio::sync::Mutex::new(rx),
-                events: broadcast::channel(8).0,
+        names
+            .iter()
+            .map(|name| {
+                let me = PeerId((*name).to_owned());
+                let (tx, rx) = mpsc::unbounded_channel();
+                inboxes.lock().insert(me.clone(), tx);
+                Arc::new(Loop {
+                    me,
+                    inboxes: inboxes.clone(),
+                    inbox: tokio::sync::Mutex::new(rx),
+                    events: broadcast::channel(8).0,
+                    cut: Default::default(),
+                })
             })
-        };
-        (mk("a"), mk("b"))
+            .collect()
+    }
+
+    impl Loop {
+        fn set_cut(&self, peers: &[&str]) {
+            *self.cut.lock() = peers.iter().map(|p| PeerId((*p).to_owned())).collect();
+        }
     }
 
     #[async_trait::async_trait]
     impl Transport for Loop {
         fn peers(&self) -> Vec<PeerId> {
+            let cut = self.cut.lock();
             self.inboxes
                 .lock()
                 .keys()
-                .filter(|p| **p != self.me)
+                .filter(|p| **p != self.me && !cut.contains(p))
                 .cloned()
                 .collect()
         }
 
         async fn open(&self, peer: &PeerId, alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
             assert_eq!(alpn, ALPN_DOCS);
+            anyhow::ensure!(!self.cut.lock().contains(peer), "cut off");
             let (mine, theirs) = tokio::io::duplex(1 << 20);
             let to = self
                 .inboxes
@@ -895,7 +1240,8 @@ mod tests {
     }
 
     /// A `sh` helper: `edit` answers with one canned update (`update_b64`, a v1 update on the
-    /// document's `t` text) as the transaction and `inserted: [b1]`; every other op is `ok`.
+    /// document's `t` text) as the transaction and `inserted: [b1]`; `import` changes nothing; every
+    /// other op is `ok`.
     fn edit_helper(dir: &Path, update_b64: &str) -> std::path::PathBuf {
         let p = dir.join("edit-helper.sh");
         std::fs::write(
@@ -910,6 +1256,7 @@ while IFS= read -r line; do
     *'"op":"edit"'*)
       printf '{{"ev":"update","doc":"%s","update":"{update_b64}","touched":["b1"],"req":%s}}\n' "$doc" "$id"
       printf '{{"id":%s,"ok":true,"result":{{"inserted":["b1"],"removed":[],"touched":["b1"],"undo":[]}}}}\n' "$id" ;;
+    *'"op":"import"'*) printf '{{"id":%s,"ok":true,"result":{{"changed":0,"total":0}}}}\n' "$id" ;;
     *) printf '{{"id":%s,"ok":true,"result":{{}}}}\n' "$id" ;;
   esac
 done
@@ -941,6 +1288,11 @@ done
             authors: Default::default(),
             created_ms: 1,
             updated_ms: 1,
+            home: None,
+            home_ms: 0,
+            serve_epoch: 0,
+            served_by: None,
+            revoked: Default::default(),
         }
     }
 
@@ -1330,5 +1682,715 @@ done
             "B holds the hub's bytes, not a re-encoding"
         );
         cancel.cancel();
+    }
+
+    // ---- 184: notes on any machine -----------------------------------------------------------
+
+    fn eid(s: &str) -> EngineId {
+        EngineId(s.into())
+    }
+
+    /// A note homed on `home`, which last served it at fence epoch 1.
+    fn homed(id: DocId, home: &str) -> DocMeta {
+        DocMeta {
+            home: Some(eid(home)),
+            home_ms: 1,
+            serve_epoch: 1,
+            served_by: Some(eid(home)),
+            ..note(id)
+        }
+    }
+
+    /// A document of `binding` (its kind) with no home.
+    fn bound(binding: Binding) -> DocMeta {
+        let id = DocId::for_binding(&binding);
+        DocMeta {
+            derived: binding.derived(&id),
+            kind: binding.kind(),
+            binding,
+            ..note(id)
+        }
+    }
+
+    /// Engine `name` on `t` (a fake helper that imports), homes on, the lease held by `holder`,
+    /// its `theuth/docs/1` streams served until `cancel`.
+    async fn engine(
+        name: &str,
+        t: &Arc<Loop>,
+        holder: &str,
+        dir: &Path,
+        cancel: &CancellationToken,
+    ) -> (ActorRef<DocumentActor>, Store) {
+        let bin = edit_helper(dir, &typed(&Doc::new(), "x"));
+        let (a, store) = actor_with(dir, &bin).await;
+        a.tell(hub::SelfId(eid(name))).await.unwrap();
+        a.tell(lease(holder)).await.unwrap();
+        a.tell(SetTransport(t.clone())).await.unwrap();
+        a.tell(hub::HomesOn(true)).await.unwrap();
+        tokio::spawn(serve_on(t.clone(), a.clone(), cancel.clone()));
+        (a, store)
+    }
+
+    async fn server(
+        a: &ActorRef<DocumentActor>,
+        doc: &DocId,
+    ) -> Result<Option<EngineId>, DocError> {
+        a.ask(hub::DocServer { doc: doc.clone() })
+            .await
+            .map_err(|e| DocError::parse(&e.to_string()))
+    }
+
+    /// §4.2 rules 2-6, read through `DocServer` (never claims) and relayed calls.
+    #[tokio::test]
+    async fn route_doc_rules_one_to_six() {
+        let n = nodes(&["a", "b", "c"]);
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let cancel = CancellationToken::new();
+        let (a, store_a) = engine("a", &n[0], "a", da.path(), &cancel).await;
+        let (b, store_b) = engine("b", &n[1], "a", db.path(), &cancel).await;
+        n[0].set_cut(&["c"]);
+        n[1].set_cut(&["c"]);
+        let (unhomed, mine, on_a, on_c) = (DocId::new(), DocId::new(), DocId::new(), DocId::new());
+        for s in [&store_a, &store_b] {
+            s.create(&note(unhomed.clone())).await.unwrap();
+            s.create(&homed(mine.clone(), "b")).await.unwrap();
+            s.create(&homed(on_a.clone(), "a")).await.unwrap();
+            s.create(&homed(on_c.clone(), "c")).await.unwrap();
+        }
+        // Rule 2: no home → the holder, as today. Rule 3: home = this engine. Rule 4: home
+        // reachable. Rule 5: home unreachable → the holder; on the holder itself, the fallback.
+        assert_eq!(server(&b, &unhomed).await, Ok(Some(eid("a"))));
+        assert_eq!(server(&b, &mine).await, Ok(None));
+        assert_eq!(server(&b, &on_a).await, Ok(Some(eid("a"))));
+        assert_eq!(server(&b, &on_c).await, Ok(Some(eid("a"))));
+        assert_eq!(server(&a, &on_c).await, Ok(None), "the holder falls back");
+        assert_eq!(server(&a, &mine).await, Ok(Some(eid("b"))));
+        // Rule 6: a relayed call is never forwarded again, except by the holder to the home.
+        let open = |doc: &DocId| OpenDoc {
+            doc: doc.clone(),
+            sv: None,
+            by: owner(1),
+        };
+        let e = b.ask(Relayed(open(&on_a))).await.unwrap_err();
+        assert_eq!(e.to_string(), "NotHub:a");
+        let e = b.ask(Relayed(open(&unhomed))).await.unwrap_err();
+        assert_eq!(e.to_string(), "NotHub:a");
+        let relayed = a.ask(Relayed(open(&mine))).await.unwrap();
+        assert_eq!(
+            relayed.server,
+            Some(eid("b")),
+            "the holder relayed to the home"
+        );
+        // Homes off: every document takes today's path; nobody holds the lease: refused.
+        b.tell(hub::HomesOn(false)).await.unwrap();
+        assert_eq!(server(&b, &mine).await, Ok(Some(eid("a"))));
+        b.tell(hub::HomesOn(true)).await.unwrap();
+        b.tell(MeshEvent::Lease(LeaseState {
+            holder: None,
+            since_ms: 0,
+            reason: "test".into(),
+        }))
+        .await
+        .unwrap();
+        assert_eq!(server(&b, &on_c).await, Err(DocError::NotHub { hub: None }));
+        assert_eq!(
+            server(&b, &mine).await,
+            Ok(None),
+            "a home serves while cut off (W-q)"
+        );
+        cancel.cancel();
+    }
+
+    /// §4.3: the home claims before it serves: the fallback's edits come back in the hand-back,
+    /// the fallback's editors hear `server_moved`, the parked open answers from the merged Doc,
+    /// and the fence names the home above every epoch it saw. Then §4.8: Move to hands it over.
+    #[tokio::test]
+    async fn a_home_takes_the_fallbacks_edits_before_serving_and_move_hands_over() {
+        let n = nodes(&["a", "b"]);
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let cancel = CancellationToken::new();
+        let (a, store_a) = engine("a", &n[0], "a", da.path(), &cancel).await;
+        let (b, store_b) = engine("b", &n[1], "a", db.path(), &cancel).await;
+        let doc = DocId::new();
+        store_a.create(&homed(doc.clone(), "b")).await.unwrap();
+        store_b.create(&homed(doc.clone(), "b")).await.unwrap();
+
+        // B is offline as A sees it: A, the holder, serves the note and takes edits B lacks.
+        n[0].set_cut(&["b"]);
+        let mut sub_a = a
+            .ask(Subscribe {
+                doc: doc.clone(),
+                by: owner(1),
+            })
+            .await
+            .unwrap();
+        a.ask(ApplyUpdate {
+            doc: doc.clone(),
+            update: typed(&Doc::new(), "typed on the fallback"),
+            by: owner(1),
+        })
+        .await
+        .unwrap();
+        n[0].set_cut(&[]);
+
+        // B returns and opens: parked until A handed back; nothing reached B by the mirror.
+        let opened = b
+            .ask(OpenDoc {
+                doc: doc.clone(),
+                sv: None,
+                by: owner(2),
+            })
+            .await
+            .unwrap();
+        assert_eq!(text_of(&opened), "typed on the fallback");
+        assert_eq!(opened.server, Some(eid("b")));
+        assert_eq!(
+            (opened.meta.serve_epoch, opened.meta.served_by.clone()),
+            (3, Some(eid("b"))),
+            "above A's fallback claim (2)"
+        );
+        assert_eq!(
+            next(&mut sub_a).await,
+            DocEvent::Closed {
+                reason: hub::SERVER_MOVED.into()
+            }
+        );
+        // One live Doc: A is a front door now.
+        let via_a = a
+            .ask(OpenDoc {
+                doc: doc.clone(),
+                sv: None,
+                by: owner(3),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (text_of(&via_a), via_a.server),
+            ("typed on the fallback".to_owned(), Some(eid("b")))
+        );
+        // A handback from an engine that is neither home nor holder is refused.
+        let e = b
+            .ask(hub::Handback {
+                doc: doc.clone(),
+                sv: Vec::new(),
+                from: eid("zz"),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.to_string(), hub::NOT_HOME);
+
+        // §4.8: Move to A, on B (the server): A merges the home, pulls from B, and serves.
+        let moved = b
+            .ask(hub::MoveHome {
+                doc: doc.clone(),
+                to: eid("a"),
+                checks: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(moved.id, doc);
+        assert_eq!(store_a.read_meta(&doc).unwrap().home, Some(eid("a")));
+        assert_eq!(server(&a, &doc).await, Ok(None));
+        let via_b = b
+            .ask(OpenDoc {
+                doc: doc.clone(),
+                sv: None,
+                by: owner(4),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (text_of(&via_b), via_b.server),
+            ("typed on the fallback".to_owned(), Some(eid("a")))
+        );
+        cancel.cancel();
+    }
+
+    /// §4.3 steps 4 and 8: calls park while a claim runs; a `Join` answers the retryable `busy`
+    /// after `JOIN_PARK_MS`; a source that never answers costs `HANDBACK_TIMEOUT_MS`, then the
+    /// home serves what it has.
+    #[tokio::test]
+    async fn a_parked_join_answers_busy_and_a_silent_source_times_out() {
+        let n = nodes(&["b", "z"]);
+        let db = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let (b, store_b) = engine("b", &n[0], "z", db.path(), &cancel).await;
+        let doc = DocId::new();
+        store_b
+            .create(&DocMeta {
+                served_by: Some(eid("z")),
+                ..homed(doc.clone(), "b")
+            })
+            .await
+            .unwrap();
+        let t0 = tokio::time::Instant::now();
+        let join = b.ask(Join {
+            doc: doc.clone(),
+            guest_pub: [1; 32],
+            handshake_hash: vec![2; 32],
+            proof: vec![3; 32],
+            name: None,
+        });
+        let open = b.ask(OpenDoc {
+            doc: doc.clone(),
+            sv: None,
+            by: owner(1),
+        });
+        let (join, open) = tokio::join!(join, open);
+        let e = join.unwrap_err();
+        assert!(
+            matches!(&e, kameo::error::SendError::HandlerError(j) if j.retryable()),
+            "{e}"
+        );
+        assert!(open.is_ok(), "the parked open is served after the timeout");
+        assert!(t0.elapsed() >= Duration::from_millis(hub::HANDBACK_TIMEOUT_MS));
+        cancel.cancel();
+    }
+
+    /// 184 §4.3 step 4, §6.2: a block read on the home while its claim runs waits for the
+    /// hand-back and reads the claimed Doc (the fallback's code block), not the home's stale copy.
+    #[tokio::test]
+    async fn a_block_read_during_a_claim_reads_the_claimed_doc() {
+        use crate::cells::{CodeBlockText, NoteKey};
+        use crate::note_cells::tests::{PREVIEW, edit, push_block};
+        let n = nodes(&["a", "b"]);
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let cancel = CancellationToken::new();
+        let (a, store_a) = engine("a", &n[0], "a", da.path(), &cancel).await;
+        let (b, store_b) = engine("b", &n[1], "a", db.path(), &cancel).await;
+        let doc = DocId::new();
+        store_a.create(&homed(doc.clone(), "b")).await.unwrap();
+        store_b.create(&homed(doc.clone(), "b")).await.unwrap();
+        // B is offline as A sees it: A, the fallback, takes the code block.
+        n[0].set_cut(&["b"]);
+        let block = edit(&Doc::new(), |txn, g| {
+            push_block(txn, g, None, "b1", Some("bash"), PREVIEW)
+        });
+        a.ask(ApplyUpdate {
+            doc: doc.clone(),
+            update: block,
+            by: owner(1),
+        })
+        .await
+        .unwrap();
+        n[0].set_cut(&[]);
+        let got = b
+            .ask(CodeBlockText {
+                doc: doc.clone(),
+                key: NoteKey::Block("b1".into()),
+                seen: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(got.text, PREVIEW);
+        cancel.cancel();
+    }
+
+    /// 184 §8.1, §15.3 checks 12 and 17: the mesh's `DocsGateState` flips homes without the 30 s
+    /// poll. An "off" that a later "on" overrides within `GATE_OFF_SETTLE` (the holder's
+    /// disconnect before the lease moves) changes nothing; one that holds makes the home stop
+    /// serving its open note and the holder serve it.
+    #[tokio::test]
+    async fn a_published_gate_flip_reroutes_and_a_blip_does_not() {
+        let n = nodes(&["a", "b"]);
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let cancel = CancellationToken::new();
+        let (_a, store_a) = engine("a", &n[0], "a", da.path(), &cancel).await;
+        let (b, store_b) = engine("b", &n[1], "a", db.path(), &cancel).await;
+        let doc = DocId::new();
+        store_a.create(&homed(doc.clone(), "b")).await.unwrap();
+        store_b.create(&homed(doc.clone(), "b")).await.unwrap();
+        let mut sub = b
+            .ask(Subscribe {
+                doc: doc.clone(),
+                by: owner(1),
+            })
+            .await
+            .unwrap();
+        assert_eq!(server(&b, &doc).await, Ok(None));
+        let gate = |homes_on| mesh::DocsGateState {
+            floor_ok: homes_on,
+            homes_on,
+        };
+        b.tell(gate(false)).await.unwrap();
+        b.tell(gate(true)).await.unwrap();
+        tokio::time::sleep(hub::GATE_OFF_SETTLE + Duration::from_millis(300)).await;
+        assert!(sub.try_recv().is_err(), "the blip unloaded nothing");
+        assert_eq!(server(&b, &doc).await, Ok(None));
+        let t = tokio::time::Instant::now();
+        b.tell(gate(false)).await.unwrap();
+        assert_eq!(
+            next(&mut sub).await,
+            DocEvent::Closed {
+                reason: hub::SERVER_MOVED.into()
+            }
+        );
+        assert!(t.elapsed() >= hub::GATE_OFF_SETTLE);
+        assert_eq!(server(&b, &doc).await, Ok(Some(eid("a"))));
+        cancel.cancel();
+    }
+
+    /// 184 §4.4, §15.3 check 12: a fallback serving at epoch 2 that merges the home's fence at the
+    /// same epoch (a greater id wins the merge) learns of the second server: `Server{dual: home}`.
+    #[tokio::test]
+    async fn an_equal_epoch_fence_from_a_greater_id_flags_the_second_server() {
+        use crate::mirror::{MirrorFile, file_name};
+        let n = nodes(&["a", "b"]);
+        let da = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let (a, store_a) = engine("a", &n[0], "a", da.path(), &cancel).await;
+        let doc = DocId::new();
+        store_a.create(&homed(doc.clone(), "b")).await.unwrap();
+        n[0].set_cut(&["b"]);
+        // A serves as the fallback: no source reachable, Held at epoch 2.
+        let mut sub = a
+            .ask(Subscribe {
+                doc: doc.clone(),
+                by: owner(1),
+            })
+            .await
+            .unwrap();
+        assert_eq!(server(&a, &doc).await, Ok(None));
+        // B's meta arrives through the mirror: B claimed at epoch 2 too.
+        let theirs = DocMeta {
+            serve_epoch: 2,
+            served_by: Some(eid("b")),
+            ..homed(doc.clone(), "b")
+        };
+        let path = store_a.mirror_dir().join(file_name(&doc, MirrorFile::Meta));
+        std::fs::write(&path, serde_json::to_vec(&theirs).unwrap()).unwrap();
+        a.tell(crate::actor::MirrorChanged { path }).await.unwrap();
+        let dual = loop {
+            match next(&mut sub).await {
+                DocEvent::Server { dual, .. } => break dual,
+                _ => continue,
+            }
+        };
+        assert_eq!(dual, Some(eid("b")));
+        cancel.cancel();
+    }
+
+    /// 184 §4.7, §16: on a lone engine, an update that changes nothing — a client's catch-all
+    /// echoing the delete set of a note with a deletion, or a re-sent update — writes no log
+    /// record, keeps `updated_ms`, and reaches no subscriber.
+    #[tokio::test]
+    async fn an_update_that_changes_nothing_is_not_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, store) = actor(dir.path()).await;
+        let id = DocId::new();
+        store.create(&note(id.clone())).await.unwrap();
+        let client = Doc::new();
+        let edit = {
+            let t = client.get_or_insert_text("t");
+            let mut txn = client.transact_mut();
+            t.insert(&mut txn, 0, "hello world");
+            t.remove_range(&mut txn, 5, 6);
+            b64(&txn.encode_update_v1())
+        };
+        let mut sub = a
+            .ask(Subscribe {
+                doc: id.clone(),
+                by: owner(1),
+            })
+            .await
+            .unwrap();
+        let apply = |update: String| ApplyUpdate {
+            doc: id.clone(),
+            update,
+            by: owner(2),
+        };
+        a.ask(apply(edit.clone())).await.unwrap();
+        assert!(matches!(next(&mut sub).await, DocEvent::Update { .. }));
+        let log = store.root().join(id.as_str()).join("updates.log");
+        let len = std::fs::metadata(&log).unwrap().len();
+        let meta_of = || MetaOf {
+            doc: id.clone(),
+            by: owner(2),
+        };
+        let updated = a.ask(meta_of()).await.unwrap().updated_ms;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        // What the client pushes past the server's vector when nothing is new: the delete set alone.
+        let echo = {
+            let txn = client.transact();
+            b64(&txn.encode_state_as_update_v1(&txn.state_vector()))
+        };
+        for u in [echo, edit] {
+            a.ask(apply(u)).await.unwrap();
+        }
+        assert_eq!(std::fs::metadata(&log).unwrap().len(), len, "no log record");
+        assert_eq!(a.ask(meta_of()).await.unwrap().updated_ms, updated);
+        assert!(sub.try_recv().is_err(), "no fan-out");
+    }
+
+    /// Z184-R2 (security must-fix): a guest revoked on the note's server is refused through
+    /// another engine whose replica still lists them: a member's read there asks the server.
+    #[tokio::test]
+    async fn a_guest_revoked_on_the_server_is_refused_through_another_engine() {
+        let n = nodes(&["a", "b"]);
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let cancel = CancellationToken::new();
+        let (a, store_a) = engine("a", &n[0], "a", da.path(), &cancel).await;
+        let (b, store_b) = engine("b", &n[1], "a", db.path(), &cancel).await;
+        let doc = DocId::new();
+        let g = crate::meta::Member {
+            pub_: "g".into(),
+            name: "G".into(),
+            color: String::new(),
+            role: crate::meta::Role::Editor,
+            added_ms: 1,
+            via: None,
+            last_seen_ms: 1,
+        };
+        let shared = DocMeta {
+            members: vec![g],
+            ..homed(doc.clone(), "b")
+        };
+        store_a.create(&shared).await.unwrap();
+        store_b.create(&shared).await.unwrap();
+        let guest = Principal::Member {
+            pub_: "g".into(),
+            device: Some(5),
+        };
+        let may = || crate::notebook::MayRead {
+            doc: doc.clone(),
+            by: guest.clone(),
+        };
+        a.ask(may()).await.unwrap();
+        b.ask(crate::share::MemberRevoke {
+            doc: doc.clone(),
+            pub_: "g".into(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(b.ask(may()).await.unwrap_err().to_string(), "not_member");
+        // A's replica still lists G (no mirror here): A asks B, the server, and refuses.
+        assert_eq!(store_a.read_meta(&doc).unwrap().members.len(), 1);
+        assert_eq!(a.ask(may()).await.unwrap_err().to_string(), "not_member");
+        cancel.cancel();
+    }
+
+    /// §5: every create runs on the engine that will serve it — here for homed kinds (no
+    /// `NotHub` off the hub), on the holder over `Cmd::Create` for hub kinds and a thread homed
+    /// there, idempotently for a keyed binding (W-f).
+    #[tokio::test]
+    async fn creates_off_the_hub_run_where_the_document_will_be_served() {
+        let n = nodes(&["a", "b"]);
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let cancel = CancellationToken::new();
+        // A must stay alive: it is the holder B forwards to.
+        let (_a, store_a) = engine("a", &n[0], "a", da.path(), &cancel).await;
+        let (b, store_b) = engine("b", &n[1], "a", db.path(), &cancel).await;
+        let by = || Principal::Owner { device: None };
+        let here = |s: &Store, id: &DocId| s.read_meta(id).map(|m| m.home).ok();
+
+        // Homed kinds made on B (tool, dreaming, autoresearch: `CreateNote`; a board; a meeting
+        // note; a thread whose task lives on B) live on B.
+        let note = b
+            .ask(crate::actor::CreateNote {
+                title: "n".into(),
+                markdown: String::new(),
+                by: by(),
+                home: Homing::Here,
+            })
+            .await
+            .unwrap();
+        let board = b
+            .ask(crate::actor::CreateBoard {
+                title: "b".into(),
+                markdown: String::new(),
+                root: db.path().to_path_buf(),
+                by: by(),
+            })
+            .await
+            .unwrap();
+        let create = |binding: Binding, home: Homing| Create {
+            binding,
+            title: "t".into(),
+            markdown: String::new(),
+            by: by(),
+            home,
+        };
+        let meeting = b
+            .ask(create(Binding::MeetingNote("m1".into()), Homing::Here))
+            .await
+            .unwrap();
+        let thread = b
+            .ask(create(
+                Binding::TaskThread("t1".into()),
+                Homing::Engine(eid("b")),
+            ))
+            .await
+            .unwrap();
+        for s in [&note, &board, &meeting, &thread] {
+            assert_eq!(here(&store_b, &s.id), Some(Some(eid("b"))), "{:?}", s.kind);
+            assert_eq!(here(&store_a, &s.id), None, "not on the hub yet");
+        }
+        let m = store_b.read_meta(&note.id).unwrap();
+        assert_eq!((m.serve_epoch, m.served_by), (1, Some(eid("b"))));
+
+        // A thread whose task lives on A is created there; B routes to it before any mirror.
+        let t2 = create(Binding::TaskThread("t2".into()), Homing::Engine(eid("a")));
+        let remote = b.ask(t2.clone()).await.unwrap();
+        assert_eq!(here(&store_a, &remote.id), Some(Some(eid("a"))));
+        assert_eq!(here(&store_b, &remote.id), None);
+        assert_eq!(server(&b, &remote.id).await, Ok(Some(eid("a"))));
+        assert_eq!(
+            b.ask(t2).await.unwrap().id,
+            remote.id,
+            "a retried forward is one document"
+        );
+
+        // Hub kinds (knowledge, notebooks, insight notes) are made by the holder.
+        let k = b
+            .ask(Ensure {
+                binding: Binding::Knowledge("k".into()),
+                markdown: "# K\n".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(here(&store_a, &k), Some(None));
+        let nb = b
+            .ask(NotebookCreate {
+                title: "nb".into(),
+                description: String::new(),
+                project: None,
+                by: by(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(here(&store_a, &nb.doc.id), Some(None));
+        let insight = b
+            .ask(crate::actor::CreateNote {
+                title: "i".into(),
+                markdown: String::new(),
+                by: by(),
+                home: Homing::Hub,
+            })
+            .await
+            .unwrap();
+        assert_eq!(here(&store_a, &insight.id), Some(None));
+
+        // Homes off (a mixed mesh): today's refusal off the hub, and no home on the hub.
+        b.tell(hub::HomesOn(false)).await.unwrap();
+        let e = b
+            .ask(crate::actor::CreateNote {
+                title: "n".into(),
+                markdown: String::new(),
+                by: by(),
+                home: Homing::Here,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.to_string(), "NotHub:a");
+        cancel.cancel();
+    }
+
+    /// §4.8: Move to is refused for every kind but a note, and for an offline or current home.
+    #[tokio::test]
+    async fn move_home_refuses_each_kind_with_its_copy() {
+        let n = nodes(&["b"]);
+        let db = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let (b, store) = engine("b", &n[0], "b", db.path(), &cancel).await;
+        let board = DocMeta {
+            kind: DocKind::Board,
+            ..note(DocId::new())
+        };
+        let docs = [
+            (
+                board,
+                "boards stay on the machine whose folder they point at",
+            ),
+            (
+                bound(Binding::MeetingNote("m".into())),
+                "meeting notes stay on the machine that recorded them",
+            ),
+            (
+                bound(Binding::TaskThread("t".into())),
+                "move the task instead",
+            ),
+            (
+                bound(Binding::Knowledge("k".into())),
+                "this document is served by the hub",
+            ),
+        ];
+        let mv = |doc: &DocId, to: &str| hub::MoveHome {
+            doc: doc.clone(),
+            to: eid(to),
+            checks: true,
+        };
+        let refusal = |r: Result<DocSummary, kameo::error::SendError<hub::MoveHome, String>>| {
+            r.unwrap_err().to_string()
+        };
+        for (meta, copy) in docs {
+            store.create(&meta).await.unwrap();
+            assert_eq!(refusal(b.ask(mv(&meta.id, "b")).await), copy);
+        }
+        let mine = DocId::new();
+        store.create(&homed(mine.clone(), "b")).await.unwrap();
+        assert_eq!(refusal(b.ask(mv(&mine, "zz")).await), "zz is offline");
+        assert_eq!(refusal(b.ask(mv(&mine, "b")).await), "already lives on b");
+        b.tell(hub::HomesOn(false)).await.unwrap();
+        assert_eq!(
+            refusal(b.ask(mv(&mine, "b")).await),
+            "notes cannot move until every machine runs this version"
+        );
+        cancel.cancel();
+    }
+
+    /// §4.9: the holder re-homes what an unpaired engine homed, once; a second pass writes nothing.
+    #[tokio::test]
+    async fn unpair_rehomes_to_the_holder_once() {
+        let n = nodes(&["a"]);
+        let da = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let (a, store) = engine("a", &n[0], "a", da.path(), &cancel).await;
+        let (gone, kept) = (DocId::new(), DocId::new());
+        store.create(&homed(gone.clone(), "c")).await.unwrap();
+        store.create(&homed(kept.clone(), "d")).await.unwrap();
+        a.ask(hub::Rehome(vec![eid("c")])).await.unwrap();
+        let after = store.read_meta(&gone).unwrap();
+        assert_eq!(after.home, Some(eid("a")));
+        assert!(after.home_ms > 1);
+        assert_eq!(store.read_meta(&kept).unwrap().home, Some(eid("d")));
+        a.ask(hub::Rehome(vec![eid("c")])).await.unwrap();
+        assert_eq!(
+            store.read_meta(&gone).unwrap().home_ms,
+            after.home_ms,
+            "idempotent"
+        );
+        cancel.cancel();
+    }
+
+    /// §16: one engine with no mesh is today's: no home, no fence, nobody to forward to.
+    #[tokio::test]
+    async fn a_lone_engine_creates_and_serves_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = edit_helper(dir.path(), &typed(&Doc::new(), "x"));
+        let (a, store) = actor_with(dir.path(), &bin).await;
+        let s = a
+            .ask(crate::actor::CreateNote {
+                title: "n".into(),
+                markdown: String::new(),
+                by: owner(1),
+                home: Homing::Here,
+            })
+            .await
+            .unwrap();
+        let m = store.read_meta(&s.id).unwrap();
+        assert_eq!(
+            (m.home, m.home_ms, m.serve_epoch, m.served_by),
+            (None, 0, 0, None)
+        );
+        let opened = a
+            .ask(OpenDoc {
+                doc: s.id.clone(),
+                sv: None,
+                by: owner(1),
+            })
+            .await
+            .unwrap();
+        assert_eq!((opened.server, opened.dual), (None, None));
+        assert_eq!(server(&a, &s.id).await, Ok(None));
     }
 }

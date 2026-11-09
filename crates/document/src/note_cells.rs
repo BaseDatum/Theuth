@@ -70,27 +70,43 @@ impl DocumentActor {
     /// map (`meta.authors`), the agent from `agents.json`, else the owner.
     pub(crate) fn code_blocks(&mut self, doc: &DocId) -> Result<Vec<CodeBlockTextReply>, String> {
         let o = self.load(doc).map_err(|e| format!("document {doc}: {e}"))?;
-        let raw = read_code_blocks(&o.doc, &o.meta.fragment);
-        Ok(raw
-            .into_iter()
-            .map(|(block, language, text)| {
-                let last_author = match (o.meta.authors.get(&block), o.agents.get(&block)) {
-                    (Some(pub_), _) => Principal::Member {
-                        pub_: pub_.clone(),
-                        device: None,
-                    },
-                    (None, Some(session)) => Principal::Agent { session: *session },
-                    (None, None) => Principal::Owner { device: None },
-                };
-                CodeBlockTextReply {
-                    block,
-                    language,
-                    text,
-                    last_author,
-                }
-            })
-            .collect())
+        Ok(blocks_of(
+            &o.doc,
+            &o.meta.fragment,
+            &o.meta.authors,
+            &o.agents,
+        ))
     }
+}
+
+/// [`DocumentActor::code_blocks`] over any Y.Doc and author maps (184 §6.2: also a throwaway copy
+/// of the replica merged with the holder's state).
+pub(crate) fn blocks_of(
+    doc: &yrs::Doc,
+    fragment: &str,
+    authors: &std::collections::BTreeMap<String, String>,
+    agents: &std::collections::BTreeMap<String, uuid::Uuid>,
+) -> Vec<CodeBlockTextReply> {
+    read_code_blocks(doc, fragment)
+        .into_iter()
+        .map(|(block, language, text)| {
+            let last_author = match (authors.get(&block), agents.get(&block)) {
+                (Some(pub_), _) => Principal::Member {
+                    pub_: pub_.clone(),
+                    device: None,
+                },
+                (None, Some(session)) => Principal::Agent { session: *session },
+                (None, None) => Principal::Owner { device: None },
+            };
+            CodeBlockTextReply {
+                block,
+                language,
+                text,
+                last_author,
+                markdown: String::new(),
+            }
+        })
+        .collect()
 }
 
 /// `(block id, language, text)` of every BlockNote `codeBlock` under `fragment`, pre-order.
@@ -521,7 +537,7 @@ fn closing(line: &str, ch: char, n: usize) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::cells::{CellLatest, CellLatestOf, CodeBlockText, PutCellLatest};
     use crate::meta::{AgentStyle, Binding, DocMeta, Member, Role};
@@ -536,6 +552,7 @@ mod tests {
             language: language.into(),
             text: text.into(),
             last_author: Principal::Owner { device: None },
+            markdown: String::new(),
         }
     }
 
@@ -558,7 +575,7 @@ mod tests {
         }
     }
 
-    const PREVIEW: &str = "#| name: preview\n#| cwd: /tmp\npulumi preview -s ir-prod1";
+    pub(crate) const PREVIEW: &str = "#| name: preview\n#| cwd: /tmp\npulumi preview -s ir-prod1";
     const APPLY: &str = "#| name: apply\n#| cwd: /tmp\n#| after: preview\npulumi up\nexit";
 
     #[test]
@@ -770,6 +787,11 @@ mod tests {
     }
 
     async fn note(store: &crate::store::Store) -> DocId {
+        note_shared(store, true).await
+    }
+
+    /// A note; `shared`: with the member [`MEMBER`].
+    async fn note_shared(store: &crate::store::Store, shared: bool) -> DocId {
         let id = DocId::for_binding(&Binding::Note);
         let meta = DocMeta {
             derived: Binding::Note.derived(&id),
@@ -778,28 +800,37 @@ mod tests {
             title: "Runbook".into(),
             binding: Binding::Note,
             fragment: crate::FRAGMENT.into(),
-            members: vec![Member {
-                pub_: MEMBER.into(),
-                name: "Alice".into(),
-                color: "#000".into(),
-                role: Role::Editor,
-                added_ms: 1,
-                via: None,
-                last_seen_ms: 1,
-            }],
+            members: if shared {
+                vec![Member {
+                    pub_: MEMBER.into(),
+                    name: "Alice".into(),
+                    color: "#000".into(),
+                    role: Role::Editor,
+                    added_ms: 1,
+                    via: None,
+                    last_seen_ms: 1,
+                }]
+            } else {
+                vec![]
+            },
             links: vec![],
             agent: AgentStyle::default(),
             last_export: None,
             authors: Default::default(),
             created_ms: 1,
             updated_ms: 1,
+            home: None,
+            home_ms: 0,
+            serve_epoch: 0,
+            served_by: None,
+            revoked: Default::default(),
         };
         store.create(&meta).await.unwrap();
         id
     }
 
     /// A BlockNote `blockContainer` holding one `tag` block (a code block when `language` is set).
-    fn push_block(
+    pub(crate) fn push_block(
         txn: &mut yrs::TransactionMut,
         group: &XmlElementRef,
         at: Option<u32>,
@@ -827,7 +858,10 @@ mod tests {
     }
 
     /// The client's edit `f` as a base64 v1 update.
-    fn edit(client: &yrs::Doc, f: impl FnOnce(&mut yrs::TransactionMut, &XmlElementRef)) -> String {
+    pub(crate) fn edit(
+        client: &yrs::Doc,
+        f: impl FnOnce(&mut yrs::TransactionMut, &XmlElementRef),
+    ) -> String {
         let frag = client.get_or_insert_xml_fragment(crate::FRAGMENT);
         let mut txn = client.transact_mut();
         let group = match frag.get(&txn, 0) {
@@ -856,6 +890,7 @@ mod tests {
         a.ask(CodeBlockText {
             doc: doc.clone(),
             key,
+            seen: None,
         })
         .await
         .map_err(|e| match e {
@@ -891,6 +926,7 @@ mod tests {
                 language: "bash".into(),
                 text: PREVIEW.into(),
                 last_author: Principal::Owner { device: None },
+                markdown: String::new(),
             }
         );
         assert_eq!(
@@ -1016,13 +1052,16 @@ mod tests {
             code_sha: "abc".into(),
             ended_ms: 7,
             text: "3 to update".into(),
+            engine: String::new(),
         }
     }
 
-    /// 171 §13.2: the hub upserts a cell's latest row (one per cell), any engine reads them, off the
-    /// hub the upsert is refused `NotHub`, and deleting the note removes its rows.
+    /// 171 §13.2: an engine upserts a cell's latest row (one per cell), any engine reads them, and
+    /// deleting the note removes its rows. 184 §6.4: off the hub too (ungated), the row read back
+    /// is its whole `payload` (`engine` inside), and a pre-184 row (`payload = ''`) reads from the
+    /// old columns with `engine = ""`.
     #[tokio::test]
-    async fn cell_latest_rows_upsert_on_the_hub_and_go_with_the_note() {
+    async fn cell_latest_rows_upsert_anywhere_and_go_with_the_note() {
         let dir = tempfile::tempdir().unwrap();
         let (a, store) = actor(dir.path()).await;
         let doc = note(&store).await;
@@ -1062,15 +1101,28 @@ mod tests {
         }))
         .await
         .unwrap();
-        match a.ask(PutCellLatest(row(&doc, "x", "r_4"))).await {
-            Err(kameo::error::SendError::HandlerError(e)) => assert_eq!(e, "NotHub:other"),
-            other => panic!("{other:?}"),
-        }
-        assert_eq!(
-            a.ask(CellLatestOf(doc.clone())).await.unwrap().len(),
-            2,
-            "reads serve anywhere"
-        );
+        let mut theirs = row(&doc, "x", "r_4");
+        theirs.engine = "me".into();
+        a.ask(PutCellLatest(theirs.clone())).await.unwrap();
+        let rows = a.ask(CellLatestOf(doc.clone())).await.unwrap();
+        assert_eq!(rows.len(), 3, "an off-hub engine upserts its own run");
+        assert_eq!(rows[2], theirs, "with its engine");
+
+        // The old columns of a replicated row may mix two runs; the payload never does.
+        sqlx::query("UPDATE cell_latest SET run = 'mixed', text = 'mixed' WHERE id = ?")
+            .bind(&theirs.id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(a.ask(CellLatestOf(doc.clone())).await.unwrap()[2], theirs);
+        // A pre-184 writer leaves `payload` empty: the old columns, no engine.
+        sqlx::query("UPDATE cell_latest SET payload = '' WHERE id = ?")
+            .bind(&theirs.id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        let old = &a.ask(CellLatestOf(doc.clone())).await.unwrap()[2];
+        assert_eq!((old.run.as_str(), old.engine.as_str()), ("mixed", ""));
         a.tell(mesh::MeshEvent::Lease(mesh::LeaseState {
             holder: Some(mesh::EngineId("me".into())),
             since_ms: 0,
@@ -1081,5 +1133,374 @@ mod tests {
 
         a.ask(DeleteNote { doc: doc.clone() }).await.unwrap();
         assert!(store.cell_latest(&doc).await.unwrap().is_empty());
+    }
+
+    // ---- 184 §6.2: the block is read on the document's server ------------------------------
+
+    type Inbound = (replica::PeerId, Box<dyn replica::ByteStream>);
+
+    /// Engine `srv` on a fake mesh: every docs stream answers `Block` with `block` and `Open` with
+    /// `open`, and `Closed{not served here}` (an engine that does not serve that tag) for `None` or
+    /// any other frame. Records the `seen` of each `Block`.
+    struct Srv {
+        block: Option<CodeBlockTextReply>,
+        open: Option<crate::meta::DocOpen>,
+        seen: std::sync::Arc<parking_lot::Mutex<Vec<Option<String>>>>,
+        events: tokio::sync::broadcast::Sender<replica::PeerEvent>,
+    }
+
+    impl Srv {
+        fn new(
+            block: Option<CodeBlockTextReply>,
+            open: Option<crate::meta::DocOpen>,
+        ) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                block,
+                open,
+                seen: Default::default(),
+                events: tokio::sync::broadcast::channel(8).0,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl replica::Transport for Srv {
+        fn peers(&self) -> Vec<replica::PeerId> {
+            vec![replica::PeerId("srv".into())]
+        }
+
+        async fn open(
+            &self,
+            _: &replica::PeerId,
+            _: &str,
+        ) -> anyhow::Result<Box<dyn replica::ByteStream>> {
+            use crate::relay::Msg;
+            use futures::{SinkExt as _, StreamExt as _};
+            let (mine, theirs) = tokio::io::duplex(1 << 20);
+            let (block, open, seen) = (self.block.clone(), self.open.clone(), self.seen.clone());
+            tokio::spawn(async move {
+                let mut wire = crate::relay::framed(Box::new(theirs));
+                while let Some(Ok(frame)) = wire.next().await {
+                    let (doc, bytes) = match Msg::decode(&frame) {
+                        Ok(Msg::Hello { .. }) => continue,
+                        Ok(Msg::Block { doc, seen: s, .. }) => {
+                            seen.lock().push(s);
+                            let ok = block.as_ref().map(|b| Ok::<_, String>(b.clone()));
+                            (doc, ok.map(|r| serde_json::to_vec(&r).unwrap()))
+                        }
+                        Ok(Msg::Open { doc, .. }) => {
+                            (doc, open.as_ref().map(|o| serde_json::to_vec(o).unwrap()))
+                        }
+                        _ => (String::new(), None),
+                    };
+                    let msg = match bytes {
+                        Some(bytes) => Msg::Event { doc, bytes },
+                        None => Msg::Closed {
+                            doc,
+                            reason: "not served here".into(),
+                        },
+                    };
+                    let _ = wire.send(msg.encode().unwrap()).await;
+                }
+            });
+            Ok(Box::new(mine))
+        }
+
+        async fn accept(&self, _: &str) -> anyhow::Result<Inbound> {
+            std::future::pending().await
+        }
+
+        fn subscribe(&self) -> tokio::sync::broadcast::Receiver<replica::PeerEvent> {
+            self.events.subscribe()
+        }
+    }
+
+    /// A note (`shared`: with a member) holding `b1` from `update`, written while `a` serves it.
+    async fn written(
+        a: &ActorRef<DocumentActor>,
+        store: &crate::store::Store,
+        shared: bool,
+        update: String,
+    ) -> DocId {
+        let doc = note_shared(store, shared).await;
+        apply(a, &doc, update, Principal::Owner { device: Some(1) }).await;
+        doc
+    }
+
+    /// `a` loses the lease to `srv` and reaches the mesh through `t`.
+    async fn off_server(a: &ActorRef<DocumentActor>, t: std::sync::Arc<Srv>) {
+        a.tell(crate::hub::SelfId(mesh::EngineId("me".into())))
+            .await
+            .unwrap();
+        a.tell(mesh::MeshEvent::Lease(mesh::LeaseState {
+            holder: Some(mesh::EngineId("srv".into())),
+            since_ms: 0,
+            reason: "test".into(),
+        }))
+        .await
+        .unwrap();
+        a.tell(crate::relay::SetTransport(t)).await.unwrap();
+    }
+
+    async fn press(a: &ActorRef<DocumentActor>, doc: &DocId, seen: &str) -> CodeBlockTextReply {
+        a.ask(CodeBlockText {
+            doc: doc.clone(),
+            key: NoteKey::Name("preview".into()),
+            seen: Some(seen.to_owned()),
+        })
+        .await
+        .unwrap()
+    }
+
+    fn first_block(client: &yrs::Doc) -> String {
+        edit(client, |txn, g| {
+            push_block(txn, g, None, "b1", Some("bash"), PREVIEW)
+        })
+    }
+
+    /// `client`'s edit appending `more` to `b1`'s text.
+    fn append(client: &yrs::Doc, more: &str) -> String {
+        edit(client, |txn, g| {
+            let Some(XmlOut::Element(c)) = g.get(txn, 0) else {
+                panic!("b1")
+            };
+            let Some(XmlOut::Element(code)) = c.get(txn, 0) else {
+                panic!("code")
+            };
+            let Some(XmlOut::Text(t)) = code.get(txn, 0) else {
+                panic!("text")
+            };
+            let n = t.get_string(txn).chars().count() as u32;
+            yrs::Text::insert(&t, txn, n, more);
+        })
+    }
+
+    /// 184 §6.2 (W-u, W-i): off the server, a press reads the block and the note's markdown from
+    /// the server over a `Block` leg carrying the press's digest — not the stale local copy.
+    #[tokio::test]
+    async fn off_the_server_a_press_reads_the_servers_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, store) = actor(dir.path()).await;
+        let doc = written(&a, &store, true, first_block(&yrs::Doc::new())).await;
+        let fresh = PREVIEW.replace("ir-prod1", "ir-prod2");
+        let srv = Srv::new(
+            Some(CodeBlockTextReply {
+                markdown: "# Runbook, as served".into(),
+                ..reply("b1", "bash", &fresh)
+            }),
+            None,
+        );
+        off_server(&a, srv.clone()).await;
+        let digest = cell::digest(&fresh);
+        let got = press(&a, &doc, &digest).await;
+        assert_eq!(
+            (got.text.as_str(), got.markdown.as_str()),
+            (fresh.as_str(), "# Runbook, as served")
+        );
+        assert_eq!(
+            *srv.seen.lock(),
+            vec![Some(digest)],
+            "the digest went along"
+        );
+    }
+
+    /// 184 §6.2 (W-i), §13 #43: the server and the holder both unreachable → the replica's block;
+    /// a shared note's author is unknown (`?`: the press confirms), an unshared one's is not.
+    #[tokio::test]
+    async fn nobody_answers_a_shared_note_reads_here_with_its_author_unknown() {
+        for (shared, author) in [
+            (
+                true,
+                Principal::Member {
+                    pub_: crate::cells::UNKNOWN_AUTHOR.into(),
+                    device: None,
+                },
+            ),
+            (false, Principal::Owner { device: None }),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (a, store) = actor(dir.path()).await;
+            let doc = written(&a, &store, shared, first_block(&yrs::Doc::new())).await;
+            off_server(&a, Srv::new(None, None)).await;
+            let got = press(&a, &doc, &cell::digest(PREVIEW)).await;
+            assert_eq!((got.text.as_str(), got.markdown.as_str()), (PREVIEW, ""));
+            assert_eq!(got.last_author, author, "shared: {shared}");
+        }
+    }
+
+    /// 184 §6.2 (W-i): a server that does not serve `Block` (an older engine) → the replica, merged
+    /// with the holder's `DocOpen` state, the block's member author from the holder's meta.
+    #[tokio::test]
+    async fn an_old_server_the_holder_names_the_author() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, store) = actor(dir.path()).await;
+        let client = yrs::Doc::new();
+        let doc = written(&a, &store, true, first_block(&client)).await;
+        let mut meta = store.read_meta(&doc).unwrap();
+        meta.authors.insert("b1".into(), MEMBER.into());
+        let open = crate::meta::DocOpen {
+            meta,
+            state: vec![append(&client, " --diff")],
+            awareness: String::new(),
+            server: None,
+            dual: None,
+            sv: String::new(),
+        };
+        off_server(&a, Srv::new(None, Some(open))).await;
+        let got = press(&a, &doc, "stale").await;
+        assert_eq!(got.text, format!("{PREVIEW} --diff"));
+        assert_eq!(
+            got.last_author,
+            Principal::Member {
+                pub_: MEMBER.into(),
+                device: None
+            }
+        );
+    }
+
+    /// 184 §16, W-u: the engine that serves the note (a lone engine) reads its own live Doc. A read
+    /// without a digest is today's reply; a press whose digest the Doc lacks is answered by the
+    /// update that brings it, or after `BLOCK_WAIT_MS` with what the Doc has.
+    #[tokio::test]
+    async fn the_server_reads_its_own_doc_and_waits_for_the_keystroke() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, store) = actor(dir.path()).await;
+        let client = yrs::Doc::new();
+        let doc = written(&a, &store, true, first_block(&client)).await;
+        let plain = text(&a, &doc, NoteKey::Name("preview".into()))
+            .await
+            .unwrap();
+        assert_eq!(plain, reply("b1", "bash", PREVIEW));
+
+        let wait = std::time::Duration::from_millis(crate::hub::BLOCK_WAIT_MS);
+        let t = std::time::Instant::now();
+        assert_eq!(press(&a, &doc, "stale").await.text, PREVIEW);
+        assert!(t.elapsed() >= wait, "waited for a matching update");
+
+        let typed = format!("{PREVIEW} x");
+        let (a2, doc2, digest) = (a.clone(), doc.clone(), cell::digest(&typed));
+        let t = std::time::Instant::now();
+        let pressed = tokio::spawn(async move { press(&a2, &doc2, &digest).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        apply(
+            &a,
+            &doc,
+            append(&client, " x"),
+            Principal::Owner { device: Some(1) },
+        )
+        .await;
+        assert_eq!(pressed.await.unwrap().text, typed);
+        assert!(t.elapsed() < wait, "answered by the update");
+    }
+
+    /// 184 §10.2, rule 6: a `Block` read relayed here (a leg's `Relayed(CodeBlockText)`) for a
+    /// note this engine does not serve is refused — the caller reads its own replica — and never
+    /// answered from this engine's replica nor relayed on.
+    #[tokio::test]
+    async fn a_relayed_read_off_the_server_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, store) = actor(dir.path()).await;
+        let doc = written(&a, &store, false, first_block(&yrs::Doc::new())).await;
+        let srv = Srv::new(Some(reply("b1", "bash", "from srv")), None);
+        off_server(&a, srv.clone()).await;
+        let e = a
+            .ask(crate::hub::Relayed(CodeBlockText {
+                doc: doc.clone(),
+                key: NoteKey::Name("preview".into()),
+                seen: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(e.to_string(), "NotHub:srv");
+        assert!(srv.seen.lock().is_empty(), "not relayed on");
+    }
+
+    /// 184 §9.2 legs are keyed by engine: after the home's `Block` leg went silent, the fallback's
+    /// `Open` goes to the holder on a leg of its own (not down the home's leg), and the author
+    /// comes from the holder's meta.
+    #[tokio::test]
+    async fn the_fallback_open_reaches_the_holder_past_a_silent_home() {
+        struct Two {
+            srv: std::sync::Arc<Srv>,
+            opened: parking_lot::Mutex<Vec<String>>,
+        }
+        #[async_trait::async_trait]
+        impl replica::Transport for Two {
+            fn peers(&self) -> Vec<replica::PeerId> {
+                vec![
+                    replica::PeerId("home".into()),
+                    replica::PeerId("srv".into()),
+                ]
+            }
+            async fn open(
+                &self,
+                p: &replica::PeerId,
+                alpn: &str,
+            ) -> anyhow::Result<Box<dyn replica::ByteStream>> {
+                self.opened.lock().push(p.0.clone());
+                if p.0 == "srv" {
+                    return self.srv.open(p, alpn).await;
+                }
+                // The home takes the stream and never answers (an engine that is stuck).
+                let (mine, theirs) = tokio::io::duplex(1 << 20);
+                tokio::spawn(async move {
+                    use futures::StreamExt as _;
+                    let mut wire = crate::relay::framed(Box::new(theirs));
+                    while wire.next().await.is_some() {}
+                });
+                Ok(Box::new(mine))
+            }
+            async fn accept(&self, _: &str) -> anyhow::Result<Inbound> {
+                std::future::pending().await
+            }
+            fn subscribe(&self) -> tokio::sync::broadcast::Receiver<replica::PeerEvent> {
+                self.srv.events.subscribe()
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let (a, store) = actor(dir.path()).await;
+        let doc = note_shared(&store, true).await;
+        let mut meta = store.read_meta(&doc).unwrap();
+        meta.home = Some(mesh::EngineId("home".into()));
+        meta.home_ms = 1;
+        store.write_meta(&meta).await.unwrap();
+        let client = yrs::Doc::new();
+        // Homes off while this engine writes the block (it holds the lease alone).
+        apply(
+            &a,
+            &doc,
+            first_block(&client),
+            Principal::Owner { device: Some(1) },
+        )
+        .await;
+        meta.authors.insert("b1".into(), MEMBER.into());
+        let open = crate::meta::DocOpen {
+            meta,
+            state: vec![append(&client, " --diff")],
+            awareness: String::new(),
+            server: None,
+            dual: None,
+            sv: String::new(),
+        };
+        let two = std::sync::Arc::new(Two {
+            srv: Srv::new(None, Some(open)),
+            opened: Default::default(),
+        });
+        off_server(&a, two.srv.clone()).await;
+        a.tell(crate::relay::SetTransport(two.clone()))
+            .await
+            .unwrap();
+        a.tell(crate::hub::HomesOn(true)).await.unwrap();
+        let got = press(&a, &doc, "stale").await;
+        assert_eq!(got.text, format!("{PREVIEW} --diff"), "the holder's state");
+        assert_eq!(
+            got.last_author,
+            Principal::Member {
+                pub_: MEMBER.into(),
+                device: None
+            }
+        );
+        assert_eq!(*two.opened.lock(), ["home", "srv"]);
     }
 }

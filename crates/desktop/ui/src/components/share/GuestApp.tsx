@@ -9,12 +9,12 @@ import { Input } from '@/components/ui/input'
 import { Toaster } from '@/components/ui/sonner'
 import { type DocStatus, type GuestUser, EngineProvider } from '@/lib/doc/provider'
 import { CLOSE_REFUSED } from '@/link/frames'
-import { type ShareTarget, joinProof, parseShareLink } from '@/link/guest'
+import { type ShareTarget, dialRotation, joinBusy, joinProof, parseShareLink, serverMoved } from '@/link/guest'
 import type { Engine } from '@/link/engines'
 import { idbGet, idbPut } from '@/link/idb'
 import { getIdentity } from '@/link/keys'
 import { LinkTransport } from '@/link/transport'
-import { makeApi } from '@/rpc/api'
+import { type Api, makeApi } from '@/rpc/api'
 import type { DocEvent } from '@/rpc/bindings/DocEvent'
 import type { DocKind } from '@/rpc/bindings/DocKind'
 import { RpcClient } from '@/rpc/client'
@@ -33,7 +33,7 @@ function goneMessage(code: string): string {
   if (code.includes('link_revoked') || code.includes('link_expired') || code.includes('link_unknown') || code.includes('bad_proof')) return 'This link no longer works.'
   if (code.includes('members_full')) return 'This document is full.'
   if (code.includes('sharing')) return 'Sharing is turned off for this document.'
-  if (code.includes('not_member')) return 'Your access was removed.'
+  if (code.includes('not_member') || code.includes('member_revoked')) return 'Your access was removed.'
   return 'Could not open this document.'
 }
 
@@ -121,28 +121,25 @@ function NamePrompt({ onSubmit }: { onSubmit: (name: string) => void }) {
 function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
   const [state, setState] = useState<GuestState>({ kind: 'connecting' })
   useEffect(() => {
-    const engine: Engine = { id: target.engineId, name: '', relayHost: target.relayHost, secure: target.secure, pairedAt: Date.now(), lastSeen: 0, order: 0, kind: 'engine' }
+    // §12.6: the store key is the first id; the dialled id (home, then mesh) changes per connection.
+    const engineId = target.engineIds[0] ?? ''
     let provider: EngineProvider | null = null
     let ended = false
+    let cur: { client: RpcClient; transport: LinkTransport; api: Api } | null = null
     const end = (message: string) => {
       if (ended) return
       ended = true
+      rotation.stop()
       provider?.destroy()
       provider = null
-      client.close()
+      cur?.client.close()
       setState({ kind: 'gone', message })
     }
-    const transport = new LinkTransport(engine, {
-      onClose: (reason) => {
-        // The engine refused us after the handshake (not admitted in time, or three refusals): stop retrying.
-        if (reason === CLOSE_REFUSED) end(provider ? 'Your access was removed.' : 'This link no longer works.')
-      },
-    })
-    const client = new RpcClient(transport)
-    const api = makeApi(client)
     const open = (user: GuestUser) => {
+      const c = cur
+      if (!c) return
       provider?.destroy()
-      const p = new EngineProvider(client, api, target.doc, target.engineId, user)
+      const p = new EngineProvider(c.client, c.api, target.doc, engineId, user)
       provider = p
       p.onStatus((s) => {
         if (s.kind !== 'closed' || p !== provider) return
@@ -151,31 +148,66 @@ function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
           open({ ...user, role: 'viewer' })
         } else if (s.reason === 'revoked') end('Your access was removed.')
         else if (s.reason === 'deleted') end('This document was deleted.')
-      })
-      setState({ kind: 'open', provider: p, user, owner: transport.hello?.name ?? '', client, engine: target.engineId })
-    }
-    let joined = false
-    const off = client.onState((s) => {
-      if (s !== 'open' || joined || ended) return
-      joined = true
-      void (async () => {
-        try {
-          const h = transport.handshakeHash
-          if (!h) throw new Error('no handshake')
-          const me = await getIdentity()
-          const j = await api.doc_join(target.doc, await joinProof(target.secret, h, me.pub), name)
-          if (!ended) open({ name: j.name, color: j.color, role: j.role })
-        } catch (e) {
-          end(goneMessage(e instanceof Error ? e.message : String(e)))
+        else if (serverMoved(s.reason)) retryJoin(c)
+        else if (s.reason.includes('not_member')) {
+          // A server move forgets guests: join again once, then it is a real removal (§12.6).
+          if (rejoined) end('Your access was removed.')
+          else {
+            rejoined = true
+            void join(c)
+          }
         }
-      })()
+      })
+      setState({ kind: 'open', provider: p, user, owner: c.transport.hello?.name ?? '', client: c.client, engine: engineId })
+    }
+    let rejoined = false
+    // The server moved under us: join again on this connection after a beat, as after a drop.
+    const retryJoin = (c: NonNullable<typeof cur>) => {
+      setTimeout(() => !ended && c === cur && void join(c), 1000)
+    }
+    const join = async (c: NonNullable<typeof cur>) => {
+      try {
+        const h = c.transport.handshakeHash
+        if (!h) throw new Error('no handshake')
+        const me = await getIdentity()
+        const j = await joinBusy(async () => c.api.doc_join(target.doc, await joinProof(target.secret, h, me.pub), name))
+        if (!ended && c === cur) open({ name: j.name, color: j.color, role: j.role })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (serverMoved(msg)) retryJoin(c)
+        else end(goneMessage(msg))
+      }
+    }
+    const rotation = dialRotation(target.engineIds, (id) => {
+      const engine: Engine = { id, name: '', relayHost: target.relayHost, secure: target.secure, pairedAt: Date.now(), lastSeen: 0, order: 0, kind: 'engine' }
+      const transport = new LinkTransport(engine, {
+        onClose: (reason) => {
+          // The engine refused us after the handshake (not admitted in time, or three refusals): stop retrying.
+          if (reason === CLOSE_REFUSED && cur?.transport === transport) end(provider ? 'Your access was removed.' : 'This link no longer works.')
+        },
+      })
+      const client = new RpcClient(transport)
+      const c = { client, transport, api: makeApi(client) }
+      cur = c
+      rejoined = false
+      let joined = false
+      client.onState((s) => {
+        if (ended || cur !== c) return
+        if (s !== 'open') return rotation.lost()
+        rotation.open()
+        if (joined) return
+        joined = true
+        void join(c)
+      })
+      void client.connect().catch(() => undefined)
+      return client
     })
-    void client.connect().catch(() => undefined)
+    rotation.start()
     return () => {
-      off()
       ended = true
+      rotation.stop()
       provider?.destroy()
-      client.close()
+      cur?.client.close()
     }
   }, [target, name])
 

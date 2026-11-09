@@ -62,14 +62,18 @@ const CREATE_SOURCES: &str = "CREATE TABLE IF NOT EXISTS sources (\
     bytes INTEGER, words INTEGER, duration_ms INTEGER, pages INTEGER, meta TEXT, \
     insights INTEGER NOT NULL DEFAULT 0, hlc TEXT)";
 /// 171 §13.2 (W-g): the latest run of each note cell, capped text, replicated to members and guests.
+/// 184 §6.4 (W-h): `payload` is the whole `CellLatest` as JSON (`engine` inside), written whole by
+/// every upsert; readers prefer it, and `''` (a pre-184 row or writer) means the old columns.
 const CREATE_CELL_LATEST: &str = "CREATE TABLE IF NOT EXISTS cell_latest (\
     id TEXT PRIMARY KEY, \
     doc TEXT NOT NULL, cell TEXT NOT NULL, \
     run TEXT NOT NULL, state TEXT NOT NULL, exit INTEGER, secs REAL, \
     expect TEXT, summary TEXT, code_sha TEXT NOT NULL, ended_ms INTEGER NOT NULL, \
-    text TEXT NOT NULL, hlc TEXT)";
+    text TEXT NOT NULL, hlc TEXT, payload TEXT NOT NULL DEFAULT '')";
 const CREATE_CELL_LATEST_DOC: &str =
     "CREATE INDEX IF NOT EXISTS cell_latest_doc ON cell_latest(doc)";
+/// 184 §9.3: `payload` on a `cell_latest` created before it existed (a no-op error otherwise).
+const ADD_PAYLOAD: &str = "ALTER TABLE cell_latest ADD COLUMN payload TEXT NOT NULL DEFAULT ''";
 
 /// The replicated tables (69 §5, 144 §3.3): attached to the record replica by the plugin; per-column
 /// LWW under the replica's HLC (the engine stamps `hlc`, the store never writes it).
@@ -205,10 +209,12 @@ impl Store {
         ] {
             sqlx::query(sql).execute(&db).await?;
         }
-        if let Err(e) = sqlx::query(ADD_HLC).execute(&db).await
-            && !e.to_string().contains("duplicate column")
-        {
-            return Err(e).context("docs.hlc");
+        for (sql, what) in [(ADD_HLC, "docs.hlc"), (ADD_PAYLOAD, "cell_latest.payload")] {
+            if let Err(e) = sqlx::query(sql).execute(&db).await
+                && !e.to_string().contains("duplicate column")
+            {
+                return Err(e).context(what);
+            }
         }
         fs::create_dir_all(root.join(MIRROR))?;
         let store = Self {
@@ -376,7 +382,7 @@ impl Store {
             .bind(id.as_str())
             .execute(&self.db)
             .await?;
-        self.mirror_write(id)?;
+        self.mirror_write_meta(id)?;
         tracing::info!(doc = %id, kind = %meta.kind, binding = %binding.key(), "documents: rebound");
         Ok(true)
     }
@@ -446,7 +452,7 @@ impl Store {
         let (meta, sealed) = self.parse_meta(&bytes)?;
         if sealed {
             write_atomic(&p, serde_json::to_vec_pretty(&meta)?.as_slice())?;
-            self.mirror_write(id)?;
+            self.mirror_write_meta(id)?;
             tracing::info!(doc = %id, "documents: share-link secret hashes sealed with the mesh key");
         }
         Ok(meta)
@@ -496,7 +502,7 @@ impl Store {
             .bind(meta.id.as_str())
             .execute(&self.db)
             .await?;
-        self.mirror_write(&meta.id)?;
+        self.mirror_write_meta(&meta.id)?;
         Ok(())
     }
 
@@ -509,8 +515,23 @@ impl Store {
     /// replica's scan never rows a half file) and remember their shas. A file the document lacks
     /// (no snapshot yet) is not written.
     pub fn mirror_write(&self, id: &DocId) -> anyhow::Result<()> {
+        self.mirror_copy(
+            id,
+            &[(META, MirrorFile::Meta), (SNAPSHOT, MirrorFile::Snapshot)],
+        )
+    }
+
+    /// [`Self::mirror_write`] of `meta.json` alone, for a change that touched only the meta: this
+    /// engine's `snapshot.yjs` may be older than the mirror's (a newer one arrived from the
+    /// document's server and is not applied yet), and re-publishing it would replace the newer
+    /// snapshot everywhere (184: every engine writes meta — fences, homes — not only the hub).
+    fn mirror_write_meta(&self, id: &DocId) -> anyhow::Result<()> {
+        self.mirror_copy(id, &[(META, MirrorFile::Meta)])
+    }
+
+    fn mirror_copy(&self, id: &DocId, files: &[(&str, MirrorFile)]) -> anyhow::Result<()> {
         let dir = self.dir(id);
-        for (src, kind) in [(META, MirrorFile::Meta), (SNAPSHOT, MirrorFile::Snapshot)] {
+        for &(src, kind) in files {
             let Some(bytes) = read_opt(&dir.join(src))? else {
                 continue;
             };
@@ -616,7 +637,11 @@ impl Store {
             MirrorFile::Meta => {
                 let (incoming, _) = self.parse_meta(&bytes).context("mirror meta.json")?;
                 let mut local = self.read_meta(&id)?;
-                if !mirror::merge_meta(&mut local, &incoming) {
+                // 184 §7.4 `opens`: the seal that opens here wins.
+                let vault = self.vault();
+                let opens =
+                    |l: &crate::meta::ShareLink| crate::share::seal_opens(vault.as_deref(), l);
+                if !mirror::merge_meta(&mut local, &incoming, &opens) {
                     return Ok(Applied::Unchanged);
                 }
                 self.write_meta(&local).await?;
@@ -1309,6 +1334,23 @@ impl Store {
         Ok(())
     }
 
+    /// `insights` and `meta` only — what the insight pass writes. A whole-row upsert there would
+    /// put back the status it read, clobbering a refresh's `queued` written meanwhile.
+    pub async fn source_set_insight(
+        &self,
+        id: &DocId,
+        insights: u32,
+        meta: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sources SET insights = ?, meta = ? WHERE id = ?")
+            .bind(i64::from(insights))
+            .bind(serde_json::to_string(meta)?)
+            .bind(id.as_str())
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
     /// The `sources` row, when there is one.
     pub async fn source_row(&self, id: &DocId) -> anyhow::Result<Option<SourceRow>> {
         let row: Option<SourceTuple> = sqlx::query_as(concat!(
@@ -1498,6 +1540,11 @@ mod tests {
             authors: Default::default(),
             created_ms: 1,
             updated_ms: 1,
+            home: None,
+            home_ms: 0,
+            serve_epoch: 0,
+            served_by: None,
+            revoked: Default::default(),
         }
     }
 
@@ -2304,6 +2351,62 @@ mod tests {
         );
         assert!(!b.dir(&m.id).exists());
         assert!(b.root().join(TRASH).join(m.id.as_str()).is_dir());
+    }
+
+    /// 184: a meta-only write (a merged fence or home) re-publishes `meta.json` only: a newer
+    /// snapshot that arrived in the mirror meanwhile is applied, not replaced by this engine's
+    /// older `snapshot.yjs` (which then won everywhere and left this engine's copy stale).
+    #[tokio::test]
+    async fn a_meta_write_never_republishes_an_older_snapshot() {
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = Store::open(da.path()).await.unwrap();
+        let b = Store::open(db.path()).await.unwrap();
+        let m = meta(Binding::Note);
+        a.create(&m).await.unwrap();
+        let doc = Doc::new();
+        a.append(&m.id, &Principal::File, &text_update(&doc, "one "))
+            .unwrap();
+        a.snapshot(&m.id, &doc, None).unwrap();
+        let names = [
+            mirror::file_name(&m.id, MirrorFile::Meta),
+            mirror::file_name(&m.id, MirrorFile::Snapshot),
+        ];
+        let project =
+            |n: &str| fs::copy(a.mirror_dir().join(n), b.mirror_dir().join(n)).map(|_| ());
+        for n in [&names[1], &names[0]] {
+            project(n).unwrap();
+            b.mirror_apply(&b.mirror_dir().join(n)).await.unwrap();
+        }
+        // A (the server) types on and snapshots; its new meta (a moved home) and snapshot reach
+        // B's mirror, and B applies the meta first.
+        a.append(&m.id, &Principal::File, &text_update(&doc, "two "))
+            .unwrap();
+        a.snapshot(&m.id, &doc, None).unwrap();
+        let mut moved = a.read_meta(&m.id).unwrap();
+        moved.home = Some(mesh::EngineId("a".into()));
+        moved.home_ms = 2;
+        a.write_meta(&moved).await.unwrap();
+        project(&names[1]).unwrap();
+        project(&names[0]).unwrap();
+        b.mirror_apply(&b.mirror_dir().join(&names[0]))
+            .await
+            .unwrap();
+        b.mirror_apply(&b.mirror_dir().join(&names[1]))
+            .await
+            .unwrap();
+        let lb = b.load(&m.id).unwrap();
+        assert_eq!(
+            lb.doc
+                .get_or_insert_text("t")
+                .get_string(&lb.doc.transact()),
+            "one two "
+        );
+        assert_eq!(lb.meta.home, Some(mesh::EngineId("a".into())));
+        assert_eq!(
+            fs::read(b.mirror_dir().join(&names[1])).unwrap(),
+            fs::read(a.mirror_dir().join(&names[1])).unwrap(),
+            "B's mirror keeps A's snapshot"
+        );
     }
 
     /// A store's mirror files as the replica rows them: name → bytes (dot files are never rows).

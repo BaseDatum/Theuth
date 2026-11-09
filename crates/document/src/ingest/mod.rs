@@ -510,6 +510,7 @@ impl Message<Add> for IngestActor {
                             title: title.clone(),
                             markdown: String::new(),
                             by: m.by.clone(),
+                            home: crate::actor::Homing::Hub,
                         })
                         .await,
                 )?;

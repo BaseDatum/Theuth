@@ -354,6 +354,20 @@ pub struct MeshStatus {
     /// until a user confirms (`mesh_confirm_peer`).
     #[serde(default)]
     pub quarantined: Vec<QuarantinedPeer>,
+    /// 184 §10.4: this engine's `homes_on` (from `DocsGate`): notes have homes in this mesh; the
+    /// note's Move to ▸ item reads it. `false` from a pre-184 engine.
+    #[serde(default)]
+    pub docs_homes_on: bool,
+}
+
+/// 184 §8.1: reply to [`crate::DocsGate`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, kameo::Reply)]
+pub struct DocsGateState {
+    /// Every counted paired engine (heard within `DOCS_STALE_MS`) advertises
+    /// `docs_schema >= DOCS_SCHEMA` on its control connection.
+    pub floor_ok: bool,
+    /// Homes are on here: the holder says so (its own `floor_ok` on the holder) and `floor_ok`.
+    pub homes_on: bool,
 }
 
 /// 183 R1 (S1), R4: a peer row a since-unpaired engine introduced, held back on this engine until confirmed.

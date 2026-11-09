@@ -139,6 +139,7 @@ mod tests {
             messaging_off: vec![],
             nearby: true,
             quarantined: vec![],
+            docs_homes_on: false,
         }
     }
 

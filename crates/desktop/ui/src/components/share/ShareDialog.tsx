@@ -4,13 +4,16 @@ import { QRCodeSVG } from 'qrcode.react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Action } from '@/components/editor/DocumentPage'
+import { type Mesh, inMesh, machineName } from '@/components/notes/machine'
 import { ago } from '@/components/sidebar/AgentTree'
+import { useMesh } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { useApi } from '@/lib/rpc'
 import type { LinkCreated } from '@/rpc/bindings/LinkCreated'
+import type { LinkVia } from '@/rpc/bindings/LinkVia'
 import type { Members } from '@/rpc/bindings/Members'
 import type { Role } from '@/rpc/bindings/Role'
 
@@ -25,6 +28,20 @@ const EXPIRY: { label: string; days: number | null }[] = [
 
 const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.message('Copied'))
 const at = (ms: bigint | number) => ago(new Date(Number(ms)).toISOString())
+
+/** `doc_link_create` refusal (link crate `MESH_LINK_UNAVAILABLE`): Link is off on the home and no hub answers. */
+const UNAVAILABLE = 'mesh_link_unavailable'
+
+/** 184 §12.2: the description and small line in a mesh (null outside one: today's copy). Before a link exists `via` is unknown: a homed note reads as `home`. */
+export function shareCopy(mesh: Mesh, home: string | null, via: LinkVia | undefined, role: Role, unavailable: boolean): { text: string; small: string } | null {
+  if (!inMesh(mesh)) return null
+  const name = home ? machineName(mesh, home) : ''
+  const can = role === 'viewer' ? 'can view' : 'can edit'
+  if (!home) return { text: `Anyone with this link ${can} the document. It is served by your mesh.`, small: 'Older links keep working.' }
+  if (unavailable) return { text: `Link sharing is off on ${name}, and no hub is reachable to make a mesh link.`, small: `Turn on Settings › Link on ${name}, or retry when the hub is back.` }
+  if (via === 'mesh') return { text: `Anyone with this link ${can} the note. It is served by your mesh, which passes it to ${name}.`, small: `Link sharing is off on ${name}, so this is a mesh link. Older links keep working.` }
+  return { text: `Anyone with this link ${can} the note. It is served by ${name}; if ${name} is offline, by your mesh.`, small: 'Older links keep working.' }
+}
 
 /** The "Share…" action of a document page (59 §8.2): opens `ShareDialog` for the live document. */
 export function ShareAction({ provider }: { provider: EngineProvider }) {
@@ -59,6 +76,8 @@ export function ShareDialog({ provider, open, onOpenChange }: { provider: Engine
   const [preset, setPreset] = useState('')
   const [expiry, setExpiry] = useState<number | null>(7)
   const [created, setCreated] = useState<LinkCreated | null>(null)
+  /** The member whose Remove confirm is open. */
+  const [removing, setRemoving] = useState<string | null>(null)
   const fail = (e: Error) => toast.error(e.message)
   const create = useMutation({
     mutationFn: () => api.doc_link_create(doc, role, preset.trim() || null, expiry === null ? null : Date.now() + expiry * DAY_MS),
@@ -66,7 +85,7 @@ export function ShareDialog({ provider, open, onOpenChange }: { provider: Engine
       setCreated(r)
       setPreset('')
     },
-    onError: fail,
+    onError: (e) => !e.message.includes(UNAVAILABLE) && fail(e),
   })
   const revokeLink = useMutation({ mutationFn: (link: string) => api.doc_link_revoke(doc, link), onError: fail })
   const setMember = useMutation({
@@ -80,13 +99,16 @@ export function ShareDialog({ provider, open, onOpenChange }: { provider: Engine
   })
   const links = members.data?.links.filter((l) => l.revoked_ms === null) ?? []
   const nameOf = (id: string | null) => members.data?.links.find((l) => l.id === id)?.name
+  const mesh = useMesh().data
+  const unavailable = !!create.error?.message.includes(UNAVAILABLE) && !created
+  const text = shareCopy(mesh, provider.meta?.home ?? null, created?.via, created ? created.link.role : role, unavailable)
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Share</DialogTitle>
+          <DialogTitle>{text ? `Share "${provider.meta?.title ?? ''}"` : 'Share'}</DialogTitle>
           <DialogDescription>
-            Anyone with a link connects to this Mac through the relay and edits live; a viewer link only shows the document.
+            {text?.text ?? 'Anyone with a link connects to this Mac through the relay and edits live; a viewer link only shows the document.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -125,6 +147,16 @@ export function ShareDialog({ provider, open, onOpenChange }: { provider: Engine
               </div>
             </div>
           )}
+          {text && (
+            <p className="flex items-center gap-2 text-xs text-fg-tertiary">
+              {text.small}
+              {unavailable && (
+                <Button size="sm" variant="outline" disabled={create.isPending} onClick={() => create.mutate()}>
+                  Retry
+                </Button>
+              )}
+            </p>
+          )}
         </section>
 
         <section aria-label="Links">
@@ -154,7 +186,7 @@ export function ShareDialog({ provider, open, onOpenChange }: { provider: Engine
           {members.data?.members.length === 0 && <p className="text-sm text-fg-tertiary">Nobody has joined yet.</p>}
           <ul className="text-sm">
             {members.data?.members.map((m) => (
-              <li key={m.pub} className="flex items-center gap-2 py-1" data-member={m.pub}>
+              <li key={m.pub} className="flex flex-wrap items-center gap-2 py-1" data-member={m.pub}>
                 <span className="size-2.5 shrink-0 rounded-full" style={{ background: m.color }} aria-hidden />
                 <span className="min-w-0 flex-1 truncate">
                   {m.name}
@@ -171,14 +203,68 @@ export function ShareDialog({ provider, open, onOpenChange }: { provider: Engine
                   <option value="editor">editor</option>
                   <option value="viewer">viewer</option>
                 </select>
-                <Button variant="outline" size="sm" disabled={revokeMember.isPending} onClick={() => revokeMember.mutate(m.pub)}>
+                <Button variant="outline" size="sm" disabled={revokeMember.isPending} onClick={() => setRemoving(m.pub)}>
                   Remove
                 </Button>
+                {removing === m.pub && (
+                  <RemoveMember
+                    name={m.name}
+                    link={links.find((l) => l.id === m.via) ?? null}
+                    onCancel={() => setRemoving(null)}
+                    onConfirm={(alsoLink) => {
+                      setRemoving(null)
+                      revokeMember.mutate(m.pub)
+                      if (alsoLink && m.via) revokeLink.mutate(m.via)
+                    }}
+                  />
+                )}
               </li>
             ))}
           </ul>
         </section>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/**
+ * Z184-R3: Remove's confirm. The engine refuses the member's key on every link made before the
+ * remove, but anyone else holding the link they came in on can still join: offer to revoke it too.
+ */
+export function RemoveMember({
+  name,
+  link,
+  onConfirm,
+  onCancel,
+}: {
+  name: string
+  /** The live link the member joined through, if any. */
+  link: { id: string; name: string | null } | null
+  onConfirm(alsoLink: boolean): void
+  onCancel(): void
+}) {
+  const [alsoLink, setAlsoLink] = useState(true)
+  const label = link?.name ?? 'without a name'
+  return (
+    <div role="group" aria-label={`Remove ${name}`} className="flex basis-full flex-col gap-1.5 rounded-md border border-border-subtle p-2 text-xs">
+      <p>
+        {name} can no longer join through any link made so far.
+        {link && ` Without revoking link «${label}», anyone else holding it can still join.`}
+      </p>
+      {link && (
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={alsoLink} onChange={(e) => setAlsoLink(e.target.checked)} />
+          Also revoke link «{label}»
+        </label>
+      )}
+      <span className="flex gap-1.5">
+        <Button variant="outline" size="sm" onClick={() => onConfirm(link !== null && alsoLink)}>
+          Remove {name}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </span>
+    </div>
   )
 }

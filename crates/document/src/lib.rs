@@ -41,23 +41,27 @@ pub mod watch;
 
 pub use actor::{
     ApplyUpdate, AwarenessUpdateMsg, Bind, Create, CreateBoard, CreateNote, Delete, DeleteNote,
-    DocHeadings, DocumentActor, Edit, EditOutcome, Ensure, Flush, Headings, ImportMarkdown,
+    DocHeadings, DocumentActor, Edit, EditOutcome, Ensure, Flush, Headings, Homing, ImportMarkdown,
     ImportOutcome, ListDocs, Lookup, Markdown, MetaOf, OpenDoc, Outline, Rename, Restore,
     SetDerived, Snapshot, Snapshots, Stats, Subscribe, Tick, UndoLastAgentEdit, board_frontmatter,
     with_heading,
 };
 pub use cells::{
     CellAnnotation, CellLatest, CodeBlockText, CodeBlockTextReply, NoteKey, RunAnnotations,
-    run_annotations, set_run_annotations,
+    run_annotations, set_run_annotations, watch_latest,
 };
 pub use helper::{
     Edit as BlockEdit, EditError, HelperProcess, HelperStatus, ImportMode, helper_path,
     helper_status, protocol_version,
 };
-pub use hub::{DocError, HUB_MOVED};
+pub use hub::{
+    BLOCK_WAIT_MS, DocError, DocServer, HANDBACK_TIMEOUT_MS, HUB_MOVED, Handback, Handover,
+    JOIN_PARK_MS, MoveHome, NOT_HOME, NOT_OWNER, PENDING_HOME_TTL, Relayed, Route, SERVER_MOVED,
+};
 pub use meta::*;
 pub use note_cells::{CheckCells, CodeBlocks, reader_markdown};
 pub use notebook::*;
+pub use relay::{CreateReq, HandbackReply};
 pub use share::{
     Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,
     secret_hash,
@@ -247,6 +251,8 @@ impl runtime::Plugin for DocumentPlugin {
                     if let Err(e) = h.announce_unstamped().await {
                         tracing::warn!("documents: existing rows not announced: {e:#}");
                     }
+                    // 184 §6.4 (W-p): foreign `cell_latest` batches → `CellLatestChanged`.
+                    cells::watch_latest(h, rt2);
                     tracing::info!("documents: docs replicated");
                 }
                 Err(e) => tracing::info!("documents: replication unavailable ({e}); local only"),
@@ -340,6 +346,9 @@ impl runtime::Plugin for DocumentPlugin {
         // watcher now (a lone engine is its own hub); the lease and the self id flip it from here on.
         let _ = actor.tell(hub::Reconcile).await;
         rt.subscribe::<DocumentActor, mesh::MeshEvent>(&actor).await;
+        // 184 §8.1: a `homes_on` flip, published by the mesh's gate pass.
+        rt.subscribe::<DocumentActor, mesh::DocsGateState>(&actor)
+            .await;
         // 144 §7.1: every `DocumentChanged` this actor publishes re-indexes the document.
         rt.subscribe::<DocumentActor, DocumentChanged>(&actor).await;
         let (a, rt2) = (actor.clone(), rt.clone());

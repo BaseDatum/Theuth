@@ -1,7 +1,11 @@
 import { BlockNoteEditor } from '@blocknote/core'
 import { schema } from '@theuth/documents/schema'
 import { createElement as h } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
+import { LOCAL } from '@/link/engines'
+import type { CellLatest } from '@/rpc/bindings/CellLatest'
+import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { CellRef } from '@/rpc/bindings/CellRef'
@@ -9,12 +13,20 @@ import type { CellSpec } from '@/rpc/bindings/CellSpec'
 import type { CellState } from '@/rpc/bindings/CellState'
 import type { PassEnd } from '@/rpc/bindings/PassEnd'
 import { cellOf, digest } from './grammar'
-import { NoteCell, pressNote, rereadAfterEdit } from './NoteCell'
+import { NoteCell, pressNote, rereadAfterEdit, UnsureRun } from './NoteCell'
 import { NoteHost } from './note-context'
 import { noteRef, withPython } from './note-edit'
 import { cells, refKey, register, scopeKey, scopeOf } from './store'
 import { fakeApi, render, run, state } from './test-fixtures'
 import { viewOf } from './view'
+
+const mesh = vi.hoisted(() => ({ current: undefined as MeshStatus | undefined, active: 'local' }))
+// A server render reads a `create` store's initial state, so the active engine is answered here.
+vi.mock('@/link/engines', async (orig) => {
+  const m = await orig<typeof import('@/link/engines')>()
+  return { ...m, LOCAL_NAME: 'This Mac', useEngines: Object.assign(<T>(sel: (s: { active: string }) => T) => sel({ active: mesh.active }), m.useEngines) }
+})
+vi.mock('@/components/tasks/queries', async (orig) => ({ ...(await orig<object>()), useMesh: () => ({ data: mesh.current }) }))
 
 const DOC = 'aaaaaaaaaaaaaaaaaaaaaaaaaa'
 const TEXT = '#| name: rotate-key\naws iam create-access-key --user-name frp-bot\naws iam list-access-keys --user-name frp-bot'
@@ -23,8 +35,8 @@ const ref = noteRef(DOC, spec, 'blk1')
 const provider = { id: DOC, meta: { members: [{ pub: 'AbCdEf12rest', name: 'Alice' }] } } as unknown as EngineProvider
 
 /** NoteCell's static markup with `record` as the engine's state for its ref and `pass` as the scope's last pass. */
-function renderNote(record: CellState | null, pass: PassEnd | null = null) {
-  cells.setState({ scopes: { [scopeKey(scopeOf(ref))]: { states: record ? { [refKey(ref)]: record } : {}, kernels: [], error: null, notices: {}, pass } } })
+function renderNote(record: CellState | null, pass: PassEnd | null = null, rows: CellLatest[] = []) {
+  cells.setState({ scopes: { [scopeKey(scopeOf(ref))]: { states: record ? { [refKey(ref)]: record } : {}, kernels: [], error: null, notices: {}, pass, rows } } })
   return mountNote()
 }
 
@@ -160,4 +172,69 @@ test('171F4 N3: in a note the "#|" pill unfolds the header in the editor — no 
   } finally {
     useToolRuns.getState().setDisclosed(pill, false)
   }
+})
+
+// 184 §6.5, §12.3: another engine's result, the Run label, the unsure-author confirm.
+const MAC = 'mac1'
+const XEUS = 'xeus1'
+const MESH = { self_id: MAC, self_name: "Sky's MacBook", peers: [{ id: XEUS, name: 'xeus', reachable: true }] } as unknown as MeshStatus
+const row = (over: Partial<CellLatest> = {}): CellLatest => ({
+  id: `${DOC}:${ref.key.value}`,
+  doc: DOC,
+  cell: ref.key.value,
+  run: 'r_x',
+  state: 'done',
+  exit: 0,
+  secs: 1,
+  expect: 'expect ✓',
+  summary: null,
+  code_sha: 'a',
+  ended_ms: BigInt(Date.now() - 4 * 60_000),
+  text: 'from xeus',
+  engine: XEUS,
+  ...over,
+})
+const own = (ended: number) => state(ref, { latest: run({ cell: ref, ended_ms: ended }) })
+const inMeshAs = (m: MeshStatus | undefined, active: string = LOCAL) => {
+  mesh.current = m
+  mesh.active = active
+}
+
+test('184 §12.3: a newer result from another engine reads `ran on xeus · 4 min ago · exit 0`, with no Attach, Stop or History', () => {
+  inMeshAs(MESH)
+  const html = renderNote(null, null, [row()])
+  expect(html).toContain('from xeus')
+  expect(html).toContain('ran on xeus</span> · 4 min ago · exit 0 · expect ✓')
+  for (const gone of ['Attach', 'Stop', 'History']) expect(html).not.toContain(gone)
+})
+
+test('184 §12.3: a row from this engine or `\'\'` renders nothing of its own; an own newer run beats an older foreign row', () => {
+  inMeshAs(MESH)
+  expect(renderNote(own(Date.now() - 60_000), null, [row({ engine: MAC })])).not.toContain('ran on')
+  expect(renderNote(own(Date.now() - 60_000), null, [row({ engine: '' })])).not.toContain('ran on')
+  const older = renderNote(own(Date.now()), null, [row()])
+  expect(older).not.toContain('ran on')
+  expect(older).toContain('Ask theuth')
+  // …and a newer foreign row beats an older own run, which then shows no footer of its own.
+  expect(renderNote(own(Date.now() - 3_600_000), null, [row()])).toContain('ran on xeus')
+})
+
+test('184 §12.3: the Run button names the machine in a mesh; a labelled cell and a lone engine keep theirs', () => {
+  inMeshAs(MESH)
+  expect(renderNote(null)).toContain('Run on this Mac')
+  inMeshAs(MESH, 'xeus1')
+  expect(renderNote(null)).toMatch(/Run on Sky(&#x27;|')s MacBook/)
+  inMeshAs({ ...MESH, peers: [] })
+  const lone = renderNote(null, null, [row()])
+  expect(lone).not.toContain('Run on')
+  expect(lone).not.toContain('ran on')
+  expect(lone).not.toContain('from xeus')
+  expect(lone).toMatch(/<\/svg>Run<\/button>/)
+})
+
+test('184 §12.3: the unsure-author confirm says what the design says, naming the server or the hub', () => {
+  const html = renderToStaticMarkup(h(UnsureRun, { server: 'the hub', onRun: () => undefined, onCancel: () => undefined }))
+  expect(html).toContain('Run this cell?')
+  expect(html).toContain("This note is shared and the hub can&#x27;t be reached, so theuth can&#x27;t tell who last edited this cell. Read it before you run it.")
+  expect(html).toMatch(/>Run<\/button>.*>Cancel<\/button>/)
 })

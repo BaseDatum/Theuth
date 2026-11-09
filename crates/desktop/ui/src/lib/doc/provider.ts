@@ -16,13 +16,20 @@ const ENGINE = 'engine'
 const RESTORE = 'restore'
 /** The whole Y.Doc is written to IndexedDB this long after the last change (link devices only). */
 const SAVE_MS = 1000
+/** A failed `#sync` with the socket still up is retried this long after (no reconnect will retry it). */
+const SYNC_RETRY_MS = 1000
+/** After this many failed retries in a row, the retry waits 5-10 s instead (jittered). */
+const SYNC_RETRY_FAST = 10
 /** One `doc_update` over the link, base64 (59 §4.7; `document::MAX_UPDATE_B64`). The replay merges the queue in batches under it. */
 export const MAX_UPDATE_B64 = 48 * 1024
 /** The engine refused an update for good (59 §11 limits): retrying cannot help, the local copy has forked. */
 const REFUSED = /^(UpdateTooLarge|DocTooLarge)\b/
+/** Bytes of acked updates kept for the state-vector resend. */
+const MAX_UNCONFIRMED = 1024 * 1024
 
 export type DocStatus =
-  | { kind: 'connecting' }
+  /** `resync`: an editor's re-sync after its server moved (184 §12.5): it keeps taking keystrokes, queued until live. */
+  | { kind: 'connecting'; resync?: boolean }
   | { kind: 'live' }
   | { kind: 'offline'; queued: number }
   | { kind: 'readonly' }
@@ -82,6 +89,24 @@ function b64(bytes: Uint8Array): string {
 }
 const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
 
+/** The structs (client, clock, length) an update carries; `Y.encodeStateVectorFromUpdate` is empty for one that does not start at clock 0. */
+const structs = (update: Uint8Array) => Y.decodeUpdate(update).structs as Array<{ id: { client: number; clock: number }; length: number }>
+
+/** A v1 state vector from a clock map (`Y.encodeStateVector` only reads a doc): varuint count, then client/clock varuints. */
+function svBytes(clocks: Map<number, number>): Uint8Array {
+  const out: number[] = []
+  const put = (n: number) => {
+    for (; n > 127; n = Math.floor(n / 128)) out.push(128 | n % 128)
+    out.push(n)
+  }
+  put(clocks.size)
+  for (const [client, clock] of clocks) {
+    put(client)
+    put(clock)
+  }
+  return Uint8Array.from(out)
+}
+
 /**
  * A Yjs provider over the engine RPC (59 §6.5): local updates go out as `doc_update`, the
  * `doc_subscribe` stream comes in as `Y.applyUpdate(doc, u, 'engine')`, awareness both ways.
@@ -97,6 +122,9 @@ export class EngineProvider {
   readonly doc = new Y.Doc()
   readonly awareness: Awareness
   meta: DocMeta | null = null
+  /** The engine serving the document and the other one during a partition (184 §10.3, §4.4); null before the first open / from an old server. */
+  server: string | null = null
+  dual: string | null = null
   status: DocStatus = { kind: 'connecting' }
   /** A viewer's provider (59 §8.1): the editor is `editable: false` (status `readonly`), awareness still flows. */
   readonly viewer: boolean
@@ -109,7 +137,19 @@ export class EngineProvider {
   #connected = false
   /** Local updates the engine has not acknowledged, oldest first. */
   #queue: Pending[] = []
+  /** Sent and acked, not yet covered by a server state vector (184 §4.7); memory only. */
+  #unconfirmed: Pending[] = []
+  #resent = new WeakSet<Pending>()
   #save: ReturnType<typeof setTimeout> | undefined
+  /** Cancels the pending `#sync` retry, if any. */
+  #cancelRetry = (): void => {}
+  /** Failed `#sync`s in a row since the last good one. */
+  #retries = 0
+  /**
+   * Something this client sent or holds may be missing on the server, so a catch-all with no structs (a lost
+   * delete-only update) carries news. Kept until a catch-all lands: `#unconfirmed` is spent at the first attempt.
+   */
+  #owed = false
   #unsub: (() => Promise<void>) | null = null
   #offState: () => void
   #status = new Set<(s: DocStatus) => void>()
@@ -180,6 +220,7 @@ export class EngineProvider {
     void this.#unsub?.()
     this.#unsub = null
     clearTimeout(this.#save)
+    this.#cancelRetry()
     if (this.#store && this.#loaded) void this.#store.saveState(Y.encodeStateAsUpdate(this.doc))
     this.awareness.destroy()
     this.doc.destroy()
@@ -230,12 +271,29 @@ export class EngineProvider {
     }
     this.#api
       .doc_update(this.id, b64(update))
-      .then(() => this.#store?.ack([p]))
+      .then(() => this.#acked([p]))
       .catch((e: unknown) => {
         if (this.#refused(e, [p])) return
         this.#queue.push(p)
         this.#set({ kind: 'offline', queued: this.#queue.length })
       })
+  }
+
+  /** Resent entries are no longer in IndexedDB (acked at their first send); acking them again would skew its byte count. */
+  #forget(items: Pending[]): Promise<void> | undefined {
+    return this.#store?.ack(items.filter((p) => !this.#resent.has(p)))
+  }
+
+  /** Sent and acked: gone from the FIFO and IndexedDB, kept in memory until a server vector confirms it (184 §4.7, §13 row 36). */
+  #acked(items: Pending[]): Promise<void> | undefined {
+    this.#unconfirmed.push(...items)
+    let bytes = this.#unconfirmed.reduce((n, p) => n + p.update.length, 0)
+    // ponytail: 1 MiB cap, oldest dropped (a reload loses the list anyway; the catch-all push still covers it); raise if long partitions lose edits.
+    while (bytes > MAX_UNCONFIRMED && this.#unconfirmed.length > 1) {
+      bytes -= this.#unconfirmed.shift()?.update.length ?? 0
+      console.warn('unconfirmed updates over 1 MiB; oldest dropped', this.id)
+    }
+    return this.#forget(items)
   }
 
   /**
@@ -247,7 +305,7 @@ export class EngineProvider {
     const message = e instanceof Error ? e.message : String(e)
     const m = REFUSED.exec(message)
     if (!m) return false
-    void this.#store?.ack([...dropped, ...this.#queue.splice(0)])
+    void this.#forget([...dropped, ...this.#queue.splice(0)])
     this.#set({ kind: 'closed', reason: m[1] === 'UpdateTooLarge' ? 'update too large (48 KiB); reload' : 'document full (8 MiB); reload' })
     return true
   }
@@ -299,9 +357,17 @@ export class EngineProvider {
         return
       case 'Closed':
         this.#unsub = null
-        // `slow`: the engine dropped our queue; the state vector recovers what we missed.
-        if (e.reason === 'slow' && !this.#destroyed) void this.#sync()
-        else this.#set({ kind: 'closed', reason: e.reason })
+        // `slow`: the engine dropped our queue; the state vector recovers what we missed. `hub_moved`,
+        // `server_moved`, `NotHub:…`: the document's server changed (184 §4.7, §12.5); `#sync` re-subscribes and pushes.
+        if (!this.#destroyed && (['slow', 'hub_moved', 'server_moved'].includes(e.reason) || e.reason.startsWith('NotHub:'))) {
+          this.#set({ kind: 'connecting', resync: !this.viewer })
+          void this.#sync()
+        } else this.#set({ kind: 'closed', reason: e.reason })
+        return
+      case 'Server':
+        this.server = e.server
+        this.dual = e.dual
+        for (const cb of this.#events) cb(e)
         return
       default:
         for (const cb of this.#events) cb(e)
@@ -312,6 +378,7 @@ export class EngineProvider {
   async #sync(): Promise<void> {
     if (this.#destroyed) return
     await this.#ready
+    this.#cancelRetry()
     if (this.#destroyed || !this.#connected) return
     try {
       if (!this.#unsub) {
@@ -321,6 +388,8 @@ export class EngineProvider {
       const opened = await this.#api.doc_open(this.id, sv)
       if (this.#destroyed) return
       this.meta = opened.meta
+      this.server = opened.server ?? null
+      this.dual = opened.dual ?? null
       // The chunks are slices of ONE v1 update (59 §4.7): joined, then applied as one transaction.
       const chunks = opened.state.map(unb64)
       const state = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0))
@@ -331,26 +400,72 @@ export class EngineProvider {
       }
       if (state.length > 0) Y.applyUpdate(this.doc, state, ENGINE)
       if (opened.awareness !== '') applyAwarenessUpdate(this.awareness, unb64(opened.awareness), ENGINE)
-      // Merged batches under the 48 KiB cap stand for everything typed while offline; another round picks
-      // up what was typed while one was in flight, so nothing waits for the next reconnect.
-      while (this.#queue.length > 0) {
-        const { batch, merged } = this.#batch()
-        this.#queue.splice(0, batch.length)
-        if (this.status.kind === 'offline') this.#set({ kind: 'offline', queued: this.#queue.length })
-        try {
-          await this.#api.doc_update(this.id, b64(merged))
-        } catch (e) {
-          if (this.#refused(e, batch)) return
-          this.#queue.unshift(...batch)
-          throw e
-        }
-        await this.#store?.ack(batch)
+      // 184 §4.7: an old server answers `sv: ''` — nothing below applies.
+      const have = opened.sv ? Y.decodeStateVector(unb64(opened.sv)) : null
+      // A viewer (or a read-only source doc) never writes: every push would be refused and counted.
+      const readOnly = this.viewer || opened.meta.kind === 'source'
+      this.#owed ||= this.#queue.length > 0 || this.#unconfirmed.length > 0
+      if (have) {
+        // Acked-but-unconfirmed updates the server's vector does not cover were lost behind its front door: resend first.
+        const lost = this.#unconfirmed.filter((p) => !structs(p.update).every((s) => s.id.clock + s.length <= (have.get(s.id.client) ?? 0)) && !this.#queue.includes(p))
+        this.#unconfirmed = []
+        for (const p of lost) this.#resent.add(p)
+        this.#queue.unshift(...lost)
+        this.#owed ||= lost.length > 0
       }
+      // Merged batches under the 48 KiB cap stand for everything typed while offline; another round picks
+      // up what was typed while one was in flight, and what was typed during the catch-all, so nothing waits
+      // for the next reconnect (the status turns live only with the queue empty, in the same tick).
+      let catchAll = have !== null && !readOnly
+      for (;;) {
+        while (this.#queue.length > 0) {
+          const { batch, merged } = this.#batch()
+          this.#queue.splice(0, batch.length)
+          if (this.status.kind === 'offline') this.#set({ kind: 'offline', queued: this.#queue.length })
+          try {
+            await this.#api.doc_update(this.id, b64(merged))
+          } catch (e) {
+            if (this.#refused(e, batch)) return
+            this.#queue.unshift(...batch)
+            throw e
+          }
+          // The server now holds these: advance its vector over every contiguous struct (a gap stays for the catch-all).
+          if (have) for (const p of batch) for (const s of structs(p.update)) if (s.id.clock <= (have.get(s.id.client) ?? 0)) have.set(s.id.client, Math.max(have.get(s.id.client) ?? 0, s.id.clock + s.length))
+          await this.#acked(batch)
+        }
+        if (catchAll && have) {
+          catchAll = false
+          // Catch-all (§12.5): what the server still lacks after the list and the queue. Yjs puts the whole delete
+          // set in every update, so a remainder without structs is pushed only when something was owed.
+          // Over the cap it is skipped: the list already covered the lost updates, and a push over the cap would trip `#refused`.
+          const rest = Y.encodeStateAsUpdate(this.doc, svBytes(have))
+          const news = rest.length > 2 && (this.#owed || Y.decodeUpdate(rest).structs.length > 0)
+          if (news && Math.ceil(rest.length / 3) * 4 <= MAX_UPDATE_B64) {
+            try {
+              await this.#api.doc_update(this.id, b64(rest))
+            } catch (e) {
+              if (this.#refused(e, [])) return
+              throw e
+            }
+          }
+          this.#owed = false
+        }
+        if (this.#queue.length === 0) break
+      }
+      this.#retries = 0
       this.#set(this.viewer ? { kind: 'readonly' } : { kind: 'live' })
     } catch (e) {
       if (this.#destroyed) return
       this.#set({ kind: 'offline', queued: this.#queue.length })
       console.warn('doc sync failed', this.id, e)
+      // Z184-R2: an engine restarted under the page answers the first sync `NotHub{hub: null}` while its lease
+      // warms up, and the socket stays up, so no reconnect retries it: the edits would sit queued for good.
+      // Once a second for the first ten tries (a warm-up is ~30 s), then every 5-10 s while the page is open.
+      if (this.#connected) {
+        const delay = ++this.#retries > SYNC_RETRY_FAST ? 5000 + Math.random() * 5000 : SYNC_RETRY_MS
+        const t = setTimeout(() => void this.#sync(), delay)
+        this.#cancelRetry = () => clearTimeout(t)
+      }
     }
   }
 }

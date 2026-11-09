@@ -1729,7 +1729,12 @@ impl Agents {
     ) {
         if let Some(owner) = self.remote_owner(to).await {
             let me = self.store.engine();
-            let note = format!("(produced on {me} after the session moved to {owner})");
+            // 184 §6.3: a cell result ran here whatever the session did.
+            let note = if from.starts_with("cell ") {
+                format!("(ran on {me})")
+            } else {
+                format!("(produced on {me} after the session moved to {owner})")
+            };
             // Inside the closing tag, so the model and the UI read one element.
             let cut = wrapped.rfind("\n</").unwrap_or(wrapped.len());
             let wrapped = format!("{}\n{note}{}", &wrapped[..cut], &wrapped[cut..]);

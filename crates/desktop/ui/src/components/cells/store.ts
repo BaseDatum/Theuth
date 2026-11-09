@@ -6,6 +6,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { notifyIfHidden } from '@/lib/notify'
 import type { Api } from '@/rpc/api'
 import { RpcError } from '@/rpc/client'
+import type { CellLatest } from '@/rpc/bindings/CellLatest'
 import type { CellRef } from '@/rpc/bindings/CellRef'
 import type { CellRun } from '@/rpc/bindings/CellRun'
 import type { CellScope } from '@/rpc/bindings/CellScope'
@@ -75,7 +76,7 @@ export async function press<T>(id: string, call: (id: string) => Promise<T>, tri
 
 type Registered = { ref: CellRef; spec: CellSpec | null; label: string; mounts: number }
 // 171:U1a-ADD (171F B11) `pass`: the scope's last finished Run all pass (`StateReply.pass`).
-type Slice = { states: Record<string, CellState>; kernels: KernelState[]; error: string | null; notices: Record<string, string>; pass?: PassEnd | null }
+type Slice = { states: Record<string, CellState>; kernels: KernelState[]; error: string | null; notices: Record<string, string>; pass?: PassEnd | null; rows?: CellLatest[] }
 const EMPTY: Slice = { states: {}, kernels: [], error: null, notices: {} }
 
 type Cells = { scopes: Record<string, Slice> }
@@ -120,6 +121,7 @@ export async function refresh(scope: CellScope): Promise<void> {
       announceEnd(prev[k]?.latest, s.latest, r.cells.get(k)?.label ?? 'Cell')
     }
     patch(key, () => ({ states, kernels: reply.kernels, error: null, pass: reply.pass ?? null }))
+    if (scope.type === 'doc') void readLatest(key)
   } catch (e) {
     patch(key, () => ({ error: errorText(e) }))
   } finally {
@@ -129,6 +131,14 @@ export async function refresh(scope: CellScope): Promise<void> {
       void refresh(scope)
     }
   }
+}
+
+/** 184 §6.5: a note's replicated rows (`cell_latest`), for a result another engine ran; an engine without it keeps the last. */
+async function readLatest(key: string) {
+  const r = registry.get(key)
+  if (r?.scope.type !== 'doc') return
+  const rows = await r.api.cell_latest(r.scope.id).catch(() => null)
+  if (rows) patch(key, () => ({ rows }))
 }
 
 function schedule(scope: CellScope) {
@@ -151,6 +161,7 @@ function listen() {
   on('run_finished', (e) => schedule(e.scope))
   on('cells_changed', (e) => schedule(e.scope))
   on('kernel_changed', (e) => schedule(e.kernel.scope))
+  on('CellLatestChanged', (e) => void readLatest(`doc:${e.doc}`))
 }
 
 /**
@@ -203,6 +214,9 @@ export function useCellRecord(ref: CellRef | null): { state: CellState | null; n
   const notice = useCells((st) => st.scopes[scope]?.notices[key] ?? st.scopes[scope]?.error ?? null)
   return { state, notice }
 }
+
+/** The note's replicated `cell_latest` row for one cell (`"<doc>:<name or block id>"`), as last read. */
+export const useLatestRow = (scope: CellScope, id: string) => useCells((st) => st.scopes[scopeKey(scope)]?.rows?.find((x) => x.id === id) ?? null)
 
 export function useScope(scope: CellScope): Slice {
   const key = scopeKey(scope)

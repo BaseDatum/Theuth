@@ -6,6 +6,7 @@ import type { LiveDocument } from '@/components/editor/useDocument'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { useItemNotebooks, useNotebook } from '@/components/notebooks/useNotebook'
+import { ServerBanner, ServerChip } from '@/components/notes/ServerChip'
 import { ParticipantStrip } from '@/components/share/ParticipantStrip'
 import { ShareAction } from '@/components/share/ShareDialog'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -240,6 +241,7 @@ export function DocumentPage({
     <>
       <ParticipantStrip provider={live.provider} className="mr-2 hidden md:flex" />
       {actions}
+      <ServerChip provider={live.provider} />
       <ShareAction provider={live.provider} />
     </>
   ) : (
@@ -249,6 +251,7 @@ export function DocumentPage({
     <Frame {...frame} actions={bar}>
       <div className="flex min-h-0 flex-1">
         <div ref={columnRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
+          {live.provider && <ServerBanner provider={live.provider} />}
           {above}
           {fallback ?? <Live {...live} onAsk={onAsk} />}
           {mobile && rail && (

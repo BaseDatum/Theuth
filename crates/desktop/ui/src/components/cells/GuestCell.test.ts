@@ -24,6 +24,7 @@ const row: CellLatest = {
   code_sha: 'a',
   ended_ms: BigInt(new Date(2026, 10, 3, 14, 31).getTime()),
   text: 'Resources:\n    ~ 3 to update\n    4 unchanged\n',
+  engine: '',
 }
 const guest = (latest: CellLatest | null) => render(h(GuestCell, { cell: spec, code: TEXT, latest, cellRef: noteRef(DOC, spec, 'blk'), editor: h('pre', null, TEXT) }))
 

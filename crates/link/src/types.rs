@@ -190,6 +190,16 @@ pub enum LinkEvent {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Status;
 
+/// 184 §7.2 (W-v): `ask` → `Result<String, String>`: the mesh link id (the public id of
+/// `mesh/device_key`), read only: never mints the key, never caches it in the Link state, needs no
+/// Link. `Err` when the mesh has no key yet (the home then asks the holder's `link_mesh_id`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MeshLinkId;
+
+/// 184 §7.2: the `doc_link_create` error (`ASK_FAILED`) when Link is off on the home, the mesh has
+/// no `mesh/device_key` yet and no holder answers `link_mesh_id`; the Share dialog offers Retry.
+pub const MESH_LINK_UNAVAILABLE: &str = "mesh_link_unavailable";
+
 /// `ask` → `Result<(), String>`: turn the uplink on/off (persisted to
 /// `config.yaml`); `relay: Some` also rewrites `link.relay` and reconnects.
 #[derive(Clone, Debug, Serialize, Deserialize)]

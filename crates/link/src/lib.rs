@@ -182,11 +182,51 @@ fn cache_mesh_identity(ctx: &Ctx, id: Identity) -> Identity {
     id
 }
 
+/// 184 §7.2 (W-v): the mesh link id, read only: the public id of `vault`'s `mesh/device_key` when
+/// the mesh has one, `None` otherwise. Never mints; the private key is dropped on return and
+/// nothing is cached (so `LinkStatus.mesh` stays unset on a Link-off engine).
+pub fn mesh_link_id(vault: &secrets::Vault) -> Result<Option<String>, String> {
+    let key = vault
+        .mesh_device_key_if_set()
+        .map_err(|e| format!("mesh device key: {e:#}"))?;
+    Ok(key.map(|k| identity::b64(&identity::public_of(&k))))
+}
+
+/// 184 §7.2 (W-v): `link_mesh_id` on the lease holder, the only engine that may mint
+/// `mesh/device_key` (a second minter's row would lose the LWW and kill its links): the mesh link
+/// id, minted when the mesh has none yet. The holder's follow loop then loads the row and
+/// registers the mesh uplink (`SecretsEvent::Changed`). `holder: false` refuses before the vault
+/// is touched.
+pub async fn mint_mesh_link_id(vault: &secrets::Vault, holder: bool) -> Result<String, String> {
+    if !holder {
+        return Err("not the hub".into());
+    }
+    let key = vault
+        .mesh_device_key()
+        .await
+        .map_err(|e| format!("mesh device key: {e:#}"))?;
+    Ok(identity::b64(&identity::public_of(&key)))
+}
+
 impl Message<Status> for LinkActor {
     type Reply = LinkStatus;
 
     async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ctx.lock().status()
+    }
+}
+
+impl Message<MeshLinkId> for LinkActor {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, _: MeshLinkId, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(id) = self.ctx.lock().mesh_identity.as_ref() {
+            return Ok(id.id.clone());
+        }
+        let vault = secrets::handle(&self.ctx.rt)
+            .await
+            .ok_or_else(|| "secrets vault unavailable".to_owned())?;
+        mesh_link_id(&vault)?.ok_or_else(|| "the mesh has no link id yet".to_owned())
     }
 }
 
@@ -574,5 +614,45 @@ mod tests {
         let key = super::pairing::build("wss://relay.example", &[1; 32], &[2; 32], "Mac", None);
         let q = super::qr(&key);
         assert!(q.lines().count() > 10, "{q}");
+    }
+}
+
+#[cfg(test)]
+mod mesh_link_tests {
+    use super::*;
+
+    /// 184 §7.2 (W-v): the pub-only read never mints; only the holder mints, once; both answer
+    /// the public id of the one `mesh/device_key` (the id the mesh uplink registers).
+    #[tokio::test]
+    async fn the_mesh_link_id_is_read_anywhere_and_minted_on_the_holder_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = secrets::Vault::open(dir.path(), secrets::KeyStore::File)
+            .await
+            .unwrap();
+        assert_eq!(mesh_link_id(&vault).unwrap(), None);
+        assert!(
+            vault.mesh_device_key_if_set().unwrap().is_none(),
+            "never minted by a read"
+        );
+        assert_eq!(
+            mint_mesh_link_id(&vault, false).await.unwrap_err(),
+            "not the hub"
+        );
+        assert!(
+            vault.mesh_device_key_if_set().unwrap().is_none(),
+            "a follower never mints"
+        );
+        let minted = mint_mesh_link_id(&vault, true).await.unwrap();
+        let key = vault.mesh_device_key_if_set().unwrap().unwrap();
+        assert_eq!(minted, Identity::from_private(*key).id);
+        assert_eq!(
+            mesh_link_id(&vault).unwrap().as_deref(),
+            Some(minted.as_str())
+        );
+        assert_eq!(
+            mint_mesh_link_id(&vault, true).await.unwrap(),
+            minted,
+            "minted once"
+        );
     }
 }

@@ -95,6 +95,7 @@ export const MESH: MeshStatus = {
   messaging_off: [],
   nearby: true,
   quarantined: [],
+  docs_homes_on: false,
 }
 
 export const PAIRING = 'theuth-mesh:1:e1a4c0ffee…mac1:relay=https://iroh.relay.theuth.io'

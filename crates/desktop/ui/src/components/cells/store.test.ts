@@ -2,6 +2,7 @@ import { expect, test, vi } from 'vitest'
 import type { PassEnd } from '@/rpc/bindings/PassEnd'
 import { RpcError } from '@/rpc/client'
 import { cells, duration, exitText, lastPass, mintId, press, refKey, register, registeredCells, scopeKey } from './store'
+import { dispatch } from '@/store/sessions'
 import { SESSION, chatRef, fakeApi, run, spec, state } from './test-fixtures'
 
 test('run ids are r_ + a 26-character Crockford ULID, time-ordered (§5.10)', () => {
@@ -76,4 +77,19 @@ test('171F B5: an ending state names itself before the exit code (timeout exits 
   expect(exitText(run({ state: 'failed', exit: { type: 'code', value: 1 } }))).toBe('exit 1')
   expect(exitText(run({ state: 'stopped', exit: { type: 'signal', value: 'SIGINT' } }))).toBe('SIGINT')
   expect(exitText(run({ state: 'stopped', exit: null }))).toBe('stopped')
+})
+
+test('184 §6.5: CellLatestChanged for an open note re-reads cell_latest; other docs and sessions are left alone', async () => {
+  const doc = 'dddddddddddddddddddddddddd'
+  const scope = { type: 'doc', id: doc } as const
+  const rows = [{ id: `${doc}:a`, engine: 'xeus1' }]
+  const { api, calls } = fakeApi({ cell_state: () => ({ cells: [], kernels: [] }), cell_latest: () => rows })
+  const off = register(api, scope, { ref: { type: 'note', doc, key: { kind: 'name', value: 'a' } }, spec: spec(0), label: 'a' })
+  await vi.waitFor(() => expect(cells.getState().scopes[scopeKey(scope)]?.rows).toEqual(rows))
+  const reads = () => calls.filter(([m]) => m === 'cell_latest').length
+  const before = reads()
+  dispatch([{ type: 'CellLatestChanged', doc: 'other' } as never])
+  dispatch([{ type: 'CellLatestChanged', doc } as never])
+  await vi.waitFor(() => expect(reads()).toBe(before + 1))
+  off()
 })

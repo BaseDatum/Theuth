@@ -132,6 +132,19 @@ impl DocKind {
     pub fn free_standing(self) -> bool {
         matches!(self, Self::Note | Self::Board)
     }
+
+    /// 184 §4.1: the kinds that get `DocMeta.home` at create (the rest stay unhomed, hub-served).
+    pub fn homed(self) -> bool {
+        matches!(
+            self,
+            Self::Note | Self::Board | Self::MeetingNote | Self::TaskThread
+        )
+    }
+
+    /// 184 §4.8: the one kind the user may move with "Move to ▸ machine".
+    pub fn movable(self) -> bool {
+        self == Self::Note
+    }
 }
 
 impl fmt::Display for DocKind {
@@ -328,10 +341,29 @@ pub struct Joined {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LinkCreated {
-    /// `https://<relay>/d#1.<harness>.<doc>.<secret>`.
+    /// `https://<relay>/d#1.<harness>.<doc>.<secret>`, or 184 §7.1 v2
+    /// `https://<relay>/d#2.<home link id>.<mesh link id>.<doc>.<secret>`.
     pub url: String,
     /// The stored row (no hash).
     pub link: ShareLink,
+    /// 184 §7.2: which front door the link names first, for the Share dialog's copy.
+    #[serde(default)]
+    pub via: LinkVia,
+}
+
+/// 184 §7.2 `LinkCreated.via`: `home` = the document's home (or this engine) is named first;
+/// `mesh` = the mesh link id only (Link off on the home, or today's mesh-id choice).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum LinkVia {
+    /// The home's own link id (v2), or this engine's engine link id (v1).
+    #[default]
+    Home,
+    /// The mesh link id (v1).
+    Mesh,
 }
 
 /// `meta.json` (§4.2) and the wire `DocMeta` of `doc_open`.
@@ -373,6 +405,25 @@ pub struct DocMeta {
     pub created_ms: i64,
     /// Last accepted update, unix ms.
     pub updated_ms: i64,
+    /// 184 §4.1: the engine that made the document (task thread: its task's home); `None` =
+    /// unhomed, served by the lease holder as before 184. Merged with `home_ms` (§9.1, W-a).
+    #[serde(default)]
+    pub home: Option<mesh::EngineId>,
+    /// 184 §9.1: `home`'s own clock, unix ms; the greater `(home_ms, home)` wins the merge.
+    #[serde(default)]
+    pub home_ms: i64,
+    /// 184 §4.4: the fence epoch of the last claim; with `served_by`, the greater pair wins.
+    #[serde(default)]
+    pub serve_epoch: i64,
+    /// 184 §4.4: the engine whose claim set `serve_epoch`.
+    #[serde(default)]
+    pub served_by: Option<mesh::EngineId>,
+    /// 184 (Z184-R2): revoked members by key → when (ms). A tombstone the merge keeps (greatest
+    /// time wins), so a member revoked on one engine is not brought back by another engine's copy;
+    /// a member whose `added_ms` is later (a fresh join) stays. Z184-R3: a join presenting a link
+    /// made no later than the revoke is refused (`member_revoked`); a newer link admits the key.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub revoked: std::collections::BTreeMap<String, i64>,
 }
 
 /// `meta.json` `agent` (§4.2).
@@ -456,6 +507,17 @@ impl DocumentChanged {
             deleted,
         }
     }
+}
+
+/// 184 §6.4 (W-p) bus event (`subscribe_events`): a replica batch from another engine touched
+/// `cell_latest` rows of `doc`; an open note re-reads `cell_latest`. Wire shape
+/// `{ "type": "CellLatestChanged", "doc": … }`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type")]
+pub struct CellLatestChanged {
+    /// Document.
+    pub doc: DocId,
 }
 
 /// One kept snapshot (§4.6).
@@ -617,9 +679,18 @@ pub enum DocEvent {
         /// The new title.
         title: String,
     },
+    /// 184 §10.3: who serves the document changed `dual` (two servers, §4.4); sent when `dual`
+    /// changes. `server` is the engine answering this subscription.
+    Server {
+        /// The serving engine.
+        server: mesh::EngineId,
+        /// The other engine also serving it during a partition (§4.4), if any.
+        dual: Option<mesh::EngineId>,
+    },
     /// The subscription ends.
     Closed {
-        /// Why: `deleted`, `unloaded`, `slow`, `demoted` (re-open read-only, §8.1), `revoked` (§8.4).
+        /// Why: `deleted`, `unloaded`, `slow`, `demoted` (re-open read-only, §8.1), `revoked` (§8.4),
+        /// `hub_moved`, 184 `server_moved` (the document's server moved, §4.3, §4.5).
         reason: String,
     },
 }
@@ -636,6 +707,16 @@ pub struct DocOpen {
     pub state: Vec<String>,
     /// base64 awareness update with every known state (may be empty).
     pub awareness: String,
+    /// 184 §10.3: the engine serving the document (`None` from a pre-184 engine).
+    #[serde(default)]
+    pub server: Option<mesh::EngineId>,
+    /// 184 §4.4: the other engine also serving it during a partition, if any.
+    #[serde(default)]
+    pub dual: Option<mesh::EngineId>,
+    /// 184 §4.7: the server's base64 v1 state vector after it answered; the client pushes
+    /// `encodeStateAsUpdate(doc, sv)` on every (re)open. `""` from a pre-184 engine: no push.
+    #[serde(default)]
+    pub sv: String,
 }
 
 #[cfg(test)]

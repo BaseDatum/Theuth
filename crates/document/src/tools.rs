@@ -881,6 +881,7 @@ impl Tool for CreateTool {
                         title: a.title,
                         markdown,
                         by,
+                        home: crate::actor::Homing::Here,
                     })
                     .await
                     .map_err(|e| e.to_string());
@@ -985,6 +986,11 @@ mod tests {
                 authors: Default::default(),
                 created_ms: 0,
                 updated_ms: 0,
+                home: None,
+                home_ms: 0,
+                serve_epoch: 0,
+                served_by: None,
+                revoked: Default::default(),
             })
             .await
             .unwrap();

@@ -3186,6 +3186,7 @@ dependencies = [
  "hex",
  "kameo",
  "link",
+ "mesh",
  "monty-pool",
  "monty-types",
  "parking_lot",

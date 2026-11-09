@@ -1,7 +1,7 @@
 // 171 visual check (U2), dev only: `bunx vite` then open `/src/dev/cells-notes-fixture.html` (`?theme=dark`; `?hl` is
 // the highlighting note instead). A note in the real `Editor` (BlockNote over a local Y.Doc, `CodeBlock` → `NoteCell`)
 // with a `cells` defaults block, a bash cell, a python cell with an HTML output, a stale cell and a member-edited cell,
-// the header pill, then the same note as a share-link guest sees it. Every `cell_*` answer below is local (no engine).
+// the header pill (`?mesh`: in a mesh, `Sky's MacBook` + `xeus`, `sum-check` last ran on xeus), then the same note as a share-link guest sees it. Every `cell_*` answer below is local (no engine).
 import '@/styles.css'
 import { BlockNoteEditor } from '@blocknote/core'
 import { blocksToYXmlFragment } from '@blocknote/core/yjs'
@@ -22,6 +22,7 @@ import type { CellRun } from '@/rpc/bindings/CellRun'
 import type { CellScope } from '@/rpc/bindings/CellScope'
 import type { CellState } from '@/rpc/bindings/CellState'
 import type { KernelState } from '@/rpc/bindings/KernelState'
+import { MESH } from '@/components/tasks/mock'
 import { active } from '@/store/engine-scope'
 import { PLAIN, PWSH, PYTHON, SAMPLE } from './cells-sample'
 
@@ -29,6 +30,8 @@ const DOC = 'notefixture000000000000000'
 const GUEST_DOC = 'notefixtureguest0000000000'
 const now = Date.now()
 const MIN = 60_000
+const MESHED = new URLSearchParams(location.search).has('mesh')
+const XEUS = 'xeus00000000000000000000000000000000000000000000000000000000xeus'
 
 const HIGHLIGHT = [
   { type: 'heading', content: 'East pre-flight' },
@@ -142,6 +145,12 @@ const api = new Proxy({} as Api, {
             { kind: 'monty', source: 'Monty', path: null, version: null, why: 'sandboxed, no tools, no network', auto: false },
             { kind: 'bash', source: 'homebrew', path: '/opt/homebrew/bin/bash', version: '5.2.37', why: 'Homebrew', auto: true },
           ]
+        case 'mesh_status':
+          return MESHED
+            ? { ...MESH, self_id: 'mac00000000000000000000000000000000000000000000000000000000mac1', self_name: "Sky's MacBook", peers: [{ ...MESH.peers[0], id: XEUS, name: 'xeus', reachable: true }] }
+            : { ...MESH, peers: [] }
+        case 'cell_latest':
+          return MESHED && args[0] === DOC ? [latestRow('sum-check', '972.70\n', { id: `${DOC}:sum-check`, doc: DOC, ended_ms: BigInt(now - 4 * MIN), engine: XEUS })] : []
         case 'cell_runs':
           return []
         default:
@@ -164,6 +173,7 @@ const latestRow = (cell: string, text: string, over: Partial<CellLatest> = {}): 
   code_sha: 'x',
   ended_ms: BigInt(now - 20 * MIN),
   text,
+  engine: '',
   ...over,
 })
 const guestApi = {

@@ -49,8 +49,18 @@ pub(crate) async fn latest(
         }
     }
     may?;
-    ask::<document::DocumentActor, _>(document::DOCUMENT_ACTOR, document::cells::CellLatestOf(doc))
-        .await
+    let mut rows = ask::<document::DocumentActor, _>(
+        document::DOCUMENT_ACTOR,
+        document::cells::CellLatestOf(doc),
+    )
+    .await?;
+    // Z184-R2: a guest never learns an engine id (a dialable endpoint); "ran on" is the owner's view.
+    if p.guest().is_some() {
+        for r in &mut rows {
+            r.engine.clear();
+        }
+    }
+    Ok(rows)
 }
 
 #[cfg(test)]

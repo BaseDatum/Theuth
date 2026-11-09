@@ -168,6 +168,7 @@ pub async fn create(meeting: MeetingId, title: &str) -> Created {
                 title,
                 markdown: String::new(),
                 by: Principal::Owner { device: None },
+                home: document::Homing::Here,
             })
             .await
         {

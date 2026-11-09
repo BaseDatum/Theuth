@@ -267,7 +267,11 @@ pub(crate) async fn append(
             if let Some(o) = row.meta.as_object_mut() {
                 o.remove("insight_error");
             }
-            if let Err(e) = ctx.store.source_upsert(&row).await {
+            if let Err(e) = ctx
+                .store
+                .source_set_insight(source, row.insights, &row.meta)
+                .await
+            {
                 tracing::warn!(%source, "insights count not written: {e:#}");
             }
         }
@@ -294,7 +298,11 @@ async fn record_error(ctx: &Ctx, source: &DocId, error: &str) {
                 serde_json::Value::String(error.to_owned()),
             );
         }
-        if let Err(e) = ctx.store.source_upsert(&row).await {
+        if let Err(e) = ctx
+            .store
+            .source_set_insight(source, row.insights, &row.meta)
+            .await
+        {
             tracing::warn!(%source, "insight_error not written: {e:#}");
         }
         ctx.rt
@@ -424,6 +432,7 @@ async fn promote(
             title: format!("{name} — {source_title}"),
             markdown,
             by: by.clone(),
+            home: crate::actor::Homing::Hub,
         })
         .await
         .map_err(flat_err)?;

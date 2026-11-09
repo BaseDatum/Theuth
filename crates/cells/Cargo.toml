@@ -13,6 +13,7 @@ tools = { workspace = true }  # 171 §5.5 `StartPty{program, cell}`, `Mark`, `Pt
 agent = { workspace = true }  # 171 §9.3 `HarnessDeliver{wake}`, `AgentEvent` (parked runs consumed)
 surface = { workspace = true }  # 171 §3 the grammar: `surface::cell`
 document = { workspace = true }  # 171 §15.2 `CodeBlockText`, `RunAnnotations`, `CellLatest`, `NoteKey`
+mesh = { workspace = true }  # 184 §6.4 `self_id` stamps `CellLatest.engine`
 platform = { workspace = true }  # 171 §5.4 `env::login_env`, process groups
 secrets = { workspace = true }  # 171 §3.6 vault names (`secret_unknown`), §12.1 inv. 9 placeholder expansion
 link = { workspace = true }  # 171 §12.1 `RpcPeer::is_internal`, hub routing for notes

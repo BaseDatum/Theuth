@@ -2,15 +2,19 @@
 //! source row written on engine A show up on engine B's store within the capture→feed hop; a soft
 //! removal on A and a revival on B merge as column writes (no row ever deleted). Two in-process
 //! engines over a `tokio::io::duplex` transport, the harness `replica/tests/sync_loopback.rs` uses.
+//! 184 §6.4: `cell_latest` rows from two engines never mix, and a foreign row is announced on the bus.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use document::store::{NotebookRow, Store};
 use document::{
-    AgentStyle, Binding, DocId, DocMeta, ItemKind, NotebookItem, SourceOrigin, SourceStatus,
+    AgentStyle, Binding, CellLatest, CellLatestChanged, DocId, DocMeta, ItemKind, NotebookItem,
+    SourceOrigin, SourceStatus,
 };
+use kameo::actor::Spawn as _;
 use parking_lot::Mutex;
 use replica::{ByteStream, Engine, PeerEvent, PeerId, Transport};
 use tokio::sync::{broadcast, mpsc};
@@ -20,6 +24,8 @@ type Inbound = (PeerId, Box<dyn ByteStream>);
 #[derive(Default)]
 struct Switch {
     inboxes: Mutex<HashMap<PeerId, mpsc::UnboundedSender<Inbound>>>,
+    /// 184: every link cut (a partition) while set.
+    parted: AtomicBool,
 }
 
 struct Loop {
@@ -46,6 +52,9 @@ impl Loop {
 #[async_trait::async_trait]
 impl Transport for Loop {
     fn peers(&self) -> Vec<PeerId> {
+        if self.switch.parted.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
         self.switch
             .inboxes
             .lock()
@@ -56,6 +65,7 @@ impl Transport for Loop {
     }
 
     async fn open(&self, peer: &PeerId, _alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
+        anyhow::ensure!(!self.switch.parted.load(Ordering::SeqCst), "parted");
         let (mine, theirs) = tokio::io::duplex(1 << 20);
         let inboxes = self.switch.inboxes.lock();
         let to = inboxes
@@ -83,6 +93,7 @@ impl Transport for Loop {
 struct Node {
     store: Store,
     _engine: Arc<Engine>,
+    handle: replica::ReplicaHandle,
     transport: Arc<Loop>,
     _dir: tempfile::TempDir,
 }
@@ -93,7 +104,7 @@ async fn node(name: &str, switch: &Arc<Switch>) -> Node {
         .await
         .unwrap();
     let store = Store::open(dir.path()).await.unwrap();
-    engine
+    let handle = engine
         .attach(store.pool(), document::store::TABLES)
         .await
         .unwrap();
@@ -102,9 +113,48 @@ async fn node(name: &str, switch: &Arc<Switch>) -> Node {
     Node {
         store,
         _engine: engine,
+        handle,
         transport,
         _dir: dir,
     }
+}
+
+/// Connect (`up`) or cut every link between `a` and `b`, and tell both sides.
+fn link(switch: &Switch, a: &Node, b: &Node, up: bool) {
+    switch.parted.store(!up, Ordering::SeqCst);
+    let ev = |p: &PeerId| {
+        if up {
+            PeerEvent::Connected(p.clone())
+        } else {
+            PeerEvent::Disconnected(p.clone())
+        }
+    };
+    let _ = a.transport.events.send(ev(&b.transport.me));
+    let _ = b.transport.events.send(ev(&a.transport.me));
+}
+
+/// The `CellLatestChanged` documents `n`'s bus carried (`document::cells::watch_latest`).
+#[derive(kameo::Actor)]
+struct Heard(Arc<Mutex<Vec<DocId>>>);
+
+impl kameo::message::Message<CellLatestChanged> for Heard {
+    type Reply = ();
+    async fn handle(
+        &mut self,
+        m: CellLatestChanged,
+        _: &mut kameo::message::Context<Self, Self::Reply>,
+    ) {
+        self.0.lock().push(m.doc);
+    }
+}
+
+async fn heard(n: &Node) -> Arc<Mutex<Vec<DocId>>> {
+    let rt = runtime::Runtime::new(figment::Figment::new(), n._dir.path().to_path_buf());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Heard::spawn_with_mailbox(Heard(seen.clone()), runtime::subscriber_mailbox());
+    rt.subscribe::<Heard, CellLatestChanged>(&sink).await;
+    document::cells::watch_latest(n.handle.clone(), rt);
+    seen
 }
 
 fn meta(binding: Binding, title: &str) -> DocMeta {
@@ -123,6 +173,11 @@ fn meta(binding: Binding, title: &str) -> DocMeta {
         authors: Default::default(),
         created_ms: 1,
         updated_ms: 1,
+        home: None,
+        home_ms: 0,
+        serve_epoch: 0,
+        served_by: None,
+        revoked: Default::default(),
     }
 }
 
@@ -251,43 +306,27 @@ async fn notebook_tables_replicate_between_two_engines() {
     assert_eq!(a.store.items(&nb.id).await.unwrap(), vec![item]);
 }
 
-/// 171 §13.2: a note cell's latest row upserted on the hub reaches the other engine, a newer run
-/// replaces it there, and deleting the note removes it on both.
+/// 171 §13.2: a note cell's latest row upserted on one engine reaches the other engine, a newer run
+/// replaces it there, and deleting the note removes it on both. 184 §6.4 (W-p): the receiving
+/// engine's bus says `CellLatestChanged{doc}`; the writer's own batch says nothing.
 #[tokio::test]
 async fn cell_latest_replicates_between_two_engines() {
     let switch = Arc::new(Switch::default());
     let a = node("A", &switch).await;
     let b = node("B", &switch).await;
-    let _ = a
-        .transport
-        .events
-        .send(PeerEvent::Connected(b.transport.me.clone()));
-    let _ = b
-        .transport
-        .events
-        .send(PeerEvent::Connected(a.transport.me.clone()));
+    let (heard_a, heard_b) = (heard(&a).await, heard(&b).await);
+    link(&switch, &a, &b, true);
 
     let note = meta(Binding::Note, "Runbook");
     a.store.create(&note).await.unwrap();
-    let mut row = document::CellLatest {
-        id: format!("{}:preview", note.id),
-        doc: note.id.clone(),
-        cell: "preview".into(),
-        run: "r_1".into(),
-        state: "finished".into(),
-        exit: Some(0),
-        secs: Some(33.0),
-        expect: Some("✓".into()),
-        summary: None,
-        code_sha: "abc".into(),
-        ended_ms: 5,
-        text: "3 to update".into(),
-    };
+    let mut row = latest(&note, "r_1", "A");
     a.store.put_cell_latest(&row).await.unwrap();
     until("row on B", async || {
         b.store.cell_latest(&note.id).await.unwrap() == vec![row.clone()]
     })
     .await;
+    until("B hears it", async || heard_b.lock().contains(&note.id)).await;
+    assert!(heard_a.lock().is_empty(), "A's own write is not news on A");
 
     row.run = "r_2".into();
     row.exit = Some(1);
@@ -304,4 +343,71 @@ async fn cell_latest_replicates_between_two_engines() {
         b.store.cell_latest(&note.id).await.unwrap().is_empty()
     })
     .await;
+}
+
+/// One `cell_latest` row of `note`'s `preview` cell: run `run` on engine `engine`.
+fn latest(note: &DocMeta, run: &str, engine: &str) -> CellLatest {
+    CellLatest {
+        id: format!("{}:preview", note.id),
+        doc: note.id.clone(),
+        cell: "preview".into(),
+        run: run.into(),
+        state: "finished".into(),
+        exit: Some(0),
+        secs: Some(33.0),
+        expect: Some("✓".into()),
+        summary: None,
+        code_sha: "abc".into(),
+        ended_ms: 5,
+        text: "3 to update".into(),
+        engine: engine.into(),
+    }
+}
+
+/// 184 §6.4 (W-h), §13 #17: two engines upsert one cell's row while cut off from each other, the
+/// second write later. After the heal both hold that later run whole — its run, exit and text —
+/// never the earlier run's text under the later run's id (the per-column merge of the old columns).
+#[tokio::test]
+async fn two_engines_runs_of_one_cell_never_mix() {
+    let switch = Arc::new(Switch::default());
+    let a = node("A", &switch).await;
+    let b = node("B", &switch).await;
+    link(&switch, &a, &b, true);
+    let note = meta(Binding::Note, "Runbook");
+    a.store.create(&note).await.unwrap();
+    let base = latest(&note, "r_1", "A");
+    a.store.put_cell_latest(&base).await.unwrap();
+    until("base on B", async || {
+        b.store.cell_latest(&note.id).await.unwrap() == vec![base.clone()]
+    })
+    .await;
+
+    link(&switch, &a, &b, false);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // A's run changes the text; B's, later, changes the exit and keeps the old text.
+    let on_a = CellLatest {
+        run: "r_a".into(),
+        text: "from A".into(),
+        ended_ms: 6,
+        ..base.clone()
+    };
+    a.store.put_cell_latest(&on_a).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await; // past a capture poll: B's HLC is later
+    let on_b = CellLatest {
+        run: "r_b".into(),
+        exit: Some(1),
+        ended_ms: 7,
+        engine: "B".into(),
+        ..base.clone()
+    };
+    b.store.put_cell_latest(&on_b).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    link(&switch, &a, &b, true);
+    for (name, n) in [("A", &a), ("B", &b)] {
+        until(&format!("B's run whole on {name}"), async || {
+            n.store.cell_latest(&note.id).await.unwrap() == vec![on_b.clone()]
+        })
+        .await;
+    }
 }

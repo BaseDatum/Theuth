@@ -678,9 +678,25 @@ impl Message<NotebookCreate> for DocumentActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
-            return reply;
+        // 184 §5.2: notebooks are hub-served; off the holder `Cmd::Create` asks it.
+        match self.route_home(None) {
+            Ok(None) => {}
+            Ok(Some(to)) => {
+                let req = crate::relay::CreateReq::Notebook {
+                    title: m.title,
+                    description: m.description,
+                    project: m.project,
+                    by: m.by.clone(),
+                };
+                let client = crate::relay::Client::of(&m.by);
+                let ask = self.create_on::<Notebook>(to, DocId::new(), client, req, None);
+                tokio::spawn(async move { tx.send(ask.await) });
+                return reply;
+            }
+            Err(e) => {
+                tx.send(Err(e.into()));
+                return reply;
+            }
         }
         let project = m.project.clone();
         let id = self
@@ -690,6 +706,7 @@ impl Message<NotebookCreate> for DocumentActor {
                 m.title,
                 m.description,
                 m.by,
+                None,
                 move |doc| {
                     ImportReply::CreatedNotebook(
                         Notebook {
@@ -1035,10 +1052,33 @@ pub struct MayRead {
 }
 
 impl Message<MayRead> for DocumentActor {
-    type Reply = Res<()>;
+    type Reply = DelegatedReply<Res<()>>;
 
-    async fn handle(&mut self, m: MayRead, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.admit(&m.doc, &m.by, false).await
+    async fn handle(&mut self, m: MayRead, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let local = self.admit(&m.doc, &m.by, false).await;
+        // 184 §7.3, Z184-R2: when the document is served elsewhere the server decides a member's
+        // read, even where this replica says yes (a revoke there may not have reached it); a guest
+        // admitted there seconds ago is not in this replica yet either. Only a local `not_member`
+        // is asked again: this engine's `sharing_disabled` or `viewer_readonly` stands.
+        let ask_server = match &local {
+            Ok(()) => true,
+            Err(e) => e == "not_member",
+        };
+        match self.server_of(&m.doc) {
+            Ok(Some(server))
+                if ask_server && self.hub.homes_on && !self.relaying && m.by.member().is_some() =>
+            {
+                let client = crate::relay::Client::of(&m.by);
+                let ask = self.leg(server, m.doc, client, |reply| crate::relay::Cmd::MayRead {
+                    reply,
+                });
+                tokio::spawn(async move { tx.send(ask.await) });
+            }
+            _ => tx.send(local),
+        }
+        reply
     }
 }
 
@@ -1344,6 +1384,11 @@ mod tests {
             authors: Default::default(),
             created_ms: 1,
             updated_ms: 1,
+            home: None,
+            home_ms: 0,
+            serve_epoch: 0,
+            served_by: None,
+            revoked: Default::default(),
         };
         store.create(&meta).await.unwrap();
         id

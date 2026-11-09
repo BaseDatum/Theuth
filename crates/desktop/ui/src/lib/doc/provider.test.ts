@@ -27,12 +27,15 @@ class Engine {
   /** Resolve the pending `doc_update`s by hand when set. */
   hold: Array<() => void> | null = null
   chunk = 8
+  lose = false
+  /** A pre-184 server: `sv: ''`. */
+  oldSv = false
   api = {
     doc_open: async (_id: string, sv: string | null) => {
       const diff = Y.encodeStateAsUpdate(this.doc, sv ? unb64(sv) : undefined)
       const state: string[] = []
       for (let i = 0; i < diff.length; i += this.chunk) state.push(b64(diff.subarray(i, i + this.chunk)))
-      return { meta: { title: 't' }, state, awareness: '' }
+      return { meta: { title: 't' }, state, awareness: '', sv: this.oldSv ? '' : b64(Y.encodeStateVector(this.doc)), server: 'srv', dual: null }
     },
     doc_update: async (_id: string, update: string) => {
       if (this.hold) {
@@ -40,6 +43,7 @@ class Engine {
         this.hold.push(resolve)
         await promise
       }
+      if (this.lose) return // a front door that acks and drops (184 §4.7)
       const u = unb64(update)
       this.updates.push(u)
       Y.applyUpdate(this.doc, u)
@@ -327,5 +331,241 @@ describe('EngineProvider offline queue', () => {
     expect((await new DocStore('h', 'e').load()).pending).toEqual([])
     p.destroy()
     p2.destroy()
+  })
+})
+
+describe('EngineProvider state-vector push (184 §4.7, §12.5)', () => {
+  const reopen = async (client: Client) => {
+    client.set('reconnecting')
+    client.set('open')
+    await settle()
+  }
+  const setup = async (h: Engine) => {
+    const client = new Client()
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h')
+    await settle()
+    return { client, p }
+  }
+
+  test('an update the engine acked but dropped is re-sent on the next open', async () => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    h.lose = true
+    type(p, 'ab')
+    await settle()
+    expect(h.text()).toBe('')
+    h.lose = false
+    await reopen(client)
+    expect(h.text()).toBe('ab')
+    expect(p.status).toEqual({ kind: 'live' })
+    p.destroy()
+  })
+
+  test('lost acked updates over 48 KiB are re-sent in several doc_update calls, each under the cap', async () => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    h.lose = true
+    for (let i = 0; i < 20; i++) type(p, String.fromCharCode(97 + i).repeat(4000))
+    await settle()
+    h.lose = false
+    const update = vi.spyOn(h.api, 'doc_update')
+    await reopen(client)
+    expect(update.mock.calls.length).toBeGreaterThan(1)
+    for (const c of update.mock.calls) expect((c[1] as string).length).toBeLessThanOrEqual(MAX_UPDATE_B64)
+    expect(h.text()).toBe(p.doc.getText('t').toString())
+    expect(p.status).toEqual({ kind: 'live' })
+    p.destroy()
+  })
+
+  test('entries the server vector covers are dropped: a later reopen sends nothing', async () => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    h.lose = true
+    type(p, 'a')
+    await settle()
+    h.lose = false
+    await reopen(client) // pushed; this open's sv did not cover it yet
+    await reopen(client) // covered now: dropped from the list
+    const update = vi.spyOn(h.api, 'doc_update')
+    await reopen(client)
+    expect(update).not.toHaveBeenCalled()
+    expect(h.text()).toBe('a')
+    p.destroy()
+  })
+
+  /** An engine whose note was edited with a deletion (every import `Replace` deletes): Yjs then puts a delete set in every update. */
+  const withDeletion = () => {
+    const h = new Engine()
+    h.doc.getText('t').insert(0, 'hello world')
+    h.doc.getText('t').delete(5, 6)
+    return h
+  }
+
+  test('a fresh open of a note with a deletion pushes nothing (184 §16)', async () => {
+    const h = withDeletion()
+    const update = vi.spyOn(h.api, 'doc_update')
+    const { p } = await setup(h)
+    expect(p.doc.getText('t').toString()).toBe('hello')
+    expect(update).not.toHaveBeenCalled()
+    expect(p.status).toEqual({ kind: 'live' })
+    p.destroy()
+  })
+
+  test('a viewer of a note with a deletion ends readonly and never writes', async () => {
+    const h = withDeletion()
+    const update = vi.spyOn(h.api, 'doc_update')
+    const client = new Client()
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h', { name: 'g', color: '#000', role: 'viewer' })
+    await settle()
+    await reopen(client)
+    expect(update).not.toHaveBeenCalled()
+    expect(p.status).toEqual({ kind: 'readonly' })
+    p.destroy()
+  })
+
+  test('a lost delete-only update is still repaired by the catch-all', async () => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    type(p, 'abc')
+    await settle()
+    h.lose = true
+    p.doc.getText('t').delete(1, 1)
+    await settle()
+    expect(h.text()).toBe('abc')
+    h.lose = false
+    await reopen(client)
+    expect(h.text()).toBe('ac')
+    p.destroy()
+  })
+
+  test('a lost delete-only update is repaired even when the first catch-all push fails', async () => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    type(p, 'abc')
+    await settle()
+    h.lose = true
+    p.doc.getText('t').delete(1, 1)
+    await settle()
+    h.lose = false
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(h.api, 'doc_update').mockRejectedValueOnce(new Error('connection lost'))
+    await reopen(client)
+    expect(p.status.kind).toBe('offline')
+    expect(h.text()).toBe('abc')
+    await reopen(client)
+    expect(h.text()).toBe('ac')
+    p.destroy()
+  })
+
+  test('keystrokes typed while the catch-all is in flight all arrive', async () => {
+    const h = withDeletion()
+    const { client, p } = await setup(h)
+    type(p, '!')
+    await settle()
+    // Acked, not yet confirmed by a server vector: the next open owes a catch-all (with the delete set).
+    h.hold = []
+    client.set('reconnecting')
+    client.set('open')
+    await settle()
+    expect(h.hold.length).toBe(1)
+    type(p, 'xyz')
+    const held = h.hold
+    h.hold = null
+    for (const r of held) r()
+    await settle()
+    expect(h.text()).toBe('hello!xyz')
+    expect(p.queued).toBe(0)
+    expect(p.status).toEqual({ kind: 'live' })
+    p.destroy()
+  })
+
+  test.each(['slow', 'hub_moved', 'server_moved', 'NotHub:abc'])('Closed{%s} re-syncs, keeps what is typed meanwhile, and ends live', async (reason) => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    const open = vi.spyOn(h.api, 'doc_open')
+    const states: string[] = []
+    p.onStatus((s) => states.push(s.kind))
+    client.item?.({ type: 'Closed', reason })
+    // 184 §4.7: the editor stays editable through a re-sync (the caret is not dropped); the keystroke is queued.
+    expect(p.status).toEqual({ kind: 'connecting', resync: true })
+    type(p, 'x')
+    await settle()
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(client.subscribed).toBe(2)
+    expect(states).toEqual(['connecting', 'live'])
+    expect(h.text()).toBe('x')
+    p.destroy()
+  })
+
+  test('Closed{deleted} still closes', async () => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    const open = vi.spyOn(h.api, 'doc_open')
+    client.item?.({ type: 'Closed', reason: 'deleted' })
+    await settle()
+    expect(p.status).toEqual({ kind: 'closed', reason: 'deleted' })
+    expect(open).not.toHaveBeenCalled()
+    p.destroy()
+  })
+
+  test('an old server (sv empty): nothing pushed beyond the queue', async () => {
+    const h = new Engine()
+    h.oldSv = true
+    const { client, p } = await setup(h)
+    h.lose = true
+    type(p, 'ab')
+    await settle()
+    h.lose = false
+    const update = vi.spyOn(h.api, 'doc_update')
+    await reopen(client)
+    expect(update).not.toHaveBeenCalled()
+    expect(h.text()).toBe('')
+    expect(p.server).toBe('srv')
+    p.destroy()
+  })
+
+  test('a Server event updates provider.server / dual and reaches onEvent; open sets them', async () => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    expect([p.server, p.dual]).toEqual(['srv', null])
+    const seen: string[] = []
+    p.onEvent((e) => seen.push(e.type))
+    client.item?.({ type: 'Server', server: 'b', dual: 'c' })
+    expect([p.server, p.dual]).toEqual(['b', 'c'])
+    expect(seen).toEqual(['Server'])
+    p.destroy()
+  })
+
+  test('single engine, nothing lost: a reopen sends no extra doc_update', async () => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    type(p, 'a')
+    await settle()
+    const update = vi.spyOn(h.api, 'doc_update')
+    await reopen(client)
+    expect(update).not.toHaveBeenCalled()
+    expect(h.updates).toHaveLength(1)
+    p.destroy()
+  })
+
+  test('a sync refused while the socket stays up (an engine restarted under the page, lease warming up) retries and delivers', async () => {
+    const h = new Engine()
+    const { client, p } = await setup(h)
+    const open = h.api.doc_open.bind(h.api)
+    let warming = true
+    h.api.doc_open = (async (...args: Parameters<typeof open>) => {
+      if (warming) throw Object.assign(new Error('another engine holds the hub lease'), { code: -32011, data: { NotHub: { hub: null } } })
+      return open(...args)
+    }) as typeof open
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    client.set('reconnecting')
+    type(p, 'ab')
+    client.set('open')
+    await settle()
+    expect(p.status).toEqual({ kind: 'offline', queued: 1 })
+    warming = false
+    await vi.waitFor(() => expect(p.status.kind).toBe('live'), { timeout: 3000 })
+    expect(h.text()).toBe('ab')
+    p.destroy()
   })
 })

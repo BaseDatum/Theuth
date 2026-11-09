@@ -175,6 +175,7 @@ async fn mirror(data_dir: &Path, text: &str) {
                     title: TITLE.into(),
                     markdown: text.to_owned(),
                     by: document::Principal::Helper,
+                    home: document::Homing::Here,
                 })
                 .await
             {

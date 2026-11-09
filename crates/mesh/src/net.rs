@@ -166,6 +166,10 @@ pub(crate) enum Msg {
     KeyAck { id: String },
     /// 183 §6.9.5: `KeyRequest` refused (a tombstoned asker, an unknown id).
     KeyRefused { id: String, reason: String },
+    /// 184 §8.1: this engine's docs schema ([`crate::DOCS_SCHEMA`]) and its `homes_on`, sent on
+    /// connect (beside `keys::on_connect`) and whenever `homes_on` changes; the receiver records it
+    /// under the connection's authenticated `remote_id`. Appended: an older engine ignores it.
+    DocsSchema { schema: u32, homes_on: bool },
 }
 
 /// How to bind (production from `MeshConfig`; tests on loopback, no relay).
@@ -352,6 +356,48 @@ struct Presence {
     since_ms: u64,
 }
 
+/// 184 §8.1: a control connection silent this long after connect is a pre-184 build (`schema` 0).
+const DOCS_SILENT: Duration = Duration::from_secs(5);
+/// 184 §8.1: `peer_docs_seen.heard_ms` of a connected peer is refreshed at most this often.
+const DOCS_TOUCH_MS: u64 = 60_000;
+
+/// 184 §8.1: the docs gate's live half (`Net.docs`); the floor itself is in `peer_docs_seen`.
+pub(crate) struct DocsLive {
+    /// What this engine advertises in its `DocsSchema` frame.
+    homes_on: AtomicBool,
+    /// Per peer, its last frame's `homes_on` and the live control connections (`stable_id`) that
+    /// sent a frame; a peer drops out with the last of them.
+    frames: Mutex<HashMap<EndpointId, Frames>>,
+    touches: Mutex<crate::store::Touches>,
+    /// Poked on a frame, a silence, a connect or a disconnect: the gate pass runs at once.
+    pub(crate) changed: tokio::sync::Notify,
+    /// Serialises [`Net::docs_gate`].
+    pass: tokio::sync::Mutex<()>,
+    /// Z184-R2: a frame's record and a silence's check-then-record run one at a time, so a
+    /// frame landing during the silence check is never overwritten by its `schema 0`.
+    record: tokio::sync::Mutex<()>,
+}
+
+/// [`DocsLive::frames`] of one peer.
+#[derive(Default)]
+struct Frames {
+    conns: HashSet<usize>,
+    homes_on: bool,
+}
+
+impl Default for DocsLive {
+    fn default() -> Self {
+        Self {
+            homes_on: AtomicBool::new(false),
+            frames: Mutex::new(HashMap::new()),
+            touches: Mutex::new(crate::store::Touches::new(DOCS_TOUCH_MS)),
+            changed: tokio::sync::Notify::new(),
+            pass: tokio::sync::Mutex::new(()),
+            record: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
 /// Everything iroh: shared by the actor, the connector tasks and the handlers.
 pub struct Net {
     /// The endpoint (one per process, 67 §4.2).
@@ -400,6 +446,12 @@ pub struct Net {
     pub(crate) keyring: crate::keys::State,
     /// 183 §6.8: the Nearby window, its sightings and the pairing ceremonies.
     pub(crate) nearby: crate::nearby::State,
+    /// 184 §8.1: the docs gate's frames and what this engine advertises.
+    pub(crate) docs: DocsLive,
+    /// Dev only (debug builds on a loopback bind; `None` in release): the file
+    /// `THEUTH_DEV_MESH_DROP_FILE` names, whose lines are endpoint ids this engine drops
+    /// ([`Net::dropped`]) — a scratch-rig partition without a firewall rule (184 §15.3 check 12).
+    dev_drop: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for Net {
@@ -524,6 +576,8 @@ impl Net {
                 vault: std::sync::OnceLock::new(),
                 keyring: crate::keys::State::default(),
                 nearby: crate::nearby::State::new(opts.mdns),
+                docs: DocsLive::default(),
+                dev_drop: dev_drop_file(opts.bind_addr),
             }
         });
         if let Some(v) = opts.vault {
@@ -531,6 +585,22 @@ impl Net {
         }
         if !net.paired_ids().is_empty() {
             net.join_network().await;
+        }
+        // Dev only ([`Net::dropped`]): live connections of a dropped peer close within a second,
+        // whichever side dialed (a connector inside `drive` never reaches its wait loop).
+        if net.dev_drop.is_some() {
+            let weak = Arc::downgrade(&net);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let Some(net) = weak.upgrade() else { return };
+                    for peer in net.paired_ids() {
+                        if net.dropped(&peer) && net.is_connected(&peer) {
+                            net.close_all(&peer, || false).await;
+                        }
+                    }
+                }
+            });
         }
         Ok(net)
     }
@@ -567,6 +637,12 @@ impl Net {
         if self.is_paired(peer) {
             return;
         }
+        self.close_all(peer, || self.is_paired(peer)).await;
+    }
+
+    /// Close every connection of `peer`; `keep()` (checked once the outbound cache is held)
+    /// keeps the dials made since.
+    async fn close_all(&self, peer: &EndpointId, keep: impl Fn() -> bool) {
         // 183 R3: every ALPN, both directions: the control connection, every connection it
         // opened to us, and our cached dials (records, sessions, docs, acp, rpc, …).
         // P2-F1: presence and inbound first; `outbound` is held across a dial (up to 30 s).
@@ -584,7 +660,7 @@ impl Net {
         }
         let mut out = self.outbound.lock().await;
         // A re-pair during the wait keeps the connections it dialed since.
-        if self.is_paired(peer) {
+        if keep() {
             return;
         }
         out.retain(|(id, _), c| {
@@ -594,6 +670,15 @@ impl Net {
             }
             keep
         });
+    }
+
+    /// Dev only: this engine drops `peer`'s traffic (`THEUTH_DEV_MESH_DROP_FILE` lists it):
+    /// no dial, every accept closed, live connections closed. Always `false` in release.
+    pub(crate) fn dropped(&self, peer: &EndpointId) -> bool {
+        self.dev_drop.as_ref().is_some_and(|f| {
+            let id = peer.to_string();
+            std::fs::read_to_string(f).is_ok_and(|s| s.lines().any(|l| l.trim() == id))
+        })
     }
 
     /// 183 R3: remember an inbound connection (stream ALPNs, gossip) so an unpair closes it.
@@ -1192,6 +1277,7 @@ impl Net {
             let _ = write_msg(&mut send, &Msg::Peers { peers }).await;
         }
         crate::keys::on_connect(self, &conn).await;
+        self.docs_on_connect(&conn).await;
         loop {
             let (mut send, mut recv) = match conn.accept_bi().await {
                 Ok(s) => s,
@@ -1224,6 +1310,11 @@ impl Net {
                     // Off the loop: a grant re-seals rows, a request waits for its ack.
                     tokio::spawn(crate::keys::on_frame(self.clone(), peer, m, send, recv));
                 }
+                Ok(Msg::DocsSchema { schema, homes_on }) => {
+                    let _ = send.finish();
+                    self.docs_frame(peer, conn.stable_id(), schema, homes_on)
+                        .await;
+                }
                 Ok(other) => tracing::debug!("mesh: ignoring {other:?} from {}", peer.fmt_short()),
                 Err(e) => tracing::debug!("mesh: control stream from {}: {e:#}", peer.fmt_short()),
             }
@@ -1247,6 +1338,7 @@ impl Net {
                 .events
                 .send(PeerEvent::Connected(PeerId(peer.to_string())));
         }
+        self.docs.changed.notify_one();
     }
 
     fn presence_remove(&self, peer: EndpointId, conn: &Connection) {
@@ -1263,18 +1355,157 @@ impl Net {
             }
             p.conns.is_empty()
         };
+        {
+            // 184 §8.1: a frame counts while a connection that carried one lives.
+            let mut frames = Self::lock(&self.docs.frames);
+            if let Some(f) = frames.get_mut(&peer) {
+                f.conns.remove(&conn.stable_id());
+                if last || f.conns.is_empty() {
+                    frames.remove(&peer);
+                }
+            }
+        }
         if last {
             tracing::info!("mesh: disconnected {}", peer.fmt_short());
             let _ = self
                 .events
                 .send(PeerEvent::Disconnected(PeerId(peer.to_string())));
         }
+        self.docs.changed.notify_one();
+    }
+
+    // --- 184 §8.1: the docs gate ------------------------------------------
+
+    /// On every control connection, beside `keys::on_connect`: our `DocsSchema` frame, and a peer
+    /// from which no live control connection carried one within [`DOCS_SILENT`] is recorded as
+    /// `schema` 0. (Two control connections can be up at once, a pairing's and the connector's,
+    /// and the peer's frame may ride either.)
+    async fn docs_on_connect(self: &Arc<Self>, conn: &Connection) {
+        self.send_docs(conn).await;
+        let (net, conn) = (self.clone(), conn.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(DOCS_SILENT).await;
+            let peer = conn.remote_id();
+            let _record = net.docs.record.lock().await;
+            let spoke = Self::lock(&net.docs.frames).contains_key(&peer);
+            if conn.close_reason().is_none() && !spoke && net.is_paired(&peer) {
+                tracing::info!(
+                    "mesh: {} sent no docs schema: a pre-184 build, notes stay on the hub",
+                    peer.fmt_short()
+                );
+                net.docs_record(peer, 0, false).await;
+            }
+        });
+    }
+
+    async fn send_docs(&self, conn: &Connection) {
+        let msg = Msg::DocsSchema {
+            schema: crate::DOCS_SCHEMA,
+            homes_on: self.docs.homes_on.load(Ordering::Relaxed),
+        };
+        if let Ok((mut send, _recv)) = conn.open_bi().await
+            && write_msg(&mut send, &msg).await.is_ok()
+        {
+            let _ = send.finish();
+        }
+    }
+
+    /// A `DocsSchema` frame from `peer` (the connection's `remote_id`, never a claimed id).
+    async fn docs_frame(&self, peer: EndpointId, conn: usize, schema: u32, homes_on: bool) {
+        let _record = self.docs.record.lock().await;
+        {
+            let mut frames = Self::lock(&self.docs.frames);
+            let f = frames.entry(peer).or_default();
+            f.conns.insert(conn);
+            f.homes_on = homes_on;
+        }
+        self.docs_record(peer, schema, homes_on).await;
+    }
+
+    async fn docs_record(&self, peer: EndpointId, schema: u32, homes_on: bool) {
+        let (id, now) = (EngineId(peer.to_string()), now_ms());
+        if let Err(e) = self.store.docs_heard(&id, schema, homes_on, now).await {
+            tracing::warn!("mesh: peer_docs_seen {}: {e:#}", peer.fmt_short());
+        }
+        Self::lock(&self.docs.touches).wrote(&id, now);
+        self.docs.changed.notify_one();
+    }
+
+    /// The gate (§8.1) as of `now`, `holder` the lease holder: the floor over the paired set and
+    /// `peer_docs_seen`, `homes_on` from the holder's own frame; a change is sent to every
+    /// connected peer. Fail-closed: a store error is homes off.
+    pub(crate) async fn docs_gate(
+        &self,
+        holder: Option<&EngineId>,
+        now: u64,
+    ) -> crate::DocsGateState {
+        // One pass at a time: two racing passes could leave the older answer advertised.
+        let _pass = self.docs.pass.lock().await;
+        let state = match self.docs_floor(now).await {
+            Ok(floor_ok) => {
+                let mine = holder == Some(&self.id);
+                let frame = holder
+                    .filter(|_| !mine)
+                    .and_then(|h| EndpointId::from_str(&h.0).ok())
+                    .filter(|h| self.is_connected(h))
+                    .and_then(|h| Self::lock(&self.docs.frames).get(&h).map(|f| f.homes_on));
+                crate::DocsGateState {
+                    floor_ok,
+                    homes_on: crate::docs_homes_on(floor_ok, mine, frame),
+                }
+            }
+            Err(e) => {
+                tracing::warn!("mesh: docs gate: {e:#}");
+                crate::DocsGateState::default()
+            }
+        };
+        if self.docs.homes_on.swap(state.homes_on, Ordering::Relaxed) != state.homes_on {
+            tracing::info!(
+                "mesh: notes homes {}",
+                if state.homes_on { "on" } else { "off" }
+            );
+            for (_, c) in self.control_conns() {
+                self.send_docs(&c).await;
+            }
+        }
+        state
+    }
+
+    async fn docs_floor(&self, now: u64) -> anyhow::Result<bool> {
+        let peers: Vec<EngineId> = self
+            .store
+            .peers()
+            .await?
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        self.store.docs_listed(&peers, now).await?;
+        let due: Vec<EngineId> = {
+            let mut t = Self::lock(&self.docs.touches);
+            self.connected()
+                .into_iter()
+                .filter(|(id, _)| t.due(id, now))
+                .map(|(id, _)| id)
+                .collect()
+        };
+        for id in &due {
+            self.store.docs_touch(id, now).await?;
+        }
+        Ok(crate::docs_floor(
+            &peers,
+            &self.store.docs_seen().await?,
+            now,
+        ))
     }
 
     /// Inbound `ALPN_MESH` connection: a pairing handshake from a stranger, or
     /// a control connection from a paired peer.
     async fn accept_control(self: &Arc<Self>, conn: Connection) -> Result<(), AcceptError> {
         let peer = conn.remote_id();
+        if self.dropped(&peer) {
+            conn.close(0u32.into(), b"dropped");
+            return Ok(());
+        }
         if self.is_paired(&peer) {
             self.drive(conn).await;
             return Ok(());
@@ -1407,6 +1638,14 @@ impl Net {
         let mut events = self.events.subscribe();
         let me_lower = self.endpoint.id() < peer;
         while !cancel.is_cancelled() {
+            if self.dropped(&peer) {
+                backoff = BACKOFF_MIN;
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                }
+                continue;
+            }
             if self.is_connected(&peer) {
                 // Wait for our disconnect (or cancellation).
                 loop {
@@ -1540,6 +1779,7 @@ impl Transport for Net {
     async fn open(&self, peer: &PeerId, alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
         let id = EndpointId::from_str(&peer.0).with_context(|| format!("bad peer id {peer}"))?;
         anyhow::ensure!(self.is_paired(&id), "{peer} is not a paired engine");
+        anyhow::ensure!(!self.dropped(&id), "{peer}: traffic dropped (dev)");
         let conn = self.connection(id, alpn).await?;
         let (send, recv) = conn.open_bi().await.context("open stream")?;
         Ok(self.count(alpn, id, Box::new(tokio::io::join(recv, send))))
@@ -1587,7 +1827,7 @@ impl ProtocolHandler for Inbound {
             return Ok(());
         };
         let peer = connection.remote_id();
-        if !net.is_paired(&peer) {
+        if !net.is_paired(&peer) || net.dropped(&peer) {
             connection.close(0u32.into(), b"not paired");
             return Ok(());
         }
@@ -1618,7 +1858,7 @@ impl<H: ProtocolHandler + Clone> ProtocolHandler for Gated<H> {
         let Some(net) = self.net.upgrade() else {
             return Ok(());
         };
-        if !net.is_paired(&connection.remote_id()) {
+        if !net.is_paired(&connection.remote_id()) || net.dropped(&connection.remote_id()) {
             connection.close(0u32.into(), b"not paired");
             return Ok(());
         }
@@ -1629,6 +1869,15 @@ impl<H: ProtocolHandler + Clone> ProtocolHandler for Gated<H> {
     async fn shutdown(&self) {
         self.inner.shutdown().await;
     }
+}
+
+/// [`Net::dev_drop`]: `THEUTH_DEV_MESH_DROP_FILE`, honoured only by a debug build bound to a
+/// loopback address; `None` otherwise (release builds never read it).
+fn dev_drop_file(bind: Option<std::net::SocketAddr>) -> Option<std::path::PathBuf> {
+    if !cfg!(debug_assertions) || !bind.is_some_and(|a| a.ip().is_loopback()) {
+        return None;
+    }
+    std::env::var_os("THEUTH_DEV_MESH_DROP_FILE").map(std::path::PathBuf::from)
 }
 
 // --- framing -----------------------------------------------------------------
@@ -2237,5 +2486,204 @@ pub(crate) mod tests {
         let load = |a: &AtomicU64| a.load(Ordering::Relaxed);
         assert_eq!((load(&c.frames_out), load(&c.bytes_out)), (1, 5));
         assert_eq!((load(&c.frames_in), load(&c.bytes_in)), (1, 2));
+    }
+
+    /// Poll `f` every 25 ms for up to `secs` seconds.
+    async fn eventually(secs: u64, mut f: impl AsyncFnMut() -> bool) -> bool {
+        for _ in 0..secs * 40 {
+            if f().await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    async fn docs_row(net: &Net, id: &EngineId) -> Option<crate::store::DocsSeen> {
+        let rows = net.store.docs_seen().await.unwrap();
+        rows.into_iter().find(|s| &s.id == id)
+    }
+
+    /// 184 §8.1: two control connections up at once (a pairing's and the connector's dial, as on
+    /// a fresh pairing) each carry a `DocsSchema` frame; the peer's frame on either counts, so
+    /// neither side is taken for a pre-184 build once `DOCS_SILENT` has passed (that turned homes
+    /// off after every fresh pairing, until a reconnect).
+    #[tokio::test]
+    async fn two_live_control_connections_are_not_a_silent_peer() {
+        let (a, c, _da, _dc) = connected_pair().await;
+        let second = c
+            .endpoint
+            .connect(a.endpoint.addr(), ALPN_MESH.as_bytes())
+            .await
+            .unwrap();
+        let c2 = c.clone();
+        tokio::spawn(async move { c2.drive(second).await });
+        tokio::time::sleep(DOCS_SILENT + Duration::from_secs(2)).await;
+        for (x, y) in [(&a, &c), (&c, &a)] {
+            let row = docs_row(x, &y.id).await;
+            assert_eq!(
+                row.map(|s| s.docs_schema),
+                Some(crate::DOCS_SCHEMA),
+                "{} heard {}",
+                x.id.0,
+                y.id.0
+            );
+        }
+    }
+
+    /// 184 §8.1 (W-g): both ends send `DocsSchema` on connect and record the other under its
+    /// authenticated id; the holder's flip reaches the follower in one frame; the follower is on
+    /// only while the holder says so; a peer rolled back to silence (0) turns the holder off, and
+    /// the follower with it.
+    #[tokio::test]
+    async fn docs_schema_rides_the_control_connection_on_connect_and_on_change() {
+        use crate::DocsGateState;
+        let (a, c, _da, _dc) = connected_pair().await;
+        assert!(
+            eventually(10, async || docs_row(&a, &c.id)
+                .await
+                .is_some_and(
+                    |s| s.docs_schema == crate::DOCS_SCHEMA && s.heard_ms.is_some()
+                ))
+            .await,
+            "a heard c on connect"
+        );
+        assert!(
+            eventually(10, async || docs_row(&c, &a.id)
+                .await
+                .is_some_and(|s| s.docs_schema == crate::DOCS_SCHEMA))
+            .await,
+            "c heard a on connect"
+        );
+        let on = DocsGateState {
+            floor_ok: true,
+            homes_on: true,
+        };
+        // c follows a, which has said nothing but off yet.
+        assert_eq!(
+            c.docs_gate(Some(&a.id), now_ms()).await,
+            DocsGateState {
+                floor_ok: true,
+                homes_on: false
+            }
+        );
+        // a holds the lease: its own floor decides, and the flip is sent.
+        assert_eq!(a.docs_gate(Some(&a.id), now_ms()).await, on);
+        assert!(
+            eventually(10, async || c.docs_gate(Some(&a.id), now_ms()).await == on).await,
+            "a's flip reached c"
+        );
+        // c's own flip reached a too (c sends its `homes_on`; only the holder's counts).
+        assert!(
+            eventually(10, async || docs_row(&a, &c.id)
+                .await
+                .is_some_and(|s| s.homes_on))
+            .await
+        );
+        assert!(
+            !c.docs_gate(None, now_ms()).await.homes_on,
+            "no holder: off"
+        );
+        assert!(
+            eventually(10, async || docs_row(&a, &c.id)
+                .await
+                .is_some_and(|s| !s.homes_on))
+            .await
+        );
+        // Rollback: c falls silent on a (recorded 0): a turns off, and c with it.
+        a.docs_record(c.endpoint.id(), 0, false).await;
+        assert_eq!(
+            a.docs_gate(Some(&a.id), now_ms()).await,
+            DocsGateState::default()
+        );
+        assert!(
+            eventually(10, async || !c
+                .docs_gate(Some(&a.id), now_ms())
+                .await
+                .homes_on)
+            .await,
+            "a's off reached c"
+        );
+        a.shutdown().await;
+        c.shutdown().await;
+    }
+
+    /// A bare iroh endpoint on loopback: an engine that speaks no 184 (or nothing at all).
+    async fn bare(key: SecretKey) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .secret_key(key)
+            .relay_mode(RelayMode::Disabled)
+            .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
+            .unwrap()
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    /// 184 §8.1, §8.3: a paired engine whose control connection says nothing for 5 s is a
+    /// pre-184 build (`schema` 0), even one that said 2 before (rollback new→old), and the floor
+    /// drops; a stranger's `DocsSchema` is never recorded.
+    #[tokio::test]
+    async fn a_silent_peer_is_old_and_a_strangers_frame_counts_for_nothing() {
+        let (a, _da) = node("a").await;
+        let old_key = SecretKey::generate();
+        let old = EngineId(old_key.public().to_string());
+        a.store
+            .put_peer(&PeerEntry {
+                id: old.clone(),
+                name: "old".into(),
+                addrs: vec![],
+                hub_pref: HubPref::Eligible,
+                added_ms: now_ms(),
+                removed_ms: None,
+            })
+            .await
+            .unwrap();
+        a.refresh_paired().await.unwrap();
+        a.store
+            .docs_heard(&old, crate::DOCS_SCHEMA, false, now_ms())
+            .await
+            .unwrap();
+        assert!(
+            a.docs_gate(Some(&a.id), now_ms()).await.floor_ok,
+            "it ran 184 before"
+        );
+        let old_ep = bare(old_key).await;
+        let _conn = old_ep
+            .connect(a.endpoint.addr(), ALPN_MESH.as_bytes())
+            .await
+            .unwrap();
+        assert!(
+            eventually(10, async || docs_row(&a, &old)
+                .await
+                .is_some_and(|s| s.docs_schema == 0))
+            .await,
+            "silent 5 s: recorded 0"
+        );
+        assert!(!a.docs_gate(Some(&a.id), now_ms()).await.floor_ok);
+
+        let stranger_key = SecretKey::generate();
+        let stranger = EngineId(stranger_key.public().to_string());
+        let stranger_ep = bare(stranger_key).await;
+        let conn = stranger_ep
+            .connect(a.endpoint.addr(), ALPN_MESH.as_bytes())
+            .await
+            .unwrap();
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        write_msg(
+            &mut send,
+            &Msg::DocsSchema {
+                schema: crate::DOCS_SCHEMA,
+                homes_on: true,
+            },
+        )
+        .await
+        .unwrap();
+        let _ = send.finish();
+        let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+        assert!(docs_row(&a, &stranger).await.is_none(), "not paired");
+        old_ep.close().await;
+        stranger_ep.close().await;
+        a.shutdown().await;
     }
 }

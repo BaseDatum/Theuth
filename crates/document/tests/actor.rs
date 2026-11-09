@@ -691,6 +691,7 @@ async fn notes_create_list_rename_delete() {
             title: "First".into(),
             markdown: "para\n".into(),
             by: owner.clone(),
+            home: document::Homing::Here,
         })
         .await
         .unwrap();
@@ -709,6 +710,7 @@ async fn notes_create_list_rename_delete() {
             title: "Second".into(),
             markdown: "# Own heading\n\nbody\n".into(),
             by: owner.clone(),
+            home: document::Homing::Here,
         })
         .await
         .unwrap();
@@ -1222,6 +1224,7 @@ async fn sharing_links_join_roles_demote_revoke() {
             title: "Shared".into(),
             markdown: "hello\n".into(),
             by: Principal::Owner { device: None },
+            home: document::Homing::Here,
         })
         .await
         .unwrap();
@@ -1634,6 +1637,47 @@ async fn sharing_links_join_roles_demote_revoke() {
     )
     .unwrap();
     assert_eq!(meta["members"].as_array().unwrap().len(), 63);
+    // Z184-R2/R3: the revoke is a tombstone the merge keeps. Every link made before it refuses
+    // the key (`member_revoked`: a reload must not undo the revoke); a link made after admits it.
+    assert!(meta["revoked"][guest_pub.as_str()].as_i64().is_some());
+    assert_eq!(
+        actor
+            .ask(join(proof(&vkey, &h, &guest), None))
+            .await
+            .unwrap_err()
+            .to_string(),
+        JoinError::MemberRevoked.to_string()
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let (_nlink, nsecret) = actor
+        .ask(LinkCreate {
+            doc: doc.clone(),
+            role: Role::Viewer,
+            name: None,
+            expires_ms: None,
+        })
+        .await
+        .unwrap();
+    let nkey = secret_hash(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&nsecret)
+            .unwrap(),
+    );
+    let back = actor
+        .ask(join(proof(&nkey, &h, &guest), None))
+        .await
+        .unwrap();
+    assert_eq!(back.role, Role::Viewer);
+    actor
+        .ask(OpenDoc {
+            doc: doc.clone(),
+            sv: None,
+            by: member.clone(),
+        })
+        .await
+        .unwrap();
+    let members = actor.ask(MembersOf { doc: doc.clone() }).await.unwrap();
+    assert!(members.members.iter().any(|m| m.pub_ == guest_pub));
     stop(actor).await;
 }
 
@@ -1693,6 +1737,7 @@ async fn member_text_is_labelled_for_the_agent() {
             title: "Shared".into(),
             markdown: "hello\n\nworld\n".into(),
             by: Principal::Owner { device: None },
+            home: document::Homing::Here,
         })
         .await
         .unwrap();
@@ -1844,6 +1889,7 @@ async fn limits_doc_size_update_size_awareness_cap() {
             title: "Big".into(),
             markdown: "hello\n".into(),
             by: Principal::Owner { device: None },
+            home: document::Homing::Here,
         })
         .await
         .unwrap();
@@ -1953,6 +1999,7 @@ async fn idle_unload_compacts_the_log_and_reloads_identically() {
             title: "A".into(),
             markdown: "one\n".into(),
             by: owner.clone(),
+            home: document::Homing::Here,
         })
         .await
         .unwrap()
@@ -2045,6 +2092,7 @@ async fn idle_unload_compacts_the_log_and_reloads_identically() {
             title: "B".into(),
             markdown: "two\n".into(),
             by: owner.clone(),
+            home: document::Homing::Here,
         })
         .await
         .unwrap()
@@ -2092,6 +2140,7 @@ async fn sharing_off_and_disabled() {
             title: "S".into(),
             markdown: "hi\n".into(),
             by: Principal::Owner { device: None },
+            home: document::Homing::Here,
         })
         .await
         .unwrap()
@@ -2287,6 +2336,7 @@ async fn owner_hears_an_export_after_the_quiet_period_or_when_the_editor_leaves(
             title: "Q".into(),
             markdown: "one\n".into(),
             by: owner.clone(),
+            home: document::Homing::Here,
         })
         .await
         .unwrap()
@@ -2401,6 +2451,7 @@ async fn hub_gate_follows_the_lease() {
             title: "H".into(),
             markdown: "one\n".into(),
             by: owner.clone(),
+            home: document::Homing::Here,
         })
         .await
         .unwrap()
@@ -2492,6 +2543,7 @@ async fn hub_gate_follows_the_lease() {
             title: "X".into(),
             markdown: String::new(),
             by: owner.clone(),
+            home: document::Homing::Here,
         })
         .await
         .unwrap_err()
@@ -2640,6 +2692,7 @@ async fn doc_read_annotates_note_cells_through_the_hook() {
             .ask(document::CodeBlockText {
                 doc: id.clone(),
                 key: document::NoteKey::Name("preview".into()),
+                seen: None,
             })
             .await
         {

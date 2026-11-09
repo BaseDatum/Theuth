@@ -11,6 +11,7 @@ import { type LiveDocument, useDocument } from '@/components/editor/useDocument'
 import { UndoAgentAction } from '@/components/knowledge/Document'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { ExportMenu } from '@/components/notes/ExportMenu'
+import { MoveNote } from '@/components/notes/MoveNote'
 import { NoteChat } from '@/components/notes/NoteChat'
 import { titleAfter } from '@/components/notes/title'
 import { useNotes } from '@/components/notes/useNotes'
@@ -195,6 +196,7 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
           {board && <span className="mr-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-[0.08em] text-fg-tertiary uppercase">board</span>}
           {board && <Action label={editing ? 'Read' : 'Edit'} icon={editing ? BookOpen : PenLine} onClick={() => setEditing((e) => !e)} pressed={editing} />}
           <Action label="Rename" icon={Pencil} onClick={() => titleInput.current?.select()} disabled={deleted} />
+          {live.provider && !deleted && <MoveNote provider={live.provider} />}
           <Action label="Attach to chat…" icon={MessageSquarePlus} onClick={() => setAttaching(true)} disabled={deleted} />
           <Action label="Snapshots…" icon={HistoryIcon} onClick={() => setSnapshots(true)} disabled={deleted} />
           <ExportMenu id={id} title={title} disabled={deleted || !live.provider} />

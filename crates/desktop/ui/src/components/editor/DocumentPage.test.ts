@@ -16,6 +16,8 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('@/components/editor/Editor', () => ({ Editor: () => null }))
 vi.mock('@/components/nav/SectionBand', () => ({ SectionBand: () => null }))
+let mesh: { self_id: string; self_name: string; peers: unknown[] } = { self_id: 'S', self_name: 'studio-mac', peers: [] }
+vi.mock('@/components/tasks/queries', () => ({ useMesh: () => ({ data: mesh }) }))
 vi.mock('@/components/share/ParticipantStrip', () => ({ ParticipantStrip: () => null }))
 vi.mock('@/components/share/ShareDialog', () => ({ ShareAction: () => null }))
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))
@@ -91,4 +93,28 @@ test('156 D1: a meeting note is owned by its meeting — by kind on /notes/<id>,
   expect(ownedByMeeting(undefined, 'm1')).toBe(true)
   expect(ownedByMeeting('note', undefined)).toBe(false)
   expect(ownedByMeeting(undefined, undefined)).toBe(false)
+})
+
+// 184 §16: a lone engine shows nothing new; in a mesh the same page gets the chip and the offline banner.
+const stub = { id: 'd1', meta: { kind: 'note', home: 'X' }, server: 'S', dual: null, status: { kind: 'live' }, onEvent: () => () => {}, onStatus: () => () => {} }
+const renderLive = () =>
+  renderToStaticMarkup(
+    createElement(QueryClientProvider, {
+      client: new QueryClient(),
+      children: createElement(DocumentPage, { backTo: '/notes', backLabel: 'Back', band: false, title: 'A note', live: { provider: stub, status: { kind: 'live' }, error: null } as never }),
+    }),
+  )
+
+test('184: without peers the bar has no chip and the page no banner', () => {
+  const html = renderLive()
+  expect(html).not.toContain('On xeus')
+  expect(html).not.toContain('On studio-mac')
+  expect(html).not.toContain('role="status"')
+})
+
+test('184: in a mesh a note served away from its home gets the chip and the banner', () => {
+  mesh = { ...mesh, peers: [{ id: 'X', name: 'xeus', reachable: true, last_seen_ms: 0 }] }
+  const html = renderLive()
+  expect(html).toContain('On xeus · offline')
+  expect(html).toContain('xeus is offline')
 })

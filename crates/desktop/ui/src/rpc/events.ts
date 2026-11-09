@@ -11,6 +11,7 @@ import type { CommunicationChanged } from '@/rpc/bindings/CommunicationChanged'
 import type { CostCubeChanged } from '@/rpc/bindings/CostCubeChanged'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
+import type { CellLatestChanged } from '@/rpc/bindings/CellLatestChanged'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
 import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
@@ -101,6 +102,8 @@ export type WireEvent =
   | KnowledgeChanged
   /** 59 §7.3: a document was created, exported, renamed or trashed; the notes list follows it. */
   | DocumentChanged
+  /** 184 §6.4: another engine's run changed a `cell_latest` row of `doc`; an open note re-reads it. */
+  | CellLatestChanged
   | LinkEvent
   | NodeEvent
   | ScheduleEvent

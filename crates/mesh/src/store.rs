@@ -34,6 +34,21 @@ pub struct Origin {
     pub confirmed: bool,
 }
 
+/// 184 §8.1: one `peer_docs_seen` row, what a paired engine last said on its control connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocsSeen {
+    /// The engine (the connection's authenticated `remote_id`).
+    pub id: EngineId,
+    /// Its `DocsSchema.schema`; 0 = never said, or silent 5 s on a connection (pre-184).
+    pub docs_schema: u32,
+    /// Its `DocsSchema.homes_on`.
+    pub homes_on: bool,
+    /// First listed here.
+    pub first_ms: u64,
+    /// Last heard on its control connection.
+    pub heard_ms: Option<u64>,
+}
+
 /// Process-wide hybrid logical clock: `(wall_ms, counter)` of the last stamp
 /// (the `tasks` store keeps the same shape).
 static HLC: Mutex<(u64, u32)> = Mutex::new((0, 0));
@@ -45,6 +60,22 @@ pub struct Store {
     /// This engine: the `hlc` origin, and never listed as its own peer.
     me: EngineId,
 }
+
+/// 184 §8.1, §9.3: what each paired engine last said on its authenticated control connection
+/// (`Msg::DocsSchema`), local only, never replicated (no `hlc`, not attached). `docs_schema` 0 =
+/// connected 5 s without a frame (a pre-184 build); `first_ms` = first listed here (the 7-day
+/// staleness clock of a never-heard peer); `heard_ms` refreshed at most once a minute.
+/// Created here, not by a numbered migration: an engine rolled back to a pre-184 build refuses a
+/// database whose applied migrations it does not know (sqlx `VersionMissing`), which would stop
+/// its mesh (§8.3, §15.3 check 17). Migrations run before this create on a fresh database, so a
+/// later migration that touches `peer_docs_seen` must itself `CREATE TABLE IF NOT EXISTS` it first.
+const CREATE_PEER_DOCS_SEEN: &str = "CREATE TABLE IF NOT EXISTS peer_docs_seen (
+    id          TEXT PRIMARY KEY,
+    docs_schema INTEGER NOT NULL DEFAULT 0,
+    homes_on    INTEGER NOT NULL DEFAULT 0,
+    first_ms    INTEGER NOT NULL,
+    heard_ms    INTEGER
+)";
 
 impl Store {
     /// Open or create the file and run the migrations.
@@ -59,10 +90,14 @@ impl Store {
             .connect_with(opts)
             .await
             .with_context(|| format!("open {}", path.display()))?;
-        sqlx::migrate!("./migrations")
-            .run(&pool)
+        let mut migrator = sqlx::migrate!("./migrations");
+        // A database a build of this branch migrated before 0008 left `migrations/` (184).
+        migrator.set_ignore_missing(true);
+        migrator.run(&pool).await.context("run migrations")?;
+        sqlx::query(CREATE_PEER_DOCS_SEEN)
+            .execute(&pool)
             .await
-            .context("run migrations")?;
+            .context("create peer_docs_seen")?;
         Ok(Self { pool, me })
     }
 
@@ -207,6 +242,88 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(r.rows_affected() == 1)
+    }
+
+    /// 184 §4.9: the tombstoned (unpaired) rows; quarantined rows stay live, so they are not here.
+    pub async fn removed_peers(&self) -> anyhow::Result<Vec<EngineId>> {
+        Ok(self
+            .peer_entries()
+            .await?
+            .into_iter()
+            .filter(PeerEntry::removed)
+            .map(|p| p.id)
+            .collect())
+    }
+
+    // --- peer_docs_seen (184 §8.1; local only) ----------------------------
+
+    /// `ids` are paired here: a row each, `first_ms = now_ms` for a new one (the 7-day clock of a
+    /// peer never heard); existing rows are untouched.
+    pub async fn docs_listed(&self, ids: &[EngineId], now_ms: u64) -> anyhow::Result<()> {
+        for id in ids {
+            sqlx::query("INSERT OR IGNORE INTO peer_docs_seen (id, first_ms) VALUES (?, ?)")
+                .bind(&id.0)
+                .bind(now_ms as i64)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// What `id` said on its control connection (`schema` 0: silent, a pre-184 build), heard now.
+    pub async fn docs_heard(
+        &self,
+        id: &EngineId,
+        schema: u32,
+        homes_on: bool,
+        now_ms: u64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO peer_docs_seen (id, docs_schema, homes_on, first_ms, heard_ms) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET docs_schema = excluded.docs_schema,
+             homes_on = excluded.homes_on, heard_ms = excluded.heard_ms",
+        )
+        .bind(&id.0)
+        .bind(i64::from(schema))
+        .bind(homes_on)
+        .bind(now_ms as i64)
+        .bind(now_ms as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// `id`'s control connection is still open: heard now, what it said unchanged.
+    pub async fn docs_touch(&self, id: &EngineId, now_ms: u64) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO peer_docs_seen (id, first_ms, heard_ms) VALUES (?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET heard_ms = excluded.heard_ms",
+        )
+        .bind(&id.0)
+        .bind(now_ms as i64)
+        .bind(now_ms as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Every `peer_docs_seen` row.
+    pub async fn docs_seen(&self) -> anyhow::Result<Vec<DocsSeen>> {
+        let rows: Vec<(String, i64, bool, i64, Option<i64>)> = sqlx::query_as(
+            "SELECT id, docs_schema, homes_on, first_ms, heard_ms FROM peer_docs_seen ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, schema, homes_on, first, heard)| DocsSeen {
+                id: EngineId(id),
+                docs_schema: u32::try_from(schema).unwrap_or(0),
+                homes_on,
+                first_ms: first as u64,
+                heard_ms: heard.map(|h| h as u64),
+            })
+            .collect())
     }
 
     // --- engine_stats --------------------------------------------------
@@ -832,5 +949,111 @@ mod tests {
             "{changes:?}"
         );
         assert!((store.availability_30d(&peer, 700_000).await.unwrap() - 1.0).abs() < f32::EPSILON);
+    }
+
+    fn entry(id: &str, removed_ms: Option<u64>) -> PeerEntry {
+        PeerEntry {
+            id: EngineId(id.into()),
+            name: id.into(),
+            addrs: vec![],
+            hub_pref: HubPref::Eligible,
+            added_ms: 1,
+            removed_ms,
+        }
+    }
+
+    /// 184 §4.9: `RemovedPeers` lists the tombstones only: a live row, a quarantined (live) row
+    /// and this engine's own row are not removed; a re-pair clears the tombstone.
+    #[tokio::test]
+    async fn removed_peers_are_the_tombstones_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId("me".into()))
+            .await
+            .unwrap();
+        for e in [
+            entry("me", Some(5)),
+            entry("live", None),
+            entry("gone", Some(9)),
+            entry("held", None),
+        ] {
+            store.put_peer(&e).await.unwrap();
+        }
+        store
+            .record_origin(&EngineId("held".into()), &EngineId("gone".into()), 10)
+            .await
+            .unwrap();
+        store
+            .set_quarantined(&EngineId("held".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.removed_peers().await.unwrap(),
+            vec![EngineId("gone".into())]
+        );
+        store.put_peer(&entry("gone", None)).await.unwrap();
+        assert!(store.removed_peers().await.unwrap().is_empty(), "re-paired");
+    }
+
+    /// 184 §8.3: the mesh database opens across builds: one that applied a migration this build
+    /// does not know (a newer build's, or this branch's dev-only 0008) still opens, and
+    /// `peer_docs_seen` is there without a numbered migration a pre-184 build would refuse.
+    #[tokio::test]
+    async fn a_database_with_an_unknown_migration_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mesh.sqlite");
+        let store = Store::open(&path, EngineId("me".into())).await.unwrap();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+             VALUES (99, 'from a newer build', 1, x'00', 0)",
+        )
+        .execute(store.pool())
+        .await
+        .unwrap();
+        drop(store);
+        let store = Store::open(&path, EngineId("me".into())).await.unwrap();
+        store.docs_listed(&[EngineId("b".into())], 1).await.unwrap();
+        assert_eq!(store.docs_seen().await.unwrap().len(), 1);
+    }
+
+    /// 184 §8.1: `peer_docs_seen` keeps the first listing, a frame sets what was said and when,
+    /// a silence downgrades a new build to 0 (rollback), a touch moves only `heard_ms`.
+    #[tokio::test]
+    async fn peer_docs_seen_records_frames_silences_and_touches() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId("me".into()))
+            .await
+            .unwrap();
+        let b = EngineId("b".into());
+        store
+            .docs_listed(std::slice::from_ref(&b), 100)
+            .await
+            .unwrap();
+        store
+            .docs_listed(std::slice::from_ref(&b), 200)
+            .await
+            .unwrap();
+        let row = |schema, homes_on, heard_ms| DocsSeen {
+            id: b.clone(),
+            docs_schema: schema,
+            homes_on,
+            first_ms: 100,
+            heard_ms,
+        };
+        assert_eq!(store.docs_seen().await.unwrap(), vec![row(0, false, None)]);
+        store.docs_heard(&b, 2, true, 300).await.unwrap();
+        assert_eq!(
+            store.docs_seen().await.unwrap(),
+            vec![row(2, true, Some(300))]
+        );
+        store.docs_touch(&b, 400).await.unwrap();
+        assert_eq!(
+            store.docs_seen().await.unwrap(),
+            vec![row(2, true, Some(400))]
+        );
+        store.docs_heard(&b, 0, false, 500).await.unwrap();
+        assert_eq!(
+            store.docs_seen().await.unwrap(),
+            vec![row(0, false, Some(500))]
+        );
     }
 }

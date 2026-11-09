@@ -88,6 +88,7 @@ const MESH: MeshStatus = {
   messaging_off: ['cloud'],
   nearby: true,
   quarantined: [],
+  docs_homes_on: false,
 }
 const XEUS2: NearbyEngine = { id: 'xeus2', name: 'xeus-2', os_name: 'Arch Linux', addr: '192.168.8.140', seen_ms: NOW }
 const PREVIEW: UnpairPreview = {

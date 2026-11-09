@@ -1217,7 +1217,12 @@ fn lang_of(block: &str) -> &'static str {
 
 #[async_trait::async_trait]
 impl note::Docs for Blocks {
-    async fn code_block(&self, _: &DocId, key: &NoteKey) -> Result<note::NoteSource, String> {
+    async fn code_block(
+        &self,
+        _: &DocId,
+        key: &NoteKey,
+        _: Option<&str>,
+    ) -> Result<note::NoteSource, String> {
         let (NoteKey::Name(n) | NoteKey::Block(n)) = key;
         let text = self.0.get(n).ok_or_else(|| format!("no block {n}"))?;
         Ok(note::NoteSource {
@@ -1225,10 +1230,8 @@ impl note::Docs for Blocks {
             language: lang_of(n).into(),
             text: text.clone(),
             last_author: crate::types::Principal::Owner { device: None },
+            markdown: String::new(),
         })
-    }
-    async fn hub(&self) -> Result<Option<String>, String> {
-        Ok(None)
     }
     /// The note's other cells (their names and `after` edges, §3.6) come from it.
     async fn markdown(&self, _: &DocId) -> Option<String> {
@@ -1532,16 +1535,25 @@ async fn missing_interpreter_is_an_error_problem() {
     assert_eq!(cells.program_missing("python", None).await, None);
 }
 
-/// The document side of note scope: one block, any key, no markdown.
-struct OneBlock(note::NoteSource);
+/// The document side of note scope: one block, any key, no markdown; records each read's `seen`.
+struct OneBlock(note::NoteSource, parking_lot::Mutex<Vec<Option<String>>>);
+
+impl OneBlock {
+    fn new(src: note::NoteSource) -> Self {
+        Self(src, parking_lot::Mutex::default())
+    }
+}
 
 #[async_trait::async_trait]
 impl note::Docs for OneBlock {
-    async fn code_block(&self, _: &DocId, _: &NoteKey) -> Result<note::NoteSource, String> {
+    async fn code_block(
+        &self,
+        _: &DocId,
+        _: &NoteKey,
+        seen: Option<&str>,
+    ) -> Result<note::NoteSource, String> {
+        self.1.lock().push(seen.map(str::to_owned));
         Ok(self.0.clone())
-    }
-    async fn hub(&self) -> Result<Option<String>, String> {
-        Ok(None)
     }
     async fn markdown(&self, _: &DocId) -> Option<String> {
         None
@@ -1568,7 +1580,7 @@ async fn member_edit_needs_the_members_ack() {
     let dir = tempfile::tempdir().unwrap();
     let cells = cells_in(dir.path()).await;
     let text = format!("#| name: up\n#| cwd: {}\necho hi", dir.path().display());
-    note::set_docs(Arc::new(OneBlock(note::NoteSource {
+    note::set_docs(Arc::new(OneBlock::new(note::NoteSource {
         block: "b1".into(),
         language: "bash".into(),
         text: text.clone(),
@@ -1576,6 +1588,7 @@ async fn member_edit_needs_the_members_ack() {
             pub_: "QUxJQ0VLRVlBTElDRQ".into(),
             device: None,
         },
+        markdown: String::new(),
     })));
     let seen = surface::cell::digest(&text);
     let note = |block: &str| CellRef::Note {
@@ -1620,6 +1633,49 @@ async fn member_edit_needs_the_members_ack() {
     store.finish(&ran, None, None).await.unwrap();
     let r = cells.run(req(note("b2"), "r_4", None)).await.unwrap();
     assert_eq!(r.id, RunId("r_4".into()));
+}
+
+/// 184 §6.2, §12.3: a shared note whose block author nobody could tell (the server and the holder
+/// unreachable: `?`) asks to confirm instead of refusing, and the confirm runs it. The press hands
+/// its digest to the read (W-u), and the cwd comes from the server's markdown (its defaults).
+#[tokio::test]
+async fn an_unknown_author_asks_to_confirm_and_the_servers_defaults_apply() {
+    let _one = note::DOCS_TEST.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cells = cells_in(dir.path()).await;
+    let text = "#| name: up\necho hi".to_owned();
+    let docs = Arc::new(OneBlock::new(note::NoteSource {
+        block: "b1".into(),
+        language: "bash".into(),
+        text: text.clone(),
+        last_author: crate::types::Principal::Member {
+            pub_: document::cells::UNKNOWN_AUTHOR.into(),
+            device: None,
+        },
+        markdown: format!("```cells\n#| cwd: {}\n```\n", dir.path().display()),
+    }));
+    note::set_docs(docs.clone());
+    let seen = surface::cell::digest(&text);
+    let req = |id: &str, ack: Option<&str>| RunRequest {
+        cell: CellRef::Note {
+            doc: DocId("d-unknown".into()),
+            key: NoteKey::Block("b1".into()),
+        },
+        seen: seen.clone(),
+        mode: RunMode::Cell,
+        run: RunId(id.into()),
+        edited: None,
+        member_ack: ack.map(Into::into),
+        confirmed: false,
+        pressed_by: "desktop · t".into(),
+    };
+    assert_eq!(
+        cells.run(req("r_1", None)).await.unwrap_err(),
+        CellsError::MemberAck("?".into())
+    );
+    let r = cells.run(req("r_2", Some("?"))).await.unwrap();
+    assert_eq!(r.cwd, dir.path().display().to_string());
+    assert_eq!(docs.1.lock()[0], Some(seen.clone()));
 }
 
 /// `cell_output_file` serves a run's images and its `code`, nothing else of the run dir.

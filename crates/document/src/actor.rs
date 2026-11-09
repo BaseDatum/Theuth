@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use kameo::actor::ActorRef;
+use kameo::actor::{ActorRef, WeakActorRef};
 use kameo::message::{Context, Message};
 use kameo::reply::{DelegatedReply, ReplySender};
 use runtime::Runtime;
@@ -28,12 +28,12 @@ use yrs::updates::encoder::Encode;
 use yrs::{ReadTxn, StateVector, Transact, TransactionMut, Update, Xml};
 
 use crate::helper::{self, Edit as BlockEdit, EditError, Helper, HelperEvent, ImportMode};
-use crate::hub::DocError;
+use crate::hub::{DocError, Route};
 use crate::meta::{
     AgentStyle, Binding, DocEvent, DocId, DocKind, DocMeta, DocOpen, DocSummary, DocumentChanged,
     Principal, SnapshotInfo, Who,
 };
-use crate::relay::{Client, Cmd};
+use crate::relay::{Client, Cmd, CreateReq};
 use crate::store::{self, Store, now_ms, sha256, write_atomic};
 use crate::{DocumentsConfig, Exported, FRAGMENT};
 
@@ -57,6 +57,8 @@ const TRASH_SWEEP: Duration = Duration::from_secs(3600);
 const TRASH_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
 /// A replied import waits this long for its update before it is forgotten (none comes when nothing changed).
 const IMPORT_GRACE: Duration = Duration::from_secs(10);
+/// 184 §8.1: the docs gate is polled this often besides every mesh event.
+const GATE_POLL: Duration = Duration::from_secs(30);
 
 /// One loaded document.
 pub(crate) struct Open {
@@ -85,7 +87,11 @@ pub(crate) struct Open {
     /// 171 §9.6: block id → the agent session that last wrote it (`agents.json`; any other writer clears it).
     pub(crate) agents: std::collections::BTreeMap<String, uuid::Uuid>,
     /// `meta.authors` or `agents` changed since they were last written.
-    authors_dirty: bool,
+    pub(crate) authors_dirty: bool,
+    /// 184: the fence changed since `meta.json` was last written (`Tick` writes it).
+    pub(crate) meta_dirty: bool,
+    /// 184 §4.4: the other engine also serving this document during a partition.
+    pub(crate) dual: Option<mesh::EngineId>,
 }
 
 /// One participant's awareness budget: window start, states relayed since.
@@ -198,6 +204,9 @@ struct Import {
     done_at: Option<Instant>,
     /// The update arrived. An import that changed nothing never sends one: `Tick` sweeps those.
     applied: bool,
+    /// 184 §5.3: a new document's first import — snapshot once both halves landed, so the mirror
+    /// ships it within its debounce.
+    first: bool,
 }
 
 pub(crate) enum ImportReply {
@@ -233,7 +242,6 @@ pub struct EditOutcome {
 }
 
 /// The [`crate::DOCUMENT_ACTOR`] actor.
-#[derive(kameo::Actor)]
 pub struct DocumentActor {
     pub(crate) store: Store,
     pub(crate) helper: Helper,
@@ -251,6 +259,33 @@ pub struct DocumentActor {
     pub(crate) hub: crate::hub::Hub,
     /// 69: off the hub, the `theuth/docs/1` legs carrying clients' sessions to the holder.
     pub(crate) legs: crate::relay::Legs,
+    /// 184 §4.3: claims on homed documents this engine serves (or is about to).
+    pub(crate) claims: HashMap<DocId, crate::hub::Claim>,
+    /// 184 §4.2 rule 1: the `home_of` memo of closed documents.
+    pub(crate) homes: HashMap<DocId, Option<mesh::EngineId>>,
+    /// 184 §5.3: forwarded creates' homes until their `meta.json` arrives.
+    pub(crate) pending_homes: HashMap<DocId, (mesh::EngineId, Instant)>,
+    /// 184 §10.2: the message being handled arrived as [`crate::hub::Relayed`].
+    pub(crate) relaying: bool,
+    /// 184 §8.1: the last `DocsGate` poll from `Tick`.
+    last_gate_poll: Option<Instant>,
+    /// 184 §8.1: the mesh's latest docs-gate answer; an "off" applies only if it still holds
+    /// after [`crate::hub::GATE_OFF_SETTLE`].
+    pub(crate) gate_latest: bool,
+    /// 184 §4.9 (Z184-R2): the unpaired engines the last re-home scan covered, sorted.
+    pub(crate) rehomed_for: Vec<mesh::EngineId>,
+    /// This actor (set at start): tasks it spawns talk back to it, not to the registered name.
+    me: Option<WeakActorRef<Self>>,
+}
+
+impl kameo::Actor for DocumentActor {
+    type Args = Self;
+    type Error = kameo::error::Infallible;
+
+    async fn on_start(mut state: Self, me: ActorRef<Self>) -> Result<Self, Self::Error> {
+        state.me = Some(me.downgrade());
+        Ok(state)
+    }
 }
 
 impl DocumentActor {
@@ -270,6 +305,14 @@ impl DocumentActor {
             shutting_down: false,
             hub: Default::default(),
             legs: Default::default(),
+            claims: HashMap::new(),
+            homes: HashMap::new(),
+            pending_homes: HashMap::new(),
+            relaying: false,
+            last_gate_poll: None,
+            gate_latest: false,
+            rehomed_for: Vec::new(),
+            me: None,
         }
     }
 
@@ -313,6 +356,8 @@ impl DocumentActor {
                     touched,
                     agents,
                     authors_dirty: false,
+                    meta_dirty: false,
+                    dual: None,
                 },
             );
             self.enforce_open_cap();
@@ -345,7 +390,7 @@ impl DocumentActor {
 
     /// Apply one update from `by` (§6.2): CRDT, log, fan-out, helper mirror, export.
     /// `touched` (a helper transaction's written ids) precedes the update as `Authored` when `by` is the agent.
-    async fn apply(
+    pub(crate) async fn apply(
         &mut self,
         doc: &DocId,
         update: Vec<u8>,
@@ -364,11 +409,30 @@ impl DocumentActor {
             ));
         }
         let u = Update::decode_v1(&update).map_err(|e| format!("bad update: {e}"))?;
+        // 184 §4.7, §16: a client update that changes neither the Doc's state vector nor its
+        // delete set (a catch-all echoing the delete set, a re-sent update) is a no-op: no log
+        // record, no `updated_ms`, no export, no fan-out. Helper updates always go through: an
+        // import or edit that changed nothing still completes through them (ingest refresh). An
+        // update whose first struct per client is at or past the Doc's clock (every keystroke) is
+        // new and skips the check. ponytail: the delete-set comparison walks the Doc's blocks, only
+        // for structless or re-sent client updates.
+        let have = o.doc.transact().state_vector();
+        let maybe_old = !from_helper
+            && u.state_vector_lower()
+                .iter()
+                .all(|(c, clock)| *clock < have.get(c));
+        let deleted_before = maybe_old.then(|| o.doc.transact().snapshot().delete_set);
         o.touched.lock().unwrap_or_else(|p| p.into_inner()).clear();
         o.doc
             .transact_mut()
             .apply_update(u)
             .map_err(|e| format!("apply update: {e}"))?;
+        if let Some(before) = deleted_before {
+            let txn = o.doc.transact();
+            if txn.state_vector() == have && txn.snapshot().delete_set.diff(&before).is_empty() {
+                return Ok(());
+            }
+        }
         // §11: a member's blocks carry their author until someone else writes them; 171 §9.6: so do the agent's,
         // whose helper transaction also names what it wrote (a first import's blocks arrive inside one new
         // `blockGroup`, which the observer cannot see into).
@@ -442,9 +506,10 @@ impl DocumentActor {
         Ok(())
     }
 
-    fn schedule_export(&mut self, doc: &DocId) {
-        // 69: exports are a hub duty; a replica's derived files come from their owners (knowledge sync).
-        if !self.hub.holding() {
+    pub(crate) fn schedule_export(&mut self, doc: &DocId) {
+        // 69, 184 §4.6: exports are the serving engine's duty; a replica's derived files come from
+        // their owners (knowledge sync).
+        if !self.serves(doc) {
             return;
         }
         let debounce = Duration::from_millis(self.cfg.export_debounce_ms);
@@ -543,6 +608,7 @@ impl DocumentActor {
         let frontmatter = matches!(o.meta.kind, DocKind::Knowledge | DocKind::Board);
         let pending = self.helper.import(doc, &markdown, mode, frontmatter);
         let req = pending.id();
+        let first = matches!(reply, ImportReply::CreatedNote(..));
         self.imports.insert(
             req,
             Import {
@@ -553,6 +619,7 @@ impl DocumentActor {
                 reply,
                 done_at: None,
                 applied: false,
+                first,
             },
         );
         let me = self.actor_ref();
@@ -662,10 +729,15 @@ impl DocumentActor {
     }
 
     pub(crate) fn actor_ref(&self) -> ActorRef<Self> {
-        ActorRef::<Self>::lookup(crate::DOCUMENT_ACTOR)
-            .ok()
-            .flatten()
-            .expect("the document actor is registered before it serves")
+        self.me
+            .as_ref()
+            .and_then(WeakActorRef::upgrade)
+            .or_else(|| {
+                ActorRef::<Self>::lookup(crate::DOCUMENT_ACTOR)
+                    .ok()
+                    .flatten()
+            })
+            .expect("the document actor runs before it serves")
     }
 
     /// Fire the export of `doc`: helper markdown → tmp + rename → [`ExportDone`]; `done` hears the outcome.
@@ -699,7 +771,7 @@ impl DocumentActor {
         });
     }
 
-    fn snapshot(&mut self, doc: &DocId, label: Option<&str>) -> Result<(), String> {
+    pub(crate) fn snapshot(&mut self, doc: &DocId, label: Option<&str>) -> Result<(), String> {
         let keep = self.cfg.snapshots_keep;
         let store = self.store.clone();
         let Some(o) = self.open.get_mut(doc) else {
@@ -738,6 +810,7 @@ impl DocumentActor {
         }
         if let Some(o) = self.open.remove(doc) {
             self.helper.close(doc).log("close");
+            self.homes.insert(doc.clone(), o.meta.home.clone());
             // A quiet period still running at unload is over: the owner hears now, nothing is lost.
             if o.notify_due.is_some() && !o.exporting && o.export_due.is_none() {
                 let rt = self.rt.clone();
@@ -748,10 +821,12 @@ impl DocumentActor {
                 };
                 tokio::spawn(async move { rt.publish(ev).await });
             }
-            if o.authors_dirty {
+            if o.authors_dirty || o.meta_dirty {
                 let store = self.store.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = store.write_agents(&o.meta.id, &o.agents) {
+                    if o.authors_dirty
+                        && let Err(e) = store.write_agents(&o.meta.id, &o.agents)
+                    {
                         tracing::warn!(doc = %o.meta.id, error = %e, "agents.json: not saved at unload");
                     }
                     if let Err(e) = store.write_meta(&o.meta).await {
@@ -760,6 +835,7 @@ impl DocumentActor {
                 });
             }
         }
+        self.drop_claim(doc);
         if let Some(subs) = self.subs.remove(doc) {
             for s in subs {
                 let _ = s.tx.try_send(DocEvent::Closed {
@@ -786,6 +862,8 @@ impl DocumentActor {
 
     /// Close, move the directory to `.trash/<id>`, mark deleted, tell subscribers (§7.1, §7.3).
     pub(crate) async fn delete_doc(&mut self, doc: &DocId) -> Result<(), String> {
+        self.drop_claim(doc);
+        self.homes.remove(doc);
         let meta = match self.open.remove(doc) {
             Some(o) => {
                 self.helper.close(doc).log("close");
@@ -885,10 +963,14 @@ impl Message<OpenDoc> for DocumentActor {
     async fn handle(&mut self, m: OpenDoc, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        match self.hub.route() {
-            Ok(None) => tx.send(self.open_doc(m).await),
-            Ok(Some(hub)) => self.forward(
-                hub,
+        match self.route_doc(&m.doc, false) {
+            Ok(Route::Serve) => tx.send(self.open_doc(m).await),
+            Ok(Route::Park) => {
+                let doc = m.doc.clone();
+                self.park(&doc, m, tx, None);
+            }
+            Ok(Route::Forward(to)) => self.forward(
+                to,
                 &m.doc,
                 Client::of(&m.by),
                 Cmd::Open {
@@ -918,7 +1000,14 @@ impl DocumentActor {
             member.last_seen_ms = now_ms();
             seen = true;
         }
-        let state = o.doc.transact().encode_state_as_update_v1(&sv);
+        let (state, server_sv) = {
+            let txn = o.doc.transact();
+            (
+                txn.encode_state_as_update_v1(&sv),
+                txn.state_vector().encode_v1(),
+            )
+        };
+        let dual = o.dual.clone();
         let awareness = o
             .awareness
             .update()
@@ -947,6 +1036,10 @@ impl DocumentActor {
             meta,
             state: state.chunks(CHUNK).map(b64).collect(),
             awareness,
+            // 184 §4.7: the client pushes what this state vector lacks; §10.3: who serves.
+            server: self.hub.self_id(),
+            dual,
+            sv: b64(&server_sv),
         })
     }
 }
@@ -977,9 +1070,13 @@ impl Message<ApplyUpdate> for DocumentActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        match self.hub.route() {
-            Ok(None) => tx.send(self.apply_update(m).await),
-            Ok(Some(hub)) => self.forward(
+        match self.route_doc(&m.doc, false) {
+            Ok(Route::Serve) => tx.send(self.apply_update(m).await),
+            Ok(Route::Park) => {
+                let doc = m.doc.clone();
+                self.park(&doc, m, tx, None);
+            }
+            Ok(Route::Forward(hub)) => self.forward(
                 hub,
                 &m.doc,
                 Client::of(&m.by),
@@ -1025,9 +1122,13 @@ impl Message<Subscribe> for DocumentActor {
     async fn handle(&mut self, m: Subscribe, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        match self.hub.route() {
-            Ok(None) => tx.send(self.subscribe(m).await),
-            Ok(Some(hub)) => {
+        match self.route_doc(&m.doc, false) {
+            Ok(Route::Serve) => tx.send(self.subscribe(m).await),
+            Ok(Route::Park) => {
+                let doc = m.doc.clone();
+                self.park(&doc, m, tx, None);
+            }
+            Ok(Route::Forward(hub)) => {
                 self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Subscribe { reply: tx })
             }
             Err(e) => tx.send(Err(e)),
@@ -1072,9 +1173,11 @@ impl Message<AwarenessUpdateMsg> for DocumentActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        match self.hub.route() {
-            Ok(None) => tx.send(self.awareness_update(m).await),
-            Ok(Some(hub)) => self.forward(
+        match self.route_doc(&m.doc, false) {
+            Ok(Route::Serve) => tx.send(self.awareness_update(m).await),
+            // §4.3 step 4: a cursor is best-effort; dropped instead of parked.
+            Ok(Route::Park) => tx.send(Ok(())),
+            Ok(Route::Forward(hub)) => self.forward(
                 hub,
                 &m.doc,
                 Client::of(&m.by),
@@ -1146,9 +1249,23 @@ impl Message<Ensure> for DocumentActor {
     async fn handle(&mut self, m: Ensure, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
-            return reply;
+        // 184 §5.2: a hub-only kind is created by the holder; off it, `Cmd::Create` asks it.
+        match self.route_home(None) {
+            Ok(None) => {}
+            Ok(Some(to)) => {
+                let id = DocId::for_binding(&m.binding);
+                let req = CreateReq::Ensure {
+                    binding: m.binding,
+                    markdown: m.markdown,
+                };
+                let ask = self.create_on::<DocSummary>(to, id, Client::Conn(None), req, None);
+                tokio::spawn(async move { tx.send(ask.await.map(|s| s.id)) });
+                return reply;
+            }
+            Err(e) => {
+                tx.send(Err(e.into()));
+                return reply;
+            }
         }
         match self.store.lookup(&m.binding).await {
             Ok(Some(id)) => {
@@ -1191,6 +1308,11 @@ impl Message<Ensure> for DocumentActor {
             authors: Default::default(),
             created_ms: now,
             updated_ms: now,
+            home: None,
+            home_ms: 0,
+            serve_epoch: 0,
+            served_by: None,
+            revoked: Default::default(),
         };
         if let Err(e) = self.store.create(&meta).await {
             tx.send(Err(format!("{e:#}")));
@@ -1230,10 +1352,11 @@ impl Message<ImportMarkdown> for DocumentActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
+        // 184 §4.6: the serving engine imports (a homed journal on its home).
+        let doc = m.doc.clone();
+        let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
             return reply;
-        }
+        };
         self.start_import(&m.doc, m.markdown, m.by, m.mode, ImportReply::Outcome(tx));
         reply
     }
@@ -1254,6 +1377,8 @@ impl Message<ImportDone> for DocumentActor {
         };
         let reply = std::mem::replace(&mut imp.reply, ImportReply::None);
         let (doc, sha) = (imp.doc.clone(), imp.sha.clone());
+        // 184 §5.3: a create whose update already landed snapshots now (else at the update).
+        let first = imp.first && imp.applied && m.result.is_ok();
         // A failed import sends no update; a successful one that changed nothing may not either.
         if m.result.is_err() || imp.applied {
             self.imports.remove(&m.req);
@@ -1271,6 +1396,9 @@ impl Message<ImportDone> for DocumentActor {
                     if let Err(e) = self.store.write_meta(&meta).await {
                         tracing::warn!(doc = %doc, error = %e, "meta.json write failed");
                     }
+                }
+                if first && let Err(e) = self.snapshot(&doc, None) {
+                    tracing::warn!(doc = %doc, error = %e, "documents: first snapshot failed");
                 }
                 finish_reply(
                     reply,
@@ -1351,12 +1479,17 @@ impl Message<Edit> for DocumentActor {
     async fn handle(&mut self, m: Edit, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        // E2: the tools and owner plugins run on every engine; off the hub the edit rides a
-        // `theuth/docs/1` leg (`Cmd::Edit`) and the hub's typed outcome comes back. A hub that cannot
-        // be reached answers `NotHub:<id>` — an error the caller sees and may retry, never a drop.
-        match self.hub.route() {
-            Ok(None) => self.start_edit(&m.doc, m.edits, m.by, tx),
-            Ok(Some(hub)) => self.forward(
+        // E2: the tools and owner plugins run on every engine; off the document's server the edit
+        // rides a `theuth/docs/1` leg (`Cmd::Edit`) and the server's typed outcome comes back. A
+        // server that cannot be reached answers `NotHub:<id>` — an error the caller sees and may
+        // retry, never a drop.
+        match self.route_doc(&m.doc, false) {
+            Ok(Route::Serve) => self.start_edit(&m.doc, m.edits, m.by, tx),
+            Ok(Route::Park) => {
+                let doc = m.doc.clone();
+                self.park(&doc, m, tx, None);
+            }
+            Ok(Route::Forward(hub)) => self.forward(
                 hub,
                 &m.doc,
                 Client::of(&m.by),
@@ -1435,10 +1568,10 @@ impl Message<UndoLastAgentEdit> for DocumentActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
+        let doc = m.doc.clone();
+        let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
             return reply;
-        }
+        };
         let last = self
             .open
             .get_mut(&m.doc)
@@ -1665,6 +1798,19 @@ impl Message<Markdown> for DocumentActor {
     }
 }
 
+/// 184 §5.1: where a new document lives. `Here` = this engine (the caller's), `Hub` = unhomed
+/// (served by the lease holder), `Engine(e)` = `e` (a task thread whose task lives on `e`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Homing {
+    /// The creating engine.
+    #[default]
+    Here,
+    /// No home: hub-served, as before 184.
+    Hub,
+    /// That engine (a task thread whose task lives there).
+    Engine(mesh::EngineId),
+}
+
 /// `ask` → `Result<DocSummary, String>`: a new `kind: note` document (§5.3) with derived file
 /// `documents/<id>/note.md`, its body imported from `markdown` and stamped `by`. A body with no
 /// level-1 heading gets `# <title>` as its first block so the title is visible in the editor (§7.3).
@@ -1676,6 +1822,8 @@ pub struct CreateNote {
     pub markdown: String,
     /// Who created it.
     pub by: Principal,
+    /// 184 §5.1: where it lives.
+    pub home: Homing,
 }
 
 /// `ask` → `Result<DocSummary, String>`: a new document bound to `binding` (a meeting's note, §7.4),
@@ -1690,6 +1838,8 @@ pub struct Create {
     pub markdown: String,
     /// Who created it.
     pub by: Principal,
+    /// 184 §5.1: where it lives.
+    pub home: Homing,
 }
 
 /// `markdown`, headed by `# title` unless it already has a level-1 heading.
@@ -1747,8 +1897,10 @@ impl Message<CreateBoard> for DocumentActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
+        // 184 §5.1: a board's `root:` is this engine's disk, so it is always `Homing::Here`.
+        let home = self.resolve_home(&Homing::Here, DocKind::Board);
+        if let Err(e) = self.route_home(home.as_ref()) {
+            tx.send(Err(e.into()));
             return reply;
         }
         self.create_doc(
@@ -1757,6 +1909,7 @@ impl Message<CreateBoard> for DocumentActor {
             m.title,
             m.markdown,
             m.by,
+            home,
             |s| ImportReply::CreatedNote(s, tx),
         )
         .await;
@@ -1770,14 +1923,8 @@ impl Message<CreateNote> for DocumentActor {
     async fn handle(&mut self, m: CreateNote, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
-            return reply;
-        }
-        self.create_doc(Binding::Note, None, m.title, m.markdown, m.by, |s| {
-            ImportReply::CreatedNote(s, tx)
-        })
-        .await;
+        self.create_routed(Binding::Note, m.title, m.markdown, m.by, m.home, tx)
+            .await;
         reply
     }
 }
@@ -1788,21 +1935,62 @@ impl Message<Create> for DocumentActor {
     async fn handle(&mut self, m: Create, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
-            return reply;
-        }
-        self.create_doc(m.binding, None, m.title, m.markdown, m.by, |s| {
-            ImportReply::CreatedNote(s, tx)
-        })
-        .await;
+        self.create_routed(m.binding, m.title, m.markdown, m.by, m.home, tx)
+            .await;
         reply
     }
 }
 
 impl DocumentActor {
+    /// 184 §5.2: create on the would-be server — here, or over `Cmd::Create` (the server runs it
+    /// as `Relayed`, with `home` resolved so `Here` keeps meaning this caller).
+    async fn create_routed(
+        &mut self,
+        binding: Binding,
+        title: String,
+        markdown: String,
+        by: Principal,
+        home: Homing,
+        tx: ReplySender<Result<DocSummary, String>>,
+    ) {
+        let home = self.resolve_home(&home, binding.kind());
+        match self.route_home(home.as_ref()) {
+            Ok(None) => {
+                // W-f: a relayed keyed create answers the document an earlier attempt made.
+                if self.relaying
+                    && !binding.keyless()
+                    && let Ok(Some(id)) = self.store.lookup(&binding).await
+                    && let Ok(meta) = self.store.read_meta(&id)
+                {
+                    tx.send(Ok(DocSummary::from(&meta)));
+                    return;
+                }
+                self.create_doc(binding, None, title, markdown, by, home, |s| {
+                    ImportReply::CreatedNote(s, tx)
+                })
+                .await;
+            }
+            Ok(Some(to)) => {
+                let id = DocId::for_binding(&binding);
+                let client = Client::of(&by);
+                let req = CreateReq::Create {
+                    binding,
+                    title,
+                    markdown,
+                    by,
+                    home: home.clone(),
+                };
+                let ask = self.create_on::<DocSummary>(to, id, client, req, home);
+                tokio::spawn(async move { tx.send(ask.await) });
+            }
+            Err(e) => tx.send(Err(e.into())),
+        }
+    }
+
     /// Meta + index row, `DocumentChanged`, then the headed body as one `replace` import. `board_root`
-    /// makes the document a `DocKind::Board` headed by [`board_frontmatter`] (71 §2.1).
+    /// makes the document a `DocKind::Board` headed by [`board_frontmatter`] (71 §2.1). `home`
+    /// (184 §5.2): this engine serves it from the start, fence epoch 1.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_doc(
         &mut self,
         binding: Binding,
@@ -1810,10 +1998,12 @@ impl DocumentActor {
         title: String,
         markdown: String,
         by: Principal,
+        home: Option<mesh::EngineId>,
         reply: impl FnOnce(DocSummary) -> ImportReply,
     ) -> DocId {
         let id = DocId::for_binding(&binding);
         let now = now_ms();
+        let homed = home.is_some();
         let meta = DocMeta {
             derived: binding.derived(&id),
             id: id.clone(),
@@ -1834,12 +2024,22 @@ impl DocumentActor {
             authors: Default::default(),
             created_ms: now,
             updated_ms: now,
+            home,
+            home_ms: if homed { now } else { 0 },
+            serve_epoch: i64::from(homed),
+            served_by: if homed { self.hub.self_id() } else { None },
+            revoked: Default::default(),
         };
         let reply = reply(DocSummary::from(&meta));
         if let Err(e) = self.store.create(&meta).await {
             finish_reply(reply, Err(format!("{e:#}")));
             return id;
         }
+        if homed {
+            self.claims
+                .insert(id.clone(), crate::hub::Claim::Held { epoch: 1 });
+        }
+        self.homes.insert(id.clone(), meta.home.clone());
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
         let mut markdown = with_heading(&meta.title, &markdown);
         if let Some(root) = board_root {
@@ -1867,10 +2067,10 @@ impl Message<Rename> for DocumentActor {
     async fn handle(&mut self, m: Rename, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
+        let doc = m.doc.clone();
+        let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
             return reply;
-        }
+        };
         let title = m.title.trim().to_owned();
         if title.is_empty() {
             tx.send(Err("title must not be empty".into()));
@@ -1956,23 +2156,33 @@ pub struct DeleteNote {
 }
 
 impl Message<DeleteNote> for DocumentActor {
-    type Reply = Result<(), String>;
+    type Reply = DelegatedReply<Result<(), String>>;
 
-    async fn handle(&mut self, m: DeleteNote, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.hub.gate_str()?;
-        let kind = match self.open.get(&m.doc) {
-            Some(o) => o.meta.kind,
-            None => {
-                self.store
-                    .read_meta(&m.doc)
-                    .map_err(|e| format!("{e:#}"))?
-                    .kind
-            }
+    async fn handle(&mut self, m: DeleteNote, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let doc = m.doc.clone();
+        let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
+            return reply;
         };
-        if !kind.free_standing() {
-            return Err("delete_via_owner".into());
+        let r = async {
+            let kind = match self.open.get(&m.doc) {
+                Some(o) => o.meta.kind,
+                None => {
+                    self.store
+                        .read_meta(&m.doc)
+                        .map_err(|e| format!("{e:#}"))?
+                        .kind
+                }
+            };
+            if !kind.free_standing() {
+                return Err("delete_via_owner".into());
+            }
+            self.delete_doc(&m.doc).await
         }
-        self.delete_doc(&m.doc).await
+        .await;
+        tx.send(r);
+        reply
     }
 }
 
@@ -2018,12 +2228,21 @@ pub struct Snapshot {
 }
 
 impl Message<Snapshot> for DocumentActor {
-    type Reply = Result<(), String>;
+    type Reply = DelegatedReply<Result<(), String>>;
 
-    async fn handle(&mut self, m: Snapshot, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.hub.gate_str()?;
-        self.load(&m.doc)?;
-        self.snapshot(&m.doc, Some(&m.label))
+    async fn handle(&mut self, m: Snapshot, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let doc = m.doc.clone();
+        let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
+            return reply;
+        };
+        tx.send(
+            self.load(&m.doc)
+                .map(|_| ())
+                .and_then(|()| self.snapshot(&m.doc, Some(&m.label))),
+        );
+        reply
     }
 }
 
@@ -2044,10 +2263,10 @@ impl Message<SetDerived> for DocumentActor {
     async fn handle(&mut self, m: SetDerived, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
+        let doc = m.doc.clone();
+        let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
             return reply;
-        }
+        };
         let o = match self.load(&m.doc) {
             Ok(o) => o,
             Err(e) => {
@@ -2088,26 +2307,36 @@ pub struct Bind {
 }
 
 impl Message<Bind> for DocumentActor {
-    type Reply = Result<bool, String>;
+    type Reply = DelegatedReply<Result<bool, String>>;
 
-    async fn handle(&mut self, m: Bind, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.hub.gate_str()?;
-        if !self
-            .store
-            .bind(&m.doc, &m.binding)
-            .await
-            .map_err(|e| format!("{e:#}"))?
-        {
-            return Ok(false);
+    async fn handle(&mut self, m: Bind, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let doc = m.doc.clone();
+        let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
+            return reply;
+        };
+        let r = async {
+            if !self
+                .store
+                .bind(&m.doc, &m.binding)
+                .await
+                .map_err(|e| format!("{e:#}"))?
+            {
+                return Ok(false);
+            }
+            let meta = self.store.read_meta(&m.doc).map_err(|e| format!("{e:#}"))?;
+            if let Some(o) = self.open.get_mut(&m.doc) {
+                o.meta.kind = meta.kind;
+                o.meta.binding = meta.binding.clone();
+                o.meta.derived = meta.derived.clone();
+            }
+            self.rt.publish(DocumentChanged::of(&meta, false)).await;
+            Ok(true)
         }
-        let meta = self.store.read_meta(&m.doc).map_err(|e| format!("{e:#}"))?;
-        if let Some(o) = self.open.get_mut(&m.doc) {
-            o.meta.kind = meta.kind;
-            o.meta.binding = meta.binding.clone();
-            o.meta.derived = meta.derived.clone();
-        }
-        self.rt.publish(DocumentChanged::of(&meta, false)).await;
-        Ok(true)
+        .await;
+        tx.send(r);
+        reply
     }
 }
 
@@ -2141,10 +2370,10 @@ impl Message<Restore> for DocumentActor {
     async fn handle(&mut self, m: Restore, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if let Err(e) = self.hub.gate_str() {
-            tx.send(Err(e));
+        let doc = m.doc.clone();
+        let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
             return reply;
-        }
+        };
         let bytes = match self.store.read_snapshot(&m.doc, &m.snapshot) {
             Ok(b) => b,
             Err(e) => {
@@ -2195,11 +2424,17 @@ pub struct Delete {
 }
 
 impl Message<Delete> for DocumentActor {
-    type Reply = Result<(), String>;
+    type Reply = DelegatedReply<Result<(), String>>;
 
-    async fn handle(&mut self, m: Delete, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.hub.gate_str()?;
-        self.delete_doc(&m.doc).await
+    async fn handle(&mut self, m: Delete, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let doc = m.doc.clone();
+        let Some((m, tx)) = self.gate_here(&doc, m, tx) else {
+            return reply;
+        };
+        tx.send(self.delete_doc(&m.doc).await);
+        reply
     }
 }
 
@@ -2216,9 +2451,6 @@ impl Message<FileChanged> for DocumentActor {
     type Reply = ();
 
     async fn handle(&mut self, m: FileChanged, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if !self.hub.holding() {
-            return;
-        }
         let id = match self.store.lookup(&m.binding).await {
             Ok(Some(id)) => id,
             Ok(None) => return,
@@ -2227,6 +2459,10 @@ impl Message<FileChanged> for DocumentActor {
                 return;
             }
         };
+        // 184 §4.6: the watcher runs on the holder; the import follows the document's server.
+        if !self.serves(&id) {
+            return;
+        }
         let Ok(Some(bytes)) = store::read_opt(&m.path) else {
             return;
         };
@@ -2269,16 +2505,24 @@ impl Message<MirrorChanged> for DocumentActor {
         let Some((id, kind)) = crate::mirror::parse(&m.path) else {
             return;
         };
-        // Off the hub a loaded document is a read cache (`doc_read`): drop it and merge on disk. Closed
-        // documents merge on disk; a document a peer removed follows its tombstone into `.trash`.
-        if !self.hub.holding() && self.open.contains_key(&id) {
+        // A loaded document this engine does not serve is a read cache (`doc_read`): drop it and
+        // merge on disk. Closed documents merge on disk; a document a peer removed follows its
+        // tombstone into `.trash`. 184 §4.6: a served one (a home's) merges live.
+        if !self.serves(&id) && self.open.contains_key(&id) {
             self.unload(&id, "unloaded");
         }
         if !self.open.contains_key(&id) {
+            let before = self.home_peek(&id);
             match self.store.mirror_apply(&m.path).await {
                 Ok(store::Applied::Created(_)) | Ok(store::Applied::Merged(_)) => {
+                    self.pending_homes.remove(&id);
+                    self.homes.remove(&id);
                     if let Ok(meta) = self.store.read_meta(&id) {
                         self.rt.publish(DocumentChanged::of(&meta, false)).await;
+                    }
+                    // §4.5: a moved home moves the legs.
+                    if self.home_peek(&id) != before {
+                        self.reroute();
                     }
                 }
                 Ok(_) => {}
@@ -2289,6 +2533,20 @@ impl Message<MirrorChanged> for DocumentActor {
             return;
         }
         let Ok(Some(bytes)) = store::read_opt(&m.path) else {
+            // W-s: a served document whose files a peer's delete removed is deleted here too, not
+            // re-snapshotted back into the mesh.
+            let gone: Option<i64> =
+                sqlx::query_scalar("SELECT 1 FROM docs WHERE id = ? AND deleted_ms IS NOT NULL")
+                    .bind(id.as_str())
+                    .fetch_optional(self.store.pool())
+                    .await
+                    .unwrap_or(None);
+            if gone.is_some() {
+                tracing::info!(doc = %id, "documents: deleted elsewhere while served here; deleting");
+                if let Err(e) = self.delete_doc(&id).await {
+                    tracing::warn!(doc = %id, error = %e, "documents: delete after a peer's delete failed");
+                }
+            }
             return;
         };
         if self
@@ -2342,9 +2600,19 @@ impl Message<MirrorChanged> for DocumentActor {
                 let Some(o) = self.open.get_mut(&id) else {
                     return;
                 };
-                if !crate::mirror::merge_meta(&mut o.meta, &incoming) {
+                // §7.4: the seal that opens here wins.
+                let vault = self.store.vault();
+                let opens =
+                    |l: &crate::meta::ShareLink| crate::share::seal_opens(vault.as_deref(), l);
+                let (home, fence) = (
+                    o.meta.home.clone(),
+                    (o.meta.serve_epoch, o.meta.served_by.clone()),
+                );
+                if !crate::mirror::merge_meta(&mut o.meta, &incoming, &opens) {
                     return;
                 }
+                let home_moved = o.meta.home != home;
+                let fence_moved = (o.meta.serve_epoch, o.meta.served_by.clone()) != fence;
                 let (meta, title) = (o.meta.clone(), o.meta.title.clone());
                 if let Err(e) = self.store.write_meta(&meta).await {
                     tracing::warn!(doc = %id, error = %e, "meta.json: merge not saved");
@@ -2359,6 +2627,13 @@ impl Message<MirrorChanged> for DocumentActor {
                 self.fan_out(&id, DocEvent::Members { members, links }, None);
                 self.fan_out(&id, DocEvent::Meta { title }, None);
                 self.rt.publish(DocumentChanged::of(&meta, false)).await;
+                // §4.4: a beaten fence names a second server; §4.5: a moved home reroutes.
+                if fence_moved {
+                    self.fence_beaten(&id);
+                }
+                if home_moved {
+                    self.reroute();
+                }
             }
         }
     }
@@ -2390,6 +2665,7 @@ impl Message<HelperEvent> for DocumentActor {
                 ratio,
             } => {
                 let mut done = false;
+                let mut first = false;
                 let (by, snapshot_first) = match (
                     self.imports.get_mut(&req),
                     self.edits.get_mut(&req),
@@ -2397,6 +2673,7 @@ impl Message<HelperEvent> for DocumentActor {
                     (Some(imp), _) => {
                         imp.applied = true;
                         done = imp.done_at.is_some();
+                        first = done && imp.first;
                         (
                             imp.by.clone(),
                             imp.mode == ImportMode::Diff
@@ -2425,6 +2702,9 @@ impl Message<HelperEvent> for DocumentActor {
                 }
                 if let Err(e) = self.apply(&doc, update, by, true, touched).await {
                     tracing::warn!(doc = %doc, error = %e, "helper update refused");
+                } else if first && let Err(e) = self.snapshot(&doc, None) {
+                    // 184 §5.3: the create's reply came first; its update now snapshots.
+                    tracing::warn!(doc = %doc, error = %e, "documents: first snapshot failed");
                 }
             }
         }
@@ -2458,7 +2738,8 @@ impl Message<Tick> for DocumentActor {
             // §4.1 size/count policy, plus 69: a quiet period, so the replicated mirror lags by seconds.
             if o.log_bytes > LOG_MAX_BYTES
                 || o.log_count > LOG_MAX_COUNT
-                || (self.hub.holding()
+                // 184 §4.6: the serving engine ships the mirror.
+                || (self.serves(id)
                     && o.log_count > 0
                     && now.duration_since(o.idle_since)
                         >= Duration::from_millis(self.cfg.snapshot_quiet_ms))
@@ -2487,21 +2768,36 @@ impl Message<Tick> for DocumentActor {
         for id in unloads {
             self.unload(&id, "unloaded");
         }
-        // §11 authorship coalesced to one `meta.json` (+ `agents.json`) write per tick.
+        // §11 authorship (and 184's fence) coalesced to one `meta.json` (+ `agents.json`) write per tick.
         let dirty: Vec<_> = self
             .open
             .values_mut()
             .filter_map(|o| {
-                std::mem::take(&mut o.authors_dirty).then(|| (o.meta.clone(), o.agents.clone()))
+                let agents = std::mem::take(&mut o.authors_dirty).then(|| o.agents.clone());
+                let meta = std::mem::take(&mut o.meta_dirty);
+                (agents.is_some() || meta).then(|| (o.meta.clone(), agents))
             })
             .collect();
         for (meta, agents) in dirty {
-            if let Err(e) = self.store.write_agents(&meta.id, &agents) {
+            if let Some(agents) = agents
+                && let Err(e) = self.store.write_agents(&meta.id, &agents)
+            {
                 tracing::warn!(doc = %meta.id, error = %e, "agents.json: not saved");
             }
             if let Err(e) = self.store.write_meta(&meta).await {
                 tracing::warn!(doc = %meta.id, error = %e, "meta.json: authors not saved");
             }
+        }
+        // 184 §8.1: the docs gate every 30 s besides every mesh event; §5.3: forwarded creates'
+        // homes expire.
+        if self
+            .last_gate_poll
+            .is_none_or(|t| now.duration_since(t) >= GATE_POLL)
+        {
+            self.last_gate_poll = Some(now);
+            self.poll_gate();
+            self.pending_homes
+                .retain(|_, (_, at)| at.elapsed() < crate::hub::PENDING_HOME_TTL);
         }
         // Imports that replied but changed nothing send no update: forget them after a grace period.
         self.imports.retain(|_, i| {

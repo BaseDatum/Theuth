@@ -496,6 +496,8 @@ export interface Api {
   doc_rename(doc: DocId, title: string): Promise<null>
   /** Move a note to the trash (swept after 30 days); other kinds reject `delete_via_owner`. */
   doc_delete(doc: DocId): Promise<null>
+  /** 184 §4.8: "Move to ▸ machine" for a note; the server hands home and live copy to `to`. */
+  doc_move_home(doc: DocId, to: string): Promise<DocSummary>
   /** The documents helper beside `t` (59 §3.2): missing = notes, knowledge editing and meeting notes are disabled. */
   documents_status(): Promise<HelperStatus>
   /** Foreign-snapshot counters since start (E2): `merged`, `unchanged`, `resnapshots`, `noop_applies_avoided`; served on any engine, never persisted. */
@@ -692,6 +694,8 @@ export interface Api {
   link_cancel_pair(): Promise<null>
   /** Toggle the link plugin; `relay` replaces `link.relay` when not `null` (31 §6.4). */
   link_enable(enabled: boolean, relay: string | null): Promise<null>
+  /** 184 §7.2: mesh-internal (`theuth/rpc/1` only): the mesh link id, minted on the lease holder only. */
+  link_mesh_id(): Promise<string>
   /** Start a 5-minute single-use pairing; the key is the QR payload. */
   link_pair(): Promise<Pairing>
   link_rename(name: string): Promise<null>
@@ -1506,6 +1510,7 @@ export const METHODS = [
   'doc_member_revoke',
   'doc_member_set',
   'doc_members',
+  'doc_move_home',
   'doc_open',
   'doc_rename',
   'doc_resolve',
@@ -1584,6 +1589,7 @@ export const METHODS = [
   'leave_session',
   'link_cancel_pair',
   'link_enable',
+  'link_mesh_id',
   'link_pair',
   'link_rename',
   'link_rename_device',

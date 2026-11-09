@@ -1171,6 +1171,7 @@ async fn create_document(slug: &str, markdown: &str) -> Option<String> {
             title: format!("Autoresearch: {slug}"),
             markdown: markdown.to_owned(),
             by: document::Principal::Helper,
+            home: document::Homing::Here,
         })
         .await
     {

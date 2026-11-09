@@ -112,6 +112,7 @@ async fn note(actor: &ActorRef<DocumentActor>, title: &str, md: &str) -> DocId {
             title: title.into(),
             markdown: md.into(),
             by: Principal::Owner { device: None },
+            home: document::Homing::Here,
         })
         .await
         .unwrap()

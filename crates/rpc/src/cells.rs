@@ -1,8 +1,8 @@
 //! Owner: E1 — the `cell_*` RPC handler bodies (design 171 §15.2), delegated to from
 //! `api.rs` one line each. Every mutating method runs the press guard first (§12.1
 //! invariants 1, 14), then routes: chat scope through `authorize` + `forward::route`
-//! (the session owner's engine), note scope through `note::route` (the document's hub);
-//! `Ok(None)` from the router means "this engine", and the actor's `Cells` handle answers.
+//! (the session owner's engine); note scope always runs here, on the viewer's engine (184
+//! §6.1). `Ok(None)` from the router means "this engine", and the actor's `Cells` handle answers.
 //! Reads run the "owner, not guest" guard and answer neutral values when the plugin is
 //! not running.
 
@@ -30,18 +30,19 @@ mod cells_guard;
 pub const CELL_REFUSED: i32 = -32020;
 
 /// `CellsError` → JSON-RPC: `NOT_RUNNING`, `UNAUTHORIZED`, else [`CELL_REFUSED`]; the message is
-/// the text the cell shows, `data: {"reason": <code>}` what clients branch on.
+/// the text the cell shows, `data: {"reason": <code>}` what clients branch on (a `member_ack`
+/// also carries `member`, the pub8 to acknowledge: `"?"` when the author is unknown, 184 §6.2).
 pub(crate) fn cells_err(e: CellsError) -> ErrorObjectOwned {
     let code = match e {
         CellsError::NotRunning => NOT_RUNNING,
         CellsError::NotOwner => UNAUTHORIZED,
         _ => CELL_REFUSED,
     };
-    ErrorObjectOwned::owned(
-        code,
-        e.to_string(),
-        Some(serde_json::json!({ "reason": e.code() })),
-    )
+    let data = match &e {
+        CellsError::MemberAck(p) => serde_json::json!({ "reason": e.code(), "member": p }),
+        _ => serde_json::json!({ "reason": e.code() }),
+    };
+    ErrorObjectOwned::owned(code, e.to_string(), Some(data))
 }
 
 /// The running engine's handle.
@@ -51,9 +52,10 @@ pub(crate) async fn handle() -> RpcResult<::cells::Cells> {
         .ok_or_else(|| cells_err(CellsError::NotRunning))
 }
 
-/// Runs this engine forwarded elsewhere (`cell_run` / `cell_run_all` answered by the owner or
-/// hub): `cell_stop`, `cell_input`, `cell_ask` and the per-run reads on such an id follow the
-/// same route. Process-local; a restart forgets it (the run is `lost` anyway, §5.3).
+/// Runs this engine forwarded elsewhere (`cell_run` / `cell_run_all` answered by the chat's
+/// owner; 184: never a note's): `cell_stop`, `cell_input`, `cell_ask` and the per-run reads on
+/// such an id follow the same route. Process-local; a restart forgets it (the run is `lost`
+/// anyway, §5.3).
 // ponytail: flat map capped at FORWARDED_CAP, an arbitrary entry is evicted when full; make it
 // an LRU if a client ever presses that many remote cells in one engine lifetime.
 static FORWARDED: LazyLock<parking_lot::Mutex<HashMap<RunId, Scope>>> =
@@ -77,7 +79,8 @@ fn forwarded_scope(run: &RunId) -> Option<Scope> {
 }
 
 /// Route one call by scope (§5.1 W-d). Chat: `authorize` then `forward::route`, exactly like
-/// `send_input`. Note: `note::route`; a hub elsewhere gets the call over `theuth/rpc/1`.
+/// `send_input`. Note: this engine, the viewer's (184 §6.1: its cwd, HOME, interpreters,
+/// secrets and `cells.sqlite`).
 /// `Ok(None)`: this engine runs it. `Ok(Some(r))`: the remote engine's reply.
 async fn route_scope<T: DeserializeOwned>(
     server: &Server,
@@ -91,18 +94,7 @@ async fn route_scope<T: DeserializeOwned>(
             server.authorize(ext, *s).await?;
             crate::forward::route(ext, *s, method, params).await
         }
-        Scope::Doc(doc) => match ::cells::note::route(doc).await.map_err(cells_err)? {
-            ::cells::note::Route::Local => Ok(None),
-            ::cells::note::Route::Hub(hub) => {
-                let hub = replica::PeerId(hub);
-                match crate::forward::to_peer(ext, &hub, method, params).await? {
-                    Some(r) => Ok(Some(r)),
-                    None => Err(cells_err(CellsError::Failed(
-                        "the note's hub engine is not connected".into(),
-                    ))),
-                }
-            }
-        },
+        Scope::Doc(_) => Ok(None),
     }
 }
 
@@ -377,8 +369,8 @@ pub(crate) async fn state(
     }
 }
 
-/// The engine a forwarded scope's cells run on (§14.2), by its mesh name: the chat session's
-/// owner, or the note's hub. `None` when it cannot be told.
+/// The engine a forwarded chat's cells run on (§14.2), by its mesh name: the session's owner.
+/// `None` when it cannot be told, and for a note: its cells always run here (184 §6.1).
 async fn host_of(scope: &Scope) -> Option<String> {
     let id = match scope {
         Scope::Session(s) => {
@@ -394,10 +386,7 @@ async fn host_of(scope: &Scope) -> Option<String> {
                 .map(|(owner, _)| owner)
                 .filter(|o| !o.is_empty())?
         }
-        Scope::Doc(doc) => match ::cells::note::route(doc).await.ok()? {
-            ::cells::note::Route::Hub(hub) => hub,
-            ::cells::note::Route::Local => return None,
-        },
+        Scope::Doc(_) => return None,
     };
     // The chip shows the peer's name ("Sky's Mac mini"), its id prefix when it has none.
     let name = crate::api::ask::<mesh::Mesh, _>(mesh::MESH_ACTOR, mesh::Status)
@@ -922,5 +911,40 @@ mod tests {
         assert_eq!(store.owner(theirs).await.unwrap(), Some(("them".into(), 1)));
         assert_eq!(store.owner(mine).await.unwrap(), Some(("me".into(), 1)));
         store.close().await;
+    }
+
+    /// 184 §6.1 (W-m): a note's cells run on the viewer's engine — the route answers "here"
+    /// with no documents actor and no lease to ask (it used to ask the hub and fail).
+    #[tokio::test]
+    async fn note_scope_routes_here() {
+        let server = server();
+        let ext = with(link::RpcPeer::internal());
+        let scope = Scope::Doc(DocId("d1".into()));
+        let got: Option<()> = route_scope(&server, &ext, &scope, "cell_stop", ())
+            .await
+            .unwrap();
+        assert!(got.is_none(), "answered here");
+        let got: Option<StateReply> = read_scope(&server, &ext, &scope, "cell_state", ())
+            .await
+            .unwrap();
+        assert!(got.is_none(), "read here");
+        assert_eq!(host_of(&scope).await, None, "no host chip on a note");
+    }
+
+    /// 184 §6.2, §12.3: a `member_ack` refusal names the member to acknowledge in `data`, so the
+    /// UI tells the unknown author (`"?"`, the confirm) from a named member's edit.
+    #[test]
+    fn a_member_ack_names_its_member_in_data() {
+        let data = |e: CellsError| -> serde_json::Value {
+            serde_json::from_str(cells_err(e).data().unwrap().get()).unwrap()
+        };
+        assert_eq!(
+            data(CellsError::MemberAck("?".into())),
+            serde_json::json!({ "reason": "member_ack", "member": "?" })
+        );
+        assert_eq!(
+            data(CellsError::Changed),
+            serde_json::json!({ "reason": "changed" })
+        );
     }
 }

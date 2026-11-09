@@ -590,23 +590,33 @@ impl Cells {
 
     /// Inspect one note cell (§3.3, §4.4) against the live block, the note's other cells
     /// and its ```` ```cells ```` defaults; also the block itself (its author, invariant 6).
+    /// 184 §6.2: the block and the note come from the document's server; `seen` (a press's
+    /// digest) makes the server wait for the keystroke that matches it (W-u).
     async fn inspect_note(
         &self,
         cell: &CellRef,
         doc: &DocId,
         key: &NoteKey,
         env: &Env,
+        seen: Option<&str>,
     ) -> Result<(Inspected, note::NoteSource)> {
-        let source = note::source(doc, key).await?;
+        let source = note::source(doc, key, seen).await?;
         let parsed =
             surface::cell::parse(&source.language, &source.text).ok_or(CellsError::Changed)?;
         let presented = Presented {
             digest: surface::cell::digest(&source.text),
             cell: parsed,
         };
-        let md = note::markdown(doc).await.unwrap_or_default();
-        let (defaults, second_defaults) = note::defaults_of(&md);
-        let others = chat::cells_of(&md);
+        // The server's markdown when the read went there; `""` = read here (this engine serves).
+        let local;
+        let md: &str = if source.markdown.is_empty() {
+            local = note::markdown(doc).await.unwrap_or_default();
+            &local
+        } else {
+            &source.markdown
+        };
+        let (defaults, second_defaults) = note::defaults_of(md);
+        let others = chat::cells_of(md);
         let opts = &presented.cell.options;
         let mut names: Vec<String> = others
             .iter()
@@ -647,7 +657,7 @@ impl Cells {
         let after = match &opts.after {
             Some(a) => Some(Gate::Pending {
                 name: a.clone(),
-                current: note::source(doc, &NoteKey::Name(a.clone()))
+                current: note::source(doc, &NoteKey::Name(a.clone()), None)
                     .await
                     .map(|s| surface::cell::digest(&s.text))
                     .unwrap_or_default(),
@@ -720,7 +730,8 @@ impl Cells {
                 Self::inspect(&t, cell, home).ok_or(CellsError::Changed)?
             }
             CellRef::Note { doc, key } => {
-                let (inspected, source) = self.inspect_note(cell, doc, key, &env).await?;
+                let (inspected, source) =
+                    self.inspect_note(cell, doc, key, &env, Some(seen)).await?;
                 // Invariant 6: a member's text the owner has not run needs its `member_ack`.
                 let latest = self.store()?.latest_of_cell(&json(cell)).await?;
                 note::member_guard(&source, latest.map(|r| r.run).as_ref(), member_ack)?;
@@ -1915,7 +1926,7 @@ impl Cells {
                     None => continue,
                 },
                 (CellRef::Note { doc, key }, None) => {
-                    match self.inspect_note(c, doc, key, &env).await {
+                    match self.inspect_note(c, doc, key, &env, None).await {
                         Ok((i, s)) => (i, Some(s)),
                         Err(_) => continue,
                     }
