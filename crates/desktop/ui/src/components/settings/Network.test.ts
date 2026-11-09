@@ -553,7 +553,9 @@ test('183 R5 Keep paired…: a confirm with the name, short id, who added it and
   const dialog = document.querySelector('[role=alertdialog]')!
   expect(dialog.textContent).toContain('Keep ghost-pc paired?')
   expect(dialog.textContent).toContain('ghost-pc · ghost012 was added by old-laptop after old-laptop was unpaired')
-  expect(document.getElementById(dialog.getAttribute('aria-describedby')!)!.textContent).toContain('Pairing shares your secrets vault')
+  // P2-F1: described by both the "added by" line and the vault warning.
+  const described = dialog.getAttribute('aria-describedby')!.split(' ').map((id) => document.getElementById(id)!.textContent)
+  expect(described).toEqual(['ghost-pc · ghost012 was added by old-laptop after old-laptop was unpaired. Keep it only if it is your own machine.', 'Pairing shares your secrets vault, sessions and tasks — only pair your own machines.'])
   expect(document.activeElement).toBe(button('Cancel'))
   await run(async () => button('Cancel')!.click())
   expect(api.mesh_confirm_peer).not.toHaveBeenCalled()

@@ -696,9 +696,24 @@ impl Vault {
     /// `''` rows of §9.5 are never rewritten outside a rotation.
     pub async fn maintain(&self, now: u64) -> anyhow::Result<()> {
         // 183 R1: a crash between the mint and the device-key reset retries here. R4: its
-        // failure is logged; the sweep and retire still run this tick.
-        if let Err(e) = self.finish_device_reset().await {
-            tracing::warn!("secrets: device-key reset still pending: {e:#}");
+        // failure is logged; the sweep and retire still run this tick. P2-F1: logged once per
+        // change of the error (and again after a success), not every tick.
+        let failed = self
+            .finish_device_reset()
+            .await
+            .err()
+            .map(|e| format!("{e:#}"));
+        {
+            let mut warned = self
+                .reset_warned
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if failed != *warned {
+                if let Some(e) = &failed {
+                    tracing::warn!("secrets: device-key reset still pending: {e}");
+                }
+                *warned = failed;
+            }
         }
         let (cur, retained) = {
             let r = self.ring();

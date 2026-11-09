@@ -345,10 +345,10 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
         </div>
       ))}
       <AlertDialog open={keeping !== null} onOpenChange={(o) => !o && setKeeping(null)}>
-        <AlertDialogContent aria-describedby="keep-vault-warning">
+        <AlertDialogContent aria-describedby="keep-added-by keep-vault-warning">
           <AlertDialogHeader>
             <AlertDialogTitle>Keep {keeping?.name} paired?</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogDescription id="keep-added-by">
               {keeping?.name} · {keeping?.id.slice(0, 8)} was added by {keeping?.added_by_name} after {keeping?.added_by_name} was unpaired. Keep it only if it is your own machine.
             </AlertDialogDescription>
           </AlertDialogHeader>

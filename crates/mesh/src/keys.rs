@@ -1051,6 +1051,50 @@ mod tests {
         b.shutdown().await;
     }
 
+    /// P2-F1: Remove on a quarantined machine tombstones it and only then clears the list
+    /// entry: it is never paired in between (the paired set never moves) and leaves the list.
+    #[tokio::test]
+    async fn removing_a_quarantined_machine_never_pairs_it() {
+        let (b, _db, _vb) = node_at("b", 1_000).await;
+        let id = || EngineId(SecretKey::generate().public().to_string());
+        let (c, x) = (id(), id());
+        let now = now_ms();
+        let entry = |id: &EngineId, added_ms: u64, removed_ms: Option<u64>| PeerEntry {
+            id: id.clone(),
+            name: id.0[..4].into(),
+            addrs: Vec::new(),
+            hub_pref: crate::types::HubPref::Eligible,
+            added_ms,
+            removed_ms,
+        };
+        b.merge_peers(&[entry(&c, now - 3_600_000, None)], None)
+            .await
+            .unwrap();
+        b.merge_peers(&[entry(&x, now, None)], Some(&c))
+            .await
+            .unwrap();
+        b.merge_peers(&[entry(&c, now - 3_600_000, Some(now - 1_000))], None)
+            .await
+            .unwrap();
+        assert_eq!(b.quarantined().await.unwrap().len(), 1);
+        let ex = EndpointId::from_str(&x.0).unwrap();
+        let mut generation = b.peers_gen.subscribe();
+        generation.mark_unchanged();
+        b.remove_peer(&x).await.unwrap();
+        assert!(
+            !generation.has_changed().unwrap(),
+            "x was never paired in between"
+        );
+        assert!(!b.is_paired(&ex));
+        assert!(
+            b.quarantined().await.unwrap().is_empty(),
+            "the list entry is gone"
+        );
+        let rows = b.store.peer_entries().await.unwrap();
+        assert!(rows.iter().any(|p| p.id == x && p.removed()), "tombstoned");
+        b.shutdown().await;
+    }
+
     /// 183 R4: A and B pair through E; N pairs through E and learns A and B from it; A retires
     /// E a moment later. Nothing E handed over at pairing is quarantined: A and B stay paired on
     /// N, A on B, nothing is listed, no row of theirs is tombstoned.

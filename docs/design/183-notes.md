@@ -1,5 +1,17 @@
 # 183 — build notes
 
+## Phase 2 follow-ups P2-F1 (final engine review should-fixes)
+
+1. **Dial lock.** `close_conns` closes the control and inbound connections first, then waits for `outbound` (held across a dial, up to 30 s) and re-checks `is_paired`: an engine re-paired meanwhile keeps its fresh dials. Test `closing_never_waits_for_a_dial_and_spares_a_re_pair`.
+2. **Remove ordering.** Remove is the unpair alone; `remove_peer` runs tombstone → `refresh_paired` → close connections → clear the quarantine entry last, so the machine is never paired in between, a failed removal leaves it listed, and a failure clearing the entry leaves no stale paired set. Test `removing_a_quarantined_machine_never_pairs_it` (fails on the old `remove_peer`).
+3. **`refresh_paired` serialised** (`Net::refreshing`, store read → set write, `peers_gen` bump inside); connections close after the lock. No deterministic fail-before: the stale interleaving needs a hook between the read and the write.
+4. **Tick without a vault.** The 5 s tick starts at once and runs the paired-set refresh vault or not; the vault (and `keys::start`) joins in the same task when `secrets::handle` answers.
+5. **`connected()` filters by `is_paired`**, so `recompute`, `Transport::peers`, availability and status never count an engine that just left the set. Test `an_engine_out_of_the_paired_set_is_no_peer_and_no_gossip_source`.
+6. **Gossip.** A heartbeat or `LeaseRelease` counts only when the neighbour that delivered it (`delivered_from`) and the engine it names are both paired (`Net::gossip_admits`). Not "the same engine": plumtree forwards frames, so a paired relay is normal. Residual: a paired engine that has not heard of the unpair yet can still forward a forged frame naming a paired id; gossip carries only lease liveness (no data, no keys), and the lease re-elects from the replicated `engine_stats`.
+7. The device-key reset warning is logged once per change of the error (`Vault::reset_warned`), not every tick.
+8. UI: the keep-paired confirm is described by the "was added by …" line and the vault warning (`aria-describedby="keep-added-by keep-vault-warning"`); vitest asserts both texts.
+- Fail-before: the tests for 1, 2 and 5/6 fail with the old `close_conns`, `remove_peer` and `connected()` (all three failed in one mutation run). Gates: check and clippy on the R1 set 0/0; mesh/secrets/rpc/roster/document/link twice green (mesh 61); tsc 0; vitest settings 17 files, 110 tests.
+
 ## Phase 2 closer round R5 (Z2-R5): UI re-review items
 
 - **Dial race.** `usePairFlow` gives each dial a token (`dial`); Cancel or a newer dial makes it stale, and a stale reply's ceremony is refused (`seen`, answered false), never shown. `dialing` counts pending dials so an unknown waiting ceremony still cannot open meanwhile. vitest "a cancelled dial's late reply never lands on the next dialog".

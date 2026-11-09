@@ -781,6 +781,13 @@ impl Ctx {
                 }
                 ev = receiver.next() => match ev {
                     Some(Ok(GossipEvent::Received(msg))) => match serde_json::from_slice::<GossipMsg>(&msg.content) {
+                        // P2-F1: the neighbour that delivered it and the engine it names must both
+                        // be paired (a removed engine's frames, and its own id, count for nothing).
+                        Ok(GossipMsg::Heartbeat { id, .. } | GossipMsg::LeaseRelease { id })
+                            if !self.net.gossip_admits(&msg.delivered_from, &id) =>
+                        {
+                            tracing::debug!("mesh: gossip about {id} via {} dropped: not paired", msg.delivered_from.fmt_short());
+                        }
                         Ok(hb @ GossipMsg::Heartbeat { .. }) => {
                             self.on_heartbeat(hb);
                             // 182 D5: a starting engine elects on the first heartbeat (not the
@@ -924,15 +931,25 @@ impl Message<ConfirmPeer> for Mesh {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: ConfirmPeer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !m.keep {
+            // 183 R4, P2-F1: Remove is the user's unpair (tombstone, push, rotation); the list
+            // entry clears inside the tombstone step, so the machine is never paired between.
+            let listed = self
+                .ctx
+                .net
+                .quarantined()
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            if !listed.iter().any(|q| q.id == m.id) {
+                return Err(format!("{} is not waiting for a confirmation", m.id));
+            }
+            return self.unpair(&m.id, false).await;
+        }
         self.ctx
             .net
             .confirm_peer(&m.id)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        // 183 R4: Remove is the user's unpair (tombstone, push, rotation), never a quarantine's.
-        if !m.keep {
-            return self.unpair(&m.id, false).await;
-        }
         self.ctx.recompute("confirm").await;
         Ok(())
     }
@@ -1184,19 +1201,26 @@ impl runtime::Plugin for MeshPlugin {
         // 79 §6.6: secrets stamps its replicated rows with the engine id; it starts
         // before us and cannot ask the mesh (mesh depends on secrets), so we tell it.
         tokio::spawn(tell_secrets_engine(rt.clone(), net.id.clone()));
-        // 183 §6.9: the vault the key frames and the rotation move keys in, then the key tick
+        // 183 §6.9: the vault the key frames and the rotation move keys in, and the key tick
         // (member rule, missing-key requests, the rotation's peer list) until shutdown.
+        // P2-F1: the tick (and its paired-set refresh: unpair enforcement) runs from the start,
+        // vault or not; the vault joins when it opens, `keys::start` before any tick uses it.
         let (n, rt2) = (net.clone(), rt.clone());
         tokio::spawn(async move {
-            let Some(vault) = secrets::handle(&rt2).await else {
-                return;
-            };
-            n.set_vault(vault);
-            keys::start(&n).await;
+            let vault = secrets::handle(&rt2);
+            tokio::pin!(vault);
+            let mut waiting = true;
             let mut every = tokio::time::interval(keys::TICK);
             loop {
                 tokio::select! {
                     () = rt2.shutdown.cancelled() => return,
+                    v = &mut vault, if waiting => {
+                        waiting = false;
+                        if let Some(v) = v {
+                            n.set_vault(v);
+                            keys::start(&n).await;
+                        }
+                    }
                     _ = every.tick() => keys::tick(&n, now_ms()).await,
                 }
             }

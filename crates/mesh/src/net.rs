@@ -376,6 +376,8 @@ pub struct Net {
     paired: Arc<RwLock<HashSet<EndpointId>>>,
     /// 183 R3: inbound connections on the stream ALPNs and gossip, by peer (closed on unpair).
     inbound_conns: Mutex<HashMap<EndpointId, Vec<Connection>>>,
+    /// P2-F1: serialises `refresh_paired` (store read → set write).
+    refreshing: tokio::sync::Mutex<()>,
     presence: Mutex<HashMap<EndpointId, Presence>>,
     outbound: tokio::sync::Mutex<HashMap<(EndpointId, String), Connection>>,
     events: broadcast::Sender<PeerEvent>,
@@ -510,6 +512,7 @@ impl Net {
                 pending: Mutex::new(None),
                 paired: Arc::new(RwLock::new(paired)),
                 inbound_conns: Mutex::new(HashMap::new()),
+                refreshing: tokio::sync::Mutex::new(()),
                 presence: Mutex::new(HashMap::new()),
                 outbound: tokio::sync::Mutex::new(HashMap::new()),
                 events,
@@ -564,8 +567,9 @@ impl Net {
         if self.is_paired(peer) {
             return;
         }
-        // 183 R3: every ALPN, both directions: the control connection, our cached dials
-        // (records, sessions, docs, acp, rpc, …) and every connection it opened to us.
+        // 183 R3: every ALPN, both directions: the control connection, every connection it
+        // opened to us, and our cached dials (records, sessions, docs, acp, rpc, …).
+        // P2-F1: presence and inbound first; `outbound` is held across a dial (up to 30 s).
         let mut conns = Self::lock(&self.presence)
             .get(peer)
             .map(|p| p.conns.clone())
@@ -575,19 +579,21 @@ impl Net {
                 .remove(peer)
                 .unwrap_or_default(),
         );
-        {
-            let mut out = self.outbound.lock().await;
-            out.retain(|(id, _), c| {
-                let keep = id != peer;
-                if !keep {
-                    conns.push(c.clone());
-                }
-                keep
-            });
-        }
-        for c in conns {
+        for c in conns.drain(..) {
             c.close(0u32.into(), b"removed");
         }
+        let mut out = self.outbound.lock().await;
+        // A re-pair during the wait keeps the connections it dialed since.
+        if self.is_paired(peer) {
+            return;
+        }
+        out.retain(|(id, _), c| {
+            let keep = id != peer;
+            if !keep {
+                c.close(0u32.into(), b"removed");
+            }
+            keep
+        });
     }
 
     /// 183 R3: remember an inbound connection (stream ALPNs, gossip) so an unpair closes it.
@@ -690,13 +696,21 @@ impl Net {
             .is_some_and(|p| !p.conns.is_empty())
     }
 
-    /// Connected peers with when each connection run started (ms).
+    /// Connected paired peers with when each connection run started (ms). P2-F1: a connection
+    /// of an engine that just left the paired set is not a peer, even before it closes.
     pub fn connected(&self) -> Vec<(EngineId, u64)> {
         Self::lock(&self.presence)
             .iter()
-            .filter(|(_, p)| !p.conns.is_empty())
+            .filter(|(id, p)| !p.conns.is_empty() && self.is_paired(id))
             .map(|(id, p)| (EngineId(id.to_string()), p.since_ms))
             .collect()
+    }
+
+    /// P2-F1: a gossip frame counts only when the neighbour that delivered it and the engine
+    /// it names are both paired. Not "the same engine": gossip forwards frames through peers.
+    pub(crate) fn gossip_admits(&self, delivered_from: &EndpointId, id: &EngineId) -> bool {
+        self.is_paired(delivered_from)
+            && EndpointId::from_str(&id.0).is_ok_and(|e| self.is_paired(&e))
     }
 
     /// This engine's display name.
@@ -976,7 +990,9 @@ impl Net {
         Ok(())
     }
 
-    /// Local removal: tombstone, drop connections, tell everyone.
+    /// Local removal: tombstone, refresh the paired set, drop connections, tell everyone.
+    /// P2-F1: a quarantined row leaves the list last, so Remove never pairs it in between, a
+    /// failed removal leaves it quarantined, and a failure clearing the list leaves no stale set.
     pub async fn remove_peer(&self, id: &EngineId) -> anyhow::Result<()> {
         let entries = self.store.peer_entries().await?;
         let Some(mut row) = entries.into_iter().find(|p| &p.id == id) else {
@@ -997,6 +1013,7 @@ impl Net {
                 .events
                 .send(PeerEvent::Disconnected(PeerId(id.0.clone())));
         }
+        self.store.confirm_origin(id).await?;
         Ok(())
     }
 
@@ -1004,6 +1021,9 @@ impl Net {
     /// the in-memory copy alone). Quarantine first (S1); an engine that left the set has its
     /// connections closed.
     pub(crate) async fn refresh_paired(&self) -> anyhow::Result<HashSet<EndpointId>> {
+        // P2-F1: one refresh at a time from the store read to the set write, so a slower one
+        // never writes an older set over a newer one (the connections are closed after).
+        let refreshing = self.refreshing.lock().await;
         self.quarantine().await?;
         // 183 R4: `Store::peers` leaves quarantined rows out (they stay live in the replicated
         // table): unpaired on this engine only, until a user keeps or removes them.
@@ -1014,16 +1034,16 @@ impl Net {
             .iter()
             .filter_map(|p| EndpointId::from_str(&p.id.0).ok())
             .collect();
-        let (changed, gone) = {
+        let gone: Vec<EndpointId> = {
             let mut paired = self.paired.write().unwrap_or_else(|p| p.into_inner());
-            let gone: Vec<EndpointId> = paired.difference(&live).copied().collect();
-            let changed = *paired != live;
-            paired.clone_from(&live);
-            (changed, gone)
+            let gone = paired.difference(&live).copied().collect();
+            if *paired != live {
+                paired.clone_from(&live);
+                self.peers_gen.send_modify(|g| *g += 1);
+            }
+            gone
         };
-        if changed {
-            self.peers_gen.send_modify(|g| *g += 1);
-        }
+        drop(refreshing);
         for id in gone {
             self.close_conns(&id).await;
         }
@@ -1093,8 +1113,8 @@ impl Net {
             .collect())
     }
 
-    /// 183 R1 (S1, `mesh_confirm_peer`), R4: either way the row leaves the list; `keep` pairs it
-    /// here again (it was never tombstoned), otherwise the caller unpairs it for real.
+    /// 183 R1 (S1, `mesh_confirm_peer` keep), R4: the row leaves the list and is paired here
+    /// again (it was never tombstoned). Remove is `remove_peer`, which clears the list entry.
     pub async fn confirm_peer(&self, id: &EngineId) -> anyhow::Result<()> {
         if !self.store.confirm_origin(id).await? {
             anyhow::bail!("{id} is not waiting for a confirmation");
@@ -1825,6 +1845,85 @@ pub(crate) mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// Two paired nodes, `a` holding a control connection to `c`.
+    async fn connected_pair() -> (Arc<Net>, Arc<Net>, tempfile::TempDir, tempfile::TempDir) {
+        let (a, da) = node("a").await;
+        let (c, dc) = node("c").await;
+        c.add_peer(&a.pairing_string().await).await.unwrap();
+        for _ in 0..400 {
+            if a.control_conn(&c.endpoint.id()).is_some() && c.is_paired(&a.endpoint.id()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(a.control_conn(&c.endpoint.id()).is_some());
+        (a, c, da, dc)
+    }
+
+    /// P2-F1: `close_conns` closes the control connection at once, even while a dial holds
+    /// `outbound`; an engine re-paired during that wait keeps the connections dialed for it.
+    #[tokio::test]
+    async fn closing_never_waits_for_a_dial_and_spares_a_re_pair() {
+        let (a, c, _da, _dc) = connected_pair().await;
+        let ec = c.endpoint.id();
+        let _s = Transport::open(&*a, &PeerId(c.id.0.clone()), replica::ALPN_RECORDS)
+            .await
+            .unwrap();
+        let control = a.control_conn(&ec).unwrap();
+        let dialing = a.outbound.lock().await;
+        a.paired.write().unwrap().remove(&ec);
+        let a2 = a.clone();
+        let closing = tokio::spawn(async move { a2.close_conns(&ec).await });
+        for _ in 0..80 {
+            if control.close_reason().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            control.close_reason().is_some(),
+            "closed while the dial lock is held"
+        );
+        a.paired.write().unwrap().insert(ec);
+        drop(dialing);
+        closing.await.unwrap();
+        assert!(
+            a.outbound
+                .lock()
+                .await
+                .contains_key(&(ec, replica::ALPN_RECORDS.to_string())),
+            "re-paired meanwhile: its dial stays"
+        );
+        a.shutdown().await;
+        c.shutdown().await;
+    }
+
+    /// P2-F1: an engine that left the paired set is no peer (lease, `Transport::peers`) and its
+    /// gossip counts for nothing, even while its connection is still open.
+    #[tokio::test]
+    async fn an_engine_out_of_the_paired_set_is_no_peer_and_no_gossip_source() {
+        let (a, c, _da, _dc) = connected_pair().await;
+        let ec = c.endpoint.id();
+        let stranger = SecretKey::generate().public();
+        assert_eq!(Transport::peers(&*a), vec![PeerId(c.id.0.clone())]);
+        assert!(a.gossip_admits(&ec, &c.id));
+        assert!(
+            !a.gossip_admits(&stranger, &c.id),
+            "relayed by an unpaired engine"
+        );
+        assert!(
+            !a.gossip_admits(&ec, &EngineId(stranger.to_string())),
+            "names an unpaired engine"
+        );
+        a.paired.write().unwrap().remove(&ec);
+        assert!(a.is_connected(&ec), "its connection is not closed yet");
+        assert!(a.connected().is_empty());
+        assert!(Transport::peers(&*a).is_empty());
+        assert!(!a.gossip_admits(&ec, &c.id));
+        a.shutdown().await;
+        c.shutdown().await;
     }
 
     /// 183 R3: an unpair closes every connection to the removed engine, on every ALPN and in

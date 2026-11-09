@@ -318,6 +318,8 @@ pub struct Vault {
     sweep_until: std::sync::atomic::AtomicU64,
     /// 183 R1: when `retire` last trial-decrypted the `''` rows, and the retained key ids they opened.
     legacy_cache: std::sync::Mutex<Option<(u64, std::collections::BTreeSet<String>)>>,
+    /// P2-F1: the last device-key reset failure `maintain` logged (logged once per change).
+    reset_warned: std::sync::Mutex<Option<String>>,
     /// `meta["rotation"]`, watched by the plugin (`SecretsEvent::Rotation`).
     rotation: tokio::sync::watch::Sender<Option<RotationState>>,
     /// This engine's mesh id ([`Vault::set_engine`]); the initiator sweeps at once.
@@ -378,6 +380,7 @@ impl Vault {
                 .map_or(0, |r| r.sweep_hold_until_ms)
                 .into(),
             legacy_cache: Default::default(),
+            reset_warned: Default::default(),
             rotation: tokio::sync::watch::Sender::new(rotation),
             me: RwLock::default(),
             keylock: tokio::sync::Mutex::new(()),
