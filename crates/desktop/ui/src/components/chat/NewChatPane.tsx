@@ -30,7 +30,8 @@ import { tilde } from './HarnessCards'
 /** 183 §12.5 / mock panel 5: one machine a new chat can start on; `id` `null` is this machine (the default). */
 export type MachineRow = { id: string | null; name: string; detail: string; status: string; online: boolean; repos: string[] }
 
-const CLASS: Record<EngineClass, string> = { laptop: 'laptop', desktop: 'desktop', server: 'server', container: 'container', vm: 'VM' }
+/** Machine class words (`EngineStats.class`) for `os_name · class` lines here and in Settings › Network. */
+export const CLASS: Record<EngineClass, string> = { laptop: 'laptop', desktop: 'desktop', server: 'server', container: 'container', vm: 'VM' }
 
 /** This machine first, then every paired engine: `os_name · class` from its replicated stats; `LAN` / `via relay` /
  * `offline 3h` (an offline one cannot be picked). No peers, no rows: a lone engine shows no picker. */

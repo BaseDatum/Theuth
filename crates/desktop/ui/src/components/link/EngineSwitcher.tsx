@@ -128,7 +128,7 @@ export function EngineSwitcher({ className }: { className?: string }) {
         <DropdownMenuItem onSelect={() => void navigate({ to: '/link' })}>
           <Plus /> Pair with a mesh…
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void navigate({ to: '/settings/$tab', params: { tab: 'mesh' }, search: {} })}>
+        <DropdownMenuItem onSelect={() => void navigate({ to: '/settings/$tab', params: { tab: 'network' }, search: {} })}>
           <Settings2 /> Manage…
         </DropdownMenuItem>
       </DropdownMenuContent>

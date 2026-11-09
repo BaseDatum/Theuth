@@ -231,6 +231,9 @@ impl Message<mesh::MeshEvent> for DocumentActor {
             && self.hub.observe(&lease).is_some()
         {
             self.sync_hub(ctx.actor_ref().clone());
+            if self.hub.holding() {
+                self.reseal().await;
+            }
         }
     }
 }
@@ -302,5 +305,90 @@ mod tests {
         assert_eq!(hub.observe(&lease(None)), Some(false));
         assert_eq!(hub.gate(), Err(DocError::NotHub { hub: None }));
         assert_eq!(hub.observe(&lease(None)), None);
+    }
+
+    /// 183 R1: a link sealed under a retained key is re-sealed when this engine becomes the hub.
+    #[tokio::test]
+    async fn becoming_the_hub_reseals_share_links() {
+        use crate::meta::{AgentStyle, Binding, DocId, DocKind, DocMeta, Role, ShareLink};
+        use kameo::actor::Spawn as _;
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let vault = std::sync::Arc::new(
+            secrets::Vault::open(dir.path(), secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let store = crate::store::Store::open(dir.path())
+            .await
+            .unwrap()
+            .with_vault(vault.clone());
+        let id = DocId::new();
+        let binding = Binding::MeetingNote("m1".into());
+        let hash = crate::share::secret_hash(&[7u8; 32]);
+        store
+            .create(&DocMeta {
+                id: id.clone(),
+                kind: DocKind::MeetingNote,
+                title: "t".into(),
+                derived: binding.derived(&id),
+                binding,
+                fragment: "blocks".into(),
+                members: vec![],
+                links: vec![ShareLink {
+                    id: "lnk_test".into(),
+                    role: Role::Editor,
+                    secret_hash_sealed: crate::share::seal_hash(&vault, "lnk_test", &hash),
+                    name: None,
+                    created_ms: 0,
+                    expires_ms: None,
+                    revoked_ms: None,
+                }],
+                agent: AgentStyle::default(),
+                last_export: None,
+                authors: Default::default(),
+                created_ms: 0,
+                updated_ms: 0,
+            })
+            .await
+            .unwrap();
+        vault.rotate("a", vec![], vec![], 0, false).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let helper =
+            crate::helper::Helper::new(dir.path().join("no-helper"), tx, rt.shutdown.clone());
+        let actor = DocumentActor::spawn(DocumentActor::new(
+            store.clone(),
+            helper,
+            crate::DocumentsConfig::default(),
+            rt,
+        ));
+        let me = EngineId("me".into());
+        actor.tell(SelfId(me.clone())).await.unwrap();
+        // Another engine holds the lease first (a follower here), then this one takes it.
+        actor
+            .tell(mesh::MeshEvent::Lease(LeaseState {
+                holder: Some(EngineId("other".into())),
+                since_ms: 0,
+                reason: "test".into(),
+            }))
+            .await
+            .unwrap();
+        actor
+            .tell(mesh::MeshEvent::Lease(LeaseState {
+                holder: Some(me),
+                since_ms: 0,
+                reason: "test".into(),
+            }))
+            .await
+            .unwrap();
+        actor.ask(Reconcile).await.unwrap();
+        let sealed = store.read_meta(&id).unwrap().links[0]
+            .secret_hash_sealed
+            .clone();
+        let bytes = crate::share::unb64url(&sealed).unwrap();
+        assert!(
+            vault.reseal_with_mesh_key(b"lnk_test", &bytes).is_none(),
+            "already under the current key"
+        );
     }
 }

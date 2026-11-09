@@ -91,6 +91,10 @@ export const MESH: MeshStatus = {
   traffic: [{ alpn: 'theuth/records/1', frames_in: 412, frames_out: 398, bytes_in: 91_204, bytes_out: 88_710 }],
   replica: { captured: 120, applied: 233, relayed: 0, echo: 0, outbox_rows: 41 },
   stats: [],
+  // 183 P2: UI — the per-machine messaging switch and the Nearby switch.
+  messaging_off: [],
+  nearby: true,
+  quarantined: [],
 }
 
 export const PAIRING = 'theuth-mesh:1:e1a4c0ffee…mac1:relay=https://iroh.relay.theuth.io'

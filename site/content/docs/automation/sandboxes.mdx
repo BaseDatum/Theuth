@@ -10,12 +10,12 @@ A sandbox VM is a small Linux desktop machine (Debian 13 with XFCE, its own kern
 - **Apple Silicon Mac** (M1 or later). The hypervisor is Apple's HVF through microsandbox (libkrun). An Intel Mac is refused with `microsandbox needs Apple Silicon (M1 or later); this Mac is Intel`; Windows with `Windows support in microsandbox is a preview; not enabled in this version`.
 - **Linux** hosts need `/dev/kvm` present and read-writable by your user (`sudo usermod -aG kvm $USER, then log in again`) and glibc ≥ 2.28. The code path exists, but as of this writing it has only been exercised on macOS.
 - **Disk**: free space of at least the VM's root disk plus about 4 GiB (2 GiB image, 2 GiB headroom). Below that the blocker `disk_low` reads `N GiB free; a VM needs root_disk + image + 2 GiB (about M GiB).`
-- **No download, no root.** The microsandbox runtime (`msb` + `libkrunfw`) is embedded in `t` and written into its home on the first create, or by pressing **Set up runtime** in Settings › Mesh. That takes well under a second. Docker is *not* needed to run VMs — only to build a developer image.
+- **No download, no root.** The microsandbox runtime (`msb` + `libkrunfw`) is embedded in `t` and written into its home on the first create, or by pressing **Set up runtime** in Settings › Network. That takes well under a second. Docker is *not* needed to run VMs — only to build a developer image.
 - **Image**: the guest image `ghcr.io/basedatum/theuth-vm:<version>` (tag = your `t` version) is pulled on the first create; pull progress streams into the create card. **Do not assume it is published for your version** — as of this writing the default image has not been confirmed public, so a create may stop at the `create` step with a pull error. In that case pass a full image reference you can reach with `--image REF` (CLI) or the sheet's **Advanced** field, or build the dev image from the repository's `deploy/vm` directory (needs Docker). Check your release notes before relying on sandboxes.
 - `sandbox.enabled: true` and `sandbox.vm.enabled: true` (both defaults). Mesh is on by default; the VM reaches the host over the configured `mesh.relay`.
 - A running engine: the desktop app's daemon or `t --headless`. CLI subcommands are RPC clients of that engine.
 
-Preflight runs on demand and is cached for 60 s. The card at the top of **Settings › Mesh › Sandbox VMs** is green (`This host can run sandbox VMs. microsandbox 0.7.4 (embedded…) · virtualization via hvf`) or lists one sentence per blocker with its fix. **Add a sandbox VM** is disabled while any blocker remains; hovering it shows the first one.
+Preflight runs on demand and is cached for 60 s. The card at the top of **Settings › Network › Sandbox VMs** is green (`This host can run sandbox VMs. microsandbox 0.7.4 (embedded…) · virtualization via hvf`) or lists one sentence per blocker with its fix. **Add a sandbox VM** is disabled while any blocker remains; hovering it shows the first one.
 
 ## How it works
 
@@ -44,7 +44,7 @@ Create runs these steps in order, each limited to `sandbox.step_timeout_secs` (6
 | `pair` | `t mesh pair` into your mesh, up to 6 tries 10 s apart |
 | `verify` | peer reachable (3 tries); desktop answers `GET /vnc.html` |
 
-A failure stops at its step. **Retry** (Settings › Mesh row) resumes from that step after taking an `auto-retry` snapshot. At most `sandbox.max_concurrent_bringups` (2) create at once.
+A failure stops at its step. **Retry** (Settings › Network row) resumes from that step after taking an `auto-retry` snapshot. At most `sandbox.max_concurrent_bringups` (2) create at once.
 
 ## Walkthrough: ask for a box in chat
 
@@ -78,9 +78,9 @@ The child's approvals (its `shell` calls, for instance) arrive in your UI like a
 
 which calls `sandbox_desktop` and pops out the `/vm/app-box` window.
 
-## Walkthrough: Settings › Mesh
+## Walkthrough: Settings › Network
 
-1. Open **Settings › Mesh**, section **Sandbox VMs**. If the card says the runtime is not set up, press **Set up runtime**.
+1. Open **Settings › Network**, section **Sandbox VMs**. If the card says the runtime is not set up, press **Set up runtime**.
 2. Press **Add a sandbox VM**. The sheet asks for:
    - **Name** — lowercase letters, digits and `-`, up to 32 characters here (the engine accepts up to 63); the next free `vm-N` is prefilled.
    - **CPUs**, **Memory**, **Disk** sliders — bounded by your cores, half your RAM, and free disk; disk is sparse and *can grow later, never shrinks*.
@@ -98,7 +98,7 @@ t mesh add --vm --name app-box --cpus 4 --memory 4G --disk 20G \
   --share ~/code/app --share ~/datasets:/shared/data:ro --network public,host
 ```
 
-prints `[create] app-box: creating`, one `[step] line` per progress event, and `engine app-box (<engine id>) joined the mesh`. A refused create prints `cannot create app-box:` followed by the blocker sentences and exits 1; a failed one prints `app-box failed at <step>: <error>` and `retry from Settings › Mesh or t sandbox rm app-box`.
+prints `[create] app-box: creating`, one `[step] line` per progress event, and `engine app-box (<engine id>) joined the mesh`. A refused create prints `cannot create app-box:` followed by the blocker sentences and exits 1; a failed one prints `app-box failed at <step>: <error>` and `retry from Settings › Network or t sandbox rm app-box`.
 
 | Command | Does |
 |---|---|
@@ -222,13 +222,13 @@ sandbox:
 | `sandbox_takeover` | mutating | `name`, `on` |
 | `desktop_handoff` | read-only | `reason`, `url?` — called from inside the VM |
 
-Only `sandbox_list` and `sandbox_create` exist when `sandbox.vm.enabled` is false (create then answers that VMs are disabled). There is no `sandbox_retry` tool; the failure text says so and points to **Retry** in Settings › Mesh.
+Only `sandbox_list` and `sandbox_create` exist when `sandbox.vm.enabled` is false (create then answers that VMs are disabled). There is no `sandbox_retry` tool; the failure text says so and points to **Retry** in Settings › Network.
 
 ### UI, slash commands, CLI
 
 | Surface | Actions |
 |---|---|
-| Settings › Mesh › Sandbox VMs | preflight card, **Set up runtime**, **Add a sandbox VM**, per-row **Open desktop**, **Stop**, **Start**, **Resume**, menu **Terminal / Resize… / Shared folders… / Snapshots… / Pause / Destroy…**, **Retry** when failed |
+| Settings › Network › Sandbox VMs | preflight card, **Set up runtime**, **Add a sandbox VM**, per-row **Open desktop**, **Stop**, **Start**, **Resume**, menu **Terminal / Resize… / Shared folders… / Snapshots… / Pause / Destroy…**, **Retry** when failed |
 | Pop-out `/vm/<name>` | **Take over** / **Hand back**, **Send keys**, **Fit to window** / **Actual size**, **Reconnect**, **Start**, hand-off banner **Done** / **Cancel** |
 | Chat header | **Desktop** when the session's engine is a VM with a desktop |
 | Agent editor | **Runs in**: any / vm / a named VM |
@@ -287,7 +287,7 @@ Nothing stops a VM on its own: there is no idle timeout or maximum duration. Sto
 | `…: share paths must be absolute` / `share paths may not contain , : or ;` / `…: not a directory` / `/ cannot be shared` / `…: the data dir cannot be shared` / `…: the runtime home cannot be shared` | share validation | share an existing ordinary directory by absolute path |
 | `max_memory N MiB exceeds this host's M MiB` / `max_cpus N exceeds this host's M cores` | ceiling above host | lower the ceiling |
 | `X failed at binary: … GLIBC_2.xx not found` (or at `first_run`) | `--local-t` built against a glibc newer than the guest's 2.41 | build on Debian 13 or older, or drop `--local-t` |
-| `X is not brought up yet (…); use retry` | start on a creating/failed record | **Retry** or **Destroy** in Settings › Mesh |
+| `X is not brought up yet (…); use retry` | start on a creating/failed record | **Retry** or **Destroy** in Settings › Network |
 | `X: bring-up in progress; wait for it to finish or fail` | destroy during create | wait |
 | `X has N session(s) with a running turn; stop with force to interrupt them` | busy VM | let it finish, or stop with `force` / `--force` |
 | `X is a docker engine; remove it with t mesh remove` | not a VM record | `t mesh remove <id>` |

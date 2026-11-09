@@ -249,7 +249,7 @@ export type SettingsTab =
   | 'computer'
   | 'agents'
   | 'link'
-  | 'mesh'
+  | 'network'
   | 'connections'
   | 'channels'
   | 'shortcuts'

@@ -10,7 +10,7 @@ A **mesh** is two or more running `t` engines that share one state: sessions, ta
 - theuth installed on every machine (`t` on PATH; see [Installation](/docs/getting-started/installation)). The desktop app's built-in daemon counts as an engine.
 - A daemon that stays up where you want work to run: `t --headless`, or `t --install-service` to install a user service running `t --headless` through your login shell — a launchd LaunchAgent on macOS, a `systemd --user` unit on Linux. On Windows the command writes a Task Scheduler logon task, but that path is not verified as of this writing; on other systems (`None` unit format) it prints the exec line for you to install yourself.
 - For phones and browsers: `link.enabled: true` (default `false`) and a reachable `link.relay` (default `wss://relay.theuth.io`, or your own — see [Self-hosting the relay](#self-hosting-the-relay)).
-- For the model to run anything on another machine from chat: `agent.communication: true` (default `false`). Without it `spawn_subagent` is not offered at all — see [Delegation](/docs/automation/delegation).
+- For the model to message or run anything on another machine from chat: agent messaging. With `agent.communication` unset it is on as soon as this machine has a paired machine; an explicit `true` or `false` always wins. Without it `spawn_subagent` is not offered at all — see [Delegation](/docs/automation/delegation).
 - Mesh traffic goes over iroh QUIC, through `mesh.relay` (`https://iroh.relay.theuth.io` by default) when the two machines cannot reach each other directly. Nothing has to be port-forwarded.
 
 ## Terminology
@@ -19,7 +19,7 @@ The UI and the code use slightly different words; here is the mapping.
 
 | Word | Means |
 |---|---|
-| engine | One running `t`. The desktop UI says **node** wherever the record says engine: Settings › Mesh lists "This node" and "Nodes in this mesh". |
+| engine | One running `t`. The desktop UI says **machine** wherever the record says engine: Settings › Network lists "This machine" and "Machines in this mesh". |
 | mesh | The paired set of engines, with a name (the first node's name until you set one) and a hub lease. |
 | hub | The engine that currently holds the lease: it fires routines without an `engine:` line, refreshes OAuth tokens, runs the Slack, Signal and Telegram channels, serves paired devices and hosts the live document server. Agent desks are not a hub duty: every engine runs its own, for the tasks homed on it ([Tasks › Machines](/docs/automation/tasks#machines)). |
 | node over SSH | A machine added with a 3-part link key (`/nodes add <key>`), reached over the link relay. It runs sessions for you but keeps its own `~/.theuth`; nothing is synced. |
@@ -28,9 +28,9 @@ The UI and the code use slightly different words; here is the mapping.
 
 ## How it works
 
-### Two ways to add a machine
+### Three ways to add a machine
 
-**A. Pair it into the mesh.** On either side run `t mesh pair` (or Settings › Mesh › **Add a node** › **Show pairing string**). Paste the string on the other side with `t mesh add <string>` or the **Paste another node's pairing string** box. Pairing is mutual and transitive: the joiner learns every node the inviter knows. The string carries the inviter's vault data key, so replicated secrets open on both machines. The token inside expires after 5 minutes. From then on the two engines replicate state and either one can run sessions, tasks and routines.
+**A. Pair it into the mesh.** On either side run `t mesh pair` (or Settings › Network › **Advanced** › **Show pairing string**). Paste the string on the other side with `t mesh add <string>` or the paste-a-pairing-string box under **Advanced**. Pairing is mutual and transitive: the joiner learns every node the inviter knows. The string carries the inviter's vault data key, so replicated secrets open on both machines. The token inside expires after 5 minutes. From then on the two engines replicate state and either one can run sessions, tasks and routines.
 
 `t mesh add --ssh TARGET`, `t mesh add --docker` and `t mesh add --vm` make a new engine for you (over SSH, in a container, or as a sandbox VM) and pair it in one step; see [Sandboxes](/docs/automation/sandboxes).
 
@@ -42,11 +42,33 @@ t --secret-set anthropic
 t --install-service --relay wss://relay.example.com
 ```
 
-The last command writes `link.enabled: true`, starts `t --headless` as a service, waits up to 15 s for it, prints `service installed: <scope> · relay <host> · name <name>` and then a QR plus a 3-part key. On your main machine: `/nodes add <key>` in the terminal UI, or paste the key into Settings › Mesh under **On another computer over SSH**, or scan the QR with the phone and choose **as a node of …**. The node appears in the engine switcher nested under its parent (`build-box · via <parent>`) and your paired devices are added to it automatically.
+The last command writes `link.enabled: true`, starts `t --headless` as a service, waits up to 15 s for it, prints `service installed: <scope> · relay <host> · name <name>` and then a QR plus a 3-part key. On your main machine: `/nodes add <key>` in the terminal UI, or paste the key into Settings › Network under **On another computer over SSH**, or scan the QR with the phone and choose **as a node of …**. The node appears in the engine switcher nested under its parent (`build-box · via <parent>`) and your paired devices are added to it automatically.
 
 A node over SSH is reachable over the link relay only; its sessions, tasks, routines, skills and secrets stay on that box. If you want them shared, pair it into the mesh (path A) instead or in addition.
 
-The README and the `t --install-service` output still mention "Settings › Nodes › Add node". There is no Nodes tab: the paste field lives in Settings › **Mesh**, and devices live in Settings › **Link**.
+The README and the `t --install-service` output still mention "Settings › Nodes › Add node". There is no Nodes tab: the paste field lives in Settings › **Network**, and devices live in Settings › **Link**.
+
+**C. Nearby and code pairing.** Open Settings › **Network** on both machines. The **Nearby** section lists unpaired machines on the same LAN (newest first, at most 32; "Only shown while this page is open."). Press **Pair…** next to one. Both machines show the same 6-digit code (`482 913`), "Check that <machine> shows the same code" and the warning "Pairing shares your secrets vault, sessions and tasks — only pair your own machines." The request opens the same dialog on the other machine's Network page, with the requester's OS, address and 8-character id. **Cancel** has the focus; press **Pair** on both. Nothing is stored and no key moves until both have pressed it; then the normal pairing (path A) runs. The code is commit-reveal: neither side can pick its random part after seeing the other's, so a machine in the middle cannot make both screens show one code.
+
+Nearby runs only while Settings › Network is open, or for `mesh.pair_window_secs` (120 s) after `t mesh pair` or after a pairing string is shown, and only while **Let nearby machines find this one while pairing** (`mesh.nearby`, default on) is on. An open page holds a 30 s lease it renews every 10 s, so a closed or killed window stops advertising and accepting within 30 s. It advertises mDNS `_theuth-mesh._udp` with the machine's id, name and OS and only private, link-local or loopback addresses. macOS asks for Local Network permission the first time. Cancel on either side, or the window ending, aborts with "Not paired: <m> pressed Cancel, or the codes did not match." or "The pairing window closed before both machines pressed Pair. Start again from Nearby."
+
+Limits per window: one ceremony per machine and four at once ("too many pairings at once"); three failed ceremonies refuse that machine ("too many failed pairings from this machine"); ten failures from anyone close the window — close and reopen Settings › Network.
+
+**Every machine needs this build.** A machine on an older theuth cannot read secrets after a vault-key rotation until it upgrades; it is named "runs an older theuth" in the rotation progress and the Unpair dialog.
+
+### Unpair, vault-key rotation and device reset
+
+Settings › Network › **Machines in this mesh** › ⋯ › **Unpair…** (or `t mesh remove <id>`) opens "Unpair <machine>?". The machines that stay get a new vault key and re-encrypt every secret with it; the removed machine keeps every secret it already had. The dialog lists "Replace these at their providers if <machine> is lost" (the secret names it had), "Sign in again: …" (OAuth sign-ins), and lines for offline machines (they get the new key when they reconnect), machines on an older theuth (cannot read secrets until they upgrade) and paired phones and iPads. **Unpair and rotate key** is enabled once that list has loaded. Progress shows in the dialog and as a banner on Settings › Network ("Rotating vault key · 34 of 40 secrets re-encrypted · …", "New vault key in use · …", "Vault key rotated (started 14:02) · old key destroyed"). See [Secrets › Rotation](/docs/reference/secrets#rotation).
+
+The checkbox **Also reset phone and iPad pairing** (off by default) writes a new `mesh/device_key` after the new vault key (it replicates to the remaining machines only) and revokes every linked phone and iPad on every remaining machine that sees the new key; each must scan the pairing QR again (Settings › Link). The reset is recorded with the new key, so an engine that stops in between finishes it when it starts again.
+
+The new key goes to the remaining machines first: re-encrypting waits until one of them confirms it holds the key, or 10 s pass, so no secret is ever readable on one machine only while others are reachable. A machine that was told of the unpair only by replication is treated the same as one told directly: it gets no key.
+
+If the removed machine had introduced another machine to a peer that had not yet heard of the unpair, that machine is not paired: it shows under **Machines in this mesh** as "Added by <removed machine> after it was unpaired — not paired until you confirm", with **Keep paired** and **Remove**.
+
+### The per-machine messaging switch
+
+Settings › Network › Machines in this mesh › **Agents can message** is per machine. Off adds the machine's id to `mesh.messaging_off`. A send to or from that machine is refused: `send_message: communication_disabled: agent messaging between <this machine> and <other> is off on <this machine>`. It is independent of the global `agent.communication` setting.
 
 ### What replicates between mesh engines
 
@@ -102,9 +124,9 @@ t --install-service --no-pair
 
 `--no-pair` skips the link QR. The name other nodes see is `mesh.name` in that machine's `config.yaml`, else its hostname — set it to `build-box` before the service starts if the hostname is not what you want.
 
-**2. Pair it.** On the server, `t mesh pair` prints a string. On the laptop open Settings › **Mesh** › **Add a node**, paste it into **Paste another node's pairing string** and press **Add**. "Nodes in this mesh" now lists `build-box`; `t mesh status` on either side shows the peer and who holds the lease. The laptop, already running, keeps the lease; the server becomes eligible after its 6-hour probation. If you want the server to end up as hub, set **Prefer this node as hub** there (or `t mesh hub prefer` on the server and `t mesh hub never` on the laptop).
+**2. Pair it.** On the server, `t mesh pair` prints a string. On the laptop open Settings › **Network** › **Advanced**, paste it into the paste-a-pairing-string box and press **Add**. (Or skip the string: open Settings › Network on both and pair from **Nearby**.) "Machines in this mesh" now lists `build-box`; `t mesh status` on either side shows the peer and who holds the lease. The laptop, already running, keeps the lease; the server becomes eligible after its 6-hour probation. If you want the server to end up as hub, set the hub preference under **Advanced** (or `t mesh hub prefer` on the server and `t mesh hub never` on the laptop).
 
-**3. Run a build there from chat.** In a new chat on the laptop (with `agent.communication: true`):
+**3. Run a build there from chat.** In a new chat on the laptop (messaging is on by default once paired):
 
 ```text
 › run the full test suite on build-box in ~/src/app and tell me what fails
@@ -120,8 +142,8 @@ If you would rather hand the whole conversation to the server, open the session'
 
 When you only need "run things over there" and do not want the server to hold a copy of your sessions:
 
-1. On the box: the four commands from [Two ways to add a machine](#two-ways-to-add-a-machine), ending with `t --install-service --relay wss://…`. Copy the key it prints.
-2. In the terminal UI on your main machine: `/nodes add <key>`. Or Settings › Mesh › **On another computer over SSH** › paste › **Add**.
+1. On the box: the four commands from [Three ways to add a machine](#three-ways-to-add-a-machine), ending with `t --install-service --relay wss://…`. Copy the key it prints.
+2. In the terminal UI on your main machine: `/nodes add <key>`. Or Settings › Network › **On another computer over SSH** › paste › **Add**.
 3. `/nodes` lists it as `<platform> · theuth <version>` (or `· offline`). Ask in chat:
 
 ```text
@@ -142,12 +164,15 @@ All keys live in `~/.theuth/config.yaml`; any key can be overridden with `THEUTH
 |---|---|---|
 | `relay` | `https://iroh.relay.theuth.io` | iroh relay for mesh traffic. `public` = n0's public relays; `none`, `off` or `""` = never dial a relay. |
 | `discovery` | `true` | Peer discovery. |
-| `name` | `""` | This node's name as other nodes see it; hostname when empty. |
+| `name` | `""` | This machine's name as other machines see it; hostname when empty. Editable in Settings › Network. |
 | `bind` | unset | `ip:port` to bind the QUIC endpoint. |
-| `hub` | `eligible` | `prefer` \| `eligible` \| `never`. Written live by `t mesh hub …` and Settings › Mesh. |
+| `hub` | `eligible` | `prefer` \| `eligible` \| `never`. Written live by `t mesh hub …` and Settings › Network. |
 | `probation_secs` | `21600` | A new joiner cannot hold the lease for this long. |
 | `handover_secs` | `600` | Graceful handover window when the hub leaves. |
 | `heartbeat_secs` | `10` | Heartbeat interval. |
+| `messaging_off` | `[]` | Engine ids that agent messaging is refused for, both directions. Set by the **Agents can message** switch (`mesh_set_messaging(id, on)`). |
+| `nearby` | `true` | Advertise on and accept pairing from the LAN (mDNS) while Settings › Network is open or a pairing window is open. |
+| `pair_window_secs` | `120` | How long Nearby stays open after `t mesh pair` or a shown pairing string. |
 | `lapse_secs` | `30` | Heartbeat lapse before a peer counts as gone. |
 | `capabilities_secs` | `300` | How often harnesses/repos/display/GPU stats are refreshed. |
 | `workspaces` | `[]` | Repo paths advertised in `mesh_peers` `repos=`. |
@@ -202,7 +227,7 @@ All `t mesh …` subcommands are RPC calls on the running engine on this machine
 | `t mesh add --ssh TARGET [--key NAME \| --system-ssh]` | Install and pair an engine over SSH. |
 | `t mesh add --docker [--name …] [--image … \| --local-t]` | Pair a container engine. |
 | `t mesh add --vm [--name --cpus --memory --disk --share HOST[:GUEST][:ro] --no-desktop --network …] [--image … \| --bootstrap] [--local-t]` | Create and pair a sandbox VM. |
-| `t mesh remove <id>` | Unpair an engine. |
+| `t mesh remove <id>` | Unpair an engine and rotate the vault key (`mesh_remove(id, reset_devices)` also resets phone and iPad pairing). |
 | `t mesh hub prefer\|eligible\|never` | Set and persist `mesh.hub`. |
 | `t mesh devices list\|add [name]\|revoke <id>\|rename <id> <name>` | Mesh-paired devices. |
 | `t --link` | Legacy per-engine phone pairing: QR + key, `expires in 5:00`. Needs a running `t --headless`. |
@@ -220,7 +245,7 @@ All `t mesh …` subcommands are RPC calls on the running engine on this machine
 
 ### Desktop
 
-- Settings › **Mesh**: "This node" (name, `hub` badge, mesh name, **Prefer this node as hub**, Sessions here/elsewhere, replication log), "Nodes in this mesh", **Add a node** (pairing string show/paste, **On another computer over SSH**), sandbox VMs.
+- Settings › **Network** (`/settings/mesh` redirects here): a rotation banner while a vault-key rotation runs; "This machine" (OS icon, editable name, 8-character id with copy, chips `LAN · mDNS` and `Relay · <host> · <ms>`, and the "Let nearby machines find this one while pairing" switch); **Nearby**; "Machines in this mesh" (name, `hub` badge, OS and class, path chip `LAN 2 ms` / `Relay 41 ms` / `offline 3h`, **Agents can message**, ⋯ Rename · Unpair…); **Advanced** (hub preference, **Rotate vault key**, **Show pairing string**, paste a pairing string, **On another computer over SSH**); Sandbox VMs.
 - Settings › **Link**: relay toggle, "This node" link identity, hub status (`this node is the hub: serving the mesh's devices` or `another node holds the hub lease`), **Devices** with **Pair a device**, rename, revoke, and **Legacy devices**.
 - Engine switcher (header): the local daemon as `LOCAL`, mesh rows with `N of M nodes online`, nodes nested under their parent; chips `reconnecting…` and `revoked — pair again`.
 - Session menu: the session's settings (Approvals ▸ On / Off / Machine default, Agent messaging, Model ›, Effort ›; headed `Settings for this session on <engine>` for a chat owned elsewhere), then **Continue here** (owned elsewhere) and **Move to ▸**. New chat: **New chat on [machine ▾]** and its folder; the sidebar's Chat **▸** and ⌘K list the same machines.
@@ -229,7 +254,7 @@ All `t mesh …` subcommands are RPC calls on the running engine on this machine
 
 - Tool calls on a remote engine follow the same policy as local ones: risk `read_only|mutating|destructive` → `tools.policy` → an Allow/Deny card in whatever UI you are using (desktop card, TUI `[y]/[n]`, Slack or Telegram buttons, Signal 👍/👎 or `/approve <code>`). The remote child's request is forwarded as-is; a timeout after `tools.approval_timeout_secs` (300 s) or any answer other than Allow is a deny. No per-tool "always allow" exists; `/approvals off` (session) or `/approvals off always` are the only switches. Details: [Tools and permissions](/docs/reference/tools-permissions).
 - `mesh_peers` is read-only and never asks. `spawn_subagent` is read-only by design; the child's own tool calls are what ask.
-- Mesh pairing is a trust decision: the joiner adopts the inviter's vault data key and receives every replicated secret, session and document. Pair only machines you control. `t mesh remove <id>` unpairs; the copies already on the removed machine remain there.
+- Mesh pairing is a trust decision: the joiner adopts the inviter's vault data key and receives every replicated secret, session and document. Pair only machines you control. `t mesh remove <id>` unpairs and rotates the vault key, so nothing written afterwards reaches the removed machine; the copies it already holds, and the old secrets, remain there — replace them at their providers if it is lost.
 - A node over SSH receives none of that; it holds its own vault and config. The parent can only start sessions on it.
 - Mesh traffic is QUIC with TLS keyed by each engine's identity; the iroh relay (`mesh.relay`) only forwards when a direct path fails.
 - The link relay keeps no state and no accounts. After the WebSocket upgrade everything is Noise-encrypted end to end, so the relay — ours or yours — sees ciphertext, frame sizes, timing, IP addresses and the harness/mesh id, never your messages, keys or which device is connected. The pairing secret is in the URL fragment and never reaches it.
@@ -266,7 +291,7 @@ RELAY_HOST=relay.example.com docker compose -f deploy/relay/compose.yaml up -d  
 | Relay payload | 65 535 bytes per frame; 10 upgrades/s per IP (HTTP 429 beyond) |
 | Mesh rows at startup | local-only after 10 s without a replica attach |
 
-Not available as of this writing: a `Settings › Nodes` tab (it is Mesh), devices over iroh (devices always use the link relay), and a per-engine `devices.yaml` (replaced by the replicated `link.sqlite`). The hub-preference select in Settings › Mesh shows the last value you set in this app, not the one on disk.
+Not available as of this writing: a `Settings › Nodes` tab (it is Network), devices over iroh (devices always use the link relay), and a per-engine `devices.yaml` (replaced by the replicated `link.sqlite`).
 
 ## Troubleshooting
 
@@ -282,7 +307,10 @@ Not available as of this writing: a `Settings › Nodes` tab (it is Mesh), devic
 | `t --link` says it needs the daemon | Legacy pairing talks to a running engine. | Start `t --headless` first. |
 | Pairing a device fails after 16 devices | `link.max_devices` reached. | Revoke an old device in Settings › Link, or raise `link.max_devices`. |
 | `/nodes add` worked but my sessions are not on the node | Expected: a node over SSH is not synced. | Pair it into the mesh with `t mesh pair` / `t mesh add` as well. |
-| `spawn_subagent` with `agent: "build-box"` is not offered | `agent.communication` is `false`. | Set `agent.communication: true` and restart. |
+| Nearby list is empty | Settings › Network must be open on both machines, **Let nearby machines find this one while pairing** on, both on the same LAN, and on macOS Local Network permission granted. | Fix the one that is missing; the list shows unpaired machines only. |
+| `too many failed pairings from this machine` | Three failed ceremonies from this machine in the window. | Close and reopen Settings › Network, then pair again. |
+| A machine is named `runs an older theuth` | It predates vault-key rotation and cannot read secrets after one. | Upgrade it. |
+| `spawn_subagent` with `agent: "build-box"` is not offered | `agent.communication` is `false`, `build-box` is in `mesh.messaging_off`, or no machine is paired and the key is unset. | Pair a machine, remove the explicit `false`, or switch **Agents can message** on for it. |
 
 ## Related
 

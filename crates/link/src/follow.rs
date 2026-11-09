@@ -104,10 +104,23 @@ impl Message<secrets::SecretsEvent> for LinkActor {
     type Reply = ();
 
     async fn handle(&mut self, m: secrets::SecretsEvent, ctx: &mut Context<Self, ()>) {
-        let wanted =
-            matches!(m, secrets::SecretsEvent::Changed) && self.ctx.lock().mesh_identity.is_none();
-        if wanted {
-            self.sync_mesh(ctx.actor_ref().clone()).await;
+        if !matches!(m, secrets::SecretsEvent::Changed) {
+            return;
+        }
+        let cached = self.ctx.lock().mesh_identity.as_ref().map(|i| i.private);
+        let me = ctx.actor_ref().clone();
+        match cached {
+            None => self.sync_mesh(me).await,
+            // 183 D11: another engine reset `mesh/device_key`; serve the new identity.
+            Some(private) => {
+                if let Ok(Some(k)) = secrets::mesh_device_key_existing(&self.ctx.rt).await
+                    && *k != private
+                {
+                    tracing::info!("mesh device key reset: the mesh uplink restarts under it");
+                    self.revoke_all_devices().await;
+                    self.drop_mesh_identity(me).await;
+                }
+            }
         }
     }
 }
@@ -217,6 +230,20 @@ impl LinkActor {
             }
             (false, None) => {}
         }
+    }
+
+    /// 183 D11: forget the cached mesh identity (and its status row), stop its uplink, and
+    /// reconcile, which loads `mesh/device_key` afresh.
+    pub(crate) async fn drop_mesh_identity(&mut self, me: ActorRef<Self>) {
+        {
+            let mut st = self.ctx.lock();
+            st.mesh_identity = None;
+            st.mesh = None;
+        }
+        if let Some(up) = self.mesh.take() {
+            up.stop();
+        }
+        self.sync_mesh(me).await;
     }
 }
 
@@ -438,5 +465,93 @@ mod tests {
         assert!(cancel.is_cancelled(), "the revoked device's conn is closed");
         assert!(ctx.lock().devices.by_key(&key).is_none());
         assert_eq!(ctx.lock().devices.all().len(), 2);
+    }
+
+    /// 183 D11: after the device key reset every paired phone and iPad must re-pair: each
+    /// active device is revoked (the row stays, its conns close) and the cached mesh identity
+    /// is dropped so the uplink reloads the new key.
+    #[tokio::test]
+    async fn reset_devices_revokes_every_device_and_drops_the_mesh_identity() {
+        let ctx = ctx("ws://x", None, Some(identity()));
+        let rows: Vec<Row> = [[7u8; 32], [8u8; 32]]
+            .into_iter()
+            .map(|key| Row {
+                id: crate::devices::device_id(&key),
+                key,
+                name: "iPhone".into(),
+                platform: "ios".into(),
+                paired_at_ms: 1,
+                last_seen_ms: 0,
+                revoked_ms: None,
+            })
+            .collect();
+        for r in &rows {
+            ctx.lock().devices.insert(r.clone());
+        }
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        ctx.lock().mesh_conns.insert(
+            3,
+            ConnHandle {
+                device: Some(rows[0].key),
+                inbound: tx,
+                cancel: cancel.clone(),
+            },
+        );
+        assert!(ctx.lock().mesh_identity.is_some());
+        let actor = LinkActor::spawn(LinkActor {
+            ctx: ctx.clone(),
+            config_path: std::env::temp_dir().join("theuth-link-reset-test.yaml"),
+            uplink: None,
+            pair_timer: None,
+            follower: mesh::lease::Follower::default(),
+            mesh: None,
+            mesh_loading: false,
+            mesh_ready: false,
+        });
+        assert_eq!(actor.ask(crate::ResetDevices).await.unwrap(), 2);
+        let st = ctx.lock();
+        assert!(st.devices.all().iter().all(|r| r.revoked_ms.is_some()));
+        assert_eq!(
+            st.devices.all().len(),
+            2,
+            "rows stay; a new QR reactivates them"
+        );
+        assert!(cancel.is_cancelled(), "the device's conn is closed");
+        assert!(st.mesh_identity.is_none(), "the old identity is dropped");
+    }
+
+    /// 183 R1 (S6): an engine that only sees `mesh/device_key` change revokes its devices too.
+    #[tokio::test]
+    async fn a_changed_device_key_revokes_every_local_device() {
+        let ctx = ctx("ws://x", None, Some(identity()));
+        let key = [7u8; 32];
+        ctx.lock().devices.insert(Row {
+            id: crate::devices::device_id(&key),
+            key,
+            name: "iPhone".into(),
+            platform: "ios".into(),
+            paired_at_ms: 1,
+            last_seen_ms: 0,
+            revoked_ms: None,
+        });
+        let mut actor = LinkActor {
+            ctx: ctx.clone(),
+            config_path: std::env::temp_dir().join("theuth-link-reset-test.yaml"),
+            uplink: None,
+            pair_timer: None,
+            follower: mesh::lease::Follower::default(),
+            mesh: None,
+            mesh_loading: false,
+            mesh_ready: false,
+        };
+        assert_eq!(actor.revoke_all_devices().await, 1);
+        assert!(
+            ctx.lock()
+                .devices
+                .all()
+                .iter()
+                .all(|r| r.revoked_ms.is_some())
+        );
     }
 }

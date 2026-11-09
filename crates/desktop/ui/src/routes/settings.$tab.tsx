@@ -17,6 +17,8 @@ export const Route = createFileRoute('/settings/$tab')({
     // Skills and Tools became Agents pages, Secrets a Library page, and Schedules became Routines; old links and `/settings/<tab>` bookmarks follow.
     const moved = movedTab(params.tab) ?? movedSettingsTab(params.tab)
     if (moved) throw redirect({ to: moved, replace: true, search: search.session ? { session: search.session } : {} })
+    // 183 §12.6: Settings › Mesh became Settings › Network.
+    if (params.tab === 'mesh') throw redirect({ to: '/settings/$tab', params: { tab: 'network' }, search, replace: true })
     if (!isTab(params.tab))
       throw redirect({
         to: '/settings/$tab',

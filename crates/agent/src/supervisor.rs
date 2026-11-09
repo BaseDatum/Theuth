@@ -39,12 +39,12 @@ use uuid::Uuid;
 use crate::communication::{
     AnswerPeerRequest, ChannelOrigin, CommunicationChanged, CommunicationState,
     DISCOVER_DEFAULT_LIMIT, DISCOVER_MAX_LIMIT, Generation, GetCommunication, GetPeerMessage,
-    ListPeerMessages, ListPeers, PEER_TEXT_MAX, PeerActivity, PeerAddress, PeerConsumed,
-    PeerDeliver, PeerDelivered, PeerEnvelope, PeerInfo, PeerIntakeFailed, PeerKind, PeerLiveState,
-    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
-    PeerRecord, PeerRelationship, PeerScope, PeerState, PeerTurnFinished, PeerUplink, Policy,
-    PolicyError, SetCommunication, SetPeerScope, SharedPolicy, WAITS_PER_HARNESS,
-    WAITS_PER_SESSION, mesh as peer_mesh, network,
+    ListPeerMessages, ListPeers, MeshRefusal, PEER_TEXT_MAX, PeerActivity, PeerAddress,
+    PeerConsumed, PeerDeliver, PeerDeliverError, PeerDelivered, PeerEnvelope, PeerInfo,
+    PeerIntakeFailed, PeerKind, PeerLiveState, PeerMessageChanged, PeerMessagePage,
+    PeerMessageState, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerRelationship, PeerScope,
+    PeerState, PeerTurnFinished, PeerUplink, Policy, PolicyError, SetCommunication, SetPeerScope,
+    SharedPolicy, WAITS_PER_HARNESS, WAITS_PER_SESSION, mesh as peer_mesh, network,
 };
 
 use crate::CostService;
@@ -247,6 +247,9 @@ pub struct Agents {
     /// Exchange ids handed to a runner in this process and not yet settled:
     /// a retried `request_id` must not queue the same row twice.
     enqueued: HashSet<Uuid>,
+    /// 183 §6.3: receipts whose network leg is in flight, with the retry waiters of the same
+    /// `request_id` attached to it; they are answered with the leg's settled outcome.
+    forwarding: HashMap<Uuid, Vec<kameo::reply::ReplySender<Result<Delivered, String>>>>,
     /// Child-work permits per orchestrator tree, keyed by the tree's root
     /// session (01 §2.6): created on demand, never shrunk. A session's own
     /// loop takes peer-opened turns and Python cells from its tree's
@@ -333,6 +336,9 @@ pub struct Agents {
     /// tests. `None` until the mesh is up: every such message then fails
     /// `OwnerUnreachable`.
     transport: Option<Arc<dyn replica::Transport>>,
+    /// 183 §6.5: `(message id, chain)` of the forwarded message [`Self::peer_deliver`] is
+    /// taking in, for `enqueue_peer`'s chain bound; set and cleared around that one intake.
+    inbound_chain: Option<(Uuid, u32)>,
     /// Who a session speaks as when it is not theuth (70 DESK-PROTOCOL): the
     /// roster installs it with [`InstallIdentitySource`]. `None`: every
     /// session is theuth's.
@@ -1105,11 +1111,45 @@ impl Agents {
     /// row never routes with a dangling link). Idempotent; a row that cannot
     /// be read stays unknown and every route for it fails closed.
     async fn mirror(&mut self, id: SessionId) {
-        if self.communication.0.read().root_of(id).is_err() {
-            let lineage = self.store.lineage(id).await;
-            self.apply_lineage(id, lineage);
+        let root = self.communication.0.read().root_of(id);
+        match root {
+            Err(_) => {
+                let lineage = self.store.lineage(id).await;
+                self.apply_lineage(id, lineage);
+            }
+            Ok(root) => self.refresh_root(root).await,
         }
         self.sync_opt_out(id).await;
+    }
+
+    /// 183 §6.6: a known root owned by another engine changed its scope or alias there (a
+    /// replicated row): the live policy follows, so a scope flipped on B reaches A's routes.
+    /// A root of ours is the policy's own (`SetPeerScope` writes both); one whose row agrees
+    /// is left alone.
+    async fn refresh_root(&mut self, root: SessionId) {
+        if self.remote_owner(root).await.is_none() {
+            return;
+        }
+        let Ok(Some((scope, alias))) = self.store.root_scope(root).await else {
+            return;
+        };
+        let changed = {
+            let p = self.communication.0.read();
+            match p.state(Some(root)) {
+                Ok(s) if s.scope == scope && s.alias == alias => return,
+                Ok(s) => s.scope != scope,
+                Err(_) => return,
+            }
+        };
+        let _ = self
+            .revoking(|p| p.set_scope(root, scope, Some(alias.unwrap_or_default())))
+            .await;
+        if changed {
+            self.expire_waits("scope changed", |w| !w.generation.live());
+            // Boxed: the revoke path can reach `mirror` again (an intake spawning an actor).
+            Box::pin(self.network_revoked(Some(root), "scope changed")).await;
+        }
+        self.communication_changed(Some(root)).await;
     }
 
     /// 183 R1 (S1): the row's agent-messaging opt-out (`sessions.communication
@@ -1912,13 +1952,41 @@ impl Agents {
                 };
                 parent.map(Target::Local).ok_or_else(unknown)
             }
-            PeerAddress::Relative(name) => self
-                .store
-                .child_by_name(from, &name)
-                .await
-                .map_err(|e| e.to_string())?
-                .map(Target::Local)
-                .ok_or_else(unknown),
+            PeerAddress::Relative(name) => {
+                if let Some(child) = self
+                    .store
+                    .child_by_name(from, &name)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    return Ok(Target::Local(child));
+                }
+                // 183 §6.6: else an owner-scope root by its alias (`ops@xeus`, a desk on
+                // any engine of the mesh); the route still checks both scopes. Only a root
+                // its `@engine` owner wrote counts: any member can mint an alias.
+                let (_, suffix) = name.rsplit_once('@').ok_or_else(unknown)?;
+                let (me, names) = peer_mesh::engine_names().await;
+                let root = self
+                    .store
+                    .root_by_alias(&name)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .find(|(_, owner)| {
+                        let here = owner.is_empty()
+                            || mesh::self_id().is_some_and(|s| s == owner.as_str());
+                        let owner_name = if here {
+                            me.clone()
+                        } else {
+                            peer_mesh::engine_name(&names, owner)
+                        };
+                        suffix == owner || suffix == owner_name
+                    })
+                    .map(|(id, _)| id)
+                    .ok_or_else(unknown)?;
+                self.mirror(root).await;
+                Ok(Target::Local(root))
+            }
         }
     }
 
@@ -2102,9 +2170,14 @@ impl Agents {
             return Err("an external harness cannot own an A2A task scope".into());
         }
         // The chain bound follows the initiating request across sessions
-        // (50 §8): a local sender's chain is inherited, a remote's is not.
+        // (50 §8): a local sender's chain is inherited; a sender on another
+        // engine sends its count with the envelope (183 §6.5).
         let sender = PeerAddress::local(&record.from);
-        if self.ledger.chain_exhausted_for(sender, to) {
+        let carried = self
+            .inbound_chain
+            .filter(|(id, _)| *id == record.receipt.id)
+            .map_or(0, |(_, n)| n);
+        if self.ledger.chain_exhausted_for(sender, to, carried) {
             return Err(format!(
                 "chain limit: {} peer-triggered continuations since the last external input",
                 crate::communication::CHAIN_MAX
@@ -2117,7 +2190,7 @@ impl Agents {
             None => Ok(self.actor(to).await?),
         };
         let scope = record.request_scope;
-        let ticket = self.ledger.admit_chained(to, None, sender);
+        let ticket = self.ledger.admit_chained(to, None, sender, carried);
         if let Some(scope) = scope
             && !self.network_input_queued(scope, ticket).await
         {
@@ -5455,6 +5528,11 @@ impl Message<ChildTimedOut> for Agents {
     }
 }
 
+/// 183 §11.4: a machine as a refusal names it — its mesh name, else a short id.
+async fn engine_label(id: &str) -> String {
+    peer_mesh::engine_name(&peer_mesh::engine_names().await.1, id)
+}
+
 /// A store refusal as the sender reads it; unknown and unauthorized are one answer.
 fn comm_err(e: anyhow::Error) -> String {
     match e.downcast_ref::<CommError>() {
@@ -5515,16 +5593,117 @@ impl Agents {
     }
 }
 
-impl Message<Deliver> for Agents {
-    type Reply = Result<Delivered, String>;
+/// 183 §6.3: what [`Agents::deliver_step`] leaves to do: nothing, or the network leg to the
+/// recipient's owner on another engine.
+enum Step {
+    Done(Delivered),
+    Forward(Delivered, ForwardJob),
+    /// A retry of a `request_id` whose network leg is still in flight.
+    InFlight(Uuid),
+}
 
-    async fn handle(&mut self, m: Deliver, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.deliver(m, None).await
+/// The network leg of a forwarded peer message (69 P): one `peer_deliver` over
+/// `theuth/rpc/1` and, on failure, the receipt's error text. Runs off the mailbox (183 §6.3).
+struct ForwardJob {
+    transport: Option<Arc<dyn replica::Transport>>,
+    owner: String,
+    to: SessionId,
+    envelope: PeerEnvelope,
+}
+
+impl ForwardJob {
+    /// `Err(receipt error)` when the owner's intake did not commit.
+    async fn run(self) -> Result<(), String> {
+        let outcome = match &self.transport {
+            Some(t) => {
+                let owner = replica::PeerId(self.owner.clone());
+                peer_mesh::forward(t.as_ref(), &owner, self.to, &self.envelope)
+                    .await
+                    .map(drop)
+            }
+            None => Err(peer_mesh::Failure::Unreachable {
+                owner: self.owner.clone(),
+                why: "mesh not running".into(),
+            }),
+        };
+        outcome.map_err(|f| {
+            tracing::info!(session = %self.to, id = %self.envelope.id, "peer message not forwarded: {f:?}");
+            f.receipt_error()
+        })
+    }
+}
+
+/// `tell` (internal, 183 §6.3): a [`ForwardJob`] came back to the mailbox; settle the receipt
+/// and answer the [`Deliver`] that started it.
+struct ForwardOutcome {
+    delivered: Delivered,
+    result: Result<(), String>,
+    reply: Option<kameo::reply::ReplySender<Result<Delivered, String>>>,
+}
+
+impl Message<Deliver> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<Delivered, String>>;
+
+    /// 183 §6.3 (the 176 E1 shape): resolve, policy, accept and the waiter in the mailbox;
+    /// the network leg to another engine's owner off it, settled by [`ForwardOutcome`]. Two
+    /// engines messaging each other at once no longer hold each other's mailbox for 30 s.
+    async fn handle(&mut self, m: Deliver, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (delegated, reply) = ctx.reply_sender();
+        match self.deliver_step(m, None).await {
+            Ok(Step::Forward(delivered, job)) => {
+                self.forwarding.insert(delivered.receipt.id, Vec::new());
+                let me = ctx.actor_ref().clone();
+                tokio::spawn(async move {
+                    let result = job.run().await;
+                    let _ = me
+                        .tell(ForwardOutcome {
+                            delivered,
+                            result,
+                            reply,
+                        })
+                        .await;
+                });
+            }
+            Ok(Step::InFlight(id)) => {
+                if let Some(r) = reply {
+                    self.forwarding.entry(id).or_default().push(r);
+                }
+            }
+            Ok(Step::Done(d)) => {
+                if let Some(r) = reply {
+                    r.send(Ok(d));
+                }
+            }
+            Err(e) => {
+                if let Some(r) = reply {
+                    r.send(Err(e));
+                }
+            }
+        }
+        delegated
+    }
+}
+
+impl Message<ForwardOutcome> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ForwardOutcome, _: &mut Context<Self, Self::Reply>) {
+        let waiters = self.forwarding.remove(&m.delivered.receipt.id);
+        let d = self.forward_settled(m.delivered, m.result).await;
+        for r in waiters.into_iter().flatten() {
+            r.send(Ok(Delivered {
+                receipt: d.receipt.clone(),
+                reply: None,
+            }));
+        }
+        if let Some(r) = m.reply {
+            r.send(Ok(d));
+        }
     }
 }
 
 impl Message<PeerDeliver> for Agents {
-    type Reply = Result<PeerReceipt, String>;
+    type Reply = Result<PeerReceipt, PeerDeliverError>;
 
     async fn handle(&mut self, m: PeerDeliver, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.peer_deliver(m).await
@@ -5536,7 +5715,10 @@ impl Agents {
     /// [`Self::deliver`] path from the envelope's sender to `session`, under
     /// the envelope's id and this engine's policy. Refused when the row is
     /// not ours (the sender's replica was stale) — never a take.
-    pub(crate) async fn peer_deliver(&mut self, m: PeerDeliver) -> Result<PeerReceipt, String> {
+    pub(crate) async fn peer_deliver(
+        &mut self,
+        m: PeerDeliver,
+    ) -> Result<PeerReceipt, PeerDeliverError> {
         let row = self
             .store
             .session(m.session)
@@ -5544,10 +5726,55 @@ impl Agents {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("unknown peer `session:{}`", m.session))?;
         if !row.here {
-            return Err(format!(
-                "session:{} is owned by {}, not here",
-                m.session, row.owner
-            ));
+            return Err(
+                format!("session:{} is owned by {}, not here", m.session, row.owner).into(),
+            );
+        }
+        // 183 §6.5, §6.2, §11.4: a forwarded message must come from the engine that owns its
+        // sender, from a machine this one has not switched off, past this engine's ceiling.
+        if let Some(fwd) = m.forwarder.as_deref() {
+            let owner = self
+                .store
+                .session(m.envelope.from)
+                .await
+                .map_err(|e| e.to_string())?
+                .map(|r| r.owner);
+            let refusal = if owner.as_deref() != Some(fwd) {
+                Some(MeshRefusal::NotOwner {
+                    engine: engine_label(fwd).await,
+                    from: m.envelope.from,
+                })
+            } else if mesh::messaging_off(fwd) {
+                let me = mesh::self_name();
+                Some(MeshRefusal::Messaging {
+                    from: engine_label(fwd).await,
+                    to: me.clone(),
+                    on: me,
+                })
+            } else if !self
+                .communication
+                .0
+                .read()
+                .state(None)
+                .is_ok_and(|s| s.global)
+            {
+                Some(MeshRefusal::Off {
+                    engine: mesh::self_name(),
+                })
+            } else {
+                None
+            };
+            match refusal {
+                Some(r @ MeshRefusal::NotOwner { .. }) => {
+                    return Err(PeerDeliverError::NotOwner(r));
+                }
+                Some(r) => {
+                    return Err(
+                        format!("send_message: {}: {r}", tools::communication::DISABLED).into(),
+                    );
+                }
+                None => {}
+            }
         }
         // The sender is a replicated row: its lineage must be known to the
         // policy before `route` (as `resolve` does for the recipient).
@@ -5558,9 +5785,10 @@ impl Agents {
             text,
             reply_to,
             request_id,
-            // 183 P2: seed `enqueue_peer`'s chain from it (§6.5).
-            chain: _,
+            chain,
         } = m.envelope;
+        // 183 §6.5: `enqueue_peer` bounds the chain from the sender's count.
+        self.inbound_chain = Some((id, chain));
         let d = self
             .deliver(
                 Deliver {
@@ -5574,8 +5802,9 @@ impl Agents {
                 },
                 Some(id),
             )
-            .await?;
-        Ok(d.receipt)
+            .await;
+        self.inbound_chain = None;
+        Ok(d?.receipt)
     }
 
     /// `(owner engine id)` when `session`'s replicated row is owned by
@@ -5602,6 +5831,8 @@ impl Agents {
     /// when the owner's intake committed (a waiter is registered as for a
     /// local recipient); otherwise it is `failed` with [`peer_mesh::Failure`]'s
     /// text — the sender reads a normal receipt either way.
+    /// ponytail: inline (in the mailbox) for the child-result paths; `send_message`'s own
+    /// `Deliver` runs the leg off the mailbox (183 §6.3), and these could too given an actor ref.
     async fn forward_peer(
         &mut self,
         owner: String,
@@ -5611,57 +5842,127 @@ impl Agents {
         receipt: PeerReceipt,
         generation: Generation,
     ) -> Result<Delivered, String> {
+        let (d, job) = self
+            .forward_prepare(owner, to, m, body, receipt, generation)
+            .await?;
+        let result = job.run().await;
+        Ok(self.forward_settled(d, result).await)
+    }
+
+    /// 183 §6.3, in the mailbox: the envelope (with the sender's chain, §6.5) and, when
+    /// `await_reply`, the waiter registered before the network leg so a fast reply finds it.
+    /// 183 §6.2: refused (the exchange `failed`) when this engine switched the owner's
+    /// machine off.
+    async fn forward_prepare(
+        &mut self,
+        owner: String,
+        to: SessionId,
+        m: &Deliver,
+        body: String,
+        receipt: PeerReceipt,
+        generation: Generation,
+    ) -> Result<(Delivered, ForwardJob), String> {
         // Nothing here will consume it.
         self.enqueued.remove(&receipt.id);
+        let refused = if mesh::messaging_off(&owner) {
+            let me = mesh::self_name();
+            Some(format!(
+                "denied: send_message: {}: {}",
+                tools::communication::DISABLED,
+                MeshRefusal::Messaging {
+                    from: me.clone(),
+                    to: engine_label(&owner).await,
+                    on: me,
+                }
+            ))
+        } else {
+            None
+        };
+        let reply = match refused {
+            Some(why) => Err(why),
+            None => m
+                .await_reply
+                .then(|| self.wait(m.from, receipt.to.clone(), receipt.id, generation))
+                .transpose(),
+        };
+        let reply = match reply {
+            Ok(r) => r,
+            Err(why) => {
+                if let Ok(failed) = self.store.fail_exchange(receipt.id, &why).await {
+                    self.peer_changed(&failed).await;
+                }
+                return Err(why);
+            }
+        };
         let envelope = PeerEnvelope {
             id: receipt.id,
             from: m.from,
             text: body,
             reply_to: m.reply_to,
             request_id: m.request_id.clone(),
-            // 183 P2: the sender's chain count (§6.5).
-            chain: 0,
+            chain: self.ledger.chain(m.from),
         };
-        let peer = replica::PeerId(owner.clone());
-        let outcome = match self.transport().await {
-            Some(t) => peer_mesh::forward(t.as_ref(), &peer, to, &envelope).await,
-            None => Err(peer_mesh::Failure::Unreachable {
-                owner,
-                why: "mesh not running".into(),
-            }),
+        let job = ForwardJob {
+            transport: self.transport().await,
+            owner,
+            to,
+            envelope,
         };
-        match outcome {
-            Ok(_) => {
-                let reply = m
-                    .await_reply
-                    .then(|| self.wait(m.from, receipt.to.clone(), receipt.id, generation))
-                    .transpose()?;
-                Ok(Delivered { receipt, reply })
-            }
-            Err(f) => {
-                tracing::info!(session = %to, id = %receipt.id, "peer message not forwarded: {f:?}");
-                let error = f.receipt_error().await;
+        Ok((Delivered { receipt, reply }, job))
+    }
+
+    /// 183 §6.3, back in the mailbox: a forward that did not commit fails the receipt and
+    /// drops its waiter. One that timed out after the owner already answered keeps the reply.
+    async fn forward_settled(&mut self, d: Delivered, result: Result<(), String>) -> Delivered {
+        let id = d.receipt.id;
+        match result {
+            Ok(()) => d,
+            Err(_) if d.reply.is_some() && !self.waits.contains_key(&id) => d,
+            Err(error) => {
+                if self.waits.remove(&id).is_some() {
+                    self.bound.retain(|_, b| *b != id);
+                }
                 let failed = self
                     .store
-                    .fail_exchange(receipt.id, &error)
+                    .fail_exchange(id, &error)
                     .await
-                    .unwrap_or(receipt);
+                    .unwrap_or(d.receipt);
                 self.peer_changed(&failed).await;
-                Ok(Delivered {
+                Delivered {
                     receipt: failed,
                     reply: None,
-                })
+                }
             }
         }
     }
 
-    /// [`Deliver`]'s body. `id`: the message id when another engine minted
-    /// it ([`Self::peer_deliver`]); minted by the store otherwise.
+    /// [`Deliver`]'s body, the forward leg included (tests, [`Self::peer_deliver`]).
+    /// `id`: the message id when another engine minted it; minted by the store otherwise.
     pub(crate) async fn deliver(
         &mut self,
         m: Deliver,
         id: Option<Uuid>,
     ) -> Result<Delivered, String> {
+        match self.deliver_step(m, id).await? {
+            Step::Done(d) => Ok(d),
+            Step::InFlight(id) => Ok(Delivered {
+                receipt: self
+                    .store
+                    .exchange_receipt(id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "unknown message".to_string())?,
+                reply: None,
+            }),
+            Step::Forward(d, job) => {
+                let result = job.run().await;
+                Ok(self.forward_settled(d, result).await)
+            }
+        }
+    }
+
+    /// [`Self::deliver`] up to the network leg, which it returns undone (183 §6.3).
+    async fn deliver_step(&mut self, m: Deliver, id: Option<Uuid>) -> Result<Step, String> {
         let revoked = || {
             format!(
                 "send_message: {}: {}",
@@ -5677,7 +5978,7 @@ impl Agents {
             return Err(format!("message exceeds {PEER_TEXT_MAX} bytes"));
         }
         let to = match self.resolve(m.from, &m.to).await? {
-            Target::Uplink => return self.uplink(&m, body).await,
+            Target::Uplink => return self.uplink(&m, body).await.map(Step::Done),
             Target::Remote(alias) => {
                 let generation = self
                     .communication
@@ -5704,7 +6005,7 @@ impl Agents {
                     }
                     _ => None,
                 };
-                return Ok(Delivered { receipt, reply });
+                return Ok(Step::Done(Delivered { receipt, reply }));
             }
             Target::Local(to) => to,
         };
@@ -5751,12 +6052,15 @@ impl Agents {
             None => self.store.accept_exchange(&accept).await,
         }
         .map_err(comm_err)?;
+        if self.forwarding.contains_key(&receipt.id) {
+            return Ok(Step::InFlight(receipt.id));
+        }
         if receipt.state != PeerMessageState::Accepted || !self.enqueued.insert(receipt.id) {
             // A retried request_id: the existing outcome, nothing sent again.
-            return Ok(Delivered {
+            return Ok(Step::Done(Delivered {
                 receipt,
                 reply: None,
-            });
+            }));
         }
         self.peer_changed(&receipt).await;
         // An answer to a request its recipient awaits completes that tool
@@ -5793,18 +6097,19 @@ impl Agents {
                     .await_reply
                     .then(|| self.wait(m.from, to_key, settled.id, generation))
                     .transpose()?;
-                return Ok(Delivered {
+                return Ok(Step::Done(Delivered {
                     receipt: settled,
                     reply,
-                });
+                }));
             }
         }
         // 69 P: the recipient lives on another engine — its owner runs the
         // intake; nothing here is woken.
         if let Some(owner) = self.remote_owner(to).await {
-            return self
-                .forward_peer(owner, to, &m, body, receipt, generation)
-                .await;
+            let (d, job) = self
+                .forward_prepare(owner, to, &m, body, receipt, generation)
+                .await?;
+            return Ok(Step::Forward(d, job));
         }
         let record = self
             .store
@@ -5829,7 +6134,7 @@ impl Agents {
             .await_reply
             .then(|| self.wait(m.from, to_key, receipt.id, generation))
             .transpose()?;
-        Ok(Delivered { receipt, reply })
+        Ok(Step::Done(Delivered { receipt, reply }))
     }
 }
 
@@ -5935,6 +6240,47 @@ impl Message<GetCommunication> for Agents {
             .read()
             .state(m.session)
             .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<mesh::MeshEvent> for Agents {
+    type Reply = ();
+
+    /// 183 §6.1: a peer connected or went (pairing and unpairing end in one), or the lease
+    /// moved (the first event after the mesh starts): re-read the paired set.
+    async fn handle(&mut self, ev: mesh::MeshEvent, _: &mut Context<Self, Self::Reply>) {
+        if matches!(ev, mesh::MeshEvent::Peer(_) | mesh::MeshEvent::Lease(_)) {
+            self.mesh_default(mesh::paired_count()).await;
+        }
+    }
+}
+
+impl Agents {
+    /// 183 §6.1 (D3, D6): with `agent.communication` absent (source `default` or `mesh`) the
+    /// ceiling is on exactly while this engine has a paired machine (`paired`, `None` = no
+    /// mesh yet). An explicit value (`config`, `env`, `command`) is never touched.
+    pub(crate) async fn mesh_default(&mut self, paired: Option<usize>) {
+        let Some(n) = paired else { return };
+        let Ok(s) = self.communication.0.read().state(None) else {
+            return;
+        };
+        let on = n > 0;
+        if !matches!(s.source.as_str(), "default" | "mesh") || s.global == on {
+            return;
+        }
+        tracing::info!(
+            "agent.communication unset: {} ({n} paired machine(s))",
+            if on {
+                "on in this mesh"
+            } else {
+                "off, no paired machine"
+            }
+        );
+        self.revoking(|p| p.set_global(on, if on { "mesh" } else { "default" }))
+            .await;
+        // As `SetCommunication`: settle what the invalidated generations carried.
+        self.revoke(None).await;
+        self.communication_changed(None).await;
     }
 }
 
@@ -6078,7 +6424,7 @@ impl Message<PeersRead> for Agents {
         let mut rows = self.directory_from(m.session, read)?;
         arrange(&mut rows, m.active_only);
         if let Some(q) = &query {
-            rows.retain(|p| p.name.to_lowercase().contains(q) || p.address.contains(q.as_str()));
+            rows.retain(|p| peer_matches(p, q));
         }
         // The cursor is the last address of the previous page (stable order).
         let start = match &m.cursor {
@@ -6096,6 +6442,17 @@ impl Message<PeersRead> for Agents {
             cursor,
         })
     }
+}
+
+/// `discover_peers(query)`: `q` (lowercase) in the name or the address, and (183 §6.6) in a
+/// tag or the engine (`xeus`).
+fn peer_matches(p: &PeerInfo, q: &str) -> bool {
+    p.name.to_lowercase().contains(q)
+        || p.address.contains(q)
+        || p.tags.iter().any(|t| t.to_lowercase().contains(q))
+        || p.engine
+            .as_deref()
+            .is_some_and(|e| e.to_lowercase().contains(q))
 }
 
 /// [`Agents::directory_from`]'s I/O, read off the mailbox: the durable rows
@@ -6171,6 +6528,8 @@ impl Agents {
         // `remote` (no activity here — their owner would know), ours carry
         // this engine's name for symmetry.
         let (me_name, names) = engines;
+        // 183 §6.6: which owners are connected now, for `reachable` on remote rows.
+        let connected = mesh::connected_ids().unwrap_or_default();
         // Rows keep their session id for the activity lookup, which runs once
         // the policy guard is released.
         let mut same = Vec::new();
@@ -6260,8 +6619,8 @@ impl Agents {
                     } else {
                         me_name.clone()
                     }),
-                    // 183 P2: from the `mesh::Status` ask (§6.6).
-                    reachable: None,
+                    // 183 §6.6: whether the owner is connected now.
+                    reachable: remote.then(|| connected.contains(&r.owner)),
                 };
                 if their_root == root {
                     same.push((r.id, info));
@@ -10670,7 +11029,19 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     } else {
         "default"
     };
-    let communication = SharedPolicy::new(Policy::new(cfg.communication, source));
+    // 183 §6.1 (D3, D6): absent → on once this engine has a paired machine (source `mesh`),
+    // re-evaluated on mesh events ([`Agents::mesh_default`]); an explicit value wins.
+    let (enabled, source) = match cfg.communication {
+        Some(on) => (on, source),
+        None => {
+            let paired = match mesh::paired_count() {
+                Some(n) => n > 0,
+                None => mesh::has_stored_peers(&rt.data_dir).await,
+            };
+            (paired, if paired { "mesh" } else { source })
+        }
+    };
+    let communication = SharedPolicy::new(Policy::new(enabled, source));
     load_topology(&store, &communication).await;
     // 179 D8: paused agents' trees are held from the start — before the
     // reminders re-arm and spared results go — and what was sent to them
@@ -10784,6 +11155,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             turn_text: HashMap::new(),
             delivered: HashMap::new(),
             enqueued: HashSet::new(),
+            forwarding: HashMap::new(),
             pools: HashMap::new(),
             child_turns: HashMap::new(),
             queued: HashMap::new(),
@@ -10812,6 +11184,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             durable_resources: SessionResources::durable_arc(&rt.data_dir),
             private_grace: PRIVATE_GRACE,
             transport: None,
+            inbound_chain: None,
             identity: None,
             advisors: HashSet::new(),
             advisor_cfg: cfg.advisor.clone(),
@@ -10852,6 +11225,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     .await?;
     UserChannels::spawn(UserChannels::default()).register(USER_ACTOR)?;
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
+    // 183 §6.1: the absent-`agent.communication` default follows the paired set.
+    rt.subscribe::<Agents, mesh::MeshEvent>(&agents).await;
     let watch =
         CellJobWatch::spawn_with_mailbox(CellJobWatch(cell_jobs), runtime::subscriber_mailbox());
     rt.subscribe::<CellJobWatch, JobEvent>(&watch).await;
@@ -11885,6 +12260,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         turn_text: HashMap::new(),
         delivered: HashMap::new(),
         enqueued: HashSet::new(),
+        forwarding: HashMap::new(),
         pools: HashMap::new(),
         child_turns: HashMap::new(),
         queued: HashMap::new(),
@@ -11914,6 +12290,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         // Short enough for a test to outwait it (`resume_rebinds_and_cancels_old_watcher`).
         private_grace: Duration::from_millis(200),
         transport: None,
+        inbound_chain: None,
         identity: None,
         advisors: HashSet::new(),
         advisor_cfg: AdvisorConfig::default(),
@@ -15495,18 +15872,24 @@ pub(crate) mod tests {
     }
 
     async fn two_engines() -> TwoEngines {
+        two_engines_as("a", "b").await
+    }
+
+    /// [`two_engines`] under other engine ids (a test that sets the process-wide
+    /// `mesh.messaging_off` must not touch the others' `a` and `b`).
+    async fn two_engines_as(na: &str, nb: &str) -> TwoEngines {
         let scratch = crate::TestDir::new("69p");
         let (dir_a, dir_b) = (scratch.0.join("a"), scratch.0.join("b"));
         std::fs::create_dir_all(&dir_a).unwrap();
         std::fs::create_dir_all(&dir_b).unwrap();
         let (a_root, b_root) = (SessionId::new(), SessionId::new());
         for dir in [&dir_a, &dir_b] {
-            seed(dir, "a", a_root).await;
-            seed(dir, "b", b_root).await;
+            seed(dir, na, a_root).await;
+            seed(dir, nb, b_root).await;
         }
-        let net = peer_mesh::loopback::nodes(&["a", "b"]);
-        let mut a = agents_on(dir_a, Some("a"), true).await;
-        let mut b = agents_on(dir_b, Some("b"), true).await;
+        let net = peer_mesh::loopback::nodes(&[na, nb]);
+        let mut a = agents_on(dir_a, Some(na), true).await;
+        let mut b = agents_on(dir_b, Some(nb), true).await;
         a.transport = Some(net[0].clone());
         b.transport = Some(net[1].clone());
         for x in [&mut a, &mut b] {
@@ -15548,12 +15931,16 @@ pub(crate) mod tests {
                     let rp = match agents
                         .lock()
                         .await
-                        .peer_deliver(PeerDeliver { session, envelope })
+                        .peer_deliver(PeerDeliver {
+                            session,
+                            envelope,
+                            forwarder: None,
+                        })
                         .await
                     {
                         Ok(r) => serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": r}),
                         Err(e) => {
-                            serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": e}})
+                            serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": e.to_string()}})
                         }
                     };
                     write.write_all(format!("{rp}\n").as_bytes()).await.unwrap();
@@ -15709,9 +16096,11 @@ pub(crate) mod tests {
                     request_id: None,
                     chain: 0,
                 },
+                forwarder: None,
             })
             .await
-            .unwrap_err();
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("owned by b"), "{e}");
     }
 
@@ -15742,6 +16131,11 @@ pub(crate) mod tests {
             "no mesh actor: the id itself (short)"
         );
         assert!(r.activity.is_none());
+        assert_eq!(
+            r.reachable,
+            Some(false),
+            "183 §6.6: a remote row says whether its owner is connected"
+        );
         arrange(&mut rows, true);
         assert!(
             rows.is_empty(),
@@ -15754,6 +16148,457 @@ pub(crate) mod tests {
         assert_eq!(
             (rows[0].state, rows[0].engine.as_deref()),
             (PeerState::Remote, Some("a"))
+        );
+        assert_eq!(a.directory(a_root).await.unwrap()[0].reachable, Some(false));
+    }
+
+    /// 183 §6.6: `discover_peers(query)` also matches a row's tags and its engine.
+    #[test]
+    fn a_discover_query_matches_tags_and_engine() {
+        let row = PeerInfo {
+            address: "session:0190".into(),
+            name: "deadbeef".into(),
+            kind: PeerKind::Native,
+            relationship: PeerRelationship::Root,
+            state: PeerState::Remote,
+            send: true,
+            reply: true,
+            stream: false,
+            activity: None,
+            title: None,
+            tags: vec!["Release-Notes".into()],
+            engine: Some("Xeus".into()),
+            reachable: Some(true),
+        };
+        for q in ["dead", "0190", "release", "xeus"] {
+            assert!(peer_matches(&row, q), "{q}");
+        }
+        assert!(!peer_matches(&row, "cloud"));
+    }
+
+    fn envelope_from(from: SessionId) -> PeerEnvelope {
+        PeerEnvelope {
+            id: Uuid::now_v7(),
+            from,
+            text: "hi".into(),
+            reply_to: None,
+            request_id: None,
+            chain: 0,
+        }
+    }
+
+    /// 183 §6.1 (D3, D6): with `agent.communication` absent the ceiling is on while this
+    /// engine has a paired machine (source `mesh`) and off without one; an explicit value is
+    /// never moved by the paired set.
+    #[tokio::test]
+    async fn absent_communication_is_on_with_a_paired_machine_and_explicit_false_wins() {
+        let scratch = crate::TestDir::new("183md");
+        let mut a = agents_on(scratch.0.clone(), None, false).await;
+        a.communication.0.write().set_global(false, "default");
+        let state = |a: &Agents| {
+            let s = a.communication.0.read().state(None).unwrap();
+            (s.global, s.source)
+        };
+        a.mesh_default(None).await;
+        assert_eq!(
+            state(&a),
+            (false, "default".into()),
+            "no mesh yet: unchanged"
+        );
+        a.mesh_default(Some(1)).await;
+        assert_eq!(state(&a), (true, "mesh".into()));
+        a.mesh_default(Some(0)).await;
+        assert_eq!(
+            state(&a),
+            (false, "default".into()),
+            "the last peer went: off"
+        );
+        for source in ["config", "env", "command"] {
+            a.communication.0.write().set_global(false, source);
+            a.mesh_default(Some(2)).await;
+            assert_eq!(state(&a), (false, source.into()), "explicit false wins");
+        }
+    }
+
+    /// 183 §6.2 (W-14), §11.4: `mesh.messaging_off` refuses both ways, naming the machines:
+    /// the sender before anything is forwarded, the receiver at its intake.
+    #[tokio::test]
+    async fn the_per_machine_switch_refuses_both_ways_and_names_the_machine() {
+        let TwoEngines {
+            _scratch,
+            mut a,
+            b,
+            a_root,
+            b_root,
+            net,
+        } = two_engines_as("deny-a", "deny-b").await;
+        let b = Arc::new(tokio::sync::Mutex::new(b));
+        serve_peer_deliver(net[1].clone(), b.clone());
+        // One process holds both "engines": a lists b, b lists a.
+        mesh::set_messaging_off(vec!["deny-b".into(), "deny-a".into()]);
+        // This engine's own name is the process-wide mesh name another test may set meanwhile.
+        let disabled = tools::communication::DISABLED;
+        let e = a
+            .deliver(deliver(a_root, b_root, "hi", false, None), None)
+            .await
+            .unwrap_err();
+        assert!(
+            e.starts_with(&format!(
+                "denied: send_message: {disabled}: agent messaging between "
+            )) && e.contains(" and deny-b is off on "),
+            "{e}"
+        );
+        let e = b
+            .lock()
+            .await
+            .peer_deliver(PeerDeliver {
+                session: b_root,
+                envelope: envelope_from(a_root),
+                forwarder: Some("deny-a".into()),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.starts_with(&format!(
+                "send_message: {disabled}: agent messaging between deny-a and "
+            )) && e.contains(" is off on "),
+            "{e}"
+        );
+        mesh::set_messaging_off(Vec::new());
+    }
+
+    /// 183 §6.5: a forwarded `peer_deliver` is taken only from the engine that owns its
+    /// `from`; any other paired engine is refused, naming it.
+    #[tokio::test]
+    async fn a_forwarder_that_does_not_own_the_sender_is_refused() {
+        let TwoEngines {
+            _scratch,
+            mut b,
+            a_root,
+            b_root,
+            ..
+        } = two_engines().await;
+        let env = envelope_from(a_root);
+        let e = b
+            .peer_deliver(PeerDeliver {
+                session: b_root,
+                envelope: env.clone(),
+                forwarder: Some("c".into()),
+            })
+            .await
+            .unwrap_err();
+        // Typed, so the RPC layer answers `UNAUTHORIZED` without matching the text.
+        assert_eq!(
+            e,
+            PeerDeliverError::NotOwner(MeshRefusal::NotOwner {
+                engine: "c".into(),
+                from: a_root,
+            })
+        );
+        assert_eq!(
+            e.to_string(),
+            format!("peer_deliver: c does not own session:{a_root}")
+        );
+        let ok = b
+            .peer_deliver(PeerDeliver {
+                session: b_root,
+                envelope: env,
+                forwarder: Some("a".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(ok.state, PeerMessageState::Accepted);
+    }
+
+    /// 183 §6.5: the chain count crosses the forward: a sender at the bound is refused by the
+    /// owner's intake, which used to count a remote sender as 0.
+    #[tokio::test]
+    async fn the_chain_is_inherited_across_a_forward() {
+        let TwoEngines {
+            _scratch,
+            mut a,
+            b,
+            a_root,
+            b_root,
+            net,
+        } = two_engines().await;
+        serve_peer_deliver(net[1].clone(), Arc::new(tokio::sync::Mutex::new(b)));
+        a.ledger.register(a_root, None, false);
+        for _ in 0..crate::communication::CHAIN_MAX {
+            let t = a.ledger.admit(a_root, InputOrigin::Automatic, None);
+            a.ledger.consumed(InputConsumed {
+                session: a_root,
+                id: t.id,
+                turn: TurnId::new(),
+            });
+        }
+        let d = a
+            .deliver(deliver(a_root, b_root, "again", false, None), None)
+            .await
+            .unwrap();
+        assert_eq!(d.receipt.state, PeerMessageState::Failed);
+        assert!(
+            d.receipt
+                .error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("chain limit")),
+            "{:?}",
+            d.receipt.error
+        );
+    }
+
+    /// 183 §6.4 (W-15): an offline owner still fails at once; a retry with the same
+    /// `request_id` once it is back forwards the same message again.
+    #[tokio::test]
+    async fn a_same_request_id_retry_re_forwards_an_unreachable_message() {
+        let TwoEngines {
+            _scratch,
+            mut a,
+            b,
+            a_root,
+            b_root,
+            net,
+        } = two_engines().await;
+        let online = a.transport.take();
+        a.transport = Some(peer_mesh::loopback::nodes(&["a"]).remove(0));
+        let mut m = deliver(a_root, b_root, "are you there?", false, None);
+        m.request_id = Some("r-183".into());
+        let first = a.deliver(m.clone(), None).await.unwrap();
+        assert_eq!(first.receipt.state, PeerMessageState::Failed);
+        assert!(
+            first
+                .receipt
+                .error
+                .as_deref()
+                .is_some_and(|e| e.starts_with(peer_mesh::UNREACHABLE_PREFIX))
+        );
+        let b = Arc::new(tokio::sync::Mutex::new(b));
+        serve_peer_deliver(net[1].clone(), b.clone());
+        a.transport = online;
+        let again = a.deliver(m, None).await.unwrap();
+        assert_eq!(
+            (again.receipt.id, again.receipt.state),
+            (first.receipt.id, PeerMessageState::Accepted)
+        );
+        let theirs = b
+            .lock()
+            .await
+            .store
+            .peer_record(b_root, first.receipt.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(theirs.text, "are you there?");
+    }
+
+    /// The owner side of `theuth/rpc/1` through the supervisor actor's mailbox, as
+    /// `api::peer_deliver` asks it.
+    fn serve_through_mailbox(t: Arc<peer_mesh::loopback::Loop>, agents: ActorRef<Agents>) {
+        use replica::Transport;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        tokio::spawn(async move {
+            while let Ok((_, stream)) = t.accept(replica::ALPN_RPC).await {
+                let agents = agents.clone();
+                tokio::spawn(async move {
+                    let (read, mut write) = tokio::io::split(stream);
+                    let mut line = String::new();
+                    BufReader::new(read).read_line(&mut line).await.unwrap();
+                    let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    let deliver = PeerDeliver {
+                        session: serde_json::from_value(req["params"][0].clone()).unwrap(),
+                        envelope: serde_json::from_value(req["params"][1].clone()).unwrap(),
+                        forwarder: None,
+                    };
+                    let rp = match agents.ask(deliver).await {
+                        Ok(r) => serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": r}),
+                        Err(e) => {
+                            serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": e.to_string()}})
+                        }
+                    };
+                    write.write_all(format!("{rp}\n").as_bytes()).await.unwrap();
+                    write.flush().await.unwrap();
+                });
+            }
+        });
+    }
+
+    /// 183 §6.3, §13 row 25: two engines send to each other at once while B's owner side is
+    /// blocked. A's forward to B waits on the network, not in A's mailbox: A's other work
+    /// answers within 100 ms and B's message to A is taken in.
+    #[tokio::test]
+    async fn a_blocked_owner_does_not_stall_the_senders_mailbox() {
+        let TwoEngines {
+            _scratch,
+            a,
+            mut b,
+            a_root,
+            b_root,
+            net,
+        } = two_engines().await;
+        // B never answers a forward: every stream to it is held open.
+        let held = net[1].clone();
+        tokio::spawn(async move {
+            use replica::Transport;
+            let mut keep = Vec::new();
+            while let Ok((_, s)) = held.accept(replica::ALPN_RPC).await {
+                keep.push(s);
+            }
+        });
+        let a_ref = Agents::spawn(a);
+        serve_through_mailbox(net[0].clone(), a_ref.clone());
+        let to_b = {
+            let a = a_ref.clone();
+            tokio::spawn(async move { a.ask(deliver(a_root, b_root, "to b", true, None)).await })
+        };
+        // A's Deliver is in its mailbox first.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let start = Instant::now();
+        a_ref.ask(GetCommunication { session: None }).await.unwrap();
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "A's mailbox answered in {:?}",
+            start.elapsed()
+        );
+        let back = tokio::time::timeout(
+            Duration::from_secs(5),
+            b.deliver(deliver(b_root, a_root, "to a", false, None), None),
+        )
+        .await
+        .expect("B's send to A is not held behind A's forward")
+        .unwrap();
+        assert_eq!(back.receipt.state, PeerMessageState::Accepted);
+        assert!(!to_b.is_finished(), "A's own forward still waits on B");
+        to_b.abort();
+    }
+
+    /// 183 §6.3 (S5): a retry with the same `request_id` while the first network leg is in
+    /// flight attaches to it — no second forward — and learns how that leg settled.
+    #[tokio::test]
+    async fn a_same_request_id_retry_during_the_forward_learns_its_outcome() {
+        let TwoEngines {
+            _scratch,
+            a,
+            a_root,
+            b_root,
+            net,
+            ..
+        } = two_engines().await;
+        // B holds every stream open until released, then drops them: the leg fails.
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (held, drop_them) = (net[1].clone(), release.clone());
+        tokio::spawn(async move {
+            use replica::Transport;
+            let mut keep = Vec::new();
+            loop {
+                tokio::select! {
+                    Ok((_, s)) = held.accept(replica::ALPN_RPC) => keep.push(s),
+                    () = drop_them.notified() => break,
+                }
+            }
+        });
+        let a_ref = Agents::spawn(a);
+        let mut m = deliver(a_root, b_root, "to b", false, None);
+        m.request_id = Some("r-s5".into());
+        let first = {
+            let (a, m) = (a_ref.clone(), m.clone());
+            tokio::spawn(async move { a.ask(m).await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let retry = {
+            let a = a_ref.clone();
+            tokio::spawn(async move { a.ask(m).await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !first.is_finished() && !retry.is_finished(),
+            "both wait on the leg"
+        );
+        release.notify_one();
+        let wait = Duration::from_secs(5);
+        let first = tokio::time::timeout(wait, first)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let retry = tokio::time::timeout(wait, retry)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.receipt.state, PeerMessageState::Failed);
+        assert_eq!(
+            (retry.receipt.id, retry.receipt.state),
+            (first.receipt.id, PeerMessageState::Failed)
+        );
+    }
+
+    /// 183 §6.6: a desk's `<agent>@<engine>` alias resolves from another engine, and a scope
+    /// or alias the owner changed (a replicated row) reaches this engine's policy.
+    #[tokio::test]
+    async fn desk_aliases_resolve_and_replicated_scope_changes_reach_the_policy() {
+        let TwoEngines {
+            _scratch,
+            mut a,
+            a_root,
+            b_root,
+            ..
+        } = two_engines().await;
+        // Any member writes an alias: a newer root engine `c` minted as `ops@b` is not b's desk.
+        // (Written and closed first: two open handles on one file keep separate log counters.)
+        let as_c = Store::open(
+            &_scratch.0.join("a").join("sessions.sqlite"),
+            Some(mesh::EngineId("c".into())),
+        )
+        .await
+        .unwrap();
+        let c_root = SessionId::new();
+        as_c.create_session(c_root, "m", None, None, None)
+            .await
+            .unwrap();
+        as_c.set_root_scope(c_root, PeerScope::Owner, Some("ops@b"))
+            .await
+            .unwrap();
+        as_c.close().await;
+        // B named its desk; the row replicated here (written as `b`, which owns it).
+        let as_b = Store::open(
+            &_scratch.0.join("a").join("sessions.sqlite"),
+            Some(mesh::EngineId("b".into())),
+        )
+        .await
+        .unwrap();
+        as_b.set_root_scope(b_root, PeerScope::Owner, Some("ops@b"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            a.resolve(a_root, "ops@b").await,
+            Ok(Target::Local(id)) if id == b_root
+        ));
+        assert_eq!(
+            a.communication
+                .0
+                .read()
+                .state(Some(b_root))
+                .unwrap()
+                .alias
+                .as_deref(),
+            Some("ops@b")
+        );
+        assert!(a.resolve(a_root, "nobody@b").await.is_err());
+        // B flips its desk to isolated: once mirrored, routes from A are gone.
+        as_b.set_root_scope(b_root, PeerScope::Isolated, Some("ops@b"))
+            .await
+            .unwrap();
+        as_b.close().await;
+        a.mirror(b_root).await;
+        assert_eq!(
+            a.communication.0.read().state(Some(b_root)).unwrap().scope,
+            PeerScope::Isolated
+        );
+        assert!(a.communication.0.write().route(a_root, b_root).is_err());
+        assert!(
+            a.resolve(a_root, "ops@b").await.is_err(),
+            "owner scope only"
         );
     }
 

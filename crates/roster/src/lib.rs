@@ -900,6 +900,31 @@ impl Roster {
                 session
             }
         };
+        // 183 §6.6: the desk answers to `<agent>@<engine>` from any machine of the mesh. A new
+        // desk is an owner-scope root; an older desk keeps its scope and gains the alias.
+        let alias = format!("{name}@{}", mesh::self_name());
+        let scope = match existing {
+            None => Some(agent::PeerScope::Owner),
+            Some(_) => agents
+                .ask(agent::GetCommunication {
+                    session: Some(session),
+                })
+                .await
+                .ok()
+                .filter(|s| s.alias.as_deref() != Some(alias.as_str()))
+                .map(|s| s.scope),
+        };
+        if let Some(scope) = scope
+            && let Err(e) = agents
+                .ask(agent::SetPeerScope {
+                    root: session,
+                    scope,
+                    alias: Some(alias),
+                })
+                .await
+        {
+            tracing::warn!(agent = %name, "desk alias not set: {e}");
+        }
         // 148 E2: the agent's configured model — a native child of the desk
         // that names none starts on it (a hired agent's `model:`, theuth's
         // live `roster.theuth_model`). Re-sent on every (re)open: Agents

@@ -47,7 +47,7 @@ what [sandboxes](/docs/automation/sandboxes) are for.
 
 | Tool | Risk | Notes |
 |---|---|---|
-| `spawn_subagent` (direct) | read_only | only with `agent.communication: true`; `tools:` caps the child |
+| `spawn_subagent` (direct) | read_only | only while agent messaging is on (`agent.communication` unset = on once a machine is paired; explicit `true`/`false` wins); `tools:` caps the child |
 | `send_message` (direct), `discover_peers`, `peer_message` | mutating, read_only, read_only | same gate; `send_message` asks under the default policy |
 | `message_user` (direct) | read_only | text and files to you on Slack, Signal or Telegram |
 | `list_models`, `session_read` | read_only | |
@@ -133,7 +133,7 @@ their plugin's switch in `config.yaml`: `secrets.tools`, `knowledge.enabled`,
 `web.enabled`, `scrape.enabled`, `codeindex.enabled`, `browser.enabled`,
 `computer.enabled`, `documents.enabled`, `artifact.enabled`, `app.enabled`,
 `schedule.enabled`, `sandbox.enabled`, `voice.enabled`, `talk.enabled`,
-`meeting.enabled`. The communication trio needs `agent.communication: true`.
+`meeting.enabled`. The communication trio needs agent messaging on (`agent.communication`; unset = on once a machine is paired).
 MCP tools are switched individually in `mcp/config.yaml`.
 
 ## The gate

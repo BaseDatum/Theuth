@@ -15,14 +15,14 @@ A theuth session is one model talking to you and calling tools. Everything on th
 | Routine (schedule) | A markdown file with `cron:`, `every:` or `at:` and a prompt; each fire is a turn in that routine's own session, optionally looping until a check passes | **Routines** in the sidebar; `/schedules` | [Schedules](/docs/automation/schedules) |
 | Watcher | A routine with `when: <sensor>.py …`: a small Python sensor polled on a cadence; the prompt runs only when the sensor says *fire* | Same Routines list, with a **Test** button and a *last check* column | [Watchers](/docs/automation/watchers) |
 | Channel | Slack, Signal and Telegram as frontends: messages become turns, approvals become buttons or reactions, voice notes are transcribed | Settings › Channels | [Channels](/docs/automation/channels) |
-| Mesh / nodes / devices | Other engines (machines) that replicate your sessions and records, remote boxes reached over the link relay, and phones or browsers paired to the mesh | Settings › Mesh, Settings › Link; the engine switcher | [Mesh](/docs/automation/mesh) |
-| Sandbox VM | An isolated Linux desktop microVM on this machine that joins the mesh as an engine, with chosen host folders shared in | Settings › Mesh › Sandbox VMs; **Open desktop** | [Sandboxes](/docs/automation/sandboxes) |
+| Mesh / nodes / devices | Other engines (machines) that replicate your sessions and records, remote boxes reached over the link relay, and phones or browsers paired to the mesh | Settings › Network, Settings › Link; the engine switcher | [Mesh](/docs/automation/mesh) |
+| Sandbox VM | An isolated Linux desktop microVM on this machine that joins the mesh as an engine, with chosen host folders shared in | Settings › Network › Sandbox VMs; **Open desktop** | [Sandboxes](/docs/automation/sandboxes) |
 | Browser and desktop | An embedded headless browser per session, and native control of your own screen, mouse and keyboard | The globe (**Live browser**) in the chat header; Settings › Computer | [Browser and desktop](/docs/automation/browser-desktop) |
 
 The dependencies between them are few and worth knowing:
 
 - Subagents are the unit of *doing*. A desk never works in its own session; it spawns a child for every task. A routine with an `agent:` line does not run a prompt — it files a task for that agent. A sandbox is used by spawning a child *on* it (`spawn_subagent{agent: "<vm name>"}`).
-- `spawn_subagent` only exists when **communication** is on (`agent.communication: true`, off by default). With it off, desks, routines and tasks still work, but nothing can delegate.
+- `spawn_subagent` only exists when **communication** is on (`agent.communication` unset is on once a machine is paired, off otherwise; an explicit `true` or `false` wins). With it off, desks, routines and tasks still work, but nothing can delegate.
 - Routines, desks and devices are served by whichever engine holds the mesh **hub** lease. On a single machine that is always this one; in a mesh, the other engines show a `not hub` chip and wait.
 - Channels (Slack, Signal, Telegram) only run in the daemon (`t --headless`, which the desktop app starts for you). The terminal UI alone does not connect them.
 
@@ -62,7 +62,7 @@ Two switches are *capabilities*, not approvals, and sit above the gate:
 
 | Switch | Default | What it controls |
 |---|---|---|
-| `agent.communication` | `false` | Whether `spawn_subagent`, `discover_peers` and `send_message` exist at all. `/communication on always` turns it on and writes the key; `/communication off` opts one session and its descendants out in memory. The global value is a ceiling: a session can opt out under it, never in above it. |
+| `agent.communication` | unset: on with at least one paired machine | Whether `spawn_subagent`, `discover_peers` and `send_message` exist at all. Absent = on once a machine is paired, off otherwise; an explicit `true` or `false` always wins. `/communication on always` writes the key; `/communication off` opts one session and its descendants out in memory. The global value is a ceiling: a session can opt out under it, never in above it. |
 | `a2a.enabled` | `false` | Remote agents over A2A — a separate network switch that also needs communication on. Not covered further here. |
 
 Unattended runs — routines with `approvals: false`, desks with approvals off — are the only places theuth acts without a human able to answer a card. Both are explicit, per-file or per-session choices, and the pages that describe them say what to expect.

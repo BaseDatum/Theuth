@@ -5,12 +5,20 @@
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`MESH_ACTOR`] actor ([`Mesh`]): [`Status`], [`AddPeer`],
-//!   [`RemovePeer`], [`SetHubPref`], [`PairingString`], [`ListStats`], [`Subscribe`]
+//!   [`RemovePeer`], [`SetHubPref`], [`PairingString`], [`ListStats`], [`Subscribe`];
+//!   183 Phase 2: [`Nearby`], [`NearbyWatch`], [`PairNearby`], [`PairAnswer`],
+//!   [`SetMessaging`], [`SetNearby`], [`Rename`], [`PreviewUnpair`], [`RotateVault`]
 //! - events: [`MeshEvent`] (bus + [`Subscribe`])
+//!
+//! 183 Phase 2 module split: Nearby and the pairing ceremony live in `nearby.rs`, the
+//! vault-key frames, keyring and rotation hooks in `keys.rs`; `net.rs` and this file only
+//! call into them.
 
 pub mod config;
 pub mod identity;
+mod keys;
 pub mod lease;
+pub mod nearby;
 pub mod net;
 pub mod pairing;
 pub mod stats;
@@ -39,7 +47,8 @@ pub use config::MeshConfig;
 pub use net::ALPN_MESH;
 pub use types::{
     Accelerator, AlpnTraffic, EngineClass, EngineId, EngineStats, HubPref, LeaseState, MeshEvent,
-    MeshStatus, NearbyEngine, PairCeremony, Peer, PeerEvent, PeerId, PeerPath, RelayState,
+    MeshStatus, NearbyEngine, PairCeremony, Peer, PeerEvent, PeerId, PeerPath, QuarantinedPeer,
+    RelayState, UnpairPreview,
 };
 
 use crate::identity::now_ms;
@@ -189,6 +198,35 @@ pub fn connected_ids() -> Option<Vec<String>> {
         .map(|n| n.connected().into_iter().map(|(id, _)| id.0).collect())
 }
 
+/// 183 §6.1: how many machines this engine is paired with; `None` before the mesh plugin bound
+/// its endpoint (or without a mesh). The agent's absent-`agent.communication` default reads it.
+pub fn paired_count() -> Option<usize> {
+    NET.get().map(|n| n.paired_ids().len())
+}
+
+/// 183 §6.3: when this engine last heard from `id` (ms since epoch), from the connection
+/// bookkeeping peer events keep, without asking the actor; `None` when never seen this run.
+pub fn last_seen_ms(id: &str) -> Option<u64> {
+    NET.get()?.last_seen(id)
+}
+
+/// 183 §6.2 (W-14): `mesh.messaging_off`, kept current by the plugin and [`SetMessaging`].
+static MESSAGING_OFF: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
+/// Replace the per-machine deny list (the plugin at start, [`SetMessaging`], tests).
+pub fn set_messaging_off(ids: Vec<String>) {
+    *MESSAGING_OFF.write().unwrap_or_else(|p| p.into_inner()) = ids;
+}
+
+/// 183 §6.2: agent messages between this engine and `id` are off here (`mesh.messaging_off`).
+pub fn messaging_off(id: &str) -> bool {
+    MESSAGING_OFF
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .any(|x| x == id)
+}
+
 /// 182 M2a/S11: `data_dir`'s mesh store lists a paired peer — readable before
 /// the mesh plugin starts (read-only; `false` without a store).
 pub async fn has_stored_peers(data_dir: &std::path::Path) -> bool {
@@ -227,6 +265,27 @@ pub struct AddPeer(pub String);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemovePeer(pub EngineId);
 
+/// 183 R1 (D11, S6): `ask` → `Result<(), String>`: [`RemovePeer`], with the rotation's record
+/// carrying `device_reset_pending` (written with the mint, so a crash before the device-key
+/// reset retries it) when `reset_devices` (`mesh_remove(id, true)`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Unpair {
+    /// The engine to leave out.
+    pub id: EngineId,
+    /// Also reset phone and iPad pairing.
+    pub reset_devices: bool,
+}
+
+/// 183 R1 (S1): `ask` → `Result<(), String>`: keep (`true`) or drop a quarantined machine
+/// (`mesh_confirm_peer`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConfirmPeer {
+    /// The quarantined engine.
+    pub id: EngineId,
+    /// Pair it again.
+    pub keep: bool,
+}
+
 /// `ask` → `Result<(), String>`: change this engine's lease preference; written
 /// to `mesh.hub` in config and advertised.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -245,6 +304,66 @@ pub struct ListStats;
 /// `ask` → `broadcast::Receiver<MeshEvent>`: live peer and lease events.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Subscribe;
+
+/// 183 §10.1: `ask` → `Result<Vec<NearbyEngine>, String>`: engines the Nearby browse sees,
+/// not paired (`mesh_nearby`); empty while no window is open.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct Nearby;
+
+/// 183 §10.1: `ask` → `Result<(), String>`: open (`true`, a 30 s lease the caller renews) or
+/// close the Nearby window: advertise + browse `_theuth-mesh._udp` (`mesh_nearby_watch`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct NearbyWatch(pub bool);
+
+/// 183 §10.1: `ask` → `Result<PairCeremony, String>`: start a code-checked pairing with a
+/// Nearby engine (`mesh_pair_nearby`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PairNearby(pub EngineId);
+
+/// 183 §10.1: `ask` → `Result<(), String>`: this side's Pair (`accept`) or Cancel for a
+/// ceremony (`mesh_pair_answer`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct PairAnswer {
+    /// [`PairCeremony::id`].
+    pub ceremony: uuid::Uuid,
+    /// Pair (`true`) or Cancel.
+    pub accept: bool,
+}
+
+/// 183 §6.2 (W-14): `ask` → `Result<(), String>`: let agents on this engine and `id`
+/// message each other (`on`), or not; writes `mesh.messaging_off` (`mesh_set_messaging`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetMessaging {
+    /// The other engine.
+    pub id: EngineId,
+    /// Agents can message.
+    pub on: bool,
+}
+
+/// 183 §6.7: `ask` → `Result<(), String>`: the "Let nearby machines find this one while
+/// pairing" switch; writes `mesh.nearby` (`mesh_set_nearby`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetNearby(pub bool);
+
+/// 183 §6.7: `ask` → `Result<(), String>`: rename a machine (`mesh_rename`): `mesh.name` for
+/// this engine, the replicated `peers.name` otherwise.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Rename {
+    /// The machine.
+    pub id: EngineId,
+    /// Its new display name.
+    pub name: String,
+}
+
+/// 183 §12.9: `ask` → `Result<UnpairPreview, String>`: what unpairing `id` means
+/// (`mesh_unpair_preview`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreviewUnpair(pub EngineId);
+
+/// 183 §6.9.12: `ask` → `Result<secrets::RotationState, String>`: rotate the vault key
+/// without an unpair, or retry a failed rotation (`vault_rotate`).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct RotateVault;
 
 /// What rides on the gossip topic (67 §4.3, §4.6). A heartbeat only confirms
 /// liveness: everything the election needs is the replicated `engine_stats`
@@ -302,6 +421,12 @@ impl Ctx {
         Self::lock(&self.cfg).clone()
     }
 
+    /// Set `mesh.<key>: <value>` (a YAML scalar or flow value) in the config file.
+    fn write_config(&self, key: &str, value: &str) -> Result<(), String> {
+        runtime::write_config_value(&self.config_path, "mesh", key, value)
+            .map_err(|e| format!("write {}: {e}", self.config_path.display()))
+    }
+
     fn lease(&self) -> LeaseState {
         Self::lock(&self.live).lease.clone()
     }
@@ -317,9 +442,10 @@ impl Ctx {
             .meta_get("name")
             .await
             .map_err(|e| e.to_string())?;
+        let cfg = self.cfg();
         Ok(MeshStatus {
             self_id: self.net.id.clone(),
-            self_name: self.net.name.clone(),
+            self_name: self.net.name(),
             mesh_name,
             peers: peers.iter().map(|p| self.net.peer_of(p)).collect(),
             lease: self.lease(),
@@ -327,8 +453,10 @@ impl Ctx {
             replica: replica::stats().await,
             // 183 §9.2: the replicated `engine_stats` rows.
             stats: self.store.stats().await.map_err(|e| e.to_string())?,
-            // 183 P2: the endpoint's relay state (§6.7).
-            relay: None,
+            relay: self.net.relay_state(),
+            messaging_off: cfg.messaging_off.into_iter().map(EngineId).collect(),
+            nearby: cfg.nearby,
+            quarantined: self.net.quarantined().await.map_err(|e| e.to_string())?,
         })
     }
 
@@ -708,14 +836,51 @@ impl Message<RemovePeer> for Mesh {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: RemovePeer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.unpair(&m.0, false).await
+    }
+}
+
+impl Message<Unpair> for Mesh {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: Unpair, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.unpair(&m.id, m.reset_devices).await
+    }
+}
+
+impl Mesh {
+    /// [`RemovePeer`] / [`Unpair`]: tombstone, push, recompute, then the rotation.
+    async fn unpair(&mut self, id: &EngineId, reset_devices: bool) -> Result<(), String> {
         self.ctx
             .net
-            .remove_peer(&m.0)
+            .remove_peer(id)
             .await
             .map_err(|e| format!("{e:#}"))?;
         self.ctx.net.push_peers().await;
-        Ctx::lock(&self.ctx.live).seen.remove(&m.0);
+        Ctx::lock(&self.ctx.live).seen.remove(id);
         self.ctx.recompute("remove").await;
+        // 183 §6.9.3 (W-28): the rotation after the tombstone; its failure leaves the unpair.
+        if let Err(e) = keys::after_remove(&self.ctx.net, id, reset_devices).await {
+            tracing::warn!("mesh: vault-key rotation after unpairing {id}: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<ConfirmPeer> for Mesh {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: ConfirmPeer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ctx
+            .net
+            .confirm_peer(&m.id)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        // 183 R4: Remove is the user's unpair (tombstone, push, rotation), never a quarantine's.
+        if !m.keep {
+            return self.unpair(&m.id, false).await;
+        }
+        self.ctx.recompute("confirm").await;
         Ok(())
     }
 }
@@ -748,7 +913,10 @@ impl Message<PairingString> for Mesh {
         _: PairingString,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        Ok(self.ctx.net.pairing_string().await)
+        let s = self.ctx.net.pairing_string().await;
+        // 183 §6.8: `t mesh pair` also lets nearby machines find this one for the pair window.
+        nearby::open_window(&self.ctx.net);
+        Ok(s)
     }
 }
 
@@ -765,6 +933,114 @@ impl Message<Subscribe> for Mesh {
 
     async fn handle(&mut self, _: Subscribe, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ctx.events.subscribe()
+    }
+}
+
+impl Message<Nearby> for Mesh {
+    type Reply = Result<Vec<NearbyEngine>, String>;
+
+    async fn handle(&mut self, _: Nearby, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Ok(nearby::list(&self.ctx.net))
+    }
+}
+
+impl Message<NearbyWatch> for Mesh {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: NearbyWatch, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        nearby::watch(&self.ctx.net, m.0).await
+    }
+}
+
+impl Message<PairNearby> for Mesh {
+    type Reply = DelegatedReply<Result<PairCeremony, String>>;
+
+    async fn handle(&mut self, m: PairNearby, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let net = self.ctx.net.clone();
+        // Network round trips: off the mailbox.
+        tokio::spawn(async move { tx.send(nearby::pair(&net, &m.0).await) });
+        reply
+    }
+}
+
+impl Message<PairAnswer> for Mesh {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: PairAnswer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        nearby::answer(&self.ctx.net, m.ceremony, m.accept).await
+    }
+}
+
+impl Message<SetMessaging> for Mesh {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: SetMessaging, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let mut off = self.ctx.cfg().messaging_off;
+        off.retain(|id| *id != m.id.0);
+        if !m.on {
+            off.push(m.id.0);
+        }
+        self.ctx
+            .write_config("messaging_off", &serde_json::json!(off).to_string())?;
+        Ctx::lock(&self.ctx.cfg).messaging_off = off.clone();
+        set_messaging_off(off);
+        Ok(())
+    }
+}
+
+impl Message<SetNearby> for Mesh {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: SetNearby, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ctx
+            .write_config("nearby", if m.0 { "true" } else { "false" })?;
+        Ctx::lock(&self.ctx.cfg).nearby = m.0;
+        nearby::allow(&self.ctx.net, m.0)
+    }
+}
+
+impl Message<Rename> for Mesh {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: Rename, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let name = m.name.trim();
+        if name.is_empty() {
+            return Err("a machine needs a name".into());
+        }
+        if m.id == self.ctx.net.id {
+            self.ctx
+                .write_config("name", &serde_json::json!(name).to_string())?;
+            Ctx::lock(&self.ctx.cfg).name = name.to_owned();
+            set_self_name(name);
+            self.ctx.net.rename(name).await
+        } else {
+            self.ctx.net.rename_peer(&m.id, name).await
+        }
+        .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<PreviewUnpair> for Mesh {
+    type Reply = Result<UnpairPreview, String>;
+
+    async fn handle(
+        &mut self,
+        m: PreviewUnpair,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        keys::unpair_preview(&self.ctx.net, &m.0)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<RotateVault> for Mesh {
+    type Reply = Result<secrets::RotationState, String>;
+
+    async fn handle(&mut self, _: RotateVault, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        keys::rotate(&self.ctx.net).await
     }
 }
 
@@ -825,7 +1101,8 @@ impl runtime::Plugin for MeshPlugin {
                 bind_addr: cfg.bind,
                 storm_frames_per_sec: cfg.storm_frames_per_sec,
                 first_seen_ms: identity.first_seen_ms,
-                keys: None,
+                vault: None,
+                mdns: None,
             },
             store.clone(),
             name,
@@ -846,11 +1123,31 @@ impl runtime::Plugin for MeshPlugin {
             cfg.discovery
         );
         let _ = NET.set(net.clone());
+        // 183 §6.2, §6.8: the deny list and the Nearby switch, from config.
+        set_messaging_off(cfg.messaging_off.clone());
+        nearby::configure(&net, cfg.nearby, cfg.pair_window_secs);
         // 183 §5.6: the machine facts carry this engine's mesh name.
-        platform::process::set_machine_name(&net.name);
+        platform::process::set_machine_name(&net.name());
         // 79 §6.6: secrets stamps its replicated rows with the engine id; it starts
         // before us and cannot ask the mesh (mesh depends on secrets), so we tell it.
         tokio::spawn(tell_secrets_engine(rt.clone(), net.id.clone()));
+        // 183 §6.9: the vault the key frames and the rotation move keys in, then the key tick
+        // (member rule, missing-key requests, the rotation's peer list) until shutdown.
+        let (n, rt2) = (net.clone(), rt.clone());
+        tokio::spawn(async move {
+            let Some(vault) = secrets::handle(&rt2).await else {
+                return;
+            };
+            n.set_vault(vault);
+            keys::start(&n).await;
+            let mut every = tokio::time::interval(keys::TICK);
+            loop {
+                tokio::select! {
+                    () = rt2.shutdown.cancelled() => return,
+                    _ = every.tick() => keys::tick(&n, now_ms()).await,
+                }
+            }
+        });
 
         // 69 decision 8: the mesh's name defaults to the first engine's own.
         // Written after the attach (below) so the trigger captures it, and only
@@ -917,9 +1214,21 @@ impl runtime::Plugin for MeshPlugin {
         let actor = Mesh::spawn(Mesh { ctx: ctx.clone() });
         actor.register(MESH_ACTOR)?;
 
+        // 183 §6.8: Nearby list and pairing ceremony changes onto the bus.
+        let (c, mut nearby_events) = (ctx.clone(), net.nearby_events());
+        tokio::spawn(async move {
+            loop {
+                match nearby_events.recv().await {
+                    Ok(ev) => c.emit(ev).await,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
         // The replica plugin starts after this one: attach when it is up (bounded — a slimmer
         // plugin set may never start it), then write the start-up rows.
-        let (c, name, stats) = (ctx.clone(), net.name.clone(), self_stats);
+        let (c, name, stats) = (ctx.clone(), net.name(), self_stats);
         tokio::spawn(async move {
             let replica = tokio::time::timeout(
                 ATTACH_WAIT,

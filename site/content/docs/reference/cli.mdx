@@ -52,7 +52,7 @@ pretty-printed JSON unless noted.
 | `t mesh add --ssh <target> [--key <name> \| --system-ssh] [--name <n>] [--local-t <path>]` | bring `t` up on a host over ssh and join it as an engine |
 | `t mesh add --docker [--name <n>] [--image <i>]` | the same in a container (default name `engine`) |
 | `t mesh add --vm [--name <n>] [--cpus <n>] [--memory <size>] [--disk <size>] [--share HOST[:GUEST][:ro]]… [--no-desktop] [--network <policy>] [--image <i> \| --local-t <path> \| --bootstrap]` | create a sandbox VM and join it; see [Sandboxes](/docs/automation/sandboxes) |
-| `t mesh remove <id>` | leave or evict an engine |
+| `t mesh remove <id>` | unpair an engine and rotate the vault key; see [Mesh](/docs/automation/mesh#unpair-vault-key-rotation-and-device-reset) |
 | `t mesh hub prefer\|eligible\|never` | this engine's willingness to hold the hub lease (`mesh.hub`) |
 | `t mesh devices list\|add [name]\|revoke <id>\|rename <id> <name>` | paired link devices; `add` prints a QR and `pending <id> — expires in 5 min` |
 | `t tasks list [--owner agent:<n>\|user] [--state todo,doing,…] [--engine] [--project]` | the task board; states `todo`, `doing`, `review`, `blocked`, `done`, `cancelled` |

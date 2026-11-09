@@ -126,8 +126,23 @@ export function size(bytes: number | bigint): string {
 }
 
 /** A chat's name: its title, else `Untitled chat · <created MMM d>` — the engine's own rule for search hits (§8). */
+/**
+ * 183 R2: a title seeded from a peer message's wrapper (`<message from="…" …>`, before the engine named those
+ * chats `Message from …`) reads `Message from <who>[: <first body line>]`, never the wrapper. Anything else as is.
+ */
+export function cleanTitle(title: string): string {
+  const t = title.trim()
+  const m = /^<message from="([^"]*)/.exec(t)
+  if (!m) return title
+  const from = m[1] ?? ''
+  const who = from.startsWith('peer:') && from.length > 5 ? from.slice(5) : 'another agent'
+  const gt = t.indexOf('>')
+  const first = gt < 0 ? undefined : t.slice(gt + 1).split('</message>')[0]!.split('\n').map((l) => l.trim()).find(Boolean)
+  return first ? `Message from ${who}: ${first}` : `Message from ${who}`
+}
+
 export const chatName = (s: { title: string; created_at: string }, now: Date = new Date()): string =>
-  s.title || `Untitled chat · ${date(s.created_at, now)}`
+  cleanTitle(s.title) || `Untitled chat · ${date(s.created_at, now)}`
 
 /** The title the user sees, with §8's fallback when the record's is empty; never `""`. */
 export function title(src: Source, now: Date = new Date()): string {

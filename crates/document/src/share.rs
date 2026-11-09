@@ -46,6 +46,73 @@ pub(crate) fn seal_hash(vault: &Vault, link_id: &str, hash: &[u8]) -> String {
     b64url(&vault.seal_with_mesh_key(link_id.as_bytes(), hash))
 }
 
+/// 183 §6.9.11: `ask` → `bool` after a vault-key rotation: under `vault.retire_hold("document")`,
+/// re-seal every share link that opens only under a retained mesh key, through the normal meta
+/// write. `false` = not the hub here (the hub owns the writes; a link whose re-seal never lands
+/// stops opening at retire, and the UI offers Re-share).
+#[derive(Clone, Copy, Debug)]
+pub struct Reseal;
+
+impl Message<Reseal> for DocumentActor {
+    type Reply = bool;
+
+    async fn handle(&mut self, _: Reseal, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.reseal().await
+    }
+}
+
+impl DocumentActor {
+    /// [`Reseal`]'s body; also run when this engine becomes the hub (183 R1), so links sealed
+    /// under a retained key survive a hub move after a rotation.
+    pub(crate) async fn reseal(&mut self) -> bool {
+        if !self.hub.holding() {
+            return false;
+        }
+        let Some(vault) = self.store.vault() else {
+            return true;
+        };
+        let _hold = vault.retire_hold("document");
+        let docs = match self.store.list(None, u32::MAX).await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("documents: share-link re-seal: {e:#}");
+                return false;
+            }
+        };
+        for d in docs {
+            if let Some(o) = self.open.get_mut(&d.id) {
+                if reseal_links(&vault, &mut o.meta.links) {
+                    self.save_members(&d.id).await;
+                }
+                continue;
+            }
+            let Ok(mut meta) = self.store.read_meta(&d.id) else {
+                continue;
+            };
+            if reseal_links(&vault, &mut meta.links)
+                && let Err(e) = self.store.write_meta(&meta).await
+            {
+                tracing::warn!(doc = %d.id, error = %e, "meta.json: re-sealed links not saved");
+            }
+        }
+        true
+    }
+}
+
+/// Re-seal each link sealed under a retained key; `true` when one changed.
+fn reseal_links(vault: &Vault, links: &mut [ShareLink]) -> bool {
+    let mut changed = false;
+    for l in links {
+        if let Some(bytes) = unb64url(&l.secret_hash_sealed)
+            && let Some(new) = vault.reseal_with_mesh_key(l.id.as_bytes(), &bytes)
+        {
+            l.secret_hash_sealed = b64url(&new);
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// The HMAC key a link holds; `None` when the field is empty, damaged, or sealed under another
 /// mesh key.
 fn open_hash(vault: &Vault, link: &ShareLink) -> Option<Vec<u8>> {
@@ -762,5 +829,34 @@ mod tests {
         l.expires_ms = None;
         l.revoked_ms = Some(1);
         assert!(!l.live(0));
+    }
+
+    /// 183 §6.9.11, §13 row 45: a link sealed before a rotation still verifies (trial with the
+    /// retained key), re-seals under the new key, and keeps verifying once the old key is
+    /// destroyed; a copy that missed the re-seal stops (the UI offers Re-share).
+    #[tokio::test]
+    async fn share_links_reseal_across_a_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(dir.path(), secrets::KeyStore::File)
+            .await
+            .unwrap();
+        let secret = [7u8; 32];
+        let (h, g) = ([1u8; 32], [2u8; 32]);
+        let p = proof(&secret_hash(&secret), &h, &g);
+        let mut links = vec![link(&v, &secret)];
+        let missed = links[0].clone();
+        v.rotate("a", vec![], vec![], 0, false).await.unwrap();
+        assert!(verify(Some(&v), &links[0], &h, &g, &p), "both keys valid");
+        assert!(reseal_links(&v, &mut links));
+        assert!(
+            !reseal_links(&v, &mut links),
+            "already under the current key"
+        );
+        v.maintain(now_ms() as u64 + secrets::vault::RETIRE_GRACE_MS + 1_000)
+            .await
+            .unwrap();
+        assert_eq!(v.held_keys().len(), 1, "the old key is destroyed");
+        assert!(verify(Some(&v), &links[0], &h, &g, &p));
+        assert!(!verify(Some(&v), &missed, &h, &g, &p));
     }
 }

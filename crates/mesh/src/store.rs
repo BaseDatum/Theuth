@@ -19,6 +19,21 @@ use crate::types::{Accelerator, EngineClass, EngineId, EngineStats, HubPref};
 /// 30 days in ms: the availability window (67 §4.5).
 pub const WINDOW_MS: u64 = 30 * 24 * 3600 * 1000;
 
+/// 183 R1 (S1): `peer_origin`, which engine introduced a peer row here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    /// The introduced engine.
+    pub id: EngineId,
+    /// The engine whose peer set carried it first.
+    pub by: EngineId,
+    /// When it arrived here (ms since epoch).
+    pub at_ms: u64,
+    /// Held back here (no peer, row still live) because `by` was unpaired by then (183 R4).
+    pub quarantined: bool,
+    /// A user kept or dropped it.
+    pub confirmed: bool,
+}
+
 /// Process-wide hybrid logical clock: `(wall_ms, counter)` of the last stamp
 /// (the `tasks` store keeps the same shape).
 static HLC: Mutex<(u64, u32)> = Mutex::new((0, 0));
@@ -100,11 +115,20 @@ impl Store {
 
     /// Live (not removed) peers.
     pub async fn peers(&self) -> anyhow::Result<Vec<PeerEntry>> {
+        // 183 R4: a quarantined row stays live in the replicated table but is no peer here (paired set, status,
+        // lease) until a user keeps it.
+        let held: Vec<EngineId> = self
+            .origins()
+            .await?
+            .into_iter()
+            .filter(|o| o.quarantined && !o.confirmed)
+            .map(|o| o.id)
+            .collect();
         Ok(self
             .peer_entries()
             .await?
             .into_iter()
-            .filter(|p| !p.removed())
+            .filter(|p| !p.removed() && !held.contains(&p.id))
             .collect())
     }
 
@@ -126,6 +150,63 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    // --- peer_origin (183 R1, S1; local only) ----------------------------
+
+    /// The first engine that brought `id` here; later ones change nothing.
+    pub async fn record_origin(
+        &self,
+        id: &EngineId,
+        by: &EngineId,
+        at_ms: u64,
+    ) -> anyhow::Result<()> {
+        sqlx::query("INSERT OR IGNORE INTO peer_origin (id, by_engine, at_ms) VALUES (?, ?, ?)")
+            .bind(&id.0)
+            .bind(&by.0)
+            .bind(at_ms as i64)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Every recorded origin.
+    pub async fn origins(&self) -> anyhow::Result<Vec<Origin>> {
+        let rows: Vec<(String, String, i64, bool, bool)> = sqlx::query_as(
+            "SELECT id, by_engine, at_ms, quarantined, confirmed FROM peer_origin ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, by, at, quarantined, confirmed)| Origin {
+                id: EngineId(id),
+                by: EngineId(by),
+                at_ms: at as u64,
+                quarantined,
+                confirmed,
+            })
+            .collect())
+    }
+
+    /// Mark `id` quarantined (its row was tombstoned here).
+    pub async fn set_quarantined(&self, id: &EngineId) -> anyhow::Result<()> {
+        sqlx::query("UPDATE peer_origin SET quarantined = 1 WHERE id = ?")
+            .bind(&id.0)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// A user decided on quarantined `id`; `false` when it was not waiting.
+    pub async fn confirm_origin(&self, id: &EngineId) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "UPDATE peer_origin SET confirmed = 1 WHERE id = ? AND quarantined = 1 AND confirmed = 0",
+        )
+        .bind(&id.0)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() == 1)
     }
 
     // --- engine_stats --------------------------------------------------

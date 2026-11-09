@@ -233,6 +233,13 @@ pub struct Revoke {
     pub id: String,
 }
 
+/// 183 D11: `ask` → `Result<u32, String>`: the mesh's `mesh/device_key` was just reset, so
+/// every phone and iPad must re-pair: each active device is revoked (the row stays; scanning a
+/// new QR reactivates it), the cached mesh identity is dropped and the mesh uplink restarts
+/// under the new key. The count of devices revoked.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ResetDevices;
+
 /// `ask` → `Vec<DeviceInfo>`: every registry row, revoked included (69 §3).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DevicesList;

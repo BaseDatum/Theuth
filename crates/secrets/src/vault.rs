@@ -13,7 +13,8 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, PoisonError, RwLock, RwLockReadGuard};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, PoisonError, RwLock, RwLockReadGuard};
 use std::time::SystemTime;
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
@@ -28,6 +29,12 @@ use sqlx::SqlitePool;
 use zeroize::Zeroizing;
 
 use crate::store;
+
+mod rotation;
+pub use rotation::{
+    LEGACY_CHECK_MS, MAX_EPOCH_JUMP, REMOVED_MACHINE, RETIRE_GRACE_MS, SWEEP_BATCH, SWEEP_GRACE_MS,
+    SWEEP_HOLD_MS, key_id,
+};
 
 /// Versions kept per name. Not config: a sixth is the one nobody asked for.
 pub const KEEP: usize = 5;
@@ -101,6 +108,128 @@ pub struct SecretsList {
     pub secrets: Vec<SecretInfo>,
 }
 
+/// 183 §14.7 (D7): one mesh key's identity and order. Keys order by `(epoch, initiator)`;
+/// the legacy key is `(0, "")`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct KeyInfo {
+    /// `hex(sha256("theuth-mesh-key-id-1" ‖ key)[0..8])` (W-29); rows carry it in `vault.key_id`.
+    pub id: String,
+    /// `0` = the legacy key.
+    pub epoch: u32,
+    /// The engine that minted it; `""` for the legacy key.
+    pub initiator: String,
+    /// Engines it was minted for or granted to (W-34).
+    pub members: Vec<String>,
+    /// When it was minted (ms since epoch; 0 for the legacy key).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub minted_ms: u64,
+}
+
+/// 183 §14.7: a key as it travels on `theuth/mesh/1` (`PairHello`/`PairAck.keyring`,
+/// `KeyGrant`). Engine-internal: carries key bytes, never ts-exported, never logged.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireKey {
+    /// Which key.
+    pub info: KeyInfo,
+    /// The 32 key bytes, base32 (no padding), as `PairHello.vault_key`.
+    pub key: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for WireKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WireKey")
+            .field("info", &self.info)
+            .finish_non_exhaustive()
+    }
+}
+
+/// 183 §14.7: where a rotation is (§12.9 banner).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum RotationPhase {
+    /// The new key is being minted and stored.
+    Minting,
+    /// Rows are being re-sealed under it.
+    Sweeping,
+    /// Every local row is swept; waiting for offline machines and the retire grace.
+    Waiting,
+    /// The old key is retired.
+    Done,
+    /// Stopped; the old key stays current (`error`, Retry = `vault_rotate`).
+    Failed,
+}
+
+/// 183 §14.7: one remaining machine as the rotation sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct RotationPeer {
+    /// Engine id.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Connected now.
+    pub online: bool,
+    /// It acknowledged the new key (`KeyAck`).
+    pub has_key: bool,
+    /// Connected 5 s without sending `KeyEpoch`: a pre-183 build (§6.9.10).
+    pub old_build: bool,
+}
+
+/// 183 §14.7: the newest rotation (`meta["rotation"]`, `vault_rotation`,
+/// `SecretsEvent::Rotation`). Names only, never values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct RotationState {
+    /// The key rotated to.
+    pub key: KeyInfo,
+    /// Engines whose unpair started it; empty for a manual rotation.
+    pub removed: Vec<String>,
+    /// Where it is.
+    pub phase: RotationPhase,
+    /// When it started (ms since epoch).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub started_ms: u64,
+    /// `vault` rows to re-seal.
+    pub rows_total: u32,
+    /// Rows already under the new key.
+    pub rows_done: u32,
+    /// Secret names whose rows open under no held key (§13 row 41).
+    pub rows_stuck: Vec<String>,
+    /// Every remaining machine.
+    pub peers: Vec<RotationPeer>,
+    /// The previous key is retired here.
+    pub old_destroyed: bool,
+    /// Why it failed.
+    pub error: Option<String>,
+    /// 183 R1: the unpair asked for a device-key reset that is not finished yet
+    /// ([`Vault::finish_device_reset`]).
+    #[serde(default)]
+    pub device_reset_pending: bool,
+    /// 183 R2: the removed machines' names, in `removed` order ("a removed machine" when none
+    /// was known): what the UI shows, never an engine id.
+    #[serde(default)]
+    pub removed_names: Vec<String>,
+    /// 183 R4: the sweep hold's end (ms; [`Vault::rotate`]), kept so a restart still holds.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub sweep_hold_until_ms: u64,
+}
+
+/// 183 §14.7 (§6.9.11): while one is held, no non-current key is retired. Drop releases it.
+#[derive(Debug)]
+pub struct RetireHold {
+    count: Arc<AtomicUsize>,
+    _who: &'static str,
+}
+
+impl Drop for RetireHold {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A local name: `[A-Za-z0-9_.-]{1,64}`. `/` is reserved for backends (37 §11).
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
@@ -140,6 +269,9 @@ struct Version {
     value: Zeroizing<String>,
     created: String,
     source: String,
+    /// `updated_ms` of the row (183 W-36: the Unpair preview's window).
+    #[serde(default)]
+    ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -173,10 +305,25 @@ struct Inner {
 pub struct Vault {
     pool: SqlitePool,
     path: PathBuf,
-    /// This engine's key: seals the mesh key at rest.
+    /// This engine's key: seals the mesh keys at rest.
     key: Zeroizing<[u8; 32]>,
-    /// The mesh-wide data key: seals every row.
-    mesh_key: RwLock<Zeroizing<[u8; 32]>>,
+    /// 183 §6.9: the mesh-wide data keys: the current one seals every new row, the retained
+    /// ones still open rows not yet swept (W-31).
+    ring: RwLock<rotation::Ring>,
+    /// Key ids rows name that this engine does not hold (W-38): the mesh asks peers for them.
+    missing: RwLock<std::collections::BTreeSet<String>>,
+    /// Open [`RetireHold`]s.
+    holds: Arc<AtomicUsize>,
+    /// 183 R1: no sweep before this time (ms; 0 = none), set by `rotate`.
+    sweep_until: std::sync::atomic::AtomicU64,
+    /// 183 R1: when `retire` last trial-decrypted the `''` rows, and the retained key ids they opened.
+    legacy_cache: std::sync::Mutex<Option<(u64, std::collections::BTreeSet<String>)>>,
+    /// `meta["rotation"]`, watched by the plugin (`SecretsEvent::Rotation`).
+    rotation: tokio::sync::watch::Sender<Option<RotationState>>,
+    /// This engine's mesh id ([`Vault::set_engine`]); the initiator sweeps at once.
+    me: RwLock<String>,
+    /// Serializes keyring changes.
+    keylock: tokio::sync::Mutex<()>,
     key_store: &'static str,
     inner: RwLock<Inner>,
 }
@@ -217,11 +364,23 @@ impl Vault {
                 k
             }
         };
+        let (ring, rotation) = rotation::load(&pool, &key, mesh_key).await?;
         let vault = Vault {
             pool,
             path,
             key,
-            mesh_key: RwLock::new(mesh_key),
+            ring: RwLock::new(ring),
+            missing: RwLock::default(),
+            holds: Arc::default(),
+            // 183 R4: a release (an ack) is not persisted; after a restart the hold runs out.
+            sweep_until: rotation
+                .as_ref()
+                .map_or(0, |r| r.sweep_hold_until_ms)
+                .into(),
+            legacy_cache: Default::default(),
+            rotation: tokio::sync::watch::Sender::new(rotation),
+            me: RwLock::default(),
+            keylock: tokio::sync::Mutex::new(()),
             key_store,
             inner: RwLock::new(Inner {
                 entries: BTreeMap::new(),
@@ -244,50 +403,9 @@ impl Vault {
         &self.pool
     }
 
-    /// The mesh data key (travels inside the pairing string, 67 §5.4).
+    /// The current mesh data key (travels inside the pairing string, 67 §5.4).
     pub fn mesh_key(&self) -> Zeroizing<[u8; 32]> {
-        self.mesh_key
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    /// Take the mesh key a pairing string carried: every local row is
-    /// re-sealed under it (rows that do not open are left as they are) and
-    /// the new key is stored under this engine's key. Same key = no-op.
-    pub async fn adopt_mesh_key(&self, key: [u8; 32]) -> anyhow::Result<()> {
-        let old = self.mesh_key();
-        if *old == key {
-            return Ok(());
-        }
-        let key = Zeroizing::new(key);
-        let (rows, _) = store::rows(&self.pool).await?;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        for r in &rows {
-            let id = store::id(&r.name, r.version);
-            let Some(plain) = open_bytes(&old, id.as_bytes(), &r.ciphertext) else {
-                tracing::warn!("secrets: {id} does not open with the old mesh key; left as is");
-                continue;
-            };
-            sqlx::query("UPDATE vault SET ciphertext = ? WHERE id = ?")
-                .bind(seal(&key, id.as_bytes(), &plain))
-                .bind(&id)
-                .execute(&mut *tx)
-                .await?;
-        }
-        sqlx::query(
-            "INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-        )
-        .bind(MESH_KEY)
-        .bind(seal(&self.key, MESH_KEY_AAD, &*key))
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        *self
-            .mesh_key
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = key;
-        self.refresh().await
+        self.ring().current.key.clone()
     }
 
     /// Vault name of the mesh's Noise static key (69 decision 1).
@@ -352,10 +470,21 @@ impl Vault {
         seal(&self.mesh_key(), aad, plain)
     }
 
-    /// Inverse of [`Vault::seal_with_mesh_key`]; `None` = wrong key, wrong
-    /// aad or damaged bytes.
+    /// Inverse of [`Vault::seal_with_mesh_key`]: the current key, then the retained ones
+    /// (183 §6.9.11); `None` = no held key, wrong aad or damaged bytes.
     pub fn open_with_mesh_key(&self, aad: &[u8], bytes: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-        open_bytes(&self.mesh_key(), aad, bytes)
+        self.ring().open("", aad, bytes)
+    }
+
+    /// 183 §6.9.11: `bytes` re-sealed under the current key when they open only under a
+    /// retained one; `None` when they already open under the current key, or under none.
+    pub fn reseal_with_mesh_key(&self, aad: &[u8], bytes: &[u8]) -> Option<Vec<u8>> {
+        let ring = self.ring();
+        if open_bytes(&ring.current.key, aad, bytes).is_some() {
+            return None;
+        }
+        let plain = ring.open("", aad, bytes)?;
+        Some(seal(&ring.current.key, aad, &plain))
     }
 
     /// Newest mtime of the sqlite file or its WAL: moves on every write by
@@ -371,12 +500,16 @@ impl Vault {
     }
 
     /// Rebuild the in-memory copy from the tables: per name the current
-    /// version and the [`KEEP`] − 1 below it; a row that does not open under
-    /// the mesh key is skipped with a warning.
+    /// version and the [`KEEP`] − 1 below it. Each row opens with the key its `key_id`
+    /// names (`''`: by trial, 183 §6.9.4). A row under a key this engine does not hold keeps
+    /// its previous in-memory value (W-38) and its key id goes to [`Vault::missing_keys`];
+    /// any other row that does not open is skipped with a warning.
     pub async fn refresh(&self) -> anyhow::Result<()> {
         let (rows, current) = store::rows(&self.pool).await?;
-        let mesh_key = self.mesh_key();
+        let ring = self.ring();
+        let mut missing = std::collections::BTreeSet::new();
         let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
+        let prev = self.read();
         for r in rows {
             let Some(&cur) = current.get(&r.name) else {
                 continue;
@@ -392,13 +525,35 @@ impl Vault {
                 continue;
             }
             let id = store::id(&r.name, r.version);
-            let Some(plain) = open_bytes(&mesh_key, id.as_bytes(), &r.ciphertext) else {
-                tracing::warn!("secrets: {id} does not open under the mesh key; skipped");
-                continue;
-            };
-            let Ok(value) = String::from_utf8(plain.to_vec()).map(Zeroizing::new) else {
-                tracing::warn!("secrets: {id} is not UTF-8; skipped");
-                continue;
+            let value = match ring.open(&r.key_id, id.as_bytes(), &r.ciphertext) {
+                Some(plain) => match String::from_utf8(plain.to_vec()).map(Zeroizing::new) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        tracing::warn!("secrets: {id} is not UTF-8; skipped");
+                        continue;
+                    }
+                },
+                None if !r.key_id.is_empty() && ring.get(&r.key_id).is_none() => {
+                    missing.insert(r.key_id.clone());
+                    let kept = prev
+                        .entries
+                        .get(&r.name)
+                        .and_then(|e| e.versions.iter().find(|v| v.v == r.version));
+                    match kept {
+                        Some(v) => v.value.clone(),
+                        None => {
+                            tracing::warn!(
+                                "secrets: {id}: key {} not held; waiting for the vault key from the mesh",
+                                r.key_id
+                            );
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!("secrets: {id} does not open under any held mesh key; skipped");
+                    continue;
+                }
             };
             if r.version == cur {
                 entry.note = r.note;
@@ -408,8 +563,12 @@ impl Vault {
                 value,
                 created: rfc3339(r.updated_ms),
                 source: r.source,
+                ms: r.updated_ms,
             });
         }
+        drop(prev);
+        drop(ring);
+        *self.missing.write().unwrap_or_else(PoisonError::into_inner) = missing;
         entries.retain(|_, e| !e.versions.is_empty());
         let mut g = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         g.scrubber = scrubber(&entries);
@@ -680,16 +839,18 @@ impl Vault {
         let version = cur.map_or(1, |c| c + 1);
         let id = store::id(name, version);
         let now = now_ms();
+        let (key, key_id) = self.current();
         sqlx::query(
-            "INSERT INTO vault (id, name, version, ciphertext, note, source, updated_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO vault (id, name, version, ciphertext, note, source, updated_ms, key_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(name)
         .bind(i64::from(version))
-        .bind(seal(&self.mesh_key(), id.as_bytes(), value.as_bytes()))
+        .bind(seal(&key, id.as_bytes(), value.as_bytes()))
         .bind(&note)
         .bind(source)
         .bind(now as i64)
+        .bind(&key_id)
         .execute(&mut *tx)
         .await
         .map_err(e)?;
@@ -735,7 +896,7 @@ impl Vault {
         let Some(entries) = load_legacy(path, &self.key)? else {
             return Ok(());
         };
-        let mesh_key = self.mesh_key();
+        let (mesh_key, key_id) = self.current();
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let mut n = 0;
         for (name, e) in &entries {
@@ -750,7 +911,7 @@ impl Vault {
                 let ms = chrono::DateTime::parse_from_rfc3339(&v.created)
                     .map_or_else(|_| now_ms(), |t| t.timestamp_millis() as u64);
                 sqlx::query(
-                    "INSERT OR IGNORE INTO vault (id, name, version, ciphertext, note, source, updated_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO vault (id, name, version, ciphertext, note, source, updated_ms, key_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(name)
@@ -759,6 +920,7 @@ impl Vault {
                 .bind(&e.note)
                 .bind(&v.source)
                 .bind(ms as i64)
+                .bind(&key_id)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -1389,7 +1551,7 @@ mod tests {
         let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let a = open(da.path()).await;
         let b = open(db.path()).await;
-        b.adopt_mesh_key(*a.mesh_key()).await.unwrap();
+        b.adopt_keyring(a.keyring()).await.unwrap();
         let ea = replica::engine::Engine::open(&da.path().join("replica.sqlite"))
             .await
             .unwrap();
@@ -1449,9 +1611,14 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         let o = open(other.path()).await;
         assert_ne!(*v.mesh_key(), *o.mesh_key());
-        v.adopt_mesh_key(*o.mesh_key()).await.unwrap();
+        v.adopt_keyring(o.keyring()).await.unwrap();
         assert_eq!(*v.mesh_key(), *o.mesh_key());
         assert_eq!(v.get("gh", 0).unwrap().as_str(), "ghp_0123456789");
+        let (rows, _) = store::rows(v.pool()).await.unwrap();
+        assert!(
+            rows.iter().all(|r| r.key_id == key_id(&o.mesh_key())),
+            "pairing sweeps at once"
+        );
         drop(v);
         let v = open(dir.path()).await;
         assert_eq!(
@@ -1480,5 +1647,531 @@ mod tests {
             v.get("legacy_tok", 0).unwrap().as_str(),
             "legacy-dummy-value-1"
         );
+    }
+
+    // --- 183 §6.9: the keyring ------------------------------------------------
+
+    async fn replica(
+        dir: &Path,
+        v: &Vault,
+    ) -> (Arc<replica::engine::Engine>, replica::engine::ReplicaHandle) {
+        let e = replica::engine::Engine::open(&dir.join("replica.sqlite"))
+            .await
+            .unwrap();
+        let h = e.attach(v.pool(), store::TABLES).await.unwrap();
+        (e, h)
+    }
+
+    async fn key_ids(v: &Vault) -> BTreeMap<String, usize> {
+        let (rows, _) = store::rows(v.pool()).await.unwrap();
+        let mut by = BTreeMap::new();
+        for r in rows {
+            *by.entry(r.key_id).or_insert(0) += 1;
+        }
+        by
+    }
+
+    async fn meta_keys(v: &Vault) -> Vec<serde_json::Value> {
+        store::meta_get(v.pool(), "mesh_keys")
+            .await
+            .unwrap()
+            .map(|b| serde_json::from_slice(&b).unwrap())
+            .unwrap_or_default()
+    }
+
+    /// §6.9.6, W-33, §16: the sweep re-seals every row (all kept versions, `oauth/*`, `mesh/*`)
+    /// in place; reads, `:-N` and restore keep working; the old key goes only after the grace,
+    /// with no hold open, and once nothing names it.
+    #[tokio::test]
+    async fn rotation_reseals_every_row_and_retires_after_the_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        for n in ["gh", "slack", "aws"] {
+            v.set(n, &format!("{n}-first-value"), None, "user")
+                .await
+                .unwrap();
+            v.set(n, &format!("{n}-second-value"), None, "user")
+                .await
+                .unwrap();
+        }
+        v.set_if_version("oauth/github", "{\"t\":1}", "oauth", None)
+            .await
+            .unwrap();
+        let old = v.current_key();
+        let sealed = v.seal_with_mesh_key(b"blob", b"psk-bytes");
+        assert!(v.rotation().is_none());
+
+        let k1 = v
+            .rotate(
+                "a",
+                vec!["a".into(), "b".into()],
+                vec!["c".into()],
+                0,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!((k1.epoch, k1.initiator.as_str()), (1, "a"));
+        assert_eq!(k1.id, key_id(&v.mesh_key()));
+        assert_eq!(v.held_keys(), [k1.id.clone(), old.id.clone()]);
+        // Both keys valid before the sweep: old rows read, new rows seal under K1.
+        assert_eq!(v.get("gh", 1).unwrap().as_str(), "gh-first-value");
+        v.set("new", "written-after-mint", None, "user")
+            .await
+            .unwrap();
+        assert_eq!(key_ids(&v).await.get(&k1.id), Some(&1));
+
+        let t = now_ms();
+        v.release_sweep();
+        v.maintain(t).await.unwrap();
+        assert_eq!(
+            key_ids(&v).await.into_iter().collect::<Vec<_>>(),
+            [(k1.id.clone(), 8)],
+            "every row and kept version, oauth/* included"
+        );
+        let r = v.rotation().unwrap();
+        assert_eq!(
+            (r.phase, r.rows_total, r.rows_done),
+            (RotationPhase::Waiting, 8, 8)
+        );
+        assert_eq!(r.removed, ["c"]);
+        assert_eq!(v.get("gh", 0).unwrap().as_str(), "gh-second-value");
+        let mut args = serde_json::json!({"h": "{{secret:gh:-1}}"});
+        v.expand(&mut args).unwrap();
+        assert_eq!(args["h"], "gh-first-value");
+        // secret_restore across the rotation: v1 re-sealed in place, v3 under K1.
+        let info = v.restore("gh", 1).await.unwrap();
+        assert_eq!(
+            (info.current, v.get("gh", 0).unwrap().as_str()),
+            (3, "gh-first-value")
+        );
+        assert!(key_ids(&v).await.keys().all(|k| *k == k1.id));
+        // A blob sealed before the rotation (the link PSK) opens by trial, and re-seals.
+        assert_eq!(
+            v.open_with_mesh_key(b"blob", &sealed).unwrap().as_slice(),
+            b"psk-bytes"
+        );
+        let resealed = v.reseal_with_mesh_key(b"blob", &sealed).unwrap();
+        assert!(open_bytes(&v.mesh_key(), b"blob", &resealed).is_some());
+        assert!(v.reseal_with_mesh_key(b"blob", &resealed).is_none());
+
+        // Not before 10 min; not while a hold is open; then destroyed.
+        v.maintain(t + RETIRE_GRACE_MS - 1_000).await.unwrap();
+        assert_eq!(v.held_keys().len(), 2);
+        let hold = v.retire_hold("test");
+        v.maintain(t + RETIRE_GRACE_MS + 1_000).await.unwrap();
+        assert_eq!(v.held_keys().len(), 2, "a RetireHold keeps the old key");
+        drop(hold);
+        v.maintain(t + RETIRE_GRACE_MS + 1_000).await.unwrap();
+        assert_eq!(v.held_keys(), vec![k1.id.clone()]);
+        assert!(meta_keys(&v).await.is_empty(), "no mesh_keys entry is left");
+        let r = v.rotation().unwrap();
+        assert!(r.old_destroyed);
+        assert_eq!(r.phase, RotationPhase::Done);
+        assert!(v.open_with_mesh_key(b"blob", &sealed).is_none());
+
+        // A restart reopens the new key and the record.
+        drop(v);
+        let v = open(dir.path()).await;
+        assert_eq!(v.current_key(), k1);
+        assert_eq!(v.get("gh", 1).unwrap().as_str(), "gh-second-value");
+        assert_eq!(v.rotation().unwrap().phase, RotationPhase::Done);
+    }
+
+    /// 183 Z2 (found live): with two older keys held, retiring the oldest does not report the
+    /// rotation's own old key destroyed; that waits until the newest retained key goes too.
+    #[tokio::test]
+    async fn old_destroyed_waits_for_the_rotations_own_old_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("gh", "x", None, "user").await.unwrap();
+        v.rotate("a", vec!["a".into()], vec!["b".into()], 0, false)
+            .await
+            .unwrap();
+        v.release_sweep();
+        v.maintain(now_ms()).await.unwrap();
+        let t1 = now_ms();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        v.rotate("a", vec!["a".into()], vec!["c".into()], 0, false)
+            .await
+            .unwrap();
+        let t2 = now_ms();
+        v.release_sweep();
+        v.maintain(t2).await.unwrap();
+        v.maintain(t1 + RETIRE_GRACE_MS + 100).await.unwrap();
+        assert_eq!(v.held_keys().len(), 2, "K0 retired, K1 still held");
+        let r = v.rotation().unwrap();
+        assert_eq!((r.old_destroyed, r.phase), (false, RotationPhase::Waiting));
+        v.maintain(t2 + RETIRE_GRACE_MS + 100).await.unwrap();
+        let r = v.rotation().unwrap();
+        assert_eq!((r.old_destroyed, r.phase), (true, RotationPhase::Done));
+    }
+
+    /// W-32, §13 row 33: a crash after one batch of 64 leaves both keys valid and resumes on
+    /// the next start; a holder that did not mint sweeps only after the 60 s grace.
+    #[tokio::test]
+    async fn a_crash_mid_sweep_resumes_and_another_holder_takes_over_after_60_s() {
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = open(da.path()).await;
+        let b = open(db.path()).await;
+        b.adopt_keyring(a.keyring()).await.unwrap();
+        // Both hold the same 70 rows under K0 (five versions of fourteen names).
+        for v in [&a, &b] {
+            for n in 0..14 {
+                for i in 0..KEEP {
+                    v.set(&format!("k{n:02}"), &format!("value-{n}-{i}"), None, "user")
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+        assert_eq!(key_ids(&b).await.values().sum::<usize>(), 70);
+
+        let k1 = a
+            .rotate("a", vec!["a".into(), "b".into()], vec![], 0, false)
+            .await
+            .unwrap();
+        let mut stuck = std::collections::BTreeSet::new();
+        assert!(a.sweep_batch("", &mut stuck).await.unwrap().is_some());
+        assert_eq!(key_ids(&a).await.get(&k1.id), Some(&(SWEEP_BATCH as usize)));
+        drop(a); // crash: the open batch is all that is lost
+        let a = open(da.path()).await;
+        a.set_engine("a");
+        assert_eq!(
+            a.get("k13", 4).unwrap().as_str(),
+            "value-13-0",
+            "both keys valid"
+        );
+        // 183 R4: the sweep hold survives the crash; past it, the sweep resumes.
+        a.maintain(now_ms() + SWEEP_HOLD_MS + 1).await.unwrap();
+        assert_eq!(
+            key_ids(&a).await.into_iter().collect::<Vec<_>>(),
+            [(k1.id.clone(), 70)]
+        );
+
+        // B holds K1 but did not mint it: no sweep for 60 s, then it takes over.
+        b.set_engine("b");
+        assert!(b.adopt_key(a.keyring().remove(0)).await.unwrap());
+        let t = b.rotation().unwrap().started_ms;
+        b.maintain(t + 30_000).await.unwrap();
+        assert!(!key_ids(&b).await.contains_key(&k1.id));
+        assert_eq!(
+            key_ids(&b).await.values().sum::<usize>(),
+            70,
+            "still every row"
+        );
+        b.maintain(t + SWEEP_GRACE_MS + 1_000).await.unwrap();
+        assert_eq!(
+            key_ids(&b).await.into_iter().collect::<Vec<_>>(),
+            [(k1.id, 70)]
+        );
+        assert_eq!(b.get("k00", 4).unwrap().as_str(), "value-0-0");
+    }
+
+    /// W-34: two rotations at epoch 1; `(epoch, initiator)` makes the same key current on both,
+    /// and the other is retained until no row names it.
+    #[tokio::test]
+    async fn two_rotations_at_once_the_higher_key_wins_on_both() {
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = open(da.path()).await;
+        let b = open(db.path()).await;
+        b.adopt_keyring(a.keyring()).await.unwrap();
+        let ka = a
+            .rotate("aaa", vec![], vec!["c".into()], 0, false)
+            .await
+            .unwrap();
+        let wa = a.keyring().remove(0);
+        let kb = b
+            .rotate("bbb", vec![], vec!["d".into()], 0, false)
+            .await
+            .unwrap();
+        assert_eq!((ka.epoch, kb.epoch), (1, 1));
+        assert!(
+            a.adopt_key(b.keyring().remove(0)).await.unwrap(),
+            "bbb orders above aaa"
+        );
+        assert!(!b.adopt_key(wa).await.unwrap(), "aaa is retained");
+        assert_eq!(a.current_key().id, kb.id);
+        assert_eq!(b.current_key().id, kb.id);
+        assert!(a.held_keys().contains(&ka.id) && b.held_keys().contains(&ka.id));
+        // A grant of a held key only adds members.
+        let mut again = b.keyring().remove(0);
+        again.info.members.push("e".into());
+        assert!(!a.adopt_key(again).await.unwrap());
+        assert!(a.current_key().members.contains(&"e".to_owned()));
+        // A key whose id does not match its bytes is refused.
+        let mut forged = b.keyring().remove(0);
+        forged.info.id = "0000000000000000".into();
+        assert!(a.adopt_key(forged).await.is_err());
+    }
+
+    /// W-38, §13 row 32: rows re-sealed under a key this engine does not hold yet keep their
+    /// in-memory values, and the key is named for a `KeyRequest`; after a restart in that
+    /// window they wait; the grant opens them. A removed engine never opens them.
+    #[tokio::test]
+    async fn rows_under_a_key_not_held_keep_their_last_value_until_the_key_comes() {
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = open(da.path()).await;
+        let b = open(db.path()).await;
+        b.adopt_keyring(a.keyring()).await.unwrap();
+        let ((_ea, ha), (eb, _hb)) = (replica(da.path(), &a).await, replica(db.path(), &b).await);
+        a.set("gh", "ghp-value-0123", None, "user").await.unwrap();
+        pump(&ha, &eb).await;
+        b.refresh().await.unwrap();
+        let k1 = a.rotate("a", vec![], vec![], 0, false).await.unwrap();
+        a.set_engine("a");
+        a.release_sweep();
+        a.maintain(now_ms()).await.unwrap();
+        a.set("after", "written-after-rotation", None, "user")
+            .await
+            .unwrap();
+        pump(&ha, &eb).await;
+        b.refresh().await.unwrap();
+        assert_eq!(
+            b.get("gh", 0).unwrap().as_str(),
+            "ghp-value-0123",
+            "never blank"
+        );
+        assert!(b.get("after", 0).is_none());
+        assert_eq!(b.missing_keys(), vec![k1.id.clone()]);
+        let fresh = open(db.path()).await;
+        assert!(
+            fresh.get("gh", 0).is_none(),
+            "after a restart: waiting for the key"
+        );
+        b.adopt_key(a.keyring().remove(0)).await.unwrap();
+        assert!(b.missing_keys().is_empty());
+        assert_eq!(
+            b.get("after", 0).unwrap().as_str(),
+            "written-after-rotation"
+        );
+    }
+
+    /// §6.9.9, W-35: a joiner during a sweep gets the retained keys too, so rows not yet swept
+    /// open on it; its own rows move under the owner's current key at once.
+    #[tokio::test]
+    async fn pairing_during_a_rotation_carries_the_retained_keys() {
+        let (da, dd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = open(da.path()).await;
+        let d = open(dd.path()).await;
+        let ((_ea, ha), (ed, _hd)) = (replica(da.path(), &a).await, replica(dd.path(), &d).await);
+        a.set("gh", "ghp-old-key-row", None, "user").await.unwrap();
+        let k1 = a.rotate("a", vec![], vec![], 0, false).await.unwrap(); // not swept yet
+        d.set("mine", "joiner-own-row", None, "user").await.unwrap();
+        let mut ring = a.keyring();
+        assert_eq!(ring.len(), 2);
+        ring.iter_mut()
+            .for_each(|k| k.info.members.push("d".into()));
+        d.adopt_keyring(ring).await.unwrap();
+        assert_eq!(d.current_key().id, k1.id);
+        assert_eq!(
+            d.held_keys().len(),
+            3,
+            "K1, the retained K0, its own old key"
+        );
+        pump(&ha, &ed).await;
+        d.refresh().await.unwrap();
+        assert_eq!(d.get("gh", 0).unwrap().as_str(), "ghp-old-key-row");
+        assert_eq!(d.get("mine", 0).unwrap().as_str(), "joiner-own-row");
+        assert_eq!(key_ids(&d).await.get(&k1.id), Some(&1), "its own row swept");
+    }
+
+    /// §6.9.10, §13 row 40: a pre-183 peer's `''` row (sealed under the legacy key) opens by
+    /// trial, is swept while the legacy key is held, and keeps that key until it is swept.
+    #[tokio::test]
+    async fn a_legacy_row_opens_by_trial_and_holds_the_legacy_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        let legacy = v.mesh_key();
+        v.rotate("a", vec![], vec![], 0, false).await.unwrap();
+        sqlx::query(
+            "INSERT INTO vault (id, name, version, ciphertext, note, source, updated_ms) VALUES ('old#1', 'old', 1, ?, '', 'cli', 1)",
+        )
+        .bind(seal(&legacy, b"old#1", b"from-a-pre-183-peer"))
+        .execute(v.pool())
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO vault_current (name, version) VALUES ('old', 1)")
+            .execute(v.pool())
+            .await
+            .unwrap();
+        v.refresh().await.unwrap();
+        assert_eq!(v.get("old", 0).unwrap().as_str(), "from-a-pre-183-peer");
+        let t = now_ms() + RETIRE_GRACE_MS + 1_000;
+        v.retire(t).await.unwrap();
+        assert_eq!(
+            v.held_keys().len(),
+            2,
+            "a '' row still opens with the legacy key"
+        );
+        v.set_engine("a");
+        v.maintain(t).await.unwrap();
+        assert_eq!(v.held_keys().len(), 1);
+        assert_eq!(v.get("old", 0).unwrap().as_str(), "from-a-pre-183-peer");
+    }
+
+    /// W-36: names with a kept version written no later than the cutoff (all when `None`);
+    /// OAuth grants apart; `mesh/*` and `sandbox/*` never.
+    #[tokio::test]
+    async fn unpair_preview_names_respect_the_window_and_the_exclusions() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        for (n, val) in [
+            ("early", "early-value-1"),
+            ("late", "late-value-12"),
+            ("oauth/github", "{}"),
+            ("oauth/google", "{}"),
+            ("mesh/device_key", "AAAA"),
+            ("sandbox/vm1/vnc", "secret-vnc"),
+        ] {
+            v.set_if_version(n, val, "user", None).await.unwrap();
+        }
+        sqlx::query(
+            "UPDATE vault SET updated_ms = 1000 WHERE name IN ('early', 'oauth/github', 'mesh/device_key', 'sandbox/vm1/vnc')",
+        )
+        .execute(v.pool())
+        .await
+        .unwrap();
+        v.refresh().await.unwrap();
+        let (names, grants) = v.names_written_by(Some(5_000));
+        assert_eq!(
+            (names, grants),
+            (vec!["early".to_owned()], vec!["github".to_owned()])
+        );
+        let (names, grants) = v.names_written_by(None);
+        assert_eq!(names, ["early", "late"]);
+        assert_eq!(grants, ["github", "google"]);
+    }
+
+    /// D11: the device key gets a new value, sealed under the current key; none = nothing.
+    #[tokio::test]
+    async fn rotate_device_key_writes_a_new_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        assert!(!v.rotate_device_key().await.unwrap(), "no device key yet");
+        let before = v.mesh_device_key().await.unwrap();
+        assert!(v.rotate_device_key().await.unwrap());
+        let after = v.mesh_device_key_if_set().unwrap().unwrap();
+        assert_ne!(*before, *after);
+        assert_eq!(v.get_versioned(Vault::MESH_DEVICE_KEY).unwrap().0, 2);
+    }
+
+    /// 183 R1: an epoch of `u32::MAX` adopted by a pairing does not brick later rotations.
+    #[tokio::test]
+    async fn rotate_after_an_exhausted_epoch_is_an_error_not_a_panic() {
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (a, b) = (open(da.path()).await, open(db.path()).await);
+        a.rotate("a", vec![], vec![], 0, false).await.unwrap();
+        let mut ring = a.keyring();
+        ring[0].info.epoch = u32::MAX;
+        b.adopt_keyring(ring).await.unwrap();
+        let e = b.rotate("b", vec![], vec![], 0, false).await.unwrap_err();
+        assert!(format!("{e:#}").contains("epoch exhausted"));
+    }
+
+    /// 183 R1 (S4): a granted key far above ours is refused; a near one is taken.
+    #[tokio::test]
+    async fn adopt_key_refuses_an_implausible_epoch() {
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (a, b) = (open(da.path()).await, open(db.path()).await);
+        b.adopt_keyring(a.keyring()).await.unwrap();
+        a.rotate("a", vec![], vec![], 0, false).await.unwrap();
+        let mut far = a.keyring().remove(0);
+        far.info.epoch = b.current_key().epoch + MAX_EPOCH_JUMP + 1;
+        assert!(b.adopt_key(far).await.is_err());
+        assert!(b.adopt_key(a.keyring().remove(0)).await.unwrap());
+    }
+
+    /// 183 R1: `floor` (a peer's epoch) lifts the new epoch.
+    #[tokio::test]
+    async fn rotate_honours_the_epoch_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        assert_eq!(
+            v.rotate("a", vec![], vec![], 7, false).await.unwrap().epoch,
+            8
+        );
+    }
+
+    /// 183 R1, R4: rows stay under the old key until a peer acks (`release_sweep`) or the hold
+    /// ends, a restart included.
+    #[tokio::test]
+    async fn rotation_holds_the_first_sweep() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("gh", "ghp-value-0123", None, "user").await.unwrap();
+        let k1 = v.rotate("a", vec![], vec![], 0, false).await.unwrap();
+        let t = now_ms();
+        v.maintain(t).await.unwrap();
+        assert!(!key_ids(&v).await.contains_key(&k1.id), "held");
+        drop(v);
+        let v = open(dir.path()).await;
+        v.set_engine("a");
+        v.maintain(t).await.unwrap();
+        assert!(
+            !key_ids(&v).await.contains_key(&k1.id),
+            "held after a restart"
+        );
+        v.release_sweep();
+        v.maintain(t).await.unwrap();
+        assert!(key_ids(&v).await.contains_key(&k1.id), "released");
+
+        let dw = tempfile::tempdir().unwrap();
+        let w = open(dw.path()).await;
+        w.set("gh", "ghp-value-0123", None, "user").await.unwrap();
+        let k = w.rotate("a", vec![], vec![], 0, false).await.unwrap();
+        w.maintain(now_ms() + SWEEP_HOLD_MS + 1).await.unwrap();
+        assert!(key_ids(&w).await.contains_key(&k.id), "hold expired");
+    }
+
+    /// 183 R1 (D11): the pending reset survives a restart; finishing it writes a new device
+    /// key version once and clears the flag.
+    #[tokio::test]
+    async fn device_reset_pending_survives_a_restart_and_finishes_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.mesh_device_key().await.unwrap();
+        v.rotate("a", vec![], vec![], 0, true).await.unwrap();
+        drop(v);
+        let v = open(dir.path()).await;
+        assert!(v.rotation().unwrap().device_reset_pending);
+        assert_eq!(v.get_versioned(Vault::MESH_DEVICE_KEY).unwrap().0, 1);
+        assert!(v.finish_device_reset().await.unwrap());
+        assert_eq!(v.get_versioned(Vault::MESH_DEVICE_KEY).unwrap().0, 2);
+        assert!(!v.rotation().unwrap().device_reset_pending);
+        assert!(!v.finish_device_reset().await.unwrap());
+        // No device key: the flag clears without a write.
+        let dw = tempfile::tempdir().unwrap();
+        let w = open(dw.path()).await;
+        w.rotate("a", vec![], vec![], 0, true).await.unwrap();
+        assert!(!w.finish_device_reset().await.unwrap());
+        assert!(!w.rotation().unwrap().device_reset_pending);
+    }
+
+    /// 183 R1 (S3): the `''` trial decrypt is reused for `LEGACY_CHECK_MS`.
+    #[tokio::test]
+    async fn the_legacy_trial_is_throttled() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        let legacy = v.mesh_key();
+        v.rotate("a", vec![], vec![], 0, false).await.unwrap();
+        sqlx::query(
+            "INSERT INTO vault (id, name, version, ciphertext, note, source, updated_ms) VALUES ('old#1', 'old', 1, ?, '', 'cli', 1)",
+        )
+        .bind(seal(&legacy, b"old#1", b"from-a-pre-183-peer"))
+        .execute(v.pool())
+        .await
+        .unwrap();
+        let t = now_ms() + RETIRE_GRACE_MS + 1_000;
+        v.retire(t).await.unwrap();
+        assert_eq!(v.held_keys().len(), 2, "the '' row opens with it");
+        sqlx::query("DELETE FROM vault")
+            .execute(v.pool())
+            .await
+            .unwrap();
+        v.retire(t + 1_000).await.unwrap();
+        assert_eq!(v.held_keys().len(), 2, "answer reused");
+        v.retire(t + LEGACY_CHECK_MS + 1).await.unwrap();
+        assert_eq!(v.held_keys().len(), 1, "rechecked");
     }
 }

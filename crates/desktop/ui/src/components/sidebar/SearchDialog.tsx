@@ -17,7 +17,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { type AttachRef, attachTo, chatName, toRef } from '@/lib/attach'
+import { type AttachRef, attachTo, chatName, cleanTitle, toRef } from '@/lib/attach'
 import { previewText, stripSnippet } from '@/lib/channel-origin'
 import * as dictation from '@/lib/dictation'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -912,7 +912,9 @@ function SessionSnippet({ text, ranges }: { text: string; ranges: MatchRange[] }
 }
 
 function SessionRow({ hit }: { hit: SearchHit }) {
-  const title = hit.kind === 'title' ? <SessionSnippet text={hit.snippet} ranges={hit.ranges} /> : previewText(hit.title)
+  // 183 R2: a wrapper-seeded title is shown cleaned, never highlighted raw.
+  const raw = hit.title.trimStart().startsWith('<message ')
+  const title = hit.kind === 'title' && !raw ? <SessionSnippet text={hit.snippet} ranges={hit.ranges} /> : previewText(cleanTitle(hit.title))
   return (
     <Lines
       title={

@@ -134,7 +134,7 @@ export type WireEvent =
   | CodeindexEvent
   /** 79 §4.4: sandbox VM records, bring-up progress, desktop open / take-over. `Changed` is shared with `ScheduleEvent`: guard on `'sandbox' in e`. */
   | SandboxEvent
-  /** 67 §4, bridged since 79: a peer changed or the hub lease moved; the Mesh page refetches on it. */
+  /** 67 §4, bridged since 79: a peer changed or the hub lease moved; the Network page refetches on it. 183: Nearby and pair ceremonies. */
   | MeshEvent
   /** 126 §13: the owner's double — a prediction per card, an L2/L3 answer, a training run's state, a version switch. */
   | DoublePredicted

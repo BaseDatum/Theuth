@@ -1295,7 +1295,24 @@ impl Session {
             let seed = match skills::injected(&texts[0]) {
                 Some((name, _, "")) => Some(name.to_owned()),
                 Some((_, _, words)) => Some(words.to_owned()),
-                None => attach::first_line(&texts[0]),
+                // 183 R2: a chat opened by a peer message is named for its sender, never the wrapper.
+                None => match attach::peer_message_from(&texts[0]) {
+                    Some(from) => {
+                        let agent = match from.strip_prefix("session:").map(str::parse) {
+                            Some(Ok(id)) => self
+                                .shared
+                                .store
+                                .session(id)
+                                .await
+                                .ok()
+                                .flatten()
+                                .and_then(|s| s.agent),
+                            _ => None,
+                        };
+                        attach::peer_message_title(&texts[0], agent.as_deref())
+                    }
+                    None => attach::first_line(&texts[0]),
+                },
             };
             if let Some(seed) = seed {
                 let title = attach::seed_title(&seed);

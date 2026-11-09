@@ -29,10 +29,14 @@ uuid = { workspace = true }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
 iroh-mdns-address-lookup = { workspace = true }
+# 183 §6.8: Nearby advertise + browse of `_theuth-mesh._udp` (already in the tree via the line above).
+swarm-discovery = "0.6"
 data-encoding = { workspace = true }
 bytes = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
+# 183 R1: key material in frames zeroized on drop.
+zeroize = { workspace = true, features = ["serde"] }
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]

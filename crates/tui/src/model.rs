@@ -6160,6 +6160,8 @@ impl Model {
                     }
                 }
             }
+            // 183 §12.9: the rotation banner is the desktop's Network page; the TUI shows none.
+            Rotation(_) => {}
         }
     }
 

@@ -34,6 +34,8 @@ use crate::pairing::{self, Payload, PeerEntry, Pending, Rank, Side};
 use crate::store::Store;
 use crate::types::{AlpnTraffic, EngineId, HubPref, Peer};
 
+use secrets::Vault;
+
 /// Stream ALPN: mesh control — pairing handshake, presence, peer-set exchange.
 /// Not in the contract's five: gossip owns `ALPN_GOSSIP` end to end.
 pub const ALPN_MESH: &str = "theuth/mesh/1";
@@ -44,7 +46,10 @@ pub const RELAY_PUBLIC: &str = "public";
 /// Largest control or pairing message.
 const MAX_MSG: u32 = 1 << 20;
 /// Dial timeout.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// 183 R1 (S1): a row an engine introduced this long before its unpair, or any time after,
+/// is quarantined (clock skew between the remover and this engine).
+pub(crate) const QUARANTINE_SKEW_MS: u64 = 5 * 60_000;
 /// Reconnect backoff bounds.
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
@@ -52,6 +57,28 @@ const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const DIAL_GRACE: Duration = Duration::from_secs(3);
 /// Inbound stream queue per ALPN.
 const INBOUND_QUEUE: usize = 64;
+
+/// 183 R1 (S7): key material in a frame: the plain string on the wire, `<redacted>` in
+/// `Debug` (the `{other:?}` logs), zeroized on drop.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Secret(zeroize::Zeroizing<String>);
+
+impl Secret {
+    pub(crate) fn new(s: String) -> Self {
+        Self(zeroize::Zeroizing::new(s))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
 
 /// Messages on `ALPN_MESH` streams (`u32 LE len ‖ JSON`).
 ///
@@ -61,8 +88,10 @@ const INBOUND_QUEUE: usize = 64;
 /// the one-time token before reading anything else), so the key is seen by
 /// exactly the engine the string named. Unknown fields are ignored on read,
 /// so a pre-F5 `t` on either end still pairs (it never adopts, never ranks).
+/// A frame an older engine cannot decode is logged and ignored there
+/// ([`Net::drive`]), so 183's variants are appended and safe toward old peers.
 #[derive(Debug, Serialize, Deserialize)]
-enum Msg {
+pub(crate) enum Msg {
     /// Dialer of `t mesh add`: prove the one-time token, introduce yourself.
     PairHello {
         token: String,
@@ -71,10 +100,13 @@ enum Msg {
         /// The dialer's mesh vault key (base32); the acceptor adopts it when
         /// [`pairing::key_owner`] says the dialer owns the key (79 F5).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        vault_key: Option<String>,
+        vault_key: Option<Secret>,
         /// The dialer's standing; `None` from a pre-F5 `t`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rank: Option<Rank>,
+        /// 183 §6.9.9: the current key plus every unretired one; empty from a pre-183 `t`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keyring: Vec<secrets::WireKey>,
     },
     /// Inviter's answer: token echoed, its own row and peer set.
     PairAck {
@@ -87,50 +119,53 @@ enum Msg {
         /// The acceptor's standing; `None` from a pre-F5 `t`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rank: Option<Rank>,
+        /// 183 §6.9.9: as `PairHello.keyring`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keyring: Vec<secrets::WireKey>,
     },
     /// Inviter's refusal.
     PairReject { reason: String },
     /// Peer-set exchange between paired engines (on connect and on change).
     Peers { peers: Vec<PeerEntry> },
-}
-
-/// The vault's mesh data key as the handshake reads and replaces it (67 §5.4).
-/// Production talks to the secrets actor ([`SecretsKeys`]); tests hand each
-/// node its own cell, since the actor is one per process.
-#[async_trait::async_trait]
-pub trait VaultKeys: Send + Sync {
-    /// The current key; `None` when secrets is not running.
-    async fn get(&self) -> Option<[u8; 32]>;
-    /// Re-seal every local row under `key` and keep it.
-    async fn adopt(&self, key: [u8; 32]) -> Result<(), String>;
-}
-
-/// [`VaultKeys`] over [`secrets::SECRETS_ACTOR`].
-pub struct SecretsKeys;
-
-impl SecretsKeys {
-    fn actor() -> Option<kameo::actor::ActorRef<secrets::SecretsActor>> {
-        kameo::actor::ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR)
-            .ok()
-            .flatten()
-    }
-}
-
-#[async_trait::async_trait]
-impl VaultKeys for SecretsKeys {
-    async fn get(&self) -> Option<[u8; 32]> {
-        Self::actor()?.ask(secrets::GetMeshKey).await.ok()
-    }
-
-    async fn adopt(&self, key: [u8; 32]) -> Result<(), String> {
-        match Self::actor() {
-            Some(a) => a
-                .ask(secrets::AdoptMeshKey(key))
-                .await
-                .map_err(|e| e.to_string()),
-            None => Err("secrets is not running".into()),
-        }
-    }
+    /// 183 §6.8: a stranger's Nearby pairing request (first frame, instead of `PairHello`),
+    /// accepted only while this engine's pairing window is open. `commit`: base32
+    /// `SHA256(nonce_a)`, the dialer's nonce committed before it sees the acceptor's.
+    PairRequest {
+        name: String,
+        os: String,
+        commit: String,
+    },
+    /// 183 §6.8: the acceptor's nonce (16 random bytes, base32).
+    PairChallenge { nonce: String },
+    /// 183 §6.8: the dialer opens its commitment. The acceptor checks it before it shows a code
+    /// or counts a press, so neither side can pick its nonce after seeing the other's.
+    PairReveal { nonce: String },
+    /// 183 §6.8: one user pressed Pair (`accept`) or Cancel. The acceptor sends its accept only
+    /// once both sides pressed Pair, carrying the freshly minted token the dialer's `PairHello`
+    /// then presents and its vault key (what a pairing string carries).
+    PairAnswer {
+        accept: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vault_key: Option<Secret>,
+    },
+    /// 183 §6.9.7: right after `Peers` on every connect, both ways: my current key and every key id I hold.
+    KeyEpoch {
+        current: secrets::KeyInfo,
+        held: Vec<String>,
+    },
+    /// 183 §6.9.7: send me key `id`.
+    KeyRequest { id: String },
+    /// 183 §6.9.5: a key, with the rotation's tombstones, applied before the key is stored.
+    KeyGrant {
+        key: secrets::WireKey,
+        removed: Vec<PeerEntry>,
+    },
+    /// 183 §6.9.5: key `id` is stored here (display only).
+    KeyAck { id: String },
+    /// 183 §6.9.5: `KeyRequest` refused (a tombstoned asker, an unknown id).
+    KeyRefused { id: String, reason: String },
 }
 
 /// How to bind (production from `MeshConfig`; tests on loopback, no relay).
@@ -148,8 +183,11 @@ pub struct BindOpts {
     pub storm_frames_per_sec: u64,
     /// Identity creation (`identity.rs`); the age half of [`Rank`].
     pub first_seen_ms: u64,
-    /// Where the vault key lives; `None` = the secrets actor.
-    pub keys: Option<Arc<dyn VaultKeys>>,
+    /// The vault whose mesh keys pairing and rotation move; `None` = the secrets plugin's,
+    /// handed over by [`Net::set_vault`] once it is up (tests give each node its own).
+    pub vault: Option<Arc<Vault>>,
+    /// 183 §6.8: the Nearby advertise + browse; `None` = real mDNS (tests pass a fake).
+    pub mdns: Option<Arc<dyn crate::nearby::Mdns>>,
 }
 
 /// Frames = one `poll_read` that returned bytes, or one `poll_write`. Not
@@ -232,6 +270,23 @@ struct Counted {
     counters: Arc<Counters>,
     alpn: String,
     limit: u64,
+    /// 183 R3: the other end, and the live paired set: once it leaves, every read and write
+    /// on this stream fails, so no shipper's in-flight batch reaches (or comes from) it.
+    peer: EndpointId,
+    paired: Arc<RwLock<HashSet<EndpointId>>>,
+}
+
+impl Counted {
+    fn unpaired(&self) -> Option<std::io::Error> {
+        let gone = !self
+            .paired
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&self.peer);
+        gone.then(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "peer is no longer paired")
+        })
+    }
 }
 
 impl tokio::io::AsyncRead for Counted {
@@ -240,6 +295,9 @@ impl tokio::io::AsyncRead for Counted {
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
+        if let Some(e) = self.unpaired() {
+            return Poll::Ready(Err(e));
+        }
         let before = buf.filled().len();
         let r = Pin::new(&mut self.inner).poll_read(cx, buf);
         if let Poll::Ready(Ok(())) = &r {
@@ -262,6 +320,9 @@ impl tokio::io::AsyncWrite for Counted {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
+        if let Some(e) = self.unpaired() {
+            return Poll::Ready(Err(e));
+        }
         let r = Pin::new(&mut self.inner).poll_write(cx, buf);
         if let Poll::Ready(Ok(n)) = &r {
             self.counters.frames_out.fetch_add(1, Ordering::Relaxed);
@@ -300,9 +361,9 @@ pub struct Net {
     pub gossip: Gossip,
     /// This engine.
     pub id: EngineId,
-    store: Store,
-    /// This engine's display name (`mesh.name`, default the hostname).
-    pub name: String,
+    pub(crate) store: Store,
+    /// This engine's display name (`mesh.name`, default the hostname); `mesh_rename` changes it.
+    name: RwLock<String>,
     relay: String,
     /// Relays to insert on `join_network` (empty = `mesh.relay: none`).
     relays: RelayMap,
@@ -312,7 +373,9 @@ pub struct Net {
     joined: AtomicBool,
     hub_pref: Mutex<HubPref>,
     pending: Mutex<Option<Pending>>,
-    paired: RwLock<HashSet<EndpointId>>,
+    paired: Arc<RwLock<HashSet<EndpointId>>>,
+    /// 183 R3: inbound connections on the stream ALPNs and gossip, by peer (closed on unpair).
+    inbound_conns: Mutex<HashMap<EndpointId, Vec<Connection>>>,
     presence: Mutex<HashMap<EndpointId, Presence>>,
     outbound: tokio::sync::Mutex<HashMap<(EndpointId, String), Connection>>,
     events: broadcast::Sender<PeerEvent>,
@@ -329,7 +392,12 @@ pub struct Net {
     traffic: Mutex<HashMap<String, Arc<Counters>>>,
     storm_frames_per_sec: u64,
     first_seen_ms: u64,
-    keys: Arc<dyn VaultKeys>,
+    /// 183 §6.9: the vault ([`Net::vault`]); set at bind in tests, by the plugin otherwise.
+    vault: std::sync::OnceLock<Arc<Vault>>,
+    /// 183 §6.9: what each peer said of its keys, the member rule, the asks.
+    pub(crate) keyring: crate::keys::State,
+    /// 183 §6.8: the Nearby window, its sightings and the pairing ceremonies.
+    pub(crate) nearby: crate::nearby::State,
 }
 
 impl std::fmt::Debug for Net {
@@ -433,14 +501,15 @@ impl Net {
                 gossip: gossip.clone(),
                 id,
                 store,
-                name,
+                name: RwLock::new(name),
                 relay: opts.relay,
                 relays,
                 discovery: opts.discovery,
                 joined: AtomicBool::new(false),
                 hub_pref: Mutex::new(hub_pref),
                 pending: Mutex::new(None),
-                paired: RwLock::new(paired),
+                paired: Arc::new(RwLock::new(paired)),
+                inbound_conns: Mutex::new(HashMap::new()),
                 presence: Mutex::new(HashMap::new()),
                 outbound: tokio::sync::Mutex::new(HashMap::new()),
                 events,
@@ -449,13 +518,84 @@ impl Net {
                 traffic: Mutex::new(HashMap::new()),
                 storm_frames_per_sec: opts.storm_frames_per_sec,
                 first_seen_ms: opts.first_seen_ms,
-                keys: opts.keys.unwrap_or_else(|| Arc::new(SecretsKeys)),
+                vault: std::sync::OnceLock::new(),
+                keyring: crate::keys::State::default(),
+                nearby: crate::nearby::State::new(opts.mdns),
             }
         });
+        if let Some(v) = opts.vault {
+            net.set_vault(v);
+        }
         if !net.paired_ids().is_empty() {
             net.join_network().await;
         }
         Ok(net)
+    }
+
+    /// 183 §6.9: the vault pairing and rotation move keys in; the first call wins.
+    pub fn set_vault(&self, vault: Arc<Vault>) {
+        vault.set_engine(&self.id.0);
+        let _ = self.vault.set(vault);
+    }
+
+    /// The vault, once [`Net::set_vault`] ran; `None` without the secrets plugin.
+    pub fn vault(&self) -> Option<Arc<Vault>> {
+        self.vault.get().cloned()
+    }
+
+    /// 183 §6.9: one live control connection per connected peer.
+    pub(crate) fn control_conns(&self) -> Vec<(EndpointId, Connection)> {
+        Self::lock(&self.presence)
+            .iter()
+            .filter_map(|(id, p)| Some((*id, p.conns.first()?.clone())))
+            .collect()
+    }
+
+    /// 183 §6.9: a live control connection to `peer`.
+    pub(crate) fn control_conn(&self, peer: &EndpointId) -> Option<Connection> {
+        Self::lock(&self.presence)
+            .get(peer)
+            .and_then(|p| p.conns.first().cloned())
+    }
+
+    /// 183 §6.9.5, R3: close every connection of an engine that left the paired set (an
+    /// unpair here, a merged tombstone, one the replica wrote).
+    pub(crate) async fn close_conns(&self, peer: &EndpointId) {
+        if self.is_paired(peer) {
+            return;
+        }
+        // 183 R3: every ALPN, both directions: the control connection, our cached dials
+        // (records, sessions, docs, acp, rpc, …) and every connection it opened to us.
+        let mut conns = Self::lock(&self.presence)
+            .get(peer)
+            .map(|p| p.conns.clone())
+            .unwrap_or_default();
+        conns.extend(
+            Self::lock(&self.inbound_conns)
+                .remove(peer)
+                .unwrap_or_default(),
+        );
+        {
+            let mut out = self.outbound.lock().await;
+            out.retain(|(id, _), c| {
+                let keep = id != peer;
+                if !keep {
+                    conns.push(c.clone());
+                }
+                keep
+            });
+        }
+        for c in conns {
+            c.close(0u32.into(), b"removed");
+        }
+    }
+
+    /// 183 R3: remember an inbound connection (stream ALPNs, gossip) so an unpair closes it.
+    fn track_inbound(&self, peer: EndpointId, conn: &Connection) {
+        let mut m = Self::lock(&self.inbound_conns);
+        let list = m.entry(peer).or_default();
+        list.retain(|c| c.close_reason().is_none());
+        list.push(conn.clone());
     }
 
     /// Close everything (lease release is the caller's job).
@@ -559,11 +699,78 @@ impl Net {
             .collect()
     }
 
+    /// This engine's display name.
+    pub fn name(&self) -> String {
+        self.name.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// 183 §6.3: when `id` was last heard from (ms): now while connected, else when its last
+    /// connection closed; `None` when it never connected in this process.
+    pub fn last_seen(&self, id: &str) -> Option<u64> {
+        let eid = EndpointId::from_str(id).ok()?;
+        let pr = Self::lock(&self.presence);
+        let p = pr.get(&eid)?;
+        Some(if p.conns.is_empty() {
+            p.since_ms
+        } else {
+            now_ms()
+        })
+        .filter(|&ms| ms > 0)
+    }
+
+    /// 183 §6.7: the relay as Settings › Network shows it; `None` with `mesh.relay: none`.
+    /// `rtt_ms` stays `None`: iroh 1.4 measures relay latency only in its unstable net report.
+    pub fn relay_state(&self) -> Option<crate::RelayState> {
+        use iroh::Watcher as _;
+        let configured = self.relays.relays::<Vec<_>>().first()?.url.to_string();
+        Some(match self.endpoint.home_relay_status().get().first() {
+            Some(s) => crate::RelayState {
+                url: s.url().to_string(),
+                connected: s.is_connected(),
+                rtt_ms: None,
+                error: s.last_error().map(|e| e.to_string()),
+            },
+            // Not joined yet (a lone engine dials no relay).
+            None => crate::RelayState {
+                url: configured,
+                connected: false,
+                rtt_ms: None,
+                error: None,
+            },
+        })
+    }
+
+    /// 183 §6.8: `MeshEvent::Nearby` / `MeshEvent::Pair` as the Nearby code raises them.
+    pub fn nearby_events(&self) -> broadcast::Receiver<crate::MeshEvent> {
+        self.nearby.events.subscribe()
+    }
+
+    /// 183 §6.7: this engine's new name, in its own replicated `peers` row so the other
+    /// machines show it (a lone engine writes none: a `peers` row means "has a peer").
+    pub async fn rename(&self, name: &str) -> anyhow::Result<()> {
+        *self.name.write().unwrap_or_else(|p| p.into_inner()) = name.to_owned();
+        if !self.paired_ids().is_empty() {
+            self.store.put_peer(&self.me()).await?;
+        }
+        Ok(())
+    }
+
+    /// 183 §6.7: another machine's display name (`peers.name`, replicated and pushed).
+    pub async fn rename_peer(&self, id: &EngineId, name: &str) -> anyhow::Result<()> {
+        let Some(mut row) = self.store.peers().await?.into_iter().find(|p| &p.id == id) else {
+            anyhow::bail!("unknown machine {id}");
+        };
+        row.name = name.to_owned();
+        self.store.put_peer(&row).await?;
+        self.push_peers().await;
+        Ok(())
+    }
+
     /// This engine as a peer-set row.
     fn me(&self) -> PeerEntry {
         PeerEntry {
             id: self.id.clone(),
-            name: self.name.clone(),
+            name: self.name(),
             addrs: self.endpoint.addr().addrs.into_iter().collect(),
             hub_pref: *Self::lock(&self.hub_pref),
             added_ms: now_ms(),
@@ -604,14 +811,15 @@ impl Net {
         // Join now so the string carries a relay address (a moment for the home relay).
         self.join_network().await;
         let _ = tokio::time::timeout(Duration::from_secs(3), self.endpoint.online()).await;
-        let vault_key = self.keys.get().await.map(|k| BASE32_NOPAD.encode(&k));
+        let vault = self.vault();
         pairing::build(&Payload {
             id: self.endpoint.id(),
-            name: self.name.clone(),
+            name: self.name(),
             relay: self.relay.clone(),
             addrs: self.endpoint.addr().addrs.into_iter().collect(),
             token,
-            vault_key,
+            vault_key: vault.as_ref().map(|v| BASE32_NOPAD.encode(&*v.mesh_key())),
+            vault_key_id: vault.map(|v| v.current_key().id),
         })
     }
 
@@ -621,29 +829,6 @@ impl Net {
             paired_peers: u32::try_from(self.paired_ids().len()).unwrap_or(u32::MAX),
             first_seen_ms: self.first_seen_ms,
             id: self.id.clone(),
-        }
-    }
-
-    /// Take `key` (base32) as the mesh vault key; a bad string or a secrets
-    /// failure is logged, never fatal — the pairing itself stands.
-    async fn adopt_key(&self, key: &str, from: &str) -> bool {
-        let Some(key) = BASE32_NOPAD
-            .decode(key.to_ascii_uppercase().as_bytes())
-            .ok()
-            .and_then(|k| <[u8; 32]>::try_from(k.as_slice()).ok())
-        else {
-            tracing::warn!("mesh: {from} sent an unreadable vault key");
-            return false;
-        };
-        match self.keys.adopt(key).await {
-            Ok(()) => {
-                tracing::info!("mesh: adopted the vault key from {from}");
-                true
-            }
-            Err(e) => {
-                tracing::warn!("mesh: adopting the vault key from {from}: {e}");
-                false
-            }
         }
     }
 
@@ -661,6 +846,12 @@ impl Net {
             anyhow::bail!("that is this engine's own pairing string");
         }
         self.join_network().await;
+        self.pair_with(payload).await
+    }
+
+    /// [`Self::add_peer`] once the string is read; a Nearby ceremony (183 §6.8) arrives here
+    /// with the acceptor's fresh token and vault key in place of a pasted string.
+    pub(crate) async fn pair_with(self: &Arc<Self>, payload: Payload) -> anyhow::Result<Peer> {
         let conn = tokio::time::timeout(
             CONNECT_TIMEOUT,
             self.endpoint.connect(payload.addr(), ALPN_MESH.as_bytes()),
@@ -672,26 +863,31 @@ impl Net {
             anyhow::bail!("dialed engine has a different id");
         }
         let mine = self.rank();
-        let my_key = self.keys.get().await;
+        let my_key = self.vault().map(|v| v.mesh_key());
         let (mut send, mut recv) = conn.open_bi().await.context("open stream")?;
+        let my_keyring = crate::keys::pairing_keyring(self, &EngineId(payload.id.to_string()));
         write_msg(
             &mut send,
             &Msg::PairHello {
                 token: payload.token.clone(),
                 me: self.me(),
                 peers: self.store.peer_entries().await?,
-                vault_key: my_key.as_ref().map(|k| BASE32_NOPAD.encode(k)),
+                vault_key: my_key
+                    .as_ref()
+                    .map(|k| Secret::new(BASE32_NOPAD.encode(&**k))),
                 rank: Some(mine.clone()),
+                keyring: my_keyring,
             },
         )
         .await?;
-        let (entry, adopted, theirs) = match read_msg(&mut recv).await? {
+        let (entry, adopted, theirs, their_keyring) = match read_msg(&mut recv).await? {
             Msg::PairAck {
                 token,
                 mut me,
                 peers,
                 adopted,
                 rank,
+                keyring,
             } => {
                 if token != payload.token {
                     anyhow::bail!("pairing token mismatch in reply");
@@ -700,13 +896,11 @@ impl Net {
                 // peer cannot see itself (a VM's loopback port, 79 smoke bug 9).
                 me.addrs = pairing::union(&payload.addrs, &me.addrs);
                 self.learn(me.clone(), &peers).await?;
-                (me, adopted, rank)
+                (me, adopted, rank, keyring)
             }
             Msg::PairReject { reason } => anyhow::bail!("pairing refused: {reason}"),
             other => anyhow::bail!("unexpected reply: {other:?}"),
         };
-        let net = self.clone();
-        tokio::spawn(async move { net.drive(conn).await });
         let from = format!("{} ({})", entry.name, entry.id);
         let owner = match &theirs {
             Some(theirs) => pairing::key_owner(&mine, theirs),
@@ -719,53 +913,65 @@ impl Net {
             }
         };
         match owner {
-            // The inviter's vault key becomes ours before any of its rows arrive (67 §5.4).
+            // The inviter's vault key becomes ours before any of its rows arrive (67 §5.4),
+            // and before the control connection's `KeyEpoch` names our key (183 §6.9.9).
             Side::Acceptor => {
-                if let Some(key) = payload.vault_key.as_deref() {
-                    self.adopt_key(key, &from).await;
-                }
+                crate::keys::adopt_pairing(
+                    self,
+                    &from,
+                    payload.vault_key.as_deref(),
+                    their_keyring,
+                )
+                .await;
             }
             Side::Dialer => {
                 if my_key.is_some() && !adopted {
                     tracing::warn!("mesh: {from} should have taken our vault key but did not");
                 }
+                crate::keys::after_pairing(self, theirs.as_ref(), &their_keyring);
             }
         }
+        let net = self.clone();
+        tokio::spawn(async move { net.drive(conn).await });
         Ok(self.peer_of(&entry))
     }
 
     /// Both sides after a handshake: `other` becomes a peer (fresh `added_ms`),
-    /// their set is merged in.
+    /// their set is merged in. 183 R4: no origin is recorded: a pairing partner hands a fresh
+    /// engine the whole mesh, and quarantining all of it when that partner is retired would be
+    /// wrong; only a `Peers` frame from a member can bring in an accomplice.
     async fn learn(&self, mut other: PeerEntry, their_peers: &[PeerEntry]) -> anyhow::Result<()> {
         other.added_ms = now_ms();
         other.removed_ms = None;
         let mut incoming = their_peers.to_vec();
         incoming.push(other);
-        self.merge_peers(&incoming).await
+        self.merge_peers(&incoming, None).await
     }
 
-    /// Merge a peer set into the store; refresh the paired set; notify.
-    pub async fn merge_peers(&self, incoming: &[PeerEntry]) -> anyhow::Result<()> {
+    /// Merge a peer set from `from` (`None`: not from a peer) into the store; refresh the
+    /// paired set; notify. 183 R1 (S1): a live row `from` introduces is recorded as its
+    /// origin, so it can be quarantined if `from` turns out to be unpaired already.
+    pub async fn merge_peers(
+        &self,
+        incoming: &[PeerEntry],
+        from: Option<&EngineId>,
+    ) -> anyhow::Result<()> {
         let local = self.store.peer_entries().await?;
         let (_, changed) = pairing::merge(&local, incoming, &self.id);
+        let now = now_ms();
         for p in &changed {
             self.store.put_peer(p).await?;
+            if let Some(by) = from
+                && &p.id != by
+                && !p.removed()
+                && !local.iter().any(|l| l.id == p.id)
+            {
+                self.store.record_origin(&p.id, by, now).await?;
+            }
         }
-        // The `peers` table also travels by the record replica, which writes the row behind this
-        // merge's back: nothing "changed" here, yet the in-memory paired set never learned the id
-        // and refused its control connection as a stranger (69 smoke: C, paired to A, could not
-        // connect to B). Refresh whenever a live incoming id is unknown to the set.
-        let unknown = {
-            let paired = self.paired.read().unwrap_or_else(|p| p.into_inner());
-            incoming.iter().any(|p| {
-                p.removed_ms.is_none()
-                    && p.id != self.id
-                    && EndpointId::from_str(&p.id.0).is_ok_and(|e| !paired.contains(&e))
-            })
-        };
-        if changed.is_empty() && !unknown {
-            return Ok(());
-        }
+        // 183 R1 (V-M1): always from the store. The `peers` table also travels by the record
+        // replica, which writes rows (tombstones included) behind this merge's back, so a merge
+        // that changed nothing may still find the in-memory set stale.
         self.refresh_paired().await?;
         Ok(())
     }
@@ -794,7 +1000,13 @@ impl Net {
         Ok(())
     }
 
-    async fn refresh_paired(&self) -> anyhow::Result<()> {
+    /// The paired set, recomputed from the store (183 R1, V-M1: the key path reads this, never
+    /// the in-memory copy alone). Quarantine first (S1); an engine that left the set has its
+    /// connections closed.
+    pub(crate) async fn refresh_paired(&self) -> anyhow::Result<HashSet<EndpointId>> {
+        self.quarantine().await?;
+        // 183 R4: `Store::peers` leaves quarantined rows out (they stay live in the replicated
+        // table): unpaired on this engine only, until a user keeps or removes them.
         let live: HashSet<EndpointId> = self
             .store
             .peers()
@@ -802,12 +1014,92 @@ impl Net {
             .iter()
             .filter_map(|p| EndpointId::from_str(&p.id.0).ok())
             .collect();
-        let some = !live.is_empty();
-        *self.paired.write().unwrap_or_else(|p| p.into_inner()) = live;
-        self.peers_gen.send_modify(|g| *g += 1);
-        if some {
+        let (changed, gone) = {
+            let mut paired = self.paired.write().unwrap_or_else(|p| p.into_inner());
+            let gone: Vec<EndpointId> = paired.difference(&live).copied().collect();
+            let changed = *paired != live;
+            paired.clone_from(&live);
+            (changed, gone)
+        };
+        if changed {
+            self.peers_gen.send_modify(|g| *g += 1);
+        }
+        for id in gone {
+            self.close_conns(&id).await;
+        }
+        if !live.is_empty() {
             self.join_network().await;
         }
+        Ok(live)
+    }
+
+    /// 183 R1 (S1), R4: a live row that an engine introduced (by `Peers`) after, or within
+    /// [`QUARANTINE_SKEW_MS`] before, that engine was unpaired is quarantined here: marked
+    /// locally and left out of this engine's paired set, never tombstoned in the replicated
+    /// table, so one engine's suspicion never unpairs a machine for the whole mesh. A user
+    /// keeps it or removes it (`confirm_peer`; Remove is a real unpair).
+    async fn quarantine(&self) -> anyhow::Result<()> {
+        let origins = self.store.origins().await?;
+        if origins.is_empty() {
+            return Ok(());
+        }
+        let entries = self.store.peer_entries().await?;
+        for o in origins.iter().filter(|o| !o.confirmed && !o.quarantined) {
+            let Some(removed) = entries
+                .iter()
+                .find(|p| p.id == o.by)
+                .and_then(|p| p.removed_ms)
+            else {
+                continue;
+            };
+            if o.at_ms.saturating_add(QUARANTINE_SKEW_MS) < removed {
+                continue;
+            }
+            let Some(row) = entries.iter().find(|p| p.id == o.id && !p.removed()) else {
+                continue;
+            };
+            self.store.set_quarantined(&o.id).await?;
+            tracing::warn!(
+                "mesh: {} ({}) was added by {} after it was unpaired; not paired here until confirmed",
+                row.name,
+                o.id,
+                o.by
+            );
+        }
+        Ok(())
+    }
+
+    /// 183 R1 (S1): the quarantined rows, for `MeshStatus.quarantined`.
+    pub async fn quarantined(&self) -> anyhow::Result<Vec<crate::types::QuarantinedPeer>> {
+        let entries = self.store.peer_entries().await?;
+        let name = |id: &EngineId| {
+            entries
+                .iter()
+                .find(|p| &p.id == id)
+                .map_or_else(|| id.0.chars().take(8).collect(), |p| p.name.clone())
+        };
+        Ok(self
+            .store
+            .origins()
+            .await?
+            .into_iter()
+            .filter(|o| o.quarantined && !o.confirmed)
+            .map(|o| crate::types::QuarantinedPeer {
+                name: name(&o.id),
+                added_by_name: name(&o.by),
+                id: o.id,
+                added_by: o.by,
+            })
+            .collect())
+    }
+
+    /// 183 R1 (S1, `mesh_confirm_peer`), R4: either way the row leaves the list; `keep` pairs it
+    /// here again (it was never tombstoned), otherwise the caller unpairs it for real.
+    pub async fn confirm_peer(&self, id: &EngineId) -> anyhow::Result<()> {
+        if !self.store.confirm_origin(id).await? {
+            anyhow::bail!("{id} is not waiting for a confirmation");
+        }
+        self.refresh_paired().await?;
         Ok(())
     }
 
@@ -836,11 +1128,15 @@ impl Net {
     /// The UI/RPC shape of a stored row.
     pub fn peer_of(&self, p: &PeerEntry) -> Peer {
         let eid = EndpointId::from_str(&p.id.0).ok();
-        let (reachable, last_seen_ms) = eid.map_or((false, 0), |e| {
+        let (conn, last_seen_ms) = eid.map_or((None, 0), |e| {
             let pr = Self::lock(&self.presence);
             pr.get(&e)
-                .map_or((false, 0), |x| (!x.conns.is_empty(), x.since_ms))
+                .map_or((None, 0), |x| (x.conns.first().cloned(), x.since_ms))
         });
+        let reachable = conn.is_some();
+        let (path, rtt_ms) = conn
+            .as_ref()
+            .map_or((crate::PeerPath::Offline, None), path_of);
         Peer {
             id: p.id.clone(),
             name: p.name.clone(),
@@ -852,9 +1148,8 @@ impl Net {
                 last_seen_ms.max(p.added_ms)
             },
             hub_pref: p.hub_pref,
-            // 183 P2: path and RTT from the iroh connection (§6.7).
-            path: crate::PeerPath::default(),
-            rtt_ms: None,
+            path,
+            rtt_ms,
         }
     }
 
@@ -876,6 +1171,7 @@ impl Net {
         {
             let _ = write_msg(&mut send, &Msg::Peers { peers }).await;
         }
+        crate::keys::on_connect(self, &conn).await;
         loop {
             let (mut send, mut recv) = match conn.accept_bi().await {
                 Ok(s) => s,
@@ -883,7 +1179,8 @@ impl Net {
             };
             match read_msg(&mut recv).await {
                 Ok(Msg::Peers { peers }) => {
-                    if let Err(e) = self.merge_peers(&peers).await {
+                    let from = EngineId(peer.to_string());
+                    if let Err(e) = self.merge_peers(&peers, Some(&from)).await {
                         tracing::warn!("mesh: peer set from {}: {e:#}", peer.fmt_short());
                     }
                     let _ = send.finish();
@@ -896,6 +1193,16 @@ impl Net {
                         },
                     )
                     .await;
+                }
+                Ok(
+                    m @ (Msg::KeyEpoch { .. }
+                    | Msg::KeyRequest { .. }
+                    | Msg::KeyGrant { .. }
+                    | Msg::KeyAck { .. }
+                    | Msg::KeyRefused { .. }),
+                ) => {
+                    // Off the loop: a grant re-seals rows, a request waits for its ack.
+                    tokio::spawn(crate::keys::on_frame(self.clone(), peer, m, send, recv));
                 }
                 Ok(other) => tracing::debug!("mesh: ignoring {other:?} from {}", peer.fmt_short()),
                 Err(e) => tracing::debug!("mesh: control stream from {}: {e:#}", peer.fmt_short()),
@@ -952,22 +1259,29 @@ impl Net {
             self.drive(conn).await;
             return Ok(());
         }
-        // Stranger: the first stream must be a valid PairHello.
+        // Stranger: the first stream must be a valid PairHello, or a Nearby PairRequest (§6.8).
         let (mut send, mut recv) = conn.accept_bi().await?;
-        let Ok(Msg::PairHello {
-            token,
-            me,
-            peers,
-            vault_key,
-            rank,
-        }) = read_msg(&mut recv).await
-        else {
-            tracing::debug!(
-                "mesh: {} is not in the paired set and sent no PairHello; closed",
-                peer.fmt_short()
-            );
-            conn.close(0u32.into(), b"not paired");
-            return Ok(());
+        let (token, me, peers, vault_key, rank, keyring) = match read_msg(&mut recv).await {
+            Ok(Msg::PairHello {
+                token,
+                me,
+                peers,
+                vault_key,
+                rank,
+                keyring,
+            }) => (token, me, peers, vault_key, rank, keyring),
+            Ok(m @ Msg::PairRequest { .. }) => {
+                crate::nearby::on_pair_request(self, conn, send, recv, m).await;
+                return Ok(());
+            }
+            _ => {
+                tracing::debug!(
+                    "mesh: {} is not in the paired set and sent no PairHello; closed",
+                    peer.fmt_short()
+                );
+                conn.close(0u32.into(), b"not paired");
+                return Ok(());
+            }
         };
         let ok = {
             let mut pending = Self::lock(&self.pending);
@@ -977,7 +1291,9 @@ impl Net {
             if live {
                 *pending = None;
             }
-            live
+            // 183 §6.8: or the token a Nearby ceremony with this very endpoint minted once both
+            // sides pressed Pair.
+            live || crate::nearby::take_token(self, &token, &peer)
         };
         if !ok {
             let _ = write_msg(
@@ -1004,10 +1320,13 @@ impl Net {
         // with the pre-pairing counts on both ends; a pre-F5 dialer sends no
         // rank and adopts our key from the string as before.
         let mine = self.rank();
-        let adopted = match (&rank, &vault_key) {
-            (Some(theirs), Some(key)) if pairing::key_owner(theirs, &mine) == Side::Dialer => {
-                self.adopt_key(key, &format!("{} ({})", me.name, me.id))
-                    .await
+        let from = format!("{} ({})", me.name, me.id);
+        let dialer_owns = rank
+            .as_ref()
+            .is_some_and(|theirs| pairing::key_owner(theirs, &mine) == Side::Dialer);
+        let adopted = match &vault_key {
+            Some(key) if dialer_owns => {
+                crate::keys::adopt_pairing(self, &from, Some(key.as_str()), keyring.clone()).await
             }
             _ => false,
         };
@@ -1017,8 +1336,12 @@ impl Net {
             peers: self.store.peer_entries().await.map_err(user_err)?,
             adopted,
             rank: Some(mine),
+            keyring: crate::keys::pairing_keyring(self, &me.id),
         };
         self.learn(me, &peers).await.map_err(user_err)?;
+        if !dialer_owns {
+            crate::keys::after_pairing(self, rank.as_ref(), &keyring);
+        }
         write_msg(&mut send, &reply).await.map_err(user_err)?;
         let _ = send.finish();
         tracing::info!("mesh: paired with {}", peer.fmt_short());
@@ -1148,7 +1471,12 @@ impl Net {
     }
 
     /// Wrap `stream` so its reads and writes count toward `alpn`.
-    fn count(&self, alpn: &str, stream: Box<dyn ByteStream>) -> Box<dyn ByteStream> {
+    fn count(
+        &self,
+        alpn: &str,
+        peer: EndpointId,
+        stream: Box<dyn ByteStream>,
+    ) -> Box<dyn ByteStream> {
         let counters = Self::lock(&self.traffic)
             .entry(alpn.to_owned())
             .or_default()
@@ -1158,6 +1486,8 @@ impl Net {
             counters,
             alpn: alpn.to_owned(),
             limit: self.storm_frames_per_sec,
+            peer,
+            paired: self.paired.clone(),
         })
     }
 
@@ -1192,7 +1522,7 @@ impl Transport for Net {
         anyhow::ensure!(self.is_paired(&id), "{peer} is not a paired engine");
         let conn = self.connection(id, alpn).await?;
         let (send, recv) = conn.open_bi().await.context("open stream")?;
-        Ok(self.count(alpn, Box::new(tokio::io::join(recv, send))))
+        Ok(self.count(alpn, id, Box::new(tokio::io::join(recv, send))))
     }
 
     fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
@@ -1242,8 +1572,14 @@ impl ProtocolHandler for Inbound {
             return Ok(());
         }
         let pid = PeerId(peer.to_string());
+        net.track_inbound(peer, &connection);
         while let Ok((send, recv)) = connection.accept_bi().await {
-            let stream = net.count(self.alpn, Box::new(tokio::io::join(recv, send)));
+            // 183 R3: per stream, not only per connection: an unpair lands between streams.
+            if !net.is_paired(&peer) {
+                connection.close(0u32.into(), b"not paired");
+                break;
+            }
+            let stream = net.count(self.alpn, peer, Box::new(tokio::io::join(recv, send)));
             net.deliver_inbound(self.alpn, (pid.clone(), stream)).await;
         }
         Ok(())
@@ -1266,6 +1602,7 @@ impl<H: ProtocolHandler + Clone> ProtocolHandler for Gated<H> {
             connection.close(0u32.into(), b"not paired");
             return Ok(());
         }
+        net.track_inbound(connection.remote_id(), &connection);
         self.inner.accept(connection).await
     }
 
@@ -1276,12 +1613,34 @@ impl<H: ProtocolHandler + Clone> ProtocolHandler for Gated<H> {
 
 // --- framing -----------------------------------------------------------------
 
+/// 183 §6.7: how a live connection reaches its peer: the selected path (else the first open
+/// one), direct = `lan`, through the relay = `relay`, with its RTT estimate.
+fn path_of(conn: &Connection) -> (crate::PeerPath, Option<u32>) {
+    let paths = conn.paths();
+    let Some(p) = paths
+        .iter()
+        .find(|p| p.is_selected())
+        .or_else(|| paths.iter().next())
+    else {
+        return (crate::PeerPath::Lan, None);
+    };
+    let path = if p.is_relay() {
+        crate::PeerPath::Relay
+    } else {
+        crate::PeerPath::Lan
+    };
+    (
+        path,
+        Some(u32::try_from(p.rtt().as_millis()).unwrap_or(u32::MAX)),
+    )
+}
+
 /// An application error as the router reports it.
 fn user_err(e: anyhow::Error) -> AcceptError {
     AcceptError::from_boxed(e.into())
 }
 
-async fn write_msg(send: &mut SendStream, msg: &Msg) -> anyhow::Result<()> {
+pub(crate) async fn write_msg(send: &mut SendStream, msg: &Msg) -> anyhow::Result<()> {
     let body = serde_json::to_vec(msg)?;
     anyhow::ensure!(body.len() < MAX_MSG as usize, "message too large");
     send.write_all(&(body.len() as u32).to_le_bytes()).await?;
@@ -1289,7 +1648,7 @@ async fn write_msg(send: &mut SendStream, msg: &Msg) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn read_msg(recv: &mut RecvStream) -> anyhow::Result<Msg> {
+pub(crate) async fn read_msg(recv: &mut RecvStream) -> anyhow::Result<Msg> {
     let len = recv.read_u32_le().await.context("read length")?;
     anyhow::ensure!(len < MAX_MSG, "message too large ({len} bytes)");
     let mut body = vec![0u8; len as usize];
@@ -1298,21 +1657,95 @@ async fn read_msg(recv: &mut RecvStream) -> anyhow::Result<Msg> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
 
-    /// One node's vault key: a cell standing in for the secrets actor.
-    struct MemKeys(Mutex<[u8; 32]>);
+    /// 183 §10.2: a pre-183 `PairHello` (no `keyring`) still decodes, an empty keyring is
+    /// not sent (the frame stays byte-identical for old peers), and the appended key frames
+    /// round-trip without key bytes in `Debug`.
+    #[test]
+    fn old_pair_hello_decodes_and_key_frames_round_trip() {
+        let entry = PeerEntry {
+            id: EngineId("a".into()),
+            name: "a".into(),
+            addrs: Vec::new(),
+            hub_pref: HubPref::Eligible,
+            added_ms: 1,
+            removed_ms: None,
+        };
+        let old = serde_json::json!({"PairHello": {"token": "t", "me": entry, "peers": []}});
+        let Msg::PairHello { keyring, .. } = serde_json::from_value(old).unwrap() else {
+            panic!("not a PairHello")
+        };
+        assert!(keyring.is_empty());
+        let hello = Msg::PairHello {
+            token: "t".into(),
+            me: entry.clone(),
+            peers: Vec::new(),
+            vault_key: None,
+            rank: None,
+            keyring: Vec::new(),
+        };
+        assert!(!serde_json::to_string(&hello).unwrap().contains("keyring"));
+        let grant = Msg::KeyGrant {
+            key: secrets::WireKey {
+                info: secrets::KeyInfo {
+                    id: "0123456789abcdef".into(),
+                    epoch: 1,
+                    initiator: "a".into(),
+                    members: vec!["a".into(), "b".into()],
+                    minted_ms: 5,
+                },
+                key: zeroize::Zeroizing::new("KEYBYTES".into()),
+            },
+            removed: vec![entry],
+        };
+        assert!(!format!("{grant:?}").contains("KEYBYTES"));
+        let back: Msg = serde_json::from_str(&serde_json::to_string(&grant).unwrap()).unwrap();
+        let Msg::KeyGrant { key, removed } = back else {
+            panic!("not a KeyGrant")
+        };
+        assert_eq!(
+            (key.info.epoch, key.key.as_str(), removed.len()),
+            (1, "KEYBYTES", 1)
+        );
+    }
 
-    #[async_trait::async_trait]
-    impl VaultKeys for MemKeys {
-        async fn get(&self) -> Option<[u8; 32]> {
-            Some(*Net::lock(&self.0))
-        }
-        async fn adopt(&self, key: [u8; 32]) -> Result<(), String> {
-            *Net::lock(&self.0) = key;
-            Ok(())
+    /// 183 R1 (S7): the vault key in `PairHello` and in a Nearby `PairAnswer` never reaches a
+    /// `Debug` line (the `{other:?}` logs), and still crosses the wire as the plain string.
+    #[test]
+    fn pairing_frames_redact_the_vault_key_in_debug() {
+        let me = PeerEntry {
+            id: EngineId("a".into()),
+            name: "a".into(),
+            addrs: Vec::new(),
+            hub_pref: HubPref::Eligible,
+            added_ms: 1,
+            removed_ms: None,
+        };
+        let frames = [
+            Msg::PairHello {
+                token: "t".into(),
+                me,
+                peers: Vec::new(),
+                vault_key: Some(Secret::new("VAULTKEYBYTES".into())),
+                rank: None,
+                keyring: Vec::new(),
+            },
+            Msg::PairAnswer {
+                accept: true,
+                token: Some("t".into()),
+                vault_key: Some(Secret::new("VAULTKEYBYTES".into())),
+            },
+        ];
+        for f in &frames {
+            assert!(!format!("{f:?}").contains("VAULTKEYBYTES"), "{f:?}");
+            assert!(
+                serde_json::to_string(f)
+                    .unwrap()
+                    .contains("\"VAULTKEYBYTES\"")
+            );
         }
     }
 
@@ -1321,21 +1754,61 @@ mod tests {
         (net, dir)
     }
 
-    /// A node whose identity was created at `first_seen_ms`, with its own key.
-    async fn node_at(
+    /// A node whose identity was created at `first_seen_ms`, with its own vault.
+    pub(crate) async fn node_at(
         name: &str,
         first_seen_ms: u64,
-    ) -> (Arc<Net>, tempfile::TempDir, Arc<MemKeys>) {
+    ) -> (Arc<Net>, tempfile::TempDir, Arc<Vault>) {
+        bind_node(name, first_seen_ms, None).await
+    }
+
+    /// 183 §6.8: a loopback node whose Nearby runs on `mdns` (a fake LAN in tests).
+    pub(crate) async fn node_with(
+        name: &str,
+        mdns: Option<Arc<dyn crate::nearby::Mdns>>,
+    ) -> (Arc<Net>, tempfile::TempDir, Arc<Vault>) {
+        bind_node(name, 1_000, mdns).await
+    }
+
+    async fn bind_node(
+        name: &str,
+        first_seen_ms: u64,
+        mdns: Option<Arc<dyn crate::nearby::Mdns>>,
+    ) -> (Arc<Net>, tempfile::TempDir, Arc<Vault>) {
         let dir = tempfile::tempdir().unwrap();
-        let secret = SecretKey::generate();
+        let vault = Arc::new(
+            Vault::open(dir.path(), secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let net = bind_at(
+            name,
+            first_seen_ms,
+            mdns,
+            dir.path(),
+            SecretKey::generate(),
+            Some(vault.clone()),
+        )
+        .await;
+        (net, dir, vault)
+    }
+
+    /// Bind a loopback node over `dir`'s mesh store (a restart reuses `secret` and `dir`).
+    pub(crate) async fn bind_at(
+        name: &str,
+        first_seen_ms: u64,
+        mdns: Option<Arc<dyn crate::nearby::Mdns>>,
+        dir: &std::path::Path,
+        secret: SecretKey,
+        vault: Option<Arc<Vault>>,
+    ) -> Arc<Net> {
         let store = Store::open(
-            &dir.path().join("mesh.sqlite"),
+            &dir.join("mesh.sqlite"),
             EngineId(secret.public().to_string()),
         )
         .await
         .unwrap();
-        let keys = Arc::new(MemKeys(Mutex::new(rand::random())));
-        let net = Net::bind(
+        Net::bind(
             BindOpts {
                 secret,
                 relay: String::new(),
@@ -1343,15 +1816,86 @@ mod tests {
                 bind_addr: Some("127.0.0.1:0".parse().unwrap()),
                 storm_frames_per_sec: 50,
                 first_seen_ms,
-                keys: Some(keys.clone()),
+                vault,
+                mdns,
             },
             store,
             name.into(),
             HubPref::Eligible,
         )
         .await
-        .unwrap();
-        (net, dir, keys)
+        .unwrap()
+    }
+
+    /// 183 R3: an unpair closes every connection to the removed engine, on every ALPN and in
+    /// both directions, and a stream already open carries nothing more: C receives no further
+    /// byte of records, and its own sessions stream delivers nothing here; new dials fail.
+    #[tokio::test]
+    async fn an_unpair_closes_every_stream_to_the_removed_engine() {
+        let (a, _da) = node("a").await;
+        let (c, _dc) = node("c").await;
+        c.add_peer(&a.pairing_string().await).await.unwrap();
+        for _ in 0..400 {
+            if a.is_paired(&c.endpoint.id()) && c.is_paired(&a.endpoint.id()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let (pa, pc) = (PeerId(a.id.0.clone()), PeerId(c.id.0.clone()));
+        let mut out = Transport::open(&*a, &pc, replica::ALPN_RECORDS)
+            .await
+            .unwrap();
+        out.write_all(b"row1").await.unwrap();
+        out.flush().await.unwrap();
+        let (_, mut at_c) = Transport::accept(&*c, replica::ALPN_RECORDS).await.unwrap();
+        let mut buf = [0u8; 4];
+        at_c.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"row1");
+        let mut from_c = Transport::open(&*c, &pa, replica::ALPN_SESSIONS)
+            .await
+            .unwrap();
+        from_c.write_all(b"s1").await.unwrap();
+        from_c.flush().await.unwrap();
+        let (_, mut at_a) = Transport::accept(&*a, replica::ALPN_SESSIONS)
+            .await
+            .unwrap();
+        let mut two = [0u8; 2];
+        at_a.read_exact(&mut two).await.unwrap();
+
+        a.remove_peer(&c.id).await.unwrap();
+        let sent = out.write_all(b"row2").await.and(out.flush().await);
+        assert!(sent.is_err(), "an in-flight batch to c fails at once");
+        let mut rest = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(5), at_c.read_to_end(&mut rest))
+            .await
+            .expect("c's stream ends, it does not hang");
+        assert!(
+            rest.is_empty(),
+            "c received nothing after the unpair: {rest:?}"
+        );
+        let _ = from_c.write_all(b"s2").await;
+        let _ = from_c.flush().await;
+        assert!(
+            at_a.read(&mut two).await.map_or(true, |n| n == 0),
+            "nothing from c is read here either"
+        );
+        assert!(Transport::open(&*a, &pc, replica::ALPN_DOCS).await.is_err());
+        // C still thinks it is paired; its new stream is refused, never delivered here.
+        if let Ok(mut s) = Transport::open(&*c, &pa, replica::ALPN_DOCS).await {
+            let _ = s.write_all(b"doc").await;
+            let _ = s.flush().await;
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                Transport::accept(&*a, replica::ALPN_DOCS)
+            )
+            .await
+            .is_err(),
+            "no docs stream from c reaches a"
+        );
+        a.shutdown().await;
+        c.shutdown().await;
     }
 
     /// 79 F5 (smoke bug 10): the established engine keeps its vault key in
@@ -1362,28 +1906,70 @@ mod tests {
         let (a, _da, ka) = node_at("a", 1_000).await;
         let (b, _db, kb) = node_at("b", 3_000).await;
         let (c, _dc, kc) = node_at("c", 2_000).await;
-        let key_a = ka.get().await.unwrap();
-        assert_ne!(key_a, kb.get().await.unwrap());
+        let key = |v: &Vault| *v.mesh_key();
+        let key_a = key(&ka);
+        assert_ne!(key_a, key(&kb));
 
         // Fresh dials established (a laptop pastes the mesh's string): as before.
         c.add_peer(&a.pairing_string().await).await.unwrap();
-        assert_eq!(kc.get().await.unwrap(), key_a);
-        assert_eq!(ka.get().await.unwrap(), key_a);
+        assert_eq!(key(&kc), key_a);
+        assert_eq!(key(&ka), key_a);
 
         // Established dials fresh (the host pairs a VM): the fresh side adopts.
         let peer = a.add_peer(&b.pairing_string().await).await.unwrap();
         assert_eq!(peer.id, b.id);
         assert!(a.is_paired(&b.endpoint.id()) && b.is_paired(&a.endpoint.id()));
-        assert_eq!(kb.get().await.unwrap(), key_a, "the fresh acceptor adopted");
-        assert_eq!(
-            ka.get().await.unwrap(),
-            key_a,
-            "the established dialer kept its key"
-        );
-        assert_eq!(kc.get().await.unwrap(), key_a);
+        assert_eq!(key(&kb), key_a, "the fresh acceptor adopted");
+        assert_eq!(key(&ka), key_a, "the established dialer kept its key");
+        assert_eq!(key(&kc), key_a);
         a.shutdown().await;
         b.shutdown().await;
         c.shutdown().await;
+    }
+
+    /// 183 §6.7: a connected peer reports its path (`lan` on loopback) with an RTT and a live
+    /// `last_seen`; after a removal it is `offline` with none. No relay configured: no relay
+    /// state. A rename of the other machine lands in its row.
+    #[tokio::test]
+    async fn mesh_status_paths_follow_the_connection() {
+        let (a, _da) = node("a").await;
+        let (b, _db) = node("b").await;
+        let mut a_events = a.subscribe_peers();
+        b.add_peer(&a.pairing_string().await).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), a_events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let row = |n: &Net, id: &EngineId| {
+            let n = n.store.clone();
+            let id = id.clone();
+            async move {
+                n.peer_entries()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|p| p.id == id)
+                    .unwrap()
+            }
+        };
+        let p = a.peer_of(&row(&a, &b.id).await);
+        assert!(p.reachable);
+        assert_eq!(p.path, crate::PeerPath::Lan);
+        assert!(p.rtt_ms.is_some(), "the live connection's RTT");
+        assert!(a.last_seen(&b.id.0).is_some());
+        assert!(a.relay_state().is_none(), "`mesh.relay` empty: no relay");
+
+        a.rename_peer(&b.id, "build box").await.unwrap();
+        assert_eq!(row(&a, &b.id).await.name, "build box");
+
+        a.remove_peer(&b.id).await.unwrap();
+        let p = a.peer_of(&row(&a, &b.id).await);
+        assert_eq!(
+            (p.reachable, p.path, p.rtt_ms),
+            (false, crate::PeerPath::Offline, None)
+        );
+        a.shutdown().await;
+        b.shutdown().await;
     }
 
     /// Two endpoints on loopback, no relay: pair, connect, round-trip bytes on
@@ -1533,11 +2119,14 @@ mod tests {
     async fn counted_stream_books_both_directions() {
         let (x, y) = tokio::io::duplex(64);
         let c = Arc::new(Counters::default());
+        let peer = SecretKey::generate().public();
         let mut cx = Counted {
             inner: Box::new(x),
             counters: c.clone(),
             alpn: "t".into(),
             limit: 50,
+            peer,
+            paired: Arc::new(RwLock::new(HashSet::from([peer]))),
         };
         let mut y = y;
         cx.write_all(b"hello").await.unwrap();

@@ -60,7 +60,7 @@ export function Link() {
           </Button>
         }
       >
-        <Empty>Scan the QR a node shows under Settings › Link, or paste its key. The meshes this device reaches are listed under Settings › Mesh.</Empty>
+        <Empty>Scan the QR a node shows under Settings › Link, or paste its key. The meshes this device reaches are listed under Settings › Network.</Empty>
       </Section>
     )
   }

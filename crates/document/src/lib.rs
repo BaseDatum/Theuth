@@ -302,6 +302,27 @@ impl runtime::Plugin for DocumentPlugin {
                 }
             }
         });
+        // 183 §6.9.11: after each vault-key rotation the hub re-seals the share links.
+        if let Some(vault) = store.vault() {
+            let (a, mut rotation) = (actor.clone(), vault.watch_rotation());
+            tokio::spawn(async move {
+                let mut done: Option<String> = None;
+                while rotation.changed().await.is_ok() {
+                    let key = rotation
+                        .borrow_and_update()
+                        .as_ref()
+                        .map(|r| r.key.id.clone());
+                    if key.is_none() || key == done {
+                        continue;
+                    }
+                    match a.ask(share::Reseal).await {
+                        Ok(true) => done = key,
+                        Ok(false) => {}
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
         // §5: the tools and their prompt block, once the registry is up (12 §9).
         let a = actor.clone();
         let rt2 = rt.clone();

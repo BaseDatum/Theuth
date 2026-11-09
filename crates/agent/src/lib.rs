@@ -160,10 +160,11 @@ pub use activity::{
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
     AnswerPeerRequest, ChannelChat, ChannelOrigin, ChannelVia, CommunicationChanged,
-    CommunicationState, GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers,
-    PeerConsumed, PeerDeliver, PeerDelivered, PeerEnvelope, PeerInfo, PeerIntakeFailed,
-    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
-    PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication, SetPeerScope,
+    CommunicationState, GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers, MeshRefusal,
+    PeerConsumed, PeerDeliver, PeerDeliverError, PeerDelivered, PeerEnvelope, PeerInfo,
+    PeerIntakeFailed, PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage,
+    PeerReceipt, PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication,
+    SetPeerScope,
 };
 pub use compact::CompactStyle;
 pub use context::{
@@ -3809,9 +3810,12 @@ pub struct AgentConfig {
     pub runtime_only: bool,
     /// Harness-wide permission for model-to-model communication (design doc
     /// 50 §2.1): discovery, `send_message`, `spawn_subagent` and automatic
-    /// child-result injection. Off is a ceiling a session cannot override;
-    /// missing means off. `/communication on always` persists it.
-    pub communication: bool,
+    /// child-result injection. Off is a ceiling a session cannot override.
+    /// `/communication on always` persists it. 183 §6.1 (D3, D6): absent (`None`)
+    /// means on while this engine has a paired peer, else off; until that lands,
+    /// absent is off as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub communication: Option<bool>,
     /// Subagent limits and model.
     pub subagents: SubagentsConfig,
     /// Auto-compaction threshold as a fraction of the model's context window;
@@ -3872,7 +3876,7 @@ impl Default for AgentConfig {
             max_salvages: 2,
             max_tool_output_chars: 32_000,
             runtime_only: true,
-            communication: false,
+            communication: None,
             subagents: SubagentsConfig::default(),
             compact_at: 0.8,
             compact_style: CompactStyle::Summary,

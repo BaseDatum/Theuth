@@ -353,6 +353,50 @@ impl Message<Revoke> for LinkActor {
         Ok(())
     }
 }
+impl LinkActor {
+    /// D11: revoke every active device (rows stay, conns close); the count revoked. Used by
+    /// [`ResetDevices`] and by an engine that sees `mesh/device_key` change (183 R1).
+    pub(crate) async fn revoke_all_devices(&mut self) -> u32 {
+        let ids: Vec<String> = {
+            let mut st = self.ctx.lock();
+            let rows: Vec<(String, [u8; 32])> = st
+                .devices
+                .rows()
+                .filter(|r| r.active())
+                .map(|r| (r.id.clone(), r.key))
+                .collect();
+            for (id, key) in &rows {
+                for c in st.all_conns().filter(|c| c.device == Some(*key)) {
+                    c.cancel.cancel();
+                }
+                st.devices.remove(id);
+            }
+            rows.into_iter().map(|(id, _)| id).collect()
+        };
+        for id in &ids {
+            self.ctx
+                .rt
+                .publish(LinkEvent::LinkRevoked { id: id.clone() })
+                .await;
+        }
+        self.ctx.rt.publish(LinkEvent::DevicesChanged).await;
+        u32::try_from(ids.len()).unwrap_or(u32::MAX)
+    }
+}
+
+impl Message<ResetDevices> for LinkActor {
+    type Reply = Result<u32, String>;
+
+    async fn handle(
+        &mut self,
+        _: ResetDevices,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let n = self.revoke_all_devices().await;
+        self.drop_mesh_identity(ctx.actor_ref().clone()).await;
+        Ok(n)
+    }
+}
 
 impl Message<DevicesList> for LinkActor {
     type Reply = Vec<DeviceInfo>;

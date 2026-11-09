@@ -14,7 +14,8 @@
 //! Public surface consumed by other plugins:
 //! - commands on the [`SECRETS_ACTOR`] actor ([`SecretsActor`]): [`List`],
 //!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`PendingRequests`],
-//!   [`ListRequests`], [`SetEngine`], [`Handle`]
+//!   [`ListRequests`], [`SetEngine`], [`Handle`]; 183: [`GetRotation`] (the mesh reaches the
+//!   keyring through [`Handle`] and the [`Vault`] methods directly)
 //! - events: [`SecretsEvent`]
 //! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
@@ -36,7 +37,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 pub use vault::{
-    KEEP, KeyStore, MESH_PREFIX, OAUTH_PREFIX, SecretInfo, SecretsList, Vault, VersionInfo,
+    KEEP, KeyInfo, KeyStore, MESH_PREFIX, OAUTH_PREFIX, RetireHold, RotationPeer, RotationPhase,
+    RotationState, SecretInfo, SecretsList, Vault, VersionInfo, WireKey,
 };
 
 /// How often the plugin looks for rows written by others (a peer's batch
@@ -219,15 +221,9 @@ pub struct ListRequests {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Handle;
 
-/// `ask` → `[u8; 32]`: the mesh data key (67 §5.4). The mesh puts it in the
-/// pairing string it prints. Never exposed over RPC.
+/// 183 §14.7: `ask` → `Option<RotationState>`: the newest rotation (`vault_rotation`).
 #[derive(Clone, Copy, Debug, Default)]
-pub struct GetMeshKey;
-
-/// `ask` → `Result<(), String>`: take the mesh key a pairing string carried
-/// (`t mesh add`); local rows are re-sealed under it.
-#[derive(Clone, Copy, Debug)]
-pub struct AdoptMeshKey(pub [u8; 32]);
+pub struct GetRotation;
 
 /// Bus events (37 §3.3).
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -270,6 +266,9 @@ pub enum SecretsEvent {
         /// Nobody answered in time.
         timed_out: bool,
     },
+    /// 183 §10.4 (D7): a rotation minted, swept, reached a peer, finished or failed.
+    #[serde(rename = "SecretsRotation")]
+    Rotation(RotationState),
 }
 
 /// Internal `tell`: the waiter finished (answered, timed out) — drop its pending entry.
@@ -591,6 +590,7 @@ impl Message<SetEngine> for SecretsActor {
     type Reply = ();
 
     async fn handle(&mut self, m: SetEngine, _: &mut Context<Self, Self::Reply>) {
+        self.vault.set_engine(&m.0);
         self.engine = Some(m.0);
     }
 }
@@ -643,24 +643,11 @@ impl Message<Handle> for SecretsActor {
     }
 }
 
-impl Message<GetMeshKey> for SecretsActor {
-    type Reply = [u8; 32];
+impl Message<GetRotation> for SecretsActor {
+    type Reply = Option<RotationState>;
 
-    async fn handle(&mut self, _: GetMeshKey, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        *self.vault.mesh_key()
-    }
-}
-
-impl Message<AdoptMeshKey> for SecretsActor {
-    type Reply = Result<(), String>;
-
-    async fn handle(&mut self, m: AdoptMeshKey, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.vault
-            .adopt_mesh_key(m.0)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-        self.rt.publish(SecretsEvent::Changed).await;
-        Ok(())
+    async fn handle(&mut self, _: GetRotation, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.vault.rotation()
     }
 }
 
@@ -839,11 +826,29 @@ async fn replicate(rt: Runtime, vault: Arc<Vault>) {
             Err(e) => tracing::warn!("secrets: vault is local only: {e:#}"),
         }
     });
+    // 183 §10.4: every change of the rotation record goes on the bus.
+    let (rt2, mut rotation) = (rt.clone(), vault.watch_rotation());
+    tokio::spawn(async move {
+        while rotation.changed().await.is_ok() {
+            let state = rotation.borrow_and_update().clone();
+            if let Some(s) = state {
+                rt2.publish(SecretsEvent::Rotation(s)).await;
+            }
+        }
+    });
     let mut seen = vault.disk_stamp();
     let mut tick = tokio::time::interval(REFRESH_POLL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut n = 0u64;
     loop {
         tick.tick().await;
+        // 183 §6.9.6: sweep and retire, on boot and then every MAINTAIN_EVERY ticks.
+        n = n.wrapping_add(1);
+        if n % MAINTAIN_EVERY == 1
+            && let Err(e) = vault.maintain(now_ms()).await
+        {
+            tracing::warn!("secrets: vault-key sweep: {e:#}");
+        }
         let now = vault.disk_stamp();
         if now == seen {
             continue;
@@ -855,6 +860,9 @@ async fn replicate(rt: Runtime, vault: Arc<Vault>) {
         }
     }
 }
+
+/// [`REFRESH_POLL`] ticks between two [`Vault::maintain`] runs.
+const MAINTAIN_EVERY: u64 = 5;
 
 #[cfg(test)]
 mod tests {

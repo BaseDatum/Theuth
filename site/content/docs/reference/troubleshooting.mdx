@@ -69,7 +69,7 @@ More in [Models](/docs/getting-started/models).
 | `<tool>: denied by user` | you pressed deny |
 | `<tool>: approval timed out` | nobody answered within `tools.approval_timeout_secs` (300). On Slack the card reads `⌛ tool timed out (denied)` |
 | `<tool>: denied: subagent is capped at read_only` | the parent spawned the child with `tools: read_only`; respawn without the cap |
-| `<tool>: communication_disabled: …` | `agent.communication` is `false` (default) or the session opted out; `/communication` shows the exact blocker, `/communication on always` fixes it for good |
+| `<tool>: communication_disabled: …` | agent messaging is off: `agent.communication` is `false`, or unset with no paired machine, or the session opted out, or (for `send_message`) the machine is in `mesh.messaging_off`; `/communication` shows the exact blocker, `/communication on always` fixes it for good, and Settings › Network › **Agents can message** is the per-machine switch |
 | `unknown tool: <name>` | the tool is hidden for this session (`/mcp` → `s`), gated `off`, its plugin is disabled, or the name changed to `<server>__<name>` after a clash |
 | a `read_only` call still prompts | its arguments carry a `{{secret:…}}` placeholder, which raises the action to `ask` |
 | prompts keep coming on an unattended machine | `/approvals off always` (writes `tools.approvals: false`), or `approvals: false` in a schedule file; `deny` entries still deny |

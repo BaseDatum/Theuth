@@ -7,7 +7,7 @@ Delegation is theuth spawning a **child session** to do part of a job: a researc
 
 ## Prerequisites
 
-- **Communication switched on.** Model-to-model communication is **off by default**: `agent.communication: false` in `~/.theuth/config.yaml`. While it is off, `spawn_subagent`, `discover_peers` and `send_message` are not offered to the model at all, and no child result is delivered. Turn it on from any chat:
+- **Communication switched on.** Model-to-model communication is on by default once this machine has a paired machine in a [mesh](/docs/automation/mesh), and off by default on a single machine (`agent.communication` absent in `~/.theuth/config.yaml`). While it is off, `spawn_subagent`, `discover_peers` and `send_message` are not offered to the model at all, and no child result is delivered. An explicit `agent.communication: true|false`, the env var or `/communication on|off always` always wins and is never moved. To turn it on from any chat:
 
   ```text
   › /communication on always
@@ -231,7 +231,7 @@ Cost rolls up: each child's spend (returned by the provider, or an estimate show
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| theuth answers that it cannot delegate / `spawn_subagent` never appears in tool cards | `agent.communication` is `false` (the default) or this session is opted out | `/communication` shows the exact blocker; `/communication on always` turns it on globally |
+| theuth answers that it cannot delegate / `spawn_subagent` never appears in tool cards | Messaging is off: `agent.communication` is `false`, or unset with no paired machine, or this session is opted out | `/communication` shows the exact blocker; `/communication on always` turns it on globally |
 | A child finished but the parent never reacted; log says `child result not delivered: communication off` | Communication was turned off between spawn and finish | Turn it back on and ask the parent to re-run; suppressed results do not revive |
 | ``unknown agent `opencode`; none configured - add one with /acp or in acp/agents.yaml`` | No entry in `~/.theuth/acp/agents.yaml` | `/acp add opencode` or Settings › Harnesses |
 | `subagents are not available at depth 1` | A child tried to spawn; `max_depth` is 1 | Ask the parent to do the fan-out itself, or raise `agent.subagents.max_depth` and restart |

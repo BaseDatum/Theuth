@@ -28,7 +28,7 @@ import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
 import { type ProgressLine, canStart, fmtBytes, fmtMib, stateLabel } from '@/store/sandboxes'
 
 /**
- * Settings › Mesh › **Sandbox VMs** (79 §7): the preflight card, then one row per `backend: vm` record. **Add a
+ * Settings › Network › **Sandbox VMs** (79 §7): the preflight card, then one row per `backend: vm` record. **Add a
  * sandbox VM** is disabled while the host has blockers — the first one is its tooltip — so "your system does not meet
  * the requirements" is said in the button as well as the card.
  */

@@ -253,6 +253,10 @@ import type { AgentFile } from '@/rpc/bindings/AgentFile'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { HubPref } from '@/rpc/bindings/HubPref'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { NearbyEngine } from '@/rpc/bindings/NearbyEngine'
+import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
+import type { UnpairPreview } from '@/rpc/bindings/UnpairPreview'
+import type { RotationState } from '@/rpc/bindings/RotationState'
 import type { DesktopAccess } from '@/rpc/bindings/DesktopAccess'
 import type { Handoff } from '@/rpc/bindings/Handoff'
 import type { LogLine } from '@/rpc/bindings/LogLine'
@@ -711,10 +715,33 @@ export interface Api {
   mesh_pairing_string(): Promise<string>
   /** Pair with the engine behind `pairing` (67 §4.1). */
   mesh_add(pairing: string): Promise<Peer>
-  /** Leave an engine out of the mesh (67 §4.1). */
-  mesh_remove(id: string): Promise<null>
+  /** Leave an engine out of the mesh (67 §4.1); 183 D7: the remaining machines then rotate the vault key. `reset_devices` (D11, default false): also reset phone and iPad pairing. */
+  mesh_remove(id: string, reset_devices?: boolean | null): Promise<null>
   /** This engine's hub lease preference (67 §4.5). */
   mesh_set_hub(pref: HubPref): Promise<null>
+  // 183 P2: UI — Settings › Network (§6.7, §6.8, §12.6, §12.9).
+  /** 183 §6.8: engines the Nearby browse sees, not paired; empty while no window is open. */
+  mesh_nearby(): Promise<NearbyEngine[]>
+  /** 183 §6.8: open (`true`, the Network page is shown) or close the Nearby window. */
+  mesh_nearby_watch(open: boolean): Promise<null>
+  /** 183 §6.8: start a code-checked pairing with Nearby engine `id`; `MeshEvent.pair` follows it. */
+  mesh_pair_nearby(id: string): Promise<PairCeremony>
+  /** 183 §6.8: this side's Pair (`accept`) or Cancel. */
+  mesh_pair_answer(ceremony: string, accept: boolean): Promise<null>
+  /** 183 R1: keep (pair again) or drop a quarantined machine an unpaired one introduced. */
+  mesh_confirm_peer(id: string, keep: boolean): Promise<null>
+  /** 183 §6.2: the per-machine "Agents can message" switch (`mesh.messaging_off`). */
+  mesh_set_messaging(id: string, on: boolean): Promise<null>
+  /** 183 §6.7: "Let nearby machines find this one while pairing" (`mesh.nearby`). */
+  mesh_set_nearby(on: boolean): Promise<null>
+  /** 183 §6.7: rename a machine (`mesh.name` for this one, `peers.name` otherwise). */
+  mesh_rename(id: string, name: string): Promise<null>
+  /** 183 §12.9: what unpairing `id` means, for the Unpair dialog. */
+  mesh_unpair_preview(id: string): Promise<UnpairPreview>
+  /** 183 §6.9: the newest vault-key rotation; `null` before the first. */
+  vault_rotation(): Promise<RotationState | null>
+  /** 183 §6.9.12: rotate the vault key without an unpair, or retry a failed rotation. */
+  vault_rotate(): Promise<RotationState>
   // 79 §4.5 / contract §2.4: sandbox VMs. Every record the sandbox actor holds (`backend` docker|ssh|vm).
   sandboxes_list(): Promise<SandboxInfo[]>
   /** Host readiness (79 §5.1): `blockers` empty ⇒ a VM can be created now; the card renders each one as a sentence. */
@@ -1645,10 +1672,19 @@ export const METHODS = [
   'meeting_topics',
   'meeting_transcript',
   'mesh_add',
+  'mesh_confirm_peer',
+  'mesh_nearby',
+  'mesh_nearby_watch',
+  'mesh_pair_answer',
+  'mesh_pair_nearby',
   'mesh_pairing_string',
   'mesh_remove',
+  'mesh_rename',
   'mesh_set_hub',
+  'mesh_set_messaging',
+  'mesh_set_nearby',
   'mesh_status',
+  'mesh_unpair_preview',
   'nb_search',
   'new_session',
   'notebook_ask',
@@ -1846,6 +1882,8 @@ export const METHODS = [
   'usage_limits',
   'usage_limits_refresh',
   'use_skill',
+  'vault_rotate',
+  'vault_rotation',
   'vision_model',
   'voice_settings',
   'voice_status',

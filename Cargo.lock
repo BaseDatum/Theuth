@@ -12088,6 +12088,7 @@ dependencies = [
  "serde_yaml",
  "sha2 0.11.1",
  "sqlx",
+ "swarm-discovery",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -12095,6 +12096,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -18917,6 +18919,7 @@ dependencies = [
  "base64 0.23.1",
  "chacha20poly1305 0.11.0",
  "chrono",
+ "data-encoding",
  "figment",
  "kameo",
  "keyring",
@@ -18930,6 +18933,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.11.1",
  "sqlx",
  "tempfile",
  "tokio",

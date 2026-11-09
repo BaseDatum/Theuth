@@ -631,7 +631,27 @@ async fn accept_in(
             anyhow::bail!(CommError::Conflict);
         }
         let row = exchange_in(conn, &eid).await?.ok_or(CommError::NotFound)?;
-        return Ok((row.receipt()?, true));
+        let receipt = row.receipt()?;
+        // 183 §6.4 (W-15): a message whose owner was out of reach is forwarded again on a
+        // retry with the same `request_id`: back to `accepted`, not a dedup hit.
+        let unreachable = receipt.state == PeerMessageState::Failed
+            && receipt
+                .error
+                .as_deref()
+                .is_some_and(|e| e.starts_with(crate::communication::mesh::UNREACHABLE_PREFIX));
+        if unreachable {
+            sqlx::query(
+                "UPDATE peer_exchanges SET state = 'accepted', error = NULL, updated_at = ? \
+                 WHERE id = ? AND state = 'failed'",
+            )
+            .bind(now())
+            .bind(&eid)
+            .execute(&mut *conn)
+            .await?;
+            let row = exchange_in(conn, &eid).await?.ok_or(CommError::NotFound)?;
+            return Ok((row.receipt()?, false));
+        }
+        return Ok((receipt, true));
     }
 
     if !session_exists(conn, &owner.to_string()).await? {
@@ -945,6 +965,41 @@ impl Store {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// 183 §6.6: one root's `(scope, alias)` as its row says now; `None` for no such root.
+    pub async fn root_scope(
+        &self,
+        root: SessionId,
+    ) -> anyhow::Result<Option<(PeerScope, Option<String>)>> {
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT scope, alias FROM sessions WHERE id = ? AND parent IS NULL")
+                .bind(root.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        row.map(|(scope, alias)| {
+            let scope = scope
+                .parse()
+                .map_err(|_| anyhow::anyhow!("bad scope {scope:?}"))?;
+            Ok((scope, alias))
+        })
+        .transpose()
+    }
+
+    /// 183 §6.6: every `owner`-scope root whose alias is `alias` (a desk is
+    /// `<agent>@<engine>`) with its owning engine (`""`: this one), newest first. Any mesh
+    /// member writes a root's alias, so the caller keeps only the owner the `@engine` names.
+    pub async fn root_by_alias(&self, alias: &str) -> anyhow::Result<Vec<(SessionId, String)>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, owner FROM sessions WHERE parent IS NULL AND scope = 'owner' \
+             AND alias = ? ORDER BY created_at DESC, id DESC",
+        )
+        .bind(alias)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(id, owner)| Ok((id.parse().context("bad session id")?, owner)))
+            .collect()
     }
 
     /// Every root with its scope and alias, oldest first: the cross-root

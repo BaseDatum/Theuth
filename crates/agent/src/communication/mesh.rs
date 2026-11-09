@@ -55,12 +55,13 @@ impl Failure {
     /// external enum form, `last_seen` from the mesh (ms since epoch or
     /// `null`). Refused → `denied: <why>` for a policy refusal on the
     /// owner's engine (design 50: both engines must allow), else the
-    /// owner's message as it was.
-    pub async fn receipt_error(&self) -> String {
+    /// owner's message as it was. Never asks an actor (183 §6.3: it runs
+    /// beside the network leg, off the supervisor's mailbox).
+    pub fn receipt_error(&self) -> String {
         match self {
             Self::Unreachable { owner, .. } => {
                 serde_json::to_string(&FrontDoorError::OwnerUnreachable {
-                    last_seen: last_seen(owner).await,
+                    last_seen: last_seen(owner),
                     owner: owner.clone(),
                 })
                 .expect("plain struct")
@@ -83,6 +84,10 @@ enum FrontDoorError {
         last_seen: Option<u64>,
     },
 }
+
+/// The receipt's `error` for a forward that ended in `OwnerUnreachable` (183 §6.4: a retry
+/// with the same `request_id` forwards such an exchange again).
+pub const UNREACHABLE_PREFIX: &str = "{\"OwnerUnreachable\"";
 
 /// One forwarded peer message: open `theuth/rpc/1` to `owner`, write the
 /// request line, read the response line, within [`TIMEOUT`].
@@ -165,21 +170,11 @@ struct RpcError {
 }
 
 /// The mesh's last sighting of `owner` in ms since epoch; `None` when the
-/// mesh is not running or never saw it (as 68 F's `unreachable`).
-pub async fn last_seen(owner: &str) -> Option<u64> {
-    let m = kameo::actor::ActorRef::<mesh::Mesh>::lookup(mesh::MESH_ACTOR)
-        .ok()
-        .flatten()?;
-    m.ask(mesh::Status)
-        .await
-        .ok()
-        .and_then(|s| {
-            s.peers
-                .into_iter()
-                .find(|p| p.id.0 == owner)
-                .map(|p| p.last_seen_ms)
-        })
-        .filter(|&ms| ms > 0)
+/// mesh is not running or never saw it (as 68 F's `unreachable`). 183 §6.3:
+/// read from the mesh's connection bookkeeping, which peer events keep, not
+/// by asking the mesh actor.
+pub fn last_seen(owner: &str) -> Option<u64> {
+    mesh::last_seen_ms(owner)
 }
 
 /// Engine display names for `discover_peers` (69 P): `(this engine's name,
@@ -381,7 +376,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(e, Failure::Refused(_)));
-        assert!(e.receipt_error().await.starts_with("denied: send_message"));
+        assert!(e.receipt_error().starts_with("denied: send_message"));
 
         // A `-32010` from the owner (it no longer holds the session) is unreachable.
         let n = nodes(&["c", "d"]);
@@ -396,7 +391,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(e, Failure::Unreachable { .. }));
         assert_eq!(
-            e.receipt_error().await,
+            e.receipt_error(),
             r#"{"OwnerUnreachable":{"owner":"d","last_seen":null}}"#,
             "F's error data shape, no mesh → last_seen null"
         );

@@ -271,7 +271,7 @@ export class LinkTransport implements Transport {
       this.hello = JSON.parse(text.decode(session.payload)) as SessionHello
       const { engines, add } = useEngines.getState()
       const cur = engines.find((h) => h.id === this.engine.id) ?? this.engine
-      // `name` is the user's local label (Settings › Mesh); the live name
+      // `name` is the user's local label (Settings › Network); the live name
       // is `hello.name` / `info.name`, shown by the switcher. Never overwrite.
       add({ ...cur, lastSeen: Date.now() })
       this.#rejected = false

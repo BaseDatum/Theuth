@@ -90,7 +90,7 @@ memory at the same time:
 |---|---|
 | Settings › Chat › Models (desktop); `/model <id>` on Slack, Signal or Telegram outside a thread | `agent.model`, `agent.effort`, `agent.subagents.model`, `roster.theuth_model` |
 | `/aws <profile\|clear>` | `agent.aws_profile` |
-| `/communication on\|off always` | `agent.communication` |
+| `/communication on\|off always` | `agent.communication` (unset = on once a machine is paired, off otherwise; an explicit value wins) |
 | `/compact style <summary\|cut\|snap>` | `agent.compact_style` |
 | `/vision <model\|off>`, `/title <model\|off>`; desktop `/subagent <model>` | `agent.vision_model`, `agent.title_model`, `agent.subagents.model` |
 | Settings → Agent loop (desktop) | `agent.max_tool_rounds`, `agent.stream_idle_secs`, `agent.max_salvages`, `agent.escalate_model`, `agent.subagents.max_runtime_secs` |
@@ -129,7 +129,7 @@ unset.
 | `model` | `anthropic/claude-sonnet-4-5` | models.dev id `provider/model`, or a bare id resolved against configured providers. The only required key. |
 | `effort` | `null` | provider reasoning effort (`low`, `medium`, `high`, …); unset = provider default |
 | `aws_profile` | `null` | AWS profile for `amazon-bedrock/*` models; overrides ambient credentials and bearer keys |
-| `communication` | `false` | model-to-model communication: `spawn_subagent`, `discover_peers`, `send_message`. Off is a ceiling. |
+| `communication` | unset | model-to-model communication: `spawn_subagent`, `discover_peers`, `send_message`. Unset = on once this machine has a paired machine, off otherwise; `true` or `false` always wins. Off is a ceiling. |
 | `max_tool_rounds` | `32` | tool-call rounds per turn before the loop asks for a text reply |
 | `stream_idle_secs` | `120` | seconds without a stream event before a model call is abandoned |
 | `max_salvages` | `2` | interrupted-reply recoveries per turn; `0` = off |
@@ -234,6 +234,9 @@ unset.
 | `mesh.hub` | `eligible` | `prefer`, `eligible` or `never` for the hub lease |
 | `mesh.probation_secs` / `handover_secs` / `heartbeat_secs` / `lapse_secs` / `capabilities_secs` | `21600` / `600` / `10` / `30` / `300` | lease timing |
 | `mesh.workspaces` | `[]` | repo roots this engine advertises for task placement |
+| `mesh.messaging_off` | `[]` | engine ids agent messaging is refused for, both directions; the Settings › Network **Agents can message** switch |
+| `mesh.nearby` | `true` | advertise on the LAN and accept code pairing while Settings › Network is open or a pairing window is open |
+| `mesh.pair_window_secs` | `120` | how long Nearby stays open after `t mesh pair` or a shown pairing string |
 | `sandbox.enabled` | `true` | `false`: no actor, no `sandbox_*` tools, no RPC; VMs on disk untouched |
 | `sandbox.vm.enabled` / `runtime` / `home` | `true` / `microsandbox` / `""` | VM engine; `home` = `MSB_HOME`, empty = SDK default |
 | `sandbox.vm.image` | `ghcr.io/basedatum/theuth-vm` | pulled at the tag equal to this binary's version; the VM path works only when that image is published and reachable from your machine. `--local-t <path>` replaces the `t` inside the guest, not the image; `--bootstrap` boots the base image without the first-boot setup and does not yield a working guest |
@@ -248,7 +251,7 @@ unset.
 |---|---|---|
 | `schedule.enabled` | `true` | `false`: no watcher, no `schedule` tool, no prompt block |
 | `schedule.run_timeout_secs` | `1800` | a run over this is cancelled and reported `timeout`; a file's `run_timeout:` overrides it |
-| `a2a.enabled` | `false` | remote agents over A2A; also needs `agent.communication: true` |
+| `a2a.enabled` | `false` | remote agents over A2A; also needs agent messaging on (`agent.communication`) |
 | `a2a.listen` | `127.0.0.1:7780` | loopback only; restart to change |
 | `a2a.public_url` | `null` | HTTPS base your reverse proxy publishes; without it the listener is plain HTTP for loopback development |
 | `update.enabled` | `true` | silent self-update of the `t` binary: download the release tarball, verify its signature, replace `t` and its helpers on disk, live at next start; `t --update` still works when `false`. The updater handles `.tar.gz` releases only: macOS and Linux CLI installs, not the Windows CLI zip |

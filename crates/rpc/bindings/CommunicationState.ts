@@ -12,7 +12,8 @@ export type CommunicationState = {
  */
 global: boolean, 
 /**
- * Where `global` came from: `default` | `config` | `env` | `command`.
+ * Where `global` came from: `default` | `config` | `env` | `command`, and 183 §6.1's
+ * `mesh` (absent key, on because this engine has a paired peer).
  */
 source: string, 
 /**

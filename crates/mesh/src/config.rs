@@ -47,6 +47,13 @@ pub struct MeshConfig {
     /// is a storm: `mesh_status.traffic` shows it and a warning is logged
     /// (once a minute at most).
     pub storm_frames_per_sec: u64,
+    /// 183 §6.2 (W-14): engine ids this engine refuses agent messages to and from
+    /// (Settings › Network "Agents can message" off). Read, not yet enforced.
+    pub messaging_off: Vec<String>,
+    /// 183 §6.8: advertise and browse `_theuth-mesh._udp` while Settings › Network is open.
+    pub nearby: bool,
+    /// 183 §6.8: how long a Nearby pairing request waits for both Pair presses.
+    pub pair_window_secs: u64,
 }
 
 impl Default for MeshConfig {
@@ -66,6 +73,9 @@ impl Default for MeshConfig {
             class: None,
             availability_flush_secs: 600,
             storm_frames_per_sec: 50,
+            messaging_off: Vec::new(),
+            nearby: true,
+            pair_window_secs: 120,
         }
     }
 }

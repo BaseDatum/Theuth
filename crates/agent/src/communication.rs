@@ -427,7 +427,8 @@ pub struct PeerPage {
 pub struct CommunicationState {
     /// `agent.communication`, the harness-wide ceiling.
     pub global: bool,
-    /// Where `global` came from: `default` | `config` | `env` | `command`.
+    /// Where `global` came from: `default` | `config` | `env` | `command`, and 183 §6.1's
+    /// `mesh` (absent key, on because this engine has a paired peer).
     pub source: String,
     /// The session asked about; `None` = the global default alone.
     pub session: Option<SessionId>,
@@ -610,6 +611,10 @@ pub struct PeerDeliver {
     pub session: SessionId,
     /// The message.
     pub envelope: PeerEnvelope,
+    /// 183 §6.5: the engine that forwarded it (the RPC's `Forwarded(peer)`), checked
+    /// against the owner of `envelope.from` and `mesh.messaging_off`; `None` = local.
+    #[serde(default)]
+    pub forwarder: Option<String>,
 }
 
 /// Event: communication settings changed (§10). `session: None` = the global
@@ -864,6 +869,77 @@ impl fmt::Display for PolicyError {
 }
 
 impl std::error::Error for PolicyError {}
+
+/// 183 §11.4: a cross-engine refusal, naming the engine rather than a session. `Display` is
+/// the text after `denied: send_message: communication_disabled: ` (`Off`, `Messaging`) or
+/// after `failed: ` (`NotOwner`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MeshRefusal {
+    /// The owner engine's ceiling (`agent.communication`) is off.
+    Off {
+        /// Mesh name of the engine that is off.
+        engine: String,
+    },
+    /// The per-machine switch (§6.2): `on` lists the other engine in `mesh.messaging_off`.
+    Messaging {
+        /// Mesh name of the sending engine.
+        from: String,
+        /// Mesh name of the receiving engine.
+        to: String,
+        /// Mesh name of the engine whose switch is off.
+        on: String,
+    },
+    /// A forwarded `peer_deliver` from an engine that does not own `envelope.from` (§6.5).
+    NotOwner {
+        /// Mesh name of the forwarding engine.
+        engine: String,
+        /// The claimed sender.
+        from: SessionId,
+    },
+}
+
+impl fmt::Display for MeshRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Off { engine } => write!(f, "communication is off on {engine}"),
+            Self::Messaging { from, to, on } => {
+                write!(f, "agent messaging between {from} and {to} is off on {on}")
+            }
+            Self::NotOwner { engine, from } => {
+                write!(f, "peer_deliver: {engine} does not own session:{from}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MeshRefusal {}
+
+/// 183 §6.5: why the owner's `peer_deliver` intake refused. `NotOwner` is typed so the RPC
+/// layer answers it `UNAUTHORIZED` without matching its text; `Display` is the plain text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeerDeliverError {
+    /// The forwarder does not own `envelope.from`.
+    NotOwner(MeshRefusal),
+    /// Any other refusal, as text.
+    Other(String),
+}
+
+impl fmt::Display for PeerDeliverError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotOwner(r) => fmt::Display::fmt(r, f),
+            Self::Other(s) => f.write_str(s),
+        }
+    }
+}
+
+impl std::error::Error for PeerDeliverError {}
+
+impl From<String> for PeerDeliverError {
+    fn from(s: String) -> Self {
+        Self::Other(s)
+    }
+}
 
 /// An admitted route's live generation (§8). Cloned into the exchange or
 /// network operation it admits; recheck [`Self::live`] at send admission
@@ -1523,7 +1599,8 @@ mod tests {
     #[test]
     fn default_scope_is_isolated_and_default_config_is_off() {
         assert_eq!(PeerScope::default(), PeerScope::Isolated);
-        assert!(!crate::AgentConfig::default().communication);
+        // 183 §6.1: absent, so the mesh default decides.
+        assert_eq!(crate::AgentConfig::default().communication, None);
         let p = Policy::new(false, "default");
         let st = p.state(None).unwrap();
         assert!(!st.effective && !st.global && st.source == "default");

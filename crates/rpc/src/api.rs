@@ -2559,12 +2559,50 @@ pub trait Api {
     /// Pair with the engine behind `pairing`; mutual and transitive (67 §4.1).
     #[method(name = "mesh_add")]
     async fn mesh_add(&self, pairing: String) -> RpcResult<mesh::Peer>;
-    /// Leave an engine out of the mesh (67 §4.1).
+    /// Leave an engine out of the mesh (67 §4.1); 183 D7: the remaining machines then rotate
+    /// the vault key. `reset_devices` (D11, default false): also rotate `mesh/device_key`
+    /// after the vault key, so every phone and iPad re-pairs.
     #[method(name = "mesh_remove")]
-    async fn mesh_remove(&self, id: String) -> RpcResult<()>;
+    async fn mesh_remove(&self, id: String, reset_devices: Option<bool>) -> RpcResult<()>;
     /// This engine's hub lease preference (67 §4.5); written to `mesh.hub`.
     #[method(name = "mesh_set_hub")]
     async fn mesh_set_hub(&self, pref: mesh::HubPref) -> RpcResult<()>;
+    /// 183 §6.8: engines the Nearby browse sees, not paired; empty while no window is open.
+    #[method(name = "mesh_nearby")]
+    async fn mesh_nearby(&self) -> RpcResult<Vec<mesh::NearbyEngine>>;
+    /// 183 §6.8: open (`true`, Settings › Network shown) or close the Nearby window. `true` is a
+    /// 30 s lease: the open page re-sends it every 10 s and on reconnect.
+    #[method(name = "mesh_nearby_watch")]
+    async fn mesh_nearby_watch(&self, open: bool) -> RpcResult<()>;
+    /// 183 §6.8: start a code-checked pairing with Nearby engine `id`.
+    #[method(name = "mesh_pair_nearby")]
+    async fn mesh_pair_nearby(&self, id: String) -> RpcResult<mesh::PairCeremony>;
+    /// 183 §6.8: this side's Pair (`accept`) or Cancel for a ceremony.
+    #[method(name = "mesh_pair_answer")]
+    async fn mesh_pair_answer(&self, ceremony: uuid::Uuid, accept: bool) -> RpcResult<()>;
+    /// 183 §6.2 (W-14): agents on this engine and `id` may message each other (`on`), or
+    /// not; written to `mesh.messaging_off`.
+    #[method(name = "mesh_set_messaging")]
+    async fn mesh_set_messaging(&self, id: String, on: bool) -> RpcResult<()>;
+    /// 183 R1 (S1): keep (`keep`: pair it again) or drop a machine an unpaired machine
+    /// introduced (`MeshStatus.quarantined`).
+    #[method(name = "mesh_confirm_peer")]
+    async fn mesh_confirm_peer(&self, id: String, keep: bool) -> RpcResult<()>;
+    /// 183 §6.7: "Let nearby machines find this one while pairing"; written to `mesh.nearby`.
+    #[method(name = "mesh_set_nearby")]
+    async fn mesh_set_nearby(&self, on: bool) -> RpcResult<()>;
+    /// 183 §6.7: rename a machine: `mesh.name` for this engine, `peers.name` otherwise.
+    #[method(name = "mesh_rename")]
+    async fn mesh_rename(&self, id: String, name: String) -> RpcResult<()>;
+    /// 183 §12.9: what unpairing `id` means, for the Unpair dialog.
+    #[method(name = "mesh_unpair_preview")]
+    async fn mesh_unpair_preview(&self, id: String) -> RpcResult<mesh::UnpairPreview>;
+    /// 183 §6.9: the newest vault-key rotation; `null` before the first.
+    #[method(name = "vault_rotation")]
+    async fn vault_rotation(&self) -> RpcResult<Option<secrets::RotationState>>;
+    /// 183 §6.9.12: rotate the vault key without an unpair, or retry a failed rotation.
+    #[method(name = "vault_rotate")]
+    async fn vault_rotate(&self) -> RpcResult<secrets::RotationState>;
     /// Every sandbox record (docker, ssh, vm) with state, resources, shares, metrics (79 §4.5).
     #[method(name = "sandboxes_list")]
     async fn sandboxes_list(&self) -> RpcResult<Vec<sandbox::SandboxInfo>>;
@@ -3941,14 +3979,28 @@ impl ApiServer for Server {
         envelope: PeerEnvelope,
     ) -> RpcResult<PeerReceipt> {
         self.authorize(ext, session).await?;
-        if ext.get::<forward::Forwarded>().is_none() {
+        let Some(forward::Forwarded(peer)) = ext.get::<forward::Forwarded>() else {
             return Err(ErrorObjectOwned::owned(
                 UNAUTHORIZED,
                 "peer_deliver is mesh-internal",
                 None::<()>,
             ));
-        }
-        ask::<Agents, _>(agent::AGENT_ACTOR, PeerDeliver { session, envelope }).await
+        };
+        let forwarder = Some(peer.0.clone());
+        // 183 §6.5: a forwarder that does not own `envelope.from` is unauthorized.
+        lookup::<Agents>(agent::AGENT_ACTOR)?
+            .ask(PeerDeliver {
+                session,
+                envelope,
+                forwarder,
+            })
+            .await
+            .map_err(|e: SendError<PeerDeliver, _>| match e {
+                SendError::HandlerError(agent::PeerDeliverError::NotOwner(r)) => {
+                    ErrorObjectOwned::owned(UNAUTHORIZED, r.to_string(), None::<()>)
+                }
+                other => ErrorObjectOwned::owned(ASK_FAILED, other.to_string(), None::<()>),
+            })
     }
 
     async fn broadcast(
@@ -8744,12 +8796,126 @@ impl ApiServer for Server {
         send(&mesh_actor()?, mesh::AddPeer(pairing)).await
     }
 
-    async fn mesh_remove(&self, id: String) -> RpcResult<()> {
-        send(&mesh_actor()?, mesh::RemovePeer(mesh::EngineId(id))).await
+    async fn mesh_remove(&self, id: String, reset_devices: Option<bool>) -> RpcResult<()> {
+        let reset_devices = reset_devices == Some(true);
+        send(
+            &mesh_actor()?,
+            mesh::Unpair {
+                id: mesh::EngineId(id.clone()),
+                reset_devices,
+            },
+        )
+        .await?;
+        if !reset_devices {
+            return Ok(());
+        }
+        // D11: the unpair's rotation stores the new vault key with `device_reset_pending`; the
+        // device key follows, as a new `mesh/device_key` version sealed under that key, so it
+        // replicates to the remaining machines only. A crash before here is retried by the
+        // vault's own tick (183 R1).
+        let failed = |what: String| {
+            ErrorObjectOwned::owned(
+                ASK_FAILED,
+                format!("mesh_remove: unpaired, but phone and iPad pairing was not reset: {what}"),
+                None::<()>,
+            )
+        };
+        let vault = send(&secrets()?, secrets::Handle).await?;
+        match vault.rotation() {
+            Some(r) if r.phase != secrets::RotationPhase::Failed && r.removed.contains(&id) => {}
+            r => {
+                return Err(failed(
+                    r.and_then(|r| r.error)
+                        .unwrap_or_else(|| "the vault key did not rotate".into()),
+                ));
+            }
+        }
+        let reset = vault
+            .finish_device_reset()
+            .await
+            .map_err(|e| failed(format!("{e:#}")))?;
+        if reset && let Ok(l) = link() {
+            send(&l, link::ResetDevices).await?;
+        }
+        Ok(())
     }
 
     async fn mesh_set_hub(&self, pref: mesh::HubPref) -> RpcResult<()> {
         send(&mesh_actor()?, mesh::SetHubPref(pref)).await
+    }
+
+    // 183 Phase 2 (§10.1): one `ask` each; the mesh answers "not built yet" where
+    // the Nearby and rotation workers have not landed.
+
+    async fn mesh_nearby(&self) -> RpcResult<Vec<mesh::NearbyEngine>> {
+        send(&mesh_actor()?, mesh::Nearby).await
+    }
+
+    async fn mesh_nearby_watch(&self, open: bool) -> RpcResult<()> {
+        send(&mesh_actor()?, mesh::NearbyWatch(open)).await
+    }
+
+    async fn mesh_pair_nearby(&self, id: String) -> RpcResult<mesh::PairCeremony> {
+        send(&mesh_actor()?, mesh::PairNearby(mesh::EngineId(id))).await
+    }
+
+    async fn mesh_pair_answer(&self, ceremony: uuid::Uuid, accept: bool) -> RpcResult<()> {
+        send(&mesh_actor()?, mesh::PairAnswer { ceremony, accept }).await
+    }
+
+    async fn mesh_confirm_peer(&self, id: String, keep: bool) -> RpcResult<()> {
+        send(
+            &mesh_actor()?,
+            mesh::ConfirmPeer {
+                id: mesh::EngineId(id),
+                keep,
+            },
+        )
+        .await
+    }
+
+    async fn mesh_set_messaging(&self, id: String, on: bool) -> RpcResult<()> {
+        send(
+            &mesh_actor()?,
+            mesh::SetMessaging {
+                id: mesh::EngineId(id),
+                on,
+            },
+        )
+        .await
+    }
+
+    async fn mesh_set_nearby(&self, on: bool) -> RpcResult<()> {
+        send(&mesh_actor()?, mesh::SetNearby(on)).await
+    }
+
+    async fn mesh_rename(&self, id: String, name: String) -> RpcResult<()> {
+        send(
+            &mesh_actor()?,
+            mesh::Rename {
+                id: mesh::EngineId(id),
+                name,
+            },
+        )
+        .await
+    }
+
+    async fn mesh_unpair_preview(&self, id: String) -> RpcResult<mesh::UnpairPreview> {
+        let mut p = send(&mesh_actor()?, mesh::PreviewUnpair(mesh::EngineId(id))).await?;
+        // W-37: the paired phones and iPads; none when link is not running here.
+        if let Ok(l) = link() {
+            let devices = send(&l, link::DevicesList).await?;
+            p.devices = u32::try_from(devices.iter().filter(|d| !d.revoked).count()).unwrap_or(0);
+        }
+        Ok(p)
+    }
+
+    async fn vault_rotation(&self) -> RpcResult<Option<secrets::RotationState>> {
+        send(&secrets()?, secrets::GetRotation).await
+    }
+
+    async fn vault_rotate(&self) -> RpcResult<secrets::RotationState> {
+        send(&mesh_actor()?, mesh::RotateVault).await
     }
 
     // 79: sandbox VMs. Each method is one `ask` to the `SandboxActor` (crates/sandbox/src/actor.rs).

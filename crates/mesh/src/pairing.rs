@@ -36,6 +36,9 @@ pub struct Payload {
     /// is not running on the inviter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault_key: Option<String>,
+    /// 183 §6.9.9: the id of `vault_key` (`secrets::KeyInfo::id`); absent from a pre-183 engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_key_id: Option<String>,
 }
 
 impl Payload {
@@ -246,10 +249,17 @@ mod tests {
             addrs: vec![TransportAddr::Ip("192.168.1.5:11204".parse().unwrap())],
             token: Pending::fresh().token,
             vault_key: Some(BASE32_NOPAD.encode(&[9u8; 32])),
+            vault_key_id: Some("0123456789abcdef".into()),
         };
         let s = build(&p);
         assert!(s.starts_with("1."), "{s}");
         assert_eq!(parse(&s).unwrap(), p);
+        // A pre-183 string (the key absent: `None` is never serialized) still parses.
+        let old = Payload {
+            vault_key_id: None,
+            ..p.clone()
+        };
+        assert_eq!(parse(&build(&old)).unwrap(), old);
         assert_eq!(
             parse(&format!("  {}  ", s.to_ascii_lowercase())).unwrap(),
             p

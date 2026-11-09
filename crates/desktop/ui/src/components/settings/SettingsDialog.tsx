@@ -49,7 +49,7 @@ import { Memory } from '@/components/settings/Memory'
 import { Mcp, ready as mcpReady } from '@/components/settings/Mcp'
 import { Meetings } from '@/components/settings/Meetings'
 import { Search } from '@/components/settings/Search'
-import { Mesh } from '@/components/settings/Mesh'
+import { Network } from '@/components/settings/Network'
 import { Shortcuts } from '@/components/settings/Shortcuts'
 import { VoiceKey } from '@/components/settings/VoiceKey'
 import { Voice } from '@/components/settings/Voice'
@@ -76,7 +76,7 @@ const TABS = [
   ['labs', 'Labs', FlaskConical],
   ['double', 'Double', UserRoundCheck],
   ['agents', 'Harnesses', Bot],
-  ['mesh', 'Mesh', Share2],
+  ['network', 'Network', Share2],
   ['link', 'Link', Link2],
   ['connections', 'Connections', KeyRound],
   ['channels', 'Channels', MessageSquare],
@@ -126,7 +126,7 @@ function Pane({ tab, session, peer, focus, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'labs' && <Labs />}
       {tab === 'double' && <Double />}
       {tab === 'agents' && <Agents />}
-      {tab === 'mesh' && <Mesh />}
+      {tab === 'network' && <Network />}
       {tab === 'link' && <Link />}
       {tab === 'connections' && <Connections />}
       {tab === 'channels' && <Channels />}

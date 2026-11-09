@@ -230,8 +230,12 @@ fn quoted(s: &str) -> Option<(String, &str)> {
 /// non-empty body line of its first user input, leading markers stripped;
 /// when the input is markers only, the first attachment's title. Never a
 /// marker's syntax, nor Slack's leading `[slack dm]` / `[slack channel]`
-/// line for the model (110 §7.1, 172). `None` when there is nothing to name by.
+/// line for the model (110 §7.1, 172), nor a peer message's wrapper (183 R2:
+/// [`peer_message_title`]). `None` when there is nothing to name by.
 pub fn first_line(text: &str) -> Option<String> {
+    if let Some(t) = peer_message_title(text, None) {
+        return Some(t);
+    }
     let p = parse(text);
     let mut lines = p
         .body
@@ -245,6 +249,36 @@ pub fn first_line(text: &str) -> Option<String> {
             .into_iter()
             .map(|r| r.title)
             .find(|t| !t.trim().is_empty())
+    })
+}
+
+/// 183 R2: the `from` of an input that is a peer message (`<message from="…" …>`, after
+/// any `<time/>` line), as delivered (`session:<uuid>`, `peer:<name>`, `parent`, …).
+pub fn peer_message_from(text: &str) -> Option<&str> {
+    let t = crate::clock::strip(text).trim_start();
+    let rest = t.strip_prefix("<message from=\"")?;
+    // A stored seed may be cut inside the attribute.
+    Some(rest.split_once('"').map_or(rest, |(from, _)| from))
+}
+
+/// 183 R2: a peer message names its chat `Message from <who>: <first body line>`, never by
+/// its wrapper. `who`: `name` (the caller resolved `from`), else a `peer:<name>`'s name,
+/// else "another agent". A title cut before the body (an old stored seed) still reads
+/// `Message from <who>`.
+pub fn peer_message_title(text: &str, name: Option<&str>) -> Option<String> {
+    let from = peer_message_from(text)?;
+    let who = name
+        .map(str::to_owned)
+        .or_else(|| from.strip_prefix("peer:").map(str::to_owned))
+        .filter(|w| !w.trim().is_empty())
+        .unwrap_or_else(|| "another agent".to_owned());
+    let body = crate::clock::strip(text)
+        .split_once('>')
+        .map(|(_, b)| b.split("</message>").next().unwrap_or(""))
+        .unwrap_or("");
+    Some(match body.lines().map(str::trim).find(|l| !l.is_empty()) {
+        Some(first) => format!("Message from {who}: {first}"),
+        None => format!("Message from {who}"),
     })
 }
 
@@ -269,7 +303,9 @@ pub fn session_title(
 ) -> String {
     let title = title.trim();
     if !title.is_empty() {
-        return title.to_owned();
+        // A title seeded from a peer message's wrapper before 183 R2.
+        return peer_message_title(title, None)
+            .map_or_else(|| title.to_owned(), |t| seed_title(&t));
     }
     if let Some(line) = first_line.map(str::trim).filter(|l| !l.is_empty()) {
         return seed_title(line);
@@ -421,6 +457,39 @@ mod tests {
         assert_eq!(
             session_title("", None, Some(created)),
             format!("Untitled chat · {day}")
+        );
+    }
+
+    /// 183 R2: a chat opened by a peer-delivered first message (the `peer_wrapper` shape,
+    /// after the `<time/>` line) is named for its sender and body, never by the wrapper; a
+    /// title seeded from the wrapper before R2 (cut at 60 chars) still reads cleanly.
+    #[test]
+    fn a_peer_message_names_its_chat_without_the_wrapper() {
+        let input = "<time now=\"2026-11-09 01:55 +00:00 (Mon)\"/>\n<message from=\"session:01a1be05-ccc8-737a-bd90-33d944959adf\" id=\"01a1be05-d5e5-7775-a2c6-bc1ee1239f78\" reply_expected=\"true\" at=\"01:55\">\nP2 ping from A\nsecond line\n</message>";
+        assert_eq!(
+            first_line(input).as_deref(),
+            Some("Message from another agent: P2 ping from A")
+        );
+        assert_eq!(
+            peer_message_title(input, Some("ops")).as_deref(),
+            Some("Message from ops: P2 ping from A")
+        );
+        let peer = "<message from=\"peer:xeus\" id=\"x\">\nhello\n</message>";
+        assert_eq!(
+            first_line(peer).as_deref(),
+            Some("Message from xeus: hello")
+        );
+        let old = seed_title(
+            "<message from=\"session:01a1be05-ccc8-737a-bd90-33d944959adf\" id=\"01a1\">",
+        );
+        assert_eq!(
+            session_title(&old, None, None),
+            "Message from another agent"
+        );
+        assert!(!session_title(&old, None, None).contains('<'));
+        assert_eq!(
+            first_line("plain question").as_deref(),
+            Some("plain question")
         );
     }
 }

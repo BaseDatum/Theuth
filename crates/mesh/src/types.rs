@@ -172,6 +172,10 @@ pub struct PairCeremony {
     pub name: String,
     /// Its display OS.
     pub os_name: String,
+    /// Where the other engine is: the advert's address (dialer) or the connection's remote
+    /// address (acceptor); `""` when unknown.
+    #[serde(default)]
+    pub addr: String,
     /// The 6-digit check code, shown `482 913`.
     pub code: String,
     /// `waiting` | `accepted` | `paired` | `rejected` | `expired`.
@@ -339,4 +343,62 @@ pub struct MeshStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub relay: Option<RelayState>,
+    /// 183 §6.2 (W-14): `mesh.messaging_off`, the machines this engine refuses agent messages
+    /// with (Settings › Network "Agents can message" off).
+    #[serde(default)]
+    pub messaging_off: Vec<EngineId>,
+    /// 183 §6.8: `mesh.nearby` (the "Let nearby machines find this one while pairing" switch).
+    #[serde(default = "yes")]
+    pub nearby: bool,
+    /// 183 R1 (S1): machines an unpaired machine introduced after its unpair, not paired here
+    /// until a user confirms (`mesh_confirm_peer`).
+    #[serde(default)]
+    pub quarantined: Vec<QuarantinedPeer>,
+}
+
+/// 183 R1 (S1), R4: a peer row a since-unpaired engine introduced, held back on this engine until confirmed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct QuarantinedPeer {
+    /// The machine.
+    pub id: EngineId,
+    /// Its display name.
+    pub name: String,
+    /// The unpaired engine that introduced it.
+    pub added_by: EngineId,
+    /// That engine's display name.
+    pub added_by_name: String,
+}
+
+/// Serde default `true`.
+fn yes() -> bool {
+    true
+}
+
+/// 183 §14.7 (D7, §12.9): what the Unpair dialog shows before anything happens
+/// (`mesh_unpair_preview`).
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct UnpairPreview {
+    /// The machine to unpair.
+    pub id: EngineId,
+    /// Its display name.
+    pub name: String,
+    /// Connected now.
+    pub connected: bool,
+    /// Last time this engine heard from it (ms since epoch; 0 = never).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub last_seen_ms: u64,
+    /// User secret names it had (W-36): replace these at their providers.
+    pub secrets: Vec<String>,
+    /// `oauth/<ns>` namespaces it had, shown "Sign in again".
+    pub sign_ins: Vec<String>,
+    /// Remaining machines not connected now: they get the new key when they reconnect.
+    pub offline: Vec<String>,
+    /// Remaining machines that never sent `KeyEpoch` (a pre-183 build, §6.9.10).
+    pub old_build: Vec<String>,
+    /// Paired phones and iPads (the W-37 line and the D11 checkbox).
+    pub devices: u32,
 }

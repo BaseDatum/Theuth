@@ -4165,6 +4165,55 @@ mod tests {
         drop(store);
     }
 
+    /// 183 R2 (item 3): [`SESSIONS_WIRE_SCHEMA`] names the columns of the tables the session
+    /// log replicates (`capture::ATTACHED`). A migration that adds, drops or renames one of
+    /// them fails this until the constant is bumped to that migration and the snapshot is
+    /// taken again, in the same change (the bump rule on the constant).
+    #[tokio::test]
+    async fn sessions_wire_schema_tracks_the_replicated_columns() {
+        const SNAPSHOT: (u32, &str) = (
+            53,
+            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication
+messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved
+epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
+todo_snapshots: session_id,at_seq,k,source,items
+errors: id,session_id,at_seq,text
+inner_calls: session_id,parent_id,n,at_seq,name,args,output,is_error,files,at
+reminders: id,session,message,set_at,fires_at,seconds
+model_calls: call_id,owner_id,request_id,attempt,turn_id,kind,status,provider,requested_model,served_model,provider_request_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,context_tokens,returned_nanos,returned_currency,returned_source,estimated_nanos,estimated_currency,estimate_source,unknown_reason,coverage,source_metadata,created_at,dispatched_at,settled_at
+remote_meters: id,owner_id,origin,external_session,epoch,source,currency,baseline_nanos,high_water_nanos,attributed_nanos,baseline_kind,scope,coverage,coverage_boundary,last_report_id,source_metadata,updated_at
+turn_steps: session_id,turn_id,n,kind,at_seq,call_id,payload,at
+tool_calls: session_id,call_id,turn_id,at_seq,name,args,risk,state,attempt,started_at,finished_at,output,is_error,files
+questions: id,session_id,tool_call_id,kind,payload,state,asked_at,deadline,answered_at,answer,answered_by
+waits: session_id,tool_call_id,kind,target,deadline,payload
+jobs: session_id,id,kind,call_id,command,name,pgid,log,started_ms,state,exit,settled_ms,engine
+pty_screens: session_id,job_id,revision,rows,cols,cursor_row,cursor_col,text,at_ms
+resume_reports: session_id,turn_id,kind,interrupted_at,at,replayed,interrupted,lost_jobs,children_restored,children_handed_off,cause
+session_advisors: session,advisor,model,effort,cursor,state,updated_at
+endless_units: session_id,i,seq,part,kind,size,turn
+endless_nodes: session_id,l,i,text,size,free,model,tries,created_at,mechanical
+endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,latency_ms,created_at",
+        );
+        let (store, _id, _dir) = fresh().await;
+        let mut tables = Vec::new();
+        for (table, _) in capture::ATTACHED {
+            let cols: Vec<String> =
+                sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+                    .bind(table)
+                    .fetch_all(&store.read)
+                    .await
+                    .unwrap();
+            tables.push(format!("{table}: {}", cols.join(",")));
+        }
+        let got = tables.join("\n");
+        assert_eq!(
+            (SESSIONS_WIRE_SCHEMA, got.as_str()),
+            SNAPSHOT,
+            "a replicated session table changed its columns: bump SESSIONS_WIRE_SCHEMA to the \
+             migration that did it and take the snapshot again"
+        );
+    }
+
     /// 183 §9.1: 0053's per-session settings start NULL (inherit) and accept
     /// only the tri-state values; `messages.moved` starts NULL.
     #[tokio::test]

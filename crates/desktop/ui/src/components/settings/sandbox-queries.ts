@@ -1,4 +1,4 @@
-// Settings › Mesh › Sandbox VMs: the queries the section reads, the mutations its rows call (every one through
+// Settings › Network › Sandbox VMs: the queries the section reads, the mutations its rows call (every one through
 // `useAction`), and the `?sim=sandbox-blocked` / `?sim=sandbox-ok` fixtures that let the preflight card be reviewed
 // without a runtime (the repo's `?sim=` idiom, `lib/talk-sim.ts`; the general `?mock=1` switch is 67's).
 

@@ -30,6 +30,8 @@ pub struct Row {
     pub source: String,
     /// Unix ms of the write.
     pub updated_ms: u64,
+    /// 183 §6.9.4: the id of the mesh key that sealed `ciphertext`; `''` = the legacy key.
+    pub key_id: String,
 }
 
 /// Open or create the file and run the migrations (WAL, 4 connections, 5 s busy).
@@ -72,7 +74,7 @@ pub fn id(name: &str, version: u32) -> String {
 /// Every row, by name then newest version first, and the current pointer per name.
 pub async fn rows(pool: &SqlitePool) -> anyhow::Result<(Vec<Row>, HashMap<String, u32>)> {
     let rows = sqlx::query(
-        "SELECT name, version, ciphertext, note, source, updated_ms FROM vault ORDER BY name, version DESC",
+        "SELECT name, version, ciphertext, note, source, updated_ms, key_id FROM vault ORDER BY name, version DESC",
     )
     .fetch_all(pool)
     .await?
@@ -84,6 +86,7 @@ pub async fn rows(pool: &SqlitePool) -> anyhow::Result<(Vec<Row>, HashMap<String
         note: r.get("note"),
         source: r.get("source"),
         updated_ms: r.get::<i64, _>("updated_ms") as u64,
+        key_id: r.get("key_id"),
     })
     .collect();
     let current = sqlx::query("SELECT name, version FROM vault_current")
@@ -137,5 +140,22 @@ mod tests {
             let (rows, _) = rows(&pool).await.unwrap();
             assert!(rows.is_empty());
         }
+    }
+
+    /// 183 §9.5: a row written without `key_id` (every pre-183 row, and every row a pre-183
+    /// peer replicates) reads back as `''`, the legacy key.
+    #[tokio::test]
+    async fn a_row_without_key_id_reads_as_the_legacy_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = open(&dir.path().join(DB)).await.unwrap();
+        sqlx::query(
+            "INSERT INTO vault (id, name, version, ciphertext, note, source, updated_ms) \
+             VALUES ('gh#1', 'gh', 1, x'00', '', 'user', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (rows, _) = rows(&pool).await.unwrap();
+        assert_eq!(rows[0].key_id, "");
     }
 }

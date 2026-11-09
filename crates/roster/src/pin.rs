@@ -136,6 +136,9 @@ mod tests {
             replica: None,
             stats: vec![],
             relay: None,
+            messaging_off: vec![],
+            nearby: true,
+            quarantined: vec![],
         }
     }
 

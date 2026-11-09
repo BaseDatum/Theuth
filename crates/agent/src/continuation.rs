@@ -313,14 +313,16 @@ impl Ledger {
     /// 50 §8: admit an automatic input into `to` that continues the chain of
     /// `from` (a peer message or child result; `from: None` for a remote
     /// sender). The recipient's chain becomes the longer of its own and the
-    /// inherited one, plus this link, when the input is consumed.
+    /// inherited one, plus this link, when the input is consumed. `carried`:
+    /// the count another engine's sender sent with it (183 §6.5; 0 locally).
     pub fn admit_chained(
         &mut self,
         to: SessionId,
         input: Option<InputId>,
         from: Option<SessionId>,
+        carried: u32,
     ) -> InputTicket {
-        let inherited = from.map_or(0, |f| self.chain(f));
+        let inherited = from.map_or(0, |f| self.chain(f)).max(carried);
         self.admit_with(to, InputOrigin::Automatic, input, inherited)
     }
 
@@ -385,15 +387,21 @@ impl Ledger {
     /// 50 §8: an automatic input from `from` into `to` would exceed
     /// [`crate::communication::CHAIN_MAX`] links; the supervisor refuses it
     /// visibly instead of admitting it. `from: None` is a non-session sender
-    /// (remote peer), which contributes no chain of its own.
-    pub fn chain_exhausted_for(&self, from: Option<SessionId>, to: SessionId) -> bool {
-        let inherited = from.map_or(0, |f| self.chain(f));
+    /// (remote peer), which contributes no chain of its own; `carried` is the
+    /// count a sender on another engine sent (183 §6.5).
+    pub fn chain_exhausted_for(
+        &self,
+        from: Option<SessionId>,
+        to: SessionId,
+        carried: u32,
+    ) -> bool {
+        let inherited = from.map_or(0, |f| self.chain(f)).max(carried);
         inherited.max(self.chain(to)) >= crate::communication::CHAIN_MAX
     }
 
     /// [`Self::chain_exhausted_for`] for a session's own continuation.
     pub fn chain_exhausted(&self, session: SessionId) -> bool {
-        self.chain_exhausted_for(None, session)
+        self.chain_exhausted_for(None, session, 0)
     }
 
     /// The model turn owning `session`'s state, or still delivering its result.
@@ -1105,7 +1113,7 @@ mod tests {
         l.register(b, None, false);
         let t = TurnId::new();
         let relay = |l: &mut Ledger, from: SessionId, to: SessionId| {
-            let ticket = l.admit_chained(to, None, Some(from));
+            let ticket = l.admit_chained(to, None, Some(from), 0);
             l.consumed(InputConsumed {
                 session: to,
                 id: ticket.id,
@@ -1124,13 +1132,15 @@ mod tests {
         assert_eq!(l.chain(a), max - 2);
         relay(&mut l, a, b);
         assert_eq!(l.chain(b), max - 1);
-        assert!(!l.chain_exhausted_for(Some(b), a));
+        assert!(!l.chain_exhausted_for(Some(b), a, 0));
         // b answers a: a is now at the bound; nothing more may be relayed either way.
         relay(&mut l, b, a);
         assert_eq!(l.chain(a), max);
-        assert!(l.chain_exhausted_for(Some(a), b) && l.chain_exhausted_for(Some(b), a));
+        assert!(l.chain_exhausted_for(Some(a), b, 0) && l.chain_exhausted_for(Some(b), a, 0));
         // A remote sender contributes nothing, but the exhausted recipient still refuses.
-        assert!(l.chain_exhausted_for(None, a) && !l.chain_exhausted_for(None, b));
+        assert!(l.chain_exhausted_for(None, a, 0) && !l.chain_exhausted_for(None, b, 0));
+        // 183 §6.5: unless it carries its own engine's count.
+        assert!(l.chain_exhausted_for(None, b, max));
         // A human input in a resets a alone; b keeps its inherited depth.
         let fresh = l.admit(a, InputOrigin::External, None);
         l.consumed(InputConsumed {
@@ -1139,7 +1149,7 @@ mod tests {
             turn: t,
         });
         assert_eq!((l.chain(a), l.chain(b)), (0, max - 1));
-        assert!(!l.chain_exhausted_for(Some(a), b));
+        assert!(!l.chain_exhausted_for(Some(a), b, 0));
     }
 
     /// The read API the network state binds request scopes with: the owning

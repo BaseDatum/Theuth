@@ -871,12 +871,19 @@ async fn sandbox_create(
     anyhow::bail!("the engine closed the event stream before {name} was ready")
 }
 
+/// 183 §6.1: the `communication:` line first runs before 183 wrote. A config still holding it
+/// byte for byte gets [`COMMUNICATION_LINE`] instead, once, so an untouched config takes the
+/// mesh default; any edited value is the user's and stays.
+const OLD_COMMUNICATION_LINE: &str = "  communication: false       # model-to-model communication (design doc 50): spawn_subagent, discover_peers, send_message.";
+/// What [`DEFAULT_CONFIG`] writes now (commented out: absent = on in a mesh, else off).
+const COMMUNICATION_LINE: &str = "  # communication: false     # model-to-model communication (design doc 50): spawn_subagent, discover_peers, send_message. Unset: on once this machine is paired into a mesh (183), else off.";
+
 const DEFAULT_CONFIG: &str = "# theuth configuration. Every plugin reads its own section.
 # Env overrides: THEUTH_<SECTION>__<KEY>, e.g. THEUTH_RPC__LISTEN=127.0.0.1:7799
 
 agent:
   model: anthropic/claude-sonnet-4-5
-  communication: false       # model-to-model communication (design doc 50): spawn_subagent, discover_peers, send_message.
+  # communication: false     # model-to-model communication (design doc 50): spawn_subagent, discover_peers, send_message. Unset: on once this machine is paired into a mesh (183), else off.
                              # Off is a ceiling no session can override; `/communication on always` writes true here.
                              # `/communication off` in a session is memory-only and ends with the process.
   # title_model: anthropic/claude-haiku-4-5   # names sessions in the history list (07 §15); default: the session's model
@@ -1354,6 +1361,11 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     }
     if !config_path.exists() {
         std::fs::write(config_path, DEFAULT_CONFIG)?;
+    } else if let Err(e) = upgrade_communication_line(config_path) {
+        tracing::warn!(
+            "{}: agent.communication line not upgraded: {e}",
+            config_path.display()
+        );
     }
     let prompt = data_dir.join("prompt.md");
     if !prompt.exists() {
@@ -1363,6 +1375,33 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// 183 §6.1: rewrite [`OLD_COMMUNICATION_LINE`] to [`COMMUNICATION_LINE`] (atomic replace);
+/// `false` when the file holds no such line (already upgraded, or the user's own value).
+fn upgrade_communication_line(config_path: &Path) -> std::io::Result<bool> {
+    let text = std::fs::read_to_string(config_path)?;
+    if !text.lines().any(|l| l == OLD_COMMUNICATION_LINE) {
+        return Ok(false);
+    }
+    let mut out: String = text
+        .lines()
+        .map(|l| {
+            if l == OLD_COMMUNICATION_LINE {
+                COMMUNICATION_LINE
+            } else {
+                l
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    let tmp = config_path.with_extension(format!("yaml.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, out)?;
+    std::fs::rename(&tmp, config_path)?;
+    Ok(true)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -2173,5 +2212,38 @@ async fn cells_before_update(data_dir: &Path, stop_cells: bool) -> anyhow::Resul
             "cancel" | "c" | "" => return Ok(false),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 183 §6.1: first runs write the line commented out; an upgrade rewrites only the old
+    /// template line, once, and leaves every edited value and every other line alone.
+    #[test]
+    fn the_template_upgrade_comments_out_only_the_untouched_line() {
+        assert!(DEFAULT_CONFIG.lines().any(|l| l == COMMUNICATION_LINE));
+        assert!(!DEFAULT_CONFIG.lines().any(|l| l == OLD_COMMUNICATION_LINE));
+        let dir = std::env::temp_dir().join(format!("rs183-upgrade-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        let old = format!("agent:\n  model: m\n{OLD_COMMUNICATION_LINE}\n# tail\n");
+        std::fs::write(&path, &old).unwrap();
+        assert!(upgrade_communication_line(&path).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("agent:\n  model: m\n{COMMUNICATION_LINE}\n# tail\n")
+        );
+        assert!(!upgrade_communication_line(&path).unwrap(), "once");
+        for mine in [
+            "agent:\n  communication: false\n",
+            "agent:\n  communication: true       # model-to-model communication (design doc 50): spawn_subagent, discover_peers, send_message.\n",
+        ] {
+            std::fs::write(&path, mine).unwrap();
+            assert!(!upgrade_communication_line(&path).unwrap());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1,6 +1,7 @@
 import { type QueryClient, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import type { Api } from '@/rpc/api'
+import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
@@ -11,6 +12,10 @@ import { isPopout, openPopout } from '@/lib/popout'
 import { applySandboxEvent } from '@/store/sandboxes'
 import { endlessFixture } from '@/dev/endless-fixture'
 import { localFixture } from '@/dev/local-fixture'
+
+/** Records `c` in the `meshPair` map under its id: a second ceremony never replaces an open one's. */
+export const putPair = (qc: QueryClient, c: PairCeremony) =>
+  qc.setQueryData<Record<string, PairCeremony>>(queryKeys.meshPair, (m) => ({ ...m, [c.id]: c }))
 
 /** The connected `Api`. Routes render only once connected, so a missing client is a bug. In dev the 137 and 177 fixtures may answer the endless and local-server methods (`dev/endless-fixture.ts`, `dev/local-fixture.ts`). */
 export function useApi(): Api {
@@ -26,7 +31,13 @@ export const queryKeys = {
   session: (id: string) => ['session', id] as const,
   /** `session_orphans(id)` (68 §4.3); dropped on `SessionOwnerChanged`. */
   sessionOrphans: (id: string) => ['session-orphans', id] as const,
-  /** `sessions_status()` (68 §10): Settings → Mesh → Sessions. */
+  /** 183 §6.8: `mesh_nearby()`, patched in place by `MeshEvent.nearby`; under `mesh` so a peer change refetches it. */
+  meshNearby: ['mesh', 'nearby'] as const,
+  /** 183 §6.8: every `PairCeremony` by id, from `mesh_pair_nearby` and each `MeshEvent.pair` (no fetch of its own). */
+  meshPair: ['mesh-pair'] as const,
+  /** 183 §12.9: `vault_rotation()`, patched in place by `SecretsRotation`. */
+  vaultRotation: ['vault-rotation'] as const,
+  /** `sessions_status()` (68 §10): Settings → Network → Advanced → Sessions. */
   sessionsStatus: ['sessions-status'] as const,
   /** `list_project_styles()` (51 §3 as-built); the style dialog invalidates it after `set_project_style`. */
   projectStyles: ['project-styles'] as const,
@@ -327,9 +338,16 @@ export function useInvalidateOn(): void {
       on('OpenDesktop', (e) => {
         if (!isPopout()) void openPopout({ kind: 'vm', name: e.name })
       }),
-      // 67 §4, bridged since 79: the Mesh page's peers and lease follow the bus instead of the poll alone.
+      // 67 §4, bridged since 79: the Network page's peers and lease follow the bus instead of the poll alone.
       on('peer', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
       on('lease', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
+      // 183 §6.8 / §12.9: Settings › Network's Nearby list, pair dialog and rotation banner carry the whole state.
+      on('nearby', (e) => qc.setQueryData(queryKeys.meshNearby, e.data)),
+      on('pair', (e) => {
+        putPair(qc, e.data)
+        if (e.data.state === 'paired') void qc.invalidateQueries({ queryKey: ['mesh'] })
+      }),
+      on('SecretsRotation', ({ type: _, ...state }) => qc.setQueryData(queryKeys.vaultRotation, state)),
       on('EndlessProgress', (e) => applyEndlessProgress(qc, e)),
     ]
     return () => {

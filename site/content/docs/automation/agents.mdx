@@ -8,7 +8,7 @@ An agent is a standing role on your roster: a name, a title, a charter, a manage
 ## Prerequisites
 
 - theuth running — the desktop app, `t` in a terminal, or a `t --headless` daemon. The roster is always on; there is no switch to enable it.
-- Desks do their work in child sessions via `spawn_subagent`, which exists only when `agent.communication: true` is set in `config.yaml` (default `false`; `/communication on always` in the terminal UI, or Settings › Communication). Without it an agent can still be hired, but its desk cannot delegate work.
+- Desks do their work in child sessions via `spawn_subagent`, which exists only while agent messaging is on: `agent.communication` unset means on once a machine is paired in a [mesh](/docs/automation/mesh) and off otherwise; an explicit `true` or `false` in `config.yaml` always wins (`/communication on always` in the terminal UI, or Settings › Communication). Without it an agent can still be hired, but its desk cannot delegate work.
 - At least one model provider configured — see [Models and providers](/docs/getting-started/models). An agent's `model:` must be a catalog id for a configured provider.
 - Each machine runs its own agents' desks. In a [mesh](/docs/automation/mesh) an agent file lives on the machine whose `~/.theuth/agents/` holds it, and theuth is on every machine; a task is worked only by the desks of its **home** machine (see [Tasks › Machines](/docs/automation/tasks#machines)). Every machine in the mesh must run the same theuth version: an older one still dispatches every task to its own desks.
 - Hiring and removing need no special permission: the Hire / Approve / Remove buttons are the consent. Tool calls made at a desk follow the ordinary permission model — see [Tools and permissions](/docs/reference/tools-permissions).
@@ -250,7 +250,7 @@ Lifecycle: **draft card** → (Hire) **active** ⇄ **paused** → (Remove) **de
 | `agent <n> exists; pick another name or create a task for it` | A desk proposed a name already in use | Choose another name, or assign the existing agent a task |
 | Task set `blocked: no continuation` | The desk ended two turns without moving its task, or its episode closed mid-task | The manager was woken; **Unblock** on the task detail re-queues it |
 | `agents/theuth.md` ignored (warning in the log) | `theuth` is reserved | Edit `~/.theuth/prompt.md` for theuth's charter |
-| Desk opens but never delegates | `agent.communication` is `false`, so `spawn_subagent` is missing | `/communication on always`, or Settings › Communication |
+| Desk opens but never delegates | Messaging is off: no machine is paired and `agent.communication` is unset, or it is explicitly `false`, so `spawn_subagent` is missing | `/communication on always`, or Settings › Communication |
 | Effort set on the agent has no visible effect | `effort:` is stored but not applied as of this writing | Set effort in the child session's model picker, or in `agent.effort` globally |
 
 ## Related

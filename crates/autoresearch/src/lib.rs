@@ -341,7 +341,11 @@ impl runtime::Plugin for AutoresearchPlugin {
             Ok(false) => {}
             Err(e) => tracing::warn!("autoresearch: {SKILL_PATH} not written: {e}"),
         }
-        let agent = config::AgentDefaults::from_runtime(rt);
+        let paired = match mesh::paired_count() {
+            Some(n) => n > 0,
+            None => mesh::has_stored_peers(&rt.data_dir).await,
+        };
+        let agent = config::AgentDefaults::from_runtime(rt, paired);
         // R-117: without the actor the tools would only answer "not running"; register nothing.
         if let Err(e) = start(rt, cfg.clone(), agent.clone()).await {
             tracing::warn!(

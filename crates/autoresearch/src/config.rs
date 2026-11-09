@@ -383,7 +383,9 @@ impl AgentDefaults {
     /// dreaming does for the same R1-D5 defaults; the `agent` actor exposes no
     /// query for its model roles, and a live change of `agent.model` reaches
     /// the next study through a restart.
-    pub fn from_runtime(rt: &runtime::Runtime) -> Self {
+    /// `paired`: this engine has a paired machine, which turns an absent
+    /// `agent.communication` on (183 §6.1, D6).
+    pub fn from_runtime(rt: &runtime::Runtime, paired: bool) -> Self {
         let a: agent::AgentConfig = rt.section("agent").unwrap_or_default();
         let others = [
             a.subagents.model.clone(),
@@ -398,7 +400,7 @@ impl AgentDefaults {
         Self {
             model: a.model,
             others,
-            communication: a.communication,
+            communication: a.communication.unwrap_or(paired),
         }
     }
 }

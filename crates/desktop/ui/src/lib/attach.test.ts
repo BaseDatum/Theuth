@@ -5,7 +5,7 @@ import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
 import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
 import type { Meta } from '@/rpc/bindings/Meta'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import { type AttachRef, atTrigger, compose, marker, parse, size, subtitle, title, toRef } from './attach'
+import { type AttachRef, atTrigger, chatName, cleanTitle, compose, marker, parse, size, subtitle, title, toRef } from './attach'
 // One grammar, one fixture (66 §3.3): the same file drives `agent::attach::tests`.
 import fixtures from '../../../../agent/tests/fixtures/attach_markers.json'
 
@@ -213,4 +213,12 @@ test('@ trigger: word boundary only', () => {
   // The caret decides: before the `@` there is no trigger.
   expect(atTrigger('@gro', 0)).toBeNull()
   expect(atTrigger('line one\n@x', 11)).toEqual({ start: 9, word: 'x' })
+})
+
+test('183 R2: a chat seeded from a peer message never shows the wrapper', () => {
+  const cut = '<message from="session:01a1be05-ccc8-737a-bd90-33d944959adf…'
+  expect(chatName({ title: cut, created_at: '2026-11-09T01:55:00Z' })).toBe('Message from another agent')
+  expect(cleanTitle('<message from="peer:xeus" id="x">\nhello\n</message>')).toBe('Message from xeus: hello')
+  expect(cleanTitle('Message from ops: P2 ping')).toBe('Message from ops: P2 ping')
+  expect(cleanTitle('Gateway limits')).toBe('Gateway limits')
 })

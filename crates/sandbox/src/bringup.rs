@@ -828,6 +828,9 @@ mod tests {
                 replica: None,
                 stats: Vec::new(),
                 relay: None,
+                messaging_off: Vec::new(),
+                nearby: true,
+                quarantined: Vec::new(),
             })
         }
         async fn remove_peer(&self, _: mesh::EngineId) -> anyhow::Result<()> {

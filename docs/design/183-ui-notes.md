@@ -1,4 +1,32 @@
-# 183 — Phase 1 UI notes (U183)
+# 183 — UI notes (U183 Phase 1, U2 Phase 2)
+
+## Phase 2 (U2): Settings › Network, Nearby, pair dialog, Unpair with rotation
+
+Built on the contract commit `5eb03940` (C2). Before finishing, `theuth-183`'s `183-notes.md` had no "Phase 2 contract changes after C2" section and its bindings and `api.ts` were byte-identical to this worktree's, so nothing was adapted.
+
+| # | Where | What |
+|---|---|---|
+| 1 | `components/settings/Network.tsx` (was `Mesh.tsx`, `git mv`), `SettingsDialog.tsx` tab `network`, `routes/settings.$tab.tsx` | Sections in order: rotation banner (when reported), **This machine** (OS tile, editable name `mesh_rename(self_id)`, 8-char id + copy, chips `LAN · mDNS ✓/off` and `Relay · <host> · 38 ms ✓` or `Relay · <host> · <error>`, switch "Let nearby machines find this one while pairing" → `mesh_set_nearby`), **Nearby** (`mesh_nearby`, patched by `MeshEvent.nearby`; rows with Pair…; "Only shown while this page is open."; `mesh_nearby_watch(true)` on mount, `(false)` on unmount), **Machines in this mesh** (OS tile, name + `hub`, `os_name · class`, path chip `LAN 2 ms` / `Relay 41 ms` / `offline 3h`, "Agents can message" → `mesh_set_messaging(id, on)`, off shows `agent messaging between <self> and <peer> is off on <self>`, ⋯ Rename (inline) · Unpair…; this machine: `this machine` chip, no switch), **Contacts** (muted, caption, disabled Add contact… with a `Phase 3` tag), **Agent messaging** (`get_communication(null)`: On/Off and why), **Advanced** (`<details>`, collapsed: mesh name, hub preference, sessions, replication log, Rotate vault key, pairing string + QR + paste, SSH add-node), Sandbox VMs, other meshes. `/settings/mesh` redirects to `/settings/network` |
+| 2 | `components/settings/PairDialog.tsx` `PairBody`, `pairView`, `usePairFlow` | `Pair with <m>` + `os · addr`; `482 913`; "Check that <m> shows the same code"; the vault warning; [Pair] [Cancel]. States: connecting, code, waiting for the other side (Pair greyed), paired, rejected ("pressed Cancel, or the codes did not match"), expired, RPC refusal. Pair → `mesh_pair_answer(id, true)`; Cancel/close of an open ceremony → `(id, false)`. A stranger's `waiting` ceremony (not expired, not seen) opens the same dialog. No messaging checkbox (W-17, D3) |
+| 3 | `components/settings/UnpairDialog.tsx` `UnpairBody`, `RotationProgress`, `RotationBanner`, `UnpairDialog` | "Unpair <m>?", the §12.9 body, "Replace these at their providers if <m> is lost" with names in mono and "Sign in again: github, google"; "<m> had no secrets."; offline / older-build / phones lines when they apply; checkbox "Also reset phone and iPad pairing" (off; ticked explains the QR re-scan). Cancel · **Unpair and rotate key** → `mesh_remove(id, reset)`; a refusal stays on the confirm step. Then "Unpaired <m>" + progress: §12.9 headline per phase, a step row, bar while minting/sweeping, per-machine lines (has the key / offline / older theuth / pending), stuck rows, failed + Retry (`vault_rotate`). `null` rotation → "No vault-key rotation reported yet" + Rotate now; a "not built yet" error reads "Vault-key rotation is not built into this engine yet (183 phase 2)" with the raw text below. The page banner is the same component, dismissable once `done` |
+| 4 | phone, 430 px | Rows wrap: the path chip, switch and ⋯ drop under the name |
+| — | `lib/rpc.ts` | `queryKeys.meshNearby` / `meshPair` / `vaultRotation`; listeners `nearby`, `pair` (and `paired` refetches `mesh`), `SecretsRotation` write the whole state into the cache |
+
+**Calls made**
+
+- **Notes file**: the brief says record calls in `183-notes.md`; the session instruction limits edits to this file, so they are here.
+- **LAN chip**: `MeshStatus` has no LAN/mDNS state; the chip follows `MeshStatus.nearby` (`✓` / `off`).
+- **Done time**: `RotationState` has no finish time; "rotated at" uses `started_ms`.
+- **Sign-in names** show the `oauth/<ns>` namespace as stored (`github`), not a brand spelling.
+- **Checkbox** shows even with `devices: 0` (V fills `devices` later; C2 always sends 0).
+- **`accepted`** with this side not yet answered still shows the code and Pair (it can mean the other side accepted first).
+- **Incoming pair dialog** lives on the Network page (the only place the app opens the Nearby window), not a global Attention dialog.
+- **Advanced** is a native `<details>`; "Rotate vault key" errors toast, success feeds the banner.
+- **Not built**: §12.8's read-only Network on a phone/iPad (a bare device still sees only "Meshes this device can reach", as before).
+
+**Screenshots** (`/tmp/rs183u/p2/shots/`, throwaway fixture with a fake Api, deleted): `page.png`, `full.png` (whole page + banner), `pair.png`, `unpair.png`, `progress.png`, `error.png`, `notbuilt.png`, `phone.png` (430 px).
+
+## Phase 1 (U183)
 
 Built on the contract commit `7c815e00` and checked against the engine worker's "Contract changes after C" (`36387802`): no TS shape changed; the bindings in this worktree are byte-identical to theirs.
 
@@ -35,3 +63,18 @@ Built on the contract commit `7c815e00` and checked against the engine worker's 
 ## Screenshots (`/tmp/rs183u/shots/`, a throwaway fixture with a fake Api, deleted)
 
 `3-remote-chat.png`, `3-menu-approvals.png`, `3-offline-menu.png`, `4-moved-restart.png`, `5-machine-picker.png`, `5-folder-on-xeus.png`, `phone-3-remote-chat.png`, `phone-3-menu.png`, `phone-4-moved.png`, `phone-5-machine-picker.png`.
+
+## Phase 2 closer (Z2) UI fixes (Settings › Network)
+
+- **U2-MUST-1 focus** (`PairDialog.tsx`): `onOpenAutoFocus` prevents Radix's default and focuses Cancel (Done on the end screens); Pair is never the default.
+- **U2-MUST-2 cancel while Connecting**: a cancelled-before-id flag; when `mesh_pair_nearby` answers, the id goes to `seen` and `mesh_pair_answer(id, false)` is sent, and the dialog stays shut (an incoming-ceremony scan is also paused while a dial is pending). Closing `starting` with an id answers false too.
+- **U2-S4 Nearby lease**: the page sends `mesh_nearby_watch(true)` on mount (once the connection is `open`), every 10 s, and again each time the connection returns to `open` (`useConnection` state); `false` on unmount. Calls made: the heartbeat is silent (nothing visible resets); nothing is sent while the socket is down.
+- **U2-S5 unpair**: "Unpair and rotate key" is disabled until the preview resolved (loading and error both disable); the preview query is `gcTime: 0` + `refetchOnMount: 'always'`, so every open reads fresh.
+- **U2-S6 Nearby off**: `MeshStatus.nearby` false shows "Nearby is off" naming the switch instead of "No unpaired machine found"; `meshNearby` is `staleTime: 0`.
+- **U2-S7 incoming dialog**: name, then `os · addr · <8-char id>` (`PairCeremony.addr`, new engine field). `queryKeys.meshPair` now holds a map by ceremony id (`putPair`), so a second ceremony cannot blank an open dialog's code.
+- **U2-S8 a11y**: code box `role="group"`; the vault warning's id is the dialog's `aria-describedby` (code/waiting views); one `DialogTitle` (the visible heading) per dialog; the progressbar is named "Re-encrypting secrets"; `role="status"` sits on the changing sentence only.
+- **Engine reconciliation**: `UnpairPreview.offline` / `.old_build` and `RotationState.peers[].id` are engine ids; `nameOfIn(mesh_status)` maps them to names, an unknown id shows its first 8 characters (`RotationProgress`, the headline and the preview lines all take `nameOf`). The done line reads "Vault key rotated (started <time>)": `started_ms` is a start, there is no finish time. `UnpairPreview.devices` is real: the phones line shows only when it is above 0; the "Also reset phone and iPad pairing" box stays always (it also rotates the device key).
+- **LAN chip**: still follows `MeshStatus.nearby` (the engine has no other source for it).
+- **Tests**: `Network.test.ts` mounts with jsdom (`test-dom.ts`, from the apps package, imported first) for focus, `usePairFlow`, the Nearby lease, the `nearby`/`pair`/`SecretsRotation` listeners and the `useRotation` retry.
+- **Found live (Z2)**: the dialer's Cancel lost the focus when `Connecting…` became the code (the `starting` and `code` views render different buttons); `cancelMount` focuses Cancel/Done whenever it mounts unless the user already focused a button in that dialog. The rotation progress names the machine being unpaired by the dialog's name (its row is gone from `mesh_status` by then) and maps `removed` ids through `nameOf`.
+- **Quarantine (R1)**: `MeshStatus.quarantined` rows render after the paired ones in Machines: name, "Added by <name> after it was unpaired — not paired until you confirm", `Keep paired` / `Remove` → `mesh_confirm_peer(id, keep)`; both refresh `mesh_status`. Nothing renders for an empty list.
