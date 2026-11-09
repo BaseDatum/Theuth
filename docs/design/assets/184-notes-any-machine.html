@@ -1,0 +1,89 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+:root{color-scheme:light dark}
+body{margin:0;font-family:var(--font-sans,-apple-system,system-ui,sans-serif);color:var(--foreground,#1a1612);background:transparent;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
+.panel{border:1px solid var(--border,#e4e0da);border-radius:var(--radius,10px);background:var(--card,#fff);overflow:hidden}
+.cap{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted-foreground,#7a7268);padding:8px 12px;border-bottom:1px solid var(--border,#e4e0da);background:var(--muted,#f6f4f1)}
+.hdr{display:flex;align-items:center;gap:8px;padding:10px 12px 6px}
+.title{font-weight:600;font-size:15px;flex:1}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:2px 8px;border-radius:999px;border:1px solid var(--border,#e4e0da);color:var(--muted-foreground,#7a7268)}
+.dot{width:7px;height:7px;border-radius:50%;background:#16a34a}
+.dot.off{background:#9ca3af}
+.btn{font-size:12px;padding:4px 10px;border-radius:7px;border:1px solid var(--border,#e4e0da);background:var(--background,#fff);color:inherit}
+.btn.primary{background:var(--primary,#2563eb);border-color:var(--primary,#2563eb);color:var(--primary-foreground,#fff)}
+.body{padding:4px 12px 12px;line-height:1.5}
+.banner{margin:6px 12px 2px;padding:7px 10px;border-radius:8px;border:1px solid #d97706;color:var(--foreground,#1a1612);font-size:12.5px}
+.banner b{font-weight:600}
+.cell{margin-top:8px;border:1px solid var(--border,#e4e0da);border-radius:8px;overflow:hidden}
+.code{font-family:var(--font-mono,ui-monospace,Menlo,monospace);font-size:12px;padding:8px 10px;background:var(--muted,#f6f4f1);display:flex;gap:8px;align-items:flex-start}
+.code pre{margin:0;flex:1;white-space:pre-wrap}
+.play{font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--border,#e4e0da);background:var(--background,#fff);white-space:nowrap}
+.meta{font-size:11.5px;color:var(--muted-foreground,#7a7268);padding:6px 10px;border-top:1px solid var(--border,#e4e0da);display:flex;gap:8px;flex-wrap:wrap}
+.out{font-family:var(--font-mono,ui-monospace,Menlo,monospace);font-size:11.5px;padding:6px 10px;border-top:1px solid var(--border,#e4e0da)}
+.ran{color:var(--foreground,#1a1612);font-weight:500}
+.dlg{padding:12px}
+.dlg h4{margin:0 0 6px;font-size:14px}
+.field{display:flex;gap:6px;margin:8px 0}
+.field input{flex:1;font-family:var(--font-mono,ui-monospace,Menlo,monospace);font-size:11px;padding:5px 7px;border-radius:7px;border:1px solid var(--border,#e4e0da);background:var(--background,#fff);color:inherit}
+.small{font-size:11.5px;color:var(--muted-foreground,#7a7268)}
+.note{font-size:11.5px;color:var(--muted-foreground,#7a7268);padding:0 12px 10px}
+</style></head><body>
+<div class="grid">
+
+<div class="panel">
+ <div class="cap">1 · Viewed on Sky's MacBook — the note lives on xeus</div>
+ <div class="hdr"><span class="title">Deploy checklist</span><span class="chip"><span class="dot"></span>On xeus</span><button class="btn">Share</button></div>
+ <div class="body">Steps to roll the staging cluster.
+  <div class="cell">
+   <div class="code"><pre>#| cwd: ~/Develop/infra
+kubectl get nodes</pre><span class="play">▶ Run on this Mac</span></div>
+   <div class="meta"><span class="ran">ran on xeus</span><span>· 4 min ago</span><span>· exit 0</span></div>
+   <div class="out">3 nodes Ready</div>
+  </div>
+ </div>
+ <div class="note">▶ runs here with this Mac's folders, interpreters and secrets. The last result shows from any machine and names the machine it ran on.</div>
+</div>
+
+<div class="panel">
+ <div class="cap">2 · Same note after ▶ on the MacBook</div>
+ <div class="hdr"><span class="title">Deploy checklist</span><span class="chip"><span class="dot"></span>On xeus</span><button class="btn">Share</button></div>
+ <div class="body">Steps to roll the staging cluster.
+  <div class="cell">
+   <div class="code"><pre>#| cwd: ~/Develop/infra
+kubectl get nodes</pre><span class="play">▶ Run on this Mac</span></div>
+   <div class="meta"><span>just now</span><span>· exit 0</span><span>· History</span></div>
+   <div class="out">3 nodes Ready</div>
+  </div>
+ </div>
+ <div class="note">A run from this machine shows no "ran on" label. On xeus the same cell now reads "ran on Sky's MacBook · just now"; its live terminal and run history stay here.</div>
+</div>
+
+<div class="panel">
+ <div class="cap">3 · xeus is offline</div>
+ <div class="hdr"><span class="title">Deploy checklist</span><span class="chip"><span class="dot off"></span>On xeus · offline</span><button class="btn">Share</button></div>
+ <div class="banner"><b>xeus is offline</b> — editing on studio-mac for now. Your changes merge back when xeus returns.</div>
+ <div class="body">Steps to roll the staging cluster.
+  <div class="cell">
+   <div class="code"><pre>#| cwd: ~/Develop/infra
+kubectl get nodes</pre><span class="play">▶ Run on this Mac</span></div>
+   <div class="meta"><span class="ran">ran on xeus</span><span>· 1 h ago</span><span>· exit 0</span></div>
+  </div>
+ </div>
+ <div class="note">Editing never stops: the hub (studio-mac) serves the note until xeus is back, then hands it back. Cells keep running on the machine you're on.</div>
+</div>
+
+<div class="panel">
+ <div class="cap">4 · Share, from any machine</div>
+ <div class="dlg">
+  <h4>Share "Deploy checklist"</h4>
+  <div class="small">Anyone with this link can edit the note. It is served by <b>xeus</b>; if xeus is offline, by your mesh.</div>
+  <div class="field"><input readonly value="https://relay.theuth.io/d#2.xeus-7f3a….mesh-91c2….0198…"><button class="btn primary">Copy</button></div>
+  <div class="small">Older links keep working. Link sharing must be on for xeus (Settings › Link on xeus).</div>
+ </div>
+ <div class="note">The relay connects guests straight to xeus; there's no hop through the hub.</div>
+</div>
+
+</div>
+</body></html>
