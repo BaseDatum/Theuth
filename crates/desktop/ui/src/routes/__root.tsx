@@ -1,5 +1,5 @@
 import { Outlet, createRootRoute, useNavigate, useParams } from '@tanstack/react-router'
-import { type CSSProperties, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { DragOverlay } from '@/components/chat/Panes'
 import { StudyDraftBridge } from '@/components/autoresearch/SetupPane'
@@ -31,9 +31,7 @@ function Popped() {
   )
 }
 
-const WIDTH = { '--sidebar-width': '260px' } as CSSProperties
-
-/** The shell: 260 px sidebar (⇧⌘S) beside the routed column; the meeting bar closes the column while a meeting records.
+/** The shell: resizable sidebar (⇧⌘S) beside the routed column; the meeting bar closes the column while a meeting records.
  * Routes render only once connected, so `useApi` is safe below. */
 function Root() {
   const { session } = useParams({ strict: false })
@@ -56,7 +54,7 @@ function Root() {
   }, [navigate, session])
 
   return (
-    <SidebarProvider open={open} onOpenChange={setOpen} style={WIDTH} className="h-band min-h-0">
+    <SidebarProvider open={open} onOpenChange={setOpen} className="h-band min-h-0">
       <AppSidebar session={session} />
       <SearchHost />
       <RoutineDraftBridge />

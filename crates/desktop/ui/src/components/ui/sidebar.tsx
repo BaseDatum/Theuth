@@ -5,6 +5,8 @@ import { PanelLeftIcon } from 'lucide-react'
 import { Slot } from 'radix-ui'
 
 import { useIsMobile } from '@/hooks/use-mobile'
+import { clamp, PX_STEP } from '@/lib/resize-drag'
+import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
@@ -19,11 +21,21 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state'
+const SIDEBAR_WIDTH_COOKIE_NAME = 'sidebar_width'
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-const SIDEBAR_WIDTH = '16rem'
+/** Desktop width in px: 16rem by default; the drag edge clamps it to 12rem–28rem. */
+export const SIDEBAR_WIDTH = 256
+export const SIDEBAR_WIDTH_MIN = 192
+export const SIDEBAR_WIDTH_MAX = 448
 const SIDEBAR_WIDTH_MOBILE = '18rem'
 const SIDEBAR_WIDTH_ICON = '3rem'
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b'
+
+/** The width saved in the `sidebar_width` cookie, clamped; the default when there is none. */
+export function readSidebarWidth(cookie: string): number {
+  const saved = /(?:^|;\s*)sidebar_width=(\d+)/.exec(cookie)
+  return saved ? clamp(Number(saved[1]), SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX) : SIDEBAR_WIDTH
+}
 
 type SidebarContextProps = {
   state: 'expanded' | 'collapsed'
@@ -33,6 +45,10 @@ type SidebarContextProps = {
   setOpenMobile: (open: boolean) => void
   isMobile: boolean
   toggleSidebar: () => void
+  /** Desktop width in px. */
+  width: number
+  /** Clamps to `SIDEBAR_WIDTH_MIN`–`SIDEBAR_WIDTH_MAX` and saves the width in its cookie. */
+  setWidth: (px: number) => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -86,6 +102,13 @@ function SidebarProvider({
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile])
 
+  const [width, _setWidth] = React.useState(() => readSidebarWidth(globalThis.document?.cookie ?? ''))
+  const setWidth = React.useCallback((px: number) => {
+    const w = clamp(Math.round(px), SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)
+    _setWidth(w)
+    document.cookie = `${SIDEBAR_WIDTH_COOKIE_NAME}=${w}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+  }, [])
+
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -112,8 +135,10 @@ function SidebarProvider({
       openMobile,
       setOpenMobile,
       toggleSidebar,
+      width,
+      setWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar],
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, width, setWidth],
   )
 
   return (
@@ -123,7 +148,7 @@ function SidebarProvider({
           data-slot="sidebar-wrapper"
           style={
             {
-              '--sidebar-width': SIDEBAR_WIDTH,
+              '--sidebar-width': `${width}px`,
               '--sidebar-width-icon': SIDEBAR_WIDTH_ICON,
               ...style,
             } as React.CSSProperties
@@ -153,7 +178,11 @@ function Sidebar({
   variant?: 'sidebar' | 'floating' | 'inset'
   collapsible?: 'offcanvas' | 'icon' | 'none'
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, width, setWidth } = useSidebar()
+  const [resizing, setResizing] = React.useState(false)
+  const start = React.useRef({ x: 0, width: 0 })
+  // A left sidebar grows as its edge moves right; a right one as it moves left.
+  const dir = side === 'left' ? 1 : -1
 
   if (collapsible === 'none') {
     return (
@@ -199,6 +228,7 @@ function Sidebar({
     <div
       className="group peer hidden text-sidebar-foreground md:block"
       data-state={state}
+      data-resizing={resizing || undefined}
       data-collapsible={state === 'collapsed' ? collapsible : ''}
       data-variant={variant}
       data-side={side}
@@ -208,7 +238,7 @@ function Sidebar({
       <div
         data-slot="sidebar-gap"
         className={cn(
-          'relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear',
+          'relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear group-data-[resizing=true]:transition-none',
           'group-data-[collapsible=offcanvas]:w-0',
           'group-data-[side=right]:rotate-180',
           variant === 'floating' || variant === 'inset'
@@ -219,7 +249,7 @@ function Sidebar({
       <div
         data-slot="sidebar-container"
         className={cn(
-          'fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear md:flex',
+          'fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear group-data-[resizing=true]:transition-none md:flex',
           side === 'left'
             ? 'left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]'
             : 'right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]',
@@ -238,6 +268,25 @@ function Sidebar({
         >
           {children}
         </div>
+        {/* Expanded desktop only: collapsed (offcanvas or icon) and the phone Sheet have no drag edge. The hit zone
+         * reaches away from the sidebar so its scrollbar stays usable. */}
+        {state === 'expanded' && (
+          <ResizeHandle
+            orientation="vertical"
+            placement={side === 'left' ? 'end' : 'start'}
+            aria-label="Resize sidebar"
+            className={cn('absolute inset-y-0 bg-transparent', side === 'left' ? 'right-0' : 'left-0')}
+            value={{ now: width, min: SIDEBAR_WIDTH_MIN, max: SIDEBAR_WIDTH_MAX }}
+            onStart={(e) => {
+              start.current = { x: e.clientX, width }
+              setResizing(true)
+            }}
+            onMove={(x) => setWidth(start.current.width + dir * (x - start.current.x))}
+            onEnd={() => setResizing(false)}
+            onNudge={(d) => setWidth(width + dir * d * PX_STEP)}
+            onReset={() => setWidth(SIDEBAR_WIDTH)}
+          />
+        )}
       </div>
     </div>
   )

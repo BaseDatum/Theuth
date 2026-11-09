@@ -21,6 +21,8 @@ export type ResizeHandleProps = {
   onEnd?(): void
   /** Arrow keys: `+1` = the line should move toward the end (right/down), `-1` toward the start. */
   onNudge?(delta: -1 | 1): void
+  /** Double-click: back to the caller's default size. */
+  onReset?(): void
 }
 
 /**
@@ -31,7 +33,7 @@ export type ResizeHandleProps = {
  * drag instead of leaving listeners that resize on the next finger, and a grip pill on coarse pointers where there is
  * no hover to hint at it.
  */
-export function ResizeHandle({ orientation, placement = 'center', className, value, onStart, onMove, onEnd, onNudge, 'aria-label': label }: ResizeHandleProps) {
+export function ResizeHandle({ orientation, placement = 'center', className, value, onStart, onMove, onEnd, onNudge, onReset, 'aria-label': label }: ResizeHandleProps) {
   const vertical = orientation === 'vertical'
   const [dragging, setDragging] = useState(false)
   const root = useRef<HTMLDivElement>(null)
@@ -101,6 +103,7 @@ export function ResizeHandle({ orientation, placement = 'center', className, val
       tabIndex={onNudge ? 0 : undefined}
       data-dragging={dragging || undefined}
       onKeyDown={key}
+      onDoubleClick={onReset}
       className={cn(
         'relative z-10 shrink-0 touch-none select-none outline-none transition-colors [-webkit-touch-callout:none] focus-visible:ring-2 focus-visible:ring-ring',
         vertical ? 'w-1 cursor-col-resize' : 'h-1 cursor-row-resize',
