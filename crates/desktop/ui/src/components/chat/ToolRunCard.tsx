@@ -63,6 +63,7 @@ export type Summary = {
   /** Header line: `running \`name\` · 3 of 5` live, `5 tools · 2.1 s · 1 failed (name)` once every call has a result. */
   text: string
   running: boolean
+  /** Red card (Sky, 2026-11-09): more of the completed calls failed than succeeded; a tie is not red. The header still names every failure. */
   failed: boolean
   /** The last completed call's `✓/✗ first line`, when any call completed. */
   hint: string | null
@@ -73,10 +74,11 @@ export function summarize(run: Run): Summary {
   const current = tools.findIndex((t) => !t.result)
   const done = tools.filter((t) => t.result)
   const failed = done.filter((t) => t.result?.isError)
+  const mostlyFailed = failed.length > done.length - failed.length
   const last = done[done.length - 1]
   const hint = last?.result ? `${last.result.isError ? '✗' : '✓'} ${resultLine(last.result.output)}` : null
   if (current >= 0) {
-    return { text: `running \`${tools[current]?.name}\` · ${current + 1} of ${tools.length}`, running: true, failed: failed.length > 0, hint }
+    return { text: `running \`${tools[current]?.name}\` · ${current + 1} of ${tools.length}`, running: true, failed: mostlyFailed, hint }
   }
   const parts = [`${tools.length} tool${tools.length === 1 ? '' : 's'}`]
   const start = tools[0]?.startedAt
@@ -84,7 +86,7 @@ export function summarize(run: Run): Summary {
   // `2.1 s` under a minute, `3 min` from there.
   if (start !== undefined && end !== undefined) parts.push(end - start < 60_000 ? `${((end - start) / 1000).toFixed(1)} s` : `${Math.round((end - start) / 60_000)} min`)
   if (failed.length) parts.push(`${failed.length} failed (${failed.map((t) => t.name).join(', ')})`)
-  return { text: parts.join(' · '), running: false, failed: failed.length > 0, hint }
+  return { text: parts.join(' · '), running: false, failed: mostlyFailed, hint }
 }
 
 /** One card for a run of consecutive tool calls (70 TOOL-COLLAPSE): collapsed by default to a live status line, expanded

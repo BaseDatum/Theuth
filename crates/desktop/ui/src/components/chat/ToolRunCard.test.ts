@@ -88,9 +88,33 @@ test('summarize: live status names the current call and its position; the ending
     tool(2, { result: { output: 'boom', isError: true, files: [] } }),
     tool(3, { finishedAt: 3100 }),
   ])
-  expect(done).toMatchObject({ text: '3 tools · 2.1 s · 1 failed (t2)', running: false, failed: true, hint: '✓ out 3  (+1 lines)' })
+  expect(done).toMatchObject({ text: '3 tools · 2.1 s · 1 failed (t2)', running: false, failed: false, hint: '✓ out 3  (+1 lines)' })
   // History rows carry no times: no duration.
   expect(summarize([tool(1), tool(2)]).text).toBe('2 tools')
+})
+
+const fail = (n: number): Tool => tool(n, { result: { output: 'boom', isError: true, files: [] } })
+/** `n` finished calls, the first `failed` of them failed; numbered from `from`. */
+const finished = (n: number, failed: number, from = 1): Tool[] => Array.from({ length: n }, (_, i) => (i < failed ? fail(from + i) : tool(from + i)))
+
+test('summarize: red only when more completed calls failed than succeeded; the header still names every failure', () => {
+  expect(summarize(finished(34, 2))).toMatchObject({ text: '34 tools · 2 failed (t1, t2)', failed: false })
+  expect(summarize(finished(1, 1)).failed).toBe(true)
+  // A tie is not a majority.
+  expect(summarize(finished(2, 1)).failed).toBe(false)
+  expect(summarize(finished(3, 2)).failed).toBe(true)
+  // Running: only completed calls count.
+  const pending = tool(99, { result: undefined })
+  expect(summarize([...finished(1, 1), pending])).toMatchObject({ running: true, failed: true })
+  expect(summarize([...finished(3, 1), pending])).toMatchObject({ running: true, failed: false })
+})
+
+test('ToolRunCard: the red border follows the majority, not any failure', () => {
+  const render = (run: Tool[]) => renderToStaticMarkup(createElement(ToolRunCard, { run, prompts: null, session: 's' }))
+  const few = render(finished(34, 2, 101))
+  expect(few).toContain('2 failed (t101, t102)')
+  expect(few).not.toContain('border-danger-border')
+  expect(render(finished(3, 2, 201))).toContain('border-danger-border')
 })
 
 test('ToolRunCard: collapsed shows one header and no cards; expanded shows all three', () => {
