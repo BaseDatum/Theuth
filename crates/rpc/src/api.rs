@@ -2157,7 +2157,8 @@ pub trait Api {
     #[method(name = "dreaming.nights")]
     async fn dreaming_nights(&self, limit: u32) -> RpcResult<Vec<dreaming::NightSummary>>;
     /// Dream now (136 §2.7): fire the routine's session with this run's budget and mode; returns the session.
-    #[method(name = "dreaming.run_now")]
+    /// 185 A5: on a peered non-hub with the hub connected the press runs on the hub (forwarded).
+    #[method(name = "dreaming.run_now", with_extensions)]
     async fn dreaming_run_now(&self, request: dreaming::RunRequest) -> RpcResult<SessionId>;
     /// Undo a night or one group of it (136 §2.7).
     #[method(name = "dreaming.undo")]
@@ -3209,6 +3210,22 @@ fn dreaming_err(e: String) -> ErrorObjectOwned {
         ASK_FAILED
     };
     ErrorObjectOwned::owned(code, e, None::<()>)
+}
+
+/// 185 R1 A5: the hub's refusal of a forwarded Dream now, said as the hub's —
+/// "Dream now runs on the hub, which …" — with the code and data kept (a
+/// `-32010` still carries `OwnerUnreachable`). Nothing runs here instead: the
+/// hub may have started the night.
+fn hub_said(e: ErrorObjectOwned) -> ErrorObjectOwned {
+    let msg = if e.code() == forward::OWNER_UNREACHABLE {
+        format!(
+            "Dream now runs on the hub, which did not answer ({}); try again when it is back",
+            e.message()
+        )
+    } else {
+        format!("Dream now runs on the hub, which said: {}", e.message())
+    };
+    ErrorObjectOwned::owned(e.code(), msg, e.data().map(|d| d.to_owned()))
 }
 
 /// Look up `name`, `ask` it `msg`, map every failure to a JSON-RPC error.
@@ -7926,7 +7943,21 @@ impl ApiServer for Server {
         dreaming::rpc::nights(limit).await.map_err(dreaming_err)
     }
 
-    async fn dreaming_run_now(&self, request: dreaming::RunRequest) -> RpcResult<SessionId> {
+    async fn dreaming_run_now(
+        &self,
+        ext: &Extensions,
+        request: dreaming::RunRequest,
+    ) -> RpcResult<SessionId> {
+        // 185 A5: the hub dreams; forwarded once (`to_peer` never makes a second
+        // hop), and run here when the hub is not connected (this side is cut off).
+        if let Some(hub) = dreaming::rpc::run_now_host().await
+            && let Some(s) =
+                forward::to_peer(ext, &replica::PeerId(hub), "dreaming.run_now", [&request])
+                    .await
+                    .map_err(hub_said)?
+        {
+            return Ok(s);
+        }
         dreaming::rpc::run_now(request).await.map_err(dreaming_err)
     }
 
@@ -10335,6 +10366,69 @@ mod tests {
                 "{req} → {v}"
             );
         }
+    }
+
+    /// 185 R1 A5: the hub side of a forwarded Dream now — the positional
+    /// `[RunRequest]` the forwarder sends dispatches into dreaming (no actor
+    /// here → `NOT_RUNNING`), never `INVALID_PARAMS`, never a second hop.
+    #[tokio::test]
+    async fn a_forwarded_dream_now_runs_on_the_hub_with_the_forwarders_params() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let mut methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        methods.extensions_mut().insert(link::RpcPeer::internal());
+        methods
+            .extensions_mut()
+            .insert(forward::Forwarded(replica::PeerId("node".into())));
+        let request = dreaming::RunRequest {
+            budget_usd: 2.0,
+            mode: dreaming::RunMode::Pass,
+            run_timeout_secs: None,
+        };
+        let params = serde_json::to_string(&[&request]).unwrap();
+        let req =
+            format!(r#"{{"jsonrpc":"2.0","method":"dreaming.run_now","params":{params},"id":1}}"#);
+        let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+        assert_eq!(
+            v["error"]["code"].as_i64(),
+            Some(i64::from(NOT_RUNNING)),
+            "{v}"
+        );
+    }
+
+    /// 185 R1 A5: a hub that refuses or does not answer is named as the hub;
+    /// the code and the `OwnerUnreachable` payload stay for the UI.
+    #[test]
+    fn the_hubs_refusal_of_dream_now_is_said_as_the_hubs() {
+        let off = hub_said(ErrorObjectOwned::owned(
+            ASK_FAILED,
+            "dreaming is off in config (dreaming.enabled: false)",
+            None::<()>,
+        ));
+        assert_eq!(off.code(), ASK_FAILED);
+        assert_eq!(
+            off.message(),
+            "Dream now runs on the hub, which said: dreaming is off in config (dreaming.enabled: false)"
+        );
+        let gone = hub_said(ErrorObjectOwned::owned(
+            forward::OWNER_UNREACHABLE,
+            "no answer within 30s",
+            Some(forward::FrontDoorError::OwnerUnreachable {
+                owner: "hub".into(),
+                last_seen: None,
+            }),
+        ));
+        assert_eq!(gone.code(), forward::OWNER_UNREACHABLE);
+        assert!(
+            gone.message()
+                .starts_with("Dream now runs on the hub, which did not answer"),
+            "{}",
+            gone.message()
+        );
+        assert!(
+            gone.data()
+                .is_some_and(|d| d.get().contains("OwnerUnreachable"))
+        );
     }
 
     /// 139 §9.2 (D18), R1 §8.11: an answer to a question whose replicated row

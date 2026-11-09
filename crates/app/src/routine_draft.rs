@@ -30,7 +30,7 @@ const PREVIEW: usize = 600;
 /// [`ScheduleArgs`] names them so the model's next call is a field-for-field copy.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RoutineDraft {
-    /// `[a-z0-9][a-z0-9-]*`, ≤ 40 chars. An existing name is replaced (the card says so).
+    /// `[a-z0-9][a-z0-9-]*`, ≤ 40 chars. Your own routine of this name is replaced (the card says so); a name another machine's routine uses is refused.
     pub name: String,
     /// The one-line sentence from the skill's grammar; shown on the card.
     pub sentence: String,
@@ -178,6 +178,10 @@ impl Tool for RoutineDraftTool {
         for d in &args.routines {
             if let Err(e) = validate(d, &sensors) {
                 return Ok(ToolOutput::err(format!("routine_draft: {}: {e}", d.name)));
+            }
+            // 185 C8: the press would be refused by `schedule`; refuse the card.
+            if let Some(why) = schedule::tools::name_in_use(&d.name, true).await {
+                return Ok(ToolOutput::err(format!("routine_draft: {}: {why}", d.name)));
             }
             if !seen.insert(d.name.as_str()) {
                 return Ok(ToolOutput::err(format!(

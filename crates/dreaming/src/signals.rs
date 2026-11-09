@@ -14,19 +14,133 @@
 //! assistant text of that session — cached at its previous `TurnFinished`,
 //! because the rewind has already hidden the rows when the event arrives —
 //! is written scrubbed (≤ 2 KB) to `ledger/pending/<id>.json` for Recall.
+//!
+//! 185 A3/A4: every heartbeat also writes where the hub is (`hub`, `peered`,
+//! `hub_reachable`, `hub_name`, from the mesh) and recounts `sessions_since`
+//! and `new_concepts_since` from the replicated session and knowledge
+//! stores, so work done on any engine of the mesh counts; each counter is
+//! the larger of that and this engine's own event count. Idle and desks stay
+//! this engine's: they guard this machine's own load, not the mesh's.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{Local, Utc};
-use kameo::actor::Spawn as _;
+use kameo::actor::{ActorRef, Spawn as _};
 use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
 
 use crate::night::{read_state, write_atomic};
 use crate::scrub::{clip, scrub};
 use crate::types::SignalsSnapshot;
+
+/// 185 A3/A5: the hub as this engine sees it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HubView {
+    /// This engine holds the lease (`mesh::is_hub`).
+    pub hub: bool,
+    /// This engine has paired peers.
+    pub peered: bool,
+    /// The lease holder's id and machine name; `None` without a holder.
+    pub holder: Option<(String, String)>,
+    /// The holder is this engine or connected to it.
+    pub reachable: bool,
+    /// Paired engines connected now: `(id, machine name)` (the pin's lookup).
+    pub connected: Vec<(String, String)>,
+}
+
+/// [`HubView`] from `mesh::is_hub`, `mesh::has_peers` and the mesh status
+/// (`None`: no mesh, or it did not answer).
+pub fn hub_view(hub: bool, peered: bool, st: Option<&mesh::MeshStatus>) -> HubView {
+    let connected: Vec<(String, String)> = st
+        .map(|s| {
+            s.peers
+                .iter()
+                .filter(|p| p.reachable)
+                .map(|p| (p.id.0.clone(), p.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let holder = st.and_then(|s| {
+        let h = s.lease.holder.as_ref()?;
+        if *h == s.self_id {
+            return Some(((h.0.clone(), s.self_name.clone()), true));
+        }
+        let name = s.peers.iter().find(|p| p.id == *h).map(|p| p.name.clone());
+        let up = connected.iter().any(|(id, _)| *id == h.0);
+        Some(((h.0.clone(), name.unwrap_or_default()), up))
+    });
+    HubView {
+        hub,
+        peered,
+        reachable: holder.as_ref().is_some_and(|(_, up)| *up),
+        holder: holder.map(|(h, _)| h),
+        connected,
+    }
+}
+
+/// [`hub_view`] now: asks the mesh actor for its status (2 s at most) —
+/// only with paired peers; a single engine asks nothing (R1).
+pub async fn hub_now() -> HubView {
+    let peered = mesh::has_peers().unwrap_or(false);
+    let st = match mesh::actor().filter(|_| peered) {
+        Some(m) => tokio::time::timeout(Duration::from_secs(2), m.ask(mesh::Status))
+            .await
+            .ok()
+            .and_then(Result::ok),
+        None => None,
+    };
+    hub_view(mesh::is_hub(), peered, st.as_ref())
+}
+
+/// 185 A5: the engine a Dream now press runs on when it is not this one —
+/// `(id, machine name)`: the `home_engine` pin when set and connected, else
+/// the hub when this engine is peered, not the hub, and the hub is
+/// connected. `None`: here (this engine dreams, or it is cut off).
+pub fn dream_host(home_engine: Option<&str>, me: &str, v: &HubView) -> Option<(String, String)> {
+    match home_engine.filter(|h| !h.is_empty()) {
+        Some(pin) if pin == me => None,
+        Some(pin) => v.connected.iter().find(|(id, _)| id == pin).cloned(),
+        None => (v.peered && !v.hub && v.reachable)
+            .then(|| v.holder.clone())
+            .flatten(),
+    }
+}
+
+/// 185 A4: harvest and model concepts first written after `since` (RFC
+/// 3339; `None` = ever). The frontmatter `source` and `timestamp` travel
+/// with the file, so a concept another engine wrote and the bundle sync
+/// brought here counts like one written here.
+/// ponytail: reads every concept's meta per heartbeat; the catalog is hundreds.
+pub async fn concepts_since(k: &knowledge::Knowledge, since: Option<&str>) -> u32 {
+    let since = since.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    let Ok(metas) = k.list(None, None, None, u32::MAX).await else {
+        return 0;
+    };
+    let n = metas
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.source,
+                Some(knowledge::Source::Harvest | knowledge::Source::Model)
+            )
+        })
+        .filter(|m| {
+            let at = m
+                .timestamp
+                .as_deref()
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok());
+            match (at, since) {
+                (Some(at), Some(since)) => at > since,
+                (Some(_), None) => true,
+                (None, _) => false,
+            }
+        })
+        .count();
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
 
 /// Registry name of the [`Signals`] actor.
 pub const SIGNALS_ACTOR: &str = "dreaming-signals";
@@ -88,8 +202,17 @@ pub struct Signals {
     last_assistant: HashMap<SessionId, String>,
     /// When `pmset` last ran.
     power_at: Option<Instant>,
-    /// Test seam: skip the roster and `pmset`.
+    /// Test seam: skip the roster, `pmset`, the mesh and the store recounts.
     probes: bool,
+    /// 185 A4: this engine's own harvest/model puts since the last dream.
+    local_concepts: u32,
+    /// 185 A4: the replicated stores' counts since [`Self::counted_from`].
+    mesh_sessions: u32,
+    mesh_concepts: u32,
+    /// 185 A4: the last night's end (`Dreamt`): what the store counts run from.
+    counted_from: Option<String>,
+    /// The knowledge store, looked up on first use.
+    knowledge: Option<Arc<knowledge::Knowledge>>,
 }
 
 /// `ask` → [`SignalsSnapshot`]: what the file says now.
@@ -108,12 +231,85 @@ impl Signals {
         snap.last_dream_at = read_state(data_dir).last_dream_at;
         Self {
             data_dir: data_dir.to_owned(),
+            local_concepts: snap.new_concepts_since,
+            counted_from: snap.last_dream_at.clone(),
             snap,
             seen: HashSet::new(),
             store,
             last_assistant: HashMap::new(),
             power_at: None,
             probes: true,
+            mesh_sessions: 0,
+            mesh_concepts: 0,
+            knowledge: None,
+        }
+    }
+
+    /// The counters the gate reads: the larger of this engine's events and
+    /// the mesh-wide store counts (185 A4).
+    fn counts(&mut self) {
+        self.snap.sessions_since = (self.seen.len() as u32).max(self.mesh_sessions);
+        self.snap.new_concepts_since = self.local_concepts.max(self.mesh_concepts);
+    }
+
+    /// 185 A4: recount attended root sessions and new concepts of every
+    /// engine since the mesh's last night — the later of this engine's last
+    /// `Dreamt` and (R1) the last run of another engine's dreaming session,
+    /// from the replicated session rows: a node that never dreamt counts
+    /// from the hub's night, not from "ever".
+    async fn count_mesh(&mut self) {
+        let mut since = self.counted_from.clone();
+        if let Some(store) = &self.store {
+            let t = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok();
+            if let Ok(Some(at)) = store.routine_ran_elsewhere("dreaming").await
+                && since.as_deref().and_then(t) < t(&at)
+            {
+                since = Some(at);
+            }
+            match store.attended_roots_since(since.as_deref()).await {
+                Ok(n) => self.mesh_sessions = n,
+                Err(e) => tracing::debug!("dreaming: sessions not counted: {e:#}"),
+            }
+        }
+        if self.knowledge.is_none()
+            && let Ok(Some(k)) =
+                ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
+            && let Ok(h) = k.ask(knowledge::Handle).await
+        {
+            self.knowledge = Some(h);
+        }
+        if let Some(k) = &self.knowledge {
+            self.mesh_concepts = concepts_since(k, since.as_deref()).await;
+        }
+        self.counts();
+    }
+
+    /// 185 A3: where the hub is, into the snapshot.
+    fn set_hub(&mut self, v: &HubView) {
+        self.snap.hub = v.hub;
+        self.snap.peered = v.peered;
+        self.snap.hub_reachable = v.reachable;
+        self.snap.hub_name = v
+            .holder
+            .as_ref()
+            .map(|(_, n)| n.clone())
+            .filter(|n| !n.is_empty());
+    }
+
+    /// The heartbeat's refresh: hub fields and mesh-wide counts (not in
+    /// tests). R1: a single engine skips both — its own events are all the work.
+    async fn refresh(&mut self) {
+        if !self.probes {
+            return;
+        }
+        let v = hub_now().await;
+        self.set_hub(&v);
+        if v.peered {
+            self.count_mesh().await;
+        } else {
+            self.mesh_sessions = 0;
+            self.mesh_concepts = 0;
+            self.counts();
         }
     }
 
@@ -222,7 +418,7 @@ impl Message<agent::AgentEvent> for Signals {
                     self.cache_last_assistant(session).await;
                     // R-18: only the user's own sessions are "something new".
                     if self.seen.insert(session) {
-                        self.snap.sessions_since = self.seen.len() as u32;
+                        self.counts();
                     }
                 }
                 if let Some(n) = self.desks_doing().await {
@@ -250,7 +446,8 @@ impl Message<knowledge::KnowledgeChanged> for Signals {
                 knowledge::Source::Harvest | knowledge::Source::Model
             )
         {
-            self.snap.new_concepts_since += 1;
+            self.local_concepts += 1;
+            self.counts();
             self.flush();
         }
     }
@@ -273,10 +470,13 @@ impl Message<Dreamt> for Signals {
     type Reply = ();
 
     async fn handle(&mut self, Dreamt(at): Dreamt, _: &mut Context<Self, Self::Reply>) {
+        self.counted_from = Some(at.clone());
         self.snap.last_dream_at = Some(at);
-        self.snap.new_concepts_since = 0;
-        self.snap.sessions_since = 0;
+        self.local_concepts = 0;
+        self.mesh_sessions = 0;
+        self.mesh_concepts = 0;
         self.seen.clear();
+        self.counts();
         self.flush();
     }
 }
@@ -296,7 +496,8 @@ impl Message<DreamStarted> for Signals {
     }
 }
 
-/// `tell` (self, every [`HEARTBEAT`]): re-stamp `written_at` (R-19).
+/// `tell` (self, every [`HEARTBEAT`]): re-stamp `written_at` (R-19); 185:
+/// refresh the hub fields and the mesh-wide counts first.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Heartbeat;
 
@@ -304,6 +505,7 @@ impl Message<Heartbeat> for Signals {
     type Reply = ();
 
     async fn handle(&mut self, _: Heartbeat, _: &mut Context<Self, Self::Reply>) {
+        self.refresh().await;
         self.flush();
     }
 }
@@ -333,6 +535,7 @@ pub async fn start(rt: &Runtime, engine: &str) -> anyhow::Result<()> {
         );
     }
     let mut signals = Signals::new(&rt.data_dir, engine, store);
+    signals.refresh().await;
     signals.flush();
     let actor = Signals::spawn_with_mailbox(signals, runtime::subscriber_mailbox());
     actor.register(SIGNALS_ACTOR)?;
@@ -584,5 +787,129 @@ mod tests {
             (Some(true), None)
         );
         assert_eq!(parse_pmset("garbage"), (None, None));
+    }
+
+    /// 185 A4: the counters read the replicated stores — a root session row
+    /// no turn event announced here (how another engine's arrives) and a
+    /// concept another engine wrote (landed by the bundle sync, a `Sync`
+    /// event here) count; a routine's session, a user concept and anything
+    /// before the last night's end do not. R1: a node that never dreamt
+    /// counts from the hub's last night (its dreaming session's row).
+    #[tokio::test]
+    async fn counts_include_work_done_on_another_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let db = d.join("sessions.sqlite");
+        let store = agent::store::Store::open(&db, Some(mesh::EngineId("eng-a".into())))
+            .await
+            .unwrap();
+        let theirs = SessionId::new();
+        let routine = SessionId::new();
+        // Rows as replication leaves them: no turn event ever reached this engine.
+        for s in [theirs, routine] {
+            store
+                .create_session(s, "m", None, None, None)
+                .await
+                .unwrap();
+            store
+                .append(s, &genai::chat::ChatMessage::user("hi"))
+                .await
+                .unwrap();
+        }
+        store.set_unattended(routine).await.unwrap();
+        let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+        let k = knowledge::Knowledge::open(d, rt).await.unwrap();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let facts = k.root().join("facts");
+        std::fs::create_dir_all(&facts).unwrap();
+        for (id, source) in [("remote", "model"), ("typed", "user")] {
+            std::fs::write(
+                facts.join(format!("{id}.md")),
+                format!(
+                    "---\ntype: fact\ntitle: {id}\nsource: {source}\ntimestamp: {now}\n---\nbody\n"
+                ),
+            )
+            .unwrap();
+        }
+        k.sync().await.unwrap();
+        let mut s = Signals::new(d, "eng-a", Some(store));
+        s.probes = false;
+        s.knowledge = Some(k);
+        s.count_mesh().await;
+        assert_eq!((s.snap.sessions_since, s.snap.new_concepts_since), (1, 1));
+        // The hub dreamt after all of it (its routine session row replicated
+        // here): this node, which never dreamt, counts nothing new.
+        let hub = agent::store::Store::open(&db, Some(mesh::EngineId("eng-h".into())))
+            .await
+            .unwrap();
+        let night = SessionId::new();
+        hub.create_session(night, "m", None, None, None)
+            .await
+            .unwrap();
+        hub.set_title(night, "dreaming · dreaming").await.unwrap();
+        hub.set_unattended(night).await.unwrap();
+        hub.append(night, &genai::chat::ChatMessage::user("go"))
+            .await
+            .unwrap();
+        hub.close().await;
+        s.count_mesh().await;
+        assert_eq!((s.snap.sessions_since, s.snap.new_concepts_since), (0, 0));
+        // Nor after this engine's own night.
+        s.counted_from = Some((Utc::now() + chrono::Duration::seconds(5)).to_rfc3339());
+        s.count_mesh().await;
+        assert_eq!((s.snap.sessions_since, s.snap.new_concepts_since), (0, 0));
+    }
+
+    /// 185 A5: Dream now runs on the hub while it is connected and is not
+    /// this engine; here on the hub, on a side cut off, or alone; the pin
+    /// wins when connected.
+    #[test]
+    fn dream_now_goes_to_the_connected_hub_only() {
+        let hub = ("eng-h".to_owned(), "studio".to_owned());
+        let v = |hub_here: bool, peered: bool, reachable: bool| HubView {
+            hub: hub_here,
+            peered,
+            holder: Some(hub.clone()),
+            reachable,
+            connected: if reachable {
+                vec![hub.clone()]
+            } else {
+                Vec::new()
+            },
+        };
+        assert_eq!(
+            dream_host(None, "me", &v(false, true, true)),
+            Some(hub.clone())
+        );
+        assert_eq!(
+            dream_host(None, "me", &v(true, true, true)),
+            None,
+            "the hub itself"
+        );
+        assert_eq!(
+            dream_host(None, "me", &v(false, true, false)),
+            None,
+            "cut off: here"
+        );
+        assert_eq!(
+            dream_host(None, "me", &v(false, false, false)),
+            None,
+            "alone"
+        );
+        assert_eq!(
+            dream_host(Some("me"), "me", &v(false, true, true)),
+            None,
+            "pinned here"
+        );
+        assert_eq!(
+            dream_host(Some("eng-h"), "me", &v(true, true, true)),
+            Some(hub.clone()),
+            "pinned there"
+        );
+        assert_eq!(
+            dream_host(Some("eng-x"), "me", &v(false, true, true)),
+            None,
+            "pin not connected"
+        );
     }
 }

@@ -11316,6 +11316,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             dir.clone(),
             "skills",
             std::time::Duration::from_secs(120),
+            None,
         ));
         let _ = reg
             .ask(RegisterTool(Arc::new(LoadSkillTool { dir: dir.clone() })))

@@ -103,6 +103,8 @@ export function dreamNowBlocker(
   return null
 }
 export const dreamNowUnavailable = (blocker: string): string => `Dream now is unavailable: ${blocker}.`
+/** 185 A5: where a Dream now press runs — the hub (named) from a non-hub that reaches it, else this machine. */
+export const dreamNowWhere = (runsOn: string | null): string => (runsOn ? `Runs on ${runsOn}, the hub,` : 'Runs on this machine')
 
 /** One edit of Settings › Dreaming; `set_settings` takes the whole object, so the reducer produces it. */
 export type SettingsChange =

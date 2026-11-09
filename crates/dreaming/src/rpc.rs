@@ -56,6 +56,13 @@ pub async fn run_now(r: RunRequest) -> Result<SessionId, String> {
     ask(night::RunNow(r)).await
 }
 
+/// 185 A5: the engine id `dreaming.run_now` is forwarded to — the hub (or
+/// the `home_engine` pin) while it is connected and is not this engine;
+/// `None` = run it here (this engine dreams, is cut off, or dreaming is off).
+pub async fn run_now_host() -> Option<String> {
+    ask(night::Host).await.ok().flatten()
+}
+
 /// `dreaming.undo(night, group?)`.
 pub async fn undo(night: String, group: Option<String>) -> Result<UndoReport, String> {
     ask(night::Undo { night, group }).await

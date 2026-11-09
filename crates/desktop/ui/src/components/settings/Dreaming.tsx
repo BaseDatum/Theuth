@@ -46,6 +46,7 @@ import {
   countsLine,
   dreamNowBlocker,
   dreamNowUnavailable,
+  dreamNowWhere,
   isPaused,
   nightText,
   parseDigest,
@@ -94,7 +95,7 @@ export function Dreaming() {
 
   return (
     <>
-      <Section title="Dreaming" actions={<DreamNow blocker={blocker} defaultBudget={settings.data?.budget_usd ?? DEFAULT_BUDGET_USD} />}>
+      <Section title="Dreaming" actions={<DreamNow blocker={blocker} runsOn={s?.runs_on ?? null} defaultBudget={settings.data?.budget_usd ?? DEFAULT_BUDGET_USD} />}>
         {status.isError ? (
           <Empty>{status.error.message}</Empty>
         ) : (
@@ -276,8 +277,8 @@ function Stat({ label, className, children }: { label: string; className?: strin
   )
 }
 
-/** The Dream now button and its dialog: budget (opens at the nightly budget) and mode (one pass | backlog) → `dreaming.run_now` → the run's chat. `blocker` disables the button and is its tooltip (R-46). */
-function DreamNow({ blocker, defaultBudget }: { blocker: string | null; defaultBudget: number }) {
+/** The Dream now button and its dialog: budget (opens at the nightly budget) and mode (one pass | backlog) → `dreaming.run_now` → the run's chat. `blocker` disables the button and is its tooltip (R-46). 185 A5: `runsOn` names the hub a non-hub's press runs on; `null` = this machine. */
+function DreamNow({ blocker, runsOn, defaultBudget }: { blocker: string | null; runsOn: string | null; defaultBudget: number }) {
   const api = useDreamingApi()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
@@ -317,7 +318,7 @@ function DreamNow({ blocker, defaultBudget }: { blocker: string | null; defaultB
           >
             <DialogHeader>
               <DialogTitle>Dream now</DialogTitle>
-              <DialogDescription>Runs the routine at once with its own budget; the night's journal names the mode.</DialogDescription>
+              <DialogDescription>{dreamNowWhere(runsOn)} at once with its own budget; the night's journal names the mode.</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-2">
               <div className="grid gap-2">

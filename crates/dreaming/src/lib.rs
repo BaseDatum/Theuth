@@ -101,11 +101,14 @@ pub fn budget_line(usd: f64) -> String {
 
 /// The routine file text for `cfg` (design §9.7 with the config's values).
 /// `cwd` is the data dir, so the sensor finds `dreaming/signals.json`.
-/// `model:` is always written: the resolved tidy tier (136 D12).
+/// `model:` is always written: the resolved tidy tier (136 D12). 185 A2:
+/// `engine:` is `me` — this engine, never another's (the file is local to
+/// each engine) — and the sensor's `engine=` arg appears only as the
+/// explicit `dreaming.home_engine` pin, which overrides the hub rule.
 pub fn routine_text(
     cfg: &DreamConfig,
     data_dir: &Path,
-    engine: Option<&str>,
+    me: Option<&str>,
     agent: &config::AgentDefaults,
 ) -> String {
     let (models, _) = cfg.resolve_models(agent);
@@ -114,9 +117,14 @@ pub fn routine_text(
     } else {
         format!("model: {}\n", models.tidy)
     };
-    let engine_arg = engine
+    let engine_arg = cfg
+        .home_engine
+        .as_deref()
         .filter(|e| !e.is_empty())
         .map_or(String::new(), |e| format!(" engine={e}"));
+    let engine_line = me
+        .filter(|e| !e.is_empty())
+        .map_or(String::new(), |e| format!("engine: {e}\n"));
     ROUTINE_TEMPLATE
         .replace(
             "{{window}}",
@@ -129,6 +137,7 @@ pub fn routine_text(
         .replace("{{run_timeout}}", &cfg.run_timeout)
         .replace("{{budget}}", &budget_line(cfg.budget_usd))
         .replace("{{cwd}}", &format!("\"{}\"", data_dir.display()))
+        .replace("{{engine_line}}", &engine_line)
         .replace("{{model_line}}", &model_line)
 }
 
@@ -142,13 +151,15 @@ const SENSOR_PATH: &str = "sensors/dreaming.py";
 /// `sensors/dreaming.py` are binary-owned (rewritten when the text differs);
 /// `schedules/dreaming.md` is written when absent and otherwise patched in
 /// place (`budget` / `when` / `run_timeout` / `model` / `cap` follow the
-/// config, R-47; `enabled:` and every other line survive — except a
-/// routine [`disable_files`] switched off, which comes back on). Returns
-/// the root-relative paths written.
+/// config, R-47; 185 A2: `cwd` and `engine` follow this engine, so a file
+/// another engine's bytes overwrote repairs itself; `enabled:` and every
+/// other line survive — except a routine [`disable_files`] switched off,
+/// which comes back on). `me` is this engine's id. Returns the
+/// root-relative paths written.
 pub fn install_files(
     data_dir: &Path,
     cfg: &DreamConfig,
-    engine: Option<&str>,
+    me: Option<&str>,
     agent: &config::AgentDefaults,
 ) -> std::io::Result<Vec<String>> {
     // P2 D6: only `disable_files` removes the sensor, so a switched-off
@@ -169,8 +180,24 @@ pub fn install_files(
     let routine = data_dir.join(schedule::DIR).join("dreaming.md");
     if routine.exists() {
         let before = std::fs::read_to_string(&routine)?;
-        night::update_routine_file(data_dir, cfg, engine, agent)?;
-        if disabled_by_us && !night::routine_enabled(data_dir) {
+        // R1 A2: bytes another engine wrote (its `cwd`, its `engine:`) carry its
+        // `enabled:` too; that line follows THIS engine's `dreaming.enabled` (on
+        // here: install runs only when enabled). Our own file keeps a hand toggle.
+        let foreign = schedule::file::ScheduleFile::read("dreaming", &before).is_ok_and(|f| {
+            let not_me = |e: &str| me.is_some_and(|me| me != e);
+            let pin = cfg.home_engine.as_deref();
+            f.cwd
+                .as_deref()
+                .is_some_and(|c| c != data_dir.display().to_string())
+                || f.engine.as_deref().is_some_and(not_me)
+                || f.when.as_deref().is_some_and(|w| {
+                    w.split_whitespace()
+                        .filter_map(|t| t.strip_prefix("engine="))
+                        .any(|e| not_me(e) && Some(e) != pin)
+                })
+        });
+        night::update_routine_file(data_dir, cfg, me, agent)?;
+        if (disabled_by_us || foreign) && !night::routine_enabled(data_dir) {
             let text = std::fs::read_to_string(&routine)?;
             night::write_atomic(&routine, night::set_routine_enabled(&text, true).as_bytes())?;
         }
@@ -179,7 +206,7 @@ pub fn install_files(
         }
     } else {
         std::fs::create_dir_all(data_dir.join(schedule::DIR))?;
-        std::fs::write(&routine, routine_text(cfg, data_dir, engine, agent))?;
+        std::fs::write(&routine, routine_text(cfg, data_dir, me, agent))?;
         written.push(format!("{}/dreaming.md", schedule::DIR));
     }
     Ok(written)
@@ -250,14 +277,10 @@ impl runtime::Plugin for DreamingPlugin {
             }
         };
         let agent = config::AgentDefaults::from_runtime(rt);
-        // R-33 (D14): `engine ≠ self` is enforced always — the home engine when
-        // configured, else this engine.
-        let home = cfg
-            .home_engine
-            .clone()
-            .filter(|h| !h.is_empty())
-            .unwrap_or_else(|| engine.clone());
-        match install_files(&rt.data_dir, &cfg, Some(&home), &agent) {
+        // 185 A2: the file is this engine's alone (never replicated): stamped
+        // with this engine; `home_engine` is only the sensor's `engine=` pin.
+        let me = (!engine.is_empty()).then_some(engine.as_str());
+        match install_files(&rt.data_dir, &cfg, me, &agent) {
             Ok(w) if !w.is_empty() => tracing::info!(files = ?w, "dreaming: bundled files written"),
             Ok(_) => {}
             Err(e) => tracing::warn!("dreaming: bundled files not written: {e}"),
@@ -308,8 +331,9 @@ mod tests {
         }
     }
 
-    /// The routine parses, carries the budget, the cap (D4), the engine arg
-    /// always (R-33) and the resolved tidy model always (R-14/D12).
+    /// The routine parses, carries the budget, the cap (D4), the resolved
+    /// tidy model always (R-14/D12) and — 185 A2 — `engine:` this engine,
+    /// with the sensor's `engine=` only as the `home_engine` pin.
     #[test]
     fn routine_parses_with_the_schedule_crate_and_carries_the_budget() {
         let dir = tempfile::tempdir().unwrap();
@@ -332,7 +356,27 @@ mod tests {
         let sensor = spec.sensor.unwrap();
         assert_eq!(sensor.args["window"], "01:00-06:00");
         assert_eq!(sensor.args["idle"], "20");
-        assert_eq!(sensor.args["engine"], "eng1");
+        assert!(
+            !sensor.args.contains_key("engine"),
+            "no pin: the hub rule decides"
+        );
+        assert_eq!(spec.engine.as_deref(), Some("eng1"));
+        let pinned = routine_text(
+            &DreamConfig {
+                home_engine: Some("pin".into()),
+                ..cfg.clone()
+            },
+            dir.path(),
+            Some("eng1"),
+            &agent(),
+        );
+        let pinned = schedule::file::parse("dreaming", &pinned).unwrap();
+        assert_eq!(pinned.sensor.unwrap().args["engine"], "pin");
+        assert_eq!(
+            pinned.engine.as_deref(),
+            Some("eng1"),
+            "the stamp is never the pin"
+        );
         assert!(spec.quiet && !spec.approvals && spec.enabled);
         assert_eq!(spec.memory, schedule::file::Memory::Clear);
         assert_eq!(spec.cwd.as_deref(), Some(dir.path()));
@@ -423,7 +467,7 @@ mod tests {
             std::fs::read_to_string(dir.path().join("skills/dreaming.md")).unwrap(),
             SKILL
         );
-        assert!(SENSOR.starts_with("# theuth-sensor: dreaming 3\n"));
+        assert!(SENSOR.starts_with("# theuth-sensor: dreaming 4\n"));
         // R-47: a hand-edited config.yaml (here: a new cfg) reaches the installed routine.
         let changed = DreamConfig {
             budget_usd: 4.0,
@@ -436,7 +480,61 @@ mod tests {
         let after = std::fs::read_to_string(&routine).unwrap();
         assert!(after.contains("enabled: false\n"), "{after}");
         assert!(after.contains("budget: 4 USD\n"), "{after}");
-        assert!(after.contains(" engine=eng9"), "{after}");
+        assert!(after.contains("engine: eng9\n"), "{after}");
+    }
+
+    /// 185 A2: a `dreaming.md` that another engine's bytes overwrote (the old
+    /// replica mirror) — its `cwd`, its `engine:` stamp, its `engine=` gate
+    /// arg, its `enabled: false` — repairs itself from this engine's config
+    /// at the next start (R1: `enabled:` follows this engine's
+    /// `dreaming.enabled`), and nothing names the other engine.
+    #[test]
+    fn a_foreign_routine_file_heals_from_this_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let cfg = DreamConfig::default();
+        install_files(d, &cfg, Some("eng-a"), &agent()).unwrap();
+        let routine = d.join("schedules/dreaming.md");
+        let foreign = routine_text(&cfg, Path::new("/Users/b/.theuth"), Some("eng-b"), &agent())
+            .replace(" heavy_sessions=40", " heavy_sessions=40 engine=eng-b")
+            .replace("---\nevery", "---\nenabled: false\nevery");
+        std::fs::write(&routine, &foreign).unwrap();
+        assert_eq!(
+            install_files(d, &cfg, Some("eng-a"), &agent()).unwrap(),
+            ["schedules/dreaming.md"]
+        );
+        let healed = std::fs::read_to_string(&routine).unwrap();
+        assert!(
+            !healed.contains("eng-b") && !healed.contains("/Users/b"),
+            "{healed}"
+        );
+        let spec = schedule::file::parse("dreaming", &healed).unwrap();
+        assert_eq!(spec.engine.as_deref(), Some("eng-a"));
+        assert_eq!(spec.cwd.as_deref(), Some(d));
+        assert!(!spec.sensor.unwrap().args.contains_key("engine"));
+        assert!(
+            spec.enabled,
+            "the peer's `enabled: false` follows this engine's config"
+        );
+        // A file from before 185 (no `engine:` line, same data-dir path, only
+        // the peer's `engine=` arg) is foreign too and gains this engine's stamp.
+        let same_dir = routine_text(&cfg, d, None, &agent())
+            .replace(" heavy_sessions=40", " heavy_sessions=40 engine=eng-b")
+            .replace("---\nevery", "---\nenabled: false\nevery");
+        std::fs::write(&routine, same_dir).unwrap();
+        install_files(d, &cfg, Some("eng-a"), &agent()).unwrap();
+        let spec =
+            schedule::file::parse("dreaming", &std::fs::read_to_string(&routine).unwrap()).unwrap();
+        assert_eq!(spec.engine.as_deref(), Some("eng-a"));
+        assert!(spec.enabled);
+        // Our own file: a hand toggle stays.
+        let own = night::set_routine_enabled(&std::fs::read_to_string(&routine).unwrap(), false);
+        std::fs::write(&routine, own).unwrap();
+        install_files(d, &cfg, Some("eng-a"), &agent()).unwrap();
+        assert!(
+            !night::routine_enabled(d),
+            "a hand toggle on our own file survives"
+        );
     }
 
     /// R-13 (D11) as amended by P2 D6: `enabled: false` leaves the routine on

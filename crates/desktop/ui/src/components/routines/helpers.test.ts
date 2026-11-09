@@ -1,9 +1,25 @@
 import { expect, test, vi } from 'vitest'
+import type { Peer } from '@/rpc/bindings/Peer'
 import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import { useSessions } from '@/store/sessions'
 import { NEW, draftToFile, fileText, latestDraft, startRoutineChat } from './draft'
-import { type Readable, cadence, cronWords, fromFile, fromInfo, kindOf, movedSettingsTab, parseWhen, plainError, resultKind, resultLabel, sentence, sortRoutines, verdictText } from './helpers'
+import { type Readable, cadence, cronWords, fromFile, fromInfo, kindOf, movedSettingsTab, parseWhen, plainError, resultKind, resultLabel, routineNotes, sentence, sortRoutines, verdictText } from './helpers'
+
+// 185 D9: the renamed line names the machine whose routine kept the name; dreaming on a non-hub says the hub dreams.
+test('routine notes: renamed on arrival, dreaming on a non-hub', () => {
+  const peer = { id: 'eng-b', name: 'studio', reachable: true, last_seen_ms: 0 } as unknown as Peer
+  const mesh = { self_id: 'eng-a', self_name: 'laptop', peers: [peer], lease: { holder: 'eng-b', since_ms: 0, reason: 'elected' } }
+  const all = [
+    { name: 'brief', engine: 'eng-b' },
+    { name: 'brief-aaaaaaaa', engine: 'eng-a' },
+  ]
+  expect(routineNotes({ name: 'brief-aaaaaaaa', renamed_from: 'brief' }, all, mesh)).toEqual(['renamed: studio already had a routine called brief'])
+  expect(routineNotes({ name: 'brief', renamed_from: undefined }, all, mesh)).toEqual([])
+  expect(routineNotes({ name: 'dreaming' }, all, mesh)).toEqual(['runs on the hub'])
+  expect(routineNotes({ name: 'dreaming' }, all, { ...mesh, lease: { ...mesh.lease, holder: 'eng-a' } })).toEqual([])
+  expect(routineNotes({ name: 'dreaming' }, all, { ...mesh, peers: [] })).toEqual([])
+})
 
 test('cadence in words', () => {
   expect(cadence({ when: 'every 5m', describe: 'every 5m' })).toBe('every 5m')

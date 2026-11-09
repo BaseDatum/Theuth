@@ -67,6 +67,16 @@ fn actor() -> Option<ActorRef<crate::Schedule>> {
         .flatten()
 }
 
+/// 185 C8: the refusal for a routine named `name` that runs on another
+/// machine ([`crate::NameInUse`]); `None` when it is free, ours, or the actor is not up.
+pub async fn name_in_use(name: &str, legacy: bool) -> Option<String> {
+    actor()?
+        .ask(crate::NameInUse(name.to_owned(), legacy))
+        .await
+        .ok()
+        .flatten()
+}
+
 /// `14h 3m` — whole minutes once past one, seconds below (34 §6's reply
 /// style). Negative durations read as `0s`.
 fn rel(d: chrono::Duration) -> String {
@@ -85,7 +95,7 @@ fn non_default<'a>(v: Option<&'a str>, default: &str, watcher: bool) -> Option<&
 /// Arguments for [`ScheduleTool`] (34 §6, 33 §5.1).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ScheduleArgs {
-    /// File stem: `[a-z0-9][a-z0-9-]*`, ≤ 40 chars. An existing schedule of this name is replaced.
+    /// File stem: `[a-z0-9][a-z0-9-]*`, ≤ 40 chars. Your own schedule of this name is replaced; a name another machine's routine already uses is refused — choose another.
     pub name: String,
     /// Standard cron, local time (`0 9 * * 1-5`). Exactly one of cron / every / at.
     pub cron: Option<String>,
@@ -211,7 +221,9 @@ impl Tool for ScheduleTool {
         "Create or replace a scheduled prompt: a file in the schedules directory that fires on a clock \
          (cron in local time, an interval, or once at an instant) and runs the prompt unattended in its \
          own session. With `until` or `max_runs` it is a loop that runs again until done. Returns the \
-         next fire time. Read, list and delete schedules with the file tools."
+         next fire time. A name already used by a routine that runs on another machine is refused \
+         (\"a routine named <x> already runs on <machine>; choose another name\"): pick a new name, never \
+         overwrite it. Read, list and delete schedules with the file tools."
             .into()
     }
 
@@ -220,6 +232,10 @@ impl Tool for ScheduleTool {
             return Ok(ToolOutput::err(
                 "name: [a-z0-9][a-z0-9-]*, at most 40 chars",
             ));
+        }
+        // 185 C8: never over another machine's routine (an unclaimed legacy one included).
+        if let Some(why) = name_in_use(&a.name, true).await {
+            return Ok(ToolOutput::err(why));
         }
         // 182 S8: replacing a schedule keeps the engine it fires on (a legacy file stays unstamped).
         let old = std::fs::read_to_string(self.dir.join(format!("{}.md", a.name)))

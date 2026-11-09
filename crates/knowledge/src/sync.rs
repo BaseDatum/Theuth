@@ -11,6 +11,17 @@
 //! loser stays in history. Nothing is deleted because a peer lacks it — only
 //! a peer's *deletion commit* newer than the local version removes a file.
 //!
+//! 185 B6: each side keeps, per peer, the last-agreed manifest (the *base*,
+//! `<data_dir>/knowledge-sync/<peer>.json`: per path the blob and commit
+//! seconds both sides held). A path only one side changed since the base
+//! takes that side's version. A path both changed is a conflict: the side
+//! whose manifest says `hub` wins when exactly one does; both claiming hub
+//! (the heal window) leaves the path as each has it for the next sync;
+//! neither (two nodes) is newest-wins. Without a base yet (the first
+//! exchange with a peer) everything is newest-wins. Each side applies only
+//! what its own rule gives the peer, so an older peer (no `hub`, no base)
+//! cannot push a version this side's rule refuses. Tombstones are versions.
+//!
 //! Frames are `u32 LE length ‖ JSON` (the mesh pairing idiom), two messages
 //! each way per exchange; the dialer speaks first at each step so neither
 //! side writes while the other is not reading.
@@ -51,6 +62,9 @@ pub struct Manifest {
     pub head: Option<String>,
     /// Root-relative `/` paths.
     pub files: BTreeMap<String, Entry>,
+    /// 185 B6: the sender holds the hub lease (`false` from an older engine).
+    #[serde(default)]
+    pub hub: bool,
 }
 
 /// One file shipped; `bytes: None` = the sender's newer deletion.
@@ -84,7 +98,8 @@ pub fn start(k: Arc<Knowledge>, sync_secs: u64) {
                     Ok((peer, stream)) => {
                         let k = k2.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = exchange(&k, stream, &peer, false).await {
+                            if let Err(e) = exchange(&k, stream, &peer, false, mesh::is_hub()).await
+                            {
                                 tracing::warn!("knowledge sync from {peer}: {e:#}");
                             }
                         });
@@ -122,22 +137,25 @@ pub fn start(k: Arc<Knowledge>, sync_secs: u64) {
 /// One exchange with `peer` as the dialer.
 pub async fn dial(k: &Arc<Knowledge>, t: &Arc<dyn Transport>, peer: &PeerId) -> anyhow::Result<()> {
     let stream = t.open(peer, ALPN_KNOWLEDGE).await?;
-    exchange(k, stream, peer, true).await
+    exchange(k, stream, peer, true, mesh::is_hub()).await
 }
 
 /// The protocol on one stream: manifests both ways, then the files each side
-/// needs, then apply. `dialer` speaks first at each step.
+/// needs, then apply. `dialer` speaks first at each step. `hub`: this engine
+/// holds the hub lease (185 B6).
 pub async fn exchange(
     k: &Arc<Knowledge>,
     mut stream: Box<dyn ByteStream>,
     peer: &PeerId,
     dialer: bool,
+    hub: bool,
 ) -> anyhow::Result<()> {
     let repo = k.repo.clone().context("no repository: sync unavailable")?;
-    let mine = {
+    let mut mine = {
         let repo = repo.clone();
         tokio::task::spawn_blocking(move || manifest(&repo)).await??
     };
+    mine.hub = hub;
     let theirs = if dialer {
         send(&mut stream, &Msg::Manifest(mine.clone())).await?;
         recv_manifest(&mut stream).await?
@@ -146,9 +164,15 @@ pub async fn exchange(
         send(&mut stream, &Msg::Manifest(mine.clone())).await?;
         m
     };
+    let base_path = base_path(k, peer);
+    let base = load_base(&base_path);
+    let plan = plan(&mine, &theirs, base.as_ref());
+    for (path, c) in &plan.conflicts {
+        tracing::info!("knowledge: {path} changed here and on {peer}: {}", c.says());
+    }
     let for_them = {
-        let (repo, mine, theirs) = (repo.clone(), mine.clone(), theirs.clone());
-        tokio::task::spawn_blocking(move || files_for(&repo, &mine, &theirs)).await??
+        let (repo, mine, plan) = (repo.clone(), mine.clone(), plan.clone());
+        tokio::task::spawn_blocking(move || files_for(&repo, &mine, &plan)).await??
     };
     let for_me = if dialer {
         send(&mut stream, &Msg::Files(for_them)).await?;
@@ -159,10 +183,203 @@ pub async fn exchange(
         f
     };
     let _ = stream.shutdown().await;
+    // 185 B6: only what this side's rule gives the peer (an older peer sends by newest-wins).
+    let for_me: Vec<File> = for_me
+        .into_iter()
+        .filter(|f| plan.take.get(&f.path) == Some(&Take::Theirs))
+        .collect();
+    let applied: Vec<String> = for_me.iter().map(|f| f.path.clone()).collect();
     if !for_me.is_empty() {
         apply(k, &repo, for_me, peer).await?;
     }
+    let next = next_base(base.unwrap_or_default(), &mine, &theirs, &plan, &applied);
+    if let Err(e) = save_base(&base_path, &next) {
+        tracing::warn!("knowledge: sync base for {peer} not saved: {e:#}");
+    }
     Ok(())
+}
+
+/// 185 B6: which version of one path both sides end with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Take {
+    /// This side's (sent to the peer).
+    Mine,
+    /// The peer's (applied here).
+    Theirs,
+    /// Each keeps its own for now: equal, or a conflict in the heal window.
+    Keep,
+}
+
+/// 185 B6: how a conflict (a path both sides changed since the base) was decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Conflict {
+    /// Exactly one side claims hub; it wins.
+    Hub { mine: bool },
+    /// Both claim hub: left for the next sync.
+    Deferred,
+    /// Neither claims hub: the newer commit wins.
+    Newest,
+}
+
+impl Conflict {
+    fn says(self) -> &'static str {
+        match self {
+            Self::Hub { mine: true } => "this engine is the hub; its version wins",
+            Self::Hub { mine: false } => "the peer is the hub; its version wins",
+            Self::Deferred => "both claim the hub; each keeps its own until the next sync",
+            Self::Newest => "no hub between the two; the newer version wins",
+        }
+    }
+}
+
+/// 185 B6: the decision per path differing between the manifests.
+#[derive(Clone, Debug, Default)]
+struct Plan {
+    take: BTreeMap<String, Take>,
+    conflicts: Vec<(String, Conflict)>,
+}
+
+/// 185 B6: the per-peer base. `agreed`: per path the version both sides
+/// last held. `pending`: per path the blob this side sent (`None` = a
+/// deletion) that the peer has not shown yet. A peer still showing the old
+/// agreed blob never applied it (it dropped before applying): the old base
+/// stands, so the path reads as this side's change and is sent again instead
+/// of the old copy being taken for the peer's edit. A peer showing the sent
+/// blob, or anything else, took it (and may have edited since): the sent
+/// blob is the base.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct Base {
+    agreed: BTreeMap<String, Entry>,
+    #[serde(default)]
+    pending: BTreeMap<String, Option<String>>,
+}
+
+impl Base {
+    /// The blob `path` stood at when both last agreed, given the peer now holds `theirs`.
+    /// ponytail: a peer that dropped the send AND then edited its old copy reads as
+    /// "took it, then edited" here while its own base still says the old blob: the
+    /// bases stay crossed and the two versions can swap every tick (both kept in
+    /// git). Fix: each manifest carries the blobs it applied from this peer.
+    fn blob(&self, path: &str, theirs: Option<&Entry>) -> Option<Option<String>> {
+        let old = self.agreed.get(path).map(|e| e.blob.clone());
+        match self.pending.get(path) {
+            Some(sent) if theirs.map(|t| t.blob.clone()) != old => Some(sent.clone()),
+            _ => old,
+        }
+    }
+}
+
+/// 185 B6: decide every path the manifests differ on (see the module docs).
+fn plan(mine: &Manifest, theirs: &Manifest, base: Option<&Base>) -> Plan {
+    let blob = |e: Option<&Entry>| e.map(|e| e.blob.clone());
+    let mut out = Plan::default();
+    let paths: std::collections::BTreeSet<&String> =
+        mine.files.keys().chain(theirs.files.keys()).collect();
+    for path in paths {
+        let (m, t) = (mine.files.get(path), theirs.files.get(path));
+        // Equal, or no file on either side (a deletion against a path never had).
+        if blob(m) == blob(t)
+            || (m.and_then(|e| e.blob.as_ref()).is_none()
+                && t.and_then(|e| e.blob.as_ref()).is_none())
+        {
+            continue;
+        }
+        let newest = match (m, t) {
+            (_, Some(t)) if newer(t, m) => Take::Theirs,
+            (Some(m), _) if newer(m, t) => Take::Mine,
+            _ => Take::Keep,
+        };
+        let take = match base {
+            None => newest,
+            Some(base) => {
+                let b = base.blob(path, t);
+                match (blob(m) != b, blob(t) != b) {
+                    (true, false) => Take::Mine,
+                    (false, true) => Take::Theirs,
+                    _ => {
+                        let (c, take) = match (mine.hub, theirs.hub) {
+                            (true, false) => (Conflict::Hub { mine: true }, Take::Mine),
+                            (false, true) => (Conflict::Hub { mine: false }, Take::Theirs),
+                            (true, true) => (Conflict::Deferred, Take::Keep),
+                            (false, false) => (Conflict::Newest, newest),
+                        };
+                        out.conflicts.push((path.clone(), c));
+                        take
+                    }
+                }
+            }
+        };
+        out.take.insert(path.clone(), take);
+    }
+    out
+}
+
+/// 185 B6: the base after this exchange — every path both manifests agreed
+/// on, and every path applied here, is agreed; a path sent stays pending
+/// until the peer's next manifest shows it ([`Base`]).
+fn next_base(
+    mut base: Base,
+    mine: &Manifest,
+    theirs: &Manifest,
+    plan: &Plan,
+    applied: &[String],
+) -> Base {
+    for (path, t) in &theirs.files {
+        let shown = base.pending.get(path).is_some_and(|sent| *sent == t.blob);
+        let agreed = mine.files.get(path).is_some_and(|m| m.blob == t.blob);
+        if shown || agreed {
+            base.pending.remove(path);
+            let e = if agreed {
+                mine.files.get(path).unwrap_or(t)
+            } else {
+                t
+            };
+            base.agreed.insert(path.clone(), e.clone());
+        }
+    }
+    for (path, take) in &plan.take {
+        if *take == Take::Mine
+            && let Some(m) = mine.files.get(path)
+        {
+            base.pending.insert(path.clone(), m.blob.clone());
+        }
+    }
+    for path in applied {
+        if let Some(t) = theirs.files.get(path) {
+            base.pending.remove(path);
+            base.agreed.insert(path.clone(), t.clone());
+        }
+    }
+    base
+}
+
+/// `<data_dir>/knowledge-sync/<peer>.json`.
+fn base_path(k: &Knowledge, peer: &PeerId) -> PathBuf {
+    let name: String = peer
+        .0
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    k.root()
+        .parent()
+        .unwrap_or_else(|| k.root())
+        .join("knowledge-sync")
+        .join(format!("{name}.json"))
+}
+
+/// The stored base; `None` before the first exchange (or unreadable: newest-wins once, then stored again).
+fn load_base(path: &Path) -> Option<Base> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+fn save_base(path: &Path, base: &Base) -> anyhow::Result<()> {
+    write_atomic(path, &serde_json::to_vec(base)?)
 }
 
 /// HEAD's paths with the time of the commit that last touched each, and
@@ -184,6 +401,7 @@ pub fn manifest(repo: &Repo) -> anyhow::Result<Manifest> {
     Ok(Manifest {
         head: Some(head.to_string()),
         files,
+        hub: false,
     })
 }
 
@@ -195,13 +413,14 @@ fn newer(theirs: &Entry, mine: Option<&Entry>) -> bool {
     }
 }
 
-/// The files `theirs` should take from `mine`.
-fn files_for(repo: &Repo, mine: &Manifest, theirs: &Manifest) -> anyhow::Result<Vec<File>> {
+/// The files the peer takes from `mine`: every path [`plan`] gives this
+/// side, except a deletion of a path the peer never had.
+fn files_for(repo: &Repo, mine: &Manifest, plan: &Plan) -> anyhow::Result<Vec<File>> {
     let mut out = Vec::new();
-    for (path, e) in &mine.files {
-        if !newer(e, theirs.files.get(path)) {
+    for (path, take) in &plan.take {
+        let Some(e) = mine.files.get(path).filter(|_| *take == Take::Mine) else {
             continue;
-        }
+        };
         let bytes = match &e.blob {
             Some(b) => Some(repo.blob(b.parse().map_err(|_| anyhow::anyhow!("bad blob id {b}"))?)?),
             None => None,
@@ -343,15 +562,44 @@ mod tests {
         }
     }
 
-    /// One exchange over an in-memory duplex: `a` dials `b`.
+    /// One exchange over an in-memory duplex: `a` dials `b`; neither claims hub.
     async fn sync_pair(a: &Arc<Knowledge>, b: &Arc<Knowledge>) {
+        sync_with(a, false, b, false).await;
+    }
+
+    /// How the other side names `k`: its bundle dir, so a reversed call keeps one base per pair.
+    fn peer_name(k: &Knowledge) -> PeerId {
+        let dir = k.root().parent().unwrap().file_name().unwrap();
+        PeerId(dir.to_string_lossy().into_owned())
+    }
+
+    /// [`sync_pair`] with each side's hub claim.
+    async fn sync_with(a: &Arc<Knowledge>, a_hub: bool, b: &Arc<Knowledge>, b_hub: bool) {
         let (sa, sb) = tokio::io::duplex(1 << 20);
-        let (pa, pb) = (PeerId("a".into()), PeerId("b".into()));
+        let (na, nb) = (peer_name(a), peer_name(b));
         let (ra, rb) = tokio::join!(
-            exchange(a, Box::new(sa), &pb, true),
-            exchange(b, Box::new(sb), &pa, false),
+            exchange(a, Box::new(sa), &nb, true, a_hub),
+            exchange(b, Box::new(sb), &na, false, b_hub),
         );
         ra.unwrap();
+        rb.unwrap();
+    }
+
+    /// `a` dials `b`, receives `b`'s files and drops before applying them (a
+    /// laptop going to sleep): `b` completes its side of the exchange.
+    async fn dialer_drops_after_the_send(a: &Arc<Knowledge>, b: &Arc<Knowledge>, b_hub: bool) {
+        let (sa, sb) = tokio::io::duplex(1 << 20);
+        let mine = manifest(a.repo.as_ref().unwrap()).unwrap();
+        let na = peer_name(a);
+        let dialer = async move {
+            let mut s: Box<dyn ByteStream> = Box::new(sa);
+            send(&mut s, &Msg::Manifest(mine)).await.unwrap();
+            recv_manifest(&mut s).await.unwrap();
+            send(&mut s, &Msg::Files(Vec::new())).await.unwrap();
+            let got = recv_files(&mut s).await.unwrap();
+            assert!(!got.is_empty(), "the acceptor sent something");
+        };
+        let (_, rb) = tokio::join!(dialer, exchange(b, Box::new(sb), &na, false, b_hub));
         rb.unwrap();
     }
 
@@ -380,7 +628,11 @@ mod tests {
         assert_eq!(ids(&b).await, ["facts/only-a", "facts/only-b"]);
         assert!(b.get("facts/only-a").await.unwrap().text.contains("from a"));
         let hist = b.history(Some("facts/only-a"), 10).await.unwrap();
-        assert_eq!(hist.changes[0].message, "sync from a");
+        assert!(
+            hist.changes[0]
+                .message
+                .starts_with("sync from theuth-ksync-")
+        );
 
         // Nothing to do: a second exchange writes no commit.
         let head_b = b.repo.as_ref().unwrap().head_id().unwrap();
@@ -432,7 +684,11 @@ mod tests {
                 .contains("b is newer")
         );
         let hist = a.history(Some("facts/shared"), 10).await.unwrap();
-        assert_eq!(hist.changes[0].message, "sync from b");
+        assert!(
+            hist.changes[0]
+                .message
+                .starts_with("sync from theuth-ksync-")
+        );
         let messages: Vec<&str> = hist.changes.iter().map(|c| c.message.as_str()).collect();
         assert!(messages.len() >= 3, "{messages:?}");
         let loser = a
@@ -454,5 +710,163 @@ mod tests {
         let head_a = a.repo.as_ref().unwrap().head_id().unwrap();
         sync_pair(&b, &a).await;
         assert_eq!(a.repo.as_ref().unwrap().head_id().unwrap(), head_a);
+    }
+
+    async fn text(k: &Arc<Knowledge>, id: &str) -> Option<String> {
+        k.get(id).await.ok().map(|c| c.text)
+    }
+
+    /// Two bundles that agree on `facts/shared` (v0): the base is recorded.
+    async fn agreed() -> (
+        crate::TestDir,
+        Arc<Knowledge>,
+        crate::TestDir,
+        Arc<Knowledge>,
+    ) {
+        let (dh, hub) = bundle().await;
+        let (dn, node) = bundle().await;
+        hub.put(put("facts/shared", "v0"), Source::User)
+            .await
+            .unwrap();
+        sync_with(&hub, true, &node, false).await;
+        assert!(text(&node, "facts/shared").await.unwrap().contains("v0"));
+        (dh, hub, dn, node)
+    }
+
+    /// 185 B6: a concept both sides changed after a partition — the hub's
+    /// version wins on both, though the node's is newer; the node's stays
+    /// in its history, and the next round changes nothing.
+    #[tokio::test]
+    async fn after_a_partition_the_hub_wins_a_real_conflict() {
+        let (_dh, hub, _dn, node) = agreed().await;
+        hub.put(put("facts/shared", "hub's edit"), Source::User)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        node.put(put("facts/shared", "node's newer edit"), Source::User)
+            .await
+            .unwrap();
+        sync_with(&node, false, &hub, true).await;
+        for k in [&hub, &node] {
+            assert!(
+                text(k, "facts/shared")
+                    .await
+                    .unwrap()
+                    .contains("hub's edit")
+            );
+        }
+        let hist = node.history(Some("facts/shared"), 10).await.unwrap();
+        let loser = node
+            .revision(&hist.changes[1].commit, Some("facts/shared"))
+            .await
+            .unwrap();
+        assert!(
+            loser.files[0].diff.contains("node's newer edit"),
+            "the loser stays in history"
+        );
+        let head = node.repo.as_ref().unwrap().head_id().unwrap();
+        sync_with(&hub, true, &node, false).await;
+        assert_eq!(node.repo.as_ref().unwrap().head_id().unwrap(), head);
+        // A deletion against an edit is a conflict like any other: the hub's edit comes back.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        hub.put(put("facts/shared", "hub again"), Source::User)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        node.delete("facts/shared").await.unwrap();
+        sync_with(&node, false, &hub, true).await;
+        for k in [&hub, &node] {
+            assert!(text(k, "facts/shared").await.unwrap().contains("hub again"));
+        }
+    }
+
+    /// 185 B6: a change only one side made since the base takes that side's
+    /// version, even when that side is not the hub — the hub never reverts
+    /// a node's edit it did not also change; a one-sided deletion travels too.
+    #[tokio::test]
+    async fn a_one_sided_change_wins_even_against_the_hub() {
+        let (_dh, hub, _dn, node) = agreed().await;
+        node.put(put("facts/shared", "node's edit"), Source::User)
+            .await
+            .unwrap();
+        sync_with(&hub, true, &node, false).await;
+        for k in [&hub, &node] {
+            assert!(
+                text(k, "facts/shared")
+                    .await
+                    .unwrap()
+                    .contains("node's edit")
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        node.delete("facts/shared").await.unwrap();
+        sync_with(&node, false, &hub, true).await;
+        assert_eq!(text(&hub, "facts/shared").await, None);
+    }
+
+    /// 185 B6: in the heal window both sides still claim hub — the conflict
+    /// waits (each keeps its own); once one side is the hub, it wins.
+    #[tokio::test]
+    async fn in_the_heal_window_the_conflict_waits_for_one_hub() {
+        let (_dh, hub, _dn, node) = agreed().await;
+        hub.put(put("facts/shared", "hub's edit"), Source::User)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        node.put(put("facts/shared", "node's edit"), Source::User)
+            .await
+            .unwrap();
+        sync_with(&hub, true, &node, true).await;
+        assert!(
+            text(&hub, "facts/shared")
+                .await
+                .unwrap()
+                .contains("hub's edit")
+        );
+        assert!(
+            text(&node, "facts/shared")
+                .await
+                .unwrap()
+                .contains("node's edit")
+        );
+        sync_with(&hub, true, &node, false).await;
+        for k in [&hub, &node] {
+            assert!(
+                text(k, "facts/shared")
+                    .await
+                    .unwrap()
+                    .contains("hub's edit")
+            );
+        }
+    }
+
+    /// R1 MUST 1: the acceptor sends its one-sided edit, the dialer drops
+    /// before applying it. The acceptor does not count the dialer's old copy
+    /// as the dialer's edit: the next rounds send the edit again, both end on
+    /// it, and nothing flips back.
+    #[tokio::test]
+    async fn a_send_the_peer_never_applied_is_sent_again_not_reverted() {
+        let (_dh, hub, _dn, node) = agreed().await;
+        hub.put(put("facts/shared", "hub's edit"), Source::User)
+            .await
+            .unwrap();
+        dialer_drops_after_the_send(&node, &hub, true).await;
+        assert!(text(&node, "facts/shared").await.unwrap().contains("v0"));
+        for _ in 0..2 {
+            sync_with(&node, false, &hub, true).await;
+            for k in [&hub, &node] {
+                assert!(
+                    text(k, "facts/shared")
+                        .await
+                        .unwrap()
+                        .contains("hub's edit"),
+                    "flipped"
+                );
+            }
+        }
+        let heads = || [&hub, &node].map(|k| k.repo.as_ref().unwrap().head_id().unwrap());
+        let before = heads();
+        sync_with(&hub, true, &node, false).await;
+        assert_eq!(heads(), before, "settled");
     }
 }

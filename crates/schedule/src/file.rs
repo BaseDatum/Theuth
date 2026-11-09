@@ -768,6 +768,126 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// 185 A1: routine files a plugin writes on every engine for that engine
+/// alone (stems). The `schedules/` mirror never replicates them: an older
+/// engine's row for one is ignored, a stored row never lands on disk.
+pub const LOCAL_ROUTINES: &[&str] = &["dreaming"];
+
+/// 185 A1: `file` (`<stem>.md`) is one of [`LOCAL_ROUTINES`].
+pub fn is_local_routine(file: &str) -> bool {
+    file.strip_suffix(".md")
+        .is_some_and(|stem| LOCAL_ROUTINES.contains(&stem))
+}
+
+/// 185 C7: `(created, engine)` as written; `(None, None)` for broken front matter.
+fn lineage(text: &str) -> (Option<String>, Option<String>) {
+    let trim = |s: Option<String>| s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    ScheduleFile::read("x", text).map_or((None, None), |f| (trim(f.created), trim(f.engine)))
+}
+
+/// R1 C7 rule 1: `text` without its front-matter `engine:` and `created:`
+/// lines — what stays when one routine is claimed (XTICK), re-homed by
+/// editing `engine:`, or re-saved by the tool.
+fn without_stamps(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut fences = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim_end() == "---" {
+            fences += 1;
+        }
+        let stamp = line.starts_with("engine:") || line.starts_with("created:");
+        if !(fences == 1 && stamp) {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// 185 C7: `a` and `b` (two texts of one name) are different routines, not
+/// two versions of one: both are stamped `engine:` with different engines,
+/// they do not share a `created:`, and (R1 rule 1) they differ in more than
+/// those two lines — a claim, a re-home or a tool re-save of one routine
+/// changes only the stamps. The mirror asks only on a path's first contact
+/// between two engines (R1 rule 2); later differences are edits.
+pub fn different_routines(a: &str, b: &str) -> bool {
+    let ((ca, ea), (cb, eb)) = (lineage(a), lineage(b));
+    let same_created = ca.is_some() && ca == cb;
+    matches!((ea, eb), (Some(x), Some(y)) if x != y)
+        && !same_created
+        && without_stamps(a) != without_stamps(b)
+}
+
+/// 185 C7: the name a routine of engine `engine` takes when `stem` is
+/// another machine's — `<stem>-<first 8 of the engine id>`, the stem cut so
+/// the whole stays a [`valid_name`].
+pub fn clash_name(stem: &str, engine: &str) -> String {
+    let slug: String = engine
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .take(8)
+        .collect();
+    let keep = 40 - 1 - slug.len();
+    let cut = stem.get(..keep.min(stem.len())).unwrap_or(stem);
+    format!("{}-{slug}", cut.trim_end_matches('-'))
+}
+
+/// 185 C7: a peer's `theirs` arrives for `<stem>.md` where the file holds
+/// `ours`. Different routines keep both: the one created later (then the
+/// higher engine id) moves to [`clash_name`] with its own engine. Both
+/// engines decide alike from the bytes alone, so they end with the same two
+/// names. Local routines and `autoresearch-*` study files (their plugin
+/// rewrites a missing file by its name) stay last-writer-wins.
+pub fn clash(file: &str, ours: &[u8], theirs: &[u8]) -> replica::files::Clash {
+    use replica::files::Clash;
+    let Some(stem) = file.strip_suffix(".md") else {
+        return Clash::Replace;
+    };
+    let (Ok(o), Ok(t)) = (std::str::from_utf8(ours), std::str::from_utf8(theirs)) else {
+        return Clash::Replace;
+    };
+    if is_local_routine(file) || stem.starts_with("autoresearch-") || !different_routines(o, t) {
+        return Clash::Replace;
+    }
+    let (ko, kt) = (lineage(o), lineage(t));
+    // Both engines are set (`different_routines`); `created` first, then the engine.
+    let later = |(c, e): &(Option<String>, Option<String>)| {
+        (c.clone().unwrap_or_default(), e.clone().unwrap_or_default())
+    };
+    if later(&kt) > later(&ko) {
+        Clash::KeepOurs {
+            theirs_as: format!(
+                "{}.md",
+                clash_name(stem, kt.1.as_deref().unwrap_or_default())
+            ),
+        }
+    } else {
+        Clash::MoveOurs {
+            ours_as: format!(
+                "{}.md",
+                clash_name(stem, ko.1.as_deref().unwrap_or_default())
+            ),
+        }
+    }
+}
+
+/// 185 D9: `name` is a routine [`clash`] renamed — `<stem>-<its engine>`
+/// where `stem` is another machine's routine (`raw_of(stem)`) — so the stem.
+pub fn renamed_from<'a>(
+    name: &str,
+    raw: &str,
+    stems: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<String> {
+    let (_, engine) = lineage(raw);
+    let engine = engine?;
+    stems
+        .into_iter()
+        .find(|(stem, other)| {
+            *stem != name && clash_name(stem, &engine) == name && different_routines(other, raw)
+        })
+        .map(|(stem, _)| stem.to_owned())
+}
+
 /// Every `*.md` in `dir` (non-recursive; names starting with `.` ignored), sorted
 /// by name: `(stem, raw text, parse result)`. Missing dir → empty; an unreadable
 /// file → `Err` with the io error.
@@ -1959,5 +2079,104 @@ mod tests {
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1
         );
+    }
+
+    /// 185 C7: two different routines named `x` — each engine decides from
+    /// the bytes alone, so A (ours a) and B (ours b) move the same routine to
+    /// the same name and keep the other under `x`: the mirror converges.
+    #[test]
+    fn same_name_routines_keep_both_and_both_engines_agree() {
+        use replica::files::Clash;
+        let a = "---\nevery: 1h\nengine: aaaaaaaa11112222\n---\nA\n";
+        let b = "---\nevery: 1h\nengine: bbbbbbbb33334444\n---\nB\n";
+        let (on_a, on_b) = (
+            clash("x.md", a.as_bytes(), b.as_bytes()),
+            clash("x.md", b.as_bytes(), a.as_bytes()),
+        );
+        assert_eq!(
+            on_a,
+            Clash::KeepOurs {
+                theirs_as: "x-bbbbbbbb.md".into()
+            }
+        );
+        assert_eq!(
+            on_b,
+            Clash::MoveOurs {
+                ours_as: "x-bbbbbbbb.md".into()
+            }
+        );
+        // The later `created:` is the second routine, whatever the engine ids.
+        let a_late = a.replacen("---\n", "---\ncreated: \"2026-11-09T10:00:00+00:00\"\n", 1);
+        let b_early = b.replacen("---\n", "---\ncreated: \"2026-11-01T10:00:00+00:00\"\n", 1);
+        assert_eq!(
+            clash("x.md", a_late.as_bytes(), b_early.as_bytes()),
+            Clash::MoveOurs {
+                ours_as: "x-aaaaaaaa.md".into()
+            }
+        );
+        assert_eq!(
+            clash("x.md", b_early.as_bytes(), a_late.as_bytes()),
+            Clash::KeepOurs {
+                theirs_as: "x-aaaaaaaa.md".into()
+            }
+        );
+        // One routine, two versions: last writer wins as before.
+        let a_edit = a.replace("\nA\n", "\nA, edited\n");
+        let legacy = "---\nevery: 1h\n---\nL\n";
+        let claim_b = a_late.replace("aaaaaaaa11112222", "bbbbbbbb33334444");
+        // R1 rule 1: a plain legacy file both machines claimed at once (no
+        // `created:` on a plain file), and a re-home by editing `engine:`.
+        let (claimed_a, claimed_b) = (
+            set_engine(legacy, "aaaaaaaa11112222"),
+            set_engine(legacy, "bbbbbbbb33334444"),
+        );
+        let rehomed = a.replace("aaaaaaaa11112222", "bbbbbbbb33334444");
+        let tool_resave = a_late
+            .replace("2026-11-09T10:00:00", "2026-11-10T09:00:00")
+            .replace("aaaaaaaa11112222", "bbbbbbbb33334444");
+        for (ours, theirs, why) in [
+            (a, a_edit.as_str(), "an edit on the same engine"),
+            (a, legacy, "a legacy side"),
+            (legacy, "---\nevery: 2h\n---\nL2\n", "two legacy files"),
+            (
+                a_late.as_str(),
+                claim_b.as_str(),
+                "two claims of one file (same created)",
+            ),
+            (
+                claimed_a.as_str(),
+                claimed_b.as_str(),
+                "racing claims of a plain legacy file",
+            ),
+            (a, rehomed.as_str(), "a re-home by editing engine:"),
+            (
+                a_late.as_str(),
+                tool_resave.as_str(),
+                "re-stamped engine and created, same routine",
+            ),
+        ] {
+            assert_eq!(
+                clash("x.md", ours.as_bytes(), theirs.as_bytes()),
+                Clash::Replace,
+                "{why}"
+            );
+        }
+        assert_eq!(
+            clash("dreaming.md", a.as_bytes(), b.as_bytes()),
+            Clash::Replace,
+            "local: never renamed"
+        );
+        assert_eq!(
+            clash("autoresearch-s.md", a.as_bytes(), b.as_bytes()),
+            Clash::Replace
+        );
+        // The renamed one says so; the one that kept the name does not.
+        let dir = [("x", a), ("x-bbbbbbbb", b)];
+        assert_eq!(renamed_from("x-bbbbbbbb", b, dir).as_deref(), Some("x"));
+        assert_eq!(renamed_from("x", a, dir), None);
+        // A long stem is cut so the name stays valid.
+        let long = clash_name(&"r".repeat(40), "bbbbbbbb33334444");
+        assert!(valid_name(&long) && long.ends_with("-bbbbbbbb"), "{long}");
+        assert!(is_local_routine("dreaming.md") && !is_local_routine("dreaming-2.md"));
     }
 }

@@ -359,6 +359,7 @@ impl runtime::Plugin for DocumentPlugin {
             store.mirror_dir(),
             "doc_files",
             std::time::Duration::from_secs(60),
+            None,
         ));
         if let Err(e) = mirror::start(&store.mirror_dir(), actor) {
             tracing::warn!("documents mirror watcher unavailable: {e:#}");

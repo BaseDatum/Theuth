@@ -355,9 +355,11 @@ pub struct SignalsSnapshot {
     pub last_root_turn_at: Option<String>,
     /// Desks with a task `doing`.
     pub desks_doing: u32,
-    /// Concepts written since `last_dream_at`.
+    /// Concepts written since `last_dream_at` — 185 A4: on any engine of
+    /// the mesh (the replicated knowledge store), not only here.
     pub new_concepts_since: u32,
-    /// Sessions that turned since `last_dream_at`.
+    /// Sessions that turned since `last_dream_at` — 185 A4: attended root
+    /// sessions of any engine (the replicated session store).
     pub sessions_since: u32,
     /// RFC 3339 of the last night's end.
     pub last_dream_at: Option<String>,
@@ -372,6 +374,15 @@ pub struct SignalsSnapshot {
     /// The engine's local UTC offset in minutes at the time of writing, so the
     /// sensor (UTC clock only) can place `now` inside the local window.
     pub tz_offset_minutes: i32,
+    /// 185 A3: this engine holds the hub lease (`mesh::is_hub`).
+    pub hub: bool,
+    /// 185 A3: this engine has paired peers (`mesh::has_peers`).
+    pub peered: bool,
+    /// 185 A3: the lease holder is this engine or connected to it. `false`
+    /// means cut off from the hub (or no hub at all): this engine dreams.
+    pub hub_reachable: bool,
+    /// 185 A3: the hub's machine name, for the gate's reason.
+    pub hub_name: Option<String>,
 }
 
 /// How a manual run proceeds (136 §4.1).
@@ -478,6 +489,12 @@ pub struct DreamStatus {
     pub proposals_pending: u64,
     /// RFC 3339 while paused.
     pub paused_until: Option<String>,
+    /// 185 A5: where Dream now runs when it is not here — the hub's machine
+    /// name when this engine is peered, not the hub, and the hub is
+    /// connected (the press is forwarded); `None` = here.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub runs_on: Option<String>,
 }
 
 /// `dreaming.undo` result (136 §3.3 item 5).

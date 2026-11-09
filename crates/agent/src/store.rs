@@ -1774,6 +1774,35 @@ impl Store {
         Ok(row.is_some_and(|(u,)| u))
     }
 
+    /// 185 A4: attended root sessions (no parent, not unattended) with
+    /// activity after `since` (RFC 3339; `None` = ever) — every engine's,
+    /// since session rows replicate with their `updated_at`.
+    pub async fn attended_roots_since(&self, since: Option<&str>) -> anyhow::Result<u32> {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sessions WHERE parent IS NULL AND NOT unattended \
+             AND (?1 IS NULL OR julianday(updated_at) > julianday(?1))",
+        )
+        .bind(since)
+        .fetch_one(&self.read)
+        .await?;
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    }
+
+    /// 185 R1 A4: the latest activity (RFC 3339) of another engine's session
+    /// of the routine `name` — titled `name`, or `name · <subject>` for a
+    /// watcher — from the replicated session rows: when it last ran there.
+    pub async fn routine_ran_elsewhere(&self, name: &str) -> anyhow::Result<Option<String>> {
+        let (at,): (Option<String>,) = sqlx::query_as(
+            "SELECT MAX(updated_at) FROM sessions WHERE unattended AND parent IS NULL \
+             AND owner != ?1 AND (title = ?2 OR substr(title, 1, length(?2) + 3) = ?2 || ' · ')",
+        )
+        .bind(&self.me)
+        .bind(name)
+        .fetch_one(&self.read)
+        .await?;
+        Ok(at.filter(|a| !a.is_empty()))
+    }
+
     /// 136 D6: may this session run dreaming's consolidation ops as the
     /// owner's own root — `scope = 'owner'`, no parent, no desk, attended?
     /// Unattended (routine) sessions are never admitted here: only the open

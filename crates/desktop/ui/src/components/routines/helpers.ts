@@ -1,4 +1,6 @@
+import { engineName } from '@/components/tasks/home'
 import type { LastCheck } from '@/rpc/bindings/LastCheck'
+import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { RunKind } from '@/rpc/bindings/RunKind'
 import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
@@ -291,4 +293,22 @@ export const isSection = (s: string): s is Section => (SECTIONS as readonly stri
 /** Settings › Schedules moved here (Sky, 2026-09-25): where a legacy `/settings/<tab>` lands, or `null` when it is still a settings tab. */
 export function movedSettingsTab(tab: string): '/routines' | null {
   return tab === 'schedules' ? '/routines' : null
+}
+
+/**
+ * 185 D9: the muted lines under a routine row. A routine renamed on arrival names the machine whose routine kept the
+ * name; the dreaming routine on a paired engine that is not the hub says the hub dreams.
+ */
+export function routineNotes(
+  s: Pick<ScheduleInfo, 'name' | 'renamed_from'>,
+  all: readonly Pick<ScheduleInfo, 'name' | 'engine'>[],
+  mesh: Pick<MeshStatus, 'self_id' | 'self_name' | 'peers' | 'lease'> | undefined,
+): string[] {
+  const notes: string[] = []
+  if (s.renamed_from) {
+    const engine = all.find((x) => x.name === s.renamed_from)?.engine
+    notes.push(`renamed: ${engine && mesh ? engineName(mesh, engine) : 'another machine'} already had a routine called ${s.renamed_from}`)
+  }
+  if (s.name === 'dreaming' && mesh && mesh.peers.length > 0 && mesh.lease.holder !== mesh.self_id) notes.push('runs on the hub')
+  return notes
 }

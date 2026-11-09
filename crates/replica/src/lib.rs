@@ -97,6 +97,8 @@ pub struct Mirror {
     pub dir: std::path::PathBuf,
     /// Table (created if missing) holding one row per file.
     pub table: String,
+    /// 185: local names and same-name clashes ([`files::Policy`]).
+    pub policy: Option<std::sync::Arc<dyn files::Policy>>,
 }
 
 /// Mark `tables` of `pool` as replicated: install the change capture and
@@ -168,7 +170,7 @@ impl Message<Mirror> for Replica {
 
     async fn handle(&mut self, m: Mirror, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.engine
-            .mirror(&m.pool, &m.dir, &m.table)
+            .mirror(&m.pool, &m.dir, &m.table, m.policy)
             .await
             .map_err(|e| format!("{e:#}"))
     }

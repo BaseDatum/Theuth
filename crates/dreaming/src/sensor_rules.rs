@@ -35,26 +35,47 @@ pub fn minutes_into_window(local: u32, start: u32, end: u32) -> Option<u32> {
 }
 
 /// The gate: `Ok(())` fires; `Err(reason)` is the sensor's one-line answer.
-/// Every rule of 136 §4 phase 0 in order; the first failure wins.
+/// Every rule of 136 §4 phase 0 in order; the first failure wins. `pin` is
+/// the routine's `engine=` arg — set only by the `dreaming.home_engine`
+/// pin, which then decides alone; without it, 185 A3: a peered engine that
+/// is not the hub and can reach the hub leaves the night to the hub (a
+/// partitioned side is its own hub, a `hub: never` one cut off reads
+/// `hub_reachable: false`, so both dream).
 pub fn gate(
     cfg: &DreamConfig,
     s: &SignalsSnapshot,
     now: DateTime<Utc>,
     tz_offset_minutes: i32,
-    self_engine: Option<&str>,
-) -> Result<(), &'static str> {
-    if let Some(me) = self_engine
+    pin: Option<&str>,
+) -> Result<(), String> {
+    if let Some(pin) = pin
         && !s.engine.is_empty()
-        && s.engine != me
+        && s.engine != pin
     {
-        return Err("another engine owns dreaming");
+        return Err("another engine owns dreaming".into());
     }
     // R-19: a frozen file (the plugin off, the actor dead) must not keep passing.
     if let Some(w) = s.written_at.as_deref()
         && parse_rfc3339(w).is_none_or(|t| now.signed_duration_since(t).num_seconds() > STALE_SECS)
     {
-        return Err("signals stale");
+        return Err("signals stale".into());
     }
+    if pin.is_none() && s.peered && !s.hub && s.hub_reachable {
+        return Err(format!(
+            "not the hub (dreaming runs on {})",
+            s.hub_name.as_deref().unwrap_or("the hub")
+        ));
+    }
+    local_rules(cfg, s, now, tz_offset_minutes).map_err(str::to_owned)
+}
+
+/// The rules after the engine, staleness and hub rows.
+fn local_rules(
+    cfg: &DreamConfig,
+    s: &SignalsSnapshot,
+    now: DateTime<Utc>,
+    tz_offset_minutes: i32,
+) -> Result<(), &'static str> {
     let (Some(start), Some(end)) = (parse_hhmm(&cfg.window[0]), parse_hhmm(&cfg.window[1])) else {
         return Err("window malformed");
     };
@@ -129,7 +150,117 @@ mod tests {
             engine: "me".into(),
             written_at: None,
             tz_offset_minutes: 0,
+            hub: true,
+            peered: false,
+            hub_reachable: true,
+            hub_name: None,
         }
+    }
+
+    /// 185 A3: the hub rows, run without the `engine=` pin (the default
+    /// routine): hub, non-hub, partitioned, `hub: never`, lone — and the
+    /// pin, which overrides the hub rule either way.
+    fn hub_rows() -> Vec<(Row, Option<&'static str>)> {
+        let s = quiet_night();
+        let peered = |hub: bool, reachable: bool, name: Option<&str>| SignalsSnapshot {
+            peered: true,
+            hub,
+            hub_reachable: reachable,
+            hub_name: name.map(str::to_owned),
+            ..s.clone()
+        };
+        vec![
+            (("lone engine", at(2, 0), 0, s.clone(), Ok(())), None),
+            (
+                (
+                    "the hub dreams",
+                    at(2, 0),
+                    0,
+                    peered(true, true, Some("laptop")),
+                    Ok(()),
+                ),
+                None,
+            ),
+            (
+                (
+                    "a non-hub that reaches the hub holds",
+                    at(2, 0),
+                    0,
+                    peered(false, true, Some("studio")),
+                    Err("not the hub (dreaming runs on studio)"),
+                ),
+                None,
+            ),
+            (
+                (
+                    "the hub's name unknown",
+                    at(2, 0),
+                    0,
+                    peered(false, true, None),
+                    Err("not the hub (dreaming runs on the hub)"),
+                ),
+                None,
+            ),
+            (
+                (
+                    "partitioned: the cut-off side elected itself",
+                    at(2, 0),
+                    0,
+                    peered(true, true, Some("studio")),
+                    Ok(()),
+                ),
+                None,
+            ),
+            (
+                (
+                    "hub: never, cut off from the hub",
+                    at(2, 0),
+                    0,
+                    peered(false, false, Some("studio")),
+                    Ok(()),
+                ),
+                None,
+            ),
+            (
+                (
+                    "a non-hub holds outside the window too (the hub row comes first)",
+                    at(12, 0),
+                    0,
+                    peered(false, true, Some("studio")),
+                    Err("not the hub (dreaming runs on studio)"),
+                ),
+                None,
+            ),
+            (
+                (
+                    "pinned here: the pin overrides the hub rule",
+                    at(2, 0),
+                    0,
+                    peered(false, true, Some("studio")),
+                    Ok(()),
+                ),
+                Some("me"),
+            ),
+            (
+                (
+                    "pinned elsewhere, even on the hub",
+                    at(2, 0),
+                    0,
+                    peered(true, true, Some("laptop")),
+                    Err("another engine owns dreaming"),
+                ),
+                Some("other"),
+            ),
+        ]
+    }
+
+    /// Every row with its pin: the 136 table under `engine=me`, then the hub rows.
+    fn table() -> Vec<(Row, Option<&'static str>)> {
+        rows()
+            .into_iter()
+            .map(|r| (r, Some("me")))
+            .chain(hub_rows())
+            .collect()
     }
 
     type Row = (
@@ -340,10 +471,14 @@ mod tests {
     fn rule_table() {
         let cfg = DreamConfig::default(); // window 01:00–06:00, idle 20
         let s = quiet_night();
-        for (name, now, tz, snap, want) in rows() {
-            assert_eq!(gate(&cfg, &snap, now, tz, Some("me")), want, "{name}");
+        for ((name, now, tz, snap, want), pin) in table() {
+            assert_eq!(
+                gate(&cfg, &snap, now, tz, pin),
+                want.map_err(str::to_owned),
+                "{name}"
+            );
         }
-        // No self engine given: the engine rule is skipped.
+        // No pin: the engine rule is skipped.
         assert_eq!(
             gate(
                 &cfg,
@@ -366,14 +501,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("sensor.py"), crate::SENSOR).unwrap();
         let mut cases = Vec::new();
-        for (name, now, tz, snap, want) in rows() {
+        for ((name, now, tz, snap, want), pin) in table() {
             let mut snap = snap;
             snap.tz_offset_minutes = tz;
+            let mut args = serde_json::json!({"window": "01:00-06:00", "idle": "20", "heavy_concepts": "300", "heavy_sessions": "40"});
+            if let Some(pin) = pin {
+                args["engine"] = pin.into();
+            }
             cases.push(serde_json::json!({
                 "name": name,
                 "now": now.timestamp(),
                 "signals": snap,
-                "args": {"window": "01:00-06:00", "idle": "20", "heavy_concepts": "300", "heavy_sessions": "40", "engine": "me"},
+                "args": args,
                 "want": want.err().unwrap_or(""),
             }));
         }
@@ -414,7 +553,7 @@ mod tests {
             assert_eq!(row.1, row.2, "python disagrees on {:?}", row.0);
             n += 1;
         }
-        assert_eq!(n, rows().len());
+        assert_eq!(n, table().len());
     }
 
     /// `read_file` answers a `[read_file …]` header line before the text even
@@ -467,7 +606,7 @@ mod tests {
         // 00:30 is inside a window that began at 23:00 yesterday; the 23:30 dream counts.
         assert_eq!(
             gate(&cfg, &s, at(0, 30), 0, None),
-            Err("already dreamt this window")
+            Err("already dreamt this window".to_owned())
         );
         // The previous night's dream does not.
         let earlier = SignalsSnapshot {
@@ -477,7 +616,7 @@ mod tests {
         assert_eq!(gate(&cfg, &earlier, at(0, 30), 0, None), Ok(()));
         assert_eq!(
             gate(&cfg, &s, at(12, 0), 0, None),
-            Err("outside the window")
+            Err("outside the window".to_owned())
         );
         assert_eq!(minutes_into_window(30, 23 * 60, 5 * 60), Some(90));
         assert_eq!(minutes_into_window(22 * 60, 23 * 60, 5 * 60), None);

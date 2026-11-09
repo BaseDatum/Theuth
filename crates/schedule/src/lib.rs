@@ -491,6 +491,12 @@ pub struct ScheduleInfo {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub waiting: Option<String>,
+    /// 185 D9: this routine was renamed on arrival because another machine
+    /// already had a different routine of this stem (`<stem>-<its engine>`);
+    /// `None` otherwise. The other one is the entry named so.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub renamed_from: Option<String>,
     /// `when:` as written for a watcher (40 §2): `pr_watch.py repo=o/r pr=482`; `None` for a clock-only file.
     pub when_sensor: Option<String>,
     /// The sensor file alone (`pr_watch.py`); `None` for a clock-only file.
@@ -2783,6 +2789,13 @@ impl Schedule {
             project: spec.and_then(|s| s.project.clone()),
             engine: spec.and_then(|s| s.engine.clone()),
             waiting: self.waiting(name, e, now),
+            renamed_from: file::renamed_from(
+                name,
+                &e.raw,
+                self.entries
+                    .iter()
+                    .map(|(n, o)| (n.as_str(), o.raw.as_str())),
+            ),
             when_sensor: sensor.map(file::Sensor::render),
             sensor: sensor.map(|s| s.file.clone()),
             fire: sensor.map(|_| spec_fire.to_string()),
@@ -3021,6 +3034,13 @@ impl Message<Put> for Schedule {
         if !file::valid_name(&name) {
             return Err("name: [a-z0-9][a-z0-9-]*, at most 40 chars".into());
         }
+        // 185 C8: a create (no `engine:` — an edit sends the stamp it read) over
+        // another engine's routine is refused; a legacy file can be either, so it stands.
+        if f.engine.is_none()
+            && let Some(why) = self.name_in_use(&name, false).await
+        {
+            return Err(why);
+        }
         // 182 D6: a schedule the editor creates fires on this engine; an edit keeps the stamp.
         if f.engine.is_none() && !self.entries.contains_key(&name) {
             f.engine = mesh::self_id();
@@ -3031,6 +3051,90 @@ impl Message<Put> for Schedule {
         self.reconcile(ctx.actor_ref()).await;
         let e = self.entries.get(&name).ok_or("no such schedule")?;
         Ok(self.info(&name, e).await)
+    }
+}
+
+/// 185 C8: `ask` → `Option<String>`: the refusal when creating (or the
+/// `schedule` tool replacing) a routine named `.0` would overwrite another
+/// machine's routine — stamped with another engine, or (`.1`) a legacy file
+/// this engine never ran while it has peers. `None`: the name is free or ours.
+#[derive(Clone, Debug)]
+pub struct NameInUse(pub String, pub bool);
+
+impl Message<NameInUse> for Schedule {
+    type Reply = Option<String>;
+
+    async fn handle(&mut self, m: NameInUse, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.name_in_use(&m.0, m.1).await
+    }
+}
+
+impl Schedule {
+    /// [`NameInUse`]: `legacy` counts an unclaimed legacy file with no local
+    /// history (while peered) as another machine's. R1: a lone engine never
+    /// refuses, nor does a stamp naming an engine that is not a paired peer
+    /// (unpaired since, or a restored backup): both are this engine's to replace.
+    async fn name_in_use(&self, name: &str, legacy: bool) -> Option<String> {
+        if !self.peered {
+            return None;
+        }
+        let e = self.entries.get(name)?;
+        let me = mesh::self_id().or_else(|| self.me.clone());
+        let other = match self.owner(e, me.as_deref()) {
+            Owner::Here | Owner::Unknown => return None,
+            Owner::Nobody if !legacy || e.has_history() => return None,
+            Owner::Nobody => None,
+            Owner::Elsewhere => stamp_of(e).map(str::to_owned),
+        };
+        let machine = match other {
+            Some(id) => machine_name(&id).await,
+            None => "another machine".to_owned(),
+        };
+        Some(format!(
+            "a routine named {name} already runs on {machine}; choose another name"
+        ))
+    }
+}
+
+/// A paired engine's display name (`mesh_status`), else `another machine`.
+async fn machine_name(id: &str) -> String {
+    let status = match mesh::actor() {
+        Some(m) => tokio::time::timeout(Duration::from_secs(2), m.ask(mesh::Status))
+            .await
+            .ok()
+            .and_then(Result::ok),
+        None => None,
+    };
+    status
+        .and_then(|s| s.peers.into_iter().find(|p| p.id.0 == id).map(|p| p.name))
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| "another machine".to_owned())
+}
+
+/// 185: the `schedules/` mirror's [`replica::files::Policy`] —
+/// [`file::LOCAL_ROUTINES`] stay here, same-name routines keep both ([`file::clash`]).
+struct RoutinePolicy;
+
+impl replica::files::Policy for RoutinePolicy {
+    fn local(&self, name: &str) -> bool {
+        file::is_local_routine(name)
+    }
+
+    fn clash(&self, name: &str, ours: &[u8], theirs: &[u8]) -> replica::files::Clash {
+        file::clash(name, ours, theirs)
+    }
+
+    /// R2: every paired peer is connected (none paired, or the mesh not up: `false`).
+    fn all_peers_connected(&self) -> bool {
+        let (Some(paired), Some(up)) = (mesh::paired_count(), mesh::connected_ids()) else {
+            return false;
+        };
+        paired > 0
+            && up
+                .iter()
+                .filter(|id| mesh::is_paired(id) == Some(true))
+                .count()
+                >= paired
     }
 }
 
@@ -3135,11 +3239,13 @@ impl runtime::Plugin for SchedulePlugin {
             return Ok(());
         }
         // 67 §5.1: the directory is a replicated table; a hand edit anywhere lands everywhere.
+        // 185: except the plugin-owned local routines; same-name routines keep both.
         tokio::spawn(replica::files::mirror_at(
             rt.data_dir.join(DB),
             dir.clone(),
             DIR,
             std::time::Duration::from_secs(120),
+            Some(Arc::new(RoutinePolicy)),
         ));
         // 109 §4.6 step 12: a run whose session has an open turn stays open
         // and re-attaches to the resumed turn's `TurnFinished`; `agent`
@@ -3985,6 +4091,58 @@ mod hub_tests {
         s.tick(Local::now()).await;
         assert_eq!(fired(&rec), 1);
         assert_eq!(text(dir.path(), "x-tick"), DUE);
+    }
+
+    /// 185 C8: creating a routine whose name another machine's routine uses
+    /// is refused with the message; replacing our own — stamped here, or a
+    /// legacy one this engine ran — still works, and a free name is free.
+    #[tokio::test]
+    async fn create_refuses_a_name_another_machine_uses() {
+        let _g = hub_lock().await;
+        let me = me();
+        let dir = tempfile::tempdir().unwrap();
+        let store = store::Store::open(&dir.path().join(DB)).await.unwrap();
+        let old = Local::now() - chrono::Duration::hours(2);
+        store.insert_run("ran-here", None, old, None).await.unwrap();
+        let theirs = stamped(PLAIN, "eng-b");
+        let mine = stamped(PLAIN, &me);
+        let gone = stamped(PLAIN, "eng-unpaired");
+        let files = [
+            ("theirs", theirs.as_str()),
+            ("mine", mine.as_str()),
+            ("legacy", PLAIN),
+            ("ran-here", PLAIN),
+            ("gone", gone.as_str()),
+        ];
+        let (mut s, _) = actor(dir.path(), &files).await;
+        s.peered = true;
+        s.fake_paired = Some(|id| Some(id == "eng-b"));
+        assert_eq!(
+            s.name_in_use("theirs", true).await.as_deref(),
+            Some("a routine named theirs already runs on another machine; choose another name")
+        );
+        assert!(
+            s.name_in_use("theirs", false).await.is_some(),
+            "the editor's create too"
+        );
+        assert!(
+            s.name_in_use("legacy", true).await.is_some(),
+            "unclaimed, never ran here"
+        );
+        for (name, legacy) in [
+            ("mine", true),
+            ("ran-here", true),
+            ("legacy", false),
+            ("free", true),
+            ("gone", true),
+        ] {
+            assert_eq!(s.name_in_use(name, legacy).await, None, "{name}");
+        }
+        // A lone engine never refuses: every routine on it is its own to replace.
+        s.peered = false;
+        for name in ["legacy", "theirs"] {
+            assert_eq!(s.name_in_use(name, true).await, None, "{name}");
+        }
     }
 
     /// XTICK: a non-hub with local runs of a legacy plain file claims it at

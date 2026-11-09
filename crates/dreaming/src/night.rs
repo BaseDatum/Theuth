@@ -167,6 +167,7 @@ pub fn status_with(data_dir: &Path, cfg: &DreamConfig, backlog: Backlog) -> Drea
         backlog,
         proposals_pending,
         paused_until: s.paused_until,
+        runs_on: None,
     }
 }
 
@@ -225,25 +226,36 @@ pub fn persist(path: &Path, cfg: &DreamConfig) -> std::io::Result<()> {
 }
 
 /// The front-matter keys a settings change (or a hand-edited `config.yaml`,
-/// R-47) carries into the installed routine file.
-const ROUTINE_KEYS: [&str; 5] = ["budget", "when", "run_timeout", "model", "cap"];
+/// R-47) carries into the installed routine file. 185 A2: `cwd` and
+/// `engine` are this engine's (data dir, id), so bytes another engine wrote
+/// over the file before the mirror kept it local repair at the next start.
+const ROUTINE_KEYS: [&str; 7] = [
+    "budget",
+    "when",
+    "run_timeout",
+    "model",
+    "cap",
+    "cwd",
+    "engine",
+];
 
 /// Carry a settings change into the installed routine file: its `budget:`,
-/// `when:` (window / idle / heavy-day args), `run_timeout:`, `model:` (the
-/// resolved tidy tier, 136 D12) and `cap:` lines take the new values — a
+/// `when:` (window / idle / heavy-day args, the `home_engine` pin),
+/// `run_timeout:`, `model:` (the resolved tidy tier, 136 D12), `cap:`,
+/// `cwd:` and `engine:` (`me`, 185 A2) lines take the new values — a
 /// missing one is inserted before the closing `---`; every other line —
 /// `enabled:` above all — stays.
 pub fn update_routine_file(
     data_dir: &Path,
     cfg: &DreamConfig,
-    engine: Option<&str>,
+    me: Option<&str>,
     agent: &AgentDefaults,
 ) -> std::io::Result<()> {
     let path = data_dir.join(schedule::DIR).join("dreaming.md");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(());
     };
-    let fresh = crate::routine_text(cfg, data_dir, engine, agent);
+    let fresh = crate::routine_text(cfg, data_dir, me, agent);
     let want = |key: &str| {
         fresh
             .lines()
@@ -784,6 +796,11 @@ pub struct RunNow(pub RunRequest);
 /// `ask` → `DreamStatus` (136 §2.7).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Status;
+
+/// 185 A5: `ask` → `Option<String>`: the engine id a Dream now press is
+/// forwarded to ([`crate::signals::dream_host`]); `None` = run it here.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Host;
 
 /// `ask` → `Vec<NightSummary>` newest first, ≤ `limit` (136 §2.7).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -1335,7 +1352,34 @@ impl Message<Status> for Night {
     async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let k = self.knowledge().await;
         let (_, backlog) = ledger::candidates(&self.data_dir, &self.cfg, k.as_deref()).await;
-        status_with(&self.data_dir, &self.cfg, backlog)
+        let mut s = status_with(&self.data_dir, &self.cfg, backlog);
+        s.runs_on = self.host().await.map(|(_, name)| {
+            if name.trim().is_empty() {
+                "the hub".to_owned()
+            } else {
+                name
+            }
+        });
+        s
+    }
+}
+
+impl Message<Host> for Night {
+    type Reply = Option<String>;
+
+    async fn handle(&mut self, _: Host, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.host().await.map(|(id, _)| id)
+    }
+}
+
+impl Night {
+    /// 185 A5: where a Dream now press runs when not here.
+    async fn host(&self) -> Option<(String, String)> {
+        crate::signals::dream_host(
+            self.cfg.home_engine.as_deref(),
+            &self.engine,
+            &crate::signals::hub_now().await,
+        )
     }
 }
 
@@ -1388,12 +1432,12 @@ impl Message<SetSettings> for Night {
         cfg.digest = s.digest.clone();
         persist(&self.data_dir.join("config.yaml"), &cfg)
             .map_err(|e| format!("config.yaml: {e}"))?;
-        let home = cfg.home_engine.clone().filter(|h| !h.is_empty());
-        let engine = home.or_else(|| (!self.engine.is_empty()).then(|| self.engine.clone()));
+        // 185 A2: this engine's id, never the `home_engine` pin (that is the sensor arg).
+        let me = (!self.engine.is_empty()).then_some(self.engine.as_str());
         // D11 / P2 D6: off switches the routine off in place and removes the
         // sensor; on restores both.
         let r = if cfg.enabled {
-            crate::install_files(&self.data_dir, &cfg, engine.as_deref(), &self.agent).map(|_| ())
+            crate::install_files(&self.data_dir, &cfg, me, &self.agent).map(|_| ())
         } else {
             crate::disable_files(&self.data_dir)
         };

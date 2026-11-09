@@ -1,9 +1,9 @@
-# theuth-sensor: dreaming 3
+# theuth-sensor: dreaming 4
 # arg: window optional 01:00-06:00 — local window the night may start in (from dreaming.window)
 # arg: idle optional 20 — minutes since the last root turn (dreaming.idle_minutes)
 # arg: heavy_concepts optional 300 — new concepts that earn a second window (dreaming.heavy_day.concepts)
 # arg: heavy_sessions optional 40 — sessions that earn a second window (dreaming.heavy_day.sessions)
-# arg: engine optional <id> — refuse when signals.json was written by another engine (mesh)
+# arg: engine optional <id> — the dreaming.home_engine pin: only that engine dreams (overrides the hub rule)
 """Dreaming's gate (design 136 §4 phase 0): fires when the Mac is idle inside the night window.
 
 when: dreaming.py [window=01:00-06:00] [idle=20] [heavy_concepts=300] [heavy_sessions=40] [engine=<id>]
@@ -13,6 +13,8 @@ the dreaming plugin from `TurnFinished`, knowledge and power events — and the
 clock. Every rule must hold; the payload names the first that does not. The
 same table lives in `crates/dreaming/src/sensor_rules.rs` (unit-tested); keep
 the two in lockstep. State is unused; `next` is None (the gate keeps `every`).
+185: without the pin, a peered engine that is not the hub and reaches the hub
+holds (the hub dreams; a side cut off from the hub dreams too).
 """
 import datetime
 import json
@@ -73,6 +75,8 @@ def gate(args: dict, s: dict, now) -> str:
         w = _rfc3339(written)
         if w is None or (now - w).total_seconds() > STALE_SECS:
             return "signals stale"
+    if not me and s.get("peered") is True and s.get("hub") is not True and s.get("hub_reachable") is True:
+        return "not the hub (dreaming runs on " + str(s.get("hub_name") or "the hub") + ")"
     window = str(args.get("window") or "01:00-06:00").split("-")
     if len(window) != 2:
         return "window malformed"

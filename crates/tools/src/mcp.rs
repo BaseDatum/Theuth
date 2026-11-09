@@ -1723,6 +1723,7 @@ pub async fn start(
         dir.clone(),
         "mcp",
         std::time::Duration::from_secs(120),
+        None,
     ));
     let sources: [DynTool; 4] = [
         Arc::new(tools::AddMcpServer),

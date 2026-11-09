@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 import type { ControlOp } from '@/rpc/bindings/ControlOp'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SensorInfo } from '@/rpc/bindings/SensorInfo'
-import { type Kind, type Result, fromInfo, kindOf, lastCheckText, relative, resultKind, resultLabel, runCount, sentence, sortRoutines, verdictText } from './helpers'
+import { type Kind, type Result, fromInfo, kindOf, lastCheckText, relative, resultKind, resultLabel, routineNotes, runCount, sentence, sortRoutines, verdictText } from './helpers'
 import { machineUnknown } from '@/components/tasks/home'
 import { useMesh } from '@/components/tasks/queries'
 import { KEY, useNotHub, useRoutines, useRoutinesApi, useSensors } from './queries'
@@ -84,7 +84,7 @@ export function RoutinesView() {
           {list && list.length > 0 && (
             <ul className="divide-y divide-border-subtle rounded-lg border border-border-subtle">
               {list.map((s) => (
-                <RoutineRow key={s.name} s={s} sensors={sensors} />
+                <RoutineRow key={s.name} s={s} all={list} sensors={sensors} />
               ))}
             </ul>
           )}
@@ -176,11 +176,12 @@ export function RoutineChips({ s, notHub }: { s: ScheduleInfo; notHub: boolean }
 export const sensorArgs = (s: Pick<ScheduleInfo, 'sensor' | 'when_sensor'>, sensors: SensorInfo[] | undefined) =>
   sensors?.find((x) => x.name === (s.sensor ?? s.when_sensor?.split(' ')[0]))?.args
 
-function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | undefined }) {
+function RoutineRow({ s, all, sensors }: { s: ScheduleInfo; all: readonly ScheduleInfo[]; sensors: SensorInfo[] | undefined }) {
   const api = useRoutinesApi()
   const autoresearch = useAutoresearchApi()
   const navigate = useNavigate()
   const notHub = useNotHub()
+  const mesh = useMesh().data
   // 140 §13.1 / R1-D4: an `autoresearch-<slug>` schedule is a study — `study` badge, opens the Study view, says its headline.
   const study = s.name.startsWith('autoresearch-') ? s.name.slice('autoresearch-'.length) : null
   const fire = useAction((name: string) => api.fire_schedule(name), {
@@ -220,6 +221,12 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
       </div>
       {/* XTICK: a legacy routine fires nowhere until a machine claims it. */}
       {s.waiting && <div className="mt-0.5 text-xs text-fg-tertiary">{s.waiting}</div>}
+      {/* 185 D9: renamed on arrival; the dreaming routine on a non-hub. */}
+      {routineNotes(s, all, mesh).map((note) => (
+        <div key={note} className="mt-0.5 text-xs text-fg-tertiary">
+          {note}
+        </div>
+      ))}
       <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
         {s.next && (
           <span className="tabular-nums" title={new Date(s.next).toLocaleString()}>

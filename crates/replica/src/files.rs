@@ -12,6 +12,12 @@
 //! treated as hand-deleted only if the mirror has seen that file on disk;
 //! otherwise (fresh engine, crash between apply and projection) the row is
 //! projected.
+//!
+//! 185: a [`Policy`] lets the directory's owner keep some names local (never
+//! rows, a peer's row for them ignored) and settle a peer's row that would
+//! replace a *different* file of the same name by keeping both — asked only
+//! on a path's first contact (no peer row for it applied here yet, and not
+//! written here while every paired peer was connected); after that it is an edit.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -28,16 +34,55 @@ use crate::engine::{Engine, ReplicaHandle, now_ms, quote};
 /// Editors save in bursts; coalesce events this long before rescanning.
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
+/// 185: what a mirror asks the directory's owner about single files.
+pub trait Policy: Send + Sync {
+    /// `name` stays on this engine: never published, a peer's row (or
+    /// tombstone) for it never written to disk, its file never flagged deleted.
+    fn local(&self, name: &str) -> bool;
+    /// A peer's live row for `name` (`theirs`) is about to replace a file on
+    /// disk with other bytes (`ours`) on the path's first contact: replace
+    /// it, or keep both under two names.
+    fn clash(&self, name: &str, ours: &[u8], theirs: &[u8]) -> Clash;
+    /// Every paired peer is connected now, so a path written here reaches
+    /// all of them: from this write on it has a shared history. `false` while
+    /// any paired peer is offline — its own file of that name may differ.
+    fn all_peers_connected(&self) -> bool;
+}
+
+/// [`Policy::clash`]'s answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Clash {
+    /// The row wins: the file takes its bytes (last writer wins).
+    Replace,
+    /// Ours keeps the name (and the row, re-stamped so it wins everywhere);
+    /// theirs is written as `theirs_as`.
+    KeepOurs {
+        /// File name the peer's bytes land under.
+        theirs_as: String,
+    },
+    /// Ours moves to `ours_as`; the row's bytes take the name.
+    MoveOurs {
+        /// File name our bytes move to.
+        ours_as: String,
+    },
+}
+
 /// Mirror `dir` into `table` of `pool` (created if missing) and replicate
 /// it. The roster calls this for `agents/`; `schedules/`, `skills/`, `mcp/`
 /// follow. Needs the replica plugin running.
-pub async fn mirror(pool: &SqlitePool, dir: &Path, table: &str) -> anyhow::Result<ReplicaHandle> {
+pub async fn mirror(
+    pool: &SqlitePool,
+    dir: &Path,
+    table: &str,
+    policy: Option<Arc<dyn Policy>>,
+) -> anyhow::Result<ReplicaHandle> {
     let actor = crate::actor().ok_or_else(|| anyhow::anyhow!("replica plugin is not running"))?;
     actor
         .ask(crate::Mirror {
             pool: pool.clone(),
             dir: dir.to_path_buf(),
             table: table.to_owned(),
+            policy,
         })
         .await
         .map_err(|e| match e {
@@ -52,7 +97,13 @@ pub async fn mirror(pool: &SqlitePool, dir: &Path, table: &str) -> anyhow::Resul
 /// plugin's `start`; the handle lives for the process. Mirrors are flat:
 /// subdirectories (`skills/<repo>/` git clones, `mcp/repos/`) are never
 /// rows — those sync by their own means (`sync_skills`).
-pub async fn mirror_at(db: PathBuf, dir: PathBuf, table: &'static str, wait: Duration) {
+pub async fn mirror_at(
+    db: PathBuf,
+    dir: PathBuf,
+    table: &'static str,
+    wait: Duration,
+    policy: Option<Arc<dyn Policy>>,
+) {
     let deadline = tokio::time::Instant::now() + wait;
     while crate::actor().is_none() {
         if tokio::time::Instant::now() >= deadline {
@@ -84,7 +135,7 @@ pub async fn mirror_at(db: PathBuf, dir: PathBuf, table: &'static str, wait: Dur
             return;
         }
     };
-    match mirror(&pool, &dir, table).await {
+    match mirror(&pool, &dir, table, policy).await {
         Ok(_) => tracing::info!("{table}: {} replicates", dir.display()),
         Err(e) => tracing::warn!("{table}: {e:#}; {} stays local", dir.display()),
     }
@@ -104,6 +155,8 @@ struct Mirror {
     projected: Mutex<HashMap<String, String>>,
     /// Scan and projection never interleave.
     io: tokio::sync::Mutex<()>,
+    /// 185: local names and same-name clashes; `None` = every file replicates, last writer wins.
+    policy: Option<Arc<dyn Policy>>,
 }
 
 impl Engine {
@@ -113,8 +166,9 @@ impl Engine {
         pool: &SqlitePool,
         dir: &Path,
         table: &str,
+        policy: Option<Arc<dyn Policy>>,
     ) -> anyhow::Result<ReplicaHandle> {
-        let m = Mirror::new(self, pool, dir, table).await?;
+        let m = Mirror::new(self, pool, dir, table, policy).await?;
         let handle = m.handle.clone();
         m.scan().await?;
 
@@ -194,6 +248,7 @@ impl Mirror {
         pool: &SqlitePool,
         dir: &Path,
         table: &str,
+        policy: Option<Arc<dyn Policy>>,
     ) -> anyhow::Result<Arc<Self>> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -209,14 +264,133 @@ impl Mirror {
         .execute(pool)
         .await?;
         let handle = engine.attach(pool, &[table]).await?;
-        Ok(Arc::new(Self {
+        let m = Arc::new(Self {
             handle,
             dir: dir.to_path_buf(),
             table: table.to_owned(),
             on_disk: Mutex::new(HashSet::new()),
             projected: Mutex::new(HashMap::new()),
             io: tokio::sync::Mutex::new(()),
-        }))
+            policy,
+        });
+        if m.policy.is_some() {
+            m.seed_shared().await?;
+        }
+        Ok(m)
+    }
+
+    /// 185: `name` never leaves this engine ([`Policy::local`]).
+    fn local(&self, name: &str) -> bool {
+        self.policy.as_ref().is_some_and(|p| p.local(name))
+    }
+
+    /// R1 C7 rule 2: the local (never replicated) table of paths with a
+    /// shared history — a peer's row for them was applied here. Only a path
+    /// not in it can be a first contact, the one case [`Policy::clash`] is
+    /// asked; after that every difference is an edit or a claim.
+    fn shared_table(&self) -> String {
+        quote(&format!("{}_shared", self.table))
+    }
+
+    /// Create the shared table; rows whose last writer is a peer are shared
+    /// already (an engine upgraded with paths it has had from peers).
+    async fn seed_shared(&self) -> anyhow::Result<()> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE TABLE IF NOT EXISTS {} (path TEXT PRIMARY KEY)",
+            self.shared_table()
+        )))
+        .execute(self.pool())
+        .await?;
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT path, hlc FROM {}",
+            quote(&self.table)
+        )))
+        .fetch_all(self.pool())
+        .await?;
+        for (path, hlc) in rows {
+            if hlc
+                .as_deref()
+                .and_then(crate::Hlc::parse)
+                .is_some_and(|h| h.origin != *self.handle.origin())
+            {
+                self.mark_shared(&path).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn is_shared(&self, path: &str) -> anyhow::Result<bool> {
+        Ok(sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT 1 FROM {} WHERE path = ?",
+            self.shared_table()
+        )))
+        .bind(path)
+        .fetch_optional(self.pool())
+        .await?
+        .is_some())
+    }
+
+    async fn mark_shared(&self, path: &str) -> anyhow::Result<()> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT OR IGNORE INTO {} (path) VALUES (?)",
+            self.shared_table()
+        )))
+        .bind(path)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Upsert `name` ← `bytes` as this engine's write, stamped now (above
+    /// every clock seen, so it wins), and mark the file seen. A live row with
+    /// these bytes already is left as it is (no batch for nothing).
+    async fn put_row(&self, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
+        self.on_disk.lock().insert(name.to_owned());
+        let same: Option<(Option<Vec<u8>>, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT bytes, deleted FROM {} WHERE path = ?",
+            quote(&self.table)
+        )))
+        .bind(name)
+        .fetch_optional(self.pool())
+        .await?;
+        if same.is_some_and(|(b, d)| d == 0 && b.as_deref() == Some(bytes)) {
+            return Ok(());
+        }
+        let now = now_ms();
+        let hlc = self.handle.stamp(now).to_text();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO {t} (path, bytes, mtime_ms, deleted, hlc) VALUES (?, ?, ?, 0, ?)
+             ON CONFLICT (path) DO UPDATE SET bytes = excluded.bytes, mtime_ms = excluded.mtime_ms,
+             deleted = 0, hlc = excluded.hlc",
+            t = quote(&self.table)
+        )))
+        .bind(name)
+        .bind(bytes)
+        .bind(now as i64)
+        .bind(&hlc)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Write `bytes` to `<dir>/<name>` atomically (dotfile temp, then rename).
+    fn write_file(&self, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
+        let file = self.dir.join(name);
+        let tmp = self
+            .dir
+            .join(format!(".{name}.tmp-{}", uuid::Uuid::now_v7()));
+        std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+        std::fs::rename(&tmp, &file).with_context(|| format!("rename to {}", file.display()))?;
+        self.on_disk.lock().insert(name.to_owned());
+        Ok(())
+    }
+
+    /// 185: `name` may land under `other` — free, or already these bytes.
+    fn free_for(&self, other: &str, bytes: &[u8]) -> bool {
+        !other.starts_with('.')
+            && !other.contains('/')
+            && !self.local(other)
+            && std::fs::read(self.dir.join(other)).map_or(true, |cur| cur == bytes)
     }
 
     fn pool(&self) -> &SqlitePool {
@@ -236,7 +410,7 @@ impl Mirror {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if name.starts_with('.') || !entry.file_type()?.is_file() {
+            if name.starts_with('.') || !entry.file_type()?.is_file() || self.local(&name) {
                 continue;
             }
             let meta = entry.metadata()?;
@@ -281,6 +455,16 @@ impl Mirror {
             .bind(&hlc)
             .execute(self.pool())
             .await?;
+            // R1/R2 rule 2: written while EVERY paired peer is connected, the
+            // path reaches them all now — later differences are edits. With
+            // one offline, its own same-named file still meets this one first.
+            if self
+                .policy
+                .as_ref()
+                .is_some_and(|p| p.all_peers_connected())
+            {
+                self.mark_shared(&name).await?;
+            }
         }
 
         let live: Vec<String> = sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -290,7 +474,8 @@ impl Mirror {
         .fetch_all(self.pool())
         .await?
         .into_iter()
-        .map(|r| r.get(0))
+        .map(|r| r.get::<String, _>(0))
+        .filter(|p| !self.local(p))
         .collect();
         let gone: Vec<String> = {
             let mut on_disk = self.on_disk.lock();
@@ -346,10 +531,14 @@ impl Mirror {
     }
 
     /// One row → its file: remove if flagged deleted, write atomically if the
-    /// bytes differ, nothing if equal.
+    /// bytes differ, nothing if equal. 185: a local name is left alone; a
+    /// peer's row over a different file asks [`Policy::clash`].
     async fn project_locked(&self, path: &str) -> anyhow::Result<()> {
         if path.starts_with('.') || path.contains('/') || path.contains(std::path::MAIN_SEPARATOR) {
             anyhow::bail!("refusing path {path:?}");
+        }
+        if self.local(path) {
+            return Ok(());
         }
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT bytes, deleted, hlc FROM {} WHERE path = ?",
@@ -362,8 +551,19 @@ impl Mirror {
             return Ok(());
         };
         let file = self.dir.join(path);
-        if let Some(hlc) = row.get::<Option<String>, _>("hlc") {
-            self.projected.lock().insert(path.to_owned(), hlc);
+        let hlc = row.get::<Option<String>, _>("hlc");
+        if let Some(hlc) = &hlc {
+            self.projected.lock().insert(path.to_owned(), hlc.clone());
+        }
+        // 185: a peer's row only, never our own write. R1 rule 2: the first
+        // peer row this engine applies for a path is its first contact.
+        let theirs = hlc
+            .as_deref()
+            .and_then(crate::Hlc::parse)
+            .is_some_and(|h| h.origin != *self.handle.origin());
+        let first_contact = theirs && self.policy.is_some() && !self.is_shared(path).await?;
+        if theirs && self.policy.is_some() {
+            self.mark_shared(path).await?;
         }
         if row.get::<i64, _>("deleted") != 0 {
             match std::fs::remove_file(&file) {
@@ -375,17 +575,43 @@ impl Mirror {
             return Ok(());
         }
         let bytes: Vec<u8> = row.get::<Option<Vec<u8>>, _>("bytes").unwrap_or_default();
-        if std::fs::read(&file).is_ok_and(|cur| cur == bytes) {
+        let cur = std::fs::read(&file).ok();
+        if cur.as_deref() == Some(&bytes[..]) {
             self.on_disk.lock().insert(path.to_owned());
             return Ok(());
         }
-        let tmp = self
-            .dir
-            .join(format!(".{path}.tmp-{}", uuid::Uuid::now_v7()));
-        std::fs::write(&tmp, &bytes).with_context(|| format!("write {}", tmp.display()))?;
-        std::fs::rename(&tmp, &file).with_context(|| format!("rename to {}", file.display()))?;
-        self.on_disk.lock().insert(path.to_owned());
-        Ok(())
+        if let (Some(ours), Some(policy), true) = (cur, &self.policy, first_contact) {
+            match policy.clash(path, &ours, &bytes) {
+                Clash::Replace => {}
+                Clash::KeepOurs { theirs_as } if self.free_for(&theirs_as, &bytes) => {
+                    self.write_file(&theirs_as, &bytes)?;
+                    self.put_row(&theirs_as, &bytes).await?;
+                    self.mark_shared(&theirs_as).await?;
+                    self.put_row(path, &ours).await?;
+                    tracing::info!(
+                        "replica: mirror {}: {path} is another routine of the same name; theirs kept as {theirs_as}",
+                        self.dir.display()
+                    );
+                    return Ok(());
+                }
+                Clash::MoveOurs { ours_as } if self.free_for(&ours_as, &ours) => {
+                    self.write_file(&ours_as, &ours)?;
+                    self.put_row(&ours_as, &ours).await?;
+                    self.mark_shared(&ours_as).await?;
+                    tracing::info!(
+                        "replica: mirror {}: {path} is another routine of the same name; ours moved to {ours_as}",
+                        self.dir.display()
+                    );
+                }
+                Clash::KeepOurs { theirs_as: other } | Clash::MoveOurs { ours_as: other } => {
+                    tracing::warn!(
+                        "replica: mirror {}: {path} clashes but {other} is taken; the newer write wins",
+                        self.dir.display()
+                    );
+                }
+            }
+        }
+        self.write_file(path, &bytes)
     }
 
     /// Is the row behind `row` (of `path`) a peer's write that scan must not
@@ -427,13 +653,20 @@ mod tests {
     }
 
     async fn side() -> Side {
+        side_with(None).await
+    }
+
+    async fn side_with(policy: Option<std::sync::Arc<dyn super::Policy>>) -> Side {
         let dir = tempfile::tempdir().unwrap();
         let engine = Engine::open(&dir.path().join("replica.sqlite"))
             .await
             .unwrap();
         let pool = open_pool(&dir.path().join("data.sqlite")).await;
         let files = dir.path().join("agents");
-        let handle = engine.mirror(&pool, &files, "agents").await.unwrap();
+        let handle = engine
+            .mirror(&pool, &files, "agents", policy)
+            .await
+            .unwrap();
         Side {
             engine,
             handle,
@@ -580,7 +813,7 @@ mod tests {
                     .unwrap();
                 let pool = open_pool(&dir.path().join(format!("{table}.sqlite"))).await;
                 let files = dir.path().join(table);
-                let handle = engine.mirror(&pool, &files, table).await.unwrap();
+                let handle = engine.mirror(&pool, &files, table, None).await.unwrap();
                 Side {
                     engine,
                     handle,
@@ -623,7 +856,7 @@ mod tests {
             .unwrap();
         let b_pool = open_pool(&bdir.path().join("data.sqlite")).await;
         let b_files = bdir.path().join("agents");
-        let b = super::Mirror::new(&b_engine, &b_pool, &b_files, "agents")
+        let b = super::Mirror::new(&b_engine, &b_pool, &b_files, "agents", None)
             .await
             .unwrap();
         let b_side = Side {
@@ -690,5 +923,251 @@ mod tests {
             .unwrap()
             .expect("hand edit replicates");
         assert_eq!(batch.origin, *b_engine.origin());
+    }
+
+    /// 185 test policy: `dreaming.md` is local; a file's first line names its
+    /// routine's machine, and the one whose machine sorts later moves to
+    /// `<stem>-<machine>.md` — the rule shape `schedule`'s policy uses.
+    /// `.0`: every paired peer is connected.
+    struct Routines(bool);
+
+    impl super::Policy for Routines {
+        fn local(&self, name: &str) -> bool {
+            name == "dreaming.md"
+        }
+
+        fn clash(&self, name: &str, ours: &[u8], theirs: &[u8]) -> super::Clash {
+            let owner = |b: &[u8]| {
+                String::from_utf8_lossy(b)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            let (o, t) = (owner(ours), owner(theirs));
+            let stem = name.trim_end_matches(".md");
+            if o == t {
+                super::Clash::Replace
+            } else if t > o {
+                super::Clash::KeepOurs {
+                    theirs_as: format!("{stem}-{t}.md"),
+                }
+            } else {
+                super::Clash::MoveOurs {
+                    ours_as: format!("{stem}-{o}.md"),
+                }
+            }
+        }
+
+        fn all_peers_connected(&self) -> bool {
+            self.0
+        }
+    }
+
+    fn routines() -> Option<std::sync::Arc<dyn super::Policy>> {
+        Some(std::sync::Arc::new(Routines(false)))
+    }
+
+    async fn wrote(s: &Side) -> bool {
+        let vv = s.engine.store.version_vector().await.unwrap();
+        vv.contains_key(s.engine.origin())
+    }
+
+    /// 185 A1: a local name is never a row here, an old engine's row or
+    /// tombstone for it never touches the file, and a stored row never
+    /// resurrects a file removed by hand.
+    #[tokio::test]
+    async fn local_names_never_leave_and_peer_rows_never_land() {
+        let (old, new) = (side().await, side_with(routines()).await);
+        std::fs::write(new.files.join("dreaming.md"), b"mine").unwrap();
+        std::fs::write(old.files.join("dreaming.md"), b"old engine's").unwrap();
+        until(async || row(&old, "dreaming.md").await.is_some()).await;
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(row(&new, "dreaming.md").await, None, "published");
+        assert!(!wrote(&new).await, "a batch for a local file");
+
+        // The old engine's row lands in the table, never on disk.
+        pump(&old, &new).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            std::fs::read(new.files.join("dreaming.md")).unwrap(),
+            b"mine"
+        );
+
+        // Removed by hand: no tombstone, and the stored row does not project it back.
+        std::fs::remove_file(new.files.join("dreaming.md")).unwrap();
+        std::fs::write(new.files.join("other.md"), b"other").unwrap();
+        until(async || row(&new, "other.md").await.is_some()).await;
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(!new.files.join("dreaming.md").exists(), "resurrected");
+        assert_eq!(
+            row(&new, "dreaming.md").await.map(|(_, d)| d),
+            Some(0),
+            "the old engine's row was flagged deleted here"
+        );
+
+        // The old engine's tombstone never deletes ours.
+        std::fs::write(new.files.join("dreaming.md"), b"mine again").unwrap();
+        std::fs::remove_file(old.files.join("dreaming.md")).unwrap();
+        until(async || row(&old, "dreaming.md").await.is_some_and(|(_, d)| d == 1)).await;
+        pump(&old, &new).await;
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(
+            std::fs::read(new.files.join("dreaming.md")).unwrap(),
+            b"mine again"
+        );
+        // And ours never reaches the old engine.
+        pump(&new, &old).await;
+        assert_eq!(row(&old, "dreaming.md").await.map(|(_, d)| d), Some(1));
+        assert!(!old.files.join("dreaming.md").exists());
+    }
+
+    /// 185 C7: two different routines named `x` keep both — on both engines
+    /// `x.md` is a's and `x-b.md` is b's — and once settled nothing moves.
+    #[tokio::test]
+    async fn same_name_different_routines_keep_both_and_converge() {
+        let (a, b) = (side_with(routines()).await, side_with(routines()).await);
+        std::fs::write(a.files.join("x.md"), b"a\nA's routine").unwrap();
+        until(async || row(&a, "x.md").await.is_some()).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(b.files.join("x.md"), b"b\nB's routine").unwrap();
+        until(async || row(&b, "x.md").await.is_some()).await;
+        for _ in 0..6 {
+            pump(&a, &b).await;
+            pump(&b, &a).await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        for s in [&a, &b] {
+            assert_eq!(
+                std::fs::read(s.files.join("x.md")).unwrap(),
+                b"a\nA's routine"
+            );
+            assert_eq!(
+                std::fs::read(s.files.join("x-b.md")).unwrap(),
+                b"b\nB's routine"
+            );
+            assert_eq!(
+                std::fs::read_dir(&s.files).unwrap().count(),
+                2,
+                "two files, no temp"
+            );
+        }
+        // Settled: more rounds write nothing.
+        let before = (
+            a.engine.store.version_vector().await.unwrap(),
+            b.engine.store.version_vector().await.unwrap(),
+        );
+        for _ in 0..2 {
+            pump(&a, &b).await;
+            pump(&b, &a).await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        assert!(a.handle.flush().await.unwrap().is_none());
+        assert!(b.handle.flush().await.unwrap().is_none());
+        assert_eq!(
+            before,
+            (
+                a.engine.store.version_vector().await.unwrap(),
+                b.engine.store.version_vector().await.unwrap(),
+            ),
+            "ping-pong"
+        );
+    }
+
+    /// R1 C7 rule 2: once a path has a shared history (each side applied
+    /// the other's row), a version naming another machine is an edit or a
+    /// claim — last writer wins, no rename — even racing an edit here.
+    #[tokio::test]
+    async fn a_path_with_shared_history_stays_one_routine() {
+        let (a, b) = (side_with(routines()).await, side_with(routines()).await);
+        std::fs::write(a.files.join("x.md"), b"a\nv1").unwrap();
+        until(async || row(&a, "x.md").await.is_some()).await;
+        pump(&a, &b).await;
+        until(async || std::fs::read(b.files.join("x.md")).is_ok_and(|x| x == b"a\nv1")).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(b.files.join("x.md"), b"a\nv1 edited on b").unwrap();
+        until(async || {
+            row(&b, "x.md")
+                .await
+                .is_some_and(|(x, _)| x == b"a\nv1 edited on b")
+        })
+        .await;
+        pump(&b, &a).await;
+        until(async || {
+            std::fs::read(a.files.join("x.md")).is_ok_and(|x| x == b"a\nv1 edited on b")
+        })
+        .await;
+        // The race: an edit on a, a claim with an edit on b.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(a.files.join("x.md"), b"a\nv2").unwrap();
+        until(async || row(&a, "x.md").await.is_some_and(|(x, _)| x == b"a\nv2")).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(b.files.join("x.md"), b"b\nclaimed").unwrap();
+        until(async || {
+            row(&b, "x.md")
+                .await
+                .is_some_and(|(x, _)| x == b"b\nclaimed")
+        })
+        .await;
+        for _ in 0..4 {
+            pump(&a, &b).await;
+            pump(&b, &a).await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        for s in [&a, &b] {
+            assert_eq!(
+                std::fs::read(s.files.join("x.md")).unwrap(),
+                b"b\nclaimed",
+                "newest wins"
+            );
+            assert_eq!(
+                std::fs::read_dir(&s.files).unwrap().count(),
+                1,
+                "renamed: {:?}",
+                s.files
+            );
+        }
+    }
+
+    /// R2 rule 2: three engines, `c` offline. `a` writes `x` while only `b`
+    /// is connected — not every paired peer — so `x` is not shared yet on `a`;
+    /// when `c` comes back with its own, different `x`, both are kept on all
+    /// three (`x` is a's, `x-c` is c's) instead of the last writer replacing one.
+    #[tokio::test]
+    async fn an_offline_peers_same_name_routine_is_kept_not_replaced() {
+        let (a, b, c) = (
+            side_with(routines()).await,
+            side_with(routines()).await,
+            side_with(routines()).await,
+        );
+        std::fs::write(a.files.join("x.md"), b"a\nA's routine").unwrap();
+        until(async || row(&a, "x.md").await.is_some()).await;
+        pump(&a, &b).await;
+        until(async || std::fs::read(b.files.join("x.md")).is_ok_and(|x| x == b"a\nA's routine"))
+            .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(c.files.join("x.md"), b"c\nC's routine").unwrap();
+        until(async || row(&c, "x.md").await.is_some()).await;
+        // c is back: every pair syncs.
+        for _ in 0..4 {
+            for (from, to) in [(&c, &a), (&a, &c), (&a, &b), (&b, &a), (&b, &c), (&c, &b)] {
+                pump(from, to).await;
+            }
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        for s in [&a, &b, &c] {
+            assert_eq!(
+                std::fs::read(s.files.join("x.md")).unwrap(),
+                b"a\nA's routine",
+                "{:?}",
+                s.files
+            );
+            assert_eq!(
+                std::fs::read(s.files.join("x-c.md")).unwrap(),
+                b"c\nC's routine",
+                "{:?}",
+                s.files
+            );
+        }
     }
 }

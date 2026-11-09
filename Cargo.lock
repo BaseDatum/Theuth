@@ -10620,6 +10620,7 @@ dependencies = [
  "figment",
  "gix",
  "kameo",
+ "mesh",
  "okf",
  "parking_lot",
  "replica",

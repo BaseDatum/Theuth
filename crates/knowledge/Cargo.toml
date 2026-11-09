@@ -10,6 +10,7 @@ okf = { workspace = true }
 gix = { workspace = true }
 runtime = { workspace = true }
 replica = { workspace = true }
+mesh = { workspace = true }  # 185 B6: `is_hub` in the sync manifest
 tools = { workspace = true }
 document = { workspace = true }
 search = { workspace = true }
