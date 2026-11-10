@@ -408,6 +408,33 @@ export function fromHistory(h: HistoryEntry): Entry[] {
   return Number.isNaN(at) ? out : out.map((e) => ({ ...e, at }));
 }
 
+/** 186: the `peer:` address of a full-collaboration contact when `h` is the row that opened its turn, `null` when `h`
+ * opened any other turn, `undefined` when it opens none (a steer, a reply, a tool row). Typed fields only. */
+const openedBy = (h: HistoryEntry): string | null | undefined =>
+  h.role !== 'user' || h.turn === null ? undefined : h.peer?.contact_mode === 'full' ? h.peer.from : null
+
+/** A page of history as entries; 186: each tool call of a turn a full contact's message opened carries `by`. A page that
+ * starts mid-turn leaves those first calls unstamped (no tag rather than a wrong one). */
+export function fromHistoryPage(history: readonly HistoryEntry[]): Entry[] {
+  let by: string | null = null
+  return history.flatMap((h) => {
+    const opened = openedBy(h)
+    if (opened !== undefined) by = opened
+    const out = fromHistory(h)
+    return by ? out.map((e) => (e.kind === 'tool' ? { ...e, by: by as string } : e)) : out
+  })
+}
+
+/** 186: the full contact whose message opened a loaded page's last turn; `null` when another input opened it,
+ * `undefined` when the page holds no opener. */
+export function lastOpenedBy(history: readonly HistoryEntry[]): string | null | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const opened = openedBy(history[i] as HistoryEntry)
+    if (opened !== undefined) return opened
+  }
+  return undefined
+}
+
 /** 146 D7: a session loaded with `running === false` whose last entry is a result-less tool call — an ACP child
  * killed mid-call by an engine restart — shows that card interrupted instead of spinning forever. */
 export function interruptDangling(entries: Entry[]): Entry[] {
@@ -766,7 +793,12 @@ export function apply(
       )
         return slice;
       return interject(
-        { ...slice, live: slice.live + 1 },
+        {
+          ...slice,
+          live: slice.live + 1,
+          // 186: the row that opened the running turn (`TurnStarted` came first) is a full contact's message.
+          ...(slice.running && e.seq === slice.turnSeq && e.origin.contact_mode === "full" ? { turnBy: e.origin.from } : {}),
+        },
         peerEntry(e.origin, e.text, e.seq),
       );
     // 125 §8.3: one Advisory card per stored row, whichever of the event, the wrapper echo or the reload lands first.
@@ -1026,6 +1058,8 @@ function turn(
         lastInjected: undefined,
         // 183 §12.10: a contact's capped turn (its wrapped row is not echoed into `entries` here).
         contactNote: cls?.[0]?.kind === "contact_message" ? cls[0] : undefined,
+        // 186: the opener's `PeerDelivered` came first: its row's seq is this turn's.
+        turnBy: s.entries.findLast((x): x is Extract<Entry, { kind: "peer" }> => x.kind === "peer" && x.seq === e.turn_seq && x.origin?.contact_mode === "full")?.from,
         // The actor is busy; the settled reload after `TurnDone` restores the authoritative flag.
         contextEditable: false,
         // 109 §8.2: one banner, for the resumed turn only; the next turn clears it.
@@ -1106,6 +1140,7 @@ function turn(
             args: undefined,
             pending: true,
             child: e.call_id.includes("."),
+            ...(s.turnBy ? { by: s.turnBy } : {}),
           },
         ],
       };
@@ -1124,6 +1159,7 @@ function turn(
         child: e.call_id.includes("."),
         startedAt: Date.now(),
         at: Date.now(),
+        ...(s.turnBy ? { by: s.turnBy } : {}),
       };
       const entries =
         at < 0 ? [...s.entries, tool] : replaceAt(s.entries, at, tool);
@@ -1213,6 +1249,7 @@ function turn(
         waiting: false,
         activity: "idle",
         contactNote: undefined,
+        turnBy: undefined,
       };
     }
     case "Error":

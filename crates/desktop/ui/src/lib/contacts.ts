@@ -50,10 +50,12 @@ export function useExports(enabled = true) {
   return useQuery({ queryKey: queryKeys.exports, queryFn: () => api.a2a_exports(), enabled })
 }
 
-/** `contact_first_waiting()`: the (contact, export) pairs whose first message waits for the owner; live on `A2aChanged`. */
-export function useFirstWaiting(enabled = true) {
+/** `contact_first_waiting()`: the (contact, export) pairs whose first message waits for the owner; live on `A2aChanged`.
+ * 186: the engine also lists cautious messages queued behind a busy chat (`queued`); only the composer strip shows
+ * those (`withQueued`), every other surface answers holds. */
+export function useFirstWaiting(enabled = true, withQueued = false) {
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.waiting, queryFn: () => api.contact_first_waiting(), enabled })
+  return useQuery({ queryKey: queryKeys.waiting, queryFn: () => api.contact_first_waiting(), enabled, select: withQueued ? undefined : (rows) => rows.filter((w) => !w.queued) })
 }
 
 /** 183 §12.10: an exported chat — its export and the contacts it is granted to (blocked ones excluded). */

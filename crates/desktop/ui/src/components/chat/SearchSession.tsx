@@ -9,7 +9,7 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
-import { fromHistory } from '@/store/reduce'
+import { fromHistoryPage } from '@/store/reduce'
 import { type Entry, useSessionField } from '@/store/sessions'
 import { ArtifactPanel } from './ArtifactPanel'
 import { SidebarToggle } from './Header'
@@ -63,7 +63,7 @@ export function SearchSession({ session, seq }: { session: string; seq: number }
     api.load_session(session, seq + 1, PAGE).then(
       (page) => {
         if (!live) return
-        setView({ status: 'ready', entries: page.history.flatMap(fromHistory), more: page.more, undone: page.undone })
+        setView({ status: 'ready', entries: fromHistoryPage(page.history), more: page.more, undone: page.undone })
       },
       (e: unknown) => live && setView({ status: 'error', message: e instanceof Error ? e.message : String(e) }),
     )

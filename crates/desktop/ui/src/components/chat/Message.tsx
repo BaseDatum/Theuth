@@ -1,12 +1,12 @@
 import { Link } from '@tanstack/react-router'
-import { AppWindow, BellRing, Bot, ChevronRight, Trash2 } from 'lucide-react'
+import { AppWindow, BellRing, Bot, ChevronRight, Trash2, UserRound } from 'lucide-react'
 import { memo, type ReactNode } from 'react'
 import { type AppInput, parseAppInput } from '@/components/apps/lifecycle'
 import { ENGINE_NOTICES, parseBroadcast } from '@/lib/injected'
 import { parseMeetingLine } from '@/lib/meeting-line'
 import type { AgentInfo } from '@/rpc/extra'
 import type { Prompt } from '@/store/approvals'
-import type { Entry } from '@/store/sessions'
+import { type Entry, useSessions } from '@/store/sessions'
 import { AdvisorNoteCard } from './AdvisorNoteCard'
 import { ApprovalCard } from './ApprovalCard'
 import { AskCard } from './AskCard'
@@ -24,6 +24,7 @@ import { SendCard } from './SendCard'
 import { SecretRequestCard } from './SecretRequestCard'
 import { Details, DisclosureScope, useScopedDisclosure } from './disclosure'
 import { ResultCard } from '@/components/cells/ResultCard'
+import { resolveSender, useDirectory } from './peer-identity'
 
 /** `readOnly`: an archive/inspection rendering (search's Earlier messages page): no turn, fork or context-removal controls. */
 function body(entry: Entry, session: string, readOnly?: boolean) {
@@ -46,7 +47,16 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessageReasoning id={entry.id} text={entry.text} done={entry.done} ms={entry.ms} />
     case 'tool': {
       // Sky 2026-11-10: a send is its own card with its delivery track.
-      const card = entry.name === 'send_message' ? <SendCard tool={entry} session={session} at={entry.at} readOnly={readOnly} /> : <MessageTool tool={entry} session={session} readOnly={readOnly} />
+      const sent = entry.name === 'send_message' ? <SendCard tool={entry} session={session} at={entry.at} readOnly={readOnly} /> : <MessageTool tool={entry} session={session} readOnly={readOnly} />
+      const card =
+        entry.by && PROMPTED[entry.name] ? (
+          <>
+            <AskedDuring session={session} by={entry.by} />
+            {sent}
+          </>
+        ) : (
+          sent
+        )
       // 183 §12.4: a resumed batch's restart note is its own card above the call, never raw XML in the result.
       return entry.restart ? (
         <>
@@ -259,10 +269,29 @@ function Card({ entry, session, children }: { entry: Entry; session: string; chi
   )
 }
 
+/** 186 (engine review 8): the calls whose card asks something of the owner; in a turn a full contact's message opened,
+ * each says whose message it was asked during. */
+const PROMPTED: Record<string, true> = { secret_request: true, desktop_handoff: true, message_user: true }
+
+/** `asked during sky's message`: `by` is the turn opener's `peer:` address (typed, `Entry.tool.by` / `turnBy`). */
+function AskedDuring({ session, by }: { session: string; by: string }) {
+  const name = resolveSender(by, useDirectory(session, true)).name
+  return (
+    <p className="mt-2 -mb-1 flex items-center gap-1.5 text-xs text-fg-secondary">
+      <UserRound className="size-3.5 shrink-0" aria-hidden="true" />
+      <span>
+        asked during <span className="font-medium text-foreground">{name}</span>&apos;s message
+      </span>
+    </p>
+  )
+}
+
 /** An approval, an `ask_user` or a `secret_request` card. `from`: a subagent's prompt shown in an ancestor's transcript,
  * headed by the child's name and a link to its session; answering here or there resolves the same request. */
 export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo }) {
-  const card =
+  // 186: a pending secret request blocks the running turn: that turn's full-contact opener asked for it.
+  const by = useSessions((s) => (prompt.type === 'SecretRequested' ? s.sessions[prompt.session]?.turnBy : undefined))
+  const ask =
     prompt.type === 'ApprovalRequested' ? (
       <ApprovalCard approval={prompt} />
     ) : prompt.type === 'AskRequested' ? (
@@ -270,6 +299,14 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
     ) : (
       <SecretRequestCard id={prompt.id} note={prompt.note} fields={[{ name: prompt.name, label: prompt.name, masked: true, current: prompt.current }]} />
     )
+  const card = by ? (
+    <>
+      <AskedDuring session={prompt.session} by={by} />
+      {ask}
+    </>
+  ) : (
+    ask
+  )
   if (!from) return card
   return (
     <div className="mt-2 [&>*:last-child]:mt-0">
