@@ -46,8 +46,8 @@ export function SenderCircle({ sender, className }: { sender: Sender; className?
   )
 }
 
-/** The circle, the name and the subtitle; `children` sit on the right (chips, the time). */
-export function SenderHead({ sender, children, reminder }: { sender: Sender; children?: ReactNode; reminder?: boolean }) {
+/** The circle, the name (with `count`, a folded group's size, never truncated) and the subtitle; `children` sit on the right (chips, the time). */
+export function SenderHead({ sender, children, reminder, count }: { sender: Sender; children?: ReactNode; reminder?: boolean; count?: string }) {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
       <SenderCircle sender={sender} />
@@ -55,6 +55,7 @@ export function SenderHead({ sender, children, reminder }: { sender: Sender; chi
         <span className="flex min-w-0 items-center gap-1.5 font-semibold">
           {reminder ? <Timer className="size-3.5 shrink-0" /> : null}
           <span className="truncate">{sender.name}</span>
+          {count ? <span className="shrink-0 text-xs font-normal whitespace-nowrap text-fg-tertiary tabular-nums">{count}</span> : null}
         </span>
         {sender.subtitle ? <span className="truncate text-xs text-fg-secondary">{sender.subtitle}</span> : null}
       </div>

@@ -41,10 +41,9 @@ export function PeerGroup({ run, session }: { run: Peer[]; session: string }) {
   const address = first.origin?.from ?? first.from
   const sender = resolveSender(address, useDirectory(session, isOutside(address)))
   const [all, setAll] = useDisclosure(disclosureKey('peer-group', first.id))
-  const subtitle = [sender.subtitle, `${run.length} messages`].filter(Boolean).join(' · ')
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-2.5 text-sm">
-      <SenderHead sender={{ ...sender, subtitle }}>
+      <SenderHead sender={sender} count={`${run.length} messages`}>
         <Button type="button" variant="ghost" size="xs" className="pointer-coarse:min-h-11" aria-expanded={all} onClick={() => setAll(!all)}>
           {all ? 'Collapse all' : 'Expand all'}
         </Button>

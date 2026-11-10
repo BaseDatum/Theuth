@@ -6,6 +6,7 @@ import { queryKeys } from '@/lib/rpc'
 import type * as Rpc from '@/lib/rpc'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { Entry } from '@/store/sessions'
+import { MessagePeer } from './MessagePeer'
 import { SendCard } from './SendCard'
 import { ToolRunCard } from './ToolRunCard'
 
@@ -66,8 +67,10 @@ test('send card: held warns with the receipt error; failed is danger with the er
   expect(failed).toContain('Not delivered')
   expect(failed).toContain('ivan&#x27;s machine is offline')
   expect(failed).not.toContain('Retry')
-  // Still running (an awaited send): no receipt yet.
-  expect(render(h(SendCard, { tool: { ...send('parent'), args: { to: 'parent', message: 'q', await_reply: true } }, session: 's' }))).toContain('waiting for the answer')
+  // Still running (an awaited send): no receipt yet. The spinner is a <div>, so its line must not be a <p> (React warns).
+  const pending = render(h(SendCard, { tool: { ...send('parent'), args: { to: 'parent', message: 'q', await_reply: true } }, session: 's' }))
+  expect(pending).toContain('waiting for the answer')
+  for (const html of [held, failed, pending]) expect(html).not.toMatch(/<p[^>]*>(?:(?!<\/p>).)*<div/)
 })
 
 test('send card, several recipients: one chip per recipient, each with its own state', () => {
@@ -93,4 +96,11 @@ test('a folded group: one header, one line per message, a repeat marked, a click
   expect(closed.match(/Same as the message above/g)).toHaveLength(1)
   useToolRuns.setState({ disclosed: { [disclosureKey('p1', 'line')]: true } })
   expect(render(h(ToolRunCard, { run, prompts: null, session: 's' }))).toContain('more')
+})
+
+test('an incoming reply quotes the first line of what this chat sent, Markdown marks removed', () => {
+  qc.setQueryData(queryKeys.peerMessage('s', A), { receipt: { id: A, to: `session:${KID}`, state: 'replied', reply_to: null, reply: null, task_id: null, error: null, answered_by: null }, from: 'session:s', session: 's', text: '\n**Z4-R1**, the last round.\nmore', created_at: '', request_scope: null })
+  const origin = { id: B, from: `session:${KID}`, reply_to: A, scope: null }
+  const html = render(h(MessagePeer, { from: origin.from, text: 'DONE', origin, session: 's' }))
+  expect(html).toContain('Replying to <b class="font-semibold text-foreground">you</b>: Z4-R1, the last round.')
 })

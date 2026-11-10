@@ -115,8 +115,9 @@ export function initials(name: string): string {
   return (word.length <= 2 ? word : word.slice(0, 1)).toUpperCase() || '?'
 }
 
-/** The project palette minus ochre and carnelian: those mean warning and danger. Classes are safelisted in styles.css. */
-const CIRCLES = ['lapis', 'faience', 'malachite', 'plum', 'umber', 'sand', 'slate', 'nile'] as const
+/** The project palette minus ochre and carnelian (warning and danger) and umber, which reads as ochre in the dark theme.
+ * Classes are safelisted in styles.css. */
+const CIRCLES = ['lapis', 'faience', 'malachite', 'plum', 'sand', 'slate', 'nile'] as const
 
 /** One stable `bg-project-<key>` per sender identity (FNV-1a of the address). */
 export function senderColor(key: string): string {

@@ -117,10 +117,10 @@ export function SendCard({ tool, session, at }: { tool: Tool; session: string; a
       </div>
       {message ? <p className="mt-1.5 line-clamp-2 text-[13.5px] text-fg-secondary wrap-anywhere">{message}</p> : null}
       {!tool.result ? (
-        <p className="mt-2 flex items-center gap-2 text-xs text-fg-secondary">
+        <div className="mt-2 flex items-center gap-2 text-xs text-fg-secondary">
           <ToolSpinner />
           {args.await_reply === true ? 'Sent; waiting for the answer…' : 'Sending…'}
-        </p>
+        </div>
       ) : refused ? (
         <p className="mt-2 flex items-start gap-2 text-[13px] text-danger wrap-anywhere">
           <X className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
