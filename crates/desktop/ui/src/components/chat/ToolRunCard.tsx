@@ -7,22 +7,27 @@ import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { isBoardCreate } from './BoardCard'
 import { Message, PromptCard } from './Message'
+import { PeerGroup } from './PeerGroup'
 import { toolKey, useDisclosed } from './disclosure'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
-/** A run: tool rows, possibly with reasoning rows between them; starts and ends with a tool. */
+/** A run: tool rows, possibly with reasoning rows between them, starting and ending with a tool; or 2+ adjacent peer rows from one sender. */
 export type Run = Entry[]
 
 /** Deliverable tools (Sky, 2026-10-06): "Show tool cards are never folded in with the collapsed sequential tools. They
  * are always shown in the transcript; they need to be easy for the user to find." A board create (71 §2.11) and the
  * full-width artifact cards `MessageTool` draws. `routine_draft` is named ahead of its tool so that wave needs no change here.
  * `ask_user` (Sky, 2026-10-07): "answered questions shouldn't be folded in collapsed tool cards, they should always be
- * visible, like show tool calls." Only `ask_user` — not `secret_request`, `desktop_handoff` or approvals. */
-const DELIVERABLE_TOOLS: Record<string, true> = { show: true, app: true, agent_draft: true, task_draft: true, routine_draft: true, ask_user: true }
+ * visible, like show tool calls." Only `ask_user` — not `secret_request`, `desktop_handoff` or approvals.
+ * `send_message` (Sky, 2026-11-10): every send is its own card with its delivery track (`SendCard`). */
+const DELIVERABLE_TOOLS: Record<string, true> = { show: true, app: true, agent_draft: true, task_draft: true, routine_draft: true, ask_user: true, send_message: true }
 export function isDeliverable(tool: Tool): boolean {
   return DELIVERABLE_TOOLS[tool.name] === true || isBoardCreate(tool)
 }
+
+type Peer = Extract<Entry, { kind: 'peer' }>
+const foldsPeer = (e: Entry | undefined): e is Peer => e?.kind === 'peer' && !e.context?.removed
 
 const NONE: ReadonlySet<string> = new Set()
 
@@ -31,12 +36,22 @@ const NONE: ReadonlySet<string> = new Set()
  * (`isDeliverable`) is never in a run: it splits one, `[a, b] show [c, d]` → `[[a, b], show, [c, d]]`. So does a
  * `pinned` thinking block (`useToolRuns.pinned`, one the user opened while it streamed): the next tool call must not
  * fold the block the reader is watching into a collapsed card. 183 §12.4: a call carrying a restart note splits one too,
- * so its EngineRestartCard stays in view. */
+ * so its EngineRestartCard stays in view. Sky 2026-11-10: two or more adjacent peer cards from one sender fold into one
+ * run too (`PeerGroup`); a row removed from context stays its own tombstone. */
 export function foldRuns(entries: Entry[], pinned: ReadonlySet<string> = NONE): (Entry | Run)[] {
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < entries.length) {
     const e = entries[i] as Entry
+    if (foldsPeer(e)) {
+      // Folded by the authenticated endpoint, else the label.
+      const from = e.origin?.from ?? e.from
+      let end = i + 1
+      while (foldsPeer(entries[end]) && ((entries[end] as Peer).origin?.from ?? (entries[end] as Peer).from) === from) end++
+      out.push(end - i > 1 ? entries.slice(i, end) : e)
+      i = end
+      continue
+    }
     if (e.kind !== 'tool' || isDeliverable(e) || e.restart) {
       out.push(e)
       i++
@@ -89,13 +104,18 @@ export function summarize(run: Run): Summary {
   return { text: parts.join(' · '), running: false, failed: mostlyFailed, hint }
 }
 
+/** A folded run: consecutive peer cards from one sender (`PeerGroup`) or tool calls (`ToolRun`). */
+export function ToolRunCard({ run, prompts, session }: { run: Run; prompts: Prompt[] | null; session: string }) {
+  return run[0]?.kind === 'peer' ? <PeerGroup run={run as Peer[]} session={session} /> : <ToolRun run={run} prompts={prompts} session={session} />
+}
+
 /** One card for a run of consecutive tool calls (70 TOOL-COLLAPSE): collapsed by default to a live status line, expanded
  * to the same cards the transcript shows ungrouped. Open state lives in the disclosure store keyed by the first call id, so
  * it survives the settled reload (new entry ids, same call ids); until the user toggles the run it is open whenever a
  * member's own card is (`toolKey`), so the next call folding an expanded tool card into a run keeps it on screen (171F B13).
  * Prompts waiting on a call in the run render under the header whether or not it is open: an approval must never hide
  * inside a collapsed run. */
-export function ToolRunCard({ run, prompts, session }: { run: Run; prompts: Prompt[] | null; session: string }) {
+function ToolRun({ run, prompts, session }: { run: Run; prompts: Prompt[] | null; session: string }) {
   const first = run[0] as Tool
   const member = useDisclosed((open) => run.some((e) => e.kind === 'tool' && open[toolKey(e.callId)] === true))
   const [open, setOpen] = useDisclosure(disclosureKey('run', first.callId), member)

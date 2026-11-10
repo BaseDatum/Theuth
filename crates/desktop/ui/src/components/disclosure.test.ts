@@ -110,7 +110,7 @@ const rows: Row[] = [
     el: h(QueryClientProvider, { client: new QueryClient() }, h(RosterCard, { tool: tool(3) as Extract<Entry, { kind: 'tool' }>, rows: [] })),
     open: expanded,
   },
-  { name: 'peer / job / subagent / reminder card', key: 'p1|peer', el: row({ id: 'p1', kind: 'peer', from: 'job j4', text: 'line 1\nline 2' }), open: expanded },
+  { name: 'peer / job / subagent / reminder card (Show all)', key: 'p1|peer', el: row({ id: 'p1', kind: 'peer', from: 'job j4', text: Array.from({ length: 9 }, (_, i) => `line ${i}`).join('\n') }), open: expanded },
   { name: 'engine notice', key: 'n1|notice', el: row({ id: 'n1', kind: 'engine', notice: 'nudge', text: 'dispose' }), open: expanded },
   { name: 'vision card', key: 'v1|vision', el: row({ id: 'v1', kind: 'vision', model: 'eyes', sources: [], text: 'seen' }), open: expanded },
   { name: 'desk card', key: 'd1|desk', el: row({ id: 'd1', kind: 'desk', agent: 'ops', charter: 'c', journal: 'j', manual: 'm' }), open: (html) => html.includes('>Charter') },

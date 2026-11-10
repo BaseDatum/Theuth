@@ -46,7 +46,7 @@ test.each(['chat first', 'settings first'])('peer request cache survives navigat
     if (order === 'chat first') {
       chat()
       await fetchQueries()
-      expect(chat()).toContain('awaiting your answer')
+      expect(chat()).toContain('Expects a reply')
       settings()
     } else {
       settings()
@@ -57,12 +57,12 @@ test.each(['chat first', 'settings first'])('peer request cache survives navigat
     await fetchQueries()
     expect(settings()).toContain(record.text)
     expect(settings()).toContain('Answer as this chat')
-    expect(chat()).toContain('awaiting your answer')
+    expect(chat()).toContain('Expects a reply')
     // Existing event/reconnect invalidation must still reach both representations.
     page.awaiting_answer = []
     await qc.invalidateQueries({ queryKey: ['peer-messages', 'recipient'] })
     await fetchQueries()
-    expect(chat()).not.toContain('awaiting your answer')
+    expect(chat()).not.toContain('Expects a reply')
     expect(settings()).not.toContain('Answer as this chat')
   } finally {
     page.awaiting_answer = [origin.id]

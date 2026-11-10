@@ -20,6 +20,7 @@ import { MessageTool } from './MessageTool'
 import { MeetingCard } from './MeetingCard'
 import { MessageUser } from './MessageUser'
 import { MessageVision } from './MessageVision'
+import { SendCard } from './SendCard'
 import { SecretRequestCard } from './SecretRequestCard'
 import { Details, DisclosureScope, useScopedDisclosure } from './disclosure'
 import { ResultCard } from '@/components/cells/ResultCard'
@@ -43,18 +44,21 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} context={entry.context} at={entry.at} readOnly={readOnly} />
     case 'reasoning':
       return <MessageReasoning id={entry.id} text={entry.text} done={entry.done} ms={entry.ms} />
-    case 'tool':
+    case 'tool': {
+      // Sky 2026-11-10: a send is its own card with its delivery track.
+      const card = entry.name === 'send_message' ? <SendCard tool={entry} session={session} at={entry.at} /> : <MessageTool tool={entry} session={session} readOnly={readOnly} />
       // 183 §12.4: a resumed batch's restart note is its own card above the call, never raw XML in the result.
       return entry.restart ? (
         <>
           <EngineRestartCard {...entry.restart} />
-          <MessageTool tool={entry} session={session} readOnly={readOnly} />
+          {card}
         </>
       ) : (
-        <MessageTool tool={entry} session={session} readOnly={readOnly} />
+        card
       )
+    }
     case 'peer':
-      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} />
+      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} at={entry.at} />
     case 'engine':
       return <EngineNotice notice={entry.notice} text={entry.text} />
     case 'desk':
