@@ -26,7 +26,7 @@ import { installFenceSnapshot } from '@/lib/fence-snapshot'
 import { installPagePreview } from '@/lib/page-preview'
 import { container, isDesktop } from '@/lib/platform'
 import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
-import { onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
+import { onOwnerChanged, onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { installSpeechListeners } from '@/lib/speech'
@@ -476,7 +476,7 @@ const LAGGED_TOAST_MS = 60_000
 function relayGuards(st: Stores): (() => void)[] {
   return [
     on('peer', (e) => onPeerChange(st, st.qc.getQueryData<SessionSummary[]>(queryKeys.sessions), e.data)),
-    on('SessionOwnerChanged', (e) => withdrawRelayed(st, new Set([e.session]))),
+    on('SessionOwnerChanged', (e) => onOwnerChanged(st, e)),
     // R2: the reducer already applied it (`following`). Down: the open reply may never see its `TurnFinished`, so settle.
     // Back up after a drop: a slice still stale (the owner's turn was open at the first settle) reads again.
     on('FollowState', (e) => {

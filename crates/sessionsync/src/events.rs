@@ -764,6 +764,8 @@ async fn stream(
         attempt.spoke = true;
         match msg {
             Msg::Event { seq, bytes, .. } => {
+                // 183 §5.6: a chat in use keeps its by-id route to its creator.
+                let _ = crate::owner::expected(session);
                 *last_seq = seq;
                 let mut ev: AgentEvent = serde_json::from_slice(&bytes)?;
                 // `here` is relative to the publisher; recompute for this engine.

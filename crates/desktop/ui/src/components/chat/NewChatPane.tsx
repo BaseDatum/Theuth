@@ -17,7 +17,7 @@ import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
-import { draftProject, usePanes } from '@/lib/panes'
+import { draftProject, newDraft, usePanes } from '@/lib/panes'
 import { useCompactorLabel } from '@/lib/endless'
 import { usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -218,6 +218,7 @@ export function NewChat({
   first = true,
   onClose,
   onCreated,
+  onUncreated,
 }: {
   /** `?project=<label>` from the sidebar's "New chat in <project>" (51 §3); followed when it changes. */
   preset?: string
@@ -225,6 +226,8 @@ export function NewChat({
   first?: boolean
   onClose?(): void
   onCreated?(session: string): void
+  /** 183 §5.6: a chat just created on another machine did not take its first message: back to this draft. */
+  onUncreated?(session: string): void
 }) {
   const [priv, setPriv] = useState(false)
   const [project, setProject] = useState<string | null>(preset ?? null)
@@ -243,7 +246,7 @@ export function NewChat({
       <MachineBar priv={priv} />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
-        <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} />
+        <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />
         <CreateOptions
           priv={priv}
           onPriv={(v) => {
@@ -327,7 +330,10 @@ export function NewChatPane({ id, first }: { id: string; first: boolean }) {
     usePanes.getState().place(id, session, 'center')
     void navigate({ to: '/c/$session', params: { session } })
   }
-  return <NewChat preset={draftProject(id)} pane={id} first={first} onClose={close} onCreated={created} />
+  // 183 §5.6: the chat (opened at once) did not take its first message: its leaf becomes a draft again; the draft's
+  // text was never acked, so it is still there.
+  const uncreated = (session: string) => usePanes.getState().place(session, newDraft(draftProject(id)), 'center')
+  return <NewChat preset={draftProject(id)} pane={id} first={first} onClose={close} onCreated={created} onUncreated={uncreated} />
 }
 
 /**

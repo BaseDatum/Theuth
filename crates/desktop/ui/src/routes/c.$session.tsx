@@ -24,8 +24,7 @@ import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { chatName } from '@/lib/attach'
 import { isDraft, usePanes } from '@/lib/panes'
-import { isNoSuchSession } from '@/lib/no-such-session'
-import { onNoSuchSession, useRemoteStart } from '@/lib/remote-start'
+import { reportLoadError, useRemoteStart } from '@/lib/remote-start'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { ownedElsewhere } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -219,19 +218,14 @@ export function useSessionLoad(session: string): void {
   const report = useCallback(
     (e: unknown, signal: AbortSignal) => {
       if (signal.aborted) return
-      if (!isNoSuchSession(e)) {
-        toast.error(e instanceof Error ? e.message : String(e))
-        return
-      }
-      const next = onNoSuchSession(session, tries.current)
-      if (next === 'home') void navigate({ to: '/', replace: true })
-      else if (next === 'unreachable') useRemoteStart.getState().unreachable(session)
-      else {
-        tries.current++
-        setTimeout(() => {
-          if (!signal.aborted) window.dispatchEvent(new CustomEvent<ReloadDetail>('theuth:reload-session', { detail: { session } }))
-        }, next.retry)
-      }
+      reportLoadError(e, session, tries, {
+        home: () => void navigate({ to: '/', replace: true }),
+        toast: (message) => toast.error(message),
+        retry: (ms) =>
+          setTimeout(() => {
+            if (!signal.aborted) window.dispatchEvent(new CustomEvent<ReloadDetail>('theuth:reload-session', { detail: { session } }))
+          }, ms),
+      })
     },
     [navigate, session],
   )

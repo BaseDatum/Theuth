@@ -27,29 +27,36 @@ use crate::{SessionSync, SessionsConfig, TakeReason};
 const CURSOR_POLL: Duration = Duration::from_millis(100);
 
 /// 183 §5.6: how long a session another engine created at this engine's
-/// request is routed to that engine by id while its row has not replicated
-/// here; every lookup renews it, so an active chat keeps working until the
-/// row lands.
+/// request stays routed to that engine by id after its last use (a call for
+/// it, a relayed event of it): the chat keeps reading from its creator while
+/// in use, so a lagging replica never answers for it.
 pub const EXPECT_FOR: Duration = Duration::from_secs(120);
 
-/// Session → (the engine that created it at our request, last lookup).
+/// Most chats remembered at once; the least recently used goes first.
+const EXPECT_MAX: usize = 256;
+
+/// Session → (the engine that created it at our request, last use).
 static EXPECTED: std::sync::LazyLock<
     parking_lot::Mutex<std::collections::HashMap<SessionId, (PeerId, Instant)>>,
 > = std::sync::LazyLock::new(Default::default);
 
 /// 183 §5.6: `engine` just created `session` for a caller of this engine.
-/// Until the row replicates here, [`expected`] names `engine`: the RPC front
-/// door forwards every call for `session` there and the event relay follows
-/// it. Entries unused for [`EXPECT_FOR`] are dropped.
+/// While [`expected`] names it, the RPC front door forwards calls for
+/// `session` there and the event relay follows it before the row lands.
+/// Entries unused for [`EXPECT_FOR`] are dropped; at most [`EXPECT_MAX`].
 pub fn expect(session: SessionId, engine: PeerId) {
     let mut map = EXPECTED.lock();
     map.retain(|_, (_, at)| at.elapsed() < EXPECT_FOR);
+    if map.len() >= EXPECT_MAX
+        && let Some(oldest) = map.iter().min_by_key(|(_, (_, at))| *at).map(|(s, _)| *s)
+    {
+        map.remove(&oldest);
+    }
     map.insert(session, (engine, Instant::now()));
 }
 
 /// The engine [`expect`]ed to hold `session`, renewing the entry; `None`
-/// when there is none or it expired. Callers ask only while the row is not
-/// here: once it lands, its owner decides.
+/// when there is none or it expired.
 pub fn expected(session: SessionId) -> Option<PeerId> {
     let mut map = EXPECTED.lock();
     match map.get_mut(&session) {
@@ -63,11 +70,6 @@ pub fn expected(session: SessionId) -> Option<PeerId> {
         }
         None => None,
     }
-}
-
-/// `session`'s row is here: its owner decides from now on.
-pub fn landed(session: SessionId) {
-    EXPECTED.lock().remove(&session);
 }
 
 /// `tell` (from the apply path): an applied row raised the epoch of a

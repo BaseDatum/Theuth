@@ -48,8 +48,8 @@ import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
-import { EMPTY, PLAIN_OPTIONS, openDraftSession, sendFirstElsewhere, useDraftTarget, useDrafts, useSkillDraft } from '@/lib/drafts'
-import { useRemoteStart } from '@/lib/remote-start'
+import { EMPTY, PLAIN_OPTIONS, sendFirst, useDraftTarget, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { YOUNG_MS, useRemoteStart } from '@/lib/remote-start'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { interrupt, phase, press } from '@/lib/composer-state'
@@ -300,6 +300,7 @@ export function Composer({
   pinned,
   sessionTitle,
   onCreated,
+  onUncreated,
   resolveSession,
   onSent,
   compact = false,
@@ -315,6 +316,9 @@ export function Composer({
   /** Title of the session the first message creates (a note's chat: the note title). */
   sessionTitle?: string
   onCreated?: (session: string) => void
+  /** 183 §5.6: with `onCreated`, the first message of a chat just created on another machine did not go: put this
+   * host back on its draft (the text is still there). Without it such a host opens the chat only after the send. */
+  onUncreated?: (session: string) => void
   /** 128 R6: with `session` null, the first send goes to the session this resolves (theuth's desk) instead of a new one; the default navigation to `/c/$session` follows. */
   resolveSession?: () => Promise<string>
   /** A bound `session` took the message (steer or send_input): the host may follow it. */
@@ -389,7 +393,18 @@ export function Composer({
   // 183 §5.6 / §13 row 11: a chat just created on another machine holds the next send until that machine is heard
   // from (its first event) or its row lists here; the engine forwards by id meanwhile, so this is the fallback.
   const start = useRemoteStart((s) => (session ? s.by[session] : undefined))
-  const starting = start && !start.heard && !row ? start.machine : null
+  // Held at most `YOUNG_MS`; the row listing here ends it (as the first event does, `dispatch`).
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!start || !session) return
+    if (row) {
+      useRemoteStart.getState().forget(session)
+      return
+    }
+    const t = setTimeout(() => tick((n) => n + 1), Math.max(0, start.at + YOUNG_MS - Date.now()))
+    return () => clearTimeout(t)
+  }, [start, row, session])
+  const starting = start && !row && Date.now() - start.at < YOUNG_MS ? start.machine : null
   // The new-chat draft while its `create_session` runs on the picked machine (up to the engine's replication wait).
   const pickedEngine = useDraftTarget((s) => (session ? null : s.engine))
   const creatingOn = busy && pickedEngine && pickedEngine !== mesh?.self_id ? engineLabel(pickedEngine, mesh?.peers) : null
@@ -884,40 +899,42 @@ export function Composer({
       } else {
         if (draftCreate?.private && !usePrivate.getState().acknowledged)
           throw new Error('Acknowledge the private session notice first')
-        // 183 §5.6: the machine picked for this chat (`openDraftSession` spends the pick); errors name it.
-        const { engine, cwd } = useDraftTarget.getState()
-        const machine = engine && engine !== mesh?.self_id ? engineLabel(engine, mesh?.peers) : null
         // A switch on needs `create_session` with the pick in it; `openDraftSession` takes a bare pick there too, else `new_session()`.
-        const { id, open, pick } = await openDraftSession(
+        // 183 §5.6: on another machine the chat opens at once with the message pending, and a failure comes back to this
+        // draft with the text (a split pane's draft leaf via `onUncreated`).
+        await sendFirst({
           api,
-          draftCreate && (draftCreate.private || draftCreate.project || draftCreate.endless) ? createOptions(draftCreate, useDrafts.getState().pick) : null,
-        ).catch((e: unknown) => {
-          throw machine ? new Error(`Could not start the chat on ${machine}: ${e instanceof Error ? e.message : String(e)}`, { cause: e }) : e
+          options: draftCreate && (draftCreate.private || draftCreate.project || draftCreate.endless) ? createOptions(draftCreate, useDrafts.getState().pick) : null,
+          input: clientId,
+          machine: (engine) => (engine !== mesh?.self_id ? engineLabel(engine, mesh?.peers) : null),
+          created: async (id, open, pick) => {
+            if (open?.retention === 'private') usePrivate.getState().open(open)
+            target = id
+            if (sessionTitle) await api.rename_session(id, sessionTitle)
+            // Seed before sending: a fast failure can finish before the RPC reply.
+            loadHistory(id, { ...FRESH, model: pick.model ?? defaultModel ?? '', effort: pick.effort ?? defaultEffort ?? null }, 'replace')
+            markSent(id, body, files)
+            mode(id)
+          },
+          send: (id) => deadline(api.send_input(id, body, files, null, clientId)),
+          ...(!onCreated
+            ? {
+                open: async (id: string) => {
+                  elsewhere = true
+                  await navigate({ to: '/c/$session', params: { session: id } })
+                },
+                back: () => navigate({ to: '/new' }),
+              }
+            : onUncreated
+              ? {
+                  open: async (id: string) => {
+                    elsewhere = true
+                    onCreated(id)
+                  },
+                  back: async (id: string) => onUncreated(id),
+                }
+              : {}),
         })
-        if (open?.retention === 'private') usePrivate.getState().open(open)
-        target = id
-        if (sessionTitle) await api.rename_session(id, sessionTitle)
-        // Seed before sending: a fast failure can finish before the RPC reply.
-        loadHistory(
-          id,
-          { ...FRESH, model: pick.model ?? defaultModel ?? '', effort: pick.effort ?? defaultEffort ?? null },
-          'replace',
-        )
-        markSent(id, body, files)
-        mode(id)
-        const send = () => deadline(api.send_input(id, body, files, null, clientId))
-        if (engine && machine && !onCreated) {
-          // The chat opens at once with the message pending; a failure lands back here with the text.
-          elsewhere = true
-          await sendFirstElsewhere({
-            session: id,
-            machine,
-            target: { engine, cwd },
-            open: () => navigate({ to: '/c/$session', params: { session: id } }),
-            back: () => navigate({ to: '/new' }),
-            send,
-          })
-        } else await send()
       }
       useDrafts.getState().acked(draftKey, spoken ?? text)
       retried.current = false

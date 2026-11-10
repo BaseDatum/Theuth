@@ -144,6 +144,16 @@ export function withdrawRelayed(st: Pick<Stores, 'approvals' | 'asks'>, sessions
 }
 
 /**
+ * `SessionOwnerChanged`: a real owner change (a move, epoch > 1) withdraws the session's relayed cards — they are the
+ * suspended turn's, and the new owner asks again on resume. 183 §5.6: epoch 1 is the first landing of a chat created on
+ * another engine (its row reaching this one); its owner did not change and its follow stream goes on, so a card it
+ * relayed still waits there and stays.
+ */
+export function onOwnerChanged(st: Pick<Stores, 'approvals' | 'asks'>, e: { session: string; epoch: number }): void {
+  if (e.epoch > 1) withdrawRelayed(st, new Set([e.session]))
+}
+
+/**
  * 183 §13 row 2: a send refused `-32013 NotOwner` keeps its draft and goes once more after the next `SessionOwnerChanged`
  * of that session (`retried` is the caller's one-shot flag, reset by its next success). `true` when this took the error;
  * `false` (the caller shows it) for any other error or a second refusal.

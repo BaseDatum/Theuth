@@ -704,6 +704,24 @@ export function openTail(s: Pick<SessionSlice, "entries">): boolean {
   return last?.kind === "assistant" && last.open === true;
 }
 
+/** The last user row's text and the reply text after it. */
+function tail(entries: readonly Entry[]): { user: string | undefined; reply: string } {
+  const at = entries.findLastIndex((e) => e.kind === "user");
+  const last = entries[at];
+  return {
+    user: last?.kind === "user" ? last.text : undefined,
+    reply: entries.slice(at + 1).flatMap((e) => (e.kind === "assistant" ? [e.text] : [])).join(""),
+  };
+}
+
+/** 183 §5.6: `page` holds less of the current reply than the `live` entries drew (same last message, its reply a strict
+ * prefix): a replica that has not caught up. Installing it would blank streamed text until the rows arrive. */
+export function shorterTail(live: readonly Entry[], page: readonly Entry[]): boolean {
+  const a = tail(live);
+  const b = tail(page);
+  return a.user !== undefined && a.user === b.user && a.reply.length > b.reply.length && a.reply.startsWith(b.reply);
+}
+
 /**
  * Fold one event into its session's slice (mirrors `tui::model::apply_agent`
  * and the job arm of `Model::apply`). Returns `slice` itself when nothing

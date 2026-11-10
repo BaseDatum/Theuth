@@ -10,9 +10,10 @@
 //! [`OwnerUnreachable`] payload; the desktop renders the "continue here?" card.
 //!
 //! 183 §5.6: a chat created on another engine (`create_session{engine}`) is
-//! routed to that engine by id until its row replicates here ([`expected`]):
-//! the mutating calls through [`classify`], the reads the chat route makes
-//! through [`to_creator`].
+//! routed to that engine by id while it is in use ([`expected`]): before its
+//! row replicates, the mutating calls through [`classify`]; the reads the chat
+//! route makes through [`to_creator`] until it goes unused, so a lagging
+//! replica never answers for it.
 //!
 //! The owner side ([`serve`]) dispatches each forwarded request into its own
 //! [`crate::api::Server`] as the internal peer, with a [`Forwarded`] marker in
@@ -228,10 +229,21 @@ pub async fn classify(
     })
 }
 
-/// 183 §5.6: the engine that created `session` at this engine's request while
-/// its row has not replicated here. `None` on a forwarded call, without the
-/// sessions plugin, or once the row is here (normal routing applies).
-pub async fn expected(ext: &Extensions, session: SessionId) -> RpcResult<Option<PeerId>> {
+/// 183 §5.6: a chat another engine created at this engine's request and still
+/// in use ([`sessionsync::owner::expected`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Expected {
+    /// The engine that created it.
+    pub engine: PeerId,
+    /// Its row has replicated here (owned by `engine`).
+    pub here: bool,
+}
+
+/// [`Expected`] for `session`: `None` on a forwarded call, without the
+/// sessions plugin, when nothing was created elsewhere for it (or that went
+/// unused for [`sessionsync::owner::EXPECT_FOR`]), or when its row here names
+/// another owner (it moved: normal routing applies).
+pub async fn expected(ext: &Extensions, session: SessionId) -> RpcResult<Option<Expected>> {
     if ext.get::<Forwarded>().is_some() || sessionsync::actor().is_none() {
         return Ok(None);
     }
@@ -239,33 +251,40 @@ pub async fn expected(ext: &Extensions, session: SessionId) -> RpcResult<Option<
         return Ok(None);
     };
     let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
-    let here = store
-        .session(session)
+    match store
+        .owner(session)
         .await
         .map_err(|e| internal(format!("{e:#}")))?
-        .is_some();
-    if here {
-        sessionsync::owner::landed(session);
-        return Ok(None);
+    {
+        None => Ok(Some(Expected {
+            engine,
+            here: false,
+        })),
+        Some((owner, _)) if owner == engine.0 => Ok(Some(Expected { engine, here: true })),
+        Some(_) => Ok(None),
     }
-    Ok(Some(engine))
 }
 
-/// A read the front door answers from its replica, for a session whose row
-/// has not replicated yet ([`expected`]): forwarded to the engine that created
-/// it. `Ok(None)`: answer here as usual.
+/// A read the front door answers from its replica, for a chat created
+/// elsewhere and in use ([`expected`]): forwarded to its creator, so a
+/// replica that has not caught up (or has no row yet) never answers for it.
+/// `Ok(None)`: answer here — nothing expected, or the creator cannot be
+/// reached and the row is here.
 pub async fn to_creator<T: DeserializeOwned>(
     ext: &Extensions,
     session: SessionId,
     method: &str,
     params: impl Serialize,
 ) -> RpcResult<Option<T>> {
-    let Some(engine) = expected(ext, session).await? else {
+    let Some(Expected { engine, here }) = expected(ext, session).await? else {
         return Ok(None);
     };
-    match to_peer(ext, &engine, method, params).await? {
-        Some(v) => Ok(Some(v)),
-        None => Err(unreachable(engine.0, "not connected").await),
+    match to_peer(ext, &engine, method, params).await {
+        Ok(Some(v)) => Ok(Some(v)),
+        Ok(None) if here => Ok(None),
+        Err(e) if here && e.code() == OWNER_UNREACHABLE => Ok(None),
+        Ok(None) => Err(unreachable(engine.0, "not connected").await),
+        Err(e) => Err(e),
     }
 }
 

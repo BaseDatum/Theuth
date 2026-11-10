@@ -144,7 +144,7 @@ impl Write for Captured {
 }
 
 #[tokio::test]
-async fn a_chat_created_elsewhere_forwards_by_id_until_its_row_lands() {
+async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
     let logs = Captured::default();
     let sink = logs.clone();
     tracing_subscriber::fmt()
@@ -154,10 +154,7 @@ async fn a_chat_created_elsewhere_forwards_by_id_until_its_row_lands() {
         .init();
 
     let dir = tempfile::tempdir().unwrap();
-    let cfg = figment::Figment::new().merge(figment::providers::Serialized::defaults(
-        serde_json::json!({ "sessions": { "release_wait_secs": 1 } }),
-    ));
-    let rt = Runtime::new(cfg, dir.path().to_path_buf());
+    let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
     let (a, b) = link();
 
     // The target: answers forwarded calls, never ships a row.
@@ -255,4 +252,91 @@ async fn a_chat_created_elsewhere_forwards_by_id_until_its_row_lands() {
         .await
         .unwrap_err();
     assert!(e.to_string().contains("no such session"), "{e}");
+    let asked = || seen.lock().len();
+    let before = asked();
+
+    // A handler that never forwards keeps the strict check: it fails closed
+    // for the chat whose row is not here, instead of running locally.
+    let e = api
+        .call::<_, Vec<agent::QueuedInput>>("list_queued", (open.session,))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("no such session"), "{e}");
+
+    // A call that arrived forwarded is never sent on again, mapped or not.
+    let mut forwarded = api.clone();
+    forwarded
+        .extensions_mut()
+        .insert(rpc::forward::Forwarded(PeerId("b".into())));
+    let e = forwarded
+        .call::<_, agent::Loaded>(
+            "load_session",
+            (open.session, None::<i64>, Some(60), None::<bool>),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("no such session"), "{e}");
+
+    // A private tree belongs to this connection and never replicates: it is
+    // refused before anything reaches the other engine.
+    let e = api
+        .call::<_, SessionOpen>(
+            "create_session",
+            (CreateSessionOptions {
+                engine: Some("b".into()),
+                retention: tools::Retention::Private,
+                ..Default::default()
+            },),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("private chat"), "{e}");
+    assert_eq!(asked(), before, "nothing reached b");
+
+    // The row lands (owned by b): the chat route's reads still go to b while
+    // the chat is in use, so a replica that has not caught up never answers;
+    // the strict check now admits it locally too.
+    let other = SessionId::new();
+    let theirs = agent::store::Store::open(
+        &dir.path().join("sessions.sqlite"),
+        Some(mesh::EngineId("b".into())),
+    )
+    .await
+    .unwrap();
+    theirs
+        .create_session(open.session, "m", None, None, None)
+        .await
+        .unwrap();
+    // A chat expected from b whose row names another owner (it moved): its
+    // row decides, nothing goes to b.
+    let moved = agent::store::Store::open(
+        &dir.path().join("sessions.sqlite"),
+        Some(mesh::EngineId("c".into())),
+    )
+    .await
+    .unwrap();
+    moved
+        .create_session(other, "m", None, None, None)
+        .await
+        .unwrap();
+    sessionsync::owner::expect(other, PeerId("b".into()));
+    let _: agent::Loaded = api
+        .call(
+            "load_session",
+            (open.session, None::<i64>, Some(60), None::<bool>),
+        )
+        .await
+        .unwrap();
+    let _: Vec<agent::QueuedInput> = api.call("list_queued", (open.session,)).await.unwrap();
+    let _: agent::Loaded = api
+        .call("load_session", (other, None::<i64>, Some(60), None::<bool>))
+        .await
+        .unwrap();
+    assert_eq!(
+        seen.lock()[before..].to_vec(),
+        vec![("load_session".to_owned(), id.clone())],
+        "after landing: b's chat reads from b, the moved one locally"
+    );
+    theirs.close().await;
+    moved.close().await;
 }
