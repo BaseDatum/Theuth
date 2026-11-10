@@ -11,7 +11,7 @@ import { touch } from '@/lib/platform'
 import { useShortcuts } from '@/lib/shortcuts'
 import type { Api } from '@/rpc/api'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
-import { useSessionField } from '@/store/sessions'
+import { contactTurn, useSessionField, useSessions } from '@/store/sessions'
 import { Attachments } from './Attachments'
 
 /** A queued input's chip: a skill injection shows the skills icon, its name and the words; an app input its app and message;
@@ -71,6 +71,8 @@ export function QueuedChips({ session, onEdit }: { session: string; onEdit: Queu
   const api = useApi()
   const queued = useSessionField(session, 'queued')
   const interject = useShortcuts((s) => s.chords.interject)
+  // 186 D8: under a contact's turn nothing interrupts; the steers run after it.
+  const contact = useSessions((s) => contactTurn(s.sessions[session]))
   if (!queued?.length) return null
   return (
     <div className="mb-2 flex flex-wrap gap-2">
@@ -88,7 +90,9 @@ export function QueuedChips({ session, onEdit }: { session: string; onEdit: Queu
               {label(q)}
               {q.defer && <span className="ml-1 text-xs text-fg-tertiary">next turn</span>}
               {q === queued[queued.length - 1] && (
-                <span className="ml-1 text-xs text-fg-tertiary">queued · {touch() ? 'hold Steer' : chordLabel(interject)} to interrupt</span>
+                <span className="ml-1 text-xs text-fg-tertiary">
+                  {contact ? `queued · runs after ${contact.contact || 'a contact'}'s turn` : `queued · ${touch() ? 'hold Steer' : chordLabel(interject)} to interrupt`}
+                </span>
               )}
             </button>
             <button

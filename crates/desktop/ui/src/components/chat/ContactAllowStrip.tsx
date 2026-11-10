@@ -1,6 +1,6 @@
 import { ChevronDown } from 'lucide-react'
 import { FirstButtons, waitingCount, waitingLine } from '@/components/settings/Contacts'
-import { LIMITED, MODE_LABEL, modeHint, useFirstWaiting } from '@/lib/contacts'
+import { MODE_LABEL, modeLines, useFirstWaiting } from '@/lib/contacts'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
@@ -46,7 +46,11 @@ export function ContactAllowStrip({ session, embedded = false }: { session: stri
           )}
         </div>
         {mine.length > 1 && open && mine.map((w) => <Row key={`${w.contact}:${w.export}`} w={w} detail />)}
-        {open && <p className="text-xs text-fg-tertiary">{mine.every((w) => w.mode === 'full') ? `Full collaboration: ${modeHint('full')}` : LIMITED}</p>}
+        {open && modeLines(mine.map((w) => w.mode)).map((l) => (
+          <p key={l} className="text-xs text-fg-tertiary">
+            {l}
+          </p>
+        ))}
       </div>
     </div>
   )

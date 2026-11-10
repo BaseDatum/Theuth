@@ -70,3 +70,13 @@ test('171F4: editing a queued steer brings back its text and its attachments; a 
     ['and this one', []],
   ])
 })
+
+test('186 D8: under a contact turn the last chip says it runs after that turn, never how to interrupt', () => {
+  const S = 'contact-turn'
+  useSessions.getState().loadHistory(S, { ...FRESH, running: true, queued: [{ id: 'q1', text: 'mine' }] }, 'replace')
+  const chips = () => render(h(QueuedChips, { session: S, onEdit: () => undefined }))
+  expect(chips()).toContain('to interrupt')
+  active().sessions.setState((s) => ({ sessions: { ...s.sessions, [S]: { ...s.sessions[S]!, contactNote: { contact: 'sky', machine: 'm', export: 'ops', cap: 'read_only' } } } }))
+  expect(chips()).toContain('queued · runs after sky&#x27;s turn')
+  expect(chips()).not.toContain('to interrupt')
+})

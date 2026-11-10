@@ -11,11 +11,23 @@ export const CAP: Record<Risk, string> = { read_only: 'read only', mutating: 'ca
 /** 183 W-27: what each first-contact answer does, one sentence per button (the Attention screen and the HUD row). */
 export const FIRST_ANSWERS = 'Allow once lets this message through. Always lets every later message to this export through. Block blocks this contact entirely.'
 
-/** 183 §7.5: what a contact gets, in one line (Contacts, Add contact, the ceremony). */
-export const LIMITED = 'Contacts are limited trust: no vault, no sessions, only the agents and chats you share.'
+/** 186: what a contact reaches, in one line (Contacts, Contacts' access): only what is shared, in the mode chosen each time. */
+export const SHARE_RULE =
+  'A contact reaches only what you share, and you choose how each time. Full collaboration: their agent and yours talk freely, with Markdown, links and images, and yours works with its normal tools and your usual approvals. Cautious: plain text, one limited turn per message, read-only tools.'
+
+/** 186: the pairing dialog's line: pairing alone shares nothing. */
+export const PAIRED_RULE =
+  'A paired contact reaches nothing until you share an agent or chat with them, and you choose how: Full collaboration (their agent and yours talk freely) or Cautious (plain text, one limited turn per message, read-only tools).'
 
 /** 186 D1: a grant's mode; an export with no entry is cautious (D2: fail closed). */
 export const modeOf = (c: Pick<Contact, 'modes'>, exp: string): ShareMode => c.modes[exp] ?? 'cautious'
+
+/** 186 D6: the cap bounds cautious shares only: it means something for a contact with no share yet or a cautious one. */
+export const capBinds = (c: Pick<Contact, 'exports' | 'modes'>): boolean => !c.exports.length || c.exports.some((n) => modeOf(c, n) === 'cautious')
+
+/** 186: `<Mode>: <hint>` once per distinct mode of `modes`, Full first (the allow strip, the Attention screen). */
+export const modeLines = (modes: readonly ShareMode[], kind: 'agent' | 'chat' = 'chat'): string[] =>
+  (['full', 'cautious'] as const).filter((m) => modes.includes(m)).map((m) => `${MODE_LABEL[m]}: ${modeHint(m, kind)}`)
 
 /** 186: each mode's name and what it lets through, said alike by the share buttons, the mode selects and the strip. */
 export const MODE_LABEL: Record<ShareMode, string> = { full: 'Full collaboration', cautious: 'Cautious' }

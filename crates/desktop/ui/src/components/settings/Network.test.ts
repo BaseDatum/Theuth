@@ -165,7 +165,7 @@ test('§6.7 sections in order: This machine, Nearby, Machines in this mesh, Cont
   expect(html).toMatch(/aria-checked="true" aria-label="Agents can message xeus"/)
   expect(html).toContain('agent messaging between Sky&#x27;s MacBook and cloud-1 is off on Sky&#x27;s MacBook')
   // Contacts (183 §12.7) and the messaging line.
-  expect(html).toContain('Contacts are limited trust: no vault, no sessions, only the agents and chats you share.')
+  expect(html).toContain('A contact reaches only what you share, and you choose how each time.')
   expect(html).toContain('No contacts yet.')
   expect(html).toMatch(/<button>[^<]*<svg[^>]*>.*?<\/svg> Add contact…<\/button>/)
   expect(html).toContain('on by default because this machine has paired machines')

@@ -193,7 +193,8 @@ test('contact words: export names, fingerprint, first-contact ids, sharing and i
 test('§12.7 Contacts: each row has name, machine, cap, fingerprint, path and the exports it may reach (paused named)', async () => {
   await mount(createElement(Contacts))
   const t = body()
-  expect(t).toContain('Contacts are limited trust: no vault, no sessions, only the agents and chats you share.')
+  expect(t).toContain('A contact reaches only what you share, and you choose how each time.')
+  // Both of bob's shares are cautious: his cap still binds and shows.
   expect(t).toContain("Bob's MacBook · read only")
   expect(t).toContain('K3J9 Q2M4 X7P1 R8T5 W6Y0')
   expect(t).toContain('Relay')
@@ -272,9 +273,11 @@ test('ceremony: the code and the check line, Cancel focused (never Accept); Acce
   expect(body()).toContain('Check that Bob shows the same code')
   expect(body()).toContain("Bob's MacBook · macOS · k3j9 q2m4 x7p1 r8t5 w6y0")
   expect(document.activeElement).toBe(button('Cancel'))
-  // The dialog is described by the limited-trust line.
+  // The dialog is described by the line that pairing alone shares nothing.
   const dialog = document.querySelector('[role=dialog]')!
-  expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toBe('Contacts are limited trust: no vault, no sessions, only the agents and chats you share.')
+  expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toBe(
+    'A paired contact reaches nothing until you share an agent or chat with them, and you choose how: Full collaboration (their agent and yours talk freely) or Cautious (plain text, one limited turn per message, read-only tools).',
+  )
   await click('Accept')
   expect(api.contact_answer).toHaveBeenCalledWith('c1', true)
   expect(body()).toContain('Waiting for Bob to press Accept…')
@@ -466,12 +469,16 @@ test('183 Z4-R1 tools line: once a reader is granted it names what contacts can 
 
 test('⋯ Share with contact…: Cautious or Full collaboration grants this chat, Shared · Stop takes it back; Stop sharing with <contacts> removes the export', async () => {
   await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
-  expect(body()).toContain('They see only the answers to their own messages')
+  expect(body()).toContain("They see only what this chat's agent sends back")
+  expect(body()).toContain('You can switch this share between Full collaboration and Cautious, or stop sharing, at any time.')
   await click('Stop sharing with bob')
   await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['research'], blocked: null, modes: null }))
   await reset()
   api.contact_list.mockImplementation(async () => [{ ...BOB, exports: [] }])
   await mount(createElement(ShareDialog, { session: 's-new', title: 'New chat', onClose: vi.fn() }))
+  // 186: no grant button takes focus on open, so Enter never shares in full by accident.
+  expect(document.querySelectorAll('[role=group][aria-label="Share this chat with bob"] button')).toHaveLength(2)
+  expect(document.activeElement?.tagName).not.toBe('BUTTON')
   await click('Cautious: share this chat with bob')
   await vi.waitFor(() => expect(api.a2a_export_put).toHaveBeenCalledWith({ name: 'new-chat', target: { kind: 'chat', session: 's-new' }, description: 'New chat', paused: null }))
   expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['new-chat'], blocked: null, modes: { 'new-chat': 'cautious' } })
@@ -520,12 +527,15 @@ test('W-27 first contact: Allow once → ask, Always → allow, Block → block 
   ])
 })
 
-test('ContactFirstScreen: who asks, what it wants to reach, the limited-trust line and the three answers', async () => {
+test('ContactFirstScreen: who asks, what it wants to reach, the share\'s mode and the three answers', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [{ contact: 'bob', machine: "Bob's MacBook", export: 'research', session: 's1', since_ms: NOW, waiting: 1, preview: 'hi', mode: 'full' }])
   await mount(createElement(ContactFirstScreen, { item: FIRST }))
   const t = body()
   expect(t).toContain("bob (Bob's MacBook) wants to reach research")
   expect(t).toContain('Wants to reach')
-  expect(t).toContain('Contacts are limited trust')
+  // research is an agent export: the hint names "this agent".
+  await vi.waitFor(() => expect(body()).toContain('Full collaboration: Their agent and this agent talk freely'))
+  expect(t).not.toContain('limited trust')
   expect(t).toContain('Allow once lets this message through. Always lets every later message to this export through. Block blocks this contact entirely.')
   for (const b of ['Allow once', 'Always', 'Block']) expect(button(b)).toBeDefined()
 })
@@ -684,7 +694,8 @@ test('186: each grant shows its mode and changes it; a full grant hides the tool
   expect(body()).toContain('Full collaboration: Their agent and this agent talk freely')
   expect(document.querySelector('[role=group][aria-label="Tools Ops chat offers contacts"]')).not.toBeNull()
   await run(() => selects['Mode of ops-chat for bob']!('full'))
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: null, blocked: null, modes: { research: 'full', 'ops-chat': 'full' } })
+  // Only the changed entry: a stale snapshot never re-sends research's mode (the engine merges entry by entry).
+  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: null, blocked: null, modes: { 'ops-chat': 'full' } })
   await reset()
   api.contact_list.mockImplementation(async () => [{ ...FULL, exports: ['research'] }])
   await mount(createElement(ContactAccess))
@@ -695,8 +706,16 @@ test('186: each grant shows its mode and changes it; a full grant hides the tool
   await mount(createElement(Contacts))
   expect(body()).toContain('research@studio · cautious')
   expect(body()).toContain('Ops chat · Paused (chat archived) · full')
+  expect(body()).toContain("Bob's MacBook · read only")
+  await reset()
+  // Every share full: the cap bounds nothing, so the row does not print it.
+  api.contact_list.mockImplementation(async () => [{ ...BOB, modes: { research: 'full', 'ops-chat': 'full' } }])
+  await mount(createElement(Contacts))
+  expect(body()).toContain("Bob's MacBook")
+  expect(body()).not.toContain('read only')
   expect(sharedLabel(sharingOf('s-ops', EXPORTS, [{ ...BOB, modes: { 'ops-chat': 'full' } }, ALICE]))).toBe('Shared with bob · full, alice · can change things · paused (chat archived)')
   await reset()
+  api.contact_list.mockImplementation(async () => [{ ...BOB, modes: { 'ops-chat': 'full' } }, ALICE])
   await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
   expect(mode('ops-chat')).toBe('full')
   expect(mode('ops-chat', 'alice')).toBe('cautious')

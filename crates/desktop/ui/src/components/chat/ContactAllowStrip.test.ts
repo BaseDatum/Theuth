@@ -45,22 +45,31 @@ afterEach(async () => {
   document.body.innerHTML = ''
 })
 
-test('one waiting contact: a collapsed row with its mode and three answers; expanding adds the preview and the limited-trust line', async () => {
+test('one waiting contact: a collapsed row with its mode and three answers; expanding adds the preview and what the mode lets through', async () => {
   await mount()
   expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Cautious")
   expect(body()).not.toContain('ping from sky')
   await click('Details')
   expect(body()).toContain('ping from sky')
-  expect(body()).toContain('limited trust')
+  expect(body()).toContain('Cautious: Plain text, one limited turn per message, read-only tools.')
+  expect(body()).not.toContain('Full collaboration:')
 })
 
-test('186: a full share says so, and what it lets through instead of the limited-trust line', async () => {
+test('186: a full share says so, and what it lets through; mixed modes print one line each', async () => {
   api.contact_first_waiting.mockImplementation(async () => [{ ...W, mode: 'full' }])
   await mount()
   expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Full collaboration")
   await click('Details')
-  expect(body()).toContain('talk freely, with Markdown, links and images')
-  expect(body()).not.toContain('limited trust')
+  expect(body()).toContain('Full collaboration: Their agent and this chat’s agent talk freely, with Markdown, links and images')
+  expect(body()).not.toContain('Cautious:')
+  await unmount()
+  document.body.innerHTML = ''
+  useToolRuns.setState({ disclosed: {} })
+  api.contact_first_waiting.mockImplementation(async () => [{ ...W, mode: 'full' }, { ...W, contact: 'eve', export: 'docs' }, { ...W, contact: 'kim', export: 'kb' }])
+  await mount()
+  await click('Details')
+  expect(body().match(/Full collaboration: /g)).toHaveLength(1)
+  expect(body().match(/Cautious: /g)).toHaveLength(1)
 })
 
 test.each([

@@ -63,6 +63,13 @@ test('186 D8: under a contact turn Stop names whose turn it stops; the owner\'s 
   expect(html()).not.toContain('title=')
 })
 
+test("186 D8: the composer's input-driven cancels say `input` (the engine refuses them under a contact turn); Stop says `stop`", () => {
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  expect(src.match(/api\.cancel\(session, null, 'input'\)/g)).toHaveLength(3)
+  expect(src.match(/api\.cancel\(session, scope, 'stop'\)/g)).toHaveLength(1)
+  expect(src.match(/api\.cancel\(/g)).toHaveLength(4)
+})
+
 test('183 §12.1 / mock panel 3: a chat owned elsewhere says where the message runs, a steer too; talk and private keep theirs', () => {
   const idle = { running: false, exports: false }
   // The name never breaks: a word joiner after its hyphen, no-break spaces (a 430 px box wrapped `cloud-` / `1`).

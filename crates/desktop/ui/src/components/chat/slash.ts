@@ -719,7 +719,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     case '/clear':
       return compact(api, need(session), 'clear')
     case '/cancel':
-      if (session) await api.cancel(session)
+      if (session) await api.cancel(session, null, 'stop')
       return
     case '/undo':
     case '/redo': {
