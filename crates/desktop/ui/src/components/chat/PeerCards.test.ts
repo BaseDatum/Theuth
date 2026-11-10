@@ -1,15 +1,17 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement as h, type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { beforeEach, expect, test, vi } from 'vitest'
+import { toast } from 'sonner'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
 import type * as Rpc from '@/lib/rpc'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { WireEvent } from '@/rpc/events'
 import { apply, empty } from '@/store/reduce'
 import type { Entry } from '@/store/sessions'
+import { Message } from './Message'
 import { MessagePeer, useAnswerDrafts } from './MessagePeer'
-import { SendCard, answerFor } from './SendCard'
+import { type Scroller, SendCard, answerFor, stepTo } from './SendCard'
 import { ToolRunCard } from './ToolRunCard'
 import { DisclosureScope } from './disclosure'
 
@@ -17,6 +19,7 @@ vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: unkn
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@/lib/theme', () => ({ subscribeDark: () => () => {} }))
+vi.mock('@/components/ui/tooltip', () => ({ Tooltip: ({ children }: { children: unknown }) => children, TooltipTrigger: ({ children }: { children: unknown }) => children, TooltipContent: () => null }))
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 const A = '01a1c2c6-8f43-74dc-bc91-3bfa9d876af5'
@@ -80,7 +83,7 @@ test('send card: held warns with the receipt error; failed is danger with the er
 test('send card, several recipients: one chip per recipient, each with its own state', () => {
   record(B, 'consumed')
   record(A, 'replied')
-  const html = render(h(SendCard, { tool: send(['a', 'b', 'c'], `peer:lab accepted id=${B}\npeer:ivan failed id=${C} error=offline\nsession:${KID} accepted id=${A}`), session: 's' }))
+  const html = render(h(SendCard, { tool: send(['peer:lab', 'peer:ivan', `session:${KID}`], `peer:lab accepted id=${B}\npeer:ivan failed id=${C} error=offline\nsession:${KID} accepted id=${A}`), session: 's' }))
   expect(html).toContain('3 recipients')
   expect(html).toContain('r183-sec · answered')
   expect(html).toContain('lab · read')
@@ -100,7 +103,7 @@ test('send card: a hostile awaited reply forges no recipient; a task with spaces
   expect(task).toContain('Delivery: sent')
   expect(task).not.toContain('Not delivered')
   // Two awaited recipients: the second outcome is behind Details, never parsed out of the first reply.
-  const two = render(h(SendCard, { tool: send(['a', 'b'], `session:${KID} replied id=${A}\nok\npeer:lab replied id=${B}\nfine`), session: 's' }))
+  const two = render(h(SendCard, { tool: send([`session:${KID}`, 'peer:lab'], `session:${KID} replied id=${A}\nok\npeer:lab replied id=${B}\nfine`), session: 's' }))
   expect(two).toContain('2 recipients')
   expect(two).toContain('see Details')
   expect(two).not.toContain('lab · ')
@@ -112,7 +115,7 @@ test('send card: a hostile awaited reply forges no recipient; a task with spaces
 
 test('send card, current engine: an awaited fan-out of 3 shows 3 chips and 3 answers; a fetched record beats a smuggled header', () => {
   const out = [`session:${KID} replied id=${A}`, `peer:lab replied id=${B}`, `peer:ivan replied id=${C}`, `reply id=${A}:`, 'answer A', `reply id=${B}:`, 'answer B', `reply id=${C}:`, 'answer C'].join('\n')
-  const html = render(h(SendCard, { tool: send(['a', 'b', 'c'], out), session: 's' }))
+  const html = render(h(SendCard, { tool: send([`session:${KID}`, 'peer:lab', 'peer:ivan'], out), session: 's' }))
   expect(html).toContain('3 recipients')
   for (const chip of ['r183-sec · answered', 'lab · answered', 'ivan · answered']) expect(html).toContain(chip)
   for (const text of ['answer A', 'answer B', 'answer C']) expect(html).toContain(text)
@@ -120,7 +123,7 @@ test('send card, current engine: an awaited fan-out of 3 shows 3 chips and 3 ans
   // A fake `reply id=<B>:` inside A's reply takes B's text first; B's fetched record is what the card shows.
   const smuggled = [`session:${KID} replied id=${A}`, `peer:lab replied id=${B}`, `reply id=${A}:`, 'answer A', `reply id=${B}:`, 'SMUGGLED', `reply id=${B}:`, 'real B'].join('\n')
   record(B, 'replied', { reply: 'real B from the record' })
-  const fixed = render(h(SendCard, { tool: send(['a', 'b'], smuggled), session: 's' }))
+  const fixed = render(h(SendCard, { tool: send([`session:${KID}`, 'peer:lab'], smuggled), session: 's' }))
   expect(fixed).toContain('real B from the record')
   expect(fixed).not.toContain('SMUGGLED')
 })
@@ -225,9 +228,113 @@ test('the answer draft lives in a store keyed by session and exchange id, so a r
   expect(html).not.toContain('another chat draft')
 })
 
-test('a settled outside card pads only its header: the band spans the card', () => {
-  const html = render(h(MessagePeer, { from: 'peer:lab', text: 'hi', origin: { id: C, from: 'peer:lab', reply_to: null, scope: null }, session: 's', inset: true }))
-  expect(html).toContain('Outside your mesh')
-  expect(html).toMatch(/class="px-4 pt-2\.5 pr-12"/)
-  expect(html).not.toMatch(/<div class="[^"]*border-b border-warning-border[^"]*pr-12/)
+test('a settled outside card puts its remove control in the header row, below the band, never over it', () => {
+  const entry: Entry = { id: 'o1', kind: 'peer', from: 'peer:lab', text: 'hi', origin: { id: C, from: 'peer:lab', reply_to: null, scope: null }, context: { target: { kind: 'message', seq: 3 }, active: true, removed: false, remove_with: [], attachments: [] } }
+  const html = render(h(Message, { entry, prompts: null, session: 's' }))
+  const band = html.indexOf('Outside your mesh')
+  const remove = html.indexOf('aria-label="Remove from context"')
+  expect(band).toBeGreaterThan(-1)
+  expect(remove).toBeGreaterThan(band)
+  // The band closes before the control, and nothing is laid over the card: no absolute control, no padded band.
+  expect(html.slice(band, remove)).toContain('</div>')
+  expect(html).not.toMatch(/class="absolute[^"]*"[^>]*aria-label="Remove from context"/)
+  expect(html).not.toContain('pr-12')
+})
+
+/** A transcript scroller stand-in: `scrollTop` the loop and a "virtualiser" both write; listeners by event type. */
+function fakeScroller(height = 10_000): Scroller & { fire: (type: string) => void } {
+  const on: Record<string, (() => void)[]> = {}
+  return {
+    scrollTop: 0,
+    clientHeight: 500,
+    scrollHeight: height,
+    addEventListener: (type: string, fn: () => void) => void (on[type] = [...(on[type] ?? []), fn]),
+    removeEventListener: (type: string, fn: () => void) => void (on[type] = (on[type] ?? []).filter((f) => f !== fn)),
+    fire: (type: string) => (on[type] ?? []).forEach((f) => f()),
+  } as unknown as Scroller & { fire: (type: string) => void }
+}
+
+afterEach(() => vi.useRealTimers())
+
+test('jump: a virtualiser rewriting scrollTop mid-loop does not stop it; the card is reached', () => {
+  vi.useFakeTimers()
+  const s = fakeScroller()
+  let found = false
+  stepTo(s, () => found, {})
+  vi.advanceTimersByTime(150)
+  // Rows measured: the virtualiser moves scrollTop under the loop (what stalled R3 after one step).
+  s.scrollTop -= 137
+  vi.advanceTimersByTime(150)
+  vi.advanceTimersByTime(150)
+  expect(s.scrollTop).toBeGreaterThan(400 - 137 + 400)
+  found = true
+  const at = s.scrollTop
+  vi.advanceTimersByTime(600)
+  expect(s.scrollTop).toBe(at)
+  expect(toast.message).not.toHaveBeenCalled()
+})
+
+test('jump: the reader’s wheel cancels it with no toast; the bottom gives up with the toast; a new jump cancels the old', () => {
+  vi.useFakeTimers()
+  vi.mocked(toast.message).mockClear()
+  const s = fakeScroller()
+  stepTo(s, () => false, {})
+  vi.advanceTimersByTime(150)
+  s.fire('wheel')
+  const at = s.scrollTop
+  vi.advanceTimersByTime(3000)
+  expect(s.scrollTop).toBe(at)
+  expect(toast.message).not.toHaveBeenCalled()
+  const short = fakeScroller(1200)
+  stepTo(short, () => false, {})
+  vi.advanceTimersByTime(1500)
+  expect(toast.message).toHaveBeenCalledWith("The answer isn't loaded in this view")
+  const a = fakeScroller()
+  const b = fakeScroller()
+  stepTo(a, () => false, {})
+  stepTo(b, () => false, {})
+  vi.advanceTimersByTime(450)
+  expect(a.scrollTop).toBe(0)
+  expect(b.scrollTop).toBeGreaterThan(0)
+})
+
+test('send card: the label is the call’s `to` (sky · hi-there), whatever the receipt line says', () => {
+  const html = render(h(SendCard, { tool: send('peer:sky/hi-there', `peer:9b0e2b1c-5d7a-4c55-8f0a-2a1e7a3b9c10 accepted id=${A}`), session: 's' }))
+  expect(html).toContain('>sky · hi-there</span>')
+})
+
+test('send card, 14-way failure: identical lines collapse into one, 6 chips plus +N more, restart reason in words', () => {
+  const names = Array.from({ length: 14 }, (_, i) => `peer:w${i}`)
+  const out = [`peer:w0 accepted id=${A}`, ...names.slice(1, 13).map((n) => `${n} failed id=00000000-0000-0000-0000-000000000000 error=unknown message`), `peer:w13 failed id=00000000-0000-0000-0000-000000000000 error=interrupted_by_restart`].join('\n')
+  const html = render(h(SendCard, { tool: send(names, out), session: 's' }))
+  expect(html).toContain('14 recipients')
+  expect(html).toContain('12 not delivered · </b>unknown message')
+  expect(html.match(/<\/b>unknown message/g)).toHaveLength(1)
+  expect(html).toContain('w13: </b>Interrupted by a restart')
+  expect(html.match(/ · not delivered</g)).toHaveLength(5)
+  expect(html).toContain('+8 more')
+  // Expanded: all 14 chips; Details lists every recipient.
+  useToolRuns.setState({ disclosed: { [disclosureKey('e1', 'send-chips')]: true, [disclosureKey('e1', 'send-details')]: true } })
+  const open = render(h(DisclosureScope, { value: 'e1' }, h(SendCard, { tool: send(names, out), session: 's' })))
+  expect(open).toContain('Show fewer')
+  expect(open.match(/<li /g)).toHaveLength(14)
+})
+
+test('send card: no query for a receipt without an id, one per distinct id', () => {
+  const out = [`peer:a failed id=00000000-0000-0000-0000-000000000000 error=x`, `peer:b failed id=00000000-0000-0000-0000-000000000000 error=x`, `peer:c accepted id=${A}`].join('\n')
+  render(h(SendCard, { tool: send(['peer:a', 'peer:b', 'peer:c'], out), session: 's' }))
+  const keys = qc.getQueryCache().findAll({ queryKey: ['peer-message', 's'] }).map((q) => q.queryKey[2])
+  expect(keys).toEqual([A])
+})
+
+test('jobs and reminders: one neutral icon circle, never a hashed colour; a stored job result is the raw monospace block', () => {
+  const card = (from: string, text = 'omp 66726\n59732 10713') => render(h(MessagePeer, { from, text, session: 's' }))
+  for (const from of ['job j42', 'j42 · lsof -i · exit 0 · 1s', 'j7 idle 63s · omp1', 'Reminder r10 · after 13 min', 'reminder r3']) {
+    const html = card(from)
+    expect(html).not.toMatch(/bg-project-/)
+    expect(html).toContain('bg-layer-3 text-fg-secondary')
+  }
+  const job = card('j42 · lsof -i · exit 0 · 1s', '# omp 66726')
+  expect(job).toContain('<pre')
+  expect(job).not.toContain('<h1')
 })

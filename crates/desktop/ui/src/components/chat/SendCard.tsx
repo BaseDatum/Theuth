@@ -12,7 +12,7 @@ import { type Entry, useSessions } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
 import { Chip, Clock, useOverflow } from './MessagePeer'
 import { useScopedDisclosure } from './disclosure'
-import { NIL, type Track, isOutside, isTerminal, parseReceipts, resolveSender, trackOf, useDirectory } from './peer-identity'
+import { NIL, type SentReceipt, type Track, isOutside, isTerminal, parseReceipts, recipientLabel, trackOf, useDirectory } from './peer-identity'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 type Peer = Extract<Entry, { kind: 'peer' }>
@@ -40,20 +40,24 @@ function TrackLine({ track }: { track: Track }) {
 
 const NOTE: Partial<Record<Track['tone'], string>> = { warning: 'text-warning', danger: 'text-danger', muted: 'text-fg-secondary' }
 
-/** `held` (warning), `failed`/`suppressed` (danger) and `unknown` (muted) say why, from the receipt's `error`. */
-function Note({ track, who }: { track: Track; who?: string }) {
+/** `held` (warning), `failed`/`suppressed` (danger) and `unknown` (muted) say why, from the receipt's `error`; `lead`
+ * names whom it is about (`ivan: `, or `13 not delivered · ` for a collapsed group), `title` lists them on hover. */
+function Note({ track, lead, title }: { track: Track; lead?: string; title?: string }) {
   if (!track.note && track.tone !== 'muted') return null
   const text = track.note ?? 'Outcome unknown.'
   return (
-    <p className={cn('mt-2 flex items-start gap-2 text-[13px] wrap-anywhere', NOTE[track.tone])}>
+    <p title={title} className={cn('mt-2 flex items-start gap-2 text-[13px] wrap-anywhere', NOTE[track.tone])}>
       {track.tone === 'warning' ? <Hourglass className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /> : track.tone === 'danger' ? <X className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /> : <CircleHelp className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />}
       <span>
-        {who ? <b className="font-semibold">{who}: </b> : null}
+        {lead ? <b className="font-semibold">{lead}</b> : null}
         {track.tone === 'muted' && track.note ? `Outcome unknown: ${track.note}` : text}
       </span>
     </p>
   )
 }
+
+/** Chips shown before `+N more`. */
+const CHIPS = 6
 
 /**
  * The incoming message answering send `id` (its `reply_to`). The card selects this one entry, not `entries`: the reducer
@@ -72,24 +76,18 @@ const INPUT = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const
 /** The one running jump: a new click, the reader's input, or the owning card's unmount cancels it. */
 let jumping: { owner: object; stop: () => void } | null = null
 
+/** What the jump loop drives: the transcript scroller (an element in the app, a stand-in in tests). */
+export type Scroller = Pick<HTMLElement, 'scrollTop' | 'clientHeight' | 'scrollHeight' | 'addEventListener' | 'removeEventListener'>
+
 /**
- * Bring the answer's card into view through the virtualised transcript: open its group line in case it is folded,
- * then step the scroller down until the card mounts (the deep-link retry of `routes/c.$session.tsx` `scrollToCell`).
- * Stops on the reader's input or when `scrollTop` is not what the loop last wrote; gives up (with a toast) at the
- * bottom or after 10 s.
+ * Step `scroller` down until `find()` brings the card into view: the deep-link retry of `routes/c.$session.tsx`
+ * `scrollToCell` for a virtualised transcript, where the card mounts only once its row is in range. Only the reader's
+ * input (wheel, touch, a key, a pointer press), the owner's unmount or a new jump cancels it: the virtualiser rewrites
+ * `scrollTop` itself as rows measure, so a moved `scrollTop` is no sign of the reader. Reaching the bottom or 10 s
+ * without the card gives up with a toast.
  */
-function jump(e: MouseEvent<HTMLElement>, owner: object, entry: string, exchange: string) {
+export function stepTo(scroller: Scroller, find: () => boolean, owner: object): void {
   jumping?.stop()
-  useToolRuns.getState().setDisclosed(disclosureKey(entry, 'line'), true)
-  const find = () => {
-    const el = document.getElementById(`peer-msg-${exchange}`)
-    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    return !!el
-  }
-  if (find()) return
-  const scroller = e.currentTarget.closest<HTMLElement>('.overflow-y-auto')
-  if (!scroller) return void toast.message(GIVE_UP)
-  let wrote = scroller.scrollTop
   const stop = (gaveUp: boolean) => {
     clearInterval(timer)
     clearTimeout(deadline)
@@ -102,13 +100,26 @@ function jump(e: MouseEvent<HTMLElement>, owner: object, entry: string, exchange
   // ponytail: steps downward only; an answer always lands after its send.
   const timer = setInterval(() => {
     if (find()) return stop(false)
-    if (Math.abs(scroller.scrollTop - wrote) > 1) return stop(false)
     if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1) return stop(true)
     scroller.scrollTop += scroller.clientHeight * 0.8
-    wrote = scroller.scrollTop
   }, 150)
   const deadline = setTimeout(() => stop(true), 10_000)
   jumping = { owner, stop: cancel }
+}
+
+/** Jump to the answer's card: open its group line in case it is folded, then scroll to it (`stepTo` while unmounted). */
+function jump(e: MouseEvent<HTMLElement>, owner: object, entry: string, exchange: string) {
+  jumping?.stop()
+  useToolRuns.getState().setDisclosed(disclosureKey(entry, 'line'), true)
+  const find = () => {
+    const el = document.getElementById(`peer-msg-${exchange}`)
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    return !!el
+  }
+  if (find()) return
+  const scroller = e.currentTarget.closest<HTMLElement>('.overflow-y-auto')
+  if (scroller) stepTo(scroller, find, owner)
+  else toast.message(GIVE_UP)
 }
 
 /** `Show all` / `Show less` under a clamped block; its open state is a scoped disclosure (171F B13). */
@@ -176,36 +187,51 @@ export function SendCard({ tool, session, at }: { tool: Tool; session: string; a
   // fan-out short leaves recipients unread: the call's `to` count then.
   const count = receipts.length === 0 ? to.length : unexpected ? Math.max(receipts.length, to.length) : receipts.length
   const single = count === 1 && receipts.length === 1 ? receipts[0] : undefined
-  const addresses = receipts.length ? receipts.map((r) => r.to) : to
+  // Display labels come from the call's `to` (receipts arrive in `to` order; a receipt's address is an engine detail
+  // that may be a binding uuid). When two spellings sent once, positions no longer line up: the receipt's then.
+  const addresses = receipts.length === 0 || receipts.length === to.length ? to : receipts.map((r) => r.to)
   const dir = useDirectory(session, addresses.some(isOutside))
-  const records = useQueries({
-    queries: receipts.map((r) => ({
-      queryKey: queryKeys.peerMessage(session, r.id),
-      queryFn: () => api.peer_message(session, r.id),
-      enabled: r.id !== NIL && (!isTerminal(r.state) || (!single && r.state === 'replied')),
-    })),
+  // One query per distinct minted id: a refusal's nil id has nothing to look up, and repeats share a key.
+  const ids = [...new Set(receipts.filter((r) => r.id !== NIL).map((r) => r.id))]
+  const results = useQueries({
+    queries: ids.map((id) => {
+      const r = receipts.find((x) => x.id === id) as SentReceipt
+      return {
+        queryKey: queryKeys.peerMessage(session, id),
+        queryFn: () => api.peer_message(session, id),
+        enabled: !isTerminal(r.state) || (!single && r.state === 'replied'),
+      }
+    }),
   })
   const answer = useSessions((s) => answerFor(s.sessions[session]?.entries, single?.id))
   const [fullText, setFullText] = useScopedDisclosure('send-text')
   const [textRef, textHidden] = useOverflow<HTMLParagraphElement>(!fullText)
   const [details, setDetails] = useScopedDisclosure('send-details')
+  const [allChips, setAllChips] = useScopedDisclosure('send-chips')
   const outside = addresses.some(isOutside)
   const rows = receipts.map((r, i) => {
-    const rec = records[i]?.data?.receipt
+    const rec = results[ids.indexOf(r.id)]?.data?.receipt
     // A string, so `held` reads the same before and after the bindings name it.
     const state: string = rec?.state ?? r.state
     // A block an older engine's reply cut short: its trailing text mixes recipients, so only records answer.
-    return { id: r.id, name: resolveSender(r.to, dir).name, track: trackOf(state, rec ? rec.error : r.error), reply: rec?.reply ?? (unexpected ? undefined : replies[r.id]) }
+    return { id: r.id, name: recipientLabel(addresses[i] ?? r.to, dir), track: trackOf(state, rec ? rec.error : r.error), reply: rec?.reply ?? (unexpected ? undefined : replies[r.id]) }
   })
+  // Identical problem lines (same tone, same words) collapse into one: `13 not delivered · unknown message`.
+  const problems: { track: Track; names: string[] }[] = []
+  for (const r of rows) {
+    if (r.track.tone !== 'danger' && r.track.tone !== 'warning') continue
+    const same = problems.find((p) => p.track.tone === r.track.tone && p.track.word === r.track.word && p.track.note === r.track.note)
+    if (same) same.names.push(r.name)
+    else problems.push({ track: r.track, names: [r.name] })
+  }
   const one = single ? rows[0] : undefined
   const reply = one ? (one.reply ?? answer?.text) : undefined
-  // `peer:<alias>/<export>`: the export is part of who it went to (`sky · hi-there`).
-  const exp = count === 1 && addresses[0]?.startsWith('peer:') ? addresses[0].split('/')[1] : undefined
-  const name = count > 1 ? `${count} recipients` : addresses[0] ? `${resolveSender(addresses[0], dir).name}${exp ? ` · ${exp}` : ''}` : '?'
+  const name = count > 1 ? `${count} recipients` : addresses[0] ? recipientLabel(addresses[0], dir) : '?'
   // Refused before any receipt (communication off, a bad `to`): the output is the reason.
   const refused = tool.result && receipts.length === 0 ? tool.result.output : undefined
   const tone = refused ? 'danger' : one?.track.tone
   const target = answer?.origin?.id
+  const chips = allChips ? rows : rows.slice(0, CHIPS)
   return (
     <div
       className={cn(
@@ -261,14 +287,26 @@ export function SendCard({ tool, session, at }: { tool: Tool; session: string; a
         </>
       ) : (
         <>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {rows.map((r) => (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {chips.map((r) => (
               <Chip key={`${r.id}-${r.name}`} tone={r.track.tone} title={r.track.note}>
                 {r.name} · {r.track.word}
               </Chip>
             ))}
+            {rows.length > CHIPS ? (
+              <Button type="button" variant="ghost" size="xs" className={cn('h-5 px-1.5 text-[11.5px] text-fg-secondary', TOUCH)} aria-expanded={allChips} onClick={() => setAllChips((v) => !v)}>
+                {allChips ? 'Show fewer' : `+${rows.length - CHIPS} more`}
+              </Button>
+            ) : null}
           </div>
-          {rows.map((r) => (r.track.tone === 'danger' || r.track.tone === 'warning' ? <Note key={`${r.id}-${r.name}-note`} track={r.track} who={r.name} /> : null))}
+          {problems.map((p) => (
+            <Note
+              key={`${p.track.word}-${p.track.note}`}
+              track={p.track}
+              lead={p.names.length === 1 ? `${p.names[0]}: ` : `${p.names.length} ${p.track.word} · `}
+              title={p.names.length > 1 ? p.names.join(', ') : undefined}
+            />
+          ))}
           {rows.map((r) => (r.reply ? <Answer key={`${r.id}-${r.name}-answer`} label={`Answer from ${r.name}`} text={r.reply} outside={outside} part={`send-answer-${r.id}`} /> : null))}
         </>
       )}
@@ -284,6 +322,19 @@ export function SendCard({ tool, session, at }: { tool: Tool; session: string; a
         <div className="mt-1 flex flex-col gap-1 text-xs text-fg-secondary">
           <span>Sent</span>
           <pre className="max-h-72 overflow-auto rounded-lg bg-layer-2 p-3 font-mono leading-5 wrap-anywhere whitespace-pre-wrap text-foreground">{message}</pre>
+          {rows.length > 1 ? (
+            <>
+              <span>Recipients</span>
+              <ul className="flex flex-col gap-0.5 rounded-lg bg-layer-2 p-3 text-foreground">
+                {rows.map((r) => (
+                  <li key={`${r.id}-${r.name}`} className="wrap-anywhere">
+                    <b className="font-semibold">{r.name}</b> · {r.track.word}
+                    {r.track.note ? <span className="text-fg-secondary"> · {r.track.note}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
           <span>Output</span>
           <pre className="max-h-72 overflow-auto rounded-lg bg-layer-2 p-3 font-mono leading-5 wrap-anywhere whitespace-pre-wrap text-foreground">{tool.result.output}</pre>
         </div>

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Copy, ShieldAlert, Timer } from 'lucide-react'
+import { Copy, ShieldAlert, SquareTerminal, Timer } from 'lucide-react'
 import { memo, type ReactNode, type RefObject, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
@@ -38,8 +38,17 @@ export function Chip({ tone, children, title }: { tone: Track['tone']; children:
   )
 }
 
-/** The sender's circle: initials over one stable project-palette colour. */
+/** The sender's circle: initials over one stable project-palette colour; a job or a reminder gets one fixed neutral
+ * circle with its icon instead, the same for every job (a hashed mineral per label would be noise). */
 export function SenderCircle({ sender, className }: { sender: Sender; className?: string }) {
+  if (sender.kind) {
+    const Icon = sender.kind === 'job' ? SquareTerminal : Timer
+    return (
+      <span aria-hidden="true" className={cn('grid size-7 shrink-0 place-items-center rounded-full bg-layer-3 text-fg-secondary', className)}>
+        <Icon className="size-3.5" />
+      </span>
+    )
+  }
   return (
     <span aria-hidden="true" className={cn('grid size-7 shrink-0 place-items-center rounded-full text-xs font-bold text-primary-foreground', senderColor(sender.key), className)}>
       {initials(sender.name)}
@@ -48,13 +57,12 @@ export function SenderCircle({ sender, className }: { sender: Sender; className?
 }
 
 /** The circle, the name (with `count`, a folded group's size, never truncated) and the subtitle; `children` sit on the right (chips, the time). */
-export function SenderHead({ sender, children, reminder, count }: { sender: Sender; children?: ReactNode; reminder?: boolean; count?: string }) {
+export function SenderHead({ sender, children, count }: { sender: Sender; children?: ReactNode; count?: string }) {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
       <SenderCircle sender={sender} />
       <div className="flex min-w-0 flex-col leading-tight">
         <span className="flex min-w-0 items-center gap-1.5 font-semibold">
-          {reminder ? <Timer className="size-3.5 shrink-0" /> : null}
           <span className="truncate">{sender.name}</span>
           {count ? <span className="shrink-0 text-xs font-normal whitespace-nowrap text-fg-tertiary tabular-nums">{count}</span> : null}
         </span>
@@ -233,19 +241,18 @@ function AnswerForm({ session, id, onDone }: { session: string; id: string; onDo
   )
 }
 
-/** `inset`: the row carries `Message`'s remove control over the top-right corner; only the header makes room for it,
- * so the outside band still spans the card. */
-type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number; inset?: boolean }
+/** `remove`: `Message`'s remove-from-context control for a stored row; it sits in the header row, after the time, so it
+ * never overlaps the outside band above. */
+type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number; remove?: ReactNode }
 
 /**
  * The card frame: sender header, the reply quote, the body (clamped), then the footer. `origin` parts (the answer
  * form, Details) come in through `chips`, `actions` and `after`.
  */
 function PeerCard({
-  from,
   text,
   at,
-  inset,
+  remove,
   sender,
   tone,
   id,
@@ -255,8 +262,9 @@ function PeerCard({
   after,
 }: Props & { sender: Sender; tone?: 'info'; id?: string; chips?: ReactNode; quote?: string; actions?: ReactNode; after?: ReactNode }) {
   const [open, setOpen] = useScopedDisclosure('peer')
-  // A job result is raw command output (14 §3): markdown would fold its lines into one paragraph.
-  const raw = from.startsWith('job ')
+  // A job result is raw command output (14 §3): markdown would fold its lines into one paragraph (and make `omp 66726`
+  // a heading). Live (`job j4`) and stored (`j4 · cmd · exit 0`) labels alike.
+  const raw = sender.kind === 'job'
   // 183: an outside agent's words (a contact or an A2A peer: `contact:` / `peer:` senders) are untrusted: plain text,
   // never Markdown, so no remote image loads and no link is live.
   const outside = isOutside(sender.key)
@@ -275,10 +283,11 @@ function PeerCard({
           Outside your mesh · plain text, links and images are off
         </div>
       ) : null}
-      <div className={cn('px-4 pt-2.5', inset && 'pr-12')}>
-        <SenderHead sender={sender} reminder={from.startsWith('Reminder ')}>
+      <div className="px-4 pt-2.5">
+        <SenderHead sender={sender}>
           {chips}
           <Clock at={at} />
+          {remove}
         </SenderHead>
       </div>
       {quote ? (

@@ -47,7 +47,11 @@ test('names: subagent name, then session title, then contact name, then alias, t
   expect(resolveSender('peer:0d1e2f3a-5d7a-4c55-8f0a-2a1e7a3b9c10', dir).name).toBe('0d1e2f3a')
   expect(resolveSender('session:ffffffff-8e10-7757-afd9-db253e4f5e73', dir)).toEqual({ name: 'ffffffff', subtitle: undefined, key: 'session:ffffffff-8e10-7757-afd9-db253e4f5e73', session: undefined })
   // A label stays a label unless it names a subagent.
-  expect(resolveSender('job j4', dir)).toEqual({ name: 'job j4', key: 'job j4' })
+  // Jobs and reminders are labels with a fixed neutral look (`kind`), live and stored spellings alike.
+  expect(resolveSender('job j4', dir)).toEqual({ name: 'job j4', key: 'job j4', kind: 'job' })
+  expect(resolveSender('j4 · make · exit 0 · 3s', dir).kind).toBe('job')
+  expect(resolveSender('Reminder r3 · after 10 min', dir).kind).toBe('reminder')
+  expect(resolveSender('schedule nightly · 03:00', dir).kind).toBeUndefined()
   expect(resolveSender('z4-183', dir)).toMatchObject({ subtitle: 'Your subagent · omp', session: KID })
 })
 

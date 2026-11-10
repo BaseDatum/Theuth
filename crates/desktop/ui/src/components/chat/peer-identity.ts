@@ -18,6 +18,16 @@ export type Sender = {
   session?: string
   /** The stable identity the circle colour hashes: the address as the engine wrote it. */
   key: string
+  /** A job's or a reminder's note: one fixed neutral circle (an icon, never a hashed colour). */
+  kind?: 'job' | 'reminder'
+}
+
+/** Job notes (`job j4` live; `j4 · cmd · exit 0 · 3s` and `j4 idle 63s` stored) and reminders (`reminder r3` live,
+ * `Reminder r3 · after 10 min` stored), told apart from the label `from`. */
+export function labelKind(from: string): Sender['kind'] {
+  if (/^(job j\w+|j\d+ (·|idle\b))/.test(from)) return 'job'
+  if (/^reminder r\w+/i.test(from)) return 'reminder'
+  return undefined
 }
 
 /** What `resolveSender` reads: the open chat, its subtree and the caches the rest of the app already keeps. */
@@ -99,8 +109,16 @@ export function resolveSender(address: string, dir: Directory): Sender {
     return contactSender(alias, exp, dir, key)
   }
   // A label (`job j4`, `Reminder r3`, a legacy wrapper's `from`): a subagent by name when it is one.
+  const kind = labelKind(address)
+  if (kind) return { name: address, key, kind }
   const child = Object.values(dir.children ?? {}).find((c) => c.name === address)
   return child ? { name: child.name, subtitle: `Your subagent · ${child.agent ?? 'theuth'}`, key, session: child.id } : { name: address, key }
+}
+
+/** How a send names one recipient: the sender name, plus the export of a `peer:<alias>/<export>` address (`sky · hi-there`). */
+export function recipientLabel(address: string, dir: Directory): string {
+  const exp = address.startsWith('peer:') ? address.split('/')[1] : undefined
+  return `${resolveSender(address, dir).name}${exp ? ` · ${exp}` : ''}`
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -216,8 +234,12 @@ export const isTerminal = (state: string): boolean => state === 'replied' || sta
 /** Where a send stands: `step` 1–3 lights Sent, Read, Answered; `tone` colours the chip and the line under the track. */
 export type Track = { step: 0 | 1 | 2 | 3; tone: 'ok' | 'info' | 'warning' | 'danger' | 'muted'; word: string; note?: string }
 
+/** Engine reason words a receipt's `error` may carry, in words. */
+const REASONS: Record<string, string> = { interrupted_by_restart: 'Interrupted by a restart' }
+
 /** Receipt state → the delivery track (`state` is a string so `held` type-checks before and after the bindings name it). */
 export function trackOf(state: string, error?: string | null): Track {
+  const why = error ? (REASONS[error] ?? error) : undefined
   switch (state) {
     case 'accepted':
       return { step: 1, tone: 'info', word: 'sent' }
@@ -226,13 +248,13 @@ export function trackOf(state: string, error?: string | null): Track {
     case 'replied':
       return { step: 3, tone: 'ok', word: 'answered' }
     case 'held':
-      return { step: 1, tone: 'warning', word: 'held', note: error || 'Held by the other side until they allow it.' }
+      return { step: 1, tone: 'warning', word: 'held', note: why || 'Held by the other side until they allow it.' }
     case 'failed':
-      return { step: 0, tone: 'danger', word: 'not delivered', note: error || 'Not delivered.' }
+      return { step: 0, tone: 'danger', word: 'not delivered', note: why || 'Not delivered.' }
     case 'suppressed':
-      return { step: 0, tone: 'danger', word: 'suppressed', note: error || 'Suppressed.' }
+      return { step: 0, tone: 'danger', word: 'suppressed', note: why || 'Suppressed.' }
     case 'unknown':
-      return { step: 1, tone: 'muted', word: 'outcome unknown', note: error || undefined }
+      return { step: 1, tone: 'muted', word: 'outcome unknown', note: why }
     default:
       return { step: 0, tone: 'muted', word: state }
   }
