@@ -92,8 +92,8 @@ test('foldRuns: adjacent peer cards from one sender fold; another sender, any ot
   const removed = peer('r', 'session:a', 'r', { context: { target: { kind: 'message', seq: 3 }, active: false, removed: true, remove_with: [], attachments: [] } } as Partial<Peer>)
   expect(foldRuns([a1, removed, a2])).toEqual([a1, removed, a2])
   // The authenticated endpoint decides, not the label.
-  const o1 = peer('o1', 'label', 'x', { origin: { id: 'm1', from: 'session:a', reply_to: null, scope: null } })
-  const o2 = peer('o2', 'other label', 'y', { origin: { id: 'm2', from: 'session:a', reply_to: null, scope: null } })
+  const o1 = peer('o1', 'label', 'x', { origin: { id: 'm1', from: 'session:a', reply_to: null, scope: null, contact_mode: null } })
+  const o2 = peer('o2', 'other label', 'y', { origin: { id: 'm2', from: 'session:a', reply_to: null, scope: null, contact_mode: null } })
   expect(foldRuns([o1, o2])).toEqual([[o1, o2]])
   // A send between two of its answers keeps them apart and stays its own card.
   const send = tool(5, { name: 'send_message', args: { to: 'session:a', message: 'hi' } })

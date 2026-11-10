@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { Peers } from '@/components/chat/Peers'
 import { Dot, Empty, Row, Section, errorText, refreshInfo, useAction } from '@/components/settings/shared'
 import { ContactAccess, WaitingRow } from '@/components/settings/Contacts'
-import { CAP, fingerprint, useContacts, useFirstWaiting } from '@/lib/contacts'
+import { CAP, MODE_LABEL, fingerprint, modeOf, useContacts, useFirstWaiting } from '@/lib/contacts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -346,7 +346,7 @@ export function Network({ state, session = null }: { state: CommunicationState |
                 c.machine,
                 `theuth/a2a/1 over iroh · pinned ${c.fingerprint || fingerprint(c.endpoint)}`,
                 CAP[c.cap],
-                c.exports.length > 0 ? `may reach ${c.exports.join(', ')}` : 'reaches nothing yet',
+                c.exports.length > 0 ? `may reach ${c.exports.map((n) => `${n} (${modeOf(c, n)})`).join(', ')}` : 'reaches nothing yet',
               ]
                 .filter(Boolean)
                 .join(' · ')}
@@ -386,12 +386,15 @@ export function Network({ state, session = null }: { state: CommunicationState |
                   <Dot on={x.peer !== null} />
                   {x.name}
                   <Badge variant="outline">export</Badge>
+                  {x.mode && <Badge variant="outline">{MODE_LABEL[x.mode]}</Badge>}
                   <span className="text-fg-secondary">{x.peer ? `granted to ${x.peer}` : 'no peer'}</span>
                 </span>
               }
               description={
                 x.peer !== null && contactNames.has(x.peer) ? (
-                  'reached by the contact over theuth/a2a/1, one capped turn per message'
+                  x.mode === 'full'
+                    ? 'reached by the contact over theuth/a2a/1, full collaboration: its agent and this chat’s agent talk freely, like mesh peers'
+                    : 'reached by the contact over theuth/a2a/1, cautious: one capped turn per message'
                 ) : (
                   <span className="break-all font-mono text-xs">{x.url}</span>
                 )

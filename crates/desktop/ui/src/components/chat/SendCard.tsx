@@ -217,7 +217,8 @@ export function SendCard({ tool, session, at, readOnly }: { tool: Tool; session:
             <Answer
               label="Answer"
               text={reply}
-              outside={outside}
+              // 186: a full contact's later reply is an ordinary peer message (typed `contact_mode`): Markdown, as on its card.
+              outside={outside && (!!one.reply || answer?.origin?.contact_mode !== 'full')}
               part="send-answer"
               at={answer?.at}
               onJump={answer && !readOnly ? () => useTranscriptJump.getState().request(session, answer.id) : undefined}

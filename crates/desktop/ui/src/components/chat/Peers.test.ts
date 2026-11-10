@@ -19,7 +19,7 @@ vi.mock('@/lib/rpc', async (original) => ({
 }))
 
 // A received request displayed in both the transcript and Settings → Communication.
-const origin = { id: 'request', from: 'session:sender', reply_to: null, scope: null }
+const origin = { id: 'request', from: 'session:sender', reply_to: null, scope: null, contact_mode: null }
 const record = {
   receipt: { id: origin.id, to: 'session:recipient', state: 'delivered', reply_to: null, reply: null, error: null, task_id: null, answered_by: null },
   session: 'recipient',

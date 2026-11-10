@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import { type Active, finish } from '@/lib/dictation'
 import { dictationCommands, placeholderFor, spokenSend } from './Composer'
 import { COMMANDS } from './slash'
+import { StopButton } from './StopButton'
 
 const active = (utts: Active['utts']): Active => ({ id: 'd1', before: '', after: '', utts, levels: [], startedAt: 0, device: null })
 const SEND = { command: 'send', near_miss: false } as const
@@ -51,6 +54,13 @@ test('171F B7: queued chips, then the kernel strip, then the input box (the stri
   expect(at('<QueuedChips')).toBeGreaterThan(0)
   expect(at('<QueuedChips')).toBeLessThan(at('{strip}'))
   expect(at('{strip}')).toBeLessThan(at('ref={box}'))
+})
+
+test('186 D8: under a contact turn Stop names whose turn it stops; the owner\'s own turn keeps a bare Stop', () => {
+  const html = (label?: string) => renderToStaticMarkup(createElement(StopButton, { count: 0, ring: 0, onStop: () => {}, label }))
+  expect(html("Stop sky's turn")).toContain('aria-label="Stop sky&#x27;s turn"')
+  expect(html()).toContain('aria-label="Stop"')
+  expect(html()).not.toContain('title=')
 })
 
 test('183 §12.1 / mock panel 3: a chat owned elsewhere says where the message runs, a steer too; talk and private keep theirs', () => {

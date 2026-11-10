@@ -1,6 +1,6 @@
 import { ChevronDown } from 'lucide-react'
 import { FirstButtons, waitingCount, waitingLine } from '@/components/settings/Contacts'
-import { LIMITED, useFirstWaiting } from '@/lib/contacts'
+import { LIMITED, MODE_LABEL, modeHint, useFirstWaiting } from '@/lib/contacts'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
@@ -12,7 +12,7 @@ function Row({ w, detail }: { w: FirstWaiting; detail: boolean }) {
     <div className="flex min-w-0 flex-col gap-0.5">
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <span className="min-w-0 flex-1 basis-48 truncate text-fg-secondary" title={waitingLine(w)}>
-          {who(w)} wants to message this chat{waitingCount(w)}
+          {who(w)} wants to message this chat · {MODE_LABEL[w.mode]}{waitingCount(w)}
         </span>
         <FirstButtons contact={w.contact} exp={w.export} />
       </div>
@@ -46,7 +46,7 @@ export function ContactAllowStrip({ session, embedded = false }: { session: stri
           )}
         </div>
         {mine.length > 1 && open && mine.map((w) => <Row key={`${w.contact}:${w.export}`} w={w} detail />)}
-        {open && <p className="text-xs text-fg-tertiary">{LIMITED}</p>}
+        {open && <p className="text-xs text-fg-tertiary">{mine.every((w) => w.mode === 'full') ? `Full collaboration: ${modeHint('full')}` : LIMITED}</p>}
       </div>
     </div>
   )
