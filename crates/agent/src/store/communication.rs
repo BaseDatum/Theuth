@@ -273,6 +273,34 @@ pub struct ContactThread {
     pub last_ms: i64,
 }
 
+/// 186 (D6), review 2: a contact's agent inbox shared in full, as its row says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FullInbox {
+    /// The inbox.
+    pub session: SessionId,
+    /// The contact's binding key (`peer:<binding>`).
+    pub principal: String,
+    /// The exported agent (bare roster name); `None` on a row from before review 2.
+    pub agent: Option<String>,
+    /// The agent's `tools:` ceiling from its last real persona (`Some(None)`: none); `None` =
+    /// unknown, which runs capped.
+    pub ceiling: Option<Option<tools::Risk>>,
+}
+
+/// `inbox_ceiling`'s text: `'none'` or the risk.
+fn ceiling_text(c: Option<tools::Risk>) -> &'static str {
+    c.map_or("none", tools::Risk::as_str)
+}
+
+/// [`ceiling_text`] read back; NULL is unknown.
+fn parse_ceiling(c: Option<&str>) -> anyhow::Result<Option<Option<tools::Risk>>> {
+    match c {
+        None => Ok(None),
+        Some("none") => Ok(Some(None)),
+        Some(r) => Ok(Some(Some(r.parse().map_err(anyhow::Error::msg)?))),
+    }
+}
+
 /// An authorized A2A context: the caller's handle on one exported session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A2aContext {
@@ -1527,15 +1555,24 @@ impl Store {
         Ok(r)
     }
 
-    /// 186 review 1: how many of `sender`'s messages to `recipient` are accepted and not yet
-    /// taken in (a contact's answers waiting on the return route).
-    pub async fn accepted_from(&self, sender: &str, recipient: SessionId) -> anyhow::Result<i64> {
+    /// 186 review 1, 2: how many of the contact `binding`'s answers to `recipient` (messages
+    /// on conversations this engine opened, the return route's) are accepted and not yet
+    /// taken in. Its messages to our exports (their conversations) do not count.
+    pub async fn answers_waiting(
+        &self,
+        binding: Uuid,
+        recipient: SessionId,
+    ) -> anyhow::Result<i64> {
+        let b = binding.to_string();
         Ok(sqlx::query_scalar(
             "SELECT COUNT(*) FROM peer_exchanges \
-             WHERE sender = ? AND recipient_session = ? AND state = 'accepted'",
+             WHERE sender = ? AND recipient_session = ? AND state = 'accepted' \
+             AND context_id IN (SELECT context_id FROM contact_threads \
+                                WHERE binding = ? AND outbound = 1)",
         )
-        .bind(sender)
+        .bind(format!("peer:{b}"))
         .bind(recipient.to_string())
+        .bind(&b)
         .fetch_one(&self.read)
         .await?)
     }
@@ -2001,26 +2038,49 @@ impl Store {
 
     /// 183 Z3-R2: mark the contexts of `session` as a contact's inbox (its default-deny
     /// limits come back at every actor start), speaking as `identity` (the exported agent's
-    /// persona at this admission, Z3-R3; `None`: the engine's own). 186 (D6): `full` = shared
-    /// in full, with the exported agent's own `tools:` ceiling (`None` inside: it has none).
+    /// persona at this admission, Z3-R3; `None`: the engine's own) for the exported agent
+    /// `agent` (bare roster name). 186 (D6): `full` = shared in full; `ceiling` the agent's
+    /// own `tools:` ceiling from a real persona (`Some(None)`: it has none), `None` = unknown
+    /// (kept as stored).
     pub async fn mark_a2a_inbox(
         &self,
         session: SessionId,
         identity: Option<&str>,
-        full: Option<Option<tools::Risk>>,
+        agent: &str,
+        full: bool,
+        ceiling: Option<Option<tools::Risk>>,
     ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         sqlx::query(
-            "UPDATE a2a_contexts SET inbox = 1, inbox_identity = ?, inbox_full = ?, \
-             inbox_ceiling = ? WHERE session = ?",
+            "UPDATE a2a_contexts SET inbox = 1, inbox_identity = ?, inbox_agent = ?, \
+             inbox_full = ?, inbox_ceiling = CASE WHEN ? THEN COALESCE(?, inbox_ceiling) END \
+             WHERE session = ?",
         )
         .bind(identity)
-        .bind(full.is_some())
-        .bind(full.flatten().map(tools::Risk::as_str))
+        .bind(agent)
+        .bind(full)
+        .bind(full)
+        .bind(ceiling.map(ceiling_text))
         .bind(session.to_string())
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// 186 review 2: the exported agent's ceiling as the roster reads it now (a real persona).
+    pub async fn set_a2a_inbox_ceiling(
+        &self,
+        session: SessionId,
+        ceiling: Option<tools::Risk>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE a2a_contexts SET inbox_ceiling = ? WHERE session = ? AND inbox_full = 1",
+        )
+        .bind(ceiling_text(ceiling))
+        .bind(session.to_string())
+        .execute(&self.write)
+        .await?;
         Ok(())
     }
 
@@ -2035,26 +2095,62 @@ impl Store {
         Ok(())
     }
 
-    /// 186 (D6): `Some(ceiling)` when `session` is a contact's inbox whose last admission was
-    /// shared in full (the exported agent's own `tools:` ceiling, `None` = it has none).
-    pub async fn a2a_inbox_full(
-        &self,
-        session: SessionId,
-    ) -> anyhow::Result<Option<Option<tools::Risk>>> {
-        let row: Option<(bool, Option<String>)> = sqlx::query_as(
-            "SELECT inbox_full, inbox_ceiling FROM a2a_contexts \
-             WHERE session = ? AND inbox = 1 LIMIT 1",
+    /// 186 (D6): `Some` when `session` is a contact's inbox whose last admission was shared
+    /// in full: who it is for and the exported agent's stored ceiling.
+    pub async fn a2a_inbox_full(&self, session: SessionId) -> anyhow::Result<Option<FullInbox>> {
+        let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT principal, inbox_agent, inbox_ceiling FROM a2a_contexts \
+             WHERE session = ? AND inbox = 1 AND inbox_full = 1 LIMIT 1",
         )
         .bind(session.to_string())
         .fetch_optional(&self.read)
         .await?;
-        match row {
-            Some((true, c)) => Ok(Some(
-                c.map(|c| c.parse().map_err(anyhow::Error::msg))
-                    .transpose()?,
-            )),
-            _ => Ok(None),
-        }
+        row.map(|(principal, agent, c)| {
+            Ok(FullInbox {
+                session,
+                principal,
+                agent,
+                ceiling: parse_ceiling(c.as_deref())?,
+            })
+        })
+        .transpose()
+    }
+
+    /// 186 review 2: every contact inbox shared in full (for a roster change).
+    pub async fn full_a2a_inboxes(&self) -> anyhow::Result<Vec<FullInbox>> {
+        let rows: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT DISTINCT session, principal, inbox_agent, inbox_ceiling FROM a2a_contexts \
+             WHERE inbox = 1 AND inbox_full = 1",
+        )
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(s, principal, agent, c)| {
+                Ok(FullInbox {
+                    session: s.parse().context("bad session id")?,
+                    principal,
+                    agent,
+                    ceiling: parse_ceiling(c.as_deref())?,
+                })
+            })
+            .collect()
+    }
+
+    /// 186 review 2: the inboxes `principal` has, by export, and whether each runs in full.
+    pub async fn a2a_inboxes_of(
+        &self,
+        principal: &str,
+    ) -> anyhow::Result<Vec<(String, SessionId, bool)>> {
+        let rows: Vec<(String, String, bool)> = sqlx::query_as(
+            "SELECT DISTINCT export, session, inbox_full FROM a2a_contexts \
+             WHERE principal = ? AND inbox = 1",
+        )
+        .bind(principal)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(e, s, f)| Ok((e, s.parse().context("bad session id")?, f)))
+            .collect()
     }
 
     /// 183 Z3-R2: `session` is a contact's inbox: `Some(its persona)` (`Some(None)`: the

@@ -586,6 +586,20 @@ impl Ctx {
                             .collect()
                     })
                     .unwrap_or_default(),
+                // 186 review 2: and which agent exports it holds in full (every other inbox
+                // of the contact stops running in full).
+                full: live
+                    .staged
+                    .peers
+                    .get(alias)
+                    .map(|p| {
+                        p.full
+                            .iter()
+                            .filter(|e| live.staged.agents.contains_key(*e))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
             .collect();
         // 183 F1: a contact whose grants here changed hears it and fetches our card again.

@@ -52,7 +52,10 @@ use crate::store::communication::{
 use crate::supervisor::Agents;
 
 mod full;
-pub use full::{A2aReturn, FullWire, META, RETURN_ROUTE, THREAD_TTL, is_receipt, receipt_metadata};
+pub use full::{
+    A2aReturn, FullWire, InboxPersonasChanged, META, RETURN_ROUTE, THREAD_TTL, is_receipt,
+    receipt_metadata,
+};
 
 /// SSE subscribers per task (§8).
 pub const SUBSCRIBERS_PER_TASK: usize = 4;
@@ -2900,6 +2903,11 @@ impl Message<CommitPeerConfig> for Agents {
         for id in gone {
             if let Some(p) = self.network.peers.remove(&id) {
                 p.generation.cancel();
+                // 186 review 2: blocked, unpaired or re-pinned: its inboxes stop running in
+                // full and are capped now.
+                if p.contact {
+                    self.cap_inboxes_of(id).await;
+                }
             }
         }
         for (route, binding) in m.routes.into_iter().zip(&bindings) {
@@ -3055,9 +3063,25 @@ impl Agents {
         // W-25: the exported agent's persona, charter, model and ceiling (`<agent>@<engine>`
         // names the agent of this engine).
         let bare = m.agent.split('@').next().unwrap_or(&m.agent);
-        let persona = match &self.identity {
-            Some(source) => source.inbox(bare).await,
-            None => None,
+        let full = m.origin.mode == super::ShareMode::Full;
+        let live = self.live_persona(bare).await;
+        // 186 review 2: a share in full runs under the agent's own ceiling, read live: with no
+        // persona for an agent (the roster not joined yet, its file gone or invalid) it does
+        // not run. theuth's own inbox, before the roster joins, keeps its stored ceiling.
+        if full
+            && match live {
+                full::Live::Known(_) => false,
+                full::Live::Unknown => bare != "theuth",
+                full::Live::Missing => true,
+            }
+        {
+            return Err(A2AError::unsupported_operation(format!(
+                "export unavailable: the agent {bare} is not available"
+            )));
+        }
+        let persona = match &live {
+            full::Live::Known(p) => Some(p.clone()),
+            _ => None,
         };
         let id = match self.store.a2a_inbox(scope).await.map_err(internal)? {
             Some(id) => id,
@@ -3096,18 +3120,20 @@ impl Agents {
         // Z3-R2: every later actor start of this session re-installs its limits (an inbox
         // opened by an older build is marked on its first resolve); Z3-R3: and a resumed turn
         // speaks as the agent again, though the roster's source joins after the boot resume.
-        // 186 (D6): in full the inbox runs under the agent's own policy, recorded on its row
-        // with the agent's own `tools:` ceiling, so an actor start neither caps it as a contact's
-        // nor runs it past that ceiling.
-        let full = m.origin.mode == super::ShareMode::Full;
+        // 186 (D6): in full the inbox runs under the agent's own policy: its row keeps the
+        // agent and the ceiling of its real persona, so an actor start re-reads the live one
+        // and takes the stricter; it is never capped as a contact's.
         // §7.6: on every resolve, so the cap holds after a restart and a change applies now;
         // the agent's own `tools:` ceiling holds there too (the stricter one wins).
         let ceiling = persona.as_ref().and_then(|p| p.tools);
+        let real = persona.as_ref().map(|p| p.tools);
         self.store
             .mark_a2a_inbox(
                 id,
                 persona.as_ref().and_then(|p| p.identity.as_deref()),
-                full.then_some(ceiling),
+                bare,
+                full,
+                real,
             )
             .await
             .map_err(internal)?;
@@ -3117,7 +3143,17 @@ impl Agents {
             None => self.network.inbox_personas.remove(&id),
         };
         if full {
-            self.clear_contact_limits(id, ceiling)
+            // A live persona's ceiling as is; theuth before the roster joins: its stored one.
+            let run = match real {
+                Some(c) => Some(c),
+                None => self
+                    .store
+                    .a2a_inbox_full(id)
+                    .await
+                    .map_err(internal)?
+                    .and_then(|r| r.ceiling),
+            };
+            self.run_full_inbox(id, run)
                 .await
                 .map_err(|e| internal(anyhow::anyhow!(e)))?;
             return Ok(id);
@@ -3185,10 +3221,33 @@ impl Agents {
             Ok(None) => return Ok(()),
             Err(e) => tracing::error!(session = %id, "a2a: inbox lookup failed, capping it: {e:#}"),
         }
-        // 186 (D6): an inbox shared in full keeps the agent's own policy, its ceiling from the
-        // row (the persona is not in memory at an actor start); unsure caps it.
+        // 186 (D6), review 2: an inbox shared in full keeps the agent's own policy: the
+        // stricter of its row's ceiling and the roster's live one (the persona is not in memory
+        // at an actor start). Its contact unpaired or blocked (binding revoked), its agent
+        // gone, or no ceiling known: capped as a contact's. Unsure caps it.
         match self.store.a2a_inbox_full(id).await {
-            Ok(Some(ceiling)) => return self.clear_contact_limits(id, ceiling).await,
+            Ok(Some(row)) => {
+                let paired = match row
+                    .principal
+                    .strip_prefix("peer:")
+                    .and_then(|b| b.parse::<Uuid>().ok())
+                {
+                    Some(b) => matches!(self.store.peer_binding_by_id(b).await, Ok(Some(_))),
+                    None => false,
+                };
+                if paired {
+                    let live = match row.agent.as_deref() {
+                        Some(agent) => self.live_persona(agent).await,
+                        None => full::Live::Unknown,
+                    };
+                    return self
+                        .run_full_inbox(id, full::full_ceiling(&live, row.ceiling))
+                        .await;
+                }
+                if let Err(e) = self.store.unmark_a2a_inbox_full(id).await {
+                    tracing::error!(session = %id, "a2a: inbox mode not reset: {e:#}");
+                }
+            }
             Ok(None) => {}
             Err(e) => {
                 tracing::error!(session = %id, "a2a: inbox mode lookup failed, capping it: {e:#}")
@@ -3249,6 +3308,9 @@ pub struct ContactLimits {
     pub cap: tools::Risk,
     /// Agent export → its allowlist.
     pub exports: Vec<(String, Vec<String>)>,
+    /// 186 review 2: the agent exports granted to it in full (their inboxes keep running
+    /// in full; every other inbox of this contact does not).
+    pub full: Vec<String>,
 }
 
 impl Message<ContactLimits> for Agents {
@@ -3266,6 +3328,31 @@ impl Agents {
             return;
         };
         let key = format!("peer:{}", binding.id);
+        // 186 review 2: an inbox whose export is no longer granted in full (unshared, deleted,
+        // downgraded) stops running in full now; one no longer granted at all is capped as a
+        // contact's inbox no admission has limited.
+        match self.store.a2a_inboxes_of(&key).await {
+            Ok(rows) => {
+                for (export, inbox, full) in rows {
+                    if full
+                        && !m.full.contains(&export)
+                        && let Err(e) = self.store.unmark_a2a_inbox_full(inbox).await
+                    {
+                        tracing::error!(session = %inbox, "a2a: inbox mode not reset: {e:#}");
+                    }
+                    let granted =
+                        m.full.contains(&export) || m.exports.iter().any(|(e, _)| *e == export);
+                    if !granted
+                        && let Err(e) = self
+                            .install_contact_limits(inbox, INBOX_FAIL_CLOSED, Vec::new())
+                            .await
+                    {
+                        tracing::error!(session = %inbox, "{e}");
+                    }
+                }
+            }
+            Err(e) => tracing::error!(contact = %m.contact, "a2a: inboxes: {e:#}"),
+        }
         for (export, tools) in m.exports {
             let scope = A2aScope {
                 principal: &key,
@@ -3279,10 +3366,6 @@ impl Agents {
                 .inbox_persona(inbox)
                 .and_then(|p| p.tools)
                 .map_or(m.cap, |t| t.min(m.cap));
-            // 186 review 1: a share that left full is capped at the next actor start too.
-            if let Err(e) = self.store.unmark_a2a_inbox_full(inbox).await {
-                tracing::error!(session = %inbox, "a2a: inbox mode not reset: {e:#}");
-            }
             if let Err(e) = self.install_contact_limits(inbox, cap, tools).await {
                 tracing::error!(session = %inbox, "{e}");
             }
@@ -6042,6 +6125,7 @@ mod tests {
             contact: "bob".into(),
             cap: tools::Risk::ReadOnly,
             exports: vec![("research".into(), vec!["search_web".into()])],
+            full: Vec::new(),
         })
         .await;
         assert_eq!(
@@ -6626,9 +6710,10 @@ mod tests {
             "bob".into(),
             vec![offer(super::super::ShareMode::Full)],
         )]));
-        // 186 review 1 (D9): at most 8 of a contact's answers wait to be taken in.
-        for i in 0..8 {
-            let _ = a
+        // 186 review 1, 2 (D9): at most 8 of a contact's answers wait to be taken in; its
+        // messages on its own conversations do not count, and a retry is its dedup.
+        for (i, ctx) in (0..9).map(|i| (i, if i < 8 { "ctx-1" } else { "ctx-in" })) {
+            let r = a
                 .store
                 .accept_exchange(&AcceptExchange {
                     sender: &to,
@@ -6643,9 +6728,45 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            a.store
+                .set_exchange_contact(r.id, super::super::ShareMode::Full, Some(ctx))
+                .await
+                .unwrap();
         }
+        assert!(a.store.answers_waiting(binding.id, session).await.unwrap() >= 8);
         let busy = a.full_return(answer("ctx-1", "r-busy")).await.unwrap_err();
         assert!(busy.message.starts_with("busy:"), "{}", busy.message);
+        if let Err(e) = a.full_return(answer("ctx-1", "r-1")).await {
+            panic!("a retry of an accepted answer is never busy: {}", e.message);
+        }
+
+        // 186 review 2: an answer on a conversation that was collected reads so.
+        let lost = a
+            .store
+            .accept_exchange(&AcceptExchange {
+                sender: &to,
+                recipient: &from,
+                sender_session: None,
+                recipient_session: Some(session),
+                request_id: Some("lost"),
+                reply_to: None,
+                request_scope: None,
+                generation: 1,
+                body: "from a lapsed conversation",
+            })
+            .await
+            .unwrap();
+        a.store
+            .set_exchange_contact(lost.id, super::super::ShareMode::Full, Some("ctx-gone"))
+            .await
+            .unwrap();
+        let record = a.store.exchange_record(lost.id).await.unwrap().unwrap();
+        let ended = a
+            .full_shape(session, "bob", binding.id, Some(&record))
+            .await
+            .err()
+            .expect("no thread: refused");
+        assert!(ended.contains("conversation with `bob` ended"), "{ended}");
         a.network.peers.clear();
         assert!(
             not_found(a.full_return(answer("ctx-1", "r-4")).await),
@@ -6749,35 +6870,41 @@ mod tests {
 #[cfg(test)]
 mod full_inbox_tests {
     use super::*;
+    use std::sync::Arc;
 
-    struct Roster;
+    /// The roster's `research` agent: `None` = no such agent (deleted, invalid file); else its
+    /// `tools:` ceiling.
+    #[derive(Clone, Default)]
+    struct Roster(Arc<parking_lot::Mutex<Option<Option<tools::Risk>>>>);
+
+    impl Roster {
+        fn research(tools: Option<tools::Risk>) -> Self {
+            let r = Self::default();
+            r.set(Some(tools));
+            r
+        }
+        fn set(&self, v: Option<Option<tools::Risk>>) {
+            *self.0.lock() = v;
+        }
+    }
+
     #[async_trait::async_trait]
     impl crate::IdentitySource for Roster {
         async fn identity(&self, _: &[SessionId]) -> Option<String> {
             None
         }
         async fn inbox(&self, agent: &str) -> Option<crate::InboxPersona> {
+            let tools = (*self.0.lock())?;
             (agent == "research").then_some(crate::InboxPersona {
                 identity: None,
                 model: None,
-                tools: Some(tools::Risk::Mutating),
+                tools,
             })
         }
     }
 
-    /// 186 review 1 (D6): an agent inbox shared in full keeps the exported agent's own ceiling
-    /// across a restart (the persona is not in memory then) and gets no contact limits; once
-    /// the share leaves full, the next actor start caps it as a contact's again.
-    #[tokio::test]
-    async fn a_full_agent_inbox_keeps_its_ceiling_across_a_restart_and_a_downgrade_caps_it() {
-        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
-        a.identity = Some(std::sync::Arc::new(Roster));
-        let binding = a
-            .store
-            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
-            .await
-            .unwrap();
-        let origin = crate::communication::ContactOrigin {
+    fn full_bob() -> crate::communication::ContactOrigin {
+        crate::communication::ContactOrigin {
             contact: "bob".into(),
             machine: "b".into(),
             export: "research".into(),
@@ -6785,33 +6912,91 @@ mod full_inbox_tests {
             holder: "me".into(),
             tools: vec!["search_web".into()],
             mode: crate::communication::ShareMode::Full,
-        };
-        let inbox = a
-            .handle_inbox(ContactInbox {
-                binding: binding.id,
-                agent: "research@sky-mac".into(),
-                origin,
-            })
+        }
+    }
+
+    async fn admit(a: &mut Agents, binding: Uuid) -> Result<SessionId, A2AError> {
+        a.handle_inbox(ContactInbox {
+            binding,
+            agent: "research@sky-mac".into(),
+            origin: full_bob(),
+        })
+        .await
+    }
+
+    /// A restart: nothing of the inbox in memory.
+    fn forget(a: &mut Agents, inbox: SessionId) {
+        a.network.inbox_personas.clear();
+        a.network.inbox_limits.clear();
+        a.caps.remove(&inbox);
+    }
+
+    fn capped(a: &Agents, inbox: SessionId) -> bool {
+        a.caps.get(&inbox) == Some(&INBOX_FAIL_CLOSED)
+            && a.network.inbox_limits.get(&inbox) == Some(&(INBOX_FAIL_CLOSED, Vec::new()))
+    }
+
+    /// 186 review 1, 2 (D6): an agent inbox shared in full runs under the agent's own ceiling,
+    /// read live: kept across a restart before the roster joins (the stored one), tightened
+    /// on a running inbox when the roster reads a stricter one, capped while the agent is gone
+    /// and back when it returns; once the share leaves full, the next actor start caps it.
+    #[tokio::test]
+    async fn a_full_agent_inbox_follows_its_agents_live_ceiling() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let roster = Roster::research(Some(tools::Risk::Mutating));
+        a.identity = Some(Arc::new(roster.clone()));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
             .await
             .unwrap();
+        let inbox = admit(&mut a, binding.id).await.unwrap();
         assert_eq!(
             a.caps.get(&inbox),
             Some(&tools::Risk::Mutating),
             "the agent's ceiling, not the contact's read_only"
         );
         assert!(!a.network.is_inbox(inbox), "no contact limits");
-        // A restart: nothing of it in memory.
-        let forget = |a: &mut Agents| {
-            a.network.inbox_personas.clear();
-            a.network.inbox_limits.clear();
-            a.caps.remove(&inbox);
-        };
-        forget(&mut a);
+
+        // A restart, the roster not joined yet: the stored ceiling.
+        forget(&mut a, inbox);
+        a.identity = None;
         a.reinstall_contact_limits(inbox).await.unwrap();
         assert_eq!(
             a.caps.get(&inbox),
             Some(&tools::Risk::Mutating),
-            "the ceiling, from the row"
+            "from the row"
+        );
+        assert!(!a.network.is_inbox(inbox));
+
+        // The roster joins with a stricter `tools:`: the running inbox takes it at once.
+        roster.set(Some(Some(tools::Risk::ReadOnly)));
+        a.identity = Some(Arc::new(roster.clone()));
+        a.refresh_full_inboxes().await;
+        assert_eq!(a.caps.get(&inbox), Some(&tools::Risk::ReadOnly));
+        // An actor start takes the stricter of the stored and the live one.
+        roster.set(Some(Some(tools::Risk::Mutating)));
+        forget(&mut a, inbox);
+        a.reinstall_contact_limits(inbox).await.unwrap();
+        assert_eq!(
+            a.caps.get(&inbox),
+            Some(&tools::Risk::ReadOnly),
+            "the stricter"
+        );
+
+        // The agent deleted: capped; an actor start too. Re-created: its ceiling again.
+        roster.set(None);
+        a.refresh_full_inboxes().await;
+        assert!(capped(&a, inbox), "agent gone");
+        forget(&mut a, inbox);
+        a.reinstall_contact_limits(inbox).await.unwrap();
+        assert!(capped(&a, inbox), "agent gone, at an actor start");
+        roster.set(Some(Some(tools::Risk::Mutating)));
+        a.refresh_full_inboxes().await;
+        assert_eq!(
+            a.caps.get(&inbox),
+            Some(&tools::Risk::Mutating),
+            "re-created"
         );
         assert!(!a.network.is_inbox(inbox));
 
@@ -6820,6 +7005,7 @@ mod full_inbox_tests {
             contact: "bob".into(),
             cap: tools::Risk::ReadOnly,
             exports: vec![("research".into(), vec!["search_web".into()])],
+            full: Vec::new(),
         })
         .await;
         assert_eq!(
@@ -6827,13 +7013,94 @@ mod full_inbox_tests {
             Some(&tools::Risk::ReadOnly),
             "capped at once"
         );
-        forget(&mut a);
+        forget(&mut a, inbox);
         a.reinstall_contact_limits(inbox).await.unwrap();
-        assert_eq!(a.caps.get(&inbox), Some(&INBOX_FAIL_CLOSED));
-        assert_eq!(
-            a.network.inbox_limits.get(&inbox),
-            Some(&(INBOX_FAIL_CLOSED, Vec::new())),
-            "default-deny again"
+        assert!(capped(&a, inbox), "default-deny again");
+    }
+
+    /// 186 review 2: with no live persona (the roster not joined, the agent missing) a full
+    /// share of an agent does not run: refused, no inbox made; a NULL stored ceiling is unknown.
+    #[tokio::test]
+    async fn a_full_share_without_the_agents_persona_is_refused() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let refused = admit(&mut a, binding.id).await.unwrap_err();
+        assert!(
+            refused.message.contains("not available"),
+            "{}",
+            refused.message
         );
+        a.identity = Some(Arc::new(Roster::default()));
+        let refused = admit(&mut a, binding.id).await.unwrap_err();
+        assert!(
+            refused.message.contains("not available"),
+            "{}",
+            refused.message
+        );
+        let scope = A2aScope {
+            principal: &format!("peer:{}", binding.id),
+            export: "research",
+        };
+        assert_eq!(
+            a.store.a2a_inbox(scope).await.unwrap(),
+            None,
+            "no inbox made"
+        );
+        assert_eq!(
+            full::full_ceiling(&full::Live::Unknown, None),
+            None,
+            "unknown: capped"
+        );
+    }
+
+    /// 186 review 2: an inbox stops running in full when its export is unshared or deleted
+    /// (the reload's limits no longer list it in full) and when its contact is blocked or
+    /// unpaired (its binding falls out); each is capped at once and at its next actor start.
+    #[tokio::test]
+    async fn unshare_delete_block_and_unpair_end_a_full_inbox() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.identity = Some(Arc::new(Roster::research(None)));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let full_row = |a: &Agents, inbox| {
+            let store = a.store.clone();
+            async move { store.a2a_inbox_full(inbox).await.unwrap().is_some() }
+        };
+        // Unshared or its agent export deleted: the contact's limits list it nowhere.
+        let inbox = admit(&mut a, binding.id).await.unwrap();
+        assert!(full_row(&a, inbox).await);
+        a.apply_contact_limits(ContactLimits {
+            contact: "bob".into(),
+            cap: tools::Risk::ReadOnly,
+            exports: Vec::new(),
+            full: Vec::new(),
+        })
+        .await;
+        assert!(!full_row(&a, inbox).await, "unshared or deleted: not full");
+        assert!(capped(&a, inbox));
+        forget(&mut a, inbox);
+        a.reinstall_contact_limits(inbox).await.unwrap();
+        assert!(capped(&a, inbox));
+
+        // Blocked or unpaired: its binding falls out of the reload.
+        assert_eq!(admit(&mut a, binding.id).await.unwrap(), inbox);
+        assert!(full_row(&a, inbox).await);
+        a.cap_inboxes_of(binding.id).await;
+        assert!(!full_row(&a, inbox).await, "blocked or unpaired: not full");
+        assert!(capped(&a, inbox));
+        // And a row left full by an older build: the revoked binding caps it at actor start.
+        assert_eq!(admit(&mut a, binding.id).await.unwrap(), inbox);
+        a.store.revoke_peer_binding("bob").await.unwrap();
+        forget(&mut a, inbox);
+        a.reinstall_contact_limits(inbox).await.unwrap();
+        assert!(capped(&a, inbox));
+        assert!(!full_row(&a, inbox).await);
     }
 }

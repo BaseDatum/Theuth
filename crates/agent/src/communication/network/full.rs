@@ -178,7 +178,11 @@ impl Agents {
                 .await
                 .map_err(err)?
             else {
-                return Ok(None);
+                // 186 review 2: a full message whose conversation was collected (quiet past the
+                // TTL, or its contact re-paired): not a task to answer on.
+                return Err(format!(
+                    "the conversation with `{alias}` ended (quiet for 7 days, or its contact was paired again); send a new message without reply_to"
+                ));
             };
             if t.outbound {
                 return Ok(Some(FullShape {
@@ -459,6 +463,136 @@ impl Agents {
             .unwrap_or(true)
     }
 
+    /// 186 review 2: the exported agent `agent` (bare roster name) as the roster reads it now.
+    pub(super) async fn live_persona(&self, agent: &str) -> Live {
+        match &self.identity {
+            None => Live::Unknown,
+            Some(source) => match source.inbox(agent).await {
+                Some(p) => Live::Known(p),
+                None => Live::Missing,
+            },
+        }
+    }
+
+    /// 186 (D6), review 2: run the full inbox `id` under `ceiling` (no contact limits), or
+    /// capped as a contact's inbox no admission has limited yet when it is `None` (no known
+    /// ceiling).
+    pub(super) async fn run_full_inbox(
+        &mut self,
+        id: SessionId,
+        ceiling: Option<Option<tools::Risk>>,
+    ) -> Result<(), String> {
+        match ceiling {
+            Some(c) => self.clear_contact_limits(id, c).await,
+            None => {
+                self.install_contact_limits(id, super::INBOX_FAIL_CLOSED, Vec::new())
+                    .await
+            }
+        }
+    }
+
+    /// 186 review 2: the contact `binding` is gone (blocked, unpaired, re-pinned): none of its
+    /// inboxes runs in full any more, and each is capped as a contact's no admission limited.
+    pub(super) async fn cap_inboxes_of(&mut self, binding: Uuid) {
+        let rows = match self.store.a2a_inboxes_of(&format!("peer:{binding}")).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(%binding, "a2a: inboxes: {e:#}");
+                return;
+            }
+        };
+        for (_, inbox, full) in rows {
+            if full && let Err(e) = self.store.unmark_a2a_inbox_full(inbox).await {
+                tracing::error!(session = %inbox, "a2a: inbox mode not reset: {e:#}");
+            }
+            if let Err(e) = self
+                .install_contact_limits(inbox, super::INBOX_FAIL_CLOSED, Vec::new())
+                .await
+            {
+                tracing::error!(session = %inbox, "{e}");
+            }
+        }
+    }
+
+    /// `tell` handler body ([`InboxPersonasChanged`]): every full inbox takes its agent's
+    /// ceiling as the roster reads it now (a tightening applies to a running inbox at once;
+    /// an agent gone caps it).
+    pub(crate) async fn refresh_full_inboxes(&mut self) {
+        if self.identity.is_none() {
+            return;
+        }
+        let rows = match self.store.full_a2a_inboxes().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("a2a: full inboxes: {e:#}");
+                return;
+            }
+        };
+        for row in rows {
+            let ceiling = match row.agent.as_deref() {
+                Some(agent) => match self.live_persona(agent).await {
+                    Live::Known(p) => {
+                        if let Err(e) = self.store.set_a2a_inbox_ceiling(row.session, p.tools).await
+                        {
+                            tracing::error!(session = %row.session, "a2a: inbox ceiling: {e:#}");
+                        }
+                        let ceiling = Some(p.tools);
+                        self.network.inbox_personas.insert(row.session, p);
+                        ceiling
+                    }
+                    Live::Missing | Live::Unknown => None,
+                },
+                None => None,
+            };
+            if let Err(e) = self.run_full_inbox(row.session, ceiling).await {
+                tracing::error!(session = %row.session, "{e}");
+            }
+        }
+    }
+}
+
+/// 186 review 2: what the roster says of an exported agent right now.
+pub(super) enum Live {
+    /// Its persona (its `tools:` ceiling with it).
+    Known(crate::InboxPersona),
+    /// No such agent (deleted, or its file is invalid).
+    Missing,
+    /// The roster has not joined yet.
+    Unknown,
+}
+
+/// 186 review 2: the ceiling a full inbox runs under at an actor start: the stricter of the
+/// stored (last real persona) and the live one; with no live persona, the stored one; an agent
+/// gone, or neither known: `None` (capped).
+pub(super) fn full_ceiling(
+    live: &Live,
+    stored: Option<Option<tools::Risk>>,
+) -> Option<Option<tools::Risk>> {
+    let stricter = |a: Option<tools::Risk>, b: Option<tools::Risk>| match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, None) | (None, x) => x,
+    };
+    match live {
+        Live::Missing => None,
+        Live::Known(p) => Some(stored.map_or(p.tools, |s| stricter(p.tools, s))),
+        Live::Unknown => stored,
+    }
+}
+
+/// `tell` (186 review 2): the roster re-read its agents (or joined): every full inbox takes
+/// its agent's ceiling as it reads now.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InboxPersonasChanged;
+
+impl Message<InboxPersonasChanged> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, _: InboxPersonasChanged, _: &mut Context<Self, Self::Reply>) {
+        self.refresh_full_inboxes().await;
+    }
+}
+
+impl Agents {
     /// 186 (D4): the contact read our full message `exchange` (its task completed with a
     /// receipt): `consumed`; an awaiting `send_message` keeps waiting for the answer.
     pub(super) async fn full_read(&mut self, exchange: Uuid) {
@@ -517,13 +651,31 @@ impl Agents {
             format!("peer:{}", m.binding),
             format!("session:{}", thread.session),
         );
-        let reply_to = self.answered(wire.re.as_deref(), &session, &peer).await?;
-        // 186 review 1 (D9): at most CONTACT_QUEUED of a contact's answers wait to be taken in.
-        let waiting = self
+        // 186 review 1 (D9): at most CONTACT_QUEUED of a contact's answers wait to be taken in;
+        // review 2: a retry of one already accepted is its dedup (the same `reply_to` as the
+        // first, though that message reads answered now), never `busy`.
+        let retry = self
             .store
-            .accepted_from(&peer, thread.session)
+            .exchange_by_request_id(&peer, &msg.message_id)
             .await
             .map_err(internal)?;
+        let (reply_to, waiting) = match retry {
+            Some(id) => (
+                self.store
+                    .exchange_record(id)
+                    .await
+                    .map_err(internal)?
+                    .and_then(|r| r.receipt.reply_to),
+                0,
+            ),
+            None => (
+                self.answered(wire.re.as_deref(), &session, &peer).await?,
+                self.store
+                    .answers_waiting(m.binding, thread.session)
+                    .await
+                    .map_err(internal)?,
+            ),
+        };
         if waiting >= super::CONTACT_QUEUED as i64 {
             return Err(A2AError::unsupported_operation(format!(
                 "busy: {waiting} answers already wait here; retry later"

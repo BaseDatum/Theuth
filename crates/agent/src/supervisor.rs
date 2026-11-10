@@ -761,6 +761,8 @@ impl Message<InstallIdentitySource> for Agents {
 
     async fn handle(&mut self, m: InstallIdentitySource, _: &mut Context<Self, Self::Reply>) {
         self.identity = Some(m.0);
+        // 186 review 2: the roster joined: full inboxes take their agents' live ceilings.
+        self.refresh_full_inboxes().await;
     }
 }
 
