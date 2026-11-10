@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Copy, ShieldAlert, Timer } from 'lucide-react'
-import { memo, type ReactNode, useState } from 'react'
+import { memo, type ReactNode, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
+import { create } from 'zustand'
 import { errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -85,7 +86,7 @@ function useRecord(session: string, id: string | null | undefined, enabled = tru
 }
 
 /** The exchange ids this session still owes an answer to (`list_peer_messages(pending_only)`); one fetch per session. */
-function useAwaitingAnswer(session: string) {
+export function useAwaitingAnswer(session: string) {
   const api = useApi()
   return useQuery({
     queryKey: queryKeys.peerMessages(session, true, 'page'),
@@ -163,10 +164,17 @@ function Provenance({ origin, seq, session, request }: { origin: PeerOrigin; seq
   )
 }
 
+/** Answer drafts by exchange id, in memory: every mount of the card shares one, so folding a group or the virtualiser
+ * dropping the row never loses what the owner typed (171F B13: transcript row state lives in a store). */
+export const useAnswerDrafts = create<Record<string, string>>()(() => ({}))
+
 /** The owner answers a request this chat owes (`answer_peer_request`, as Settings › Communication does). */
 function AnswerForm({ session, id, onDone }: { session: string; id: string; onDone: () => void }) {
   const api = useApi()
-  const [text, setText] = useState('')
+  // The live state is the server snapshot too (as `useDisclosure`), so a preset draft shows on the first render.
+  const read = () => useAnswerDrafts.getState()[id] ?? ''
+  const text = useSyncExternalStore(useAnswerDrafts.subscribe, read, read)
+  const setText = (t: string) => useAnswerDrafts.setState({ [id]: t })
   const send = useAction((t: string) => routed(session, () => api.answer_peer_request(session, id, t)), {
     keys: [['peer-messages', session], queryKeys.peerMessage(session, id)],
     onSuccess: (receipt) => {
@@ -204,7 +212,9 @@ function AnswerForm({ session, id, onDone }: { session: string; id: string; onDo
   )
 }
 
-type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number }
+/** `inset`: the row carries `Message`'s remove control over the top-right corner; only the header makes room for it,
+ * so the outside band still spans the card. */
+type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number; inset?: boolean }
 
 /** Lines (or characters) past which a body clamps behind a fade and `Show all`. */
 const CLAMP_LINES = 6
@@ -218,6 +228,7 @@ function PeerCard({
   from,
   text,
   at,
+  inset,
   sender,
   tone,
   id,
@@ -249,7 +260,7 @@ function PeerCard({
           Outside your mesh · plain text, links and images are off
         </div>
       ) : null}
-      <div className="px-4 pt-2.5">
+      <div className={cn('px-4 pt-2.5', inset && 'pr-12')}>
         <SenderHead sender={sender} reminder={from.startsWith('Reminder ')}>
           {chips}
           <Clock at={at} />

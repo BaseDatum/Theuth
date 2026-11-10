@@ -58,7 +58,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       )
     }
     case 'peer':
-      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} at={entry.at} />
+      // The remove control's room is the card header's (`inset`), so the outside band keeps the full width.
+      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} at={entry.at} inset={!!entry.context && !readOnly} />
     case 'engine':
       return <EngineNotice notice={entry.notice} text={entry.text} />
     case 'desk':
@@ -226,13 +227,14 @@ function Tombstone({ entry, session, readOnly, reveal }: { entry: Entry; session
 }
 
 /** Tool, peer and engine cards keep their own layout (`show`/scrape cards included); the remove control sits over the card's
- * top-right corner as a sibling, with the card padded so no text hides under it. Cards without stored membership
- * (live, unsaved rows) get no control: a button without an authoritative target would only be guessing. The wrapper is
- * the same element either way, so the settled reload adding `context` never remounts the card (171F B13). */
+ * top-right corner as a sibling, with the card padded so no text hides under it (a peer card pads only its header,
+ * `MessagePeer` `inset`). Cards without stored membership (live, unsaved rows) get no control: a button without an
+ * authoritative target would only be guessing. The wrapper is the same element either way, so the settled reload adding
+ * `context` never remounts the card (171F B13). */
 function Card({ entry, session, children }: { entry: Entry; session: string; children: ReactNode }) {
   const ctx = entry.context
   return (
-    <div className={ctx ? 'group relative [&>:first-child]:pr-12' : 'group relative'}>
+    <div className={ctx && entry.kind !== 'peer' ? 'group relative [&>:first-child]:pr-12' : 'group relative'}>
       {children}
       {ctx && (
         <RemoveButton

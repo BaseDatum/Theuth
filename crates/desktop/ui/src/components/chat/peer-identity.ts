@@ -62,7 +62,8 @@ export function resolveSender(address: string, dir: Directory): Sender {
     const child = id ? dir.children?.[id] : undefined
     const row = id ? dir.sessions?.find((s) => s.id === id) : undefined
     const parent = !!id && selfRow?.parent === id
-    const name = child?.name || row?.title || row?.name || (id ? shortId(id) : 'Parent')
+    // A subagent's row carries its peer name; its title is only the brief's first line.
+    const name = child?.name || (row?.parent ? row.name : null) || row?.title || row?.name || (id ? shortId(id) : 'Parent')
     const subtitle = child
       ? `Your subagent · ${child.agent ?? 'theuth'}`
       : parent || address === 'parent'
@@ -76,10 +77,14 @@ export function resolveSender(address: string, dir: Directory): Sender {
     return { name, subtitle, key, session: child || row ? id : undefined }
   }
   if (address.startsWith('contact:')) {
-    // `contact:<holding engine>:<contact name>`: the holder vouches for the name.
+    // `contact:<holding engine>:<contact name>`: the holder vouches for the name. Only this engine's own contact list
+    // describes a contact it holds; another machine's contact is never matched against it.
     const rest = address.slice('contact:'.length)
+    const holder = rest.slice(0, rest.indexOf(':'))
     const alias = rest.slice(rest.indexOf(':') + 1)
-    return contactSender(alias, undefined, dir, key)
+    if (dir.mesh && holder === dir.mesh.self_id) return contactSender(alias, undefined, dir, key)
+    const on = dir.mesh ? engineLabel(holder, dir.mesh.peers) : shortId(holder)
+    return { name: alias, subtitle: ['Contact', `held on ${on}`, dir.exported && `via ${dir.exported}`].filter(Boolean).join(' · '), key }
   }
   if (address.startsWith('peer:')) {
     // `peer:<binding uuid>` inbound, `peer:<alias>` or `peer:<alias>/<export>` outbound.
@@ -141,23 +146,31 @@ export function useDirectory(self: string, outside: boolean): Directory {
 // ------------------------------------------------------------------------------------------------ sends and receipts
 
 /** One recipient's row of a `send_message` result. */
-export type SentReceipt = { id: string; to: string; state: string; error?: string; reply?: string }
+export type SentReceipt = { id: string; to: string; state: string; error?: string }
 
 /** A refusal before anything was accepted carries the nil id: nothing to look up. */
 export const NIL = '00000000-0000-0000-0000-000000000000'
 
-const RECEIPT = /^(\S+) ([a-z_]+) id=([0-9a-f-]{36})(?: task=\S+)?(?: error=(.*))?$/
+// peers.rs `receipt_line`: `<to> <state> id=<uuid>`, then ` task=<t>` and ` error=<e>` when set; either may hold spaces.
+const RECEIPT = /^(\S+) ([a-z_]+) id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?: task=.*?)?(?: error=(.*))?$/
 
-/** `send_message`'s text output (`<to> <state> id=<uuid>[ task=…][ error=…]`, then the reply's lines) as receipts. */
-export function parseReceipts(output: string): SentReceipt[] {
-  const out: SentReceipt[] = []
-  for (const line of output.split('\n')) {
-    const m = RECEIPT.exec(line)
-    const last = out[out.length - 1]
-    if (m) out.push({ to: m[1] as string, state: m[2] as string, id: m[3] as string, ...(m[4] !== undefined && { error: m[4] }) })
-    else if (last) last.reply = last.reply === undefined ? line : `${last.reply}\n${line}`
+/**
+ * `send_message`'s text output (peers.rs `receipts_output`): one receipt line per recipient, a `replied` one followed
+ * by its awaited reply's lines. A reply is text the other side controls, so only the LEADING block of receipt lines is
+ * read: at most `max` (the call's recipient count), stopping at the first other line and right after a `replied`
+ * receipt (whatever follows it may be its reply). A receipt-shaped line inside a reply is never a receipt. `rest` is
+ * everything after the block, unparsed (the reply, when there is one receipt).
+ */
+export function parseReceipts(output: string, max: number): { receipts: SentReceipt[]; rest: string } {
+  const lines = output.split('\n')
+  const receipts: SentReceipt[] = []
+  while (receipts.length < max && receipts.length < lines.length) {
+    const m = RECEIPT.exec(lines[receipts.length] as string)
+    if (!m) break
+    receipts.push({ to: m[1] as string, state: m[2] as string, id: m[3] as string, ...(m[4] !== undefined && { error: m[4] }) })
+    if (m[2] === 'replied') break
   }
-  return out
+  return { receipts, rest: lines.slice(receipts.length).join('\n') }
 }
 
 /** No further transition is possible. */
