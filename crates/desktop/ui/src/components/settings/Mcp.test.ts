@@ -6,12 +6,18 @@ import { parse } from 'smol-toml'
 import { expect, test, vi } from 'vitest'
 import { MCP_SHARED_LINE, mcpActions, mcpConfig } from '@/lib/mcp-config'
 import type * as Rpc from '@/lib/rpc'
+import type * as Tauri from '@/lib/tauri'
 import type { McpAuditLine } from '@/rpc/bindings/McpAuditLine'
 import type { McpServerConfig } from '@/rpc/bindings/McpServerConfig'
 import type { McpServerStatus } from '@/rpc/bindings/McpServerStatus'
 import { Mcp, ready } from './Mcp'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+// The app's own engine listens on a port of its own, not a fixed one.
+vi.mock('@/lib/tauri', async (original) => ({
+  ...await original<typeof Tauri>(),
+  connection: async () => ({ url: 'ws://127.0.0.1:18788/', token: 't', data_dir: '/d', owned: true }),
+}))
 
 const TOKEN = 'a'.repeat(64)
 const status: McpServerStatus = {
@@ -106,4 +112,5 @@ test('ready, and the pane renders status, masked token, the last-20 audit tail a
   expect(html).toContain('Rotate')
   expect(html).toContain(MCP_SHARED_LINE)
   expect(MCP_SHARED_LINE).toContain('read and write')
+  expect(html).toContain('Loopback only (127.0.0.1); RPC is on port 18788.')
 })

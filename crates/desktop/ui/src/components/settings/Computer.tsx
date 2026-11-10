@@ -39,7 +39,7 @@ export function Computer() {
         )
       }
     >
-      <ConfigFlagRow flag="computer.enabled" label="Enabled" description="Lets agents see and drive this desktop." />
+      <ConfigFlagRow flag="computer.enabled" name="Computer use" label="Enabled" description="Lets agents see and drive this desktop." />
       {runs === false && <Empty>The displays and permissions show once computer use runs.</Empty>}
       {runs && perms.isError && <Empty>{errorText(perms.error)}</Empty>}
       {runs && p && (

@@ -3,7 +3,7 @@ import { Copy } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { type FormEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { AllowList, useChannelEvents } from '@/components/settings/Channels'
+import { AllowList, ChannelStatusRow, useChannelEvents } from '@/components/settings/Channels'
 import { Dot, Row, Section, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -137,14 +137,7 @@ export function Telegram() {
 
   return (
     <Section title="Telegram">
-      {status.isPending && <Row label="Bot" description="loading…" />}
-      {status.isError && (
-        <Row label="Bot" description={`status unavailable: ${status.error instanceof Error ? status.error.message : String(status.error)}`}>
-          <Button variant="outline" size="sm" onClick={() => void status.refetch()}>
-            Retry
-          </Button>
-        </Row>
-      )}
+      <ChannelStatusRow label="Bot" status={status} />
       {s && (
         <>
           <Row

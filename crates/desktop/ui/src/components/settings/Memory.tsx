@@ -56,7 +56,7 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
     <input
       type="range"
       aria-label={ariaLabel}
-      className="w-48 accent-primary disabled:opacity-50"
+      className="w-48 accent-primary disabled:opacity-50 max-md:w-full"
       min={min}
       max={max}
       step={step}
@@ -131,6 +131,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
       </Section>
       <Section title="View">
         <Row
+          stack
           label={
             <>
               View size · <span className="tabular-nums">{kb} KB</span>
@@ -157,6 +158,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
           />
         </Row>
         <Row
+          stack
           label={
             <>
               Slack · <span className="tabular-nums">{pct} %</span>
@@ -207,7 +209,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
         >
           <SummaryTestCall model={testModel} />
         </Row>
-        <Row label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
+        <Row stack label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
           <span className="text-sm text-fg-secondary">copy · grounding · status · format — always on</span>
         </Row>
         <Collapsible defaultOpen={focus === 'spend'}>

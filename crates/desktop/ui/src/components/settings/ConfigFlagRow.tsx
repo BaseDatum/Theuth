@@ -8,17 +8,17 @@ import type { ConfigFlag, ConfigFlagKey } from '@/rpc/api'
 
 const flagQuery = (key: ConfigFlagKey) => ['config-flag', key] as const
 
-/** 188: one of the three `enabled` flags that had no write path, as config.yaml has it and as the engine runs it. */
+/** 188: one of the four `enabled` flags that had no write path, as config.yaml has it and as the engine runs it. */
 export function useConfigFlag(key: ConfigFlagKey) {
   const api = useApi()
   return useQuery({ queryKey: flagQuery(key), queryFn: () => api.config_flag_get(key), retry: false })
 }
 
 /**
- * 188 F4–F6: the switch for such a flag. Its saved value shows at once; while the engine still runs the other value
- * the row says so and the change is listed in Settings' restart banner.
+ * 188 F1, F4–F6: the switch for such a flag. Its saved value shows at once; while the engine still runs the other value
+ * the row says so and the change is listed in Settings' restart banner under `name`, the feature's name.
  */
-export function ConfigFlagRow({ flag, label, description }: { flag: ConfigFlagKey; label: string; description: ReactNode }) {
+export function ConfigFlagRow({ flag, name, label, description }: { flag: ConfigFlagKey; name: string; label: string; description: ReactNode }) {
   const api = useApi()
   const qc = useQueryClient()
   const state = useConfigFlag(flag)
@@ -28,9 +28,9 @@ export function ConfigFlagRow({ flag, label, description }: { flag: ConfigFlagKe
   const pending = state.data?.restart_required ?? false
   useEffect(() => {
     const restart = useRestartPending.getState()
-    if (pending) restart.mark(flag, label)
+    if (pending) restart.mark(flag, name)
     else restart.clear(flag)
-  }, [pending, flag, label])
+  }, [pending, flag, name])
   return (
     <Row
       label={label}

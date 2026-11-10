@@ -753,7 +753,7 @@ export function ContactAccess({ focus = null }: { focus?: string | null }) {
   return (
     <Section title="Access">
       <p className="text-[13px] text-fg-secondary">
-        {SHARE_RULE} Cautious shares open a fresh capped session per agent, or one capped turn per message in a shared chat.
+        Choose, per contact, which agents and chats it may reach, which tools it may use there (read only, or able to change things), and how each share answers its first message.
       </p>
       <p className="text-[13px] text-fg-secondary">A new share starts on "Always allow". "Ask first" holds a contact's first message until you press Allow.</p>
       <p className="text-[13px] text-fg-secondary">{toolsLine(exports.data ?? [])}</p>

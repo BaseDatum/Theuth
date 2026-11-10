@@ -40,7 +40,7 @@ export function Labs() {
   return (
     <>
       <Section title="Decision models">
-        <ConfigFlagRow flag="decision.enabled" label="Enabled" description="The local decision models behind the meeting oracle, the browser's System-1 and the double." />
+        <ConfigFlagRow flag="decision.enabled" name="Decision models" label="Enabled" description="The local decision models behind the meeting oracle, the browser's System-1 and the double." />
         {runs === false && <Empty>While they run, this tab also holds the meeting oracle and browser System-1 modes, training-data capture and the models loaded now.</Empty>}
       </Section>
       {runs && <Families />}

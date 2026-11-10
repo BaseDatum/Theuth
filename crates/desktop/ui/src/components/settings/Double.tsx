@@ -7,6 +7,8 @@ import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { LineChartView } from '@/components/chat/surface/diagrams/LineChart'
+import { ConfigFlagRow, useConfigFlag } from '@/components/settings/ConfigFlagRow'
+import { flagRuns } from '@/components/settings/flag-runs'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { useMesh } from '@/components/tasks/queries'
 import {
@@ -25,7 +27,6 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { humanSecs } from '@/lib/injected'
-import { useRestartPending } from '@/lib/restart-pending'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import type { Api } from '@/rpc/api'
@@ -105,16 +106,18 @@ export const setCap = (api: Pick<Api, 'double_set_cap'>, c: DoubleClass, rung: n
 export const setOptIn = (api: Pick<Api, 'double_set_cap'>, c: DoubleClass, on: boolean) => api.double_set_cap(c.key, c.cap, on)
 export const forgetClass = (api: Pick<Api, 'double_forget'>, key: string) => api.double_forget({ target: 'class', key })
 
-/** 188 F1: `enabled` takes a restart, so it waits while the saved value differs from the running one; `null` until both are known. */
-export const enabledRestartPending = (saved: boolean | undefined, running: boolean | undefined): boolean | null =>
-  saved === undefined || running === undefined ? null : saved !== running
-
 export function Double() {
   const api = useApi()
   const qc = useQueryClient()
-  const status = useQuery({ queryKey: queryKeys.doubleStatus, queryFn: () => api.double_status(), refetchInterval: 30_000 })
-  const classes = useQuery({ queryKey: queryKeys.doubleClasses, queryFn: () => api.double_classes() })
-  const settings = useQuery({ queryKey: queryKeys.doubleSettings, queryFn: () => api.double_settings_get() })
+  const flag = useConfigFlag('double.enabled')
+  // Off, the engine has no double actors to answer, so nothing below the switch is asked for (188 F1).
+  const runs = flagRuns(flag)
+  const status = useQuery({ queryKey: queryKeys.doubleStatus, queryFn: () => api.double_status(), refetchInterval: 30_000, enabled: runs === true })
+  const classes = useQuery({ queryKey: queryKeys.doubleClasses, queryFn: () => api.double_classes(), enabled: runs === true })
+  const loaded = useQuery({ queryKey: queryKeys.doubleSettings, queryFn: () => api.double_settings_get(), enabled: runs === true })
+  // `double_settings_set` persists the whole section: carry the saved Enabled, not the running copy's, so a training
+  // save never undoes the switch.
+  const settings = loaded.data && flag.data ? { ...loaded.data, enabled: flag.data.enabled } : loaded.data
   // Live: a run's state or a version switch refreshes everything; the run states also feed the log below.
   const [live, setLive] = useState<DoubleTrainingState[]>([])
   useEffect(() => {
@@ -131,15 +134,27 @@ export function Double() {
     ]
     return () => offs.forEach((off) => off())
   }, [qc])
+  const enabled = (
+    <ConfigFlagRow
+      flag="double.enabled"
+      name="Double"
+      label="Enabled"
+      description={flag.data?.enabled ? 'Predicting every captured card; learning from your answers.' : 'Off: nothing is predicted or learned.'}
+    />
+  )
+  if (runs !== true)
+    return (
+      <Section title="Status">
+        {enabled}
+        {runs === false && <Empty>While the double runs, this tab also holds Pause learning, the active version and last run, the improvement curve, the classes, training and the training log.</Empty>}
+      </Section>
+    )
   const s = status.data
   return (
     <>
       <Section title="Status">
-        {status.isError ? (
-          <Empty>{errorText(status.error)}</Empty>
-        ) : (
-          <Status s={s} settings={settings.data} />
-        )}
+        {enabled}
+        {status.isError ? <Empty>{errorText(status.error)}</Empty> : <Status s={s} />}
       </Section>
       <Section title="Improvement">
         <p className="mb-2 text-[13px] text-fg-secondary">
@@ -152,7 +167,7 @@ export function Double() {
         <Classes classes={classes.data ?? []} loading={classes.isPending} error={classes.isError ? errorText(classes.error) : undefined} />
       </Section>
       <Section title="Training">
-        <Training s={s} settings={settings.data} />
+        <Training s={s} settings={settings} />
       </Section>
       <Section title="Training log">
         <RunLog last={s?.last_run} live={live} />
@@ -161,31 +176,12 @@ export function Double() {
   )
 }
 
-function Status({ s, settings }: { s: DoubleStatus | undefined; settings: DoubleConfig | undefined }) {
+function Status({ s }: { s: DoubleStatus | undefined }) {
   const api = useApi()
   const pause = useAction((on: boolean) => api.double_pause(on), { keys: [queryKeys.doubleStatus] })
-  const save = useAction((next: DoubleConfig) => api.double_settings_set(next), { keys: [queryKeys.doubleSettings] })
-  const pending = enabledRestartPending(settings?.enabled, s?.enabled)
-  useEffect(() => {
-    if (pending === null) return
-    const restart = useRestartPending.getState()
-    if (pending) restart.mark('double.enabled', 'Double')
-    else restart.clear('double.enabled')
-  }, [pending])
   if (!s) return <Empty>loading…</Empty>
   return (
     <>
-      <Row
-        label="Enabled"
-        description={
-          <>
-            {settings?.enabled === false ? 'Off: nothing is predicted or learned.' : 'Predicting every captured card; learning from your answers.'}
-            {pending && <span className="block">Applies after theuth restarts.</span>}
-          </>
-        }
-      >
-        <Switch checked={settings?.enabled ?? false} disabled={!settings || save.isPending} onCheckedChange={(v) => settings && save.mutate({ ...settings, enabled: v })} aria-label="Double enabled" />
-      </Row>
       <Row label="Pause learning" description="Predictions and rungs continue; labels stop accruing (the curve shows the gap).">
         <Switch checked={s.paused} disabled={pause.isPending || !s.enabled} onCheckedChange={(v) => pause.mutate(v)} aria-label="Pause learning" />
       </Row>

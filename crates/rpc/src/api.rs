@@ -2452,9 +2452,9 @@ pub trait Api {
         &self,
         settings: search_providers::SearchSettings,
     ) -> RpcResult<search_providers::SearchSettings>;
-    /// 188: `decision.enabled`, `a2a.enabled` or `computer.enabled` as config.yaml
-    /// holds it and as this engine started with it. Node-level, never forwarded; any
-    /// other key is `INVALID_PARAMS` naming the three.
+    /// 188: `decision.enabled`, `a2a.enabled`, `computer.enabled` or `double.enabled`
+    /// as config.yaml holds it and as this engine started with it. Node-level, never
+    /// forwarded; any other key is `INVALID_PARAMS` naming the four.
     #[method(name = "config_flag_get")]
     fn config_flag_get(&self, key: ConfigFlagKey) -> RpcResult<ConfigFlag>;
     /// 188: write only `<section>.enabled: <on>` into config.yaml (every other line,
@@ -3107,8 +3107,8 @@ impl PendingPrompts {
     }
 }
 
-/// 188: the three `enabled` flags Settings had no write path for. Any other
-/// string fails to deserialize, an `INVALID_PARAMS` error listing these three.
+/// 188: the four `enabled` flags Settings had no write path for. Any other
+/// string fails to deserialize, an `INVALID_PARAMS` error listing these four.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ConfigFlagKey {
@@ -3121,6 +3121,10 @@ pub enum ConfigFlagKey {
     /// `computer.enabled` (27): the computer-use actor, tools and input thread.
     #[serde(rename = "computer.enabled")]
     Computer,
+    /// `double.enabled` (126): the double actors, tools and prompt paragraph. Its own
+    /// `double_settings_set` needs the running scheduler, so it cannot turn it on.
+    #[serde(rename = "double.enabled")]
+    Double,
 }
 
 impl ConfigFlagKey {
@@ -3130,6 +3134,7 @@ impl ConfigFlagKey {
             Self::Decision => "decision",
             Self::A2a => "a2a",
             Self::Computer => "computer",
+            Self::Double => "double",
         }
     }
 
@@ -3148,6 +3153,10 @@ impl ConfigFlagKey {
             }
             Self::Computer => {
                 let c: computer::ComputerConfig = config.extract_inner(s).unwrap_or_default();
+                c.enabled
+            }
+            Self::Double => {
+                let c: double::DoubleConfig = config.extract_inner(s).unwrap_or_default();
                 c.enabled
             }
         }
@@ -11024,16 +11033,18 @@ mod tests {
 
     /// 188: `get` reports the file value, the boot value and their difference for each
     /// key; an absent key or section is that section's default (decision and computer
-    /// on, a2a off).
+    /// on, a2a off, double `DoubleConfig::default()`).
     #[tokio::test]
     async fn config_flag_get_reports_file_boot_and_restart() {
         let flag = |key: &str, enabled: bool, running: bool| serde_json::json!({ "key": key, "enabled": enabled, "running": running, "restart_required": enabled != running });
         let boot = "decision:\n  enabled: false\na2a:\n  enabled: true\n";
-        let file = "decision:\n  enabled: true\ncomputer:\n  enabled: false\n";
+        let file =
+            "decision:\n  enabled: true\ncomputer:\n  enabled: false\ndouble:\n  enabled: true\n";
         for (key, want) in [
             ("decision.enabled", flag("decision.enabled", true, false)),
             ("a2a.enabled", flag("a2a.enabled", false, true)),
             ("computer.enabled", flag("computer.enabled", false, true)),
+            ("double.enabled", flag("double.enabled", true, false)),
         ] {
             let (v, _dir) = config_flag_call(
                 boot,
@@ -11048,6 +11059,7 @@ mod tests {
             ("decision.enabled", true),
             ("a2a.enabled", false),
             ("computer.enabled", true),
+            ("double.enabled", double::DoubleConfig::default().enabled),
         ] {
             let (v, _dir) =
                 config_flag_call("", None, "config_flag_get", &format!(r#"["{key}"]"#)).await;
@@ -11090,20 +11102,43 @@ mod tests {
             std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
             format!("{file}\ncomputer:\n  enabled: false\n")
         );
+
+        let file = "double:\n  retention_days: 30  # short\n  enabled: false\n";
+        let (v, dir) = config_flag_call(
+            "",
+            Some(file),
+            "config_flag_set",
+            r#"["double.enabled", true]"#,
+        )
+        .await;
+        assert_eq!(
+            v["result"],
+            serde_json::json!({ "key": "double.enabled", "enabled": true, "running": false, "restart_required": true }),
+            "{v}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
+            file.replace("enabled: false", "enabled: true")
+        );
     }
 
-    /// 188: only the three keys parse; anything else is `INVALID_PARAMS` naming them,
+    /// 188: only the four keys parse; anything else is `INVALID_PARAMS` naming them,
     /// and nothing is written.
     #[tokio::test]
     async fn config_flag_rejects_an_unknown_key() {
         for (method, params) in [
-            ("config_flag_get", r#"["double.enabled"]"#),
+            ("config_flag_get", r#"["dreaming.enabled"]"#),
             ("config_flag_set", r#"["agent.model", true]"#),
         ] {
             let (v, dir) = config_flag_call("", None, method, params).await;
             assert_eq!(v["error"]["code"], -32602, "{v}");
             let text = v["error"].to_string();
-            for key in ["decision.enabled", "a2a.enabled", "computer.enabled"] {
+            for key in [
+                "decision.enabled",
+                "a2a.enabled",
+                "computer.enabled",
+                "double.enabled",
+            ] {
                 assert!(text.contains(key), "{key} missing from {text}");
             }
             assert!(!dir.path().join("config.yaml").exists());

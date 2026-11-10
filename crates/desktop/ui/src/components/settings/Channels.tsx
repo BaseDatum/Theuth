@@ -1,7 +1,7 @@
-import { type QueryKey, useQueryClient } from '@tanstack/react-query'
+import { type QueryKey, type UseQueryResult, useQueryClient } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import { type FormEvent, useEffect, useState } from 'react'
-import { type Action, Empty } from '@/components/settings/shared'
+import { type Action, Empty, Row, errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
@@ -39,6 +39,19 @@ export function useChannelEvents(key: QueryKey) {
       for (const off of offs) off()
     }
   }, [qc, key])
+}
+
+/** A channel's first row while its status call loads or after it fails (with Retry); nothing once it answers. */
+export function ChannelStatusRow({ label, status }: { label: string; status: UseQueryResult<unknown> }) {
+  if (status.isPending) return <Row label={label} description="loading…" />
+  if (!status.isError) return null
+  return (
+    <Row label={label} description={`status unavailable: ${errorText(status.error)}`}>
+      <Button variant="outline" size="sm" onClick={() => void status.refetch()}>
+        Retry
+      </Button>
+    </Row>
+  )
 }
 
 /** An id list with a remove `×` per item and an input that adds one. */

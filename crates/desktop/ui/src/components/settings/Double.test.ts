@@ -7,22 +7,24 @@ import type { DoubleClass } from '@/rpc/bindings/DoubleClass'
 import type { DoubleClassDetail } from '@/rpc/bindings/DoubleClassDetail'
 import type { DoubleStatus } from '@/rpc/bindings/DoubleStatus'
 import type { Kpis } from '@/rpc/bindings/Kpis'
-import { Double, chartProps, enabledRestartPending, forgetClass, mergeCurves, runLine, setCap, setOptIn } from './Double'
+import { Double, chartProps, forgetClass, mergeCurves, runLine, setCap, setOptIn } from './Double'
 
 const zero: Kpis = { n: 0, accuracy: 0, brier: 0, ece: 0, coverage_2pct: 0, asks_avoided: 0, minutes_saved: 0, overrides_per_100: 0, undo_rate_per_100: 0 }
 /** What C's stub answers before W1/W2: `enabled: false`, no version, no run, empty numbers, no classes. */
 const STUB: DoubleStatus = { enabled: false, paused: false, venue: 'auto', approvals_off_sessions: 0, kpis: zero, baseline: zero }
 let status: DoubleStatus = STUB
 let classes: DoubleClass[] = []
-let savedEnabled = false
+/** The double_* reads the tab made. */
+const asked: string[] = []
+const ask = <T>(name: string, value: T): T => (asked.push(name), value)
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({
-    double_status: async () => status,
-    double_classes: async () => classes,
+    double_status: async () => ask('double_status', status),
+    double_classes: async () => ask('double_classes', classes),
     double_class: async (): Promise<DoubleClassDetail> => ({ class: classes[0] as DoubleClass, curve: [], examples: [], promote_hint: '' }),
-    double_settings_get: async () => ({
-      enabled: savedEnabled,
+    double_settings_get: async () => ask('double_settings_get', {
+      enabled: true,
       capture: { approvals: true, asks: true, attention: true, packets: true, drafts: true },
       ladder: { grace_secs: 30, caps: { read_only: 2, mutating: 1, destructive: 1 }, mutating_opt_in: false },
       training: { venue: 'auto', window: '02:00-06:00', idle_min: 15, run_cap_min: 90, triggers: { labels: 200, days: 7 }, share_data: true, tiers: { a: { enabled: true }, b: { enabled: true, rank: 8, batch: 8, epochs: 3, lr: 0.0002 }, c: { enabled: false } } },
@@ -33,12 +35,17 @@ vi.mock('@/lib/rpc', async (original) => ({
   }),
 }))
 
-async function render(): Promise<string> {
+/** The tab against an engine that runs the double (`running`) or not; `config_flag_get` answers before the first paint. */
+async function render(running = true): Promise<string> {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  qc.setQueryData(['config-flag', 'double.enabled'], { key: 'double.enabled', enabled: running, running, restart_required: false })
   const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Double) as ReactNode }))
   for (let pass = 0; pass < 3; pass++) {
     paint()
-    for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
+    for (const query of qc.getQueryCache().findAll()) {
+      if ('enabled' in query.options && query.options.enabled === false) continue
+      await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
+    }
   }
   return paint()
 }
@@ -57,23 +64,15 @@ test('the empty stub state renders every section without crashing', async () => 
   expect(html).toContain('02:00-06:00')
 })
 
-test('enabled waits for a restart only while the saved value differs from the running one (188 F1)', async () => {
-  expect(enabledRestartPending(true, false)).toBe(true)
-  expect(enabledRestartPending(false, true)).toBe(true)
-  expect(enabledRestartPending(true, true)).toBe(false)
-  expect(enabledRestartPending(false, false)).toBe(false)
-  expect(enabledRestartPending(undefined, false)).toBeNull()
-  expect(enabledRestartPending(true, undefined)).toBeNull()
-  status = STUB
-  classes = []
-  savedEnabled = true
-  try {
-    const html = await render()
-    expect(html).toContain('Applies after theuth restarts.')
-    expect(html).not.toMatch(/config\.yaml|double\.enabled/)
-  } finally {
-    savedEnabled = false
-  }
+test('while the engine runs with the double off the tab holds only its switch and asks for nothing else (188 F1)', async () => {
+  asked.length = 0
+  const html = await render(false)
+  expect(html).toContain('Off: nothing is predicted or learned.')
+  expect(html).toContain('While the double runs, this tab also holds')
+  for (const s of ['Improvement', 'Classes', 'Training log', 'aria-label="Pause learning"']) expect(html).not.toContain(s)
+  expect(asked).toEqual([])
+  await render(true)
+  expect(asked).toContain('double_status')
 })
 
 test('a class row shows n, rung glyph, accuracy, ECE, cap and the last decision', async () => {

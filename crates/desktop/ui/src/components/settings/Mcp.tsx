@@ -13,7 +13,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { MCP_CLIENTS, MCP_CLIENT_LABEL, MCP_SHARED_LINE, type McpClient, mcpActions, mcpConfig } from '@/lib/mcp-config'
 import { useApi } from '@/lib/rpc'
+import { connection } from '@/lib/tauri'
 import { formatAt } from '@/lib/time'
+import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 
 export const ready = true
@@ -25,6 +27,9 @@ export function Mcp() {
   const dataDir = useConnection((s) => s.info?.data_dir ?? '<data_dir>')
   const status = useQuery({ queryKey: KEYS.status, queryFn: () => api.mcp_server_get() })
   const audit = useQuery({ queryKey: KEYS.audit, queryFn: () => api.mcp_server_audit(20) })
+  // This engine's RPC port is known only for the app's own engine, from the shell's cached connection.
+  const local = useEngines((st) => st.active) === LOCAL
+  const rpcPort = useQuery({ queryKey: ['shell-connection'], queryFn: connection, enabled: local, staleTime: Number.POSITIVE_INFINITY, select: (c) => new URL(c.url).port }).data
   const [client, setClient] = useState<McpClient>('claude')
   const acts = mcpActions(api)
   const setEnabled = useAction((on: boolean) => acts.setEnabled(status.data!, on), { keys: [KEYS.status] })
@@ -53,7 +58,7 @@ export function Mcp() {
         >
           <Switch checked={s.enabled} disabled={busy} onCheckedChange={(on) => setEnabled.mutate(on)} />
         </Row>
-        <Row label="Port" description="Loopback only (127.0.0.1); RPC is 7777.">
+        <Row label="Port" description={`Loopback only (127.0.0.1)${rpcPort ? `; RPC is on port ${rpcPort}` : ''}.`}>
           <Input
             key={s.port}
             type="number"

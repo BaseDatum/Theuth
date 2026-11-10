@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { toast } from 'sonner'
-import { AllowList, useChannelEvents } from '@/components/settings/Channels'
+import { AllowList, ChannelStatusRow, useChannelEvents } from '@/components/settings/Channels'
 import { Dot, Row, Section, useAction } from '@/components/settings/shared'
 import {
   AlertDialog,
@@ -53,6 +53,7 @@ export function Signal() {
 
   return (
     <Section title="Signal">
+      <ChannelStatusRow label="Account" status={status} />
       {s && (
         <>
           <Row

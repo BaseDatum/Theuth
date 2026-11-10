@@ -147,6 +147,7 @@ export function A2aSection({ state }: { state: CommunicationState | undefined })
     >
       <ConfigFlagRow
         flag="a2a.enabled"
+        name="A2A over HTTP"
         label="A2A over HTTP"
         description="An HTTP listener, client and credential for agents outside theuth. Contacts don't need it: they reach this machine over theuth/a2a/1."
       />

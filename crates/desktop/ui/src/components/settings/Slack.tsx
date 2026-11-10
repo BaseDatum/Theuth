@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { AllowList, useChannelEvents } from '@/components/settings/Channels'
+import { AllowList, ChannelStatusRow, useChannelEvents } from '@/components/settings/Channels'
 import { Dot, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { openExternal } from '@/lib/platform'
@@ -43,6 +43,7 @@ export function Slack() {
   return (
     <Section title="Slack">
       <SlackManifest />
+      <ChannelStatusRow label="Bot" status={status} />
       {s && (
         <>
           <Row
