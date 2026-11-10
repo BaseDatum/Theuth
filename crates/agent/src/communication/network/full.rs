@@ -232,6 +232,12 @@ impl Agents {
         if offer.mode != ShareMode::Full {
             return Ok(None);
         }
+        // 186 review 1: lapsed conversations (and revoked bindings') go first; a send after
+        // a lapse opens a new one.
+        let stale = Utc::now().timestamp_millis() - THREAD_TTL.as_millis() as i64;
+        if let Err(e) = self.store.gc_contact_threads(stale).await {
+            tracing::warn!("a2a: conversations not collected: {e:#}");
+        }
         let context = match self
             .store
             .outbound_contact_thread(binding, from, &offer.name)
@@ -440,13 +446,17 @@ impl Agents {
         }
     }
 
-    /// 186 (D8): the session's running turn took a contact's message (any mode): the owner's
-    /// input does not cancel it.
-    pub(crate) fn contact_turn(&self, session: SessionId) -> bool {
+    /// 186 (D8): the session's running turn took a contact's incoming message (any mode; not an
+    /// answer to ours): the owner's input does not cancel it. From the turn's journal, so a
+    /// resumed turn keeps it; unsure counts as a contact's (the input still queues).
+    pub(crate) async fn contact_turn(&self, session: SessionId) -> bool {
         let Some(turn) = self.turn_of(session) else {
             return false;
         };
-        self.network.contact_turns.get(&session) == Some(&turn)
+        self.store
+            .turn_took_contact(session, turn)
+            .await
+            .unwrap_or(true)
     }
 
     /// 186 (D4): the contact read our full message `exchange` (its task completed with a
@@ -508,6 +518,17 @@ impl Agents {
             format!("session:{}", thread.session),
         );
         let reply_to = self.answered(wire.re.as_deref(), &session, &peer).await?;
+        // 186 review 1 (D9): at most CONTACT_QUEUED of a contact's answers wait to be taken in.
+        let waiting = self
+            .store
+            .accepted_from(&peer, thread.session)
+            .await
+            .map_err(internal)?;
+        if waiting >= super::CONTACT_QUEUED as i64 {
+            return Err(A2AError::unsupported_operation(format!(
+                "busy: {waiting} answers already wait here; retry later"
+            )));
+        }
         let a = AcceptExchange {
             sender: &peer,
             recipient: &session,
@@ -537,7 +558,9 @@ impl Agents {
                     .await
                     .map_err(|e| format!("{e:#}"))?
                     .ok_or("accepted exchange missing")?;
-                record.contact_mode = Some(ShareMode::Full);
+                // 186 (D8): an answer to ours is no contact's turn (it is a peer's, journaled
+                // `peer`); the row keeps its `full` provenance in the store.
+                record.contact_mode = None;
                 self.full_intake(record, from, generation, wire.chain).await
             };
             if let Err(e) = intake.await {

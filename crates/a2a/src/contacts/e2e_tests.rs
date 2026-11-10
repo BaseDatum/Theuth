@@ -1891,4 +1891,37 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         "{}",
         gone.message
     );
+
+    // 186 review 1: full was chosen for what the export published; re-pointed to another
+    // chat, it is shared cautiously until the owner picks full again.
+    assert_eq!(
+        share(Some(ShareMode::Full))
+            .await
+            .unwrap()
+            .modes
+            .get("proj"),
+        Some(&ShareMode::Full)
+    );
+    let other = chat_of(a_agents.clone()).await;
+    a.ctx
+        .put_export(Export {
+            name: "proj".into(),
+            target: ExportTarget::Chat { session: other },
+            description: "The project chat".into(),
+            paused: None,
+            tools: None,
+        })
+        .await
+        .unwrap();
+    let after = a
+        .ctx
+        .contact_list()
+        .into_iter()
+        .find(|c| c.name == a_alias)
+        .unwrap();
+    assert_eq!(
+        after.modes.get("proj"),
+        Some(&ShareMode::Cautious),
+        "re-pointed: cautious"
+    );
 }

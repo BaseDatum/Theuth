@@ -124,6 +124,14 @@ pub struct FirstWaiting {
     pub preview: String,
     /// 186: the share's mode.
     pub mode: ShareMode,
+    /// 186 review 1: not a first-contact hold but a message admitted and waiting behind the
+    /// chat's running turn (it starts when that turn ends); only `contact_first_waiting` lists
+    /// these, never the Attention item.
+    #[serde(default)]
+    pub queued: bool,
+    /// 186 review 1: a queued message's place in the chat's queue (1 = next); `0` for a hold.
+    #[serde(default)]
+    pub position: u32,
 }
 
 /// `contact_update`: each `Some` field replaces the contact's value.
@@ -139,7 +147,8 @@ pub struct ContactPatch {
     pub exports: Option<Vec<String>>,
     /// Block or unblock.
     pub blocked: Option<bool>,
-    /// 186 (D1, D3): export → share mode, whole; a newly granted export must have one.
+    /// 186 (D1, D3): export → share mode, merged per entry into the contact's modes; a newly
+    /// granted export must have one.
     pub modes: Option<BTreeMap<String, ShareMode>>,
 }
 
@@ -1888,6 +1897,17 @@ impl crate::Ctx {
             let tools = tools
                 .or_else(|| file.exports.get(&name).map(|e| e.tools.clone()))
                 .unwrap_or_else(crate::config::default_contact_tools);
+            // 186 review 1: a re-pointed export (another chat or agent) is shared cautiously
+            // until its owner picks full again: full was chosen for what it published before.
+            let moved = file
+                .exports
+                .get(&name)
+                .is_some_and(|e| e.session != session || e.agent != agent);
+            if moved {
+                for p in file.peers.values_mut() {
+                    p.modes.remove(&name);
+                }
+            }
             file.exports.insert(
                 name.clone(),
                 ExportEntry {
@@ -2155,13 +2175,32 @@ impl crate::Ctx {
     /// from the agent's holds and the contacts' facts. The one source of the Attention item,
     /// `contact_first_waiting`, the Communication window, the Contacts row and the strip.
     pub(crate) async fn first_waiting(&self) -> Vec<FirstWaiting> {
+        self.waiting(false).await
+    }
+
+    /// `contact_first_waiting` (186 review 1): the holds, then every contact message queued
+    /// behind its chat's running turn (`queued: true`, with its place in the queue).
+    pub(crate) async fn contact_waiting(&self) -> Vec<FirstWaiting> {
+        let mut rows = self.waiting(false).await;
+        rows.extend(self.waiting(true).await);
+        rows
+    }
+
+    async fn waiting(&self, queued: bool) -> Vec<FirstWaiting> {
         let Ok(agents) = self.agents() else {
             return Vec::new();
         };
-        let Ok(held) = agents
-            .ask(agent::communication::network::ContactsHeld)
-            .await
-        else {
+        let held = match queued {
+            false => agents
+                .ask(agent::communication::network::ContactsHeld)
+                .await
+                .ok(),
+            true => agents
+                .ask(agent::communication::network::ContactsQueued)
+                .await
+                .ok(),
+        };
+        let Some(held) = held else {
             return Vec::new();
         };
         let live = self.shared.read().clone();
@@ -2185,6 +2224,8 @@ impl crate::Ctx {
                 since_ms: h.since_ms,
                 waiting: h.waiting as u32,
                 preview: h.preview,
+                queued,
+                position: h.position,
             })
             .collect()
     }
@@ -2203,7 +2244,7 @@ impl Message<ContactsWaiting> for A2aActor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let c = self.ctx.clone();
-        off_mailbox(ctx, async move { c.first_waiting().await })
+        off_mailbox(ctx, async move { c.contact_waiting().await })
     }
 }
 

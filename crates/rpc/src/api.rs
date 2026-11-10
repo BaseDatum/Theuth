@@ -2679,7 +2679,8 @@ pub trait Api {
         answer: a2a::config::FirstContact,
     ) -> RpcResult<()>;
     /// 183 F3, F11: every (contact, export) whose first message waits for the owner's
-    /// answer — the source of the `contact_first` Attention item; refetch on `A2aChanged`.
+    /// answer — the source of the `contact_first` Attention item; refetch on `A2aChanged`. 186
+    /// review 1: then every contact message queued behind its chat's running turn (`queued`).
     #[method(name = "contact_first_waiting")]
     async fn contact_first_waiting(&self) -> RpcResult<Vec<a2a::contacts::FirstWaiting>>;
     /// Every sandbox record (docker, ssh, vm) with state, resources, shares, metrics (79 §4.5).

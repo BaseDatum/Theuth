@@ -4158,7 +4158,7 @@ impl Agents {
     pub(crate) async fn cancel(&mut self, mut m: Cancel) {
         // 186 (D8): the owner's input (interject, flush) never cancels a contact's turn; the
         // input itself queues behind it. An explicit Stop still does.
-        if m.reason == crate::CancelReason::Input && self.contact_turn(m.session) {
+        if m.reason == crate::CancelReason::Input && self.contact_turn(m.session).await {
             tracing::info!(session = %m.session, "cancel for input refused: a contact's turn is running");
             return;
         }
@@ -6304,10 +6304,6 @@ impl Message<PeerConsumed> for Agents {
         // Live typed provenance (50 §10), from the durable record only.
         match self.store.peer_record(m.session, m.id).await {
             Ok(Some(r)) => {
-                // 186 (D8): a contact's message is in this turn: the owner's input keeps it.
-                if r.contact_mode.is_some() {
-                    self.network.note_contact_turn(m.session, m.turn);
-                }
                 self.peer_changed(&r.receipt).await;
                 self.rt
                     .publish(PeerDelivered {
@@ -14934,7 +14930,21 @@ pub(crate) mod tests {
         let before = a.ledger.epoch(p);
         a.cancel(cancel(crate::CancelReason::Input)).await;
         assert!(a.ledger.epoch(p) > before, "the owner's own turn");
-        a.network.note_contact_turn(p, t);
+        // An answer to ours (journaled `peer`) is no contact's turn; a full contact's message is.
+        a.store
+            .input_accepted(p, t, Some("answer"), "peer")
+            .await
+            .unwrap();
+        let before = a.ledger.epoch(p);
+        a.cancel(cancel(crate::CancelReason::Input)).await;
+        assert!(
+            a.ledger.epoch(p) > before,
+            "an answer's turn is the owner's to interject"
+        );
+        a.store
+            .input_accepted(p, t, Some("contact"), "contact_full")
+            .await
+            .unwrap();
         let before = a.ledger.epoch(p);
         a.cancel(cancel(crate::CancelReason::Input)).await;
         assert_eq!(a.ledger.epoch(p), before, "a contact's turn keeps running");
@@ -16382,7 +16392,8 @@ pub(crate) mod tests {
             cap: Risk::Destructive,
             holder: "a".into(),
             tools: Vec::new(),
-            mode: crate::communication::ShareMode::Cautious,
+            // 186 (D11): sent full; the owner serves it cautiously.
+            mode: crate::communication::ShareMode::Full,
         };
         let p = network::A2aPrincipal {
             binding: binding.id,
@@ -16422,6 +16433,11 @@ pub(crate) mod tests {
             env.origin.cap,
             Risk::Mutating,
             "the owner never raises a cap"
+        );
+        assert_eq!(
+            env.origin.mode,
+            crate::communication::ShareMode::Cautious,
+            "the owner lowers full (no return route from here)"
         );
         assert_eq!(env.text, "did the build pass?");
         let record = b

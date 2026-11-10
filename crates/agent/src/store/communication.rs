@@ -1493,6 +1493,53 @@ impl Store {
         Ok(row.and_then(|(c, r)| Some((c?, r))))
     }
 
+    /// 186 review 1: an outbound message's remote task waits behind its chat's running turn
+    /// (`note`), or no longer (`None`): the receipt's `error` carries the note while it is
+    /// still `accepted`/`consumed`; nothing fails. `Some(receipt)` when it changed.
+    pub async fn note_queued_exchange(
+        &self,
+        id: Uuid,
+        note: Option<&str>,
+    ) -> anyhow::Result<Option<PeerReceipt>> {
+        let ids = id.to_string();
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE peer_exchanges SET error = ?, updated_at = ? WHERE id = ? \
+             AND state IN ('accepted', 'consumed') AND error IS NOT ? \
+             AND (error IS NULL OR error LIKE 'queued:%')",
+        )
+        .bind(note)
+        .bind(now())
+        .bind(&ids)
+        .bind(note)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let r = if n == 1 {
+            exchange_in(&mut tx, &ids)
+                .await?
+                .map(|r| r.receipt())
+                .transpose()?
+        } else {
+            None
+        };
+        tx.commit().await?;
+        Ok(r)
+    }
+
+    /// 186 review 1: how many of `sender`'s messages to `recipient` are accepted and not yet
+    /// taken in (a contact's answers waiting on the return route).
+    pub async fn accepted_from(&self, sender: &str, recipient: SessionId) -> anyhow::Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM peer_exchanges \
+             WHERE sender = ? AND recipient_session = ? AND state = 'accepted'",
+        )
+        .bind(sender)
+        .bind(recipient.to_string())
+        .fetch_one(&self.read)
+        .await?)
+    }
+
     /// 186 (D5): the exchange `sender` sent under idempotency key `request_id` (the A2A
     /// `messageId` a contact's answer names in `theuth.re`).
     pub async fn exchange_by_request_id(
@@ -1508,6 +1555,19 @@ impl Store {
                 .await?;
         row.map(|(id,)| id.parse().context("bad exchange id"))
             .transpose()
+    }
+
+    /// 186 review 1: forget conversations quiet since before `stale_before_ms` (their return
+    /// grant has lapsed) and those of revoked bindings (unpaired, re-pinned).
+    pub async fn gc_contact_threads(&self, stale_before_ms: i64) -> anyhow::Result<u64> {
+        Ok(sqlx::query(
+            "DELETE FROM contact_threads WHERE last_ms < ? \
+             OR binding IN (SELECT id FROM peer_bindings WHERE revoked_at IS NOT NULL)",
+        )
+        .bind(stale_before_ms)
+        .execute(&self.write)
+        .await?
+        .rows_affected())
     }
 
     /// 186 (D5): open (or touch) the conversation `context` with the contact `binding`:
@@ -1941,19 +2001,22 @@ impl Store {
 
     /// 183 Z3-R2: mark the contexts of `session` as a contact's inbox (its default-deny
     /// limits come back at every actor start), speaking as `identity` (the exported agent's
-    /// persona at this admission, Z3-R3; `None`: the engine's own).
+    /// persona at this admission, Z3-R3; `None`: the engine's own). 186 (D6): `full` = shared
+    /// in full, with the exported agent's own `tools:` ceiling (`None` inside: it has none).
     pub async fn mark_a2a_inbox(
         &self,
         session: SessionId,
         identity: Option<&str>,
-        full: bool,
+        full: Option<Option<tools::Risk>>,
     ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         sqlx::query(
-            "UPDATE a2a_contexts SET inbox = 1, inbox_identity = ?, inbox_full = ? WHERE session = ?",
+            "UPDATE a2a_contexts SET inbox = 1, inbox_identity = ?, inbox_full = ?, \
+             inbox_ceiling = ? WHERE session = ?",
         )
         .bind(identity)
-        .bind(full)
+        .bind(full.is_some())
+        .bind(full.flatten().map(tools::Risk::as_str))
         .bind(session.to_string())
         .execute(&mut *tx)
         .await?;
@@ -1961,15 +2024,37 @@ impl Store {
         Ok(())
     }
 
-    /// 186 (D6): `session` is a contact's inbox whose last admission was shared in full.
-    pub async fn a2a_inbox_full(&self, session: SessionId) -> anyhow::Result<bool> {
-        let row: Option<(bool,)> = sqlx::query_as(
-            "SELECT inbox_full FROM a2a_contexts WHERE session = ? AND inbox = 1 LIMIT 1",
+    /// 186 review 1: the inbox's share left full: its next actor start caps it again.
+    pub async fn unmark_a2a_inbox_full(&self, session: SessionId) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE a2a_contexts SET inbox_full = 0, inbox_ceiling = NULL WHERE session = ?",
+        )
+        .bind(session.to_string())
+        .execute(&self.write)
+        .await?;
+        Ok(())
+    }
+
+    /// 186 (D6): `Some(ceiling)` when `session` is a contact's inbox whose last admission was
+    /// shared in full (the exported agent's own `tools:` ceiling, `None` = it has none).
+    pub async fn a2a_inbox_full(
+        &self,
+        session: SessionId,
+    ) -> anyhow::Result<Option<Option<tools::Risk>>> {
+        let row: Option<(bool, Option<String>)> = sqlx::query_as(
+            "SELECT inbox_full, inbox_ceiling FROM a2a_contexts \
+             WHERE session = ? AND inbox = 1 LIMIT 1",
         )
         .bind(session.to_string())
         .fetch_optional(&self.read)
         .await?;
-        Ok(row.is_some_and(|(f,)| f))
+        match row {
+            Some((true, c)) => Ok(Some(
+                c.map(|c| c.parse().map_err(anyhow::Error::msg))
+                    .transpose()?,
+            )),
+            _ => Ok(None),
+        }
     }
 
     /// 183 Z3-R2: `session` is a contact's inbox: `Some(its persona)` (`Some(None)`: the
