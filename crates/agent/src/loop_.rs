@@ -9971,6 +9971,7 @@ mod tests {
             cap: tools::Risk::ReadOnly,
             holder: "e".into(),
             tools: Vec::new(),
+            mode: crate::communication::ShareMode::Cautious,
         };
         let w = contact_message(
             &origin,

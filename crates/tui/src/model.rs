@@ -14241,6 +14241,7 @@ mod tests {
             from: "contact:studio:sky-moore".into(),
             reply_to: None,
             scope: None,
+            contact_mode: None,
         };
         let row = |text: &str| {
             from_history(

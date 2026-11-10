@@ -177,6 +177,7 @@ impl Port for LivePort {
                 session,
                 keep: None,
                 scope: agent::CancelScope::Root,
+                reason: agent::CancelReason::Stop,
             }),
         )
         .await

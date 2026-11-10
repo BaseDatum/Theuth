@@ -6282,6 +6282,7 @@ fn origin_of(r: &PeerRecord) -> PeerOrigin {
         from: r.from.clone(),
         reply_to: r.receipt.reply_to,
         scope: r.request_scope,
+        contact_mode: None,
     }
 }
 
@@ -16304,6 +16305,7 @@ pub(crate) mod tests {
             cap: Risk::Destructive,
             holder: "a".into(),
             tools: Vec::new(),
+            mode: crate::communication::ShareMode::Cautious,
         };
         let p = network::A2aPrincipal {
             binding: binding.id,
@@ -17708,6 +17710,7 @@ pub(crate) mod tests {
                 cap: tools::Risk::ReadOnly,
                 holder: "me".into(),
                 tools: Vec::new(),
+                mode: crate::communication::ShareMode::Cautious,
             }),
             ask_first: true,
         };
@@ -17827,6 +17830,7 @@ pub(crate) mod tests {
                 session: y,
                 keep: None,
                 scope: CancelScope::Root,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -17886,6 +17890,7 @@ pub(crate) mod tests {
                 session: p,
                 keep: None,
                 scope: CancelScope::Root,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -17908,6 +17913,7 @@ pub(crate) mod tests {
                 session: p,
                 keep: None,
                 scope: CancelScope::Tree,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -18621,6 +18627,7 @@ pub(crate) mod tests {
                 session: child,
                 scope: CancelScope::Root,
                 keep: None,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -18633,6 +18640,7 @@ pub(crate) mod tests {
                 session: e1,
                 scope: CancelScope::Tree,
                 keep: None,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -19999,6 +20007,7 @@ done
                 session: c,
                 keep: None,
                 scope: CancelScope::Root,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();

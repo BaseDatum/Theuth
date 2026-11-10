@@ -42,7 +42,7 @@ pub mod contacts;
 pub mod server;
 
 use client::{ConnectError, PeerClient, Sender};
-use config::{A2aConfig, Listener, PEERS_FILE, PeersFile, Staged};
+use config::{A2aConfig, Listener, PEERS_FILE, PeersFile, ShareMode, Staged};
 use server::{Live, Shared};
 
 /// Registry name of the [`A2aActor`].
@@ -123,6 +123,8 @@ pub struct A2aExportStatus {
     pub url: String,
     /// The one peer granted this export.
     pub peer: Option<String>,
+    /// 186: the granted peer's share mode (contacts only).
+    pub mode: Option<ShareMode>,
 }
 
 /// `ask` → [`A2aStatus`].
@@ -257,6 +259,18 @@ impl Ctx {
                 session: e.session,
                 url: format!("{}/agents/{}/rpc", base.as_deref().unwrap_or(""), e.name),
                 peer: e.peer.clone(),
+                mode: e
+                    .peer
+                    .as_ref()
+                    .and_then(|p| live.staged.peers.get(p))
+                    .filter(|p| p.eid.is_some())
+                    .map(|p| {
+                        if p.full.contains(&e.name) {
+                            ShareMode::Full
+                        } else {
+                            ShareMode::Cautious
+                        }
+                    }),
             })
             .collect();
         A2aStatus {
@@ -1105,6 +1119,7 @@ mod tests {
                     inbound: Some(config::Token::for_test(token)),
                     sessions: vec![],
                     exports: vec![],
+                    full: Default::default(),
                     allow_private: false,
                     eid: None,
                 },

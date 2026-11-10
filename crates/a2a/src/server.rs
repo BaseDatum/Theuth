@@ -140,6 +140,8 @@ pub struct ContactCaller(pub String);
 struct ContactGrant {
     alias: String,
     facts: crate::config::ContactFacts,
+    /// 186: the exports shared with it in full.
+    full: std::collections::BTreeSet<String>,
 }
 
 impl Live {
@@ -201,11 +203,17 @@ impl Live {
                 .values()
                 .filter_map(|p| {
                     let facts = staged.contacts.get(&p.peer)?.clone();
+                    let full = staged
+                        .peers
+                        .get(&p.peer)
+                        .map(|x| x.full.clone())
+                        .unwrap_or_default();
                     Some((
                         p.binding,
                         ContactGrant {
                             alias: p.peer.clone(),
                             facts,
+                            full,
                         },
                     ))
                 })
@@ -586,6 +594,11 @@ impl Handler {
             cap: g.facts.cap,
             holder: mesh::self_id().unwrap_or_default(),
             tools: self.tools.clone(),
+            mode: if g.full.contains(&self.export) {
+                agent::ShareMode::Full
+            } else {
+                agent::ShareMode::Cautious
+            },
         });
         let ask_first = match grant.map(|g| g.facts.first_contact.get(&self.export)) {
             None | Some(Some(crate::config::FirstContact::Allow)) => false,

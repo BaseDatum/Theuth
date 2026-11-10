@@ -116,6 +116,7 @@ pub async fn on_agent_event(a: &mut Studies, e: &agent::AgentEvent) -> Result<()
                                 session: child,
                                 keep: None,
                                 scope: agent::CancelScope::Tree,
+                                reason: agent::CancelReason::Stop,
                             })
                             .await;
                     }

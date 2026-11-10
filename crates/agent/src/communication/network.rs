@@ -303,6 +303,8 @@ pub struct ContactOffer {
     pub kind: OfferKind,
     /// Whether a message goes through now.
     pub state: OfferState,
+    /// 186: the mode the contact granted us this export in.
+    pub mode: super::ShareMode,
 }
 
 /// `tell` (183 F1): every contact's latest offers, by alias, replacing the last set.
@@ -770,6 +772,7 @@ impl NetworkState {
                         "contact".to_owned(),
                         o.kind.as_str().to_owned(),
                         o.state.as_str().to_owned(),
+                        o.mode.as_str().to_owned(),
                     ],
                 ));
             }
@@ -2265,6 +2268,7 @@ impl Agents {
                 cap: tools::Risk::ReadOnly,
                 holder: holder.to_owned(),
                 tools: Vec::new(),
+                mode: crate::communication::ShareMode::Cautious,
             },
             reply_to: None,
             request_id: None,
@@ -5025,6 +5029,7 @@ mod tests {
             cap,
             holder: "me".into(),
             tools: vec!["search_web".into(), "read_url".into()],
+            mode: super::super::ShareMode::Cautious,
         }
     }
 
