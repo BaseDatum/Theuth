@@ -9,8 +9,9 @@ import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { WireEvent } from '@/rpc/events'
 import { apply, empty, fromHistory } from '@/store/reduce'
 import { active } from '@/store/engine-scope'
+import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
-import { Message } from './Message'
+import { Message, PromptCard } from './Message'
 import { MessagePeer, useAnswerDrafts } from './MessagePeer'
 import { SendCard, answerFor } from './SendCard'
 import { settleOn, jumpIndex, takeJump, useTranscriptJump } from './jump'
@@ -295,6 +296,29 @@ test('186: a send card answers a full contact in Markdown (its reply is an ordin
     expect(receipt).not.toContain('data-streamdown')
   } finally {
     active().sessions.setState((s) => ({ sessions: { ...s.sessions, s: empty('s') } }))
+  }
+})
+
+test('186: a card a full contact\'s message prompted (secret request, desktop hand-off, message to the owner) says whose message it was asked during', () => {
+  const call = (name: string, by?: string): Entry => ({ id: `t-${name}`, kind: 'tool', callId: `c-${name}`, name, args: {}, pending: false, child: false, result: { output: 'ok', isError: false, files: [] }, ...(by ? { by } : {}) })
+  for (const name of ['secret_request', 'desktop_handoff', 'message_user']) {
+    const html = render(h(Message, { entry: call(name, 'peer:sky/ops'), prompts: null, session: 's' }))
+    expect(html).toMatch(/asked during <span[^>]*>sky<\/span>&#x27;s message/)
+    expect(render(h(Message, { entry: call(name), prompts: null, session: 's' }))).not.toContain('asked during')
+  }
+  // Any other call of that turn is not "asked" of the owner.
+  expect(render(h(Message, { entry: call('shell', 'peer:sky/ops'), prompts: null, session: 's' }))).not.toContain('asked during')
+  // The pending secret request card: its session's running turn was opened by sky's full message.
+  const store = active().sessions
+  const prompt: Prompt = { type: 'SecretRequested', id: 'r1', session: 's', name: 'GITHUB_TOKEN', note: 'for the release', current: null, title: null, fields: [] }
+  try {
+    store.setState((st) => ({ sessions: { ...st.sessions, s: { ...empty('s'), running: true, turnBy: 'peer:sky/ops' } } }))
+    Object.assign(store, { getInitialState: store.getState })
+    expect(render(h(PromptCard, { prompt }))).toContain('asked during')
+    store.setState((st) => ({ sessions: { ...st.sessions, s: { ...empty('s'), running: true } } }))
+    expect(render(h(PromptCard, { prompt }))).not.toContain('asked during')
+  } finally {
+    store.setState((st) => ({ sessions: { ...st.sessions, s: empty('s') } }))
   }
 })
 

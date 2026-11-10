@@ -31,7 +31,8 @@ import type {
 import {
   adopt,
   empty,
-  fromHistory,
+  fromHistoryPage,
+  lastOpenedBy,
   interruptDangling,
   nextId,
   openTail,
@@ -134,6 +135,9 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       interrupted?: true;
       /** 183 §12.4: the `<engine_restart/>` note the result opened with (the first call of a resumed batch). */
       restart?: RestartNote & { text: string };
+      /** 186: the full-collaboration contact (its `peer:` address) whose message opened this call's turn: the typed
+       * opener (`PeerOrigin.contact_mode`), stamped live from `turnBy` and on reload from the page's opener rows. */
+      by?: string;
     }
   /** `⟵ from` card: a peer message, a subagent result or a job result. `origin` is the engine-authenticated
    * provenance (50 §9) of a peer exchange, from `PeerDelivered` live or `HistoryEntry::User.peer` on replay; a card
@@ -288,6 +292,9 @@ export type SessionSlice = {
   turnSeq?: number;
   /** 183 §12.10: the `<contact_message>` that opened the running turn (live `TurnStarted`; cleared at `TurnFinished`). */
   contactNote?: ContactNote;
+  /** 186: the `peer:` address of the full-collaboration contact whose message opened the running turn: the peer row
+   * whose seq is `turnSeq` (`PeerDelivered` or `TurnStarted`, whichever lands second, sets it). */
+  turnBy?: string;
   /** 125 §3: the advisor model the last `AdvisorChanged` named (`null` = off); the reducer prints `advisor → …` when it moves. */
   advisorModel?: string | null;
   /** A `browser_*` tool ran in this session: the header shows the live-view globe. */
@@ -471,7 +478,7 @@ export const createSessions = (): SessionsApi =>
         // The plan rides on every page and reconciles by version (47 §5.4): a refused or older page never rolls
         // it back, and only a read issued after the last invalidation clears a stale mark.
         const cur = reconcileTodos(before, loaded.todos, !moved);
-        const raw = foldCells(loaded.history.flatMap(fromHistory));
+        const raw = foldCells(fromHistoryPage(loaded.history));
         const refused =
           (mode === "prepend" && moved) ||
           // A newer snapshot already landed (or a reconnect will bring one): a superseded full page has nothing to add.
@@ -498,6 +505,7 @@ export const createSessions = (): SessionsApi =>
         }
         // 146 D7: an ACP child that is not running cannot still be inside its last tool call.
         const entries = loaded.agent && !loaded.running ? interruptDangling(raw) : raw;
+        const opened = lastOpenedBy(loaded.history);
         const browser =
           cur.browser ||
           loaded.history.some(
@@ -531,6 +539,8 @@ export const createSessions = (): SessionsApi =>
             codemap,
             entries: adopt(cur.entries, entries),
             running: loaded.running,
+            // 186: a page holding the running turn's opener names its full contact; one that starts later keeps ours.
+            turnBy: !loaded.running ? undefined : opened === undefined ? cur.turnBy : (opened ?? undefined),
             waiting: false,
             activity: loaded.running ? "thinking" : "idle",
             model: loaded.model,

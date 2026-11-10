@@ -614,8 +614,8 @@ test('183 F3 Communication: a held message of this chat whose export has no row 
   expect(body()).not.toContain('dave')
 })
 
-test('183 F3 Contacts: each contact\'s row carries its own waiting line and answers', async () => {
-  api.contact_first_waiting.mockImplementation(async () => [WAIT])
+test('183 F3 Contacts: each contact\'s row carries its own waiting line and answers; 186: a queued message is no hold and never shows here', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [WAIT, { ...WAIT, export: 'research', queued: true, position: 1 }])
   await mount(createElement(Contacts))
   await vi.waitFor(() => expect(body()).toContain("bob (Bob's MacBook) is waiting for you to allow its first message to ops-chat"))
   expect(body().match(/is waiting for you/g)).toHaveLength(1)
