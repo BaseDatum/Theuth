@@ -7,13 +7,14 @@ import type { DoubleClass } from '@/rpc/bindings/DoubleClass'
 import type { DoubleClassDetail } from '@/rpc/bindings/DoubleClassDetail'
 import type { DoubleStatus } from '@/rpc/bindings/DoubleStatus'
 import type { Kpis } from '@/rpc/bindings/Kpis'
-import { Double, chartProps, forgetClass, mergeCurves, runLine, setCap, setOptIn } from './Double'
+import { Double, chartProps, enabledRestartPending, forgetClass, mergeCurves, runLine, setCap, setOptIn } from './Double'
 
 const zero: Kpis = { n: 0, accuracy: 0, brier: 0, ece: 0, coverage_2pct: 0, asks_avoided: 0, minutes_saved: 0, overrides_per_100: 0, undo_rate_per_100: 0 }
 /** What C's stub answers before W1/W2: `enabled: false`, no version, no run, empty numbers, no classes. */
 const STUB: DoubleStatus = { enabled: false, paused: false, venue: 'auto', approvals_off_sessions: 0, kpis: zero, baseline: zero }
 let status: DoubleStatus = STUB
 let classes: DoubleClass[] = []
+let savedEnabled = false
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({
@@ -21,7 +22,7 @@ vi.mock('@/lib/rpc', async (original) => ({
     double_classes: async () => classes,
     double_class: async (): Promise<DoubleClassDetail> => ({ class: classes[0] as DoubleClass, curve: [], examples: [], promote_hint: '' }),
     double_settings_get: async () => ({
-      enabled: false,
+      enabled: savedEnabled,
       capture: { approvals: true, asks: true, attention: true, packets: true, drafts: true },
       ladder: { grace_secs: 30, caps: { read_only: 2, mutating: 1, destructive: 1 }, mutating_opt_in: false },
       training: { venue: 'auto', window: '02:00-06:00', idle_min: 15, run_cap_min: 90, triggers: { labels: 200, days: 7 }, share_data: true, tiers: { a: { enabled: true }, b: { enabled: true, rank: 8, batch: 8, epochs: 3, lr: 0.0002 }, c: { enabled: false } } },
@@ -54,6 +55,25 @@ test('the empty stub state renders every section without crashing', async () => 
   expect(html).toContain('No training runs yet.')
   expect(html).toContain('Rebuild (tier C)')
   expect(html).toContain('02:00-06:00')
+})
+
+test('enabled waits for a restart only while the saved value differs from the running one (188 F1)', async () => {
+  expect(enabledRestartPending(true, false)).toBe(true)
+  expect(enabledRestartPending(false, true)).toBe(true)
+  expect(enabledRestartPending(true, true)).toBe(false)
+  expect(enabledRestartPending(false, false)).toBe(false)
+  expect(enabledRestartPending(undefined, false)).toBeNull()
+  expect(enabledRestartPending(true, undefined)).toBeNull()
+  status = STUB
+  classes = []
+  savedEnabled = true
+  try {
+    const html = await render()
+    expect(html).toContain('Applies after theuth restarts.')
+    expect(html).not.toMatch(/config\.yaml|double\.enabled/)
+  } finally {
+    savedEnabled = false
+  }
 })
 
 test('a class row shows n, rung glyph, accuracy, ECE, cap and the last decision', async () => {
