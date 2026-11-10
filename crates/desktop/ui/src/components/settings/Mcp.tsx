@@ -38,6 +38,8 @@ export function Mcp() {
 function ToolServers() {
   const api = useApi()
   const servers = useQuery({ queryKey: queryKeys.mcp(null), queryFn: () => api.list_mcp(null) })
+  // Under the `mcp` prefix: every `McpProgress` event refreshes it with the list.
+  const status = useQuery({ queryKey: ['mcp', 'status'], queryFn: () => api.mcp_status() })
   const mesh = useMesh()
   const machines = engines(mesh.data)
   const setHome = useAction((v: { server: string; action: McpHomeAction }) => api.set_mcp_home(v.server, v.action), {
@@ -47,6 +49,11 @@ function ToolServers() {
   const ready = !mesh.isPending
   return (
     <Section title="Tool servers">
+      {status.data?.homes_problem && (
+        <p className="py-2 text-[13px] break-words text-destructive">
+          {status.data.homes_problem} — homes stay as they were and nothing is written until it reads again.
+        </p>
+      )}
       {servers.isError ? (
         <Empty>{errorText(servers.error)}</Empty>
       ) : !servers.data ? (

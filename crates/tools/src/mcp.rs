@@ -529,23 +529,23 @@ fn machine() -> Option<Machine> {
     MACHINE.read().clone()
 }
 
-/// Is a mesh engine id a paired peer here (`mesh::is_paired`); `None` = unknown.
-type Paired = fn(&str) -> Option<bool>;
+/// This engine's paired peers (mesh ids, `mesh` `Net::paired_ids`); `None` = unknown (no endpoint yet).
+type Paired = fn() -> Option<Vec<String>>;
 
 static PAIRED: std::sync::OnceLock<Paired> = std::sync::OnceLock::new();
 
-/// 187: the mesh plugin hands over `mesh::is_paired` at start, so a server
-/// homed on an engine that left the mesh is claimed by one still here.
+/// 187: the mesh plugin hands over its paired set at start, so a server whose
+/// home is not paired here runs on one engine still in the mesh.
 pub fn set_paired_check(f: Paired) {
     let _ = PAIRED.set(f);
 }
 
-fn paired(id: &str) -> Option<bool> {
-    PAIRED.get().and_then(|f| f(id))
+fn paired() -> Option<Vec<String>> {
+    PAIRED.get().and_then(|f| f())
 }
 
 /// 187: the mesh plugin calls this when the paired set changed: homes on an
-/// engine that left are claimed again.
+/// engine that left (or came back) are placed again.
 pub fn peers_changed() {
     if let Ok(Some(mcp)) = ActorRef::<Mcp>::lookup(MCP_ACTOR)
         && let Ok(rt) = tokio::runtime::Handle::try_current()
@@ -560,20 +560,36 @@ pub fn peers_changed() {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
     Here,
+    /// Its home is not paired here (it left, or a peer row not applied yet)
+    /// and this engine is the lowest id among itself and its peers: it runs
+    /// here, written nowhere, so a re-pair gives it back.
+    Adopted,
     /// Its home is another engine (or nobody claimed it yet) and it does not run everywhere.
     Elsewhere,
     /// Turned off on this engine.
     OffHere,
 }
 
-/// No machine (no mesh) = here: a lone engine runs everything.
-fn place(home: Option<&Home>, me: Option<&Machine>) -> Place {
+impl Place {
+    fn runs(self) -> bool {
+        matches!(self, Place::Here | Place::Adopted)
+    }
+}
+
+/// No machine (no mesh) = here: a lone engine runs everything. `peers` is
+/// this engine's paired set (`None` = unknown: a home is then never adopted).
+fn place(home: Option<&Home>, me: Option<&Machine>, peers: Option<&[String]>) -> Place {
     let Some(me) = me else {
         return Place::Here;
     };
     match home {
         Some(h) if h.off.contains(&me.id) => Place::OffHere,
         Some(h) if h.everywhere || h.engine.as_deref() == Some(me.id.as_str()) => Place::Here,
+        Some(Home {
+            engine: Some(e), ..
+        }) if peers.is_some_and(|p| !p.contains(e) && p.iter().all(|p| me.id < *p)) => {
+            Place::Adopted
+        }
         _ => Place::Elsewhere,
     }
 }
@@ -818,6 +834,10 @@ struct State {
     /// 187: why `homes.yaml` or the replica could not be read, logged once
     /// per distinct problem; `None` while both read fine.
     unreadable: Option<String>,
+    /// 187: when the one pending reconcile for `unreadable` fires.
+    unreadable_retry: Option<tokio::time::Instant>,
+    /// 187: servers running here while their home is not paired (logged once each).
+    adopted: HashSet<String>,
 }
 
 /// 187: a failed start and when the next one may run.
@@ -845,6 +865,9 @@ pub struct McpProgress {
     pub connected: Vec<String>,
     /// Servers whose last connect failed, sorted.
     pub failed: Vec<String>,
+    /// 187: why `mcp/homes.yaml` (or the replica) could not be read; homes stay
+    /// as they were and nothing is written to it until it reads again.
+    pub homes_problem: Option<String>,
 }
 
 /// The MCP actor. Look up with `ActorRef::<Mcp>::lookup(MCP_ACTOR)`.
@@ -1137,11 +1160,13 @@ impl Mcp {
         } else if running.is_some() {
             (McpState::Running, None)
         } else {
-            match place(home, me) {
+            match place(home, me, (self.paired)().as_deref()) {
                 Place::Elsewhere => (McpState::Elsewhere, None),
                 Place::OffHere => (McpState::OffHere, None),
-                Place::Here if state.pending.contains(&name) => (McpState::Connecting, None),
-                Place::Here => match (
+                Place::Here | Place::Adopted if state.pending.contains(&name) => {
+                    (McpState::Connecting, None)
+                }
+                Place::Here | Place::Adopted => match (
                     retry.and_then(|r| r.unavailable.clone()),
                     state.errors.get(&name),
                 ) {
@@ -1581,15 +1606,36 @@ impl Mcp {
             }
             Err(e) => Err(e),
         };
-        self.note_unreadable(read.err(), me);
+        changed |= self.note_unreadable(read.err(), me);
         self.tell_homes(&want);
 
         let machine = self.machine.as_ref();
+        let peers = (self.paired)();
         let state = &mut self.state;
-        let here: BTreeMap<String, ServerSpec> = want
+        let places: Vec<(String, ServerSpec, Place)> = want
             .into_iter()
-            .filter(|(name, _)| place(state.homes.servers.get(name), machine) == Place::Here)
-            .map(|(name, (_, spec))| (name, spec))
+            .map(|(name, (_, spec))| {
+                let p = place(state.homes.servers.get(&name), machine, peers.as_deref());
+                (name, spec, p)
+            })
+            .collect();
+        let adopted: HashSet<String> = places
+            .iter()
+            .filter(|(_, _, p)| *p == Place::Adopted)
+            .map(|(name, _, _)| name.clone())
+            .collect();
+        for name in adopted.difference(&state.adopted) {
+            let home = state.homes.servers.get(name);
+            let who = home
+                .and_then(|h| h.name.clone().or_else(|| h.engine.clone()))
+                .unwrap_or_default();
+            tracing::info!("mcp: {name} runs here while its home {who} is not paired");
+        }
+        state.adopted = adopted;
+        let here: BTreeMap<String, ServerSpec> = places
+            .into_iter()
+            .filter(|(_, _, p)| p.runs())
+            .map(|(name, spec, _)| (name, spec))
             .collect();
         let stale: Vec<String> = state
             .running
@@ -1645,12 +1691,14 @@ impl Mcp {
     }
 
     /// 187: home every wanted server `homes.yaml` has no home for and whose
-    /// file this engine wrote ([`written_here`]), and every server homed on an
-    /// engine no longer paired here; drop this engine's own lines of servers
-    /// no file wants any more (only when every file parsed, so a typo drops
-    /// nothing). Writes `homes.yaml` when anything changed. A peer's file waits
-    /// for that peer's claim. No machine: nothing to claim. Err (nothing
-    /// written) when the replica cannot be read: an unread row is never "no row".
+    /// file this engine wrote ([`written_here`]); drop this engine's own lines
+    /// of servers no file defines at all (disabled or malformed entries keep
+    /// theirs; nothing is dropped while a file fails to parse). Writes
+    /// `homes.yaml` when anything changed. A peer's file waits for that peer's
+    /// claim; a home that is not paired is adopted at runtime only
+    /// ([`Place::Adopted`]), never written. No machine: nothing to claim. Err
+    /// (nothing written) when the replica cannot be read: an unread row is
+    /// never "no row".
     async fn claim(&mut self, want: &BTreeMap<String, (String, ServerSpec)>) -> Result<(), String> {
         let Some(me) = self.machine.clone() else {
             return Ok(());
@@ -1661,15 +1709,7 @@ impl Mcp {
             .filter(|(name, _)| homes.engine(name).is_none())
             .map(|(name, (file, _))| (name, file))
             .collect();
-        let orphaned: Vec<&String> = want
-            .keys()
-            .filter(|name| {
-                homes
-                    .engine(name)
-                    .is_some_and(|e| e != me.id && (self.paired)(e) == Some(false))
-            })
-            .collect();
-        let gone: Vec<&String> = homes
+        let mine: Vec<&String> = homes
             .servers
             .iter()
             .filter(|(name, h)| {
@@ -1677,13 +1717,11 @@ impl Mcp {
             })
             .map(|(name, _)| name)
             .collect();
-        let gone =
-            if !gone.is_empty() && json_files(&self.dir).iter().all(|p| read_json(p).is_some()) {
-                gone
-            } else {
-                Vec::new()
-            };
-        if homeless.is_empty() && orphaned.is_empty() && gone.is_empty() {
+        let gone: Vec<&String> = match (mine.is_empty(), defined(&self.dir)) {
+            (false, Some(defined)) => mine.into_iter().filter(|n| !defined.contains(*n)).collect(),
+            _ => Vec::new(),
+        };
+        if homeless.is_empty() && gone.is_empty() {
             return Ok(());
         }
         let mut next = homes.clone();
@@ -1704,12 +1742,6 @@ impl Mcp {
                 }
             }
         }
-        for name in orphaned {
-            tracing::info!("mcp: {name}'s home left the mesh; claimed here");
-            let h = next.servers.entry(name.clone()).or_default();
-            h.engine = Some(me.id.clone());
-            h.name = Some(me.name.clone());
-        }
         for name in gone {
             next.servers.remove(name);
         }
@@ -1721,14 +1753,12 @@ impl Mcp {
     }
 
     /// 187: one line when `homes.yaml` or the replica becomes unreadable (or a
-    /// different problem), one when it reads again; while it fails a reconcile
-    /// is due in [`RETRY_FIRST`] (a locked file at boot clears by itself).
-    fn note_unreadable(&mut self, problem: Option<String>, me: &ActorRef<Mcp>) {
-        if self.state.unreadable == problem {
-            if problem.is_none() {
-                return;
-            }
-        } else {
+    /// different problem), one when it reads again; while it fails ONE
+    /// reconcile is pending, [`RETRY_FIRST`] out (a locked file at boot clears
+    /// by itself). True when the problem changed (the UI shows it).
+    fn note_unreadable(&mut self, problem: Option<String>, me: &ActorRef<Mcp>) -> bool {
+        let changed = self.state.unreadable != problem;
+        if changed {
             match &problem {
                 Some(e) => {
                     tracing::warn!("mcp homes: {e}; homes kept as they were, nothing claimed")
@@ -1737,13 +1767,16 @@ impl Mcp {
             }
             self.state.unreadable.clone_from(&problem);
         }
-        if problem.is_some() {
+        let now = tokio::time::Instant::now();
+        if problem.is_some() && self.state.unreadable_retry.is_none_or(|at| at <= now) {
+            self.state.unreadable_retry = Some(now + RETRY_FIRST);
             let me = me.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(RETRY_FIRST).await;
                 let _ = me.tell(Reconcile).await;
             });
         }
+        changed
     }
 
     /// One `mcp: <name> home is <machine>` line per server and change.
@@ -1936,7 +1969,12 @@ impl Message<Settled> for Mcp {
         self.state.pending.remove(&m.name);
         let wanted = desired(&self.dir).get(&m.name) == Some(&m.spec)
             && !self.state.gates.server_off(&m.name)
-            && place(self.state.homes.servers.get(&m.name), self.machine.as_ref()) == Place::Here;
+            && place(
+                self.state.homes.servers.get(&m.name),
+                self.machine.as_ref(),
+                (self.paired)().as_deref(),
+            )
+            .runs();
         if !wanted {
             // The entry changed, left or moved away while connecting: `result`
             // is dropped (ending the process) and reconcile starts over if needed.
@@ -2175,6 +2213,32 @@ fn wanted(dir: &Path) -> BTreeMap<String, (String, ServerSpec)> {
     out
 }
 
+/// 187: every server name any file defines, disabled or malformed entries
+/// too (the shapes of [`parse_file`]); `None` when a file does not parse.
+fn defined(dir: &Path) -> Option<HashSet<String>> {
+    let mut out = HashSet::new();
+    for path in json_files(dir) {
+        let json = read_json(&path)?;
+        if is_entry(&json) {
+            out.insert(stem(&path).to_owned());
+            continue;
+        }
+        for (k, v) in json.as_object().into_iter().flatten() {
+            if is_entry(v) {
+                out.insert(k.clone());
+            } else if let Some(wrapper) = v.as_object() {
+                out.extend(
+                    wrapper
+                        .iter()
+                        .filter(|(_, v2)| is_entry(v2))
+                        .map(|(k2, _)| k2.clone()),
+                );
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Progress snapshot of `state`.
 fn progress(state: &State) -> McpProgress {
     let sorted = |it: Vec<String>| {
@@ -2186,6 +2250,7 @@ fn progress(state: &State) -> McpProgress {
         connecting: sorted(state.pending.iter().cloned().collect()),
         connected: sorted(state.running.keys().cloned().collect()),
         failed: sorted(state.errors.keys().cloned().collect()),
+        homes_problem: state.unreadable.clone(),
     }
 }
 
@@ -2351,7 +2416,14 @@ pub async fn start(
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
+        // 187: only server configs, `config.yaml` and `homes.yaml` matter; an
+        // audit append or an image write is no reason to reconcile.
+        let config = |p: &PathBuf| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                !n.starts_with('.') && (n.ends_with(".json") || n == "config.yaml" || n == HOMES)
+            })
+        };
+        if res.is_ok_and(|e| e.paths.iter().any(config)) {
             let _ = tx.send(());
         }
     })?;
@@ -3246,7 +3318,7 @@ mod tests {
 
     /// An `Mcp` actor over `<root>/mcp`, not started: tests drive `Reconcile`.
     fn actor(root: &Path, machine: Option<Machine>) -> ActorRef<Mcp> {
-        actor_paired(root, machine, |_| None)
+        actor_paired(root, machine, || None)
     }
 
     fn actor_paired(root: &Path, machine: Option<Machine>, paired: Paired) -> ActorRef<Mcp> {
@@ -3356,29 +3428,46 @@ mod tests {
             everywhere,
             off: off.iter().map(|s| s.to_string()).collect(),
         };
+        // `b` paired with `a` and `c`.
+        let peers = ["a".to_owned(), "c".to_owned()];
+        let p = Some(&peers[..]);
+        let at = |h: Option<&Home>, me: Option<&Machine>| place(h, me, p);
         assert_eq!(
-            place(Some(&home(Some("a"), false, &[])), Some(&a)),
+            at(Some(&home(Some("a"), false, &[])), Some(&a)),
             Place::Here
         );
         assert_eq!(
-            place(Some(&home(Some("a"), false, &[])), Some(&b)),
+            at(Some(&home(Some("a"), false, &[])), Some(&b)),
             Place::Elsewhere
         );
+        assert_eq!(at(Some(&home(Some("a"), true, &[])), Some(&b)), Place::Here);
         assert_eq!(
-            place(Some(&home(Some("a"), true, &[])), Some(&b)),
-            Place::Here
-        );
-        assert_eq!(
-            place(Some(&home(Some("a"), true, &["b"])), Some(&b)),
+            at(Some(&home(Some("a"), true, &["b"])), Some(&b)),
             Place::OffHere
         );
-        assert_eq!(place(Some(&home(None, true, &[])), Some(&b)), Place::Here);
-        assert_eq!(place(None, Some(&a)), Place::Elsewhere, "unclaimed waits");
+        assert_eq!(at(Some(&home(None, true, &[])), Some(&b)), Place::Here);
+        assert_eq!(at(None, Some(&a)), Place::Elsewhere, "unclaimed waits");
         assert_eq!(
-            place(Some(&home(Some("b"), false, &[])), None),
+            place(Some(&home(Some("b"), false, &[])), None, None),
             Place::Here,
             "no mesh"
         );
+        // A home not paired here: only the lowest id among this engine and its peers runs it.
+        let left = home(Some("x"), false, &[]);
+        assert_eq!(
+            at(Some(&left), Some(&b)),
+            Place::Elsewhere,
+            "a is lower than b"
+        );
+        let (b_alone, a_peers) = (Vec::<String>::new(), ["b".to_owned()]);
+        assert_eq!(place(Some(&left), Some(&b), Some(&b_alone)), Place::Adopted);
+        assert_eq!(place(Some(&left), Some(&a), Some(&a_peers)), Place::Adopted);
+        assert_eq!(
+            place(Some(&left), Some(&a), None),
+            Place::Elsewhere,
+            "paired set unknown"
+        );
+        assert!(Place::Adopted.runs() && Place::Here.runs() && !Place::Elsewhere.runs());
 
         let secs: Vec<u64> = (1..=10).map(|n| backoff(n).as_secs()).collect();
         assert_eq!(secs, [30, 60, 120, 240, 480, 960, 1800, 1800, 1800, 1800]);
@@ -3711,6 +3800,11 @@ mod tests {
             broken
         );
         assert_eq!(lines.count("homes kept as they were"), 1);
+        let problem = mcp.ask(Progress).await.unwrap().homes_problem;
+        assert!(
+            problem.is_some_and(|p| p.contains("homes.yaml is invalid")),
+            "shown over RPC"
+        );
 
         // Fixed: read again, and the homeless server is claimed.
         homes(
@@ -3746,33 +3840,78 @@ mod tests {
         );
     }
 
-    /// A home on an engine that left the mesh is claimed here; a paired one,
-    /// or one whose standing is unknown, is left alone. This engine's own
-    /// lines of servers no file wants are dropped, a peer's are kept, and
+    static B_PAIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+    /// Engine `a`'s paired set: `b` while [`B_PAIRED`], else nobody.
+    fn a_peers() -> Option<Vec<String>> {
+        Some(if B_PAIRED.load(std::sync::atomic::Ordering::SeqCst) {
+            vec!["b".to_owned()]
+        } else {
+            Vec::new()
+        })
+    }
+
+    /// Sky's pair: mikrotik is homed on b. b unpaired: a runs it, writes
+    /// nothing, says so once. b paired again: the home is b's as before.
+    #[tokio::test]
+    async fn an_unpaired_home_runs_here_unwritten_and_a_re_pair_restores_it() {
+        let (lines, _log) = capture();
+        let root = crate::TestDir::new("mcp-home-adopt");
+        let mcp = actor_paired(&root.0, Some(engine("a")), a_peers);
+        missing(&root.0, "mikrotik", &[]);
+        let yaml = "servers:\n  mikrotik:\n    engine: b\n    name: box-b\n";
+        homes(&root.0, yaml);
+        let on_disk = || std::fs::read_to_string(root.0.join("mcp").join(HOMES)).unwrap();
+        mcp.ask(Reconcile).await.unwrap();
+        assert_eq!(listed(&mcp, "mikrotik").await.state, McpState::Elsewhere);
+
+        B_PAIRED.store(false, std::sync::atomic::Ordering::SeqCst);
+        mcp.ask(Reconcile).await.unwrap();
+        settled(&mcp, "mikrotik").await;
+        mcp.ask(Reconcile).await.unwrap();
+        let s = listed(&mcp, "mikrotik").await;
+        assert_eq!(
+            (s.state, s.home.as_deref(), s.home_here),
+            (McpState::UnavailableHere, Some("b"), false)
+        );
+        assert_eq!(on_disk(), yaml, "adopted at runtime only");
+        assert_eq!(
+            lines.count("mcp: mikrotik runs here while its home box-b is not paired"),
+            1
+        );
+
+        B_PAIRED.store(true, std::sync::atomic::Ordering::SeqCst);
+        mcp.ask(Reconcile).await.unwrap();
+        let s = listed(&mcp, "mikrotik").await;
+        assert_eq!(
+            (s.state, s.home.as_deref()),
+            (McpState::Elsewhere, Some("b"))
+        );
+        assert_eq!(
+            mcp.ask(Failures("mikrotik")).await.unwrap(),
+            None,
+            "stopped here"
+        );
+        assert_eq!(on_disk(), yaml);
+    }
+
+    /// This engine's own lines of servers no file defines are dropped; a
+    /// disabled entry keeps its line (and flags), a peer's line stays, and
     /// nothing is dropped while a file fails to parse.
     #[tokio::test]
-    async fn left_homes_are_claimed_and_own_stale_lines_dropped() {
-        let root = crate::TestDir::new("mcp-home-left");
-        let mcp = actor_paired(&root.0, Some(engine("a")), |id| {
-            (id != "u").then_some(id == "b")
-        });
-        for name in ["paired", "left", "unknown"] {
-            missing(&root.0, name, &[]);
-        }
+    async fn own_lines_of_undefined_servers_are_dropped() {
+        let root = crate::TestDir::new("mcp-home-prune");
+        let mcp = actor(&root.0, Some(engine("a")));
+        let entry =
+            serde_json::json!({"mcpServers": {"paused": {"command": MISSING, "disabled": true}}});
+        std::fs::write(root.0.join("mcp/paused.json"), entry.to_string()).unwrap();
         std::fs::write(root.0.join("mcp/broken.json"), "{ not json").unwrap();
         homes(
             &root.0,
-            "servers:\n  paired:\n    engine: b\n  left:\n    engine: c\n    name: box-c\n  unknown:\n    engine: u\n  stale:\n    engine: a\n  peers:\n    engine: b\n",
+            "servers:\n  stale:\n    engine: a\n  paused:\n    engine: a\n    everywhere: true\n  peers:\n    engine: b\n",
         );
         mcp.ask(Reconcile).await.unwrap();
-        settled(&mcp, "left").await;
         let h = load_homes(&root.0.join("mcp")).unwrap();
-        assert_eq!(
-            (h.engine("paired"), h.engine("left"), h.engine("unknown")),
-            (Some("b"), Some("a"), Some("u"))
-        );
-        assert_eq!(listed(&mcp, "left").await.state, McpState::UnavailableHere);
-        assert_eq!(listed(&mcp, "paired").await.state, McpState::Elsewhere);
         assert_eq!(
             h.engine("stale"),
             Some("a"),
@@ -3782,6 +3921,13 @@ mod tests {
         std::fs::remove_file(root.0.join("mcp/broken.json")).unwrap();
         mcp.ask(Reconcile).await.unwrap();
         let h = load_homes(&root.0.join("mcp")).unwrap();
-        assert_eq!((h.engine("stale"), h.engine("peers")), (None, Some("b")));
+        assert_eq!(
+            (h.engine("stale"), h.engine("paused"), h.engine("peers")),
+            (None, Some("a"), Some("b"))
+        );
+        assert!(
+            h.servers["paused"].everywhere,
+            "a disabled entry keeps its flags"
+        );
     }
 }

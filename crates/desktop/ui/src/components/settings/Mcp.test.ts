@@ -75,6 +75,7 @@ vi.mock('@/lib/rpc', async (original) => ({
     },
     list_mcp: async () => servers,
     mesh_status: async () => mesh,
+    mcp_status: async () => ({ connecting: [], connected: [], failed: [], homes_problem: '/d/mcp/homes.yaml is invalid: line 1' }),
     set_mcp_home: async (name: string, action: string) => {
       calls.push(['set_mcp_home', [name, action]])
       return null
@@ -136,9 +137,12 @@ test('187: the pane lists every server with its home and state; a button sets th
   document.body.append(el)
   const root = createRoot(el)
   await act(async () => root.render(createElement(QueryClientProvider, { client: qc, children: createElement(Mcp) as ReactNode })))
-  await vi.waitFor(() => expect(el.textContent).toContain('portable-mcp is not installed on xeus'))
+  await vi.waitFor(() => {
+    expect(el.textContent).toContain('portable-mcp is not installed on xeus')
+    expect(el.textContent).toContain('homes.yaml is invalid: line 1')
+  })
   const html = el.innerHTML
-  for (const t of ['on 333', 'not running here (home is 333)', 'on xeus', 'running', 'not installed here'])
+  for (const t of ['on 333', 'not running here (home is 333)', 'on xeus', 'running', 'not installed here', 'homes.yaml is invalid: line 1'])
     expect(html).toContain(t)
   const button = (label: string) => [...el.querySelectorAll('button')].filter((b) => b.textContent === label)
   expect(button('Move home here')).toHaveLength(2)

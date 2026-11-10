@@ -139,8 +139,9 @@ installed here` (`<command> is not installed on <machine>`); every failed
 start is retried after 30 s, doubling up to 30 min, and immediately when its
 entry changes. The log gets one line per change of state, not per attempt.
 
-A server homed on a machine that left the mesh is taken over by a machine
-still in it. Edit `homes.yaml` by hand with care: while it does not parse,
+A server homed on a machine that is no longer paired runs on one machine
+still in the mesh until its home is paired again; its home is not rewritten
+(**Move home here** makes the move permanent). Edit `homes.yaml` by hand with care: while it does not parse,
 homes stay as they were and nothing is written to it.
 
 **Upgrade note.** After the upgrade, servers run only on their home machine

@@ -45,7 +45,7 @@ everywhere) need **Run everywhere** once.
 | # | Finding | As built |
 |---|---|---|
 | 1 | The skip rule left any `{{secret:` … `}}` run unmasked: a value wrapped in the form, `env` output before a JSON close | `hits` protects only an exact emitted placeholder (`Scrubber.held`, at most `held_max` bytes); negative tests: a wrapped value, unknown name, unkept version, multi-line span, `env` + JSON (`redact_masks_values_inside_anything_but_a_real_placeholder`) |
-| 2 | Servers homed on an ex-peer ran nowhere; Move home here hidden when alone | `claim` takes every server whose home engine is not paired here (`mesh::is_paired == Some(false)`, handed over as `tools::set_paired_check`; unknown = left alone); the mesh reconciles MCP when the paired set shrinks and once it is known at start (`tools::peers_changed`). UI: alone, Move home here for a home the mesh does not know |
+| 2 | Servers homed on an ex-peer ran nowhere; Move home here hidden when alone | Superseded in round 2: adoption is runtime only (below). UI: alone, Move home here for a home the mesh does not know |
 | 3 | A broken `homes.yaml` loaded as empty and was written over | `load_homes` → `Result`; on Err the last good homes stay, nothing is claimed or written, one WARN (`note_unreadable`), a reconcile in 30 s; `AddServer`, `RemoveServer`, `SetMcpHome` return the error before writing anything |
 | 4 | A replica read error looked like "no row" | `replica::files::writers` / `stored_origin` → `Result`; only a missing file is no rows; a row without a stamp is never this engine's; on Err the claim round is skipped (one WARN, retried in 30 s) |
 | 5 | Raw connect errors over RPC | `McpServer.reason` goes through `secrets::redact` |
@@ -53,14 +53,23 @@ everywhere) need **Run everywhere** once.
 | 7 | A panicking connect left `pending` set; a stale error beside `unavailable` | The connect task's `JoinHandle` is awaited, a `JoinError` settles as a failure; `unavailable` clears `errors`/`login` |
 | 8 | UI flicker and Turn off here everywhere | No chip or actions until `mesh_status` answers; Turn off here only on rows that would run here |
 
+## Review round 2
+
+| # | Finding | As built |
+|---|---|---|
+| 1 | The round-1 orphan claim was written to the one-row `homes.yaml`: unpair + re-pair left mikrotik homed on xeus for good | `claim` no longer writes adoptions. `place` returns `Place::Adopted` (runs here) for a home not in this engine's paired set when this engine has the lowest id among itself and its peers; `tools::set_paired_check` now hands over the paired set (`Net::paired_ids`), and the mesh reconciles MCP on every paired-set change (`net.rs` `refresh_paired`) and once at start. Test `an_unpaired_home_runs_here_unwritten_and_a_re_pair_restores_it`; rig: unpair → adopted, re-pair → back on its home, `homes.yaml` unchanged |
+| 2 | Adoption logging | One line per adoption: `mcp: <name> runs here while its home <machine> is not paired` (`State.adopted`) |
+| 3 | Retry timers multiplied | One pending retry for an unreadable homes/replica (`State.unreadable_retry`); the watcher only reacts to `*.json`, `config.yaml` and `homes.yaml` (not `server-audit.jsonl`, images, dotfile temps) |
+| 4 | Prune dropped flags of disabled/malformed entries; problem not shown | `claim` prunes only names no file defines at all (`defined`, the `parse_file` shapes, disabled entries included). `McpProgress.homes_problem` carries the error; Settings › MCP › Tool servers shows it |
+| 5 | Scrubber edge cases | Pinned: adjacent placeholders, prefix names, case variants (`redact_placeholder_edges_adjacent_prefix_and_case`) |
+
 ## Decisions
 
 - Sidecar over a key inside the entry: no rewriting of hand-written or third-party files, no shape detection per layout.
 - Home id = mesh engine id (the 182 `tasks.home` / schedule `engine:` convention); the stamped name is display only.
 - "Turn off here" is a per-engine list in the replicated sidecar, so every engine can show it; `off` in `config.yaml` stays the everywhere switch.
 - PATH-change retries: not built. The engine's own PATH does not change at runtime; the backoff (≤ 30 min) and an edit of the entry cover an install.
-- An engine whose identity was recreated sees its old home id as an engine that left (not paired) and claims those servers again; its old replica rows read as another writer's until then.
-- A home on an engine no longer paired is claimed by every engine still in the mesh; the sidecar's last writer wins, so one keeps it (a partial mesh, A–B and B–C but not A–C, would let A take C's servers: not a supported topology).
+- A home on an engine not paired here (it left, an identity reset, a quarantine on one side, a peers row not applied yet) is adopted at runtime only: the lowest engine id among this engine and its paired peers runs it, nothing is written, and a re-pair gives it back. **Move home here** is the way to make an adoption permanent.
 
 ## TODO (out of scope)
 
@@ -92,3 +101,8 @@ homes, write nothing over it, and `set_mcp_home` / `add_mcp_server` return the p
 file. A replica read error (B's `mcp.sqlite` without its table, and at B's next boot before the mirror recreated it) —
 one WARN, nothing claimed, claimed on the 30 s retry. A unpairs B: A claims `fresh` and `handb` (homed on B) and backs
 off on them; B, still counting A as an offline peer, keeps `hello` homed on A until it removes A too, then claims it.
+
+Review round 2 rig: A and B unpaired, homes reset to the originals (hello on A; handb, fresh on B). Each adopted the
+other's servers at runtime (`mcp: handb runs here while its home B is not paired`), `homes.yaml` byte-identical on both.
+Re-paired (`mesh_pairing_string` → `mesh_add`): A dropped handb and fresh, B dropped hello, `homes.yaml` still
+identical to the original — nothing was written.

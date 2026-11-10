@@ -1477,6 +1477,43 @@ mod tests {
         assert_eq!(v.redact_spans(both).len(), 1);
     }
 
+    /// Adjacent placeholders, a name that is a prefix of another, and case:
+    /// only the exact emitted text is a placeholder.
+    #[tokio::test]
+    async fn redact_placeholder_edges_adjacent_prefix_and_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("tok", "token-secret-value", None, "user")
+            .await
+            .unwrap();
+        v.set("token", "other-secret-value", None, "user")
+            .await
+            .unwrap();
+        let masked = |text: &str| v.redact(text).into_owned();
+        // Adjacent, with nothing and with a value between them.
+        let adjacent = "{{secret:tok}}{{secret:token}}{{secret:tok}}";
+        assert_eq!(masked(adjacent), adjacent);
+        assert_eq!(
+            masked("{{secret:tok}}token-secret-value{{secret:token}}"),
+            "{{secret:tok}}{{secret:tok}}{{secret:token}}"
+        );
+        // A prefix of a real name, or a real name with more after it, is not one.
+        assert_eq!(
+            masked("{{secret:toke other-secret-value}} {{secret:tokens}}"),
+            "{{secret:toke {{secret:token}}}} {{secret:tokens}}"
+        );
+        assert_eq!(
+            masked("{{secret:tok token-secret-value}}"),
+            "{{secret:tok {{secret:tok}}}}"
+        );
+        // Case variants are not placeholders: a value inside them is masked.
+        assert_eq!(
+            masked("{{SECRET:tok other-secret-value}} {{secret:TOK token-secret-value}}"),
+            "{{SECRET:tok {{secret:token}}}} {{secret:TOK {{secret:tok}}}}"
+        );
+        assert_eq!(masked("{{Secret:tok}}"), "{{Secret:tok}}");
+    }
+
     #[tokio::test]
     async fn imports_credentials_yaml_once() {
         let dir = tempfile::tempdir().unwrap();
