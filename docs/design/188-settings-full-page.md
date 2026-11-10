@@ -1,6 +1,6 @@
 # 188 Settings: a full page with categories and tabs
 
-Status: building (2026-11-10). Plan approved by Sky with rulings D1–D4 and all 12 removals.
+Status: built and live-proven (2026-11-10); see As built at the end. Plan approved by Sky with rulings D1–D4 and all 12 removals.
 
 ## Sky's words
 
@@ -34,7 +34,7 @@ Rules that follow from it:
 - **Engine flags (W-ENG).** `config_flag_get(key)` and `config_flag_set(key, on)` accept only `decision.enabled`, `a2a.enabled` and `computer.enabled`; any other key is an RPC error. `set` writes that one key into the engine's `config.yaml` through the same config-persistence path the engine already uses for its other settings writes, leaving every other key untouched. Both return `{ key, enabled, running, restart_required }`: `enabled` is the value now in config.yaml, `running` is the value this engine process started with, and `restart_required = enabled != running`.
 - **Chat Messaging sheet (W-CHAT).** `/c/$session?messaging=1` opens that chat's Messaging… sheet; `&peer=<message id>` also focuses that pending peer request. W-SHELL redirects old `/settings/communication?session=<id>[&peer=<id>]` links there; without `session` they go to `/settings/messaging`.
 - **Restart theuth** (W-SHELL) calls the desktop shell's existing `relaunch()` (`lib/tauri.ts`: "Stop the daemon we own (if any) and connect again"). It is shown only where a restart can actually happen; elsewhere the banner says to restart theuth where it runs.
-- **Nothing new.** No new setting or config key, except the three writes above for keys that already exist.
+- **Nothing new.** No new setting or config key, except the four writes above for keys that already exist (`double.enabled` joined the three after the live proof).
 
 ## Work split
 
@@ -73,7 +73,7 @@ Coverage was checked against the code. All 95 sections of today's 24 tabs land s
 3. **A category is what you would look for; a tab is one item.** No category has more than 6 tabs, and every tab has its own URL.
 4. **Nothing sends you to a file.** Every flag the UI describes as "in config.yaml" becomes a control.
 5. **Nothing new.** Moves, merges and removals only.
-6. **UI only.** The engine changes only where no write path exists today: three flags.
+6. **UI only.** The engine changes only where no write path exists today: four flags (three planned; `double.enabled` added after the live proof).
 
 ## What leaves Settings (all 12 approved 2026-11-10)
 
@@ -193,7 +193,7 @@ Inside Settings, two more pieces move without losing anything:
 
 | | Where | Today | Becomes | Work | Takes effect |
 |---|---|---|---|---|---|
-| F1 | Learning › Double › Enabled | a status dot and "`double.enabled` is off … Turn it on in config.yaml and restart." | Switch | **UI only**: `double_settings_set` already persists `enabled` | after restart |
+| F1 | Learning › Double › Enabled | a status dot and "`double.enabled` is off … Turn it on in config.yaml and restart." | Switch | **Engine (as built)**: `double_settings_set` needs the running scheduler, so it could not turn Double on (live proof D1); `double.enabled` became a fourth `config_flag` key and the row a `ConfigFlagRow` | after restart |
 | F2 | Learning › Dreaming › Enabled | a copy of the routine switch, plus "dreaming.enabled is off in config" | Plugin switch | **UI only**: `dreaming.set_settings` already persists `enabled`; off disables the routine and removes the sensor, on restores both (verified in `dreaming/src/night.rs`) | at once |
 | F3 | Agent › Autoresearch › Enabled | read-only "on/off" and "Set in config.yaml (autoresearch.enabled)" | Switch | **UI only**: `autoresearch.settings.set` persists the whole section and works while the plugin is off | after restart (the plugin starts then) |
 | F4 | Learning › Decision models (was Labs) | the whole tab is hidden while `decision.enabled` is false | Tab always listed, with an Enabled switch | **engine**: a write for `decision.enabled` (today `set_decision_mode`, `set_decision_training` and `set_decision_share` only write per-family values) | after restart |
@@ -230,7 +230,7 @@ Inside Settings, two more pieces move without losing anything:
 2. **Split, move and remove (UI).** Split the files that feed several tabs (Communication, Network, Link, Connections, General, Chat, Loop, Voice, Meetings, Calendar) by tab, and delete the 12 approved rows in the list above.
 3. **Per-chat move (UI).** Add the chat menu's Messaging… sheet and point the peer-message card's link at it.
 4. **MCP rows (UI).** Move each server's home and login onto Agents › Tools.
-5. **Config flags.** F1–F3 and F7 are UI only, and so is the restart banner (it uses `relaunch`). F4–F6 are the only engine changes: three small writes.
+5. **Config flags.** F2, F3 and F7 are UI only, and so is the restart banner (it uses `relaunch`). F1 and F4–F6 are the engine changes: four one-line writes through `config_flag_set` (F1 moved to the engine after the live proof).
 6. **Proof.** Every old URL and deep link lands; screenshots of every category at desktop and phone widths; the Network, Contacts, Channels and Memory tests updated.
 
 ## Decisions
@@ -244,4 +244,13 @@ Answered 2026-11-10:
 | D3 | Feature model pickers | Stay with their feature |
 | D4 | Node update line (`t --update`) | Leave it |
 
-Removal list: all 12 rows approved, 2026-11-10. Nothing is open; the build waits for your go.
+Removal list: all 12 rows approved, 2026-11-10; Sky's go followed the same evening.
+
+## As built (2026-11-10)
+
+Built as a contract-first wave: C0 `8a397170` + C0b `d02f4959` (registry, category modules, restart store, `config_flag_*` signatures, `ConfigFlagRow`), seven omp workers (SHELL, AGENT, VOICE, LEARN, NET, CHAT, ENG) merged on `feat/188-settings`, one integration commit, then a live proof and one fix round. Each worker's decisions are in `188-as-built-<WORKER>.md`.
+
+- **Proof.** A scratch engine built from the merged tree: 39/39 tabs render with no crash; old URLs and deep links land; the three planned flags each write one line and report `restart_required`; the chat's Messaging… sheet and the phone list / category pages work. It found two defects, fixed in the fix round: Double's switch could not turn Double on (F1 above), and the restart banner listed rows as "Enabled, Enabled" (`ConfigFlagRow` now takes the feature's `name`).
+- **Fix round, also:** Signal and Slack show a "status unavailable" row with Retry like Telegram; Memory's Guards, View size and Slack rows stack on a phone; the Contacts › Access sentence no longer repeats the Contacts intro; Serve over MCP names the real RPC port when the app knows it.
+- **Deviations from this doc.** Restart theuth relaunches the daemon and then reloads the window (the new daemon listens on a new port). Per-chat messaging is keyed by chat, so with split panes only the asked pane opens its sheet. MCP logins on Agents › Tools need no `LoginFinished` listener: the engine sends that event only for provider logins; MCP state arrives through `McpProgress`. `/title`, `/escalate` and `/vision` open Models › Helpers; `/subagent` opens Models › Defaults; `/peers` opens the chat's Messaging… sheet.
+- **Known, left as is.** Saving Autoresearch or Dreaming settings (including their Enabled switches) writes that feature's whole section into config.yaml, as those screens did before 188. A `THEUTH_*` environment override of a `config_flag` key keeps `restart_required` true while the file disagrees.
