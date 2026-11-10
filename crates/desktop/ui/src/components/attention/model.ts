@@ -7,35 +7,56 @@ import type { HistoryEntry } from '@/rpc/extra'
 
 type Kind = AttentionItem['kind']
 
-/** 104 A4: the rail's groups in Sky's order; a kind outside the table never reaches the rail (every kind is listed). */
-export const GROUPS: readonly { key: string; label: string; kinds: readonly Kind[] }[] = [
-  { key: 'decisions', label: 'Decisions', kinds: ['decision'] },
-  { key: 'reviews', label: 'Reviews', kinds: ['review'] },
-  { key: 'questions', label: 'Questions', kinds: ['ask'] },
-  { key: 'approvals', label: 'Approvals', kinds: ['approval'] },
-  { key: 'shown', label: 'Shown to you', kinds: ['show'] },
-  { key: 'hand', label: 'Needs a hand', kinds: ['handoff', 'secret', 'resume'] },
-  { key: 'agents', label: 'Agents', kinds: ['hire', 'budget'] },
-  { key: 'blocked', label: 'Blocked', kinds: ['blocked'] },
-  { key: 'mesh', label: 'Mesh', kinds: ['node', 'home'] },
+/** 104 A4: the rail's groups in Sky's order. */
+const GROUP_ORDER = [
+  ['decisions', 'Decisions'],
+  ['reviews', 'Reviews'],
+  ['questions', 'Questions'],
+  ['approvals', 'Approvals'],
+  ['first', 'First contact'],
+  ['shown', 'Shown to you'],
+  ['hand', 'Needs a hand'],
+  ['agents', 'Agents'],
+  ['blocked', 'Blocked'],
+  ['mesh', 'Mesh'],
   // 126 §10: "answered for you" rows (undo during grace) and the L3 daily digest.
-  { key: 'double', label: 'Answered by double', kinds: ['double'] },
-  /** 130 E3: finished turns — receipts, nothing to decide. */
-  { key: 'done', label: 'Done', kinds: ['finished'] },
-]
+  ['double', 'Answered by double'],
+  // 130 E3: finished turns — receipts, nothing to decide.
+  ['done', 'Done'],
+] as const
+
+/** Every kind's group. A `Record`, so tsc fails when a new kind has none — a kind outside the rail would never be listed. */
+const GROUP_OF: Record<Kind, (typeof GROUP_ORDER)[number][0]> = {
+  decision: 'decisions',
+  review: 'reviews',
+  ask: 'questions',
+  approval: 'approvals',
+  contact_first: 'first',
+  show: 'shown',
+  handoff: 'hand',
+  secret: 'hand',
+  resume: 'hand',
+  hire: 'agents',
+  budget: 'agents',
+  blocked: 'blocked',
+  node: 'mesh',
+  home: 'mesh',
+  double: 'double',
+  finished: 'done',
+}
 
 export type Group = { key: string; label: string; items: AttentionItem[] }
 
 /**
  * The inbox grouped for the rail: Urgent first (every `priority === 'urgent'` item, taken out of its kind group), then
- * the kinds in `GROUPS` order; empty groups omitted. 132 D4: inside every group the ENGINE's order stands (rank desc,
+ * the kinds in `GROUP_ORDER`; empty groups omitted. 132 D4: inside every group the ENGINE's order stands (rank desc,
  * waiting-since asc, newest) — no client re-sort by `at_ms`.
  */
 export function groupItems(items: readonly AttentionItem[]): Group[] {
   const urgent = items.filter((i) => i.priority === 'urgent')
   const rest = items.filter((i) => i.priority !== 'urgent')
-  const groups = GROUPS.flatMap(({ key, label, kinds }) => {
-    const mine = rest.filter((i) => kinds.includes(i.kind))
+  const groups = GROUP_ORDER.flatMap(([key, label]) => {
+    const mine = rest.filter((i) => GROUP_OF[i.kind] === key)
     return mine.length > 0 ? [{ key, label, items: mine }] : []
   })
   return urgent.length > 0 ? [{ key: 'urgent', label: 'Urgent', items: urgent }, ...groups] : groups

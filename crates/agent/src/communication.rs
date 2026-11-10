@@ -121,6 +121,10 @@ pub enum PeerScope {
 pub enum PeerMessageState {
     /// Durably queued for the recipient.
     Accepted,
+    /// 183 F7: a contact's export set to Ask first holds it until its owner presses Allow;
+    /// `error` explains. Not terminal: it moves to `consumed`/`replied` once allowed, or
+    /// `failed` on Block, revoke or expiry.
+    Held,
     /// Linked into the recipient's history; a model has or will see it.
     Consumed,
     /// A correlated reply exists.
@@ -155,10 +159,12 @@ impl std::str::FromStr for PeerScope {
 }
 
 impl PeerMessageState {
-    /// The serde word: `accepted` | `consumed` | `replied` | `suppressed` | `failed` | `unknown`.
+    /// The serde word: `accepted` | `held` | `consumed` | `replied` | `suppressed` | `failed` |
+    /// `unknown`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Accepted => "accepted",
+            Self::Held => "held",
             Self::Consumed => "consumed",
             Self::Replied => "replied",
             Self::Suppressed => "suppressed",
@@ -178,6 +184,7 @@ impl std::str::FromStr for PeerMessageState {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "accepted" => Ok(Self::Accepted),
+            "held" => Ok(Self::Held),
             "consumed" => Ok(Self::Consumed),
             "replied" => Ok(Self::Replied),
             "suppressed" => Ok(Self::Suppressed),
@@ -494,9 +501,13 @@ pub struct ListPeers {
     pub cursor: Option<String>,
     /// Page size; `None` = [`DISCOVER_DEFAULT_LIMIT`], capped at [`DISCOVER_MAX_LIMIT`].
     pub limit: Option<u16>,
-    /// Keep only rows whose `activity` is working (62 §3.4).
+    /// Keep only rows whose `activity` is working (62 §3.4); 183 F6: contacts and their
+    /// export rows always stay.
     #[serde(default)]
     pub active_only: bool,
+    /// 183 F6: keep only rows of this kind (`native` | `acp` | `a2a` | …).
+    #[serde(default)]
+    pub kind: Option<PeerKind>,
 }
 
 /// `ask` → `Result<PeerRecord, String>`: `session`'s own record of message
@@ -1013,6 +1024,26 @@ impl fmt::Display for ContactRefusal {
             Self::OwnerOld => f.write_str("the chat's machine needs an update"),
         }
     }
+}
+
+impl ContactRefusal {
+    /// 183 F7: the (machine, export) of a holder's `waiting: <machine> has not allowed
+    /// messages to <export> yet` status (the [`Self::NotAllowed`] text), wherever it sits in
+    /// `text`; `None` for any other status.
+    pub fn waiting(text: &str) -> Option<(String, String)> {
+        let rest = &text[text.find("waiting: ")? + "waiting: ".len()..];
+        let (machine, rest) = rest.split_once(" has not allowed messages to ")?;
+        let (export, _) = rest.split_once(" yet")?;
+        (!machine.is_empty() && !export.is_empty()).then(|| (machine.to_owned(), export.to_owned()))
+    }
+}
+
+/// 183 F7: what a sender's tools show for a message a contact's owner holds.
+pub fn held_line(contact: &str, machine: &str, export: &str) -> String {
+    format!(
+        "held: {contact} ({machine}) has not allowed messages to {export} yet; it will be \
+         delivered when they press Allow — do not resend"
+    )
 }
 
 impl std::error::Error for ContactRefusal {}

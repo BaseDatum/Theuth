@@ -31,6 +31,7 @@ import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/
 import { useScope } from '@/store/engine-scope'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
+import { ContactAllowStrip } from '@/components/chat/ContactAllowStrip'
 import { KernelStrip } from '@/components/cells/KernelStrip'
 
 /** `seq`: a search hit's stored message seq (49 §7); anything but a safe non-negative integer is dropped.
@@ -182,7 +183,12 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
           <ObservedBar session={session} />
         </>
       ) : (
-        <Composer key={`c:${session}`} session={session} strip={<KernelStrip session={session} embedded />} />
+        <Composer key={`c:${session}`} session={session} strip={
+            <>
+              <ContactAllowStrip session={session} embedded />
+              <KernelStrip session={session} embedded />
+            </>
+          } />
       )}
     </>
   )

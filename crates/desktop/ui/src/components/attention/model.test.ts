@@ -106,3 +106,9 @@ test('urlHost', () => {
 test('182: a `node:<engine>` item of kind `home` sits in the Mesh group with the node items', () => {
   expect(groupItems([item('node:B', 'home', 1), item('node:1', 'node', 2)]).map((g) => [g.key, g.items.length])).toEqual([['mesh', 2]])
 })
+
+test('groupItems: a contact_first item is listed, right after Approvals (it was dropped for lack of a group)', () => {
+  const groups = groupItems([item('d', 'decision'), item('c', 'contact_first'), item('p', 'approval'), item('s', 'show')])
+  expect(groups.map((g) => [g.key, g.label])).toEqual([['decisions', 'Decisions'], ['approvals', 'Approvals'], ['first', 'First contact'], ['shown', 'Shown to you']])
+  expect(groups[2]?.items.map((i) => i.id)).toEqual(['c'])
+})

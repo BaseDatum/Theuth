@@ -25,6 +25,12 @@ export function useExports(enabled = true) {
   return useQuery({ queryKey: queryKeys.exports, queryFn: () => api.a2a_exports(), enabled })
 }
 
+/** `contact_first_waiting()`: the (contact, export) pairs whose first message waits for the owner; live on `A2aChanged`. */
+export function useFirstWaiting(enabled = true) {
+  const api = useApi()
+  return useQuery({ queryKey: queryKeys.waiting, queryFn: () => api.contact_first_waiting(), enabled })
+}
+
 /** 183 §12.10: an exported chat — its export and the contacts it is granted to (blocked ones excluded). */
 export type Sharing = { exp: Export; contacts: Contact[] }
 

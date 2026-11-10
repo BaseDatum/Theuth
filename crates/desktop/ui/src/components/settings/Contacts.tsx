@@ -24,7 +24,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { CAP, LIMITED, exportName, fingerprint, names, useContacts, useExports, useSharing } from '@/lib/contacts'
+import { CAP, LIMITED, exportName, fingerprint, names, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -35,6 +35,7 @@ import type { ContactWindow } from '@/rpc/bindings/ContactWindow'
 import type { Export } from '@/rpc/bindings/Export'
 import type { ExportTarget } from '@/rpc/bindings/ExportTarget'
 import type { FirstContact } from '@/rpc/bindings/FirstContact'
+import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
 import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import type { PeerPath } from '@/rpc/bindings/PeerPath'
 import type { Risk } from '@/rpc/bindings/Risk'
@@ -64,6 +65,50 @@ function PathChip({ path }: { path: PeerPath }) {
   )
 }
 
+/** 183 Phase 3: the line under a held first message — shared by the chat's Communication page, Contacts and the strip. */
+export const waitingLine = (w: FirstWaiting) => `${w.contact}${w.machine ? ` (${w.machine})` : ''} is waiting for you to allow its first message to ${w.export}`
+
+const ANSWERED: Record<FirstContact, (c: string) => string> = { ask: (c) => `Allowed ${c} once`, allow: (c) => `Allowed ${c} · always`, block: (c) => `Blocked ${c}` }
+
+/** Answer a held first message (`contact_first_answer`); the engine fires `A2aChanged`, which drops it from every list. */
+export function useFirstAnswer() {
+  const api = useApi()
+  return useAction((v: { contact: string; exp: string; answer: FirstContact }) => api.contact_first_answer(v.contact, v.exp, v.answer), {
+    keys: [queryKeys.a2a],
+    onSuccess: (_, v) => toast(ANSWERED[v.answer](v.contact)),
+  })
+}
+
+/** Allow once · Always · Block for `contact`'s held first message to `exp`. */
+export function FirstButtons({ contact, exp }: { contact: string; exp: string }) {
+  const answer = useFirstAnswer()
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {(
+        [
+          ['ask', 'Allow once'],
+          ['allow', 'Always'],
+          ['block', 'Block'],
+        ] as const
+      ).map(([v, label]) => (
+        <Button key={v} variant={v === 'block' ? 'ghost' : 'outline'} size="sm" disabled={answer.isPending} onClick={() => answer.mutate({ contact, exp, answer: v })}>
+          {label}
+        </Button>
+      ))}
+    </span>
+  )
+}
+
+/** One held first message: its line and the three answers. */
+export function WaitingRow({ w }: { w: FirstWaiting }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg bg-layer-2 px-2.5 py-1.5 text-[13px]">
+      <span className="min-w-0 flex-1 basis-56">{waitingLine(w)}</span>
+      <FirstButtons contact={w.contact} exp={w.export} />
+    </div>
+  )
+}
+
 /** One export as a chip: an agent or a chat, and why it is paused (W-41, §12.10). */
 export function ExportChip({ name, exp }: { name: string; exp: Export | undefined }) {
   const Icon = exp?.target.kind === 'agent' ? Bot : MessageSquare
@@ -87,6 +132,7 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
   const navigate = useNavigate()
   const contacts = useContacts()
   const exports = useExports()
+  const waiting = useFirstWaiting().data ?? []
   const [adding, setAdding] = useState(initial)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<{ c: Contact; block: boolean } | null>(null)
@@ -126,6 +172,18 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
                 c.exports.map((n) => <ExportChip key={n} name={n} exp={exports.data?.find((x) => x.name === n)} />)
               )}
             </div>
+            {c.shared.length > 0 && (
+              <p className="mt-1 text-[13px] text-fg-secondary">
+                Shared with you: {c.shared.map((o) => `${o.title}${o.state === 'ask_first' ? ' (asks first)' : o.state === 'unavailable' ? ' (paused)' : ''}`).join(', ')}
+              </p>
+            )}
+            {waiting
+              .filter((w) => w.contact === c.name)
+              .map((w) => (
+                <div key={w.export} className="mt-1.5">
+                  <WaitingRow w={w} />
+                </div>
+              ))}
           </div>
           <div className="ml-auto flex items-center gap-2">
             <PathChip path={c.path} />
@@ -622,6 +680,7 @@ export function ContactAccess() {
       }
     >
       <p className="text-[13px] text-fg-secondary">{LIMITED} Each one opens a fresh capped session per agent, or one capped turn per message in a shared chat.</p>
+      <p className="text-[13px] text-fg-secondary">A new share starts on "Always allow". "Ask first" holds a contact's first message until you press Allow.</p>
       <p className="text-[13px] text-fg-secondary">{toolsLine(exports.data ?? [])}</p>
       {contacts.isPending && <Empty>Loading…</Empty>}
       {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
@@ -693,6 +752,9 @@ function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; expo
                   <X />
                 </Button>
               </div>
+              <p className="text-xs text-fg-tertiary" title={`The full address is peer:<the name ${c.name} gave you>/${n}`}>
+                {c.name} reaches this as …/{n}
+              </p>
               {x && <ExportTools exp={x} />}
             </div>
           )

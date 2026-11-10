@@ -353,6 +353,28 @@ fn failed(to: String, error: String) -> PeerReceipt {
     }
 }
 
+/// 183 F7: how long `send_message` waits for a remote peer's first answer to a send.
+const FIRST_ANSWER: Duration = Duration::from_secs(5);
+
+/// 183 F7: `r` as the remote first answered it (held, failed, or taken as a task), polled
+/// for at most [`FIRST_ANSWER`]; unchanged when it says nothing in that time. ponytail: a
+/// 100 ms poll of the store; a oneshot from the outcome handler if sends ever fan out wide.
+async fn first_answer(agents: &ActorRef<Agents>, session: runtime::SessionId, r: &mut PeerReceipt) {
+    let deadline = tokio::time::Instant::now() + FIRST_ANSWER;
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let Ok(rec) = agents.ask(GetPeerMessage { session, id: r.id }).await else {
+            return;
+        };
+        if rec.receipt.state != PeerMessageState::Accepted || rec.receipt.task_id.is_some() {
+            r.state = rec.receipt.state;
+            r.error = rec.receipt.error;
+            r.task_id = rec.receipt.task_id;
+            return;
+        }
+    }
+}
+
 /// `<address> <state> id=<uuid>` plus task, error and the reply text.
 fn receipt_line(r: &PeerReceipt) -> String {
     let mut s = format!("{} {} id={}", r.to, r.state.as_str(), r.id);
@@ -402,8 +424,12 @@ impl Tool for SendMessageTool {
     fn description(&self) -> String {
         format!(
             "Send one message to one or more peers. `to`: one canonical address from `discover_peers()` (python; `session:<uuid>`, \
-             `peer:<name>`; a contact's `peer:<name>/<export>` reaches that one of its exports), `parent` if you are a subagent, or one of your subagents by name — or a list of up to \
-             {SEND_MAX_RECIPIENTS} such addresses (every address must resolve or nothing is sent). Returns one receipt \
+             `peer:<name>`), `parent` if you are a subagent, or one of your subagents by name — or a list of up to \
+             {SEND_MAX_RECIPIENTS} such addresses (every address must resolve or nothing is sent). A contact (tag `contact`): \
+             `peer:<contact>` reaches the contact's first shared chat (name order); `peer:<contact>/<export>` reaches a \
+             named one — discover_peers lists one such row per chat or agent the contact shares with you; the first \
+             message to an export set to Ask first is held until its owner presses Allow, then delivered automatically: \
+             do not resend (its receipt reads `held`). Returns one receipt \
              per recipient (`structured.receipts`, always a list): `accepted` means committed to their intake, not read. \
              With await_reply=true you block until each answers with reply_to set to its message's id (or one shared \
              timeout passes; unanswered messages are not recalled). When answering a <message> with \
@@ -491,6 +517,16 @@ impl Tool for SendMessageTool {
                 }
             }
         }
+        // 183 F7: a remote peer answers a send within a moment (held until its owner
+        // presses Allow, refused, or taken as a task); this call says so instead of `accepted`.
+        if !args.await_reply {
+            for r in receipts
+                .iter_mut()
+                .filter(|r| r.state == PeerMessageState::Accepted && r.to.starts_with("peer:"))
+            {
+                first_answer(&agents, cx.session, r).await;
+            }
+        }
         // One shared deadline for every awaited reply.
         let secs = self.cfg.subagents.reply_timeout_secs;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
@@ -552,9 +588,12 @@ pub struct DiscoverPeersArgs {
     /// Page size, default 25, max 100.
     #[serde(default)]
     pub limit: Option<u16>,
-    /// Only peers working now: a turn in flight (running, approval, awaiting) or a running job/PTY.
+    /// Only peers working now: a turn in flight (running, approval, awaiting) or a running job/PTY. Contacts and their shared chats and agents always stay.
     #[serde(default)]
     pub active_only: bool,
+    /// Only rows of this kind: `native` (theuth sessions), `acp` (external harnesses), `a2a` (contacts, their shared chats and agents, remote agents), `node`, `parent`.
+    #[serde(default)]
+    pub kind: Option<crate::communication::PeerKind>,
 }
 
 /// The permitted peer directory (50 §5.1).
@@ -570,19 +609,24 @@ impl Tool for DiscoverPeersTool {
     fn description(&self) -> String {
         format!(
             "List the peers you may message: parent, children, siblings, other sessions of the same tree, \
-             other owner roots and configured remote agents. Each row has the canonical address for send_message, \
+             other owner roots, configured remote agents and contacts. Each row has the canonical address for send_message, \
              a short name, kind, relationship, coarse state and capabilities, plus `activity` for local peers: \
              `state` (idle|running|approval|awaiting|error|cancelled|stored), `last_active` (the last input or stop, \
              not a heartbeat), `turn_secs`, `jobs`, `ptys`, `children`, `stalled_secs` (an ACP child whose \
              harness has sent no session update for the configured time; wait on it with wait_peer); remote peers have none. `engine` names the \
              engine a session lives on; a session owned by another engine of the mesh has state `remote` (its \
-             activity is unknown here; send_message still reaches it). `title` is filled only \
+             activity is unknown here; send_message still reaches it). A contact (another person's theuth, tag \
+             `contact`) is `peer:<contact>`, and each chat or agent it shares with you is its own row \
+             `peer:<contact>/<export>` (title = its description; tags `contact`, `chat` or `agent`, and `allowed`, \
+             `ask_first` — the first message waits until its owner presses Allow, then goes through — or \
+             `unavailable`). `title` is filled only \
              for your own tree (parent, children, siblings, ancestors, descendants); `tags` (short keywords the title \
              model assigned, e.g. `[rust, merge]`) come with every local peer, empty until it has a model-written title, \
-             and say what a peer is working on so you can tell which are relevant to you. Rows come working-first, then \
-             most recently active; `active_only` keeps only peers with a turn in flight or a running job/PTY (never \
-             a `remote` one). Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the \
-             next page. Listing wakes nobody and probes no network."
+             and say what a peer is working on so you can tell which are relevant to you. Contacts and their rows come \
+             first, then working rows, then most recently active; `active_only` keeps contacts and the peers with a \
+             turn in flight or a running job/PTY (never a `remote` session); `kind` keeps one kind (`a2a`: contacts \
+             and remote agents). Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the \
+             next page. Listing wakes nobody; it may refresh the contacts' shared lists in the background."
         )
     }
 
@@ -598,6 +642,7 @@ impl Tool for DiscoverPeersTool {
                 cursor: args.cursor,
                 limit: args.limit,
                 active_only: args.active_only,
+                kind: args.kind,
             })
             .await
         {

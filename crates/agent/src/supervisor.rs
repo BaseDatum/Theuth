@@ -6512,7 +6512,17 @@ impl Message<PeersRead> for Agents {
             .map(str::to_lowercase)
             .filter(|q| !q.is_empty());
         let mut rows = self.directory_from(m.session, read)?;
+        // 183 F1: contacts' offers older than the TTL are refetched (the next listing shows
+        // them); this one answers from what is cached.
+        if self.network.offers_due() {
+            self.rt
+                .publish(crate::communication::network::ContactOffersStale)
+                .await;
+        }
         arrange(&mut rows, m.active_only);
+        if let Some(k) = m.kind {
+            rows.retain(|p| p.kind == k);
+        }
         if let Some(q) = &query {
             rows.retain(|p| peer_matches(p, q));
         }
@@ -6802,19 +6812,26 @@ fn peer_activity(a: SessionActivity, stalled_secs: Option<u64>) -> PeerActivity 
     }
 }
 
-/// `discover_peers` order and `active_only` filter (62 §3.4): working rows
-/// first, then most recently active; ties keep [`Agents::directory`]'s order.
-/// Remote rows have no activity and stay last.
+/// `discover_peers` order and `active_only` filter (62 §3.4): 183 F6: contacts and their
+/// export rows first (name order), and `active_only` keeps them; then working rows, then
+/// most recently active; ties keep [`Agents::directory`]'s order. Other remote rows have no
+/// activity and stay last.
 fn arrange(rows: &mut Vec<PeerInfo>, active_only: bool) {
+    // A local session's title model may tag it `contact` too; only an A2A row is one.
+    let contact =
+        |p: &PeerInfo| p.kind == PeerKind::A2a && p.tags.first().is_some_and(|t| t == "contact");
     if active_only {
-        rows.retain(|p| p.activity.as_ref().is_some_and(PeerActivity::active));
+        rows.retain(|p| contact(p) || p.activity.as_ref().is_some_and(PeerActivity::active));
     }
     rows.sort_by_key(|p| {
         let a = p.activity.as_ref();
-        std::cmp::Reverse((
-            a.is_some_and(PeerActivity::active),
-            a.and_then(|a| a.last_active),
-        ))
+        (
+            !contact(p),
+            std::cmp::Reverse((
+                a.is_some_and(PeerActivity::active),
+                a.and_then(|a| a.last_active),
+            )),
+        )
     });
 }
 

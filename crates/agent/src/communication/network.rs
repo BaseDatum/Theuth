@@ -14,7 +14,7 @@
 //! sends and cancels reply through a delegated sender, streams are pulled by
 //! the plugin, remote sends run in spawned tasks that report back by message.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,6 +31,7 @@ use chrono::Utc;
 use futures::{Stream, StreamExt, stream};
 use kameo::message::{Context, Message};
 use runtime::{SessionId, TurnId};
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::AbortHandle;
@@ -41,6 +42,7 @@ use uuid::Uuid;
 use super::{
     CommunicationChanged, Generation, PEER_TEXT_MAX, PeerInfo, PeerKind, PeerMessageState,
     PeerReceipt, PeerRecord, PeerRelationship, PeerState, PeerTurnFinished, SharedPolicy,
+    held_line,
 };
 use crate::continuation::{InputConsumed, InputTicket};
 use crate::store::communication::{
@@ -242,6 +244,83 @@ pub fn contact_endpoint(eid: &str) -> String {
 pub fn contact_eid(endpoint: &str) -> Option<&str> {
     endpoint.strip_prefix(IROH_PREFIX)
 }
+
+/// 183 §7.7 (F1): what one export a contact offers us is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum OfferKind {
+    /// One of the contact's chats: one capped turn per message.
+    Chat,
+    /// One of the contact's agents: a capped inbox.
+    Agent,
+}
+
+/// 183 §7.7 (F1): whether a message to an offered export goes through now, as the sharer
+/// reported it on its card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum OfferState {
+    /// Delivered at once.
+    Allowed,
+    /// The first message waits until the owner presses Allow, then goes through.
+    AskFirst,
+    /// Answers nothing right now (chat archived, or its messaging off).
+    Unavailable,
+}
+
+impl OfferState {
+    /// The card tag and the `discover_peers` tag: `allowed` | `ask_first` | `unavailable`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::AskFirst => "ask_first",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+impl OfferKind {
+    /// The card tag and the `discover_peers` tag: `chat` | `agent`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Agent => "agent",
+        }
+    }
+}
+
+/// 183 §7.7 (F1): one export a contact grants this engine, from the card it serves us.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ContactOffer {
+    /// The export name: `peer:<contact>/<name>`.
+    pub name: String,
+    /// Its description, else its name.
+    pub title: String,
+    /// Chat or agent.
+    pub kind: OfferKind,
+    /// Whether a message goes through now.
+    pub state: OfferState,
+}
+
+/// `tell` (183 F1): every contact's latest offers, by alias, replacing the last set.
+#[derive(Clone, Debug, Default)]
+pub struct ContactOffers(pub BTreeMap<String, Vec<ContactOffer>>);
+
+/// Bus event (183 F1): `discover_peers` ran and the contacts' offers were last refreshed
+/// more than [`OFFERS_TTL`] ago; the a2a plugin refetches the stale cards.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ContactOffersStale;
+
+/// 183 F1: how long a contact's offers count as fresh for `discover_peers`.
+pub const OFFERS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Bus event (183 F3, F11): a first-contact hold began or ended (held, released, failed,
+/// revoked, expired); the a2a plugin re-derives Attention and tells the UI.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ContactsHeldChanged;
 
 /// `ask` → `()`: register (or replace) the route for `binding` (§4). `roots`
 /// are the exact local roots whose enabled trees may use it; cancelling
@@ -461,6 +540,11 @@ struct Outbound {
     /// Grant epoch of the route the send was admitted under.
     route: CancellationToken,
     task_id: Option<String>,
+    /// 183 F8: the address as the sender wrote it (`sky`, `sky/hi-there`): what its receipt
+    /// and the replies show instead of the binding id.
+    alias: String,
+    /// 183 F7: the route is a contact's.
+    contact: bool,
 }
 
 /// Derived memory only (§7): routes, started scopes, subscribers and
@@ -495,9 +579,14 @@ pub struct NetworkState {
     /// 183 §7.6: request scope → the contact behind it (its turn cap, its wrapper, its
     /// first-contact hold); gone with the scope.
     contact_scopes: HashMap<Uuid, super::ContactOrigin>,
-    /// 183 W-27: request scopes of tasks waiting for a first-contact answer, by (contact,
-    /// export), oldest first, with the admission each waits under.
+    /// 183 W-27, F11: tasks waiting for a first-contact answer, by (contact, export), oldest
+    /// first, with the admission each waits under. A held task waits aside: it is neither the
+    /// session's active task nor the head of its queue.
     held: HashMap<(String, String), Vec<HeldTask>>,
+    /// 183 F1: each contact's latest offers (alias → exports it grants us), from its card.
+    offers: BTreeMap<String, Vec<ContactOffer>>,
+    /// 183 F1: when `discover_peers` last asked for a refresh (unix ms; 0 = never).
+    offers_asked_ms: std::sync::atomic::AtomicU64,
     /// 183 W-40: contact message id → the request scope of the A2A task on this (holding)
     /// engine whose exported chat lives on another engine; its answer comes back as a
     /// `contact_deliver` with `reply_to`.
@@ -505,9 +594,6 @@ pub struct NetworkState {
     /// 183 W-40: on a chat's owner, the contact turns it runs for another engine: the
     /// pseudo-scope its input opened the turn under (the message id) → where the answer goes.
     contact_replies: HashMap<Uuid, super::ContactEnvelope>,
-    /// 183 W-27: request scopes of first-contact tasks queued behind another task: they
-    /// wait for the owner once they reach the front.
-    hold_on_start: HashSet<Uuid>,
     /// 183 §7.6, W-25: inbox session → the exported agent's persona, recorded on every
     /// resolve (so after a restart too, before the contact's turn runs).
     inbox_personas: HashMap<SessionId, crate::supervisor::InboxPersona>,
@@ -518,13 +604,21 @@ pub struct NetworkState {
     last_paired: Option<usize>,
 }
 
+/// 183 F5: a held first message fails after this long without the owner's answer.
+pub const HOLD_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// 183 F5: what a held task fails with when [`HOLD_TTL`] passes.
+pub const HOLD_EXPIRED: &str = "the owner did not answer";
+
 /// 183 W-27: one task held for a first-contact answer.
 struct HeldTask {
     task: A2aTask,
     route: CancellationToken,
-    /// Fails the task when its grant epoch ends while it waits.
+    /// Fails the task when its grant epoch ends or [`HOLD_TTL`] passes while it waits.
     watch: AbortHandle,
     since_ms: u64,
+    /// 183 F11: the first line of its message.
+    preview: String,
 }
 
 /// `ask` → `Result<usize, String>` (183 W-27): the owner answered the first-contact item of
@@ -558,6 +652,8 @@ pub struct HeldContact {
     pub since_ms: u64,
     /// How many tasks wait.
     pub waiting: usize,
+    /// 183 F11: the first line of the oldest waiting message.
+    pub preview: String,
 }
 
 impl NetworkState {
@@ -617,17 +713,10 @@ impl NetworkState {
     /// sees no contact (Z3-R2, §7.5: a contact never learns our contact list).
     pub(crate) fn remote_peers(&self, root: SessionId) -> Vec<PeerInfo> {
         let inbox = self.inboxes.contains_key(&root);
-        let mut rows: Vec<PeerInfo> = self
-            .peers
-            .values()
-            .filter(|p| {
-                !p.generation.is_cancelled()
-                    && p.sender.is_some()
-                    && ((p.contact && !inbox) || p.roots.contains(&root))
-            })
-            .map(|p| PeerInfo {
-                address: format!("peer:{}", p.name),
-                name: p.name.clone(),
+        let row =
+            |address: String, name: String, title: Option<String>, tags: Vec<String>| PeerInfo {
+                address,
+                name,
                 kind: PeerKind::A2a,
                 relationship: PeerRelationship::Remote,
                 state: PeerState::Idle,
@@ -635,18 +724,74 @@ impl NetworkState {
                 reply: true,
                 stream: false,
                 activity: None,
-                title: None,
-                tags: if p.contact {
-                    vec!["contact".to_owned()]
-                } else {
-                    Vec::new()
-                },
+                title,
+                tags,
                 engine: None,
                 reachable: None,
+            };
+        let mut peers: Vec<&RemotePeer> = self
+            .peers
+            .values()
+            .filter(|p| {
+                !p.generation.is_cancelled()
+                    && p.sender.is_some()
+                    && ((p.contact && !inbox) || p.roots.contains(&root))
             })
             .collect();
-        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        peers.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut rows = Vec::with_capacity(peers.len());
+        for p in peers {
+            if !p.contact {
+                rows.push(row(
+                    format!("peer:{}", p.name),
+                    p.name.clone(),
+                    None,
+                    Vec::new(),
+                ));
+                continue;
+            }
+            rows.push(row(
+                format!("peer:{}", p.name),
+                p.name.clone(),
+                None,
+                vec!["contact".to_owned()],
+            ));
+            // 183 F1: one row per chat or agent the contact shares with us, from its card.
+            for o in self.offers.get(&p.name).into_iter().flatten() {
+                rows.push(row(
+                    format!("peer:{}/{}", p.name, o.name),
+                    format!("{}/{}", p.name, o.name),
+                    Some(o.title.clone()),
+                    vec![
+                        "contact".to_owned(),
+                        o.kind.as_str().to_owned(),
+                        o.state.as_str().to_owned(),
+                    ],
+                ));
+            }
+        }
         rows
+    }
+
+    /// 183 F1: replace every contact's offers.
+    pub(crate) fn set_offers(&mut self, offers: BTreeMap<String, Vec<ContactOffer>>) {
+        self.offers = offers;
+    }
+
+    /// 183 F1: `discover_peers` ran; `true` (once per [`OFFERS_TTL`]) when this engine has a
+    /// contact and their offers should be refetched now.
+    pub(crate) fn offers_due(&self) -> bool {
+        let now = Utc::now().timestamp_millis().max(0) as u64;
+        let last = self.offers_asked_ms.load(Ordering::Relaxed);
+        let contacts = self
+            .peers
+            .values()
+            .any(|p| p.contact && !p.generation.is_cancelled());
+        if !contacts || now.saturating_sub(last) < OFFERS_TTL.as_millis() as u64 {
+            return false;
+        }
+        self.offers_asked_ms.store(now, Ordering::Relaxed);
+        true
     }
 
     /// 183 W-26: `peer:<name>` (or the binding of `peer:<binding>`) is a contact.
@@ -747,7 +892,12 @@ impl NetworkState {
     /// opening a private turn. Each row goes when its producer settles it.
     fn retire(&mut self, scope: Uuid) {
         self.contact_scopes.remove(&scope);
-        self.hold_on_start.remove(&scope);
+        for tasks in self.held.values_mut() {
+            if let Some(i) = tasks.iter().position(|h| h.task.request_scope == scope) {
+                tasks.remove(i).watch.abort();
+            }
+        }
+        self.held.retain(|_, v| !v.is_empty());
         if let Some(q) = self.queued.remove(&scope) {
             q.watch.abort();
             self.feeds.remove(&q.task);
@@ -1364,21 +1514,16 @@ impl Agents {
             self.network
                 .contact_scopes
                 .insert(task.request_scope, origin.clone());
-            // W-27: the first task for (contact, export) waits for the owner. A waiting
-            // task is the session's one active task (`AUTH_REQUIRED`), so behind another one
-            // it queues first and waits once it reaches the front.
+            // W-27, F11: the first task for (contact, export) waits for the owner, aside: it
+            // takes neither the session's active slot nor the head of its queue, so the chat
+            // keeps working until the owner answers.
             if p.ask_first {
-                let busy = self.network.active.contains_key(&task.session)
-                    || matches!(self.store.active_a2a_task(task.session).await, Ok(Some(_)));
-                if !busy {
-                    let task = self.hold_task(task, origin, route.clone()).await;
-                    return Ok(Admitted {
-                        task,
-                        generation,
-                        route,
-                    });
-                }
-                self.network.hold_on_start.insert(task.request_scope);
+                let task = self.hold_task(task, origin, route.clone()).await;
+                return Ok(Admitted {
+                    task,
+                    generation,
+                    route,
+                });
             }
         }
         let task = self
@@ -1401,7 +1546,7 @@ impl Agents {
         generation: Generation,
         route: CancellationToken,
     ) -> A2aTask {
-        match self.store.active_a2a_task(task.session).await {
+        match self.active_task(task.session).await {
             Ok(None) => {
                 let task = self.start_task(task, generation, route).await;
                 if task.status.is_terminal() {
@@ -1434,6 +1579,34 @@ impl Agents {
                 task
             }
         }
+    }
+
+    /// The session's active task (the store allows one): a held first-contact task waits
+    /// aside (183 F11) and never counts, though it is stored `AUTH_REQUIRED`.
+    async fn active_task(&self, session: SessionId) -> anyhow::Result<Option<A2aTask>> {
+        let held: HashSet<Uuid> = self
+            .network
+            .held
+            .values()
+            .flatten()
+            .map(|h| h.task.request_scope)
+            .collect();
+        if held.is_empty() {
+            return self.store.active_a2a_task(session).await;
+        }
+        Ok(self
+            .store
+            .open_a2a_tasks(Some(session))
+            .await?
+            .into_iter()
+            .find(|t| {
+                matches!(
+                    t.status,
+                    A2aTaskStatus::Working
+                        | A2aTaskStatus::InputRequired
+                        | A2aTaskStatus::AuthRequired
+                ) && !held.contains(&t.request_scope)
+            }))
     }
 
     /// Working transition, scope registration, deadline / grant-epoch watch
@@ -1757,20 +1930,6 @@ impl Agents {
                     Ok(_) => continue,
                     Err(_) => return,
                 }
-            }
-            // W-27: a first-contact task that queued behind another waits for the owner now.
-            if self.network.hold_on_start.remove(&next.request_scope)
-                && let Some(origin) = self
-                    .network
-                    .contact_scopes
-                    .get(&next.request_scope)
-                    .cloned()
-            {
-                let held = self.hold_task(next, &origin, admitted.route).await;
-                if held.status.is_terminal() {
-                    continue;
-                }
-                return;
             }
             let p = A2aPrincipal {
                 binding,
@@ -2958,12 +3117,53 @@ impl Agents {
     }
 }
 
-/// `tell` (internal, 183 W-27): the grant epoch a held task waits under ended.
-struct HeldRevoked(Uuid);
+/// `tell` (internal, 183 W-27, F5): a held task's wait ended without the owner's answer:
+/// its grant epoch ended (`expired: false`) or [`HOLD_TTL`] passed (`expired: true`).
+struct HeldEnded {
+    scope: Uuid,
+    expired: bool,
+}
+
+/// 183 W-27, F5: the watch of one held task: [`HeldEnded`] when `route` (its grant epoch)
+/// ends or `ttl` passes, whichever comes first.
+fn held_watch(scope: Uuid, route: CancellationToken, ttl: Duration) -> AbortHandle {
+    tokio::spawn(async move {
+        let expired = tokio::select! {
+            () = route.cancelled() => false,
+            () = tokio::time::sleep(ttl) => true,
+        };
+        crate::continuation::notify(HeldEnded { scope, expired }).await;
+    })
+    .abort_handle()
+}
+
+/// `ask` → `()` (183 F4): `contact`'s grant changed and its grant epoch is about to end
+/// (`route` is the new one). Its held tasks for an export it still grants (`exports`) wait
+/// on under `route`; the others fail when the old epoch ends. Asked before the old epoch is
+/// cancelled, so editing a contact (or sharing another export with it) never drops a
+/// waiting first message.
+#[derive(Clone, Debug)]
+pub struct RebindHeld {
+    /// The contact's alias.
+    pub contact: String,
+    /// The exports it is granted now.
+    pub exports: Vec<String>,
+    /// Its new grant epoch.
+    pub route: CancellationToken,
+}
+
+impl Message<RebindHeld> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RebindHeld, _: &mut Context<Self, Self::Reply>) {
+        self.rebind_held(m);
+    }
+}
 
 impl Agents {
     /// W-27: park a contact's first task for (contact, export) in `AUTH_REQUIRED` until the
-    /// owner answers; the contact reads "waiting: … has not allowed messages to … yet".
+    /// owner answers; the contact reads "waiting: … has not allowed messages to … yet". F11:
+    /// it waits aside (the chat keeps working); F5: it fails after [`HOLD_TTL`].
     async fn hold_task(
         &mut self,
         task: A2aTask,
@@ -2977,6 +3177,13 @@ impl Agents {
                 export: origin.export.clone(),
             }
         );
+        let preview = snapshot(&task)
+            .history
+            .as_deref()
+            .and_then(|h| h.first())
+            .and_then(|m| parts_text(&m.parts))
+            .map(|t| cut(t.lines().next().unwrap_or_default().trim(), 200).to_owned())
+            .unwrap_or_default();
         let held = match self
             .transition(&task, A2aTaskStatus::AuthRequired, Some(&why), None, None)
             .await
@@ -2988,13 +3195,7 @@ impl Agents {
                 return self.fail_task(&task, &why).await.unwrap_or(task);
             }
         };
-        let scope = held.request_scope;
-        let watched = route.clone();
-        let watch = tokio::spawn(async move {
-            watched.cancelled().await;
-            crate::continuation::notify(HeldRevoked(scope)).await;
-        })
-        .abort_handle();
+        let watch = held_watch(held.request_scope, route.clone(), HOLD_TTL);
         tracing::info!(task = %held.id, contact = %origin.contact, export = %origin.export, "a2a: first contact waits for the owner");
         self.network
             .held
@@ -3005,8 +3206,30 @@ impl Agents {
                 route,
                 watch,
                 since_ms: Utc::now().timestamp_millis().max(0) as u64,
+                preview,
             });
+        self.rt.publish(ContactsHeldChanged).await;
         held
+    }
+
+    /// [`RebindHeld`].
+    fn rebind_held(&mut self, m: RebindHeld) {
+        let now = Utc::now().timestamp_millis().max(0) as u64;
+        for ((c, e), tasks) in self.network.held.iter_mut() {
+            if *c != m.contact || !m.exports.contains(e) {
+                continue;
+            }
+            for h in tasks.iter_mut() {
+                h.watch.abort();
+                let waited = Duration::from_millis(now.saturating_sub(h.since_ms));
+                h.watch = held_watch(
+                    h.task.request_scope,
+                    m.route.clone(),
+                    HOLD_TTL.saturating_sub(waited),
+                );
+                h.route = m.route.clone();
+            }
+        }
     }
 
     /// [`ContactRelease`].
@@ -3030,41 +3253,14 @@ impl Agents {
                         contact: m.contact.clone(),
                     }
                     .to_string();
-                    match self.fail_task(&h.task, &why).await {
-                        Ok(t) => self.start_next(t.session).await,
-                        Err(e) => tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}"),
+                    if let Err(e) = self.fail_task(&h.task, &why).await {
+                        tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}");
                     }
                 }
             }
         }
-        // The ones still queued behind another task: Allow lets them start as they come;
-        // Block fails them now.
-        let queued: Vec<Uuid> = self
-            .network
-            .hold_on_start
-            .iter()
-            .filter(|s| {
-                self.network.contact_scopes.get(s).is_some_and(|o| {
-                    o.contact == m.contact && m.export.as_ref().is_none_or(|x| *x == o.export)
-                })
-            })
-            .copied()
-            .collect();
-        for scope in queued {
-            self.network.hold_on_start.remove(&scope);
-            n += 1;
-            if m.allow {
-                continue;
-            }
-            if let Some(task) = self.scope_task(scope).await {
-                let why = super::ContactRefusal::NotAContact {
-                    contact: m.contact.clone(),
-                }
-                .to_string();
-                if let Err(e) = self.fail_task(&task, &why).await {
-                    tracing::warn!(task = %task.id, "a2a: fail queued task: {e:#}");
-                }
-            }
+        if n > 0 {
+            self.rt.publish(ContactsHeldChanged).await;
         }
         n
     }
@@ -3129,6 +3325,14 @@ impl Message<ContactRelease> for Agents {
     }
 }
 
+impl Message<ContactOffers> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ContactOffers, _: &mut Context<Self, Self::Reply>) {
+        self.network.set_offers(m.0);
+    }
+}
+
 impl Message<ContactsHeld> for Agents {
     type Reply = Vec<HeldContact>;
 
@@ -3145,6 +3349,7 @@ impl Message<ContactsHeld> for Agents {
                     session: first.task.session,
                     since_ms: first.since_ms,
                     waiting: tasks.len(),
+                    preview: first.preview.clone(),
                 })
             })
             .collect();
@@ -3153,24 +3358,38 @@ impl Message<ContactsHeld> for Agents {
     }
 }
 
-impl Message<HeldRevoked> for Agents {
-    type Reply = ();
-
-    async fn handle(&mut self, m: HeldRevoked, _: &mut Context<Self, Self::Reply>) {
+impl Agents {
+    /// [`HeldEnded`]: the held task fails (`HOLD_EXPIRED` after [`HOLD_TTL`], else the
+    /// revoked route); it never held the session's slot, so nothing else moves.
+    async fn held_ended(&mut self, scope: Uuid, expired: bool) {
         let mut gone = None;
         for tasks in self.network.held.values_mut() {
-            if let Some(i) = tasks.iter().position(|h| h.task.request_scope == m.0) {
+            if let Some(i) = tasks.iter().position(|h| h.task.request_scope == scope) {
                 gone = Some(tasks.remove(i));
                 break;
             }
         }
         self.network.held.retain(|_, v| !v.is_empty());
-        if let Some(h) = gone {
-            match self.fail_task(&h.task, "peer route revoked").await {
-                Ok(t) => self.start_next(t.session).await,
-                Err(e) => tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}"),
-            }
+        let Some(h) = gone else { return };
+        h.watch.abort();
+        let why = if expired {
+            tracing::info!(task = %h.task.id, "a2a: first contact expired unanswered");
+            HOLD_EXPIRED
+        } else {
+            "peer route revoked"
+        };
+        if let Err(e) = self.fail_task(&h.task, why).await {
+            tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}");
         }
+        self.rt.publish(ContactsHeldChanged).await;
+    }
+}
+
+impl Message<HeldEnded> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: HeldEnded, _: &mut Context<Self, Self::Reply>) {
+        self.held_ended(m.scope, m.expired).await;
     }
 }
 
@@ -3601,21 +3820,23 @@ impl Agents {
             generation: generation.revision() as i64,
             body: &body,
         };
-        let receipt = self
-            .store
-            .accept_exchange(&a)
-            .await
-            .map_err(|e| match comm_error(&e) {
-                Some(CommError::NotFound) => {
-                    "reply_to does not name a live message from this peer".to_owned()
-                }
-                Some(CommError::Terminal) => "that message was already answered".to_owned(),
-                Some(CommError::Conflict) => {
-                    "request_id was already used with different content".to_owned()
-                }
-                Some(CommError::TooLarge) => format!("message exceeds {PEER_TEXT_MAX} bytes"),
-                _ => format!("{e:#}"),
-            })?;
+        let mut receipt =
+            self.store
+                .accept_exchange(&a)
+                .await
+                .map_err(|e| match comm_error(&e) {
+                    Some(CommError::NotFound) => {
+                        "reply_to does not name a live message from this peer".to_owned()
+                    }
+                    Some(CommError::Terminal) => "that message was already answered".to_owned(),
+                    Some(CommError::Conflict) => {
+                        "request_id was already used with different content".to_owned()
+                    }
+                    Some(CommError::TooLarge) => format!("message exceeds {PEER_TEXT_MAX} bytes"),
+                    _ => format!("{e:#}"),
+                })?;
+        // 183 F8: the receipt names the peer as the sender wrote it, not by its binding id.
+        receipt.to = format!("peer:{alias}");
         if receipt.state != PeerMessageState::Accepted {
             // Idempotent retry of a settled send: the existing outcome.
             return Ok(receipt);
@@ -3650,11 +3871,12 @@ impl Agents {
             .map_err(|e| format!("{e:#}"))?
             .ok_or_else(|| "accepted exchange missing".to_owned())?;
         if !generation.live() || route.is_cancelled() {
-            let r = self
+            let mut r = self
                 .store
                 .fail_exchange(receipt.id, "communication_disabled")
                 .await
                 .map_err(|e| format!("{e:#}"))?;
+            r.to = receipt.to;
             return Ok(r);
         }
         self.network.outbound.insert(
@@ -3665,6 +3887,8 @@ impl Agents {
                 generation: generation.clone(),
                 route,
                 task_id: remote_task.clone(),
+                alias: alias.to_owned(),
+                contact,
             },
         );
         let outbound = OutboundPeerMessage {
@@ -3758,6 +3982,7 @@ impl Agents {
             tracing::warn!(exchange = %exchange, "a2a: update names another task; ignored");
             return;
         }
+        let (alias, contact) = (o.alias.clone(), o.contact);
         let text = self.redact(&task_text(t)).into_owned();
         match t.status.state {
             TaskState::Completed => self.import_reply(exchange, &text).await,
@@ -3778,6 +4003,23 @@ impl Agents {
                     .await;
             }
             TaskState::AuthRequired => {
+                // 183 F7: a contact's first-contact hold is a state of this message, not a
+                // question to answer: `held`, with the line the sender's tools show.
+                if contact && let Some((machine, export)) = super::ContactRefusal::waiting(&text) {
+                    let name = alias.split('/').next().unwrap_or_default();
+                    let to = format!("peer:{alias}");
+                    let why = held_line(name, &machine, &export);
+                    match self.store.hold_exchange(exchange, &why).await {
+                        Ok(mut r) => {
+                            self.peer_changed(&r).await;
+                            r.to = to;
+                            // An awaiting `send_message` returns now, saying so.
+                            self.settle_wait(&r);
+                        }
+                        Err(e) => tracing::warn!(exchange = %exchange, "a2a: hold exchange: {e:#}"),
+                    }
+                    return;
+                }
                 let key = t.status.message.as_ref().map_or_else(
                     || format!("q:{exchange}:auth"),
                     |m| format!("q:{}", m.message_id),
@@ -3789,7 +4031,15 @@ impl Agents {
                 self.import_question(exchange, &t.id, &key, &text, false)
                     .await;
             }
-            TaskState::Submitted | TaskState::Working | TaskState::Unspecified => {}
+            TaskState::Submitted | TaskState::Working => {
+                // 183 F7: the owner allowed it; it is being delivered now.
+                match self.store.unhold_exchange(exchange).await {
+                    Ok(Some(r)) => self.peer_changed(&r).await,
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(exchange = %exchange, "a2a: unhold exchange: {e:#}"),
+                }
+            }
+            TaskState::Unspecified => {}
         }
     }
 
@@ -3823,13 +4073,15 @@ impl Agents {
                 return;
             }
         };
-        let Ok(Some(orig)) = self.store.exchange_receipt(exchange).await else {
+        let Ok(Some(mut orig)) = self.store.exchange_receipt(exchange).await else {
             return;
         };
         self.peer_changed(&orig).await;
         if reply.state != PeerMessageState::Accepted {
             return;
         }
+        // 183 F8: the awaiting tool and the reply show the address the sender wrote.
+        orig.to = format!("peer:{}", o.alias);
         if self.settle_wait(&orig) {
             if let Err(e) = self
                 .store
@@ -3848,7 +4100,8 @@ impl Agents {
             return;
         }
         match self.store.exchange_record(reply.id).await {
-            Ok(Some(record)) => {
+            Ok(Some(mut record)) => {
+                record.from = format!("peer:{}", o.alias);
                 if let Err(e) = self.enqueue_peer(record, o.generation, false, false).await {
                     let _ = self.store.fail_exchange(reply.id, &e).await;
                 }
@@ -3873,6 +4126,7 @@ impl Agents {
             return;
         };
         let (binding, session, generation) = (o.binding, o.session, o.generation.clone());
+        let shown = format!("peer:{}", o.alias);
         let (peer, session_key) = (format!("peer:{binding}"), format!("session:{session}"));
         let a = AcceptExchange {
             sender: &peer,
@@ -3906,7 +4160,9 @@ impl Agents {
             return;
         }
         match self.store.exchange_record(q.id).await {
-            Ok(Some(record)) => {
+            Ok(Some(mut record)) => {
+                // 183 F8: the session reads the address it wrote, not the binding id.
+                record.from = shown;
                 if let Err(e) = self
                     .enqueue_peer(record, generation, false, reply_expected)
                     .await
@@ -4696,10 +4952,10 @@ mod tests {
         }
     }
 
-    /// 183 W-27: a contact's first task waits in `AUTH_REQUIRED`, saying so — behind a busy
-    /// session it queues first and waits once it reaches the front; Allow once lets it
-    /// through; with `allow` (Always) the next one is not held; Block fails the ones still
-    /// waiting as not a contact.
+    /// 183 W-27, F11: a contact's first task waits in `AUTH_REQUIRED` at once, saying so, and
+    /// aside: the session's running task keeps its slot, an allowed message queues behind that
+    /// one only and starts when it ends, never behind the held one; Allow once queues the held
+    /// one normally; Block fails a waiting one as not a contact.
     #[tokio::test]
     async fn first_contact_holds_until_the_owner_answers() {
         let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
@@ -4726,19 +4982,10 @@ mod tests {
         let first = a.admit_send(&p(true), &send("m-a")).await.unwrap().task;
         assert_eq!(
             first.status,
-            A2aTaskStatus::Submitted,
-            "queued behind the busy one"
+            A2aTaskStatus::AuthRequired,
+            "held at once, though the session is busy"
         );
-        assert!(a.network.held.is_empty());
-        // The busy task ends: the first-contact task reaches the front and waits.
-        let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
-        a.transition(&busy, A2aTaskStatus::Completed, None, Some("done"), None)
-            .await
-            .unwrap();
-        a.start_next(session).await;
-        let held = a.store.a2a_task(s, &first.id).await.unwrap().unwrap();
-        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
-        let why = snapshot(&held).status.message.unwrap();
+        let why = snapshot(&first).status.message.unwrap();
         let why = why.text().unwrap();
         assert!(
             why.starts_with("waiting: ")
@@ -4754,10 +5001,29 @@ mod tests {
             refused.message.contains("not allowed this task yet"),
             "{refused:?}"
         );
+        // F11: an allowed message waits for the running task only.
+        let allowed = a.admit_send(&p(false), &send("m-b")).await.unwrap().task;
+        assert_eq!(
+            allowed.status,
+            A2aTaskStatus::Submitted,
+            "behind the busy one"
+        );
+        let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
+        a.transition(&busy, A2aTaskStatus::Completed, None, Some("done"), None)
+            .await
+            .unwrap();
+        a.network.retire(busy.request_scope);
+        a.start_next(session).await;
+        let allowed = a.store.a2a_task(s, &allowed.id).await.unwrap().unwrap();
+        assert_ne!(
+            allowed.status,
+            A2aTaskStatus::Submitted,
+            "the allowed message starts though one still waits for the owner"
+        );
         let still = a.store.a2a_task(s, &first.id).await.unwrap().unwrap();
         assert_eq!(still.status, A2aTaskStatus::AuthRequired, "it did not run");
 
-        // Allow once: it goes on.
+        // Allow once: it is queued as any admitted message (behind the running one).
         let n = a
             .release_held(ContactRelease {
                 contact: "bob".into(),
@@ -4769,17 +5035,17 @@ mod tests {
         assert!(a.network.held.is_empty());
         let now = a.store.a2a_task(s, &first.id).await.unwrap().unwrap();
         assert_ne!(now.status, A2aTaskStatus::AuthRequired);
-        assert_ne!(now.status, A2aTaskStatus::Submitted);
-
-        // Always: the next one is not held.
-        if now.status.is_active() {
-            let next = a.admit_send(&p(false), &send("m-b")).await.unwrap().task;
-            assert_eq!(next.status, A2aTaskStatus::Submitted);
-            assert!(a.network.held.is_empty() && a.network.hold_on_start.is_empty());
+        if allowed.status.is_active() {
+            assert_eq!(
+                now.status,
+                A2aTaskStatus::Submitted,
+                "behind the running one"
+            );
         }
 
         // Block: a first-contact task still waiting fails as not a contact.
         let waiting = a.admit_send(&p(true), &send("m-c")).await.unwrap().task;
+        assert_eq!(waiting.status, A2aTaskStatus::AuthRequired);
         let n = a
             .release_held(ContactRelease {
                 contact: "bob".into(),
@@ -4791,6 +5057,50 @@ mod tests {
         let now = a.store.a2a_task(s, &waiting.id).await.unwrap().unwrap();
         assert_eq!(now.status, A2aTaskStatus::Failed);
         assert_eq!(now.error.as_deref(), Some("peer:bob: not a contact"));
+    }
+
+    /// 183 F5: a held first message the owner never answers fails "the owner did not
+    /// answer" (and no longer shows as waiting); the session's own work is untouched.
+    #[tokio::test]
+    async fn a_held_first_message_expires_unanswered() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, busy, _) = exported_task(&mut a, &principal).await;
+        let p = A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            ask_first: true,
+        };
+        let s = A2aScope {
+            principal: &principal,
+            export: "research",
+        };
+        let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        // What the `HOLD_TTL` timer delivers.
+        a.held_ended(held.request_scope, true).await;
+        let now = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
+        assert_eq!(now.status, A2aTaskStatus::Failed);
+        assert_eq!(now.error.as_deref(), Some(HOLD_EXPIRED));
+        assert!(a.network.held.is_empty(), "nothing waits any more");
+        let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
+        assert_eq!(
+            busy.status,
+            A2aTaskStatus::Working,
+            "the session's task runs on"
+        );
+        // A second end (the revoke racing the timer) changes nothing.
+        a.held_ended(held.request_scope, false).await;
+        let again = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
+        assert_eq!(again.error.as_deref(), Some(HOLD_EXPIRED));
     }
 
     /// Z3-R3: a contact that never reuses a context (our own sender passes none) is never
@@ -5008,6 +5318,169 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(a.network.remote_peers(owner).len(), 1);
+    }
+
+    /// 183 F7, F8: a contact's first-contact hold makes the sender's receipt `held` with the
+    /// line its tools show (no peer message that reads like a login failure); the receipt
+    /// names the peer as written (`peer:sky/hi-there`), not by its binding id; once the
+    /// owner allows it the message is delivered (`consumed`, no explanation) and the reply
+    /// still answers it.
+    #[tokio::test]
+    async fn a_held_send_reads_held_and_names_the_contact() {
+        struct Silent;
+        #[async_trait]
+        impl PeerSender for Silent {
+            async fn send(&self, _: OutboundPeerMessage) -> Result<RemoteReply, RemoteSendError> {
+                Err(RemoteSendError::Unknown("not in this test".into()))
+            }
+        }
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("sky", &contact_endpoint("sky-endpoint"))
+            .await
+            .unwrap();
+        a.network.peers.insert(
+            binding.id,
+            RemotePeer {
+                name: "sky".into(),
+                roots: Vec::new(),
+                sender: Some(Arc::new(Silent)),
+                generation: CancellationToken::new(),
+                contact: true,
+            },
+        );
+        let owner = a
+            .new_root(None, super::super::PeerScope::Owner, None, None)
+            .await
+            .unwrap();
+        let sent = a
+            .network_send(owner, "sky/hi-there", "hello", None, None, false)
+            .await
+            .unwrap();
+        assert_eq!(sent.to, "peer:sky/hi-there", "F8: not the binding id");
+        let mut t = Task {
+            id: "t-1".into(),
+            context_id: "c-1".into(),
+            status: TaskStatus {
+                state: TaskState::AuthRequired,
+                message: Some(agent_message(
+                    "waiting: 333 has not allowed messages to hi-there yet",
+                    "t-1",
+                    "c-1",
+                )),
+                timestamp: None,
+            },
+            artifacts: None,
+            history: None,
+            metadata: None,
+        };
+        a.remote_outcome(sent.id, Ok(SendMessageResponse::Task(t.clone())))
+            .await;
+        let r = a.store.exchange_receipt(sent.id).await.unwrap().unwrap();
+        assert_eq!(r.state, PeerMessageState::Held);
+        assert_eq!(
+            r.error.as_deref(),
+            Some(
+                "held: sky (333) has not allowed messages to hi-there yet; it will be \
+                 delivered when they press Allow — do not resend"
+            )
+        );
+        assert!(
+            a.store
+                .pending_exchanges(owner, 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "no peer message reached the sender's session"
+        );
+        // Allowed: it runs on the owner's side, then answers.
+        t.status = TaskStatus {
+            state: TaskState::Working,
+            message: None,
+            timestamp: None,
+        };
+        a.apply_remote_task(sent.id, &t).await;
+        let r = a.store.exchange_receipt(sent.id).await.unwrap().unwrap();
+        assert_eq!(r.state, PeerMessageState::Consumed);
+        assert_eq!(r.error, None);
+        t.status.state = TaskState::Completed;
+        t.artifacts = Some(vec![text_artifact("hi back")]);
+        a.apply_remote_task(sent.id, &t).await;
+        let r = a.store.exchange_receipt(sent.id).await.unwrap().unwrap();
+        assert_eq!(r.state, PeerMessageState::Replied);
+        assert_eq!(r.reply.as_deref(), Some("hi back"));
+    }
+
+    /// 183 F4: a grant change keeps a held first message whose export the contact still
+    /// has: it moves to the new grant epoch, so Allow once runs it after the old epoch ended;
+    /// one whose export was taken away keeps the old epoch and fails at Allow.
+    #[tokio::test]
+    async fn a_grant_change_keeps_held_first_messages_of_exports_still_granted() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, busy, _) = exported_task(&mut a, &principal).await;
+        let old = CancellationToken::new();
+        let p = |export: &str| A2aPrincipal {
+            binding: binding.id,
+            export: export.into(),
+            session,
+            route: old.clone(),
+            contact: Some(bob(export, tools::Risk::ReadOnly)),
+            ask_first: true,
+        };
+        let kept = a
+            .admit_send(&p("research"), &send("m-a"))
+            .await
+            .unwrap()
+            .task;
+        let dropped = a.admit_send(&p("other"), &send("m-b")).await.unwrap().task;
+        assert_eq!(kept.status, A2aTaskStatus::AuthRequired);
+        assert_eq!(dropped.status, A2aTaskStatus::AuthRequired);
+        let new = CancellationToken::new();
+        a.rebind_held(RebindHeld {
+            contact: "bob".into(),
+            exports: vec!["research".into()],
+            route: new.clone(),
+        });
+        old.cancel();
+        // The session's own task ends, so a released task can start at once.
+        let s = A2aScope {
+            principal: &principal,
+            export: "research",
+        };
+        let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
+        a.transition(&busy, A2aTaskStatus::Completed, None, Some("done"), None)
+            .await
+            .unwrap();
+        a.network.retire(busy.request_scope);
+        for export in ["research", "other"] {
+            a.release_held(ContactRelease {
+                contact: "bob".into(),
+                export: Some(export.into()),
+                allow: true,
+            })
+            .await;
+        }
+        let kept = a.store.a2a_task(s, &kept.id).await.unwrap().unwrap();
+        assert_ne!(kept.status, A2aTaskStatus::AuthRequired);
+        assert_ne!(
+            kept.error.as_deref(),
+            Some("peer route revoked"),
+            "the export still granted runs under the new epoch"
+        );
+        let other = A2aScope {
+            principal: &principal,
+            export: "other",
+        };
+        let dropped = a.store.a2a_task(other, &dropped.id).await.unwrap().unwrap();
+        assert_eq!(dropped.status, A2aTaskStatus::Failed);
+        assert_eq!(dropped.error.as_deref(), Some("peer route revoked"));
     }
 
     /// 183 Z3-R2: a lowered cap or a changed allowlist reaches the contact's live inbox at

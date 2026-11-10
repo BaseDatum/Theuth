@@ -1098,3 +1098,264 @@ async fn a_put_without_tools_keeps_the_exports_allowlist() {
         .unwrap();
     assert_eq!(tools_of("research").await, Some(ok));
 }
+
+/// Pair `a` (inviter) and `b` by ticket; A's alias for B and B's alias for A.
+async fn paired(a: &Engine, b: &Engine) -> (String, String) {
+    let w = a.ctx.open_window().await.unwrap();
+    let vb = b
+        .ctx
+        .pair(ContactTarget::Ticket { ticket: w.ticket })
+        .await
+        .unwrap();
+    let va = until("the inviter's code", || ceremony_of(&a)).await;
+    a.ctx.answer(va.id, true).unwrap();
+    b.ctx.answer(vb.id, true).unwrap();
+    let of = |e: &Engine| e.ctx.shared.read().staged.contacts.keys().next().cloned();
+    let a_alias = until("A pinned B", || of(a)).await;
+    let b_alias = until("B pinned A", || of(b)).await;
+    (a_alias, b_alias)
+}
+
+/// 183 F1, F2: sharing an agent with a contact starts it on "Always allow" (an explicit "Ask
+/// first" is kept on a re-grant), the contact's engine hears of the grant and lists the
+/// export as its own `discover_peers` row (`peer:<contact>/<export>`, its description,
+/// tags `contact`, its kind and state), and taking the grant back removes the row after the
+/// notice. The contact's card is per reader: the public card lists nothing.
+#[tokio::test]
+async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_revoked() {
+    let lan = Lan::default();
+    let a = engine("a", &lan, true, cfg(600)).await;
+    let b = engine("b", &lan, true, cfg(600)).await;
+    let (a_alias, b_alias) = paired(&a, &b).await;
+    a.ctx
+        .put_export(Export {
+            name: "research".into(),
+            target: ExportTarget::Agent {
+                agent: "theuth".into(),
+            },
+            description: "Answers research questions".into(),
+            paused: None,
+            tools: None,
+        })
+        .await
+        .unwrap();
+    let grant = |exports: &[&str]| {
+        a.ctx.update_contact(ContactUpdate {
+            name: a_alias.clone(),
+            patch: ContactPatch {
+                exports: Some(exports.iter().map(|s| s.to_string()).collect()),
+                ..ContactPatch::default()
+            },
+        })
+    };
+    let shared = grant(&["research"]).await.unwrap();
+    assert_eq!(
+        shared.first_contact.get("research"),
+        Some(&FirstContact::Allow),
+        "F2: sharing counts as allowing"
+    );
+    assert!(
+        a.ctx.my_card().unwrap().skills.is_empty(),
+        "the public card lists nothing"
+    );
+
+    // B's discover_peers, as one of its own chats sees it.
+    let b_agents = b.ctx.agents().unwrap();
+    let root = b_agents
+        .ask(agent::CreateSession {
+            options: agent::CreateSessionOptions::default(),
+            peer: None,
+        })
+        .await
+        .unwrap()
+        .session;
+    let rows = || async {
+        b_agents
+            .ask(agent::ListPeers {
+                session: root,
+                query: None,
+                cursor: None,
+                limit: None,
+                active_only: true,
+                kind: None,
+            })
+            .await
+            .unwrap()
+            .peers
+    };
+    let address = format!("peer:{b_alias}/research");
+    let mut row = None;
+    for _ in 0..100 {
+        row = rows().await.into_iter().find(|p| p.address == address);
+        if row.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let row = row.expect("the granted export is a row on the contact's side");
+    assert_eq!(row.title.as_deref(), Some("Answers research questions"));
+    assert_eq!(row.tags, ["contact", "agent", "allowed"]);
+    assert!(row.send && row.reply);
+    let all = rows().await;
+    assert_eq!(
+        all[..2]
+            .iter()
+            .map(|p| p.address.as_str())
+            .collect::<Vec<_>>(),
+        [format!("peer:{b_alias}"), address.clone()],
+        "F6: the contact and its rows lead, and active_only keeps them"
+    );
+    assert_eq!(
+        b.ctx.contact_list()[0].shared[0].name,
+        "research",
+        "Settings › Network › Contacts: Shared with you"
+    );
+
+    // F2: an explicit "Ask first" stays when the grant is sent again unchanged.
+    a.ctx
+        .first_answer(ContactFirstAnswer {
+            contact: a_alias.clone(),
+            export: "research".into(),
+            answer: FirstContact::Ask,
+        })
+        .await
+        .unwrap();
+    let again = grant(&["research"]).await.unwrap();
+    assert_eq!(
+        again.first_contact.get("research"),
+        None,
+        "Ask first is kept"
+    );
+    until("B sees research ask first", || {
+        b.ctx
+            .offers_of(&a.eid())
+            .first()
+            .filter(|o| o.state == agent::communication::network::OfferState::AskFirst)
+            .map(|_| ())
+    })
+    .await;
+
+    // Taking it back: the notice reaches B and the row goes.
+    grant(&[]).await.unwrap();
+    let mut gone = false;
+    for _ in 0..100 {
+        if !rows().await.iter().any(|p| p.address == address) {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(gone, "the revoked export's row is gone after the notice");
+    assert!(
+        rows()
+            .await
+            .iter()
+            .any(|p| p.address == format!("peer:{b_alias}")),
+        "the contact's own row stays"
+    );
+}
+
+/// 183 F4: editing a contact (here: sharing a second export, which rotates its grant
+/// epoch) keeps a first message waiting for an export it still has; Always then delivers
+/// it like Allow once and it stops waiting.
+#[tokio::test]
+async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
+    let lan = Lan::default();
+    let a = engine("a", &lan, true, cfg(600)).await;
+    let b = engine("b", &lan, true, cfg(600)).await;
+    let (a_alias, _) = paired(&a, &b).await;
+    for name in ["research", "zeta"] {
+        a.ctx
+            .put_export(Export {
+                name: name.into(),
+                target: ExportTarget::Agent {
+                    agent: "theuth".into(),
+                },
+                description: String::new(),
+                paused: None,
+                tools: None,
+            })
+            .await
+            .unwrap();
+    }
+    let grant = |exports: &[&str]| {
+        a.ctx.update_contact(ContactUpdate {
+            name: a_alias.clone(),
+            patch: ContactPatch {
+                exports: Some(exports.iter().map(|s| s.to_string()).collect()),
+                ..ContactPatch::default()
+            },
+        })
+    };
+    grant(&["research"]).await.unwrap();
+    // The owner sets research to Ask first; B's first message waits.
+    a.ctx
+        .first_answer(ContactFirstAnswer {
+            contact: a_alias.clone(),
+            export: "research".into(),
+            answer: FirstContact::Ask,
+        })
+        .await
+        .unwrap();
+    let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
+        net: b.net.clone(),
+        eid: a.eid(),
+        hints: reach::Hints {
+            addrs: a.addrs(),
+            relay: None,
+        },
+        export: Some("research".into()),
+    }) as Box<dyn a2a_client::Transport>);
+    let mut m = a2a_types::Message::new(a2a_types::Role::User, vec![a2a_types::Part::text("hi")]);
+    m.message_id = "m-1".into();
+    let req = a2a_types::SendMessageRequest {
+        message: m,
+        configuration: Some(a2a_types::SendMessageConfiguration {
+            accepted_output_modes: Some(vec!["text/plain".into()]),
+            task_push_notification_config: None,
+            history_length: Some(0),
+            return_immediately: Some(true),
+        }),
+        metadata: None,
+        tenant: None,
+    };
+    let first = match client.send_message(&req).await.unwrap() {
+        a2a_types::SendMessageResponse::Task(t) => t,
+        other => panic!("expected a task, got {other:?}"),
+    };
+    assert_eq!(first.status.state, a2a_types::TaskState::AuthRequired);
+    let waiting = a.ctx.first_waiting().await;
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].preview, "hi");
+
+    // Sharing zeta too rotates the contact's grant epoch: research still waits.
+    grant(&["research", "zeta"]).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(a.ctx.first_waiting().await.len(), 1, "still waiting");
+
+    // Always: delivered like Allow once, and nothing waits any more.
+    a.ctx
+        .first_answer(ContactFirstAnswer {
+            contact: a_alias.clone(),
+            export: "research".into(),
+            answer: FirstContact::Allow,
+        })
+        .await
+        .unwrap();
+    assert!(a.ctx.first_waiting().await.is_empty());
+    let now = client
+        .get_task(&a2a_types::GetTaskRequest {
+            id: first.id.clone(),
+            history_length: Some(0),
+            tenant: None,
+        })
+        .await
+        .unwrap();
+    assert_ne!(now.status.state, a2a_types::TaskState::AuthRequired);
+    assert_ne!(
+        now.status.state,
+        a2a_types::TaskState::Failed,
+        "it was let through, not revoked: {:?}",
+        now.status.message.as_ref().and_then(|m| m.text())
+    );
+}

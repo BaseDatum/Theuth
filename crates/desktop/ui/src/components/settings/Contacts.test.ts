@@ -12,6 +12,7 @@ import { ContactFirstScreen } from '@/components/attention/PlainScreens'
 import { KindActions } from '@/components/hud/Hud'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { Contact } from '@/rpc/bindings/Contact'
+import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
 import type { Export } from '@/rpc/bindings/Export'
 import type { GrantableTool } from '@/rpc/bindings/GrantableTool'
 import type { NearbyAgent } from '@/rpc/bindings/NearbyAgent'
@@ -59,6 +60,7 @@ const BOB: Contact = {
   cap: 'read_only',
   exports: ['research', 'ops-chat'],
   first_contact: { research: 'allow' },
+  shared: [],
   blocked: false,
   paired_ms: NOW,
 }
@@ -98,6 +100,7 @@ const api = {
   contact_update: vi.fn(async (_name: string, _patch: unknown) => BOB),
   contact_remove: vi.fn(async (_name: string, _block: boolean) => null),
   contact_first_answer: vi.fn(async (_c: string, _e: string, _a: string) => null),
+  contact_first_waiting: vi.fn(async (): Promise<FirstWaiting[]> => []),
   a2a_export_put: vi.fn(async (_x: Export) => null),
   a2a_export_remove: vi.fn(async (_name: string) => null),
   list_sessions: vi.fn(async () => [
@@ -157,6 +160,7 @@ beforeEach(() => {
   api.contact_window.mockImplementation(async (open: boolean) => (open ? { ticket: 'theuth-contact:1.MFRGGZDFMZTWQ2LK', expires_ms: NOW + 600_000 } : null))
   api.contact_pair.mockImplementation(async () => CER)
   api.a2a_exports.mockImplementation(async () => EXPORTS)
+  api.contact_first_waiting.mockImplementation(async () => [])
   for (const k of Object.keys(selects)) delete selects[k]
 })
 /** Unmount every root, then empty the page (clearing first would pull nodes out from under React). */
@@ -562,4 +566,78 @@ test('the chat banner names HTTP-peer exports only: a chat shared with a contact
   await reset()
   await mount(createElement(NoticeFor, { session: 's-docs' }))
   await vi.waitFor(() => expect(body()).toContain('Exported: docs → lab'))
+})
+
+const WAIT: FirstWaiting = { contact: 'bob', machine: "Bob's MacBook", export: 'ops-chat', session: 's-ops', since_ms: NOW, waiting: 1, preview: 'hello' }
+
+test('183 F3 Communication: a held first message sits under its export row; Allow once · Always · Block answer it; no machine, no parentheses', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [WAIT, { ...WAIT, contact: 'alice', machine: '' }])
+  await mount(createElement(Network, { state: undefined, session: 's-ops' }))
+  await vi.waitFor(() => expect(body()).toContain("bob (Bob's MacBook) is waiting for you to allow its first message to ops-chat"))
+  expect(body()).toContain('alice is waiting for you to allow its first message to ops-chat')
+  expect(body()).not.toContain('alice ()')
+  const buttons = [...document.querySelectorAll('button')].filter((b) => b.textContent === 'Allow once')
+  expect(buttons).toHaveLength(2)
+  await run(() => (buttons[0] as HTMLElement).click())
+  expect(api.contact_first_answer).toHaveBeenLastCalledWith('bob', 'ops-chat', 'ask')
+  await run(() => [...document.querySelectorAll('button')].filter((b) => b.textContent === 'Always')[0]!.click())
+  expect(api.contact_first_answer).toHaveBeenLastCalledWith('bob', 'ops-chat', 'allow')
+  await run(() => [...document.querySelectorAll('button')].filter((b) => b.textContent === 'Block')[0]!.click())
+  expect(api.contact_first_answer).toHaveBeenLastCalledWith('bob', 'ops-chat', 'block')
+})
+
+test('183 F3 Communication: a held message of this chat whose export has no row still shows; another chat\'s does not', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [
+    { ...WAIT, export: 'ghost', contact: 'carol' },
+    { ...WAIT, export: 'ghost2', contact: 'dave', session: 's-other' },
+  ])
+  await mount(createElement(Network, { state: undefined, session: 's-ops' }))
+  await vi.waitFor(() => expect(body()).toContain('carol (Bob\'s MacBook) is waiting for you to allow its first message to ghost'))
+  expect(body()).not.toContain('dave')
+})
+
+test('183 F3 Contacts: each contact\'s row carries its own waiting line and answers', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [WAIT])
+  await mount(createElement(Contacts))
+  await vi.waitFor(() => expect(body()).toContain("bob (Bob's MacBook) is waiting for you to allow its first message to ops-chat"))
+  expect(body().match(/is waiting for you/g)).toHaveLength(1)
+  await click('Always')
+  expect(api.contact_first_answer).toHaveBeenCalledWith('bob', 'ops-chat', 'allow')
+})
+
+test('183 F10 Contacts: "Shared with you" lists what the contact shares, marking asks-first and paused; nothing when empty', async () => {
+  api.contact_list.mockImplementation(async () => [
+    {
+      ...BOB,
+      shared: [
+        { name: 'ops', title: 'Ops', kind: 'chat', state: 'allowed' },
+        { name: 'bot', title: 'Bot', kind: 'agent', state: 'ask_first' },
+        { name: 'old', title: 'Old', kind: 'chat', state: 'unavailable' },
+      ],
+    },
+    ALICE,
+  ])
+  await mount(createElement(Contacts))
+  expect(body()).toContain('Shared with you: Ops, Bot (asks first), Old (paused)')
+  expect(body().match(/Shared with you/g)).toHaveLength(1)
+})
+
+test('183 F10 Contacts\' access: a granted export reads "<contact> reaches this as …/<export>" with the full form in the tooltip', async () => {
+  await mount(createElement(ContactAccess))
+  expect(body()).toContain('bob reaches this as …/ops-chat')
+  expect(document.querySelector('[title*="peer:<the name bob gave you>/ops-chat"]')).not.toBeNull()
+})
+
+test('183 F2: after Share… the engine stores Always allow and the row shows it; an absent entry shows Ask first', async () => {
+  api.contact_list.mockImplementation(async () => [{ ...BOB, exports: [] }])
+  await mount(createElement(ContactAccess))
+  await click('Share with bob…')
+  api.contact_list.mockImplementation(async () => [{ ...BOB, exports: ['research'], first_contact: { research: 'allow' } }])
+  await click('research@studioagent')
+  await vi.waitFor(() => expect(document.querySelector('[aria-label="First contact from bob to research"]')?.getAttribute('data-value')).toBe('allow'))
+  expect(body()).toContain('A new share starts on "Always allow"')
+  await reset()
+  api.contact_list.mockImplementation(async () => [{ ...BOB, exports: ['research'], first_contact: {} }])
+  await mount(createElement(ContactAccess))
+  expect(document.querySelector('[aria-label="First contact from bob to research"]')?.getAttribute('data-value')).toBe('ask')
 })

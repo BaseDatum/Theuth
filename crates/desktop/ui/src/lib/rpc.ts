@@ -121,6 +121,8 @@ export const queryKeys = {
   contacts: ['a2a', 'contacts'] as const,
   /** 183 §7.6: `a2a_exports()`, under `a2a`. */
   exports: ['a2a', 'exports'] as const,
+  /** 183: `contact_first_waiting()`, under `a2a` so `A2aChanged` refetches it. */
+  waiting: ['a2a', 'waiting'] as const,
   /** 183 §7.1: `contact_nearby()`, patched in place by `ContactEvent` `contact_nearby`. */
   contactNearby: ['a2a', 'nearby'] as const,
   /** 183 §7.4: every contact `PairCeremony` by id, from `contact_pair` and each `contact_pair` event (no fetch of its own). */

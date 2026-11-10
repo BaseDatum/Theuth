@@ -681,7 +681,6 @@ impl RequestHandler for Handler {
     ) -> Result<SendMessageResponse, A2AError> {
         let principal = self.admit(params).await?;
         validate_send(&req)?;
-        let held = principal.ask_first;
         let history_length = req.configuration.as_ref().and_then(|c| c.history_length);
         let mut response = self
             .ask(A2aSend {
@@ -689,9 +688,6 @@ impl RequestHandler for Handler {
                 request: req,
             })
             .await?;
-        if held {
-            crate::contacts::nudge_attention();
-        }
         if let SendMessageResponse::Task(task) = &mut response {
             trim_history(task, history_length);
         }
@@ -1260,7 +1256,8 @@ mod tests {
                     IrohGate::Contact { .. }
                 ) {
                     let io = crate::contacts::reach::Prefixed::new(line, stream);
-                    let _ = crate::contacts::reach::serve_http(shared, remote, Box::new(io)).await;
+                    let _ = crate::contacts::reach::serve_http(shared, remote, Box::new(io), None)
+                        .await;
                 }
             })
         }

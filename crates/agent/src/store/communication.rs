@@ -665,18 +665,21 @@ async fn accept_in(
             .await?
             .filter(|o| o.recipient == a.sender && o.sender == a.recipient)
             .ok_or(CommError::NotFound)?;
-        match orig.state()? {
-            PeerMessageState::Accepted | PeerMessageState::Consumed => {}
+        let held = match orig.state()? {
+            PeerMessageState::Accepted | PeerMessageState::Consumed => false,
+            PeerMessageState::Held => true,
             _ => anyhow::bail!(CommError::Terminal),
-        }
+        };
+        // 183 F7: a held message's explanation goes once it is answered.
         sqlx::query(
-            "UPDATE peer_exchanges SET state = ?, reply = ?, answered_by = ?, updated_at = ? \
-             WHERE id = ?",
+            "UPDATE peer_exchanges SET state = ?, reply = ?, answered_by = ?, updated_at = ?, \
+             error = CASE WHEN ? THEN NULL ELSE error END WHERE id = ?",
         )
         .bind(PeerMessageState::Replied.as_str())
         .bind(a.body)
         .bind(a.sender)
         .bind(now())
+        .bind(held)
         .bind(&orig.id)
         .execute(&mut *conn)
         .await?;
@@ -1294,7 +1297,7 @@ impl Store {
         Ok(r)
     }
 
-    /// Record a definite failure (`accepted`/`consumed`/`unknown` → `failed`).
+    /// Record a definite failure (`accepted`/`held`/`consumed`/`unknown` → `failed`).
     pub async fn fail_exchange(&self, id: Uuid, error: &str) -> anyhow::Result<PeerReceipt> {
         let mut tx = self.begin_write().await?;
         let r = finish_in(
@@ -1302,6 +1305,7 @@ impl Store {
             id,
             &[
                 PeerMessageState::Accepted,
+                PeerMessageState::Held,
                 PeerMessageState::Consumed,
                 PeerMessageState::Unknown,
             ],
@@ -1310,6 +1314,49 @@ impl Store {
             Some(error),
         )
         .await?;
+        tx.commit().await?;
+        Ok(r)
+    }
+
+    /// 183 F7: the contact's owner holds this outbound message until they press Allow
+    /// (`accepted` → `held`); `why` is the sender's explanation.
+    pub async fn hold_exchange(&self, id: Uuid, why: &str) -> anyhow::Result<PeerReceipt> {
+        let mut tx = self.begin_write().await?;
+        let r = finish_in(
+            &mut tx,
+            id,
+            &[PeerMessageState::Accepted],
+            PeerMessageState::Held,
+            None,
+            Some(why),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(r)
+    }
+
+    /// 183 F7: a held outbound message was allowed and is being delivered (`held` →
+    /// `consumed`, its explanation cleared); `None` when it was not held.
+    pub async fn unhold_exchange(&self, id: Uuid) -> anyhow::Result<Option<PeerReceipt>> {
+        let ids = id.to_string();
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE peer_exchanges SET state = 'consumed', error = NULL, updated_at = ? \
+             WHERE id = ? AND state = 'held'",
+        )
+        .bind(now())
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let r = if n == 1 {
+            exchange_in(&mut tx, &ids)
+                .await?
+                .map(|r| r.receipt())
+                .transpose()?
+        } else {
+            None
+        };
         tx.commit().await?;
         Ok(r)
     }
@@ -1329,7 +1376,11 @@ impl Store {
         let r = finish_in(
             &mut tx,
             id,
-            &[PeerMessageState::Accepted, PeerMessageState::Consumed],
+            &[
+                PeerMessageState::Accepted,
+                PeerMessageState::Held,
+                PeerMessageState::Consumed,
+            ],
             PeerMessageState::Unknown,
             task_id,
             Some(error),
@@ -1349,8 +1400,10 @@ impl Store {
             .await?
             .ok_or(CommError::NotFound)?;
         match row.state()? {
-            PeerMessageState::Accepted | PeerMessageState::Consumed | PeerMessageState::Unknown => {
-            }
+            PeerMessageState::Accepted
+            | PeerMessageState::Held
+            | PeerMessageState::Consumed
+            | PeerMessageState::Unknown => {}
             _ => anyhow::bail!(CommError::Terminal),
         }
         sqlx::query("UPDATE peer_exchanges SET task_id = ?, updated_at = ? WHERE id = ?")

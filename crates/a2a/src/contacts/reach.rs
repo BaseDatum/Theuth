@@ -161,23 +161,39 @@ pub(crate) async fn serve(
     if !matches!(c.gate(&remote), IrohGate::Contact { .. }) {
         anyhow::bail!("a stranger sent a request outside a ceremony");
     }
+    let shared = c.shared.clone();
     serve_http(
-        c.shared.clone(),
+        shared,
         remote,
         Box::new(Prefixed::new(line, stream)),
+        Some(c),
     )
     .await
 }
 
-/// One HTTP/1.1 request on `stream` into the router, as `remote`.
+/// One HTTP/1.1 request on `stream` into the router, as `remote`. 183 F1: with the engine's
+/// context, a contact's `GET` [`super::offers::CARD_PATH`] is its own card (the exports
+/// granted to it as skills) and `POST` [`super::offers::NOTICE_PATH`] makes this engine fetch
+/// the contact's card again.
 pub(crate) async fn serve_http(
     shared: crate::server::Shared,
     remote: String,
     stream: Box<dyn ByteStream>,
+    ctx: Option<Arc<Ctx>>,
 ) -> anyhow::Result<()> {
     let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
-        req.extensions_mut().insert(ContactCaller(remote.clone()));
-        crate::server::app(shared.clone()).oneshot(req.map(axum::body::Body::new))
+        let (shared, remote, ctx) = (shared.clone(), remote.clone(), ctx.clone());
+        async move {
+            if let Some(c) = &ctx
+                && let Some(res) = contact_route(c, &remote, &req).await
+            {
+                return Ok::<_, std::convert::Infallible>(res);
+            }
+            req.extensions_mut().insert(ContactCaller(remote));
+            crate::server::app(shared)
+                .oneshot(req.map(axum::body::Body::new))
+                .await
+        }
     });
     let conn = hyper::server::conn::http1::Builder::new()
         .timer(hyper_util::rt::TokioTimer::new())
@@ -190,6 +206,35 @@ pub(crate) async fn serve_http(
         .await
         .map_err(|_| anyhow::anyhow!("theuth/a2a/1 request exceeded {HTTP_TIMEOUT:?}"))??;
     Ok(())
+}
+
+/// 183 F1: the contact-only routes of [`serve_http`]; `None` for everything else.
+async fn contact_route<B>(
+    c: &Arc<Ctx>,
+    remote: &str,
+    req: &hyper::Request<B>,
+) -> Option<axum::response::Response> {
+    use axum::response::IntoResponse as _;
+    match (req.method(), req.uri().path()) {
+        (&hyper::Method::GET, super::offers::CARD_PATH) => {
+            Some(match c.contact_card(remote).await {
+                Ok(card) => (
+                    [(hyper::header::CACHE_CONTROL, "private, no-store")],
+                    axum::Json(card),
+                )
+                    .into_response(),
+                Err(e) => {
+                    tracing::warn!(%remote, "a2a: contact card: {e}");
+                    hyper::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
+            })
+        }
+        (&hyper::Method::POST, super::offers::NOTICE_PATH) => {
+            c.offers_noticed(remote);
+            Some(hyper::StatusCode::NO_CONTENT.into_response())
+        }
+        _ => None,
+    }
 }
 
 /// Where to dial a contact: its pinned id and the latest hints for it.

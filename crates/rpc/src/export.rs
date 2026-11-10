@@ -117,6 +117,7 @@ async fn export_bindings() {
         a2a::contacts::ExportTarget,
         a2a::contacts::Export,
         a2a::contacts::ContactEvent,
+        a2a::contacts::FirstWaiting,
         crate::search::SearchResponse,
         crate::search::SearchGroup,
         ::search::SearchCategory,
