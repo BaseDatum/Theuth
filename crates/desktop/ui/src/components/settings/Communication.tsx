@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { Peers } from '@/components/chat/Peers'
 import { Dot, Empty, Row, Section, errorText, refreshInfo, useAction } from '@/components/settings/shared'
 import { ContactAccess, WaitingRow } from '@/components/settings/Contacts'
-import { CAP, MODE_LABEL, fingerprint, modeOf, useContacts, useFirstWaiting } from '@/lib/contacts'
+import { CAP, MODE_LABEL, capBinds, fingerprint, modeOf, useContacts, useFirstWaiting } from '@/lib/contacts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -345,7 +345,7 @@ export function Network({ state, session = null }: { state: CommunicationState |
               description={[
                 c.machine,
                 `theuth/a2a/1 over iroh · pinned ${c.fingerprint || fingerprint(c.endpoint)}`,
-                CAP[c.cap],
+                capBinds(c) && CAP[c.cap],
                 c.exports.length > 0 ? `may reach ${c.exports.map((n) => `${n} (${modeOf(c, n)})`).join(', ')}` : 'reaches nothing yet',
               ]
                 .filter(Boolean)

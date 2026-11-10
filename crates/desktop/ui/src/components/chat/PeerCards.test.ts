@@ -8,6 +8,7 @@ import type * as Rpc from '@/lib/rpc'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { WireEvent } from '@/rpc/events'
 import { apply, empty, fromHistory } from '@/store/reduce'
+import { active } from '@/store/engine-scope'
 import type { Entry } from '@/store/sessions'
 import { Message } from './Message'
 import { MessagePeer, useAnswerDrafts } from './MessagePeer'
@@ -263,6 +264,37 @@ test('186 D7: a full contact message reads like a mesh peer (Markdown, no outsid
     expect(plain).toContain('See **this** [link](https://example.com)')
     expect(plain).not.toContain('data-streamdown')
     expect(plain).not.toContain('Contact · full')
+  }
+})
+
+test('186: a send card answers a full contact in Markdown (its reply is an ordinary peer message); cautious, null and a receipt reply stay plain', () => {
+  const tool = send('peer:sky/ops', `peer:sky/ops accepted id=${A}`)
+  const reply = (contact_mode: 'full' | 'cautious' | null): Entry => ({ id: 'r1', kind: 'peer', from: 'peer:sky/ops', text: 'Done: **merged**', origin: { id: B, from: 'peer:sky/ops', reply_to: A, scope: null, contact_mode } })
+  const card = (contact_mode: 'full' | 'cautious' | null) => {
+    const store = active().sessions
+    store.setState((s) => ({ sessions: { ...s.sessions, s: { ...empty('s'), entries: [tool, reply(contact_mode)] } } }))
+    // Server rendering reads zustand's initial state: let it read the live one.
+    Object.assign(store, { getInitialState: store.getState })
+    return render(h(SendCard, { tool, session: 's' }))
+  }
+  try {
+    record(A, 'consumed')
+    const full = card('full')
+    expect(full).toContain('Delivery: read')
+    expect(full).toContain('data-streamdown')
+    expect(full).not.toContain('Done: **merged**')
+    for (const m of ['cautious', null] as const) {
+      const plain = card(m)
+      expect(plain).toContain('Done: **merged**')
+      expect(plain).not.toContain('data-streamdown')
+    }
+    // A reply inside the receipt is the cautious turn text, not the peer message: plain even beside a full answer.
+    record(A, 'replied', { reply: 'Turn **text**' })
+    const receipt = card('full')
+    expect(receipt).toContain('Turn **text**')
+    expect(receipt).not.toContain('data-streamdown')
+  } finally {
+    active().sessions.setState((s) => ({ sessions: { ...s.sessions, s: empty('s') } }))
   }
 })
 

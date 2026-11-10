@@ -9,7 +9,7 @@ import { age } from '@/components/tasks/helpers'
 import { useAgents, useMesh, useTask } from '@/components/tasks/queries'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
-import { FIRST_ANSWERS, LIMITED, contactFirstOf } from '@/lib/contacts'
+import { FIRST_ANSWERS, contactFirstOf, modeLines, useExports, useFirstWaiting } from '@/lib/contacts'
 import { useSecretRequests } from '@/store/approvals'
 import { useAnswered } from '@/store/double'
 import { Body, SectionTitle, useResolved } from './shared'
@@ -148,9 +148,12 @@ export function HomeScreen({ item }: { item: AttentionItem }) {
   return <Plain item={item}>{item.detail && <p className="text-sm text-fg-secondary">{item.detail}</p>}</Plain>
 }
 
-/** 183 §7.6 (W-27): a contact's first task to one export waits for an answer — who, what it wants to reach, the limited-trust line; Allow once · Always · Block in the bar. */
+/** 183 §7.6 (W-27): a contact's first task to one export waits for an answer — who, what it wants to reach, the share's mode (186); Allow once · Always · Block in the bar. */
 export function ContactFirstScreen({ item }: { item: AttentionItem }) {
   const first = contactFirstOf(item.id)
+  // 186: the share's mode, from the held message this item names (none once it is answered).
+  const mode = useFirstWaiting().data?.find((w) => w.contact === first?.contact && w.export === first?.exp)?.mode
+  const kind = useExports().data?.find((x) => x.name === first?.exp)?.target.kind
   return (
     <Plain item={item}>
       <div className="grid gap-4 sm:grid-cols-2">
@@ -159,8 +162,9 @@ export function ContactFirstScreen({ item }: { item: AttentionItem }) {
         {item.detail && <Fact label="Detail">{item.detail}</Fact>}
         <Fact label="Waiting">{age(item.waiting_since_ms ?? item.at_ms)}</Fact>
       </div>
+      {mode && <p className="text-sm text-fg-secondary">{modeLines([mode], kind)[0]}</p>}
       <p className="text-sm text-fg-secondary">
-        {LIMITED} Until you answer, the sender sees "waiting for {first?.contact ?? 'you'} to allow". {FIRST_ANSWERS}
+        Until you answer, the sender sees "waiting for {first?.contact ?? 'you'} to allow". {FIRST_ANSWERS}
       </p>
     </Plain>
   )

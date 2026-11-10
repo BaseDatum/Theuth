@@ -1236,7 +1236,7 @@ export function Composer({
       {session && <QueuedChips session={session} onEdit={editQueued} />}
       {contact && (
         // 183 §12.10: a contact's capped turn runs in this exported chat; 186 D8: the owner's messages queue behind it.
-        <div className="flex items-center justify-end gap-2 pb-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 pb-2">
           <span role="status" className="rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary" title={`${CAP[contact.cap as Risk] ?? contact.cap.replaceAll('_', ' ')} · ${contactName}'s turn`}>
             Runs after {contactName}&apos;s turn
           </span>

@@ -340,7 +340,7 @@ async function cancelAll(): Promise<void> {
   const api = useConnection.getState().api
   if (!api) return
   const running = Object.values(useSessions.getState().sessions).filter((s) => s.running)
-  await Promise.all(running.map((s) => api.cancel(s.id).catch(() => undefined)))
+  await Promise.all(running.map((s) => api.cancel(s.id, null, 'stop').catch(() => undefined)))
   if (running.length) toast(`cancelled ${running.length} sessions`)
 }
 

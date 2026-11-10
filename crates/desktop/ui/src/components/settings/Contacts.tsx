@@ -24,7 +24,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { CAP, LIMITED, MODE_LABEL, exportName, fingerprint, modeHint, modeOf, names, updateNeeded, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { CAP, MODE_LABEL, PAIRED_RULE, SHARE_RULE, capBinds, exportName, fingerprint, modeHint, modeOf, names, updateNeeded, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -162,7 +162,7 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
         </Button>
       }
     >
-      <p className="text-[13px] text-fg-secondary">Other people's machines. {LIMITED}</p>
+      <p className="text-[13px] text-fg-secondary">Other people's machines. {SHARE_RULE}</p>
       {contacts.isPending && <Empty>Loading…</Empty>}
       {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
       {contacts.data?.length === 0 && <Empty>No contacts yet.</Empty>}
@@ -174,7 +174,7 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
               {c.blocked && <span className="rounded-full bg-danger/10 px-1.5 text-xs text-danger">blocked</span>}
             </div>
             <div className="text-[13px] text-fg-secondary">
-              {[c.machine, CAP[c.cap]].filter(Boolean).join(' · ')}
+              {[c.machine, capBinds(c) && CAP[c.cap]].filter(Boolean).join(' · ')}
               <span className="ml-2 font-mono text-xs text-fg-tertiary" title={c.endpoint}>
                 {c.fingerprint || fingerprint(c.endpoint)}
               </span>
@@ -258,11 +258,11 @@ export type CeremonyView = PairView | 'mismatch'
 
 const LIMITED_ID = 'contact-limited-trust'
 
-function Limited({ id }: { id?: string }) {
+function Limited({ id, children }: { id?: string; children: ReactNode }) {
   return (
     <div className="flex items-start gap-2 rounded-lg border border-border-subtle bg-layer-2 px-3 py-2 text-[13px] text-fg-secondary">
       <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <p id={id}>{LIMITED}</p>
+      <p id={id}>{children}</p>
     </div>
   )
 }
@@ -347,7 +347,7 @@ export function CeremonyBody({
             </div>
             <p className="mt-3 text-sm text-fg-secondary">Check that {name} shows the same code</p>
           </div>
-          <Limited id={LIMITED_ID} />
+          <Limited id={LIMITED_ID}>{PAIRED_RULE}</Limited>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {view === 'waiting' ? (
               <span className="mr-auto text-[13px] text-fg-secondary">Waiting for {name} to press Accept…</span>
@@ -617,7 +617,7 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
                 </TabsContent>
               </Tabs>
             )}
-            <Limited />
+            <Limited>{PAIRED_RULE}</Limited>
           </div>
         )}
       </DialogContent>
@@ -638,8 +638,8 @@ export function useGrant() {
           exp = { name: exportName(title, all.map((x) => x.name)), target, description: title, paused: null }
           await api.a2a_export_put(exp)
         }
-        if (!contact.exports.includes(exp.name))
-          await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name], modes: { ...contact.modes, [exp.name]: mode } })
+        // Only this entry: the engine merges modes entry by entry, so a stale snapshot never re-sends another export's mode.
+        if (!contact.exports.includes(exp.name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name], modes: { [exp.name]: mode } })
       })(),
     { keys: [queryKeys.contacts, queryKeys.exports] },
   )
@@ -648,7 +648,7 @@ export function useGrant() {
 /** 186: change the mode of `contact`'s grant of `exp` (a new epoch on the engine, D2). */
 export function useMode() {
   const api = useApi()
-  return useAction(({ contact, exp, mode }: { contact: Contact; exp: string; mode: ShareMode }) => api.contact_update(contact.name, { ...NO_PATCH, modes: { ...contact.modes, [exp]: mode } }), {
+  return useAction(({ contact, exp, mode }: { contact: Contact; exp: string; mode: ShareMode }) => api.contact_update(contact.name, { ...NO_PATCH, modes: { [exp]: mode } }), {
     keys: [queryKeys.contacts],
   })
 }
@@ -685,7 +685,7 @@ export function ModeButtons({ c, what, kind, disabled, onPick }: { c: Contact; w
 function ModeSelect({ c, exp, mode, onChange, disabled }: { c: Contact; exp: string; mode: ShareMode; onChange: (m: ShareMode) => void; disabled: boolean }) {
   return (
     <Select value={mode} disabled={disabled} onValueChange={(v) => onChange(v as ShareMode)}>
-      <SelectTrigger size="sm" className="w-44 shrink-0" aria-label={`Mode of ${exp} for ${c.name}`}>
+      <SelectTrigger size="sm" className="w-44 shrink-0 pointer-coarse:min-h-11" aria-label={`Mode of ${exp} for ${c.name}`}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -750,7 +750,7 @@ export function ContactAccess() {
       }
     >
       <p className="text-[13px] text-fg-secondary">
-        {LIMITED} A cautious share opens a fresh capped session per agent, or one capped turn per message in a shared chat. A full one lets their agent and yours talk freely, like agents in your mesh, with your agent's normal tools and approvals.
+        {SHARE_RULE} Cautious shares open a fresh capped session per agent, or one capped turn per message in a shared chat.
       </p>
       <p className="text-[13px] text-fg-secondary">A new share starts on "Always allow". "Ask first" holds a contact's first message until you press Allow.</p>
       <p className="text-[13px] text-fg-secondary">{toolsLine(exports.data ?? [])}</p>
@@ -859,7 +859,7 @@ function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; expo
               }}
             />
             <div>
-              <Button variant="ghost" size="sm" onClick={() => setChosen(null)}>
+              <Button variant="ghost" size="sm" className="pointer-coarse:min-h-11" onClick={() => setChosen(null)}>
                 Back
               </Button>
             </div>
@@ -1015,7 +1015,7 @@ export function SharingItems({ session, onShare }: { session: string; onShare: (
 
 /**
  * 183 §12.10: ⋯ Share with contact… — the open chat shared with (or taken back from) each contact. Sharing creates the
- * chat's export on first use; the contact's agents can then send into it and see only the answers to their own messages.
+ * chat's export on first use; the contact's agents can then send into it and see only what this chat's agent sends back.
  * 186: sharing is two equal buttons, Full collaboration or Cautious; a shared row shows its mode and changes it.
  */
 export function ShareDialog({ session, title, onClose }: { session: string; title: string; onClose: () => void }) {
@@ -1029,11 +1029,18 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
   const busy = grant.isPending || ungrant.isPending
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      {/* 186: no grant button takes focus on open, so Enter never shares in full by accident. */}
+      <DialogContent
+        className="sm:max-w-md"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement).focus()
+        }}
+      >
         <div className="flex flex-col gap-4">
           <div>
             <DialogTitle className="text-lg font-semibold">Share this chat with a contact</DialogTitle>
-            <p className="text-[13px] text-fg-secondary">Their agents can send messages into “{title}”. They see only the answers to their own messages: no transcript, no live view, no typing.</p>
+            <p className="text-[13px] text-fg-secondary">Their agents can send messages into “{title}”. They see only what this chat's agent sends back: no transcript, no live view, no typing.</p>
           </div>
           {exp?.paused && <p className="text-[13px] text-warning">Paused ({exp.paused})</p>}
           <div className="flex flex-col">
@@ -1065,7 +1072,7 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
                 )
               })}
           </div>
-          <Limited />
+          <Limited>You can switch this share between Full collaboration and Cautious, or stop sharing, at any time.</Limited>
           <div className="flex flex-wrap justify-end gap-2">
             <Button
               variant="ghost"

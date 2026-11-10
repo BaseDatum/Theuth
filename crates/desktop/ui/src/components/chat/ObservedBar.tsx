@@ -118,6 +118,6 @@ export function ObservedBar({ session }: { session: string }) {
   const parent = useSessionField(session, 'parent')
   const parentAgent = useSessions((s) => (parent ? s.sessions[parent]?.agent : undefined))
   if (!observed) return null
-  const stop = () => api.cancel(session, 'root').catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
+  const stop = () => api.cancel(session, 'root', 'stop').catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
   return <ObservedBarView observed={observed} harness={harnessName(observed, parentAgent)} parent={parent} onStop={() => void stop()} />
 }
