@@ -127,10 +127,13 @@ pub struct FirstWaiting {
     /// 186 review 1: not a first-contact hold but a message admitted and waiting behind the
     /// chat's running turn (it starts when that turn ends); only `contact_first_waiting` lists
     /// these, never the Attention item.
+    /// An older engine sends neither field (TS: optional).
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub queued: bool,
     /// 186 review 1: a queued message's place in the chat's queue (1 = next); `0` for a hold.
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
     pub position: u32,
 }
 
