@@ -6512,7 +6512,21 @@ impl Message<PeersRead> for Agents {
             .map(str::to_lowercase)
             .filter(|q| !q.is_empty());
         let mut rows = self.directory_from(m.session, read)?;
-        arrange(&mut rows, m.active_only);
+        // 183 F1: contacts' offers older than the TTL are refetched (the next listing shows
+        // them); this one answers from what is cached.
+        if self.network.offers_due() {
+            self.rt
+                .publish(crate::communication::network::ContactOffersStale)
+                .await;
+        }
+        arrange(
+            &mut rows,
+            m.active_only,
+            m.kind == Some(crate::communication::DirectoryKind::Contact),
+        );
+        if let Some(k) = m.kind {
+            rows.retain(|p| k.admits(p));
+        }
         if let Some(q) = &query {
             rows.retain(|p| peer_matches(p, q));
         }
@@ -6802,20 +6816,71 @@ fn peer_activity(a: SessionActivity, stalled_secs: Option<u64>) -> PeerActivity 
     }
 }
 
-/// `discover_peers` order and `active_only` filter (62 §3.4): working rows
-/// first, then most recently active; ties keep [`Agents::directory`]'s order.
-/// Remote rows have no activity and stay last.
-fn arrange(rows: &mut Vec<PeerInfo>, active_only: bool) {
+/// 183 review 1: a contact's export rows listed by default; `kind: contact` lists them all.
+const CONTACT_ROWS: usize = 8;
+
+/// `discover_peers` order and `active_only` filter (62 §3.4). 183 F6 (review 1): first the
+/// asking session's own tree (parent, children, siblings, ancestors, descendants), then
+/// contacts with their export rows (at most [`CONTACT_ROWS`] each unless `all_contact_rows`;
+/// the contact's row then says how to list the rest), then everything else (other roots,
+/// stored sessions, remote agents); inside each, working rows first, then most recently
+/// active, ties in [`Agents::directory`]'s order. `active_only` keeps contacts.
+fn arrange(rows: &mut Vec<PeerInfo>, active_only: bool, all_contact_rows: bool) {
+    use crate::communication::is_contact_row;
     if active_only {
-        rows.retain(|p| p.activity.as_ref().is_some_and(PeerActivity::active));
+        rows.retain(|p| is_contact_row(p) || p.activity.as_ref().is_some_and(PeerActivity::active));
     }
+    let group = |p: &PeerInfo| {
+        if is_contact_row(p) {
+            1
+        } else if matches!(
+            p.relationship,
+            PeerRelationship::Parent
+                | PeerRelationship::Child
+                | PeerRelationship::Sibling
+                | PeerRelationship::Ancestor
+                | PeerRelationship::Descendant
+        ) {
+            0
+        } else {
+            2
+        }
+    };
     rows.sort_by_key(|p| {
         let a = p.activity.as_ref();
-        std::cmp::Reverse((
-            a.is_some_and(PeerActivity::active),
-            a.and_then(|a| a.last_active),
-        ))
+        (
+            group(p),
+            std::cmp::Reverse((
+                a.is_some_and(PeerActivity::active),
+                a.and_then(|a| a.last_active),
+            )),
+        )
     });
+    if all_contact_rows {
+        return;
+    }
+    let mut listed: HashMap<String, usize> = HashMap::new();
+    let mut hidden: HashMap<String, usize> = HashMap::new();
+    rows.retain(|p| {
+        let Some((contact, _)) = p.name.split_once('/').filter(|_| is_contact_row(p)) else {
+            return true;
+        };
+        let n = listed.entry(contact.to_owned()).or_default();
+        *n += 1;
+        if *n <= CONTACT_ROWS {
+            return true;
+        }
+        *hidden.entry(contact.to_owned()).or_default() += 1;
+        false
+    });
+    for p in rows.iter_mut().filter(|p| is_contact_row(p)) {
+        if let Some(n) = hidden.get(&p.name) {
+            p.title = Some(format!(
+                "+{n} more: discover_peers(kind=\"contact\", query=\"{}\")",
+                p.name
+            ));
+        }
+    }
 }
 
 /// `s` is a strict descendant of `ancestor` among `rows`.
@@ -6843,11 +6908,14 @@ impl Message<GetPeerMessage> for Agents {
         m: GetPeerMessage,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.store
+        let mut r = self
+            .store
             .peer_record(m.session, m.id)
             .await
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| "unknown message".to_string())
+            .ok_or_else(|| "unknown message".to_string())?;
+        self.network.name_peers(&mut r);
+        Ok(r)
     }
 }
 
@@ -6904,6 +6972,9 @@ impl Message<ListPeerMessages> for Agents {
                 }
             }
             messages.sort_by_key(|m| std::cmp::Reverse(m.created_at));
+            for r in &mut messages {
+                self.network.name_peers(r);
+            }
             return Ok(PeerMessagePage {
                 awaiting_answer: received,
                 awaiting_reply: sent,
@@ -6911,11 +6982,14 @@ impl Message<ListPeerMessages> for Agents {
                 cursor: None,
             });
         }
-        let messages = self
+        let mut messages = self
             .store
             .peer_records(m.session, after, limit)
             .await
             .map_err(|e| e.to_string())?;
+        for r in &mut messages {
+            self.network.name_peers(r);
+        }
         let cursor = (messages.len() == usize::from(limit))
             .then(|| messages.last().map(|r| r.receipt.id.to_string()))
             .flatten();
@@ -14379,15 +14453,63 @@ pub(crate) mod tests {
             row("idle-new", Some(act(PeerLiveState::Idle, 0, 10))),
             row("running", Some(act(PeerLiveState::Running, 0, 900))),
         ];
-        arrange(&mut rows, false);
+        arrange(&mut rows, false, false);
         let order: Vec<&str> = rows.iter().map(|r| r.address.as_str()).collect();
         assert_eq!(
             order,
             ["pty", "running", "idle-new", "idle-old", "peer:lab"]
         );
-        arrange(&mut rows, true);
+        arrange(&mut rows, true, false);
         let order: Vec<&str> = rows.iter().map(|r| r.address.as_str()).collect();
         assert_eq!(order, ["pty", "running"]);
+
+        // 183 F6 (review 1): the own tree first, then contacts with at most 8 export rows
+        // each (the contact's row names the call that lists the rest), then the rest;
+        // active_only keeps contacts; `kind: contact` lists every row.
+        let contact = |address: &str| PeerInfo {
+            kind: PeerKind::A2a,
+            relationship: PeerRelationship::Remote,
+            tags: vec!["contact".into()],
+            name: address.trim_start_matches("peer:").into(),
+            ..row(address, None)
+        };
+        let child = PeerInfo {
+            relationship: PeerRelationship::Child,
+            ..row("kid", Some(act(PeerLiveState::Idle, 0, 5000)))
+        };
+        let mut all = vec![
+            row("stored", Some(act(PeerLiveState::Idle, 0, 1))),
+            contact("peer:sky"),
+        ];
+        all.extend((0..10).map(|i| contact(&format!("peer:sky/e{i}"))));
+        all.push(child);
+        let mut rows = all.clone();
+        arrange(&mut rows, false, false);
+        let order: Vec<&str> = rows.iter().map(|r| r.address.as_str()).collect();
+        let mut want = vec!["kid", "peer:sky"];
+        let shared: Vec<String> = (0..8).map(|i| format!("peer:sky/e{i}")).collect();
+        want.extend(shared.iter().map(String::as_str));
+        want.push("stored");
+        assert_eq!(order, want);
+        assert_eq!(
+            rows[1].title.as_deref(),
+            Some("+2 more: discover_peers(kind=\"contact\", query=\"sky\")")
+        );
+        let mut rows = all.clone();
+        arrange(&mut rows, true, false);
+        assert_eq!(
+            rows.len(),
+            9,
+            "active_only keeps the contact and its 8 rows"
+        );
+        let mut rows = all;
+        arrange(&mut rows, false, true);
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.address.starts_with("peer:sky/"))
+                .count(),
+            10
+        );
     }
 
     /// 183 §4.5 (D4): the row's messaging opt-out is applied when the actor
@@ -16569,7 +16691,7 @@ pub(crate) mod tests {
             Some(false),
             "183 §6.6: a remote row says whether its owner is connected"
         );
-        arrange(&mut rows, true);
+        arrange(&mut rows, true, false);
         assert!(
             rows.is_empty(),
             "remote activity is unknown: active_only keeps none"
@@ -17554,6 +17676,140 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(released, "the spawn permit goes when y's turn ends");
+    }
+
+    /// 183 F11: a contact's first message waiting for the owner never blocks the chat it
+    /// asks for: the owner's own turn runs, another session's peer message is delivered, an
+    /// allowed message into the same chat is admitted and started (on v2.19.0 it queued
+    /// behind the held one), and Allow once then queues the held one as any admitted message.
+    #[tokio::test]
+    async fn a_waiting_first_message_leaves_the_chat_working() {
+        use crate::communication::network::{A2aPrincipal, ContactsHeld, contact_endpoint};
+        let (_scratch, mut a) = agents_with(true).await;
+        let mut rx = tap(&a.rt).await;
+        // Two owner roots: they may message each other (as two chats of the owner do).
+        let owner = crate::communication::PeerScope::Owner;
+        let chat = a.new_root(None, owner, None, None).await.unwrap();
+        let other = a.new_root(None, owner, None, None).await.unwrap();
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = A2aPrincipal {
+            binding: binding.id,
+            export: "hi-there".into(),
+            session: chat,
+            route: CancellationToken::new(),
+            contact: Some(crate::communication::ContactOrigin {
+                contact: "bob".into(),
+                machine: "b".into(),
+                export: "hi-there".into(),
+                cap: tools::Risk::ReadOnly,
+                holder: "me".into(),
+                tools: Vec::new(),
+            }),
+            ask_first: true,
+        };
+        let mut m = a2a_types::Message::new(
+            a2a_types::Role::User,
+            vec![a2a_types::Part::text("hello owner")],
+        );
+        m.message_id = "m-1".into();
+        let req = a2a_types::SendMessageRequest {
+            message: m,
+            configuration: None,
+            metadata: None,
+            tenant: None,
+        };
+        let held = a.admit_send(&principal, &req).await.unwrap().task;
+        assert_eq!(
+            held.status,
+            crate::store::communication::A2aTaskStatus::AuthRequired
+        );
+        let agents = Agents::spawn(a);
+        agents
+            .ask(SendInput {
+                session: Some(chat),
+                text: "the owner's own turn".into(),
+                files: Vec::new(),
+                delivery: Default::default(),
+                id: None,
+                channel: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            next_turn(&mut rx, chat)
+                .await
+                .contains("the owner's own turn")
+        );
+        agents.tell(finished(chat)).await.unwrap();
+        agents
+            .ask(Deliver {
+                from: other,
+                to: format!("session:{chat}"),
+                text: "a peer's message".into(),
+                await_reply: false,
+                reply_to: None,
+                request_id: None,
+                admitted: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(next_turn(&mut rx, chat).await.contains("a peer's message"));
+        let waiting = agents.ask(ContactsHeld).await.unwrap();
+        assert_eq!(
+            waiting.len(),
+            1,
+            "the first message still waits for the owner"
+        );
+        assert_eq!(waiting[0].preview, "hello owner");
+        agents.tell(finished(chat)).await.unwrap();
+
+        let mut m = a2a_types::Message::new(
+            a2a_types::Role::User,
+            vec![a2a_types::Part::text("an allowed message")],
+        );
+        m.message_id = "m-2".into();
+        let allowed = agents
+            .ask(crate::communication::network::A2aSend {
+                principal: A2aPrincipal {
+                    ask_first: false,
+                    ..principal
+                },
+                request: a2a_types::SendMessageRequest {
+                    message: m,
+                    configuration: Some(a2a_types::SendMessageConfiguration {
+                        accepted_output_modes: Some(vec!["text/plain".into()]),
+                        task_push_notification_config: None,
+                        history_length: Some(0),
+                        return_immediately: Some(true),
+                    }),
+                    metadata: None,
+                    tenant: None,
+                },
+            })
+            .await
+            .unwrap();
+        let a2a_types::SendMessageResponse::Task(allowed) = allowed else {
+            panic!("a task")
+        };
+        assert_ne!(
+            allowed.status.state,
+            a2a_types::TaskState::Submitted,
+            "admitted and started though one waits for the owner"
+        );
+        let released = agents
+            .ask(crate::communication::network::ContactRelease {
+                contact: "bob".into(),
+                export: Some("hi-there".into()),
+                allow: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(released, 1);
+        assert!(agents.ask(ContactsHeld).await.unwrap().is_empty());
     }
 
     /// T3: a queued child stopped by the user never gets its brief: the

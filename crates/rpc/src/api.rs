@@ -2671,6 +2671,10 @@ pub trait Api {
         export: String,
         answer: a2a::config::FirstContact,
     ) -> RpcResult<()>;
+    /// 183 F3, F11: every (contact, export) whose first message waits for the owner's
+    /// answer — the source of the `contact_first` Attention item; refetch on `A2aChanged`.
+    #[method(name = "contact_first_waiting")]
+    async fn contact_first_waiting(&self) -> RpcResult<Vec<a2a::contacts::FirstWaiting>>;
     /// Every sandbox record (docker, ssh, vm) with state, resources, shares, metrics (79 §4.5).
     #[method(name = "sandboxes_list")]
     async fn sandboxes_list(&self) -> RpcResult<Vec<sandbox::SandboxInfo>>;
@@ -5994,6 +5998,7 @@ impl ApiServer for Server {
                 cursor,
                 limit,
                 active_only: false,
+                kind: None,
             },
         )
         .await
@@ -9406,6 +9411,10 @@ impl ApiServer for Server {
             answer,
         };
         contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
+    }
+
+    async fn contact_first_waiting(&self) -> RpcResult<Vec<a2a::contacts::FirstWaiting>> {
+        contacts(&self.rt, a2a::contacts::ContactsWaiting, Ok(Vec::new())).await
     }
 
     // 79: sandbox VMs. Each method is one `ask` to the `SandboxActor` (crates/sandbox/src/actor.rs).

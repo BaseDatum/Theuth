@@ -66,6 +66,24 @@ pub const FOLLOW_MAX: Duration = Duration::from_secs(6 * 3600);
 const POLL_MIN: Duration = Duration::from_secs(2);
 const POLL_MAX: Duration = Duration::from_secs(30);
 
+/// 183 review 1, 2: the follower's deadline at `now`. A contact's owner may take up to the
+/// hold TTL to answer a first message; while the task waits for that (`waiting`:
+/// `AUTH_REQUIRED`) the deadline slides to `now + FOLLOW_MAX`, never past `started +
+/// HOLD_TTL + FOLLOW_MAX`, so the answer after a late Allow still reaches the sender.
+fn follow_deadline(
+    started: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    now: tokio::time::Instant,
+    waiting: bool,
+) -> tokio::time::Instant {
+    if !waiting {
+        return deadline;
+    }
+    deadline
+        .max(now + FOLLOW_MAX)
+        .min(started + agent::communication::network::HOLD_TTL + FOLLOW_MAX)
+}
+
 type Client = A2AClient<Box<dyn Transport>>;
 
 /// A resolved card and its negotiated client.
@@ -604,10 +622,17 @@ impl PeerClient {
         }
         let _done = Done(&self, task.id.clone());
 
-        let deadline = tokio::time::Instant::now() + FOLLOW_MAX;
+        let started = tokio::time::Instant::now();
+        let mut deadline = started + FOLLOW_MAX;
         let mut seen = fingerprint(&task);
         let mut backoff = POLL_MIN;
         loop {
+            deadline = follow_deadline(
+                started,
+                deadline,
+                tokio::time::Instant::now(),
+                task.status.state == TaskState::AuthRequired,
+            );
             if self.generation.is_cancelled() {
                 self.report(
                     exchange,
@@ -621,7 +646,7 @@ impl PeerClient {
                     exchange,
                     RemoteUpdate::Unknown(format!(
                         "remote task not terminal after {}s",
-                        FOLLOW_MAX.as_secs()
+                        (deadline - started).as_secs()
                     )),
                 )
                 .await;
@@ -1050,6 +1075,35 @@ fn refused_before_send(e: &A2AError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 183 review 2: a held task keeps its follower past FOLLOW_MAX, sliding with the wait,
+    /// but never past start + HOLD_TTL + FOLLOW_MAX; a task not waiting keeps its deadline.
+    #[test]
+    fn the_follow_deadline_slides_while_held_up_to_the_ceiling() {
+        use agent::communication::network::HOLD_TTL;
+        let t0 = tokio::time::Instant::now();
+        let first = t0 + FOLLOW_MAX;
+        let hour = Duration::from_secs(3600);
+        assert_eq!(follow_deadline(t0, first, t0 + hour, false), first);
+        assert_eq!(
+            follow_deadline(t0, first, t0 + hour, true),
+            t0 + hour + FOLLOW_MAX,
+            "slides while waiting"
+        );
+        let ceiling = t0 + HOLD_TTL + FOLLOW_MAX;
+        assert_eq!(
+            follow_deadline(t0, first, t0 + HOLD_TTL + hour, true),
+            ceiling,
+            "never past the ceiling"
+        );
+        assert_eq!(
+            follow_deadline(t0, ceiling, t0 + 2 * HOLD_TTL, true),
+            ceiling
+        );
+        // Released: the deadline reached so far stands.
+        let slid = follow_deadline(t0, first, t0 + hour, true);
+        assert_eq!(follow_deadline(t0, slid, t0 + 2 * hour, false), slid);
+    }
 
     fn card(ifaces: Vec<AgentInterface>) -> AgentCard {
         AgentCard {

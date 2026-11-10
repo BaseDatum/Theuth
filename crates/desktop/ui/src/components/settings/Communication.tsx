@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Copy, RefreshCw } from 'lucide-react'
+import { Fragment } from 'react'
 import { toast } from 'sonner'
 import { Peers } from '@/components/chat/Peers'
 import { Dot, Empty, Row, Section, errorText, refreshInfo, useAction } from '@/components/settings/shared'
-import { ContactAccess } from '@/components/settings/Contacts'
-import { CAP, fingerprint, useContacts } from '@/lib/contacts'
+import { ContactAccess, WaitingRow } from '@/components/settings/Contacts'
+import { CAP, fingerprint, useContacts, useFirstWaiting } from '@/lib/contacts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -245,7 +246,7 @@ export function Communication({ session, focus }: { session: string | null; focu
         </Section>
       )}
 
-      <Network state={s} />
+      <Network state={s} session={session} />
 
       {hasLocal() && <ContactAccess />}
 
@@ -256,7 +257,7 @@ export function Communication({ session, focus }: { session: string | null; focu
 
 /** 50 §6.1/§10: `a2a_status` with peers, exports, the error and `reload_a2a`. 183 §7: contacts (`contact_list`) are
  * shown as built — theuth/a2a/1 over iroh, pinned, one cap per contact — never as HTTP peers with roots. */
-export function Network({ state }: { state: CommunicationState | undefined }) {
+export function Network({ state, session = null }: { state: CommunicationState | undefined; session?: string | null }) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -270,6 +271,9 @@ export function Network({ state }: { state: CommunicationState | undefined }) {
   })
   const a = status.data
   const contacts = useContacts(hasLocal()).data ?? []
+  const waiting = useFirstWaiting(hasLocal()).data ?? []
+  // This chat's held first messages whose export has no row above still show here.
+  const stray = waiting.filter((w) => w.session === session && !a?.exports.some((x) => x.name === w.export))
   const contactNames = new Set(contacts.map((c) => c.name))
   return (
     <Section
@@ -371,9 +375,12 @@ export function Network({ state }: { state: CommunicationState | undefined }) {
                 }
               />
             ))}
+          {stray.map((w) => (
+            <WaitingRow key={`${w.contact}:${w.export}`} w={w} />
+          ))}
           {a.exports.map((x) => (
+            <Fragment key={x.name}>
             <Row
-              key={x.name}
               label={
                 <span className="flex flex-wrap items-center gap-2">
                   <Dot on={x.peer !== null} />
@@ -409,6 +416,12 @@ export function Network({ state }: { state: CommunicationState | undefined }) {
                 </Button>
               )}
             </Row>
+            {waiting
+              .filter((w) => w.export === x.name)
+              .map((w) => (
+                <WaitingRow key={w.contact} w={w} />
+              ))}
+            </Fragment>
           ))}
         </>
       )}

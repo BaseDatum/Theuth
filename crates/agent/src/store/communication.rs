@@ -42,6 +42,10 @@ pub const PENDING_BYTES_PER_HARNESS: i64 = 32 << 20;
 pub const EXTERNAL_ID_MAX: usize = 256;
 /// `list_a2a_tasks` page bound.
 pub const TASK_PAGE_MAX: u16 = 100;
+/// 183 review 1: why an outbound message a contact's owner held, or had let through, ends
+/// at the sender's restart (nothing follows it any more).
+pub const HELD_AT_RESTART: &str = "the contact's owner may still allow and deliver it, and \
+its answer would not reach this session; check with them before sending it again";
 /// Ancestry walks stop here: deeper is a cycle in persisted topology.
 const LINEAGE_MAX: i64 = 64;
 
@@ -665,18 +669,21 @@ async fn accept_in(
             .await?
             .filter(|o| o.recipient == a.sender && o.sender == a.recipient)
             .ok_or(CommError::NotFound)?;
-        match orig.state()? {
-            PeerMessageState::Accepted | PeerMessageState::Consumed => {}
+        let held = match orig.state()? {
+            PeerMessageState::Accepted | PeerMessageState::Consumed => false,
+            PeerMessageState::Held => true,
             _ => anyhow::bail!(CommError::Terminal),
-        }
+        };
+        // 183 F7: a held message's explanation goes once it is answered.
         sqlx::query(
-            "UPDATE peer_exchanges SET state = ?, reply = ?, answered_by = ?, updated_at = ? \
-             WHERE id = ?",
+            "UPDATE peer_exchanges SET state = ?, reply = ?, answered_by = ?, updated_at = ?, \
+             error = CASE WHEN ? THEN NULL ELSE error END WHERE id = ?",
         )
         .bind(PeerMessageState::Replied.as_str())
         .bind(a.body)
         .bind(a.sender)
         .bind(now())
+        .bind(held)
         .bind(&orig.id)
         .execute(&mut *conn)
         .await?;
@@ -1294,7 +1301,7 @@ impl Store {
         Ok(r)
     }
 
-    /// Record a definite failure (`accepted`/`consumed`/`unknown` → `failed`).
+    /// Record a definite failure (`accepted`/`held`/`consumed`/`unknown` → `failed`).
     pub async fn fail_exchange(&self, id: Uuid, error: &str) -> anyhow::Result<PeerReceipt> {
         let mut tx = self.begin_write().await?;
         let r = finish_in(
@@ -1302,6 +1309,7 @@ impl Store {
             id,
             &[
                 PeerMessageState::Accepted,
+                PeerMessageState::Held,
                 PeerMessageState::Consumed,
                 PeerMessageState::Unknown,
             ],
@@ -1310,6 +1318,49 @@ impl Store {
             Some(error),
         )
         .await?;
+        tx.commit().await?;
+        Ok(r)
+    }
+
+    /// 183 F7: the contact's owner holds this outbound message until they press Allow
+    /// (`accepted` → `held`); `why` is the sender's explanation.
+    pub async fn hold_exchange(&self, id: Uuid, why: &str) -> anyhow::Result<PeerReceipt> {
+        let mut tx = self.begin_write().await?;
+        let r = finish_in(
+            &mut tx,
+            id,
+            &[PeerMessageState::Accepted],
+            PeerMessageState::Held,
+            None,
+            Some(why),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(r)
+    }
+
+    /// 183 F7: a held outbound message was allowed and is being delivered (`held` →
+    /// `consumed`, its explanation cleared); `None` when it was not held.
+    pub async fn unhold_exchange(&self, id: Uuid) -> anyhow::Result<Option<PeerReceipt>> {
+        let ids = id.to_string();
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE peer_exchanges SET state = 'consumed', error = NULL, updated_at = ? \
+             WHERE id = ? AND state = 'held'",
+        )
+        .bind(now())
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let r = if n == 1 {
+            exchange_in(&mut tx, &ids)
+                .await?
+                .map(|r| r.receipt())
+                .transpose()?
+        } else {
+            None
+        };
         tx.commit().await?;
         Ok(r)
     }
@@ -1329,7 +1380,11 @@ impl Store {
         let r = finish_in(
             &mut tx,
             id,
-            &[PeerMessageState::Accepted, PeerMessageState::Consumed],
+            &[
+                PeerMessageState::Accepted,
+                PeerMessageState::Held,
+                PeerMessageState::Consumed,
+            ],
             PeerMessageState::Unknown,
             task_id,
             Some(error),
@@ -1349,8 +1404,10 @@ impl Store {
             .await?
             .ok_or(CommError::NotFound)?;
         match row.state()? {
-            PeerMessageState::Accepted | PeerMessageState::Consumed | PeerMessageState::Unknown => {
-            }
+            PeerMessageState::Accepted
+            | PeerMessageState::Held
+            | PeerMessageState::Consumed
+            | PeerMessageState::Unknown => {}
             _ => anyhow::bail!(CommError::Terminal),
         }
         sqlx::query("UPDATE peer_exchanges SET task_id = ?, updated_at = ? WHERE id = ?")
@@ -1565,13 +1622,31 @@ impl Store {
         .bind(&spare)
         .fetch_all(&mut *tx)
         .await?;
-        let exchanges = rows
+        let mut exchanges = rows
             .iter()
             .map(ExchangeRow::receipt)
             .collect::<anyhow::Result<Vec<_>>>()?;
+        // 183 review 1, 2: an outbound message a contact's owner held (or let through, its
+        // answer still to come) has nothing following it after a restart: its outcome is
+        // `unknown` (bytes have left; it may still be delivered), saying so, so the sender
+        // checks before sending again.
+        let followed: Vec<ExchangeRow> = sqlx::query_as(concat!(
+            "UPDATE peer_exchanges SET state = 'unknown', error = ?, updated_at = ? \
+             WHERE state IN ('held', 'consumed') AND recipient LIKE 'peer:%' \
+               AND recipient_session IS NULL RETURNING ",
+            exchange_cols!()
+        ))
+        .bind(format!("{reason}: {HELD_AT_RESTART}"))
+        .bind(&ts)
+        .fetch_all(&mut *tx)
+        .await?;
+        for r in &followed {
+            exchanges.push(r.receipt()?);
+        }
         let tasks: Vec<TaskRow> = sqlx::query_as(concat!(
-            "UPDATE a2a_tasks SET status = 'failed', error = ?, revision = revision + 1, updated_at = ? \
-             WHERE status NOT IN ('completed', 'failed', 'canceled', 'rejected') RETURNING ",
+            "UPDATE a2a_tasks SET status = 'failed', error = ?, held = 0, revision = revision + 1, \
+             updated_at = ? WHERE status NOT IN ('completed', 'failed', 'canceled', 'rejected') \
+             RETURNING ",
             task_cols!()
         ))
         .bind(reason)
@@ -1954,8 +2029,9 @@ impl Store {
             }
         }
         if status.is_active() && !cur.status.is_active() {
+            // 183 F11: a task held for a contact's owner waits aside.
             let (other,): (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM a2a_tasks WHERE session = ? AND id <> ? \
+                "SELECT COUNT(*) FROM a2a_tasks WHERE session = ? AND id <> ? AND held = 0 \
                  AND status IN ('working', 'input_required', 'auth_required')",
             )
             .bind(cur.session.to_string())
@@ -1968,7 +2044,7 @@ impl Store {
         }
         let n = sqlx::query(
             "UPDATE a2a_tasks SET status = ?, snapshot = ?, error = COALESCE(?, error), \
-             revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?",
+             held = 0, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?",
         )
         .bind(status.as_str())
         .bind(serde_json::to_string(snapshot)?)
@@ -1995,6 +2071,42 @@ impl Store {
         let task = task_in(&mut tx, scope, id)
             .await?
             .ok_or(CommError::NotFound)?;
+        tx.commit().await?;
+        Ok(task)
+    }
+
+    /// 183 W-27, F11: park a contact's first task for its owner's answer: `auth_required`
+    /// (what the contact reads) and `held`, so it is not the session's active task and
+    /// takes no scope ([`Self::active_a2a_task`] and the busy rule skip it). Only from
+    /// `submitted`; the next [`Self::update_a2a_task`] takes it out.
+    pub async fn hold_a2a_task(
+        &self,
+        scope: A2aScope<'_>,
+        id: &str,
+        expected_revision: i64,
+        snapshot: &serde_json::Value,
+    ) -> anyhow::Result<A2aTask> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE a2a_tasks SET status = 'auth_required', snapshot = ?, held = 1, \
+             revision = revision + 1, updated_at = ? \
+             WHERE id = ? AND revision = ? AND status = 'submitted'",
+        )
+        .bind(serde_json::to_string(snapshot)?)
+        .bind(now())
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let task = task_in(&mut tx, scope, id)
+            .await?
+            .ok_or(CommError::NotFound)?;
+        if n != 1 {
+            anyhow::bail!(CommError::Stale {
+                current: task.revision
+            });
+        }
         tx.commit().await?;
         Ok(task)
     }
@@ -2082,12 +2194,13 @@ impl Store {
         row.map(A2aTask::try_from).transpose()
     }
 
-    /// The task holding `session`'s active request scope, if any.
+    /// The task holding `session`'s active request scope, if any (183 F11: a held task
+    /// waits aside and never does).
     pub async fn active_a2a_task(&self, session: SessionId) -> anyhow::Result<Option<A2aTask>> {
         let row: Option<TaskRow> = sqlx::query_as(concat!(
             "SELECT ",
             task_cols!(),
-            " FROM a2a_tasks WHERE session = ? \
+            " FROM a2a_tasks WHERE session = ? AND held = 0 \
              AND status IN ('working', 'input_required', 'auth_required') ORDER BY seq LIMIT 1"
         ))
         .bind(session.to_string())
@@ -3249,5 +3362,174 @@ mod tests {
                 "{bad}: {e}"
             );
         }
+    }
+
+    /// 183 F11 (review 1): a held task waits aside in the store — not the session's active
+    /// task, no bar to another one starting — and a v2.19.0 store (before 0055) holding an
+    /// `auth_required` task opens with `held = 0` (as it behaved then: the active task), which
+    /// the boot accounting fails with `held` clear.
+    #[tokio::test]
+    async fn held_tasks_wait_aside_and_a_pre_0055_store_upgrades() {
+        let (store, session, dir) = fresh().await;
+        let lab = A2aScope {
+            principal: "peer:lab",
+            export: "research",
+        };
+        let ctx = store
+            .create_a2a_context(lab, "ctx-1", session)
+            .await
+            .unwrap();
+        let to = format!("session:{session}");
+        let new = |n: &'static str, task: &'static str| {
+            let mut req = accept("peer:lab", &to, None, None, n);
+            req.request_id = Some(n);
+            (req, task)
+        };
+        let (r1, t1) = new("msg-1", "task-1");
+        let (_, held) = store
+            .accept_a2a_request(
+                lab,
+                &r1,
+                A2aRequest::New {
+                    task_id: t1,
+                    context_id: &ctx.id,
+                    snapshot: snap("submitted"),
+                },
+            )
+            .await
+            .unwrap();
+        let held = store
+            .hold_a2a_task(lab, &held.id, held.revision, &snap("auth-required"))
+            .await
+            .unwrap();
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        assert!(store.active_a2a_task(session).await.unwrap().is_none());
+        let (r2, t2) = new("msg-2", "task-2");
+        let (_, next) = store
+            .accept_a2a_request(
+                lab,
+                &r2,
+                A2aRequest::New {
+                    task_id: t2,
+                    context_id: &ctx.id,
+                    snapshot: snap("submitted"),
+                },
+            )
+            .await
+            .unwrap();
+        let next = store
+            .update_a2a_task(
+                lab,
+                &next.id,
+                next.revision,
+                A2aTaskStatus::Working,
+                &snap("working"),
+                None,
+            )
+            .await
+            .expect("starts though one is held");
+        assert_eq!(
+            store.active_a2a_task(session).await.unwrap().map(|t| t.id),
+            Some(next.id)
+        );
+
+        // A v2.19.0 store: no `held` column, migration 0055 not applied, one task waiting.
+        let path = dir.0.join("sessions.sqlite");
+        store.close().await;
+        drop(store);
+        {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+                .await
+                .unwrap();
+            sqlx::query("ALTER TABLE a2a_tasks DROP COLUMN held")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 55")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        }
+        let store = Store::open(&path, None).await.unwrap();
+        let waiting: Vec<(String, i64)> =
+            sqlx::query_as("SELECT status, held FROM a2a_tasks WHERE id = 'task-1'")
+                .fetch_all(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(waiting, [("auth_required".to_owned(), 0)]);
+        let i = store
+            .fail_interrupted("interrupted_by_restart")
+            .await
+            .unwrap();
+        assert_eq!(i.tasks.len(), 2, "the waiting task and the working one");
+        let after: Vec<(String, i64)> =
+            sqlx::query_as("SELECT status, held FROM a2a_tasks ORDER BY seq")
+                .fetch_all(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(after, [("failed".to_owned(), 0), ("failed".to_owned(), 0)]);
+    }
+
+    /// 183 review 1, 2: at the sender's restart an outbound contact message held by the
+    /// owner, or let through with its answer to come, ends `unknown` with the restart text
+    /// (nothing follows it any more; it may still be delivered); a local message the
+    /// recipient already consumed is left alone.
+    #[tokio::test]
+    async fn a_restart_leaves_followed_contact_messages_unknown_and_local_ones_alone() {
+        let (store, a, _dir) = fresh().await;
+        let b = SessionId::new();
+        store
+            .create_session(b, "m", Some(a), Some("b"), None)
+            .await
+            .unwrap();
+        let from = format!("session:{a}");
+        let held = store
+            .accept_exchange(&accept(&from, "peer:sky", Some(a), None, "first"))
+            .await
+            .unwrap();
+        store.hold_exchange(held.id, "held: sky").await.unwrap();
+        let through = store
+            .accept_exchange(&accept(&from, "peer:sky", Some(a), None, "second"))
+            .await
+            .unwrap();
+        let local = store
+            .accept_exchange(&accept(
+                &from,
+                &format!("session:{b}"),
+                Some(a),
+                Some(b),
+                "local",
+            ))
+            .await
+            .unwrap();
+        store
+            .consume_exchange(local.id, b, 1, ChatMessage::user("local"))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE peer_exchanges SET state = 'consumed' WHERE id = ?")
+            .bind(through.id.to_string())
+            .execute(&store.write)
+            .await
+            .unwrap();
+
+        let i = store
+            .fail_interrupted("interrupted_by_restart")
+            .await
+            .unwrap();
+        let want = format!("interrupted_by_restart: {HELD_AT_RESTART}");
+        for id in [held.id, through.id] {
+            let r = store.exchange_receipt(id).await.unwrap().unwrap();
+            assert_eq!(r.state, PeerMessageState::Unknown, "{id}");
+            assert_eq!(r.error.as_deref(), Some(want.as_str()));
+            assert!(i.exchanges.iter().any(|x| x.id == id), "reported");
+        }
+        let r = store.exchange_receipt(local.id).await.unwrap().unwrap();
+        assert_eq!(
+            r.state,
+            PeerMessageState::Consumed,
+            "the local row survives"
+        );
+        assert!(!i.exchanges.iter().any(|x| x.id == local.id));
     }
 }

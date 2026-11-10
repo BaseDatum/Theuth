@@ -176,6 +176,8 @@ struct Ctx {
     mdns: Arc<dyn contacts::discovery::Mdns>,
     /// 183 §7.4: the window and the ceremonies.
     contacts: Mutex<contacts::Contacts>,
+    /// 183 F1: each contact's last fetched offers, by endpoint id.
+    offers: Mutex<std::collections::HashMap<String, contacts::offers::Cached>>,
 }
 
 #[derive(Default)]
@@ -497,10 +499,36 @@ impl Ctx {
             .filter(|a| !staged.peers.contains_key(*a))
             .cloned()
             .collect();
+        // 183 F4: a contact whose grant epoch rotates, or whose cap changes, keeps a held
+        // first message only for an export whose definition is unchanged (it moves to the new
+        // epoch); every other held message fails now, before an Allow could run it under
+        // authority that is gone.
+        let rebind: Vec<agent::communication::network::RebindHeld> = staged
+            .contacts
+            .iter()
+            .filter(|(alias, f)| {
+                let cap_changed = prev.staged.contacts.get(*alias).map(|c| c.cap) != Some(f.cap);
+                !f.blocked
+                    && prev.staged.peers.contains_key(*alias)
+                    && (cap_changed || !prev.staged.same_grant(&staged, alias))
+            })
+            .filter_map(|(alias, _)| {
+                Some(agent::communication::network::RebindHeld {
+                    contact: alias.clone(),
+                    exports: prev.staged.unchanged_exports(&staged, alias),
+                    route: epochs.get(alias)?.clone(),
+                })
+            })
+            .collect();
         let committed = self
             .ask(&agents, CommitPeerConfig { routes, revoke })
             .await
             .map_err(|e| format!("commit peer configuration: {e}"))?;
+        for m in &rebind {
+            if let Err(e) = agents.ask(m.clone()).await {
+                tracing::warn!("a2a: held first messages across a grant change: {e}");
+            }
+        }
         let bindings: BTreeMap<String, Uuid> = staged
             .peers
             .keys()
@@ -541,13 +569,25 @@ impl Ctx {
                     .collect(),
             })
             .collect();
+        // 183 F1: a contact whose grants here changed hears it and fetches our card again.
+        let notice = contacts::offers::changed(&prev.staged, &live.staged);
         *self.shared.write() = live;
+        // 183 review 2: the old Live admitted until this swap, so a first message it held
+        // after the first ask is checked again (the same answer: kept or failed).
+        for m in rebind {
+            if let Err(e) = agents.ask(m).await {
+                tracing::warn!("a2a: held first messages across a grant change: {e}");
+            }
+        }
         let to = agents.clone();
         tokio::spawn(async move {
             for m in limits {
                 let _ = to.tell(m).await;
             }
         });
+        self.notify_offers(notice);
+        // A rename, removal or block changes whose offers the agent lists, and under what name.
+        self.push_offers().await;
         for old in retired {
             old.cancel();
         }
@@ -791,6 +831,19 @@ impl Ctx {
             net.join_network().await;
         }
         self.rewire_contacts().await;
+        // 183 F1: what each contact shares with us is memory; fetch it again at boot.
+        let eids: Vec<String> = self
+            .shared
+            .read()
+            .staged
+            .contacts
+            .values()
+            .filter(|f| !f.blocked)
+            .map(|f| f.eid.clone())
+            .collect();
+        for eid in eids {
+            self.refresh_offers_soon(&eid);
+        }
     }
 
     /// Contacts' outbound routes ride on the endpoint: once it is attached, a reload
@@ -850,6 +903,36 @@ impl Message<CommunicationChanged> for A2aActor {
     }
 }
 
+impl Message<agent::communication::network::ContactOffersStale> for A2aActor {
+    type Reply = ();
+
+    /// 183 F1: `discover_peers` found the contacts' offers older than the TTL.
+    async fn handle(
+        &mut self,
+        _: agent::communication::network::ContactOffersStale,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        let c = self.ctx.clone();
+        tokio::spawn(async move { c.refresh_stale_offers().await });
+    }
+}
+
+impl Message<agent::communication::network::ContactsHeldChanged> for A2aActor {
+    type Reply = ();
+
+    /// 183 F3, F4, F11: a first-contact hold began or ended, wherever in the agent (held,
+    /// released, failed, revoked, expired): Attention derives again and every
+    /// `contact_first_waiting` reader refetches (`A2aChanged`).
+    async fn handle(
+        &mut self,
+        _: agent::communication::network::ContactsHeldChanged,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        contacts::nudge_attention();
+        self.ctx.rt.publish(A2aChanged {}).await;
+    }
+}
+
 #[async_trait::async_trait]
 impl runtime::Plugin for A2aPlugin {
     fn name(&self) -> &'static str {
@@ -899,6 +982,7 @@ impl runtime::Plugin for A2aPlugin {
             contacts: Mutex::new(contacts::Contacts::new(
                 cfg!(debug_assertions) && std::env::var_os("THEUTH_DEV_CONTACTS_DIR").is_some(),
             )),
+            offers: Mutex::default(),
         });
         let actor = A2aActor::spawn_with_mailbox(
             A2aActor { ctx: ctx.clone() },
@@ -906,6 +990,10 @@ impl runtime::Plugin for A2aPlugin {
         );
         actor.register(A2A_ACTOR)?;
         rt.subscribe::<A2aActor, CommunicationChanged>(&actor).await;
+        rt.subscribe::<A2aActor, agent::communication::network::ContactOffersStale>(&actor)
+            .await;
+        rt.subscribe::<A2aActor, agent::communication::network::ContactsHeldChanged>(&actor)
+            .await;
         if config_error.is_none() {
             tokio::spawn(ctx.init());
         }
@@ -940,6 +1028,7 @@ async fn test_ctx(
         net: std::sync::OnceLock::new(),
         mdns,
         contacts: Mutex::new(contacts::Contacts::new(true)),
+        offers: Mutex::default(),
     });
     if let Some(agents) = agents {
         let policy = agents.ask(PeerPolicy).await.unwrap();

@@ -844,6 +844,7 @@ async fn isolation(r: &mut Rig) {
             cursor: None,
             limit: None,
             active_only: false,
+            kind: None,
         })
         .await
         .unwrap();

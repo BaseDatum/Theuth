@@ -278,6 +278,20 @@ impl Live {
             .map(|(_, p)| p)
     }
 
+    /// 183 F1 (review 1): admit one contact-only request on `theuth/a2a/1` (its card, the
+    /// offers notice) from the contact pinned to `eid`, under the same per-principal rate and
+    /// concurrency bounds `dispatch` applies to the A2A routes.
+    pub(crate) fn admit_contact(&self, eid: &str) -> Result<OwnedSemaphorePermit, StatusCode> {
+        let p = self.contacts.get(eid).ok_or(StatusCode::UNAUTHORIZED)?;
+        if !p.admit_rate() {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+        p.concurrent
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+    }
+
     /// The export exists and its session is effectively enabled right now; an agent export
     /// while agent communication is on (its inbox is checked at admission).
     fn open(&self, export: &str) -> bool {
@@ -681,7 +695,6 @@ impl RequestHandler for Handler {
     ) -> Result<SendMessageResponse, A2AError> {
         let principal = self.admit(params).await?;
         validate_send(&req)?;
-        let held = principal.ask_first;
         let history_length = req.configuration.as_ref().and_then(|c| c.history_length);
         let mut response = self
             .ask(A2aSend {
@@ -689,9 +702,6 @@ impl RequestHandler for Handler {
                 request: req,
             })
             .await?;
-        if held {
-            crate::contacts::nudge_attention();
-        }
         if let SendMessageResponse::Task(task) = &mut response {
             trim_history(task, history_length);
         }
@@ -882,6 +892,46 @@ pub fn iroh_gate(live: &Live, remote: &str, window_open: bool) -> IrohGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 183 review 1, 2: a contact-only request (its card, the offers notice) is bounded like
+    /// the A2A routes: an unknown caller 401, every permit taken 503, a spent bucket 429.
+    #[test]
+    fn contact_only_requests_share_the_contacts_bounds() {
+        let bob = || {
+            Arc::new(Principal::new(
+                Uuid::from_u128(1),
+                "bob".into(),
+                HashSet::new(),
+                CancellationToken::new(),
+            ))
+        };
+        let mut live = Live::empty();
+        live.contacts.insert("bob-eid".into(), bob());
+        assert_eq!(
+            live.admit_contact("nobody").unwrap_err(),
+            StatusCode::UNAUTHORIZED
+        );
+        let held: Vec<_> = (0..CONCURRENT_PER_PEER)
+            .map(|_| live.admit_contact("bob-eid").unwrap())
+            .collect();
+        assert_eq!(
+            live.admit_contact("bob-eid").unwrap_err(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "every permit taken"
+        );
+        drop(held);
+        assert!(live.admit_contact("bob-eid").is_ok(), "permits come back");
+
+        // A fresh bucket: its burst, one at a time, then 429.
+        live.contacts.insert("bob-eid".into(), bob());
+        for _ in 0..RATE_PER_SEC as usize {
+            drop(live.admit_contact("bob-eid").unwrap());
+        }
+        assert_eq!(
+            live.admit_contact("bob-eid").unwrap_err(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
 
     fn params(version: Option<&str>) -> ServiceParams {
         let mut p = ServiceParams::new();
@@ -1260,7 +1310,8 @@ mod tests {
                     IrohGate::Contact { .. }
                 ) {
                     let io = crate::contacts::reach::Prefixed::new(line, stream);
-                    let _ = crate::contacts::reach::serve_http(shared, remote, Box::new(io)).await;
+                    let _ = crate::contacts::reach::serve_http(shared, remote, Box::new(io), None)
+                        .await;
                 }
             })
         }

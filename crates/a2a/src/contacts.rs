@@ -22,6 +22,7 @@ pub mod ceremony;
 pub mod discovery;
 #[cfg(test)]
 pub(crate) mod e2e_tests;
+pub mod offers;
 pub mod reach;
 pub mod store;
 
@@ -90,6 +91,31 @@ pub struct Contact {
     /// When the ceremony finished (ms since epoch).
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub paired_ms: u64,
+    /// 183 F1: what the contact shares with us (its exports granted to this engine), from
+    /// the card it last served us.
+    pub shared: Vec<agent::communication::network::ContactOffer>,
+}
+
+/// 183 F3, F11: one (contact, export) whose first message waits for the owner's answer
+/// (`contact_first_waiting`), the same source as the `contact_first` Attention item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct FirstWaiting {
+    /// The contact's alias.
+    pub contact: String,
+    /// The contact's machine, from its card (`""` when unknown).
+    pub machine: String,
+    /// The export it wants to reach.
+    pub export: String,
+    /// The session its message would run in (the exported chat, or the agent's inbox).
+    pub session: SessionId,
+    /// When the oldest waiting message arrived (ms since epoch).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub since_ms: u64,
+    /// How many messages wait.
+    pub waiting: u32,
+    /// The first line of the oldest one.
+    pub preview: String,
 }
 
 /// `contact_update`: each `Some` field replaces the contact's value.
@@ -368,8 +394,9 @@ pub struct CardFacts {
     pub endpoint: String,
     /// `a2a.public_url`, for the second interface.
     pub public_url: Option<String>,
-    /// (export name, description) pairs listed as skills.
-    pub skills: Vec<(String, String)>,
+    /// 183 F1: the exports granted to the card's reader, listed as skills (`id` = export
+    /// name, `description` = its description; tags `text`, its kind and its state).
+    pub skills: Vec<agent::communication::network::ContactOffer>,
 }
 
 /// The JWS protected header (RFC 7515) over the JCS-canonical card without `signatures`
@@ -475,11 +502,15 @@ pub fn card(facts: &CardFacts) -> AgentCard {
         skills: facts
             .skills
             .iter()
-            .map(|(name, description)| AgentSkill {
-                id: name.clone(),
-                name: name.clone(),
-                description: description.clone(),
-                tags: vec!["text".into()],
+            .map(|o| AgentSkill {
+                id: o.name.clone(),
+                name: o.name.clone(),
+                description: o.title.clone(),
+                tags: vec![
+                    "text".into(),
+                    o.kind.as_str().into(),
+                    o.state.as_str().into(),
+                ],
                 examples: None,
                 input_modes: None,
                 output_modes: None,
@@ -554,9 +585,11 @@ pub fn verify_card(card: &AgentCard, eid: &str) -> Result<(), String> {
     let protected: JwsProtected = serde_json::from_slice(&b64(&sig.protected)?)
         .map_err(|_| "the card signature header is not JSON".to_owned())?;
     if protected.alg != JWS_ALG || protected.kid != eid {
+        // Remote text: cut, so a forged header cannot flood a log or a status line.
         return Err(format!(
             "the card is signed {} by {}, not {JWS_ALG} by its endpoint",
-            protected.alg, protected.kid
+            clip(&protected.alg),
+            clip(&protected.kid)
         ));
     }
     let bytes: [u8; 64] = b64(&sig.signature)?
@@ -755,11 +788,10 @@ impl crate::Ctx {
         (name, machine)
     }
 
-    /// This engine's signed public card (§7.3).
-    pub(crate) fn my_card(&self) -> Result<AgentCard, String> {
-        let net = self.net().ok_or("this engine has no mesh endpoint")?;
+    /// This engine's public card facts (§7.3): no skills.
+    pub(crate) fn card_facts(&self, net: &mesh::net::Net) -> CardFacts {
         let (name, machine) = self.my_names();
-        let facts = CardFacts {
+        CardFacts {
             description: format!("theuth on {machine}"),
             name,
             machine,
@@ -767,8 +799,13 @@ impl crate::Ctx {
             endpoint: net.id.0.clone(),
             public_url: self.public_url.clone(),
             skills: Vec::new(),
-        };
-        signed_card(&facts, &|m: &[u8]| net.sign(m))
+        }
+    }
+
+    /// This engine's signed public card (§7.3).
+    pub(crate) fn my_card(&self) -> Result<AgentCard, String> {
+        let net = self.net().ok_or("this engine has no mesh endpoint")?;
+        signed_card(&self.card_facts(&net), &|m: &[u8]| net.sign(m))
     }
 
     /// A fresh nonce and this engine's signed card, for a ceremony.
@@ -961,8 +998,13 @@ impl crate::Ctx {
     }
 
     /// Both accepted: pin the other side's endpoint id (TOFU) in `peers.yaml`; the
-    /// inviter's window closes. A known endpoint keeps its alias and settings.
-    pub(crate) async fn pin(&self, id: Uuid, card: &AgentCard) -> Result<(), String> {
+    /// inviter's window closes. A known endpoint keeps its alias and settings. 183 F1: then
+    /// fetch what the new contact shares with us.
+    pub(crate) async fn pin(
+        self: &std::sync::Arc<Self>,
+        id: Uuid,
+        card: &AgentCard,
+    ) -> Result<(), String> {
         let (eid, role) = {
             let s = self.contacts.lock();
             let r = s.ceremonies.get(&id).ok_or("the ceremony ended")?;
@@ -1014,6 +1056,7 @@ impl crate::Ctx {
         if let Some(net) = self.net() {
             net.join_network().await;
         }
+        self.refresh_offers_soon(&eid);
         Ok(())
     }
 
@@ -1487,6 +1530,7 @@ fn contact_view(
     staged: &crate::config::Staged,
     alias: &str,
     net: Option<&mesh::net::Net>,
+    shared: impl FnOnce(&str) -> Vec<agent::communication::network::ContactOffer>,
 ) -> Option<Contact> {
     let c = staged.contacts.get(alias)?;
     Some(Contact {
@@ -1504,6 +1548,7 @@ fn contact_view(
         first_contact: c.first_contact.clone(),
         blocked: c.blocked,
         paired_ms: c.paired_ms,
+        shared: shared(&c.eid),
     })
 }
 
@@ -1528,12 +1573,23 @@ impl Message<ContactsList> for A2aActor {
     type Reply = Vec<Contact>;
 
     async fn handle(&mut self, _: ContactsList, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let live = self.ctx.shared.read().clone();
-        let net = self.ctx.net();
+        self.ctx.contact_list()
+    }
+}
+
+impl crate::Ctx {
+    /// [`ContactsList`].
+    pub(crate) fn contact_list(&self) -> Vec<Contact> {
+        let live = self.shared.read().clone();
+        let net = self.net();
         live.staged
             .contacts
             .keys()
-            .filter_map(|alias| contact_view(&live.staged, alias, net.as_deref()))
+            .filter_map(|alias| {
+                contact_view(&live.staged, alias, net.as_deref(), |eid| {
+                    self.offers_of(eid)
+                })
+            })
             .collect()
     }
 }
@@ -1547,46 +1603,60 @@ impl Message<ContactUpdate> for A2aActor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let c = self.ctx.clone();
-        off_mailbox(ctx, async move {
-            let ContactUpdate { name, patch } = m;
-            let alias = c
-                .edit(|file| {
-                    let mut e = entry(file, &name)?.clone();
-                    if let Some(cap) = patch.cap {
-                        if cap > tools::Risk::Mutating {
-                            return Err("a contact's cap is read_only or mutating".into());
+        off_mailbox(ctx, async move { c.update_contact(m).await })
+    }
+}
+
+impl crate::Ctx {
+    /// [`ContactUpdate`].
+    pub(crate) async fn update_contact(&self, m: ContactUpdate) -> Result<Contact, String> {
+        let ContactUpdate { name, patch } = m;
+        let alias = self
+            .edit(|file| {
+                let mut e = entry(file, &name)?.clone();
+                if let Some(cap) = patch.cap {
+                    if cap > tools::Risk::Mutating {
+                        return Err("a contact's cap is read_only or mutating".into());
+                    }
+                    e.cap = Some(cap);
+                }
+                if let Some(exports) = patch.exports {
+                    // 183 F2: sharing counts as allowing: a newly granted export starts on
+                    // "Always allow"; a stored answer (Ask first included) is kept.
+                    for x in exports.iter().filter(|x| !e.exports.contains(x)) {
+                        e.first_contact
+                            .entry(x.clone())
+                            .or_insert(FirstContact::Allow);
+                    }
+                    e.exports = exports;
+                }
+                if let Some(blocked) = patch.blocked {
+                    e.blocked = blocked;
+                }
+                let alias = match patch.name {
+                    Some(new) if new != name => {
+                        crate::config::check_alias(&new)?;
+                        if file.peers.contains_key(&new) {
+                            return Err(format!("a peer named {new} already exists"));
                         }
-                        e.cap = Some(cap);
+                        file.peers.remove(&name);
+                        new
                     }
-                    if let Some(exports) = patch.exports {
-                        e.exports = exports;
-                    }
-                    if let Some(blocked) = patch.blocked {
-                        e.blocked = blocked;
-                    }
-                    let alias = match patch.name {
-                        Some(new) if new != name => {
-                            crate::config::check_alias(&new)?;
-                            if file.peers.contains_key(&new) {
-                                return Err(format!("a peer named {new} already exists"));
-                            }
-                            file.peers.remove(&name);
-                            new
-                        }
-                        _ => name.clone(),
-                    };
-                    file.peers.insert(alias.clone(), e);
-                    Ok(alias)
-                })
-                .await?;
-            let live = c.shared.read().clone();
-            if live.staged.contacts.get(&alias).is_some_and(|f| f.blocked) {
-                c.contact_gone(&alias, &live.staged.contacts[&alias].eid.clone(), false)
-                    .await;
-            }
-            contact_view(&live.staged, &alias, c.net().as_deref())
-                .ok_or_else(|| format!("contact {alias} vanished"))
+                    _ => name.clone(),
+                };
+                file.peers.insert(alias.clone(), e);
+                Ok(alias)
+            })
+            .await?;
+        let live = self.shared.read().clone();
+        if live.staged.contacts.get(&alias).is_some_and(|f| f.blocked) {
+            self.contact_gone(&alias, &live.staged.contacts[&alias].eid.clone(), false)
+                .await;
+        }
+        contact_view(&live.staged, &alias, self.net().as_deref(), |eid| {
+            self.offers_of(eid)
         })
+        .ok_or_else(|| format!("contact {alias} vanished"))
     }
 }
 
@@ -1785,17 +1855,35 @@ impl Message<ChatArchived> for A2aActor {
 impl crate::Ctx {
     /// [`ChatArchived`].
     pub(crate) async fn chat_archived(&self, session: SessionId) -> bool {
-        let exported = self
-            .shared
-            .read()
+        let live = self.shared.read().clone();
+        let names: Vec<&String> = live
             .staged
             .exports
             .values()
-            .any(|e| e.session == session);
-        if exported {
-            self.rt.publish(crate::A2aChanged {}).await;
+            .filter(|e| e.session == session)
+            .map(|e| &e.name)
+            .collect();
+        if names.is_empty() {
+            return false;
         }
-        exported
+        self.rt.publish(crate::A2aChanged {}).await;
+        // 183 F1: the contacts it is shared with see it `unavailable` (or back) at once.
+        let eids: Vec<String> = live
+            .staged
+            .contacts
+            .iter()
+            .filter(|(alias, f)| {
+                !f.blocked
+                    && live
+                        .staged
+                        .peers
+                        .get(*alias)
+                        .is_some_and(|p| p.exports.iter().any(|x| names.contains(&x)))
+            })
+            .map(|(_, f)| f.eid.clone())
+            .collect();
+        self.notify_offers(eids);
+        true
     }
 }
 
@@ -1817,7 +1905,9 @@ impl crate::Ctx {
     /// through and keeps asking; Always writes `first_contact: allow` first; Block writes
     /// `blocked: true` (the gate refuses the contact from now on, its waiting tasks fail).
     /// With no task waiting for (contact, export) — the select in Settings — the answer is
-    /// only that export's standing default (§9.4): `ask` (the entry goes), `allow`, `block`.
+    /// only that export's standing default (§9.4): `ask`, `allow`, `block`, each stored, so an
+    /// owner's explicit Ask first survives taking the share back and giving it again (F2,
+    /// review 1; an absent entry also reads Ask first, and a new grant writes Always allow).
     async fn first_answer(&self, m: ContactFirstAnswer) -> Result<(), String> {
         let ContactFirstAnswer {
             contact,
@@ -1836,11 +1926,9 @@ impl crate::Ctx {
         if !waiting {
             return self
                 .edit(|file| {
-                    let e = entry(file, &contact)?;
-                    match answer {
-                        FirstContact::Ask => e.first_contact.remove(&export),
-                        a => e.first_contact.insert(export.clone(), a),
-                    };
+                    entry(file, &contact)?
+                        .first_contact
+                        .insert(export.clone(), answer);
                     Ok(())
                 })
                 .await;
@@ -1871,18 +1959,16 @@ impl crate::Ctx {
             }
         }
         let agents = self.agents()?;
-        let released = self
-            .ask(
-                &agents,
-                agent::communication::network::ContactRelease {
-                    contact,
-                    export: Some(export),
-                    allow: true,
-                },
-            )
-            .await;
-        nudge_attention();
-        released.map(|_| ())
+        self.ask(
+            &agents,
+            agent::communication::network::ContactRelease {
+                contact,
+                export: Some(export),
+                allow: true,
+            },
+        )
+        .await
+        .map(|_| ())
     }
 
     /// 183 §7.2: write each contact's direct addresses from its live `theuth/a2a/1`
@@ -1960,7 +2046,6 @@ impl crate::Ctx {
         {
             tracing::warn!(%alias, "a2a: release held tasks: {e}");
         }
-        nudge_attention();
         if let Some(net) = self.net() {
             if revoke {
                 tokio::spawn(ceremony::revoke(net, eid.to_owned()));
@@ -1983,8 +2068,59 @@ pub(crate) fn nudge_attention() {
     });
 }
 
+impl crate::Ctx {
+    /// 183 W-27, F3: the (contact, export) pairs whose first message waits for the owner,
+    /// from the agent's holds and the contacts' facts. The one source of the Attention item,
+    /// `contact_first_waiting`, the Communication window, the Contacts row and the strip.
+    pub(crate) async fn first_waiting(&self) -> Vec<FirstWaiting> {
+        let Ok(agents) = self.agents() else {
+            return Vec::new();
+        };
+        let Ok(held) = agents
+            .ask(agent::communication::network::ContactsHeld)
+            .await
+        else {
+            return Vec::new();
+        };
+        let live = self.shared.read().clone();
+        held.into_iter()
+            .map(|h| FirstWaiting {
+                machine: live
+                    .staged
+                    .contacts
+                    .get(&h.contact)
+                    .map(|f| clip(&f.machine))
+                    .unwrap_or_default(),
+                contact: h.contact,
+                export: h.export,
+                session: h.session,
+                since_ms: h.since_ms,
+                waiting: h.waiting as u32,
+                preview: h.preview,
+            })
+            .collect()
+    }
+}
+
+/// `ask` → `Vec<FirstWaiting>`: `contact_first_waiting`.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactsWaiting;
+
+impl Message<ContactsWaiting> for A2aActor {
+    type Reply = DelegatedReply<Vec<FirstWaiting>>;
+
+    async fn handle(
+        &mut self,
+        _: ContactsWaiting,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let c = self.ctx.clone();
+        off_mailbox(ctx, async move { c.first_waiting().await })
+    }
+}
+
 /// 183 W-27: the `contact_first` Attention items, one per (contact, export) with a task
-/// waiting, from the agent's holds and the contacts' facts.
+/// waiting ([`crate::Ctx::first_waiting`]).
 pub(crate) struct FirstContactItems(pub std::sync::Weak<crate::Ctx>);
 
 #[async_trait::async_trait]
@@ -1993,50 +2129,36 @@ impl roster::attention::Source for FirstContactItems {
         let Some(c) = self.0.upgrade() else {
             return Vec::new();
         };
-        let Ok(agents) = c.agents() else {
-            return Vec::new();
-        };
-        let held = match agents
-            .ask(agent::communication::network::ContactsHeld)
+        c.first_waiting()
             .await
-        {
-            Ok(h) => h,
-            Err(_) => return Vec::new(),
-        };
-        let live = c.shared.read().clone();
-        held.into_iter()
-            .map(|h| {
-                let machine = live
-                    .staged
-                    .contacts
-                    .get(&h.contact)
-                    .map(|f| f.machine.clone())
-                    .filter(|m| !m.is_empty());
-                let who = match &machine {
-                    Some(m) => format!("{} ({m})", h.contact),
-                    None => h.contact.clone(),
+            .into_iter()
+            .map(|w| {
+                let who = if w.machine.is_empty() {
+                    w.contact.clone()
+                } else {
+                    format!("{} ({})", w.contact, w.machine)
                 };
                 roster::attention::AttentionItem {
-                    id: format!("contact_first:{}:{}", h.contact, h.export),
+                    id: format!("contact_first:{}:{}", w.contact, w.export),
                     kind: roster::attention::AttentionKind::ContactFirst,
                     title: format!(
                         "{who} wants to reach {} — Allow once · Always · Block",
-                        h.export
+                        w.export
                     ),
                     detail: Some(format!(
                         "{} waiting · a contact outside your mesh",
-                        h.waiting
+                        w.waiting
                     )),
-                    at_ms: h.since_ms,
+                    at_ms: w.since_ms,
                     task: None,
                     agent: None,
-                    session: Some(h.session.to_string()),
+                    session: Some(w.session.to_string()),
                     approval: None,
                     decision: None,
                     packet: None,
                     ask: None,
                     turn: None,
-                    waiting_since_ms: Some(h.since_ms),
+                    waiting_since_ms: Some(w.since_ms),
                     summary: None,
                     next_steps: Vec::new(),
                     context: None,

@@ -382,6 +382,35 @@ impl Staged {
             })
     }
 
+    /// 183 F4: the exports `alias` holds in both sets with the same authority — the same
+    /// session (chat) or agent, the same tools — under the same contact cap: a first message
+    /// held for one of them may wait on into the next epoch; any other was admitted under
+    /// authority that is gone. A title or description edit changes no authority.
+    pub fn unchanged_exports(&self, next: &Staged, alias: &str) -> Vec<String> {
+        let (Some(a), Some(b)) = (self.peers.get(alias), next.peers.get(alias)) else {
+            return Vec::new();
+        };
+        let cap = |s: &Staged| s.contacts.get(alias).map(|c| c.cap);
+        if cap(self) != cap(next) {
+            return Vec::new();
+        }
+        b.exports
+            .iter()
+            .filter(|e| {
+                let chat = match (self.exports.get(*e), next.exports.get(*e)) {
+                    (Some(x), Some(y)) => x.session == y.session && x.tools == y.tools,
+                    (x, y) => x.is_none() && y.is_none(),
+                };
+                let agent = match (self.agents.get(*e), next.agents.get(*e)) {
+                    (Some(x), Some(y)) => x.agent == y.agent && x.tools == y.tools,
+                    (x, y) => x.is_none() && y.is_none(),
+                };
+                a.exports.contains(e) && chat && agent
+            })
+            .cloned()
+            .collect()
+    }
+
     /// 183 §7.2: the alias of the contact (blocked or not) pinned to `eid`.
     pub fn contact_by_eid(&self, eid: &str) -> Option<&str> {
         self.contacts
@@ -1010,6 +1039,87 @@ exports:
         ] {
             assert!(errors.contains(&e.to_owned()), "{e}: {errors:?}");
         }
+    }
+
+    /// 183 F4 (review 1, 2): a held first message may outlive a grant change only for an
+    /// export whose authority is unchanged: a chat re-pointed to another session, changed
+    /// tools, a removed grant or a changed contact cap each drop it; a new title or
+    /// description keeps it.
+    #[test]
+    fn only_unchanged_exports_keep_held_messages_across_a_grant_change() {
+        let bob = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
+        let staged = |cap: &str, chat: u8, tools: &str, grants: &str, words: &str| {
+            super::stage(
+                &file(&format!(
+                    r#"
+peers:
+  bob:
+    endpoint: {bob}
+    cap: {cap}
+    exports: [{grants}]
+exports:
+  chat: {{ session: "00000000-0000-0000-0000-00000000000{chat}", name: Chat{words}, description: "About{words}" }}
+  agent: {{ agent: theuth, name: Agent{words}, description: "Does{words}", tools: [{tools}] }}
+  other: {{ session: "00000000-0000-0000-0000-000000000009", name: Other }}
+"#
+                )),
+                &resolver(S),
+                None,
+                tools::Risk::ReadOnly,
+            )
+            .unwrap()
+        };
+        let base = staged("read_only", 1, "search_web", "chat, agent, other", "");
+        let same = |n: &Staged| base.unchanged_exports(n, "bob");
+        assert_eq!(
+            same(&staged(
+                "read_only",
+                1,
+                "search_web",
+                "chat, agent, other",
+                " v2"
+            )),
+            ["chat", "agent", "other"],
+            "a title or description edit keeps every hold"
+        );
+        assert_eq!(
+            same(&staged("read_only", 1, "search_web", "chat, agent", "")),
+            ["chat", "agent"],
+            "a removed grant drops only its own holds"
+        );
+        assert_eq!(
+            same(&staged(
+                "read_only",
+                2,
+                "search_web",
+                "chat, agent, other",
+                ""
+            )),
+            ["agent", "other"],
+            "the chat now names another session"
+        );
+        assert_eq!(
+            same(&staged(
+                "read_only",
+                1,
+                "read_url",
+                "chat, agent, other",
+                ""
+            )),
+            ["chat", "other"],
+            "the agent's tools changed"
+        );
+        assert!(
+            same(&staged(
+                "mutating",
+                1,
+                "search_web",
+                "chat, agent, other",
+                ""
+            ))
+            .is_empty(),
+            "a changed cap drops every hold"
+        );
     }
 
     #[test]

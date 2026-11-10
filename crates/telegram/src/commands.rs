@@ -1163,6 +1163,7 @@ async fn peers_cmd(session: Option<SessionId>, arg: &str) -> anyhow::Result<Outc
             cursor: None,
             limit: None,
             active_only: false,
+            kind: None,
         })
         .await
         .map_err(err)?;

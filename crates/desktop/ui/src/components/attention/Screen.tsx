@@ -36,7 +36,8 @@ const SCREEN: Record<AttentionItem['kind'], ComponentType<{ item: AttentionItem 
 
 /** The selected item's screen (101 D7, 104 A6): every kind has one. Under `md` a 52 px header with the back chevron. */
 export function Screen({ item }: { item: AttentionItem }) {
-  const Kind = SCREEN[item.kind]
+  // 183 review 1: a kind a newer engine sends (rail group Other) shows its title and detail.
+  const Kind = SCREEN[item.kind] ?? HomeScreen
   return (
     <>
       <header data-tauri-drag-region={isMacDesktop() || undefined} className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3 md:hidden">

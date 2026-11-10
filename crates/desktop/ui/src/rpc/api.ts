@@ -265,6 +265,7 @@ import type { NearbyAgent } from '@/rpc/bindings/NearbyAgent'
 import type { Export } from '@/rpc/bindings/Export'
 import type { GrantableTool } from '@/rpc/bindings/GrantableTool'
 import type { FirstContact } from '@/rpc/bindings/FirstContact'
+import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
 import type { ContactEnvelope } from '@/rpc/bindings/ContactEnvelope'
 import type { DesktopAccess } from '@/rpc/bindings/DesktopAccess'
 import type { Handoff } from '@/rpc/bindings/Handoff'
@@ -780,6 +781,8 @@ export interface Api {
   a2a_grantable_tools(): Promise<GrantableTool[]>
   /** 183 §7.6: the `contact_first` Attention item's Allow once (`ask`) · Always (`allow`) · Block (`block`). */
   contact_first_answer(contact: string, exp: string, answer: FirstContact): Promise<null>
+  /** 183 Phase 3: every (contact, export) whose first message is held for the owner's answer; refetched on `A2aChanged`. */
+  contact_first_waiting(): Promise<FirstWaiting[]>
   // 79 §4.5 / contract §2.4: sandbox VMs. Every record the sandbox actor holds (`backend` docker|ssh|vm).
   sandboxes_list(): Promise<SandboxInfo[]>
   /** Host readiness (79 §5.1): `blockers` empty ⇒ a VM can be created now; the card renders each one as a sentence. */
@@ -1510,6 +1513,7 @@ export const METHODS = [
   'contact_answer',
   'contact_deliver',
   'contact_first_answer',
+  'contact_first_waiting',
   'contact_list',
   'contact_nearby',
   'contact_pair',
