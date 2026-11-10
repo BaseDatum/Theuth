@@ -1131,6 +1131,32 @@ impl Store {
         Ok(n == 1)
     }
 
+    /// 186 review 3: revoke every live binding not in `keep` (a reload's full route set: a
+    /// peer or contact removed or blocked while the engine was down is in none); the ids.
+    pub async fn revoke_peer_bindings_except(&self, keep: &[Uuid]) -> anyhow::Result<Vec<Uuid>> {
+        let mut tx = self.begin_write().await?;
+        let live: Vec<(String,)> =
+            sqlx::query_as("SELECT id FROM peer_bindings WHERE revoked_at IS NULL")
+                .fetch_all(&mut *tx)
+                .await?;
+        let ts = now();
+        let mut out = Vec::new();
+        for (id,) in live {
+            let uuid: Uuid = id.parse().context("bad binding id")?;
+            if keep.contains(&uuid) {
+                continue;
+            }
+            sqlx::query("UPDATE peer_bindings SET revoked_at = ? WHERE id = ?")
+                .bind(&ts)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            out.push(uuid);
+        }
+        tx.commit().await?;
+        Ok(out)
+    }
+
     /// The live binding of `alias`, if any.
     pub async fn peer_binding(&self, alias: &str) -> anyhow::Result<Option<PeerBinding>> {
         let row: Option<(String, String)> = sqlx::query_as(

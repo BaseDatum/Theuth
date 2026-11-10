@@ -2910,6 +2910,7 @@ impl Message<CommitPeerConfig> for Agents {
                 }
             }
         }
+        self.drop_unrouted(&keep).await;
         for (route, binding) in m.routes.into_iter().zip(&bindings) {
             // Inbound-only peers register too: their token ends open inbound
             // streams when the binding falls out of a later reload.
@@ -3075,8 +3076,15 @@ impl Agents {
                 full::Live::Missing => true,
             }
         {
+            // 186 review 3: the contact hears its export's name, never the roster agent's.
+            tracing::warn!(
+                agent = bare,
+                export = %m.origin.export,
+                "a2a: full share refused: the agent has no persona (roster not joined, file missing or invalid)"
+            );
             return Err(A2AError::unsupported_operation(format!(
-                "export unavailable: the agent {bare} is not available"
+                "export unavailable: {} is not available",
+                m.origin.export
             )));
         }
         let persona = match &live {
@@ -6936,6 +6944,21 @@ mod full_inbox_tests {
             && a.network.inbox_limits.get(&inbox) == Some(&(INBOX_FAIL_CLOSED, Vec::new()))
     }
 
+    /// `binding` in the reload's routes (a live contact).
+    fn route(a: &mut Agents, binding: Uuid) {
+        a.network.peers.insert(
+            binding,
+            RemotePeer {
+                name: "bob".into(),
+                roots: Vec::new(),
+                sender: None,
+                generation: CancellationToken::new(),
+                contact: true,
+                full: vec!["research".into()],
+            },
+        );
+    }
+
     /// 186 review 1, 2 (D6): an agent inbox shared in full runs under the agent's own ceiling,
     /// read live: kept across a restart before the roster joins (the stored one), tightened
     /// on a running inbox when the roster reads a stricter one, capped while the agent is gone
@@ -6950,6 +6973,7 @@ mod full_inbox_tests {
             .bind_peer("bob", &contact_endpoint("bob-endpoint"))
             .await
             .unwrap();
+        route(&mut a, binding.id);
         let inbox = admit(&mut a, binding.id).await.unwrap();
         assert_eq!(
             a.caps.get(&inbox),
@@ -7102,5 +7126,53 @@ mod full_inbox_tests {
         a.reinstall_contact_limits(inbox).await.unwrap();
         assert!(capped(&a, inbox));
         assert!(!full_row(&a, inbox).await);
+    }
+
+    /// 186 review 3: a contact removed or blocked in the config while the engine was down:
+    /// its stored binding is live and its inbox starts full, until the first reload after the
+    /// boot (no route of it, none in memory) revokes the binding and caps the inbox; a roster
+    /// re-read before that reload leaves the unrouted inbox alone.
+    #[tokio::test]
+    async fn a_contact_removed_while_down_loses_its_full_inbox_at_the_first_reload() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let roster = Roster::research(Some(tools::Risk::Mutating));
+        a.identity = Some(Arc::new(roster.clone()));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let inbox = admit(&mut a, binding.id).await.unwrap();
+        // The boot: nothing in memory, the binding row still live.
+        forget(&mut a, inbox);
+        a.reinstall_contact_limits(inbox).await.unwrap();
+        assert_eq!(
+            a.caps.get(&inbox),
+            Some(&tools::Risk::Mutating),
+            "starts full"
+        );
+        // A roster re-read (the agent gone, which would cap a routed inbox) skips it.
+        roster.set(None);
+        a.refresh_full_inboxes().await;
+        assert_eq!(
+            a.caps.get(&inbox),
+            Some(&tools::Risk::Mutating),
+            "unrouted: skipped"
+        );
+        roster.set(Some(Some(tools::Risk::Mutating)));
+        // The first reload: bob is in no route (removed or blocked).
+        a.drop_unrouted(&HashSet::new()).await;
+        assert!(
+            a.store
+                .peer_binding_by_id(binding.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(capped(&a, inbox));
+        assert!(a.store.a2a_inbox_full(inbox).await.unwrap().is_none());
+        forget(&mut a, inbox);
+        a.reinstall_contact_limits(inbox).await.unwrap();
+        assert!(capped(&a, inbox), "and at the next actor start");
     }
 }

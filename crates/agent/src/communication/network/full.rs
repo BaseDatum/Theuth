@@ -7,7 +7,7 @@
 //! conversation lives ([`THREAD_TTL`], sliding) and the share is still full. The sender's
 //! answers go back to the export on the same conversation. Design doc 186.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use a2a_types::{A2AError, Message as A2aMessage, Part, Role, SendMessageRequest};
 use a2a_types::{SendMessageResponse, Task};
@@ -514,9 +514,25 @@ impl Agents {
         }
     }
 
-    /// `tell` handler body ([`InboxPersonasChanged`]): every full inbox takes its agent's
-    /// ceiling as the roster reads it now (a tightening applies to a running inbox at once;
-    /// an agent gone caps it).
+    /// 186 review 3: a reload's route set is whole: a binding the store still holds live
+    /// outside it (its contact removed or blocked while the engine was down, so in no
+    /// in-memory route either) is revoked and its inboxes capped.
+    pub(super) async fn drop_unrouted(&mut self, keep: &HashSet<Uuid>) {
+        let keep: Vec<Uuid> = keep.iter().copied().collect();
+        match self.store.revoke_peer_bindings_except(&keep).await {
+            Ok(gone) => {
+                for id in gone {
+                    self.cap_inboxes_of(id).await;
+                }
+            }
+            Err(e) => tracing::error!("a2a: unrouted bindings not revoked: {e:#}"),
+        }
+    }
+
+    /// `tell` handler body ([`InboxPersonasChanged`]): every full inbox of a routed contact
+    /// takes its agent's ceiling as the roster reads it now (a tightening applies to a running
+    /// inbox at once; an agent gone caps it). One whose contact is in no route (before the
+    /// first reload, or gone) is left to its actor start and the reload.
     pub(crate) async fn refresh_full_inboxes(&mut self) {
         if self.identity.is_none() {
             return;
@@ -529,6 +545,14 @@ impl Agents {
             }
         };
         for row in rows {
+            let routed = row
+                .principal
+                .strip_prefix("peer:")
+                .and_then(|b| b.parse::<Uuid>().ok())
+                .is_some_and(|b| self.network.peers.contains_key(&b));
+            if !routed {
+                continue;
+            }
             let ceiling = match row.agent.as_deref() {
                 Some(agent) => match self.live_persona(agent).await {
                     Live::Known(p) => {
