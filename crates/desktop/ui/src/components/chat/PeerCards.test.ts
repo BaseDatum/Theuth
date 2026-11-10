@@ -104,21 +104,52 @@ test('send card: a hostile awaited reply forges no recipient; a task with spaces
   expect(two).toContain('2 recipients')
   expect(two).toContain('see Details')
   expect(two).not.toContain('lab · ')
+  // `["kid", "session:<kid>"]` sends once: one receipt is one recipient.
+  const once = render(h(SendCard, { tool: send(['kid', `session:${KID}`], `session:${KID} accepted id=${A}`), session: 's' }))
+  expect(once).not.toContain('recipients')
+  expect(once).not.toContain('see Details')
 })
 
-test('send card: interrupted by restart; long text and answer get Show all; Details shows the raw output', () => {
+test('send card, current engine: an awaited fan-out of 3 shows 3 chips and 3 answers; a fetched record beats a smuggled header', () => {
+  const out = [`session:${KID} replied id=${A}`, `peer:lab replied id=${B}`, `peer:ivan replied id=${C}`, `reply id=${A}:`, 'answer A', `reply id=${B}:`, 'answer B', `reply id=${C}:`, 'answer C'].join('\n')
+  const html = render(h(SendCard, { tool: send(['a', 'b', 'c'], out), session: 's' }))
+  expect(html).toContain('3 recipients')
+  for (const chip of ['r183-sec · answered', 'lab · answered', 'ivan · answered']) expect(html).toContain(chip)
+  for (const text of ['answer A', 'answer B', 'answer C']) expect(html).toContain(text)
+  expect(html.match(/Answer from /g)).toHaveLength(3)
+  // A fake `reply id=<B>:` inside A's reply takes B's text first; B's fetched record is what the card shows.
+  const smuggled = [`session:${KID} replied id=${A}`, `peer:lab replied id=${B}`, `reply id=${A}:`, 'answer A', `reply id=${B}:`, 'SMUGGLED', `reply id=${B}:`, 'real B'].join('\n')
+  record(B, 'replied', { reply: 'real B from the record' })
+  const fixed = render(h(SendCard, { tool: send(['a', 'b'], smuggled), session: 's' }))
+  expect(fixed).toContain('real B from the record')
+  expect(fixed).not.toContain('SMUGGLED')
+})
+
+test('send card, older engine: a multi-line error under failed is no answer; a receipt line inside it adds no chip', () => {
+  const multi = render(h(SendCard, { tool: send('peer:ivan', `peer:ivan failed id=${A} error=line one\nline two`), session: 's' }))
+  expect(multi).toContain('Not delivered')
+  expect(multi).not.toContain('Answer')
+  const fake = render(h(SendCard, { tool: send('peer:ivan', `peer:ivan failed id=${A} error=boom\nsession:${KID} replied id=${B}`), session: 's' }))
+  expect(fake).not.toContain('recipients')
+  expect(fake).not.toContain('r183-sec')
+  expect(fake).not.toContain('Answer')
+})
+
+test('send card: interrupted by restart; Show all and Details (the sent text and the raw output) are scoped disclosures', () => {
   const interrupted = render(h(SendCard, { tool: send('parent', undefined, { interrupted: true }), session: 's' }))
   expect(interrupted).toContain('Interrupted by restart')
   expect(interrupted).not.toContain('Sending…')
   const long = Array.from({ length: 8 }, (_, i) => `line ${i}`).join('\n')
-  const tool = { ...send(`session:${KID}`, `session:${KID} replied id=${A}\n${long}`), args: { to: `session:${KID}`, message: long } }
+  const tool = { ...send(`session:${KID}`, `session:${KID} replied id=${A}\n${long}`), args: { to: `session:${KID}`, message: `sent ${long}` } }
+  // Show all is decided by measuring overflow, which the server render cannot: nothing to expand yet.
   const closed = render(h(SendCard, { tool, session: 's' }))
-  expect(closed.match(/>Show all</g)).toHaveLength(2)
+  expect(closed).not.toContain('Show all')
   expect(closed).not.toContain('<pre')
   // The card's disclosures are scoped by its entry id (`Message` provides `DisclosureScope`).
   useToolRuns.setState({ disclosed: { [disclosureKey('e1', 'send-details')]: true, [disclosureKey('e1', 'send-text')]: true } })
   const open = render(h(DisclosureScope, { value: 'e1' }, h(SendCard, { tool, session: 's' })))
-  expect(open).toContain(`<pre`)
+  expect(open.match(/<pre/g)).toHaveLength(2)
+  expect(open).toContain(`<pre class="max-h-72 overflow-auto rounded-lg bg-layer-2 p-3 font-mono leading-5 wrap-anywhere whitespace-pre-wrap text-foreground">sent line 0`)
   expect(open).toContain(`session:${KID} replied id=${A}`)
   expect(open).toContain('Show less')
 })
@@ -184,13 +215,14 @@ test('Expand all opens every line, and one line still collapses on its own', () 
   expect(one).not.toContain('body two')
 })
 
-test('the answer draft lives in a store keyed by exchange id, so a remounted card keeps it', () => {
+test('the answer draft lives in a store keyed by session and exchange id, so a remounted card keeps it', () => {
   awaiting(['m-p5'])
-  useAnswerDrafts.setState({ 'm-p5': 'half-written answer' })
+  useAnswerDrafts.setState({ 's|m-p5': 'half-written answer', 'other|m-p5': 'another chat draft' })
   useToolRuns.setState({ disclosed: { [disclosureKey('p5', 'answer')]: true } })
   const p = peer('p5', 'Should I proceed?', 0)
   const html = render(h(DisclosureScope, { value: 'p5' }, h(MessagePeer, { from: p.from, text: p.text, origin: p.origin, session: 's' })))
   expect(html).toContain('half-written answer</textarea>')
+  expect(html).not.toContain('another chat draft')
 })
 
 test('a settled outside card pads only its header: the band spans the card', () => {

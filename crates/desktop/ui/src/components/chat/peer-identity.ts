@@ -80,10 +80,13 @@ export function resolveSender(address: string, dir: Directory): Sender {
     // `contact:<holding engine>:<contact name>`: the holder vouches for the name. Only this engine's own contact list
     // describes a contact it holds; another machine's contact is never matched against it.
     const rest = address.slice('contact:'.length)
-    const holder = rest.slice(0, rest.indexOf(':'))
-    const alias = rest.slice(rest.indexOf(':') + 1)
-    if (dir.mesh && holder === dir.mesh.self_id) return contactSender(alias, undefined, dir, key)
-    const on = dir.mesh ? engineLabel(holder, dir.mesh.peers) : shortId(holder)
+    const colon = rest.indexOf(':')
+    // A colon-less address names no holder: the whole rest is the name, and no local contact is assumed.
+    const holder = colon < 0 ? '' : rest.slice(0, colon)
+    const alias = colon < 0 ? rest : rest.slice(colon + 1)
+    if (holder && dir.mesh && holder === dir.mesh.self_id) return contactSender(alias, undefined, dir, key)
+    // Never a raw engine id: a holder the (loaded) mesh does not name is "another machine".
+    const on = dir.mesh?.peers.find((p) => p.id === holder)?.name ?? 'another machine'
     return { name: alias, subtitle: ['Contact', `held on ${on}`, dir.exported && `via ${dir.exported}`].filter(Boolean).join(' · '), key }
   }
   if (address.startsWith('peer:')) {
@@ -151,26 +154,60 @@ export type SentReceipt = { id: string; to: string; state: string; error?: strin
 /** A refusal before anything was accepted carries the nil id: nothing to look up. */
 export const NIL = '00000000-0000-0000-0000-000000000000'
 
+const UUID_SRC = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 // peers.rs `receipt_line`: `<to> <state> id=<uuid>`, then ` task=<t>` and ` error=<e>` when set; either may hold spaces.
-const RECEIPT = /^(\S+) ([a-z_]+) id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?: task=.*?)?(?: error=(.*))?$/
+const RECEIPT = new RegExp(`^(\\S+) (accepted|consumed|replied|suppressed|failed|unknown|held) id=(${UUID_SRC})(?: task=.*?)?(?: error=(.*))?$`)
+// The current engine's reply block header; an older engine has none.
+const HEADER = new RegExp(`^reply id=(${UUID_SRC}):$`)
+
+/** `parseReceipts`: the receipts, the reply text by receipt id, and whether the receipt block stopped at a line that
+ * is neither a reply header, nor the end, nor the recipient cap (an older engine's reply cut a fan-out short). */
+export type ParsedSend = { receipts: SentReceipt[]; replies: Record<string, string>; unexpected: boolean }
 
 /**
- * `send_message`'s text output (peers.rs `receipts_output`): one receipt line per recipient, a `replied` one followed
- * by its awaited reply's lines. A reply is text the other side controls, so only the LEADING block of receipt lines is
- * read: at most `max` (the call's recipient count), stopping at the first other line and right after a `replied`
- * receipt (whatever follows it may be its reply). A receipt-shaped line inside a reply is never a receipt. `rest` is
- * everything after the block, unparsed (the reply, when there is one receipt).
+ * `send_message`'s text output, from either engine. Both start with the LEADING block of receipt lines, read up to
+ * `max` (the call's recipient count) and never past the first other line. Then:
+ * - current engines: `reply id=<uuid>:` header lines, each followed by that receipt's reply text up to the next
+ *   header; a block whose id is not a `replied` receipt of the block is ignored, and the first block for an id wins;
+ * - older engines: the reply sits right under its receipt, so the rest is a reply only when the LAST receipt is
+ *   `replied` (never under failed, held or any other state).
+ * Reply text is the other side's: it is never parsed for receipts. With several receipts, the card prefers each
+ * fetched record's reply (a fake header inside one reply could otherwise move text between recipients).
  */
-export function parseReceipts(output: string, max: number): { receipts: SentReceipt[]; rest: string } {
+export function parseReceipts(output: string, max: number): ParsedSend {
   const lines = output.split('\n')
   const receipts: SentReceipt[] = []
-  while (receipts.length < max && receipts.length < lines.length) {
-    const m = RECEIPT.exec(lines[receipts.length] as string)
+  let i = 0
+  for (; i < lines.length && receipts.length < max; i++) {
+    const m = RECEIPT.exec(lines[i] as string)
     if (!m) break
     receipts.push({ to: m[1] as string, state: m[2] as string, id: m[3] as string, ...(m[4] !== undefined && { error: m[4] }) })
-    if (m[2] === 'replied') break
   }
-  return { receipts, rest: lines.slice(receipts.length).join('\n') }
+  const replies: Record<string, string> = {}
+  // Only a `replied` receipt has a reply, in either format.
+  const ids = new Set(receipts.filter((r) => r.state === 'replied').map((r) => r.id))
+  if (i < lines.length && HEADER.test(lines[i] as string)) {
+    let id: string | undefined
+    let body: string[] = []
+    const flush = () => {
+      if (id && ids.has(id) && !(id in replies)) replies[id] = body.join('\n')
+    }
+    for (; i < lines.length; i++) {
+      const h = HEADER.exec(lines[i] as string)
+      if (!h) {
+        body.push(lines[i] as string)
+        continue
+      }
+      flush()
+      id = h[1]
+      body = []
+    }
+    flush()
+    return { receipts, replies, unexpected: false }
+  }
+  const last = receipts[receipts.length - 1]
+  if (i < lines.length && last?.state === 'replied') replies[last.id] = lines.slice(i).join('\n')
+  return { receipts, replies, unexpected: receipts.length > 0 && i < lines.length && receipts.length < max }
 }
 
 /** No further transition is possible. */

@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Copy, ShieldAlert, Timer } from 'lucide-react'
-import { memo, type ReactNode, useSyncExternalStore } from 'react'
+import { memo, type ReactNode, type RefObject, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
 import { create } from 'zustand'
@@ -164,22 +164,43 @@ function Provenance({ origin, seq, session, request }: { origin: PeerOrigin; seq
   )
 }
 
-/** Answer drafts by exchange id, in memory: every mount of the card shares one, so folding a group or the virtualiser
- * dropping the row never loses what the owner typed (171F B13: transcript row state lives in a store). */
+/** Answer drafts by `session|exchange id`, in memory: every mount of the card shares one, so folding a group or the
+ * virtualiser dropping the row never loses what the owner typed (171F B13: transcript row state lives in a store). */
 export const useAnswerDrafts = create<Record<string, string>>()(() => ({}))
+
+/**
+ * Whether the clamped element hides content (`scrollHeight > clientHeight`), re-measured on every resize, so a phone
+ * width always gets the expander. Measured only while `clamped`: once opened, the expander stays to close it again.
+ * False before layout (and on the server): there is nothing to measure yet.
+ */
+export function useOverflow<T extends HTMLElement>(clamped: boolean): [RefObject<T | null>, boolean] {
+  const ref = useRef<T>(null)
+  const [hidden, setHidden] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || !clamped) return
+    const measure = () => setHidden(el.scrollHeight > el.clientHeight + 1)
+    measure()
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [clamped])
+  return [ref, hidden]
+}
 
 /** The owner answers a request this chat owes (`answer_peer_request`, as Settings › Communication does). */
 function AnswerForm({ session, id, onDone }: { session: string; id: string; onDone: () => void }) {
   const api = useApi()
+  const key = `${session}|${id}`
   // The live state is the server snapshot too (as `useDisclosure`), so a preset draft shows on the first render.
-  const read = () => useAnswerDrafts.getState()[id] ?? ''
+  const read = () => useAnswerDrafts.getState()[key] ?? ''
   const text = useSyncExternalStore(useAnswerDrafts.subscribe, read, read)
-  const setText = (t: string) => useAnswerDrafts.setState({ [id]: t })
+  const setText = (t: string) => useAnswerDrafts.setState({ [key]: t })
   const send = useAction((t: string) => routed(session, () => api.answer_peer_request(session, id, t)), {
     keys: [['peer-messages', session], queryKeys.peerMessage(session, id)],
     onSuccess: (receipt) => {
       if (!receipt) return // parked behind the chat's OwnerOfflineCard: nothing was answered
-      setText('')
+      useAnswerDrafts.setState((s) => Object.fromEntries(Object.entries(s).filter(([k]) => k !== key)), true)
       onDone()
       toast(`Answered ${id.slice(0, 8)} · ${receipt.state}`)
     },
@@ -216,10 +237,6 @@ function AnswerForm({ session, id, onDone }: { session: string; id: string; onDo
  * so the outside band still spans the card. */
 type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number; inset?: boolean }
 
-/** Lines (or characters) past which a body clamps behind a fade and `Show all`. */
-const CLAMP_LINES = 6
-const CLAMP_CHARS = 480
-
 /**
  * The card frame: sender header, the reply quote, the body (clamped), then the footer. `origin` parts (the answer
  * form, Details) come in through `chips`, `actions` and `after`.
@@ -243,9 +260,7 @@ function PeerCard({
   // 183: an outside agent's words (a contact or an A2A peer: `contact:` / `peer:` senders) are untrusted: plain text,
   // never Markdown, so no remote image loads and no link is live.
   const outside = isOutside(sender.key)
-  // ponytail: line/length heuristic, not a measured overflow; a ResizeObserver if short-but-tall bodies clamp wrongly.
-  const long = text.split('\n').length > CLAMP_LINES || text.length > CLAMP_CHARS
-  const clamped = long && !open
+  const [body, hidden] = useOverflow<HTMLDivElement>(!open)
   return (
     <div
       id={id}
@@ -272,13 +287,15 @@ function PeerCard({
         </div>
       ) : null}
       <div
+        ref={body}
         className={cn(
           'relative px-4 pt-2',
-          clamped && "max-h-36 overflow-hidden after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-9 after:bg-linear-to-b after:from-transparent after:to-layer-1 after:content-['']",
+          !open && 'max-h-36 overflow-hidden',
+          !open && hidden && "after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-9 after:bg-linear-to-b after:from-transparent after:to-layer-1 after:content-['']",
         )}
       >
         {raw ? (
-          <pre className={cn('rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap', !clamped && 'max-h-96 overflow-auto')}>{text}</pre>
+          <pre className={cn('rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap', open && 'max-h-96 overflow-auto')}>{text}</pre>
         ) : outside ? (
           <div className="whitespace-pre-wrap wrap-anywhere">{text}</div>
         ) : (
@@ -288,7 +305,7 @@ function PeerCard({
         )}
       </div>
       <div className="flex flex-wrap items-center gap-2 px-4 pt-2 pb-2.5">
-        {long ? (
+        {hidden || open ? (
           <Button type="button" variant="outline" size="xs" className={TOUCH} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
             {open ? 'Show less' : 'Show all'}
           </Button>
