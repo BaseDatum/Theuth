@@ -1114,9 +1114,17 @@ async fn paired(a: &Engine, b: &Engine) -> (String, String) {
     let va = until("the inviter's code", || ceremony_of(a)).await;
     a.ctx.answer(va.id, true).unwrap();
     b.ctx.answer(vb.id, true).unwrap();
-    let of = |e: &Engine| e.ctx.shared.read().staged.contacts.keys().next().cloned();
-    let a_alias = until("A pinned B", || of(a)).await;
-    let b_alias = until("B pinned A", || of(b)).await;
+    // By the other's endpoint: an engine that already has a contact must not return early.
+    let of = |e: &Engine, other: &Engine| {
+        e.ctx
+            .shared
+            .read()
+            .staged
+            .contact_by_eid(&other.eid())
+            .map(str::to_owned)
+    };
+    let a_alias = until("A pinned B", || of(a, b)).await;
+    let b_alias = until("B pinned A", || of(b, a)).await;
     (a_alias, b_alias)
 }
 
@@ -1282,8 +1290,10 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
 }
 
 /// 183 F4: editing a contact (here: sharing a second export, which rotates its grant
-/// epoch) keeps a first message waiting for an export it still has; Always then delivers
-/// it like Allow once and it stops waiting.
+/// epoch) keeps a first message waiting for an export it still has, and so does a new
+/// description of that export (review 2); Always then delivers it like Allow once and it
+/// stops waiting. A changed cap fails a waiting message at once (review 1: `cap_changed` →
+/// `RebindHeld` with nothing kept).
 #[tokio::test]
 async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     let lan = Lan::default();
@@ -1358,6 +1368,24 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     grant(&["research", "zeta"]).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(a.ctx.first_waiting().await.len(), 1, "still waiting");
+    a.ctx
+        .put_export(Export {
+            name: "research".into(),
+            target: ExportTarget::Agent {
+                agent: "theuth".into(),
+            },
+            description: "Answers research questions".into(),
+            paused: None,
+            tools: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        a.ctx.first_waiting().await.len(),
+        1,
+        "a description edit keeps it waiting"
+    );
 
     // Always: delivered like Allow once, and nothing waits any more.
     a.ctx
@@ -1384,4 +1412,97 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
         "it was let through, not revoked: {:?}",
         now.status.message.as_ref().and_then(|m| m.text())
     );
+
+    // A changed cap: the next waiting message fails at once, it never runs under the new cap.
+    a.ctx
+        .first_answer(ContactFirstAnswer {
+            contact: a_alias.clone(),
+            export: "research".into(),
+            answer: FirstContact::Ask,
+        })
+        .await
+        .unwrap();
+    let mut m =
+        a2a_types::Message::new(a2a_types::Role::User, vec![a2a_types::Part::text("again")]);
+    m.message_id = "m-2".into();
+    let second = match client
+        .send_message(&a2a_types::SendMessageRequest { message: m, ..req })
+        .await
+        .unwrap()
+    {
+        a2a_types::SendMessageResponse::Task(t) => t,
+        other => panic!("expected a task, got {other:?}"),
+    };
+    assert_eq!(second.status.state, a2a_types::TaskState::AuthRequired);
+    a.ctx
+        .update_contact(ContactUpdate {
+            name: a_alias.clone(),
+            patch: ContactPatch {
+                cap: Some(tools::Risk::Mutating),
+                ..ContactPatch::default()
+            },
+        })
+        .await
+        .unwrap();
+    assert!(a.ctx.first_waiting().await.is_empty(), "no longer waiting");
+    let now = client
+        .get_task(&a2a_types::GetTaskRequest {
+            id: second.id.clone(),
+            history_length: Some(0),
+            tenant: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(now.status.state, a2a_types::TaskState::Failed);
+    assert_eq!(
+        now.status.message.as_ref().and_then(|m| m.text()),
+        Some(agent::communication::network::HOLD_CHANGED)
+    );
+}
+
+/// 183 review 1, 2: offers notices from one contact coalesce — five at once run the refresh
+/// in flight and one follow-up — a failed refresh leaves the next notice free to run, and
+/// the claim on `busy` is released however its task ends (a panic drops it unreleased).
+#[tokio::test]
+async fn offers_notices_coalesce_and_never_stick() {
+    let lan = Lan::default();
+    let a = engine("a", &lan, true, cfg(600)).await;
+    let b = engine("b", &lan, true, cfg(600)).await;
+    let eid = b.eid();
+    // B is no contact of A: every fetch of its card fails (refused), and quickly.
+    let state = || {
+        let all = a.ctx.offers.lock();
+        all.get(&eid)
+            .map(|c| (c.busy, c.again, c.refreshes, c.error.is_some()))
+    };
+    for _ in 0..5 {
+        a.ctx.offers_noticed(&eid);
+    }
+    assert_eq!(
+        state(),
+        Some((true, true, 0, false)),
+        "one running, one more asked"
+    );
+    let done = until("the refreshes end", || state().filter(|s| !s.0)).await;
+    assert_eq!(
+        done,
+        (false, false, 2, true),
+        "the running one and one follow-up"
+    );
+    a.ctx.offers_noticed(&eid);
+    let done = until("the next one ends", || state().filter(|s| !s.0)).await;
+    assert_eq!(done.2, 3, "after an error a notice still runs");
+
+    // A claim dropped without its loop releasing it (a panic) clears the flags.
+    {
+        let mut all = a.ctx.offers.lock();
+        let c = all.get_mut(&eid).unwrap();
+        (c.busy, c.again) = (true, true);
+    }
+    drop(super::offers::Busy {
+        ctx: a.ctx.clone(),
+        eid: eid.clone(),
+        done: false,
+    });
+    assert_eq!(state().map(|s| (s.0, s.1)), Some((false, false)));
 }

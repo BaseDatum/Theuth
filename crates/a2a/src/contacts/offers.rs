@@ -47,8 +47,31 @@ pub(crate) struct Cached {
     /// The last refresh failure logged (each distinct one once).
     pub error: Option<String>,
     /// A noticed refresh is running; `again` is one more asked for meanwhile.
-    busy: bool,
-    again: bool,
+    pub(super) busy: bool,
+    pub(super) again: bool,
+    /// Refreshes run (every outcome), for the coalescing test.
+    #[cfg(test)]
+    pub(super) refreshes: usize,
+}
+
+/// [`Ctx::offers_noticed`]'s claim on one contact's `busy` flag: released on drop unless
+/// the refresh loop already released it under the lock (`done`).
+pub(super) struct Busy {
+    pub(super) ctx: Arc<Ctx>,
+    pub(super) eid: String,
+    pub(super) done: bool,
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        if let Some(c) = self.ctx.offers.lock().get_mut(&self.eid) {
+            c.busy = false;
+            c.again = false;
+        }
+    }
 }
 
 /// Remote error text cut for a log line.
@@ -204,7 +227,8 @@ impl Ctx {
 
     /// A contact said what it shares with us changed (`NOTICE_PATH`): fetch its card again.
     /// At most one noticed refresh runs per contact; notices meanwhile collapse into one
-    /// more refresh after it (review 1).
+    /// more refresh after it (review 1). However the refresh task ends (a panic included),
+    /// `busy` is cleared, so a later notice runs again (review 2).
     pub(crate) fn offers_noticed(self: &Arc<Self>, eid: &str) {
         {
             let mut all = self.offers.lock();
@@ -215,14 +239,24 @@ impl Ctx {
             }
             c.busy = true;
         }
-        let (c, eid) = (self.clone(), eid.to_owned());
+        let busy = Busy {
+            ctx: self.clone(),
+            eid: eid.to_owned(),
+            done: false,
+        };
         tokio::spawn(async move {
+            let mut busy = busy;
             loop {
-                c.refresh_offers(&eid).await;
-                let mut all = c.offers.lock();
-                let Some(e) = all.get_mut(&eid) else { return };
+                busy.ctx.refresh_offers(&busy.eid).await;
+                let mut all = busy.ctx.offers.lock();
+                let Some(e) = all.get_mut(&busy.eid) else {
+                    return;
+                };
                 if !std::mem::take(&mut e.again) {
+                    // Cleared under the same lock a notice checks it under: none is lost.
                     e.busy = false;
+                    drop(all);
+                    busy.done = true;
                     return;
                 }
             }
@@ -251,6 +285,10 @@ impl Ctx {
             let mut all = self.offers.lock();
             let c = all.entry(eid.to_owned()).or_default();
             c.at = Some(Instant::now());
+            #[cfg(test)]
+            {
+                c.refreshes += 1;
+            }
             match outcome {
                 Ok(offers) => {
                     c.error = None;

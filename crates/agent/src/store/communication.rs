@@ -1626,11 +1626,12 @@ impl Store {
             .iter()
             .map(ExchangeRow::receipt)
             .collect::<anyhow::Result<Vec<_>>>()?;
-        // 183 review 1: an outbound message a contact's owner held (or let through, its answer
-        // still to come) has nothing following it after a restart: it ends, saying it may
-        // still arrive, so the sender checks before sending again.
+        // 183 review 1, 2: an outbound message a contact's owner held (or let through, its
+        // answer still to come) has nothing following it after a restart: its outcome is
+        // `unknown` (bytes have left; it may still be delivered), saying so, so the sender
+        // checks before sending again.
         let followed: Vec<ExchangeRow> = sqlx::query_as(concat!(
-            "UPDATE peer_exchanges SET state = 'failed', error = ?, updated_at = ? \
+            "UPDATE peer_exchanges SET state = 'unknown', error = ?, updated_at = ? \
              WHERE state IN ('held', 'consumed') AND recipient LIKE 'peer:%' \
                AND recipient_session IS NULL RETURNING ",
             exchange_cols!()
@@ -3468,5 +3469,67 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(after, [("failed".to_owned(), 0), ("failed".to_owned(), 0)]);
+    }
+
+    /// 183 review 1, 2: at the sender's restart an outbound contact message held by the
+    /// owner, or let through with its answer to come, ends `unknown` with the restart text
+    /// (nothing follows it any more; it may still be delivered); a local message the
+    /// recipient already consumed is left alone.
+    #[tokio::test]
+    async fn a_restart_leaves_followed_contact_messages_unknown_and_local_ones_alone() {
+        let (store, a, _dir) = fresh().await;
+        let b = SessionId::new();
+        store
+            .create_session(b, "m", Some(a), Some("b"), None)
+            .await
+            .unwrap();
+        let from = format!("session:{a}");
+        let held = store
+            .accept_exchange(&accept(&from, "peer:sky", Some(a), None, "first"))
+            .await
+            .unwrap();
+        store.hold_exchange(held.id, "held: sky").await.unwrap();
+        let through = store
+            .accept_exchange(&accept(&from, "peer:sky", Some(a), None, "second"))
+            .await
+            .unwrap();
+        let local = store
+            .accept_exchange(&accept(
+                &from,
+                &format!("session:{b}"),
+                Some(a),
+                Some(b),
+                "local",
+            ))
+            .await
+            .unwrap();
+        store
+            .consume_exchange(local.id, b, 1, ChatMessage::user("local"))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE peer_exchanges SET state = 'consumed' WHERE id = ?")
+            .bind(through.id.to_string())
+            .execute(&store.write)
+            .await
+            .unwrap();
+
+        let i = store
+            .fail_interrupted("interrupted_by_restart")
+            .await
+            .unwrap();
+        let want = format!("interrupted_by_restart: {HELD_AT_RESTART}");
+        for id in [held.id, through.id] {
+            let r = store.exchange_receipt(id).await.unwrap().unwrap();
+            assert_eq!(r.state, PeerMessageState::Unknown, "{id}");
+            assert_eq!(r.error.as_deref(), Some(want.as_str()));
+            assert!(i.exchanges.iter().any(|x| x.id == id), "reported");
+        }
+        let r = store.exchange_receipt(local.id).await.unwrap().unwrap();
+        assert_eq!(
+            r.state,
+            PeerMessageState::Consumed,
+            "the local row survives"
+        );
+        assert!(!i.exchanges.iter().any(|x| x.id == local.id));
     }
 }

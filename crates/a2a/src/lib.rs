@@ -524,8 +524,8 @@ impl Ctx {
             .ask(&agents, CommitPeerConfig { routes, revoke })
             .await
             .map_err(|e| format!("commit peer configuration: {e}"))?;
-        for m in rebind {
-            if let Err(e) = agents.ask(m).await {
+        for m in &rebind {
+            if let Err(e) = agents.ask(m.clone()).await {
                 tracing::warn!("a2a: held first messages across a grant change: {e}");
             }
         }
@@ -572,6 +572,13 @@ impl Ctx {
         // 183 F1: a contact whose grants here changed hears it and fetches our card again.
         let notice = contacts::offers::changed(&prev.staged, &live.staged);
         *self.shared.write() = live;
+        // 183 review 2: the old Live admitted until this swap, so a first message it held
+        // after the first ask is checked again (the same answer: kept or failed).
+        for m in rebind {
+            if let Err(e) = agents.ask(m).await {
+                tracing::warn!("a2a: held first messages across a grant change: {e}");
+            }
+        }
         let to = agents.clone();
         tokio::spawn(async move {
             for m in limits {

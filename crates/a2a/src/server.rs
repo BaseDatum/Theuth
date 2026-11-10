@@ -893,6 +893,46 @@ pub fn iroh_gate(live: &Live, remote: &str, window_open: bool) -> IrohGate {
 mod tests {
     use super::*;
 
+    /// 183 review 1, 2: a contact-only request (its card, the offers notice) is bounded like
+    /// the A2A routes: an unknown caller 401, every permit taken 503, a spent bucket 429.
+    #[test]
+    fn contact_only_requests_share_the_contacts_bounds() {
+        let bob = || {
+            Arc::new(Principal::new(
+                Uuid::from_u128(1),
+                "bob".into(),
+                HashSet::new(),
+                CancellationToken::new(),
+            ))
+        };
+        let mut live = Live::empty();
+        live.contacts.insert("bob-eid".into(), bob());
+        assert_eq!(
+            live.admit_contact("nobody").unwrap_err(),
+            StatusCode::UNAUTHORIZED
+        );
+        let held: Vec<_> = (0..CONCURRENT_PER_PEER)
+            .map(|_| live.admit_contact("bob-eid").unwrap())
+            .collect();
+        assert_eq!(
+            live.admit_contact("bob-eid").unwrap_err(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "every permit taken"
+        );
+        drop(held);
+        assert!(live.admit_contact("bob-eid").is_ok(), "permits come back");
+
+        // A fresh bucket: its burst, one at a time, then 429.
+        live.contacts.insert("bob-eid".into(), bob());
+        for _ in 0..RATE_PER_SEC as usize {
+            drop(live.admit_contact("bob-eid").unwrap());
+        }
+        assert_eq!(
+            live.admit_contact("bob-eid").unwrap_err(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
     fn params(version: Option<&str>) -> ServiceParams {
         let mut p = ServiceParams::new();
         if let Some(v) = version {

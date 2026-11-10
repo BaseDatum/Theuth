@@ -1,13 +1,27 @@
 # 183 — build notes
 
+## 183 follow-ups, final round (CF-R2)
+
+On 91c6e724 (review verdict: ship), 7 items.
+
+1. **e2e pairing flake.** `paired` waits until each side has pinned the other's endpoint (`staged.contact_by_eid`), not just any contact, so a second pairing on the same engine doesn't return early.
+2. **Tests for the review-1 fixes:** `contact_only_requests_share_the_contacts_bounds` (401 / 503 when every permit is taken / 429 when the bucket is spent); `offers_notices_coalesce_and_never_stick` (five notices → 2 refreshes, a notice after an error still runs, the `Busy` guard clears both flags on drop); `the_follow_deadline_slides_while_held_up_to_the_ceiling` (pure `follow_deadline`); the F4 e2e test now changes the cap with a message waiting → it fails with `HOLD_CHANGED` (the `cap_changed` → `RebindHeld` wiring); the cancel test hears `ContactsHeldChanged`; `a_restart_leaves_followed_contact_messages_unknown_and_local_ones_alone`.
+3. **A title or description edit keeps a waiting message.** `unchanged_exports` compares only what grants authority — the session (chat) or agent, the tools — under the same cap. Tested in config and in the F4 e2e test.
+4. **At the sender's restart a held or let-through contact message is `unknown`, not `failed`** (bytes have left; it may still be delivered), with the same `HELD_AT_RESTART` text.
+5. **The follower's "not terminal after Ns" text** uses the real deadline (`deadline - started`), not `FOLLOW_MAX`.
+6. **`busy` can't stick.** `offers_noticed`'s task holds a `Busy` claim; its drop clears `busy`/`again` unless the loop already released it under the lock (so no notice is lost).
+7. **A message the old Live admitted after the first `RebindHeld` is checked again.** The same `RebindHeld` list is asked again right after the Live swap (idempotent: kept ones re-bound, others failed).
+
+Also: `NetworkState::retire` now returns whether it dropped a hold, and `transition_with` (its only caller) publishes `ContactsHeldChanged`; `HeldGone` and its registry hop are gone (the registry lookup also did nothing for unregistered engines, such as the a2a tests' two engines).
+
 ## 183 follow-ups, review round 1 (CF-R1)
 
 On fd4de033, 17 items. Evidence `/tmp/rs183f/evidence.txt` (section "CF-R1"), shots `shots/r1-*.png`.
 
-1. **Rebinding a hold checks the export's definition, not only its name.** `Staged::unchanged_exports` (a2a `config.rs`): exports granted in both epochs with the same `exports`/`agents` definition and the same contact cap. `reload_as` asks `RebindHeld` for every contact whose cap or grant changed, right after `CommitPeerConfig`; holds of exports not in that list fail at once with `HOLD_CHANGED` ("the shared chat or agent changed while this waited; send it again"), so a re-pointed chat, changed agent tools or a changed cap never runs an old first message under the new authority. Live: hi-there re-pointed to another chat with a message waiting → B's task failed with that text, nothing ran in the new chat, C's receipt failed with it.
+1. **Rebinding a hold checks the export's definition, not only its name.** `Staged::unchanged_exports` (a2a `config.rs`): exports granted in both epochs with the same authority (CF-R2: session or agent and tools; a title or description edit keeps them) and the same contact cap. `reload_as` asks `RebindHeld` for every contact whose cap or grant changed, right after `CommitPeerConfig` (CF-R2: and again after the Live swap); holds of exports not in that list fail at once with `HOLD_CHANGED` ("the shared chat or agent changed while this waited; send it again"), so a re-pointed chat, changed agent tools or a changed cap never runs an old first message under the new authority. Live: hi-there re-pointed to another chat with a message waiting → B's task failed with that text, nothing ran in the new chat, C's receipt failed with it.
 2. **The held line is bounded.** `held_line` clips machine and export to 64 characters, drops control characters, at most 512 in all; the export comes from the alias as written, and for a plain `peer:<contact>` the holder's export is named only when it is a valid export name.
 3. **The card route is admitted like any contact request** (`Live::admit_contact`: rate and concurrency limits before the card or the notice). Offer refreshes coalesce per contact (one in flight, notices collapse into one follow-up), errors are clipped to 200 characters, and `A2aChanged` fires only when the offers changed. The card's alg/kid in a verify error are clipped.
-4. **A held message on the sender at the sender's restart fails honestly.** Re-arming the follower is not possible (the store keeps no export per exchange for the follow route), so boot accounting fails outbound held/consumed contact rows with `HELD_AT_RESTART` ("the contact's owner may still allow and deliver it, and its answer would not reach this session; check with them before sending it again").
+4. **A held message on the sender at the sender's restart ends honestly.** Re-arming the follower is not possible (the store keeps no export per exchange for the follow route), so boot accounting marks outbound held/consumed contact rows `unknown` (CF-R2; `failed` in CF-R1) with `HELD_AT_RESTART` ("the contact's owner may still allow and deliver it, and its answer would not reach this session; check with them before sending it again").
 5. **The sender keeps following a held task.** While the remote task is `AUTH_REQUIRED` the follow deadline slides by `FOLLOW_MAX`, capped at `HOLD_TTL + FOLLOW_MAX`, so an Allow late in the 24 h still reports back.
 6. **Non-await sends ask for contacts only.** `peers.rs` asks `IsContact` per `peer:` receipt and fetches first answers for contacts only, concurrently.
 7. **Directory order and caps.** Three groups: own tree, then contacts with at most 8 export rows each (the contact's row then reads `+N more: discover_peers(kind="contact", query="<contact>")`), then the rest. New filter `kind: contact` (`DirectoryKind`) lists every contact row uncapped.
@@ -18,7 +32,7 @@ On fd4de033, 17 items. Evidence `/tmp/rs183f/evidence.txt` (section "CF-R1"), sh
 12. **Remote strings wrap.** `break-words` on the waiting line and on "Shared with you".
 13. **Receipt lines stay one line.** `\r`, `\n`, U+2028 and U+2029 become spaces, in the address too.
 14. **The contact's `tasks/cancel` on a held task cancels it at once** (as a never-started task: no `CANCEL_WAIT`); its retire drops the hold, so a later Allow runs nothing.
-15. **Every dropped hold refreshes the surfaces.** `NetworkState::retire` publishes `ContactsHeldChanged` (via `HeldGone`) when it removes a hold.
+15. **Every dropped hold refreshes the surfaces.** A terminal transition whose `retire` removed a hold publishes `ContactsHeldChanged` (CF-R2: directly; CF-R1 went through a `HeldGone` registry hop).
 16. **Offer titles** are cut to the card's 64 characters, without control characters, names deduplicated.
 17. **Counts and `held`.** The strip and rows say "· N messages" when more than one waits; the boot UPDATE clears `held`.
 

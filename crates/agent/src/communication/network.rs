@@ -908,8 +908,10 @@ impl NetworkState {
     /// buffered terminal event. `ops` keeps its rows: a job the scope's turn
     /// started stays *its* work when it reports after the task ended, so
     /// [`Agents::network_input_queued`] refuses the result instead of it
-    /// opening a private turn. Each row goes when its producer settles it.
-    fn retire(&mut self, scope: Uuid) {
+    /// opening a private turn. Each row goes when its producer settles it. `true` when a
+    /// held first message was dropped (183 review 1: the caller announces it).
+    #[must_use]
+    fn retire(&mut self, scope: Uuid) -> bool {
         self.contact_scopes.remove(&scope);
         let mut dropped = false;
         for tasks in self.held.values_mut() {
@@ -919,10 +921,6 @@ impl NetworkState {
             }
         }
         self.held.retain(|_, v| !v.is_empty());
-        if dropped {
-            // 183 review 1: no stale strip, row or Attention item (a cancel, a revoke).
-            tokio::spawn(crate::continuation::notify(HeldGone));
-        }
         if let Some(q) = self.queued.remove(&scope) {
             q.watch.abort();
             self.feeds.remove(&q.task);
@@ -944,6 +942,7 @@ impl NetworkState {
             self.pending.retain(|_, s| *s != scope);
             self.feeds.remove(&sc.task);
         }
+        dropped
     }
 }
 
@@ -1874,8 +1873,10 @@ impl Agents {
         for ev in events {
             self.network.emit(&task.id, ev);
         }
-        if status.is_terminal() {
-            self.network.retire(task.request_scope);
+        // 183 review 1: a hold that ends here (a cancel, a revoke) leaves no stale strip,
+        // row or Attention item.
+        if status.is_terminal() && self.network.retire(task.request_scope) {
+            self.rt.publish(ContactsHeldChanged).await;
         }
         Ok(updated)
     }
@@ -3395,17 +3396,6 @@ impl Message<IsContact> for Agents {
 
     async fn handle(&mut self, m: IsContact, _: &mut Context<Self, Self::Reply>) -> bool {
         self.network.is_contact(&m.0)
-    }
-}
-
-/// `tell` (internal, 183 review 1): [`NetworkState::retire`] dropped a held task.
-struct HeldGone;
-
-impl Message<HeldGone> for Agents {
-    type Reply = ();
-
-    async fn handle(&mut self, _: HeldGone, _: &mut Context<Self, Self::Reply>) {
-        self.rt.publish(ContactsHeldChanged).await;
     }
 }
 
@@ -5109,7 +5099,7 @@ mod tests {
         a.transition(&busy, A2aTaskStatus::Completed, None, Some("done"), None)
             .await
             .unwrap();
-        a.network.retire(busy.request_scope);
+        let _ = a.network.retire(busy.request_scope);
         a.start_next(session).await;
         let allowed = a.store.a2a_task(s, &allowed.id).await.unwrap().unwrap();
         assert_eq!(
@@ -5228,7 +5218,8 @@ mod tests {
     }
 
     /// 183 review 1: the contact's own `tasks/cancel` on a held first message cancels it at
-    /// once (no wait for work that never started), and a later Allow finds nothing to run.
+    /// once (no wait for work that never started), the surfaces hear the hold ended (review
+    /// 2: `retire` → `ContactsHeldChanged`), and a later Allow finds nothing to run.
     #[tokio::test]
     async fn a_contact_cancel_of_a_held_message_ends_it_at_once() {
         let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
@@ -5249,6 +5240,20 @@ mod tests {
         };
         let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
         assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        #[derive(kameo::Actor)]
+        struct HeldTap(tokio::sync::mpsc::UnboundedSender<()>);
+        impl Message<ContactsHeldChanged> for HeldTap {
+            type Reply = ();
+            async fn handle(&mut self, _: ContactsHeldChanged, _: &mut Context<Self, ()>) {
+                let _ = self.0.send(());
+            }
+        }
+        let (tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let tap = <HeldTap as kameo::actor::Spawn>::spawn_with_mailbox(
+            HeldTap(tx),
+            runtime::subscriber_mailbox(),
+        );
+        a.rt.subscribe::<HeldTap, ContactsHeldChanged>(&tap).await;
         let done = a
             .cancel_task(&p, &held.id)
             .await
@@ -5256,6 +5261,10 @@ mod tests {
             .expect("settled at once");
         assert_eq!(done.status, A2aTaskStatus::Canceled);
         assert!(a.network.held.is_empty(), "no longer waiting anywhere");
+        tokio::time::timeout(Duration::from_secs(10), heard.recv())
+            .await
+            .expect("ContactsHeldChanged published")
+            .unwrap();
         let n = a
             .release_held(ContactRelease {
                 contact: "bob".into(),
@@ -5664,7 +5673,7 @@ mod tests {
         a.transition(&busy, A2aTaskStatus::Completed, None, Some("done"), None)
             .await
             .unwrap();
-        a.network.retire(busy.request_scope);
+        let _ = a.network.retire(busy.request_scope);
         a.release_held(ContactRelease {
             contact: "bob".into(),
             export: Some("research".into()),
