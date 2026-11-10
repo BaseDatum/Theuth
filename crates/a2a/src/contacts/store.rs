@@ -33,10 +33,20 @@ pub fn parse(text: &str) -> Result<(String, PeersFile), String> {
     Ok((head, file))
 }
 
-/// The header, then the entries.
+/// 183: what a rewrite adds to the leading comment block (once), so a reader of the file —
+/// an owner or a model — does not take a contact's `exports` for what it shares with us.
+pub const EXPORTS_NOTE: &str = "# peers.<contact>.exports: what THIS machine grants that \
+contact (it may reach them here), not what the contact shares with us.\n";
+
+/// The header (with [`EXPORTS_NOTE`] added once, after the owner's lines), then the entries.
 pub fn render(head: &str, file: &PeersFile) -> Result<String, String> {
     let body = serde_yaml::to_string(file).map_err(|e| e.to_string())?;
-    Ok(format!("{head}{body}"))
+    let note = if head.contains(EXPORTS_NOTE) {
+        ""
+    } else {
+        EXPORTS_NOTE
+    };
+    Ok(format!("{head}{note}{body}"))
 }
 
 /// Replace `path` with `text` atomically (owner-only on unix: the file names vault secrets).
@@ -98,9 +108,16 @@ mod tests {
         let path = dir.path().join("a2a/peers.yaml");
         write(&path, &render(&head, &file).unwrap()).unwrap();
         let back = std::fs::read_to_string(&path).unwrap();
-        assert!(back.starts_with("# Contacts and exports.\n# Owner notes: keep.\n\npeers:\n"));
+        assert!(back.starts_with("# Contacts and exports.\n# Owner notes: keep.\n\n"));
         let (head2, file2) = parse(&back).unwrap();
-        assert_eq!(head2, head);
+        assert_eq!(
+            head2,
+            format!("{head}{EXPORTS_NOTE}"),
+            "the note follows the owner's"
+        );
+        // A second rewrite keeps one note.
+        let again = render(&head2, &file2).unwrap();
+        assert_eq!(again.matches(EXPORTS_NOTE).count(), 1);
         assert!(file2.peers["lab"].exports.is_empty());
         assert_eq!(file2.peers["lab"].inbound_secret.as_deref(), Some("in"));
         assert_eq!(file2.exports["research"].name, "Research");
