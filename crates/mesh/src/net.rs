@@ -1313,16 +1313,21 @@ impl Net {
             .iter()
             .filter_map(|p| EndpointId::from_str(&p.id.0).ok())
             .collect();
-        let gone: Vec<EndpointId> = {
+        let (gone, changed): (Vec<EndpointId>, bool) = {
             let mut paired = self.paired.write().unwrap_or_else(|p| p.into_inner());
             let gone = paired.difference(&live).copied().collect();
-            if *paired != live {
+            let changed = *paired != live;
+            if changed {
                 paired.clone_from(&live);
                 self.peers_gen.send_modify(|g| *g += 1);
             }
-            gone
+            (gone, changed)
         };
         drop(refreshing);
+        if changed {
+            // 187: a server homed on an engine that left runs on one still here; a re-pair gives it back.
+            ::tools::peers_changed();
+        }
         for id in gone {
             self.close_conns(&id).await;
         }

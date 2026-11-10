@@ -91,9 +91,9 @@ use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
     AskRequested, CancelJob, CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
-    JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpLogin, McpLogout, McpProgress,
-    McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate, SetHidden,
-    SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
+    JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpHomeAction, McpLogin,
+    McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals,
+    SetGate, SetHidden, SetMcpHome, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
 };
 use tools::{
     Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
@@ -838,6 +838,10 @@ pub trait Api {
         tool: Option<String>,
         gate: Option<Gate>,
     ) -> RpcResult<()>;
+    /// 187: where a server runs — `run_everywhere`, `only_home`, `move_here`,
+    /// `off_here`, `on_here` (this engine); persists to `mcp/homes.yaml`, which replicates.
+    #[method(name = "set_mcp_home")]
+    async fn set_mcp_home(&self, server: String, action: McpHomeAction) -> RpcResult<()>;
     /// Hide (or show again) registered tools for one session and its
     /// subagents, in memory: absent from the model's tool list, `unknown tool`
     /// when called. The persistent form is `set_mcp_gate(.., Some(Off))`.
@@ -5934,6 +5938,10 @@ impl ApiServer for Server {
         gate: Option<Gate>,
     ) -> RpcResult<()> {
         ask::<Mcp, _>(tools::MCP_ACTOR, SetGate { server, tool, gate }).await
+    }
+
+    async fn set_mcp_home(&self, server: String, action: McpHomeAction) -> RpcResult<()> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, SetMcpHome { server, action }).await
     }
 
     async fn set_mcp_hidden(

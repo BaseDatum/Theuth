@@ -1144,6 +1144,8 @@ impl Message<Rename> for Mesh {
                 .write_config("name", &serde_json::json!(name).to_string())?;
             Ctx::lock(&self.ctx.cfg).name = name.to_owned();
             set_self_name(name);
+            // 187: MCP homes show this name.
+            ::tools::set_machine(&m.id.0, name);
             self.ctx.net.rename(name).await
         } else {
             self.ctx.net.rename_peer(&m.id, name).await
@@ -1243,6 +1245,12 @@ impl runtime::Plugin for MeshPlugin {
         };
         set_self_name(&name);
         set_self_id(&identity.id().0);
+        // 187: MCP servers start only on their home engine.
+        ::tools::set_machine(&identity.id().0, &name);
+        ::tools::set_paired_check(|| {
+            NET.get()
+                .map(|n| n.paired_ids().iter().map(ToString::to_string).collect())
+        });
         let net = match Net::bind(
             net::BindOpts {
                 secret: identity.secret,
@@ -1273,6 +1281,8 @@ impl runtime::Plugin for MeshPlugin {
             cfg.discovery
         );
         let _ = NET.set(net.clone());
+        // 187: the paired set is known from here on: place servers homed on an engine that left.
+        ::tools::peers_changed();
         // 183 §6.2, §6.8: the deny list and the Nearby switch, from config.
         set_messaging_off(cfg.messaging_off.clone());
         nearby::configure(&net, cfg.nearby, cfg.pair_window_secs);

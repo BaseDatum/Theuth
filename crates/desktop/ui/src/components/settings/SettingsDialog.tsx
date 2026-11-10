@@ -81,7 +81,7 @@ const TABS = [
   ['connections', 'Connections', KeyRound],
   ['channels', 'Channels', MessageSquare],
   ['shortcuts', 'Shortcuts', Keyboard],
-  ['mcp', 'MCP server', Plug],
+  ['mcp', 'MCP', Plug],
 ] as const satisfies readonly (readonly [string, string, LucideIcon])[]
 
 /** 158 C158: tabs whose module says `ready === false` are filtered out of the list (W2/W5 flip their own flag). */

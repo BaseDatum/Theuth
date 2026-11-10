@@ -68,8 +68,9 @@ pub use journal::{
     QuestionKind, QuestionRow, QuestionState, WaitKind, WaitRow,
 };
 pub use mcp::{
-    AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
-    McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
+    AddRepo, AddServer, ListServers, Mcp, McpAuth, McpHomeAction, McpLogin, McpLogout, McpProgress,
+    McpServer, McpState, McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate,
+    SetMcpHome, SyncMcp, peers_changed, set_machine, set_paired_check,
 };
 pub use proctree::{PtyThresholds, TreeQuiet};
 pub use pty::{
