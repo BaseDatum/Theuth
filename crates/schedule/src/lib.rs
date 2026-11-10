@@ -2143,6 +2143,7 @@ async fn cancel_tree(
                 session: child,
                 keep: None,
                 scope: agent::CancelScope::Root,
+                reason: agent::CancelReason::Stop,
             })
             .await
         {
@@ -2155,6 +2156,7 @@ async fn cancel_tree(
             session,
             keep: None,
             scope: agent::CancelScope::Tree,
+            reason: agent::CancelReason::Stop,
         })
         .await
         .map_err(|e| e.to_string())
@@ -5058,6 +5060,7 @@ mod watch_tests {
                     from: format!("session:{child}"),
                     reply_to: None,
                     scope: None,
+                    contact_mode: None,
                 },
                 text: "P1 finding".into(),
                 seq: 33,

@@ -942,7 +942,7 @@ impl Store {
             .is_some_and(|s| {
                 matches!(
                     json(&s.payload)["source"].as_str(),
-                    Some("peer" | "scoped" | "contact")
+                    Some("peer" | "scoped" | "contact" | "contact_full")
                 )
             });
         let mut kind = ResumeKind::Interrupted;
@@ -1985,6 +1985,15 @@ mod tests {
             assert!(store.resume_plan(s, t).await.unwrap().bounded);
             store.finish_turn(s, t, "stop").await.unwrap();
         }
+        // 186 (D6): a contact's turn shared in full is a peer turn: bounded, never capped.
+        let full = TurnId::new();
+        store
+            .input_accepted(s, full, Some("ex-2"), "contact_full")
+            .await
+            .unwrap();
+        assert_eq!(store.contact_turn_input(s, full).await.unwrap(), None);
+        assert!(store.resume_plan(s, full).await.unwrap().bounded);
+        store.finish_turn(s, full, "stop").await.unwrap();
         let owner = TurnId::new();
         store.input_accepted(s, owner, None, "user").await.unwrap();
         assert_eq!(store.contact_turn_input(s, owner).await.unwrap(), None);

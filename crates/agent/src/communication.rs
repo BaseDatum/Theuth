@@ -245,6 +245,10 @@ pub struct PeerRecord {
     pub created_at: DateTime<Utc>,
     /// Owning A2A request scope, when the exchange belongs to one.
     pub request_scope: Option<Uuid>,
+    /// 186: a contact's share mode when a contact's message (or its answer) made the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub contact_mode: Option<ShareMode>,
 }
 
 /// Backend behind a peer address (§5.1).
@@ -666,6 +670,34 @@ pub struct PeerDeliver {
     pub forwarder: Option<String>,
 }
 
+/// 186 (D1): how a contact share collaborates, chosen per grant (contact × export) when the
+/// share is made. `Full`: the contact's message arrives like a mesh peer's, the receiving
+/// agent replies with `send_message(reply_to)` any number of times and the chat's own tool
+/// policy applies. `Cautious`: one capped turn per message, the reply is the turn text (183).
+/// A grant with no recorded mode is `Cautious` (D2, fail closed).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum ShareMode {
+    /// Collaborate like a mesh peer.
+    Full,
+    /// 183's capped, one-turn-per-message path.
+    #[default]
+    Cautious,
+}
+
+impl ShareMode {
+    /// The `discover_peers` tag: `full` | `cautious`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Cautious => "cautious",
+        }
+    }
+}
+
 /// 183 §14.6 (D9, W-40): who a contact's message into an exported chat comes from, as the
 /// engine that holds the contact vouches for it. The chat's owner may lower `cap`, never
 /// raise it above `mutating`.
@@ -687,6 +719,10 @@ pub struct ContactOrigin {
     /// = none.
     #[serde(default)]
     pub tools: Vec<String>,
+    /// 186 (D11): the share's mode; absent (an older holder) = cautious. The chat's owner may
+    /// lower it, never raise it.
+    #[serde(default)]
+    pub mode: ShareMode,
 }
 
 /// 183 §14.6: one contact message for an exported chat owned by another engine of the
@@ -762,6 +798,9 @@ pub struct PeerOrigin {
     pub reply_to: Option<Uuid>,
     /// Owning A2A request scope, when any.
     pub scope: Option<Uuid>,
+    /// 186: the share mode when a contact's message produced the row; `None` for mesh peers.
+    #[serde(default)]
+    pub contact_mode: Option<ShareMode>,
 }
 
 /// 172: which channel delivered a user row (UIs show it as a chip; the model input is unchanged).

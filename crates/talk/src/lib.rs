@@ -666,6 +666,7 @@ impl Talk {
                                 session,
                                 keep,
                                 scope: agent::CancelScope::Root,
+                                reason: agent::CancelReason::Stop,
                             })
                             .await;
                     }

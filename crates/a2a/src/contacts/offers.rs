@@ -17,7 +17,7 @@ use http_body_util::BodyExt as _;
 use hyper_util::rt::TokioIo;
 
 use crate::Ctx;
-use crate::config::{FirstContact, Staged};
+use crate::config::{FirstContact, ShareMode, Staged};
 
 /// The per-reader card a contact fetches over `theuth/a2a/1`.
 pub const CARD_PATH: &str = crate::config::CARD_SUFFIX;
@@ -42,6 +42,8 @@ const PAIRED_RETRIES: [Duration; 3] = [
 #[derive(Default)]
 pub(crate) struct Cached {
     pub offers: Vec<ContactOffer>,
+    /// 186 (D10): the last card advertised [`super::EXT_FULL`].
+    pub full: bool,
     /// The last refresh, whatever its outcome (the TTL counts from it).
     pub at: Option<Instant>,
     /// The last refresh failure logged (each distinct one once).
@@ -108,6 +110,11 @@ pub(crate) fn granted(staged: &Staged, alias: &str) -> Vec<ContactOffer> {
                 },
                 kind,
                 state,
+                mode: if peer.full.contains(name) {
+                    ShareMode::Full
+                } else {
+                    ShareMode::Cautious
+                },
             })
         })
         .collect()
@@ -150,6 +157,12 @@ pub(crate) fn of_card(card: &AgentCard) -> Vec<ContactOffer> {
                     OfferState::Unavailable
                 } else {
                     OfferState::AskFirst
+                },
+                // 186: an older card has no mode tag: cautious.
+                mode: if tagged(ShareMode::Full.as_str()) {
+                    ShareMode::Full
+                } else {
+                    ShareMode::Cautious
                 },
             }
         })
@@ -273,7 +286,7 @@ impl Ctx {
                     .map_err(|e| format!("card: {e}"))
                     .and_then(|card| {
                         super::verify_card(&card, eid)?;
-                        Ok(of_card(&card))
+                        Ok((of_card(&card), super::card_full(&card)))
                     }),
                 Ok((s, _)) => Err(format!("card: HTTP {s}")),
                 Err(e) => Err(e),
@@ -290,9 +303,10 @@ impl Ctx {
                 c.refreshes += 1;
             }
             match outcome {
-                Ok(offers) => {
+                Ok((offers, full)) => {
                     c.error = None;
-                    std::mem::replace(&mut c.offers, offers) != c.offers
+                    let was = std::mem::replace(&mut c.full, full);
+                    (std::mem::replace(&mut c.offers, offers) != c.offers) || was != full
                 }
                 Err(e) => {
                     let e = clip(&e);
@@ -356,6 +370,11 @@ impl Ctx {
             .get(eid)
             .map(|c| c.offers.clone())
             .unwrap_or_default()
+    }
+
+    /// 186 (D10): the contact pinned to `eid` last served a card that collaborates in full.
+    pub(crate) fn full_of(&self, eid: &str) -> bool {
+        self.offers.lock().get(eid).is_some_and(|c| c.full)
     }
 
     /// Hand the agent every live contact's offers, by today's alias.

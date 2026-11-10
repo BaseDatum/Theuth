@@ -14241,6 +14241,7 @@ mod tests {
             from: "contact:studio:sky-moore".into(),
             reply_to: None,
             scope: None,
+            contact_mode: None,
         };
         let row = |text: &str| {
             from_history(
@@ -19908,6 +19909,7 @@ mod tests {
             text: "which port?".into(),
             created_at: chrono::Utc::now(),
             request_scope: None,
+            contact_mode: None,
         };
         m.apply(UiEvent::PeerRequests(
             s,

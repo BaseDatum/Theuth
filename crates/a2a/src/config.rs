@@ -10,10 +10,16 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 
 use agent::communication::ALIAS_MAX;
+pub use agent::communication::ShareMode;
 use runtime::SessionId;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 use zeroize::Zeroizing;
+
+/// 186 (D2): `modes` is written only when it holds a `full` grant.
+fn no_full(m: &BTreeMap<String, ShareMode>) -> bool {
+    !m.values().any(|v| *v == ShareMode::Full)
+}
 
 /// Owner-managed peer/export file, relative to the data dir.
 pub const PEERS_FILE: &str = "a2a/peers.yaml";
@@ -163,6 +169,10 @@ pub struct PeerEntry {
     /// 183 §7.6 (W-27): export → first-contact answer; a missing export is `ask`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub first_contact: BTreeMap<String, FirstContact>,
+    /// 186 (D1, D2): export → share mode; a granted export missing here is `cautious`. Written
+    /// only when it holds a `full` grant (an older build refuses unknown keys).
+    #[serde(skip_serializing_if = "no_full")]
+    pub modes: BTreeMap<String, ShareMode>,
     /// 183 §9.4: refused at the `theuth/a2a/1` gate.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub blocked: bool,
@@ -183,6 +193,7 @@ impl PeerEntry {
             || self.machine.is_some()
             || self.cap.is_some()
             || !self.first_contact.is_empty()
+            || !self.modes.is_empty()
             || self.blocked
             || self.paired_ms.is_some()
     }
@@ -278,6 +289,9 @@ pub struct Peer {
     pub sessions: Vec<SessionId>,
     /// Granted exports.
     pub exports: Vec<String>,
+    /// 186 (D1): the granted exports shared in `full`; the rest are `cautious`. A change is a
+    /// new grant epoch (D2, D12).
+    pub full: std::collections::BTreeSet<String>,
     /// Private/loopback card origin permitted.
     pub allow_private: bool,
     /// 183 §7.3: a contact's pinned endpoint id (its identity: a re-pin is a new grant).
@@ -405,7 +419,8 @@ impl Staged {
                     (Some(x), Some(y)) => x.agent == y.agent && x.tools == y.tools,
                     (x, y) => x.is_none() && y.is_none(),
                 };
-                a.exports.contains(e) && chat && agent
+                // 186 (D2): a mode change is a grant change.
+                a.exports.contains(e) && a.full.contains(*e) == b.full.contains(*e) && chat && agent
             })
             .cloned()
             .collect()
@@ -620,6 +635,12 @@ fn stage_contact<'a>(
                 inbound: None,
                 sessions: Vec::new(),
                 exports: p.exports.clone(),
+                full: p
+                    .exports
+                    .iter()
+                    .filter(|e| p.modes.get(*e) == Some(&ShareMode::Full))
+                    .cloned()
+                    .collect(),
                 allow_private: false,
                 eid: Some(eid.to_owned()),
             },
@@ -808,6 +829,7 @@ pub fn stage(
                 inbound,
                 sessions: p.sessions.clone(),
                 exports: p.exports.clone(),
+                full: std::collections::BTreeSet::new(),
                 allow_private: p.allow_private,
                 eid: None,
             },
@@ -1039,6 +1061,39 @@ exports:
         ] {
             assert!(errors.contains(&e.to_owned()), "{e}: {errors:?}");
         }
+    }
+
+    /// 186 (D2): a grant with no mode is cautious; `modes` is written only when a full grant
+    /// exists (an older build refuses the unknown key); a mode change is a new grant epoch
+    /// and keeps no held message of that export.
+    #[test]
+    fn modes_default_to_cautious_and_are_written_only_for_a_full_grant() {
+        let bob = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
+        let yaml = |modes: &str| {
+            format!(
+                "peers:\n  bob:\n    endpoint: {bob}\n    exports: [research]\n{modes}exports:\n  research: {{ agent: research@xeus, name: Research }}\n"
+            )
+        };
+        let old = file(&yaml(""));
+        let cautious = stage(&old, &resolver(S), None).unwrap();
+        assert!(cautious.peers["bob"].full.is_empty(), "no mode is cautious");
+        let mut entry = old.peers["bob"].clone();
+        entry.modes.insert("research".into(), ShareMode::Cautious);
+        let written = serde_yaml::to_string(&entry).unwrap();
+        assert!(!written.contains("modes"), "{written}");
+        entry.modes.insert("research".into(), ShareMode::Full);
+        let written = serde_yaml::to_string(&entry).unwrap();
+        assert!(written.contains("research: full"), "{written}");
+
+        let full = stage(
+            &file(&yaml("    modes: { research: full }\n")),
+            &resolver(S),
+            None,
+        )
+        .unwrap();
+        assert!(full.peers["bob"].full.contains("research"));
+        assert!(!cautious.same_grant(&full, "bob"), "a new grant epoch");
+        assert!(cautious.unchanged_exports(&full, "bob").is_empty());
     }
 
     /// 183 F4 (review 1, 2): a held first message may outlive a grant change only for an

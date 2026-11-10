@@ -778,6 +778,12 @@ impl PeerClient {
         message.message_id = outbound.request_id.clone();
         message.task_id = outbound.task_id.clone();
         message.context_id = outbound.context_id.clone();
+        // 186 (D5, D9): a full contact share's references and chain count.
+        let metadata = outbound.full.as_ref().map(|f| {
+            message.reference_task_ids = f.reference_task.clone().map(|t| vec![t]);
+            f.metadata()
+        });
+        message.metadata = metadata;
         let request = SendMessageRequest {
             message,
             configuration: Some(SendMessageConfiguration {
@@ -1012,6 +1018,10 @@ fn apply(task: &mut Task, ev: StreamResponse, kept: &mut Retained) -> Result<(),
             next.check(items(task))?;
             *kept = next;
             task.status = u.status;
+            // 186 (D4): a full contact's receipt rides the status event.
+            if let Some(m) = u.metadata {
+                task.metadata.get_or_insert_with(Default::default).extend(m);
+            }
         }
         StreamResponse::ArtifactUpdate(u) => {
             if u.artifact.parts.iter().any(|p| p.as_text().is_none()) {
