@@ -6,6 +6,7 @@ import {
   AudioLines,
   CircleAlert,
   FileUp,
+  Loader2,
   Megaphone,
   Paperclip,
   Plus,
@@ -47,7 +48,8 @@ import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
-import { EMPTY, PLAIN_OPTIONS, openDraftSession, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, PLAIN_OPTIONS, openDraftSession, sendFirstElsewhere, useDraftTarget, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { useRemoteStart } from '@/lib/remote-start'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { interrupt, phase, press } from '@/lib/composer-state'
@@ -384,6 +386,13 @@ export function Composer({
   const { data: rows } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session })
   const row = session ? rows?.find((r) => r.id === session) : undefined
   const runsOn = row && !row.here ? engineLabel(row.owner, mesh?.peers) : undefined
+  // 183 §5.6 / §13 row 11: a chat just created on another machine holds the next send until that machine is heard
+  // from (its first event) or its row lists here; the engine forwards by id meanwhile, so this is the fallback.
+  const start = useRemoteStart((s) => (session ? s.by[session] : undefined))
+  const starting = start && !start.heard && !row ? start.machine : null
+  // The new-chat draft while its `create_session` runs on the picked machine (up to the engine's replication wait).
+  const pickedEngine = useDraftTarget((s) => (session ? null : s.engine))
+  const creatingOn = busy && pickedEngine && pickedEngine !== mesh?.self_id ? engineLabel(pickedEngine, mesh?.peers) : null
   const voice = speech.useVoice()
   const recorder = useRef<{ rec: MediaRecorder; discard: boolean } | null>(null)
   /** A release (send / cancel) that beat `getUserMedia`: applied the moment the recorder exists. */
@@ -795,7 +804,7 @@ export function Composer({
    * banner, and the retry (Retry, or Enter again) reuses the client input id so the engine never takes it twice. */
   const submit = async (spoken?: string, interject = false) => {
     const line = spoken ?? text.trim()
-    if ((!line && !skill && !held) || busy) return
+    if ((!line && !skill && !held) || busy || starting) return
     // 153 §6.1: the typed box after a dictation is what was actually sent — the engine learns single-word edits from it.
     if (spoken === undefined && lastDictation.current) dictation.correction(api, lastDictation.current, line, me.current)
     lastDictation.current = null
@@ -806,6 +815,8 @@ export function Composer({
     let target: string | null = session
     let steered = false
     let body = ''
+    /** 183 §5.6: a new chat's first message went to another machine (`sendFirstElsewhere` took the user back on failure). */
+    let elsewhere = false
     try {
       // D15: a harness command picked from the menu with its arguments typed after it — the harness's, sent as typed.
       if (session && rawCmd && (line === rawCmd || line.startsWith(`${rawCmd} `))) {
@@ -873,11 +884,16 @@ export function Composer({
       } else {
         if (draftCreate?.private && !usePrivate.getState().acknowledged)
           throw new Error('Acknowledge the private session notice first')
+        // 183 §5.6: the machine picked for this chat (`openDraftSession` spends the pick); errors name it.
+        const { engine, cwd } = useDraftTarget.getState()
+        const machine = engine && engine !== mesh?.self_id ? engineLabel(engine, mesh?.peers) : null
         // A switch on needs `create_session` with the pick in it; `openDraftSession` takes a bare pick there too, else `new_session()`.
         const { id, open, pick } = await openDraftSession(
           api,
           draftCreate && (draftCreate.private || draftCreate.project || draftCreate.endless) ? createOptions(draftCreate, useDrafts.getState().pick) : null,
-        )
+        ).catch((e: unknown) => {
+          throw machine ? new Error(`Could not start the chat on ${machine}: ${e instanceof Error ? e.message : String(e)}`, { cause: e }) : e
+        })
         if (open?.retention === 'private') usePrivate.getState().open(open)
         target = id
         if (sessionTitle) await api.rename_session(id, sessionTitle)
@@ -889,7 +905,19 @@ export function Composer({
         )
         markSent(id, body, files)
         mode(id)
-        await deadline(api.send_input(id, body, files, null, clientId))
+        const send = () => deadline(api.send_input(id, body, files, null, clientId))
+        if (engine && machine && !onCreated) {
+          // The chat opens at once with the message pending; a failure lands back here with the text.
+          elsewhere = true
+          await sendFirstElsewhere({
+            session: id,
+            machine,
+            target: { engine, cwd },
+            open: () => navigate({ to: '/c/$session', params: { session: id } }),
+            back: () => navigate({ to: '/new' }),
+            send,
+          })
+        } else await send()
       }
       useDrafts.getState().acked(draftKey, spoken ?? text)
       retried.current = false
@@ -900,7 +928,7 @@ export function Composer({
       // routed retry is either stamped by its `TurnStarted` already (then this is a no-op) or echoed by it after.
       // A steer's chip self-heals: the engine's `InputInjected` for the same id removes it.
       if (unsent && target && !steered) useSessions.getState().unmarkSent(target, body)
-      if (target && !session) {
+      if (target && !session && !elsewhere) {
         if (onCreated) onCreated(target)
         else await navigate({ to: '/c/$session', params: { session: target } })
       } else if (session) onSent?.(session)
@@ -909,7 +937,7 @@ export function Composer({
       const st = useSessions.getState()
       if (target && steered) st.applyEvents([{ type: 'InputWithdrawn', session: target, id: clientId }])
       else if (target) st.unmarkSent(target, body)
-      if (target && !session) {
+      if (target && !session && !elsewhere) {
         // The chat exists now: the unsent draft follows it, so Retry lands in that session.
         const drafts = useDrafts.getState()
         drafts.set(`${onCreated ? 'panel:' : ''}${target}`, drafts.by[draftKey] ?? EMPTY)
@@ -917,10 +945,11 @@ export function Composer({
         if (onCreated) onCreated(target)
         else await navigate({ to: '/c/$session', params: { session: target } })
       }
-      if (e instanceof SendTimeout) useConnection.getState().client?.probe('send-timeout')
+      if ((elsewhere && e instanceof Error ? e.cause : e) instanceof SendTimeout) useConnection.getState().client?.probe('send-timeout')
       const unreachable = ownerUnreachable(e)
       const draining = sessionDraining(e)
-      if (draining && target && !retried.current) {
+      if (elsewhere) toast.error(e instanceof Error ? e.message : String(e))
+      else if (draining && target && !retried.current) {
         // 139 §9.3: the session is mid-release on this engine — one automatic retry after 2 s, no card.
         retried.current = true
         toast.message(
@@ -1216,6 +1245,12 @@ export function Composer({
           onResend={async () => void (offline.retry ? await offline.retry() : await submit())}
         />
       )}
+      {(starting || creatingOn) && (
+        <div role="status" className="mb-2 flex items-center gap-2 px-1 text-sm text-fg-secondary">
+          <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+          Starting on {starting ?? creatingOn}…
+        </div>
+      )}
       {session && unsent && !busy && !offline && (
         <div
           role="alert"
@@ -1508,7 +1543,7 @@ export function Composer({
               <Button
                 className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
                 aria-label="Send"
-                disabled={!filled || busy || dictating || readOnly}
+                disabled={!filled || busy || dictating || readOnly || !!starting}
                 onClick={() => gesture('press')}
               >
                 <ArrowUp className="size-5" />

@@ -17567,6 +17567,7 @@ dependencies = [
  "tools",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "ts-rs",
  "update",
  "uuid",

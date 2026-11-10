@@ -570,6 +570,15 @@ async fn send_batch(
     framed: &mut Stream,
     rows: Vec<LogRow>,
 ) -> anyhow::Result<()> {
+    // Debug builds only: `THEUTH_DEBUG_SHIP_DELAY_SECS=N` holds each batch of
+    // our rows N seconds before it goes, to reproduce a slow mesh (183 §5.6).
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("THEUTH_DEBUG_SHIP_DELAY_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        tokio::time::sleep(Duration::from_secs(secs)).await;
+    }
     let last = rows.last().map_or(0, |r| r.seq);
     node.mark(remote, &node.me, last);
     framed

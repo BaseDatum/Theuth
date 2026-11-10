@@ -3188,13 +3188,25 @@ impl Server {
 impl Server {
     /// The one admission check (51 §4.2): the calling connection may act on
     /// `session`. Durable sessions admit any authenticated peer; a private
-    /// one only its owner; unknown or closing ids fail closed.
+    /// one only its owner; unknown or closing ids fail closed. 183 §5.6: a
+    /// chat another engine just created for us, not replicated yet, is
+    /// admitted as durable: every call for it is forwarded there, and that
+    /// engine admits it.
     pub(crate) async fn authorize(
         &self,
         ext: &Extensions,
         session: SessionId,
     ) -> RpcResult<Authorized> {
         let peer = peer(ext)?.id();
+        if forward::expected(ext, session).await?.is_some() {
+            return Ok(Authorized {
+                root: session,
+                retention: Retention::Durable,
+                generation: 0,
+                resources: tools::SessionResources::durable_arc(&self.rt.data_dir),
+                owner_peer: None,
+            });
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             Authorize {
@@ -3236,9 +3248,9 @@ impl Server {
     }
 
     /// 183 §5.6: wait, at most `sessions.release_wait_secs`, for a session
-    /// another engine just created to replicate here (§13 row 11: on timeout
-    /// the caller answers anyway).
-    async fn wait_for_row(&self, session: SessionId) {
+    /// `engine` just created to replicate here (§13 row 11: on timeout the
+    /// caller answers anyway; calls for it are forwarded by id meanwhile).
+    async fn wait_for_row(&self, session: SessionId, engine: &str) {
         let secs = self
             .rt
             .section::<sessionsync::SessionsConfig>("sessions")
@@ -3254,6 +3266,9 @@ impl Server {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        tracing::warn!(
+            "sessions: new row {session} from {engine} not here after {secs}s; forwarding by id"
+        );
     }
 }
 
@@ -5058,6 +5073,9 @@ impl ApiServer for Server {
 
     async fn list_agents(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<AgentInfo>> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::to_creator(ext, session, "list_agents", (session,)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, ListAgents { session }).await
     }
 
@@ -5070,6 +5088,16 @@ impl ApiServer for Server {
         settled_only: Option<bool>,
     ) -> RpcResult<Loaded> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::to_creator(
+            ext,
+            session,
+            "load_session",
+            (session, before, limit, settled_only),
+        )
+        .await?
+        {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             LoadSession {
@@ -5084,6 +5112,9 @@ impl ApiServer for Server {
 
     async fn get_todos(&self, ext: &Extensions, session: SessionId) -> RpcResult<TodoSnapshot> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::to_creator(ext, session, "get_todos", (session,)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, GetTodos { session }).await
     }
 
@@ -5403,8 +5434,9 @@ impl ApiServer for Server {
     ) -> RpcResult<SessionOpen> {
         let peer = peer(ext)?;
         // 183 §5.6 (W-10): New chat on another machine: that engine creates and
-        // owns the row from epoch 1; wait (bounded) for it to replicate here
-        // so the first `send_input` forwards instead of failing as unknown.
+        // owns the row from epoch 1. Until the row replicates here every call
+        // for it is forwarded there by id; wait (bounded) for it anyway so the
+        // sidebar lists it at once.
         if let Some(engine) = options.engine.clone() {
             let mut there = options.clone();
             there.engine = None;
@@ -5412,7 +5444,8 @@ impl ApiServer for Server {
                 forward::to_engine::<SessionOpen>(ext, Some(&engine), "create_session", (there,))
                     .await?
             {
-                self.wait_for_row(open.session).await;
+                sessionsync::owner::expect(open.session, replica::PeerId(engine.clone()));
+                self.wait_for_row(open.session, &engine).await;
                 return Ok(open);
             }
         }

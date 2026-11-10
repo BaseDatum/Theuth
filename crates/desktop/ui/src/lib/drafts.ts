@@ -15,6 +15,8 @@
 import { create } from 'zustand'
 import type { AttachRef } from '@/lib/attach'
 import type { Paste, Pastes } from '@/lib/pastes'
+import { isNoSuchSession } from '@/lib/no-such-session'
+import { useRemoteStart } from '@/lib/remote-start'
 import type { Api } from '@/rpc/api'
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
 import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
@@ -178,11 +180,18 @@ export const PLAIN_OPTIONS: CreateSessionOptions = {
   harness: null,
 }
 
+/** A chat created on `engine` (folder `cwd`) whose first message did not go: the next send from the draft goes there. */
+export type Reuse = { session: string; engine: string; cwd: string | null }
+
+type DraftTarget = { engine: string | null; cwd: string | null; reuse: Reuse | null }
+
 /** 183 §5.6 (W-10): the new chat's machine (mesh id) and folder there; `null` = this machine, its default folder. Not
- * persisted: a relaunch starts on this machine. Spent with the pick by `openDraftSession`. */
-export const useDraftTarget = create<{ engine: string | null; cwd: string | null; set(patch: Partial<{ engine: string | null; cwd: string | null }>): void }>()((set) => ({
+ * persisted: a relaunch starts on this machine. Spent with the pick by `openDraftSession`. `reuse`: the empty chat a
+ * failed first message left on that machine; the retry sends into it instead of leaving it behind for another. */
+export const useDraftTarget = create<DraftTarget & { set(patch: Partial<DraftTarget>): void }>()((set) => ({
   engine: null,
   cwd: null,
+  reuse: null,
   set: (patch) => set(patch),
 }))
 
@@ -191,7 +200,8 @@ export const useDraftTarget = create<{ engine: string | null; cwd: string | null
  * (a New Chat switch on, built by the composer with the pick in it) or a bare model/effort pick goes through
  * `create_session`; otherwise `new_session()`. The pick is spent either way. `open` is the `create_session` reply
  * when it ran (a private session needs it); `pick` is what was spent, for seeding the transcript header.
- * 183 §5.6: a chosen machine or folder (`useDraftTarget`) also goes through `create_session`, with `engine` / `cwd`.
+ * 183 §5.6: a chosen machine or folder (`useDraftTarget`) also goes through `create_session`, with `engine` / `cwd`;
+ * a `reuse` for that same machine and folder is opened again instead (nothing is created).
  */
 export async function openDraftSession(
   api: Api,
@@ -199,11 +209,41 @@ export async function openDraftSession(
 ): Promise<{ id: string; open: SessionOpen | null; pick: DraftPick }> {
   const { pick, resetPick } = useDrafts.getState()
   const target = useDraftTarget.getState()
+  const { reuse } = target
+  const again = reuse && reuse.engine === target.engine && reuse.cwd === target.cwd ? reuse.session : null
   const base = options ?? (pick.model || pick.effort || target.engine || target.cwd ? { ...PLAIN_OPTIONS, ...pick } : null)
-  const wanted = base && { ...base, ...(target.engine ? { engine: target.engine } : {}), ...(target.cwd ? { cwd: target.cwd } : {}) }
+  const wanted = !again && base && { ...base, ...(target.engine ? { engine: target.engine } : {}), ...(target.cwd ? { cwd: target.cwd } : {}) }
   const open = wanted ? await api.create_session(wanted) : null
-  const id = open ? open.session : await api.new_session()
+  const id = again ?? (open ? open.session : await api.new_session())
   resetPick()
-  target.set({ engine: null, cwd: null })
+  target.set({ engine: null, cwd: null, reuse: null })
   return { id, open, pick }
+}
+
+/**
+ * The first message of a chat just created on another machine: `open` the chat at once (the caller has shown the
+ * message pending), then `send` it. On a failure the user is taken `back` to the new-chat draft — its text was never
+ * acked, so it is still in the box — with the machine and folder picked again, and the error names the machine. The
+ * chat just created is kept for the retry (`reuse`): the next send goes into it with the same client input id, which
+ * the engine dedupes, so no empty chat is left behind and nothing is sent twice. Never deleted: the failed send may
+ * have landed. Not kept when the machine itself says it has no such session.
+ */
+export async function sendFirstElsewhere(o: {
+  session: string
+  machine: string
+  target: { engine: string; cwd: string | null }
+  open(): Promise<unknown>
+  back(): Promise<unknown>
+  send(): Promise<unknown>
+}): Promise<void> {
+  useRemoteStart.getState().begin(o.session, o.machine)
+  await o.open()
+  try {
+    await o.send()
+  } catch (e) {
+    useRemoteStart.getState().forget(o.session)
+    useDraftTarget.getState().set({ ...o.target, reuse: isNoSuchSession(e) ? null : { session: o.session, ...o.target } })
+    await o.back()
+    throw new Error(`${o.machine} did not take the first message (${e instanceof Error ? e.message : String(e)}). It is back in the box: send again to retry.`, { cause: e })
+  }
 }

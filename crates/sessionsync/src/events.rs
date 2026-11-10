@@ -663,7 +663,8 @@ struct Attempt {
 }
 
 /// Subscriber side: follow `session`'s owner until aborted; returns when the
-/// owner is this engine (nothing to follow) or the session is unknown.
+/// owner is this engine (nothing to follow) or the session is unknown and not
+/// [`crate::owner::expected`].
 async fn follower(rt: Runtime, store: Store, t: Arc<dyn Transport>, session: SessionId) {
     let mut backoff = BACKOFF_MIN;
     let mut peers = t.subscribe();
@@ -672,6 +673,12 @@ async fn follower(rt: Runtime, store: Store, t: Arc<dyn Transport>, session: Ses
     loop {
         let owner = match store.owner(session).await {
             Ok(Some((o, _))) if !o.is_empty() && o != store.engine() => PeerId(o),
+            // 183 §5.6: a chat another engine just created for us streams from
+            // it before its row lands here.
+            Ok(None) => match crate::owner::expected(session) {
+                Some(engine) => engine,
+                None => return,
+            },
             _ => return,
         };
         // 183 R1: each stream starts from the owner's current frame; a
@@ -1081,6 +1088,56 @@ mod tests {
                 .await
                 .is_err(),
             "unsubscribed"
+        );
+        store_o.close().await;
+        store_f.close().await;
+    }
+
+    /// 183 §5.6: a chat the owner just created for the front door streams its
+    /// events there before its row replicates: the follower takes the owner
+    /// from [`crate::owner::expect`] while the front's store has no row.
+    #[tokio::test]
+    async fn a_chat_created_elsewhere_is_followed_before_its_row_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let (owner_t, front_t) = pair();
+        let (rt_o, store_o) = engine(dir.path(), "owner").await;
+        let session = SessionId::new();
+        store_o
+            .create_session(session, "m", None, None, None)
+            .await
+            .unwrap();
+        let (rt_f, store_f) = engine(dir.path(), "front").await;
+        let owner = EventRelay::spawn_on(&rt_o, store_o.clone()).await;
+        owner.tell(SetTransport(owner_t.clone())).await.unwrap();
+        accept_as_owner(owner.clone(), owner_t, false);
+        let front = EventRelay::spawn_on(&rt_f, store_f.clone()).await;
+        front.tell(SetTransport(front_t)).await.unwrap();
+        let (tap_tx, mut tapped) = mpsc::unbounded_channel();
+        let tap = Tap::spawn_with_mailbox(Tap(tap_tx), runtime::subscriber_mailbox());
+        rt_f.subscribe::<Tap, AgentEvent>(&tap).await;
+
+        assert!(store_f.session(session).await.unwrap().is_none());
+        crate::owner::expect(session, PeerId("owner".into()));
+        front.tell(Follow(session)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        rt_o.publish(AgentEvent::TitleChanged {
+            session,
+            title: "first".into(),
+            tags: vec![],
+        })
+        .await;
+        let got = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(ev @ AgentEvent::TitleChanged { .. }) = tapped.recv().await {
+                    return ev;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(got, AgentEvent::TitleChanged { session: s, ref title, .. } if s == session && title == "first"),
+            "{got:?}"
         );
         store_o.close().await;
         store_f.close().await;

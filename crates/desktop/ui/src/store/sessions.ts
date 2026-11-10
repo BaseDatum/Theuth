@@ -3,6 +3,7 @@ import { subscribeWithSelector } from "zustand/middleware";
 import type { CellResultInput, ContactNote, Injected, ParentViewLine, RestartNote } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
+import { useRemoteStart } from '@/lib/remote-start';
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
 import type { ChannelOrigin } from "@/rpc/bindings/ChannelOrigin";
@@ -902,6 +903,8 @@ export function dispatch(events: WireEvent[], st: Stores = active()): void {
       const conn = st.connection.getState();
       if (conn.info) conn.setInfo({ ...conn.info, favorite_models: e.models });
     }
+    // 183 §5.6: a chat just created on another machine is heard from (its composer is free, an unreachable card goes).
+    if (live && "session" in e && typeof e.session === "string") useRemoteStart.getState().heard(e.session);
     if (live) listeners.get(e.type)?.forEach((cb) => cb(e));
   }
 }
