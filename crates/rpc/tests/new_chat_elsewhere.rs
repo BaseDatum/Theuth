@@ -1,11 +1,11 @@
 //! 183 §5.6: "New chat on <another machine>" — the target engine creates and
 //! owns the row, and the first `send_input` (and the chat route's reads) must
 //! reach it even while that row has not replicated to the caller. Here the
-//! target never ships its log at all (a session log held indefinitely), the
-//! caller's `create_session` waits `release_wait_secs`, logs the WARN and
-//! answers; every following call is forwarded by id. Its own binary: it
-//! registers the agent, replica and sessions actors, which the process-wide
-//! kameo registry allows once.
+//! target never ships its log at all (a session log held indefinitely): the
+//! caller's `create_session` waits 1 s for the row and answers, every
+//! following call is forwarded by id, and the row still missing after 6 s
+//! logs the WARN. Its own binary: it registers the agent, replica and
+//! sessions actors, which the process-wide kameo registry allows once.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -126,6 +126,13 @@ fn target(seen: Seen) -> jsonrpsee::Methods {
         },
     )
     .unwrap();
+    m.register_method("cell_state", |p, seen, _| -> RpcResult<serde_json::Value> {
+        let scope: serde_json::Value = p.sequence().next()?;
+        let session = scope["id"].as_str().unwrap_or_default().to_owned();
+        seen.lock().push(("cell_state".into(), session));
+        Ok(serde_json::json!({ "cells": [], "kernels": [], "pass": null }))
+    })
+    .unwrap();
     m.into()
 }
 
@@ -194,14 +201,10 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
         .await
         .unwrap();
     let id = open.session.to_string();
-    let log = String::from_utf8(logs.0.lock().clone()).unwrap();
-    assert!(
-        log.contains("WARN")
-            && log.contains(&format!(
-                "sessions: new row {id} from b not here after 1s; forwarding by id"
-            )),
-        "{log}"
-    );
+    // Not after 1 s: replication taking a few seconds is normal and logs nothing.
+    let warn = format!("sessions: new row {id} from b not here after 6s; forwarding by id");
+    let logged = || String::from_utf8(logs.0.lock().clone()).unwrap();
+    assert!(!logged().contains(&warn), "{}", logged());
 
     // The row is still not here: the first message and the chat route's reads
     // go to the target, none fails as "no such session".
@@ -241,6 +244,35 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
         ]
         .map(|m| (m.to_owned(), id.clone()))
         .to_vec()
+    );
+
+    // The cell strip's read and a per-session event subscriber (TUI/CLI)
+    // attach to the chat before its row is here; the read goes to b.
+    let state: serde_json::Value = api
+        .call(
+            "cell_state",
+            (
+                serde_json::json!({ "type": "session", "id": id }),
+                Vec::<String>::new(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state["cells"], serde_json::json!([]));
+    assert_eq!(
+        seen.lock().last().cloned(),
+        Some(("cell_state".to_owned(), id.clone()))
+    );
+    let subscribe = |s: SessionId| {
+        api.subscribe_unbounded(
+            "subscribe_events",
+            jsonrpsee::rpc_params![s, serde_json::Value::Null],
+        )
+    };
+    let _sub = subscribe(open.session).await.unwrap();
+    assert!(
+        subscribe(SessionId::new()).await.is_err(),
+        "an unknown id is refused"
     );
 
     // An id nobody created for us is still this engine's "no such session".
@@ -292,6 +324,20 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
         .unwrap_err();
     assert!(e.to_string().contains("private chat"), "{e}");
     assert_eq!(asked(), before, "nothing reached b");
+
+    // Still no row 6 s after the create: that is the WARN. Real time: the lag
+    // is measured by a task the create spawned, nothing here can advance it.
+    for _ in 0..100 {
+        if logged().contains(&warn) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        logged().contains("WARN") && logged().contains(&warn),
+        "{}",
+        logged()
+    );
 
     // The row lands (owned by b): the chat route's reads still go to b while
     // the chat is in use, so a replica that has not caught up never answers;

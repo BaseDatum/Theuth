@@ -101,7 +101,8 @@ async fn route_scope<T: DeserializeOwned>(
 /// [`route_scope`] for a read (`cell_state`, `cell_runs`, a forwarded run's reads): a chat
 /// owned elsewhere is asked of its owner and never taken — viewing a chat must not move it
 /// (181: a moved session stayed put only until the origin reopened it). Owner not connected →
-/// `Ok(None)`: this engine answers from what it has.
+/// `Ok(None)`: this engine answers from what it has. 183 §5.6: a chat just created on another
+/// engine and in use is asked of that engine, its row here or not (`forward::to_creator`).
 async fn read_scope<T: DeserializeOwned>(
     server: &Server,
     ext: &Extensions,
@@ -112,7 +113,10 @@ async fn read_scope<T: DeserializeOwned>(
     let Scope::Session(s) = scope else {
         return route_scope(server, ext, scope, method, params).await;
     };
-    server.authorize(ext, *s).await?;
+    server.authorize_fwd(ext, *s).await?;
+    if let Some(r) = crate::forward::to_creator(ext, *s, method, &params).await? {
+        return Ok(Some(r));
+    }
     let Ok(store) =
         crate::api::ask::<agent::Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await
     else {
