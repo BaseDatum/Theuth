@@ -345,6 +345,17 @@ export type PermissionStatus = {
   note: string
 }
 
+/** 188: the three `enabled` flags Settings could only describe, never change. */
+export type ConfigFlagKey = 'decision.enabled' | 'a2a.enabled' | 'computer.enabled'
+
+/** 188: a flag as config.yaml has it (`enabled`) and as the running engine started with it (`running`); they differ until theuth restarts. */
+export type ConfigFlag = {
+  key: ConfigFlagKey
+  enabled: boolean
+  running: boolean
+  restart_required: boolean
+}
+
 /** `document::DocStats` (E2 §doc_stats); hand-written until `just ts` exports the document crate's types. */
 export type DocStats = {
   merged: number
@@ -429,6 +440,10 @@ export interface Api {
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
   computer_permissions(): Promise<PermissionStatus>
+  /** 188: one of the three flags with no other write path: its config.yaml value and the running engine's. */
+  config_flag_get(key: ConfigFlagKey): Promise<ConfigFlag>
+  /** 188: write `key: on` into config.yaml (the rest of the file untouched); the engine keeps running with its old value until it restarts. */
+  config_flag_set(key: ConfigFlagKey, on: boolean): Promise<ConfigFlag>
   /** 96 §6.3: capture the displays a pointer path visited, draw the path, read the accessibility tree under it, write the PNGs under `attachments/`; the `[screen …]` lines and files. Local peers only; rejects with `disabled` or a Screen Recording denial. */
   screen_context(req: ScreenContextReq): Promise<ScreenContextReply>
   /** Active-context inventory with its revision and `remove_with` companions (48 §3.2); `editable: false` carries the refusal `reason`. */
@@ -1515,6 +1530,8 @@ export const METHODS = [
   'compact',
   'compact_style',
   'computer_permissions',
+  'config_flag_get',
+  'config_flag_set',
   'contact_answer',
   'contact_deliver',
   'contact_first_answer',

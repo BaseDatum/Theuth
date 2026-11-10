@@ -1,154 +1,36 @@
 import { cn } from 'cn'
-import {
-  Bot,
-  AudioLines,
-  CalendarDays,
-  ChevronLeft,
-  ChevronRight,
-  Eye,
-  FlaskConical,
-  Infinity as InfinityIcon,
-  KeyRound,
-  Keyboard,
-  Link2,
-  type LucideIcon,
-  MessageCircle,
-  MessageSquare,
-  Mic,
-  MicVocal,
-  Moon,
-  Monitor,
-  Plug,
-  Radio,
-  RefreshCw,
-  Search as SearchIcon,
-  Settings2,
-  Share2,
-  UserRoundCheck,
-  ShieldCheck,
-  X,
-} from 'lucide-react'
+import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { useState } from 'react'
-import { Advisor } from '@/components/settings/Advisor'
-import { Agents } from '@/components/settings/Agents'
-import { Autoresearch } from '@/components/settings/Autoresearch'
-import { Approvals } from '@/components/settings/Approvals'
-import { Calendar, ready as calendarReady } from '@/components/settings/Calendar'
-import { Channels } from '@/components/settings/Channels'
-import { Chat } from '@/components/settings/Chat'
-import { Communication } from '@/components/settings/Communication'
-import { Computer } from '@/components/settings/Computer'
-import { Connections } from '@/components/settings/Connections'
-import { Double } from '@/components/settings/Double'
-import { Dreaming } from '@/components/settings/Dreaming'
-import { General } from '@/components/settings/General'
-import { Link } from '@/components/settings/Link'
-import { Loop } from '@/components/settings/Loop'
-import { Labs, useLabsVisible } from '@/components/settings/Labs'
-import { Memory } from '@/components/settings/Memory'
-import { Mcp, ready as mcpReady } from '@/components/settings/Mcp'
-import { Meetings } from '@/components/settings/Meetings'
-import { Search } from '@/components/settings/Search'
-import { Network } from '@/components/settings/Network'
-import { Shortcuts } from '@/components/settings/Shortcuts'
-import { VoiceKey } from '@/components/settings/VoiceKey'
-import { Voice } from '@/components/settings/Voice'
+import { CATEGORIES, placeOf } from '@/components/settings/registry'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 
-const TABS = [
-  ['general', 'General', Settings2],
-  ['chat', 'Chat', MessageCircle],
-  ['loop', 'Agent loop', RefreshCw],
-  ['advisor', 'Advisor', Eye],
-  ['dreaming', 'Dreaming', Moon],
-  ['autoresearch', 'Autoresearch', FlaskConical],
-  ['approvals', 'Approvals', ShieldCheck],
-  ['communication', 'Communication', Radio],
-  ['memory', 'Memory', InfinityIcon],
-  ['computer', 'Computer', Monitor],
-  ['meetings', 'Meetings', Mic],
-  ['calendar', 'Calendar', CalendarDays],
-  ['voice', 'Voice', MicVocal],
-  ['voice-key', 'Voice key', AudioLines],
-  ['search', 'Search', SearchIcon],
-  ['labs', 'Labs', FlaskConical],
-  ['double', 'Double', UserRoundCheck],
-  ['agents', 'Harnesses', Bot],
-  ['network', 'Network', Share2],
-  ['link', 'Link', Link2],
-  ['connections', 'Connections', KeyRound],
-  ['channels', 'Channels', MessageSquare],
-  ['shortcuts', 'Shortcuts', Keyboard],
-  ['mcp', 'MCP', Plug],
-] as const satisfies readonly (readonly [string, string, LucideIcon])[]
-
-/** 158 C158: tabs whose module says `ready === false` are filtered out of the list (W2/W5 flip their own flag). */
-const NOT_READY: Partial<Record<Tab, boolean>> = { calendar: calendarReady, mcp: mcpReady }
-
-export type Tab = (typeof TABS)[number][0]
-
-export function isTab(s: string): s is Tab {
-  return TABS.some(([id]) => id === s)
-}
+/** 188 C0: every tab of every category, in column order; the interim modal lists them flat. */
+const TABS = CATEGORIES.flatMap((category) => category.tabs.map((tab) => ({ ...tab, category: category.label })))
 
 type Props = {
-  tab: Tab
-  /** The chat the dialog was opened from; `null` from the empty state or the tray. */
-  session: string | null
-  /** Pending peer request to focus on the communication tab (`?peer=`). */
-  peer: string | null
+  /** A registry tab id (the route has already redirected old ids). */
+  tab: string
   /** A control the tab focuses on open (`?focus=`); Memory: `model` (the compactor model picker) or `spend` (the daily spend cap). */
   focus: string | null
-  onTab: (tab: Tab) => void
+  onTab: (tab: string) => void
   onClose: () => void
 }
 
-function Pane({ tab, session, peer, focus, onClose }: Omit<Props, 'onTab'>) {
-  return (
-    <>
-      {tab === 'general' && <General />}
-      {tab === 'chat' && <Chat />}
-      {tab === 'loop' && <Loop />}
-      {tab === 'advisor' && <Advisor />}
-      {tab === 'dreaming' && <Dreaming />}
-      {tab === 'autoresearch' && <Autoresearch />}
-      {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
-      {tab === 'communication' && <Communication session={session} focus={peer} />}
-      {tab === 'memory' && <Memory focus={focus} />}
-      {tab === 'computer' && <Computer />}
-      {tab === 'meetings' && <Meetings />}
-      {tab === 'calendar' && <Calendar />}
-      {tab === 'voice-key' && <VoiceKey />}
-      {tab === 'voice' && <Voice />}
-      {tab === 'search' && <Search />}
-      {tab === 'labs' && <Labs />}
-      {tab === 'double' && <Double />}
-      {tab === 'agents' && <Agents />}
-      {tab === 'network' && <Network />}
-      {tab === 'link' && <Link />}
-      {tab === 'connections' && <Connections />}
-      {tab === 'channels' && <Channels />}
-      {tab === 'shortcuts' && <Shortcuts />}
-      {tab === 'mcp' && <Mcp />}
-    </>
-  )
+function Pane({ tab, focus }: Pick<Props, 'tab' | 'focus'>) {
+  const Tab = placeOf(tab)?.tab.Component
+  return Tab ? <Tab focus={focus} /> : null
 }
 
 /**
- * ChatGPT-style two-pane settings modal; the open tab is the route param.
- * Under the mobile breakpoint (31 §8.1) it is a full-screen sheet: the tab
- * list first, a tap pushes the tab with a back chevron.
+ * 188 C0: the old two-pane modal, now driven by the settings registry so no file but a category module imports a tab
+ * component. W-SHELL replaces it with the full settings page (docs/design/188-settings-full-page.md).
  */
-export function SettingsDialog({ tab, session, peer, focus, onTab, onClose }: Props) {
+export function SettingsDialog({ tab, focus, onTab, onClose }: Props) {
   const mobile = useIsMobile()
   const [pushed, setPushed] = useState(false)
-  // Labs only while `decision.enabled` (57 §7.1).
-  const hasLabs = useLabsVisible()
-  // 158 C158: a wave's tab stays out of the list until its module flips `ready` (Calendar W2, MCP W5).
-  const tabs = TABS.filter(([id]) => (id !== 'labs' || hasLabs) && NOT_READY[id] !== false)
-  const label = TABS.find(([id]) => id === tab)?.[1] ?? 'Settings'
+  const label = placeOf(tab)?.tab.label ?? 'Settings'
 
   if (mobile) {
     return (
@@ -177,11 +59,11 @@ export function SettingsDialog({ tab, session, peer, focus, onTab, onClose }: Pr
           </div>
           {pushed ? (
             <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
-              <Pane tab={tab} session={session} peer={peer} focus={focus} onClose={onClose} />
+              <Pane tab={tab} focus={focus} />
             </div>
           ) : (
             <nav className="min-h-0 flex-1 overflow-y-auto p-2">
-              {tabs.map(([id, tabLabel, Icon]) => (
+              {TABS.map(({ id, label: tabLabel, icon: Icon }) => (
                 <button
                   key={id}
                   type="button"
@@ -210,17 +92,15 @@ export function SettingsDialog({ tab, session, peer, focus, onTab, onClose }: Pr
         className="flex h-[640px] max-w-[880px] flex-row gap-0 overflow-hidden bg-elevated p-0 sm:max-w-[880px]"
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
-        <nav className="flex w-[220px] shrink-0 flex-col gap-0.5 border-r border-border-subtle px-3 pt-5 pb-3">
+        <nav className="flex w-[220px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border-subtle px-3 pt-5 pb-3">
           <h2 className="mb-3 px-2.5 text-lg font-semibold">Settings</h2>
-          {tabs.map(([id, tabLabel, Icon]) => (
+          {TABS.map(({ id, label: tabLabel, icon: Icon, category }) => (
             <button
               key={id}
               type="button"
+              title={category}
               onClick={() => onTab(id)}
-              className={cn(
-                'flex h-9 items-center gap-2.5 rounded-[10px] px-2.5 text-sm',
-                id === tab ? 'bg-layer-3' : 'hover:bg-layer-3/60',
-              )}
+              className={cn('flex h-9 shrink-0 items-center gap-2.5 rounded-[10px] px-2.5 text-sm', id === tab ? 'bg-layer-3' : 'hover:bg-layer-3/60')}
             >
               <Icon className="size-4 text-fg-secondary" />
               {tabLabel}
@@ -230,7 +110,7 @@ export function SettingsDialog({ tab, session, peer, focus, onTab, onClose }: Pr
         {/* Not ScrollArea: Radix wraps the viewport in `display: table`, which never shrinks, so rows overflowed. */}
         <div className="min-w-0 flex-1 overflow-y-auto">
           <div className="px-8 pt-6 pb-8">
-            <Pane tab={tab} session={session} peer={peer} focus={focus} onClose={onClose} />
+            <Pane tab={tab} focus={focus} />
           </div>
         </div>
       </DialogContent>

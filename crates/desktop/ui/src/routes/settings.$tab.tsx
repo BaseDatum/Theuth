@@ -1,10 +1,11 @@
 import { createFileRoute, redirect, useNavigate, useRouter } from '@tanstack/react-router'
 import { movedTab } from '@/components/library/moved'
 import { movedSettingsTab } from '@/components/routines/helpers'
-import { SettingsDialog, type Tab, isTab } from '@/components/settings/SettingsDialog'
+import { SettingsDialog } from '@/components/settings/SettingsDialog'
+import { MOVED_TABS, isTab } from '@/components/settings/registry'
 import { isMacDesktop } from '@/lib/hotkeys'
 
-/** `?session=<id>`: the chat the dialog was opened from, for per-session rows; `?peer=<message id>` focuses one pending peer request on the communication tab; `?focus=model` the compactor model on the memory tab. */
+/** `?focus=model|spend`: the control the memory tab focuses. `?session` / `?peer` are what old links to the per-chat rows carried (188: those rows move to the chat). */
 type Search = { session?: string; peer?: string; focus?: string }
 
 export const Route = createFileRoute('/settings/$tab')({
@@ -17,21 +18,17 @@ export const Route = createFileRoute('/settings/$tab')({
     // Skills and Tools became Agents pages, Secrets a Library page, and Schedules became Routines; old links and `/settings/<tab>` bookmarks follow.
     const moved = movedTab(params.tab) ?? movedSettingsTab(params.tab)
     if (moved) throw redirect({ to: moved, replace: true, search: search.session ? { session: search.session } : {} })
-    // 183 §12.6: Settings › Mesh became Settings › Network.
-    if (params.tab === 'mesh') throw redirect({ to: '/settings/$tab', params: { tab: 'network' }, search, replace: true })
-    if (!isTab(params.tab))
-      throw redirect({
-        to: '/settings/$tab',
-        params: { tab: 'general' },
-        search,
-      })
+    // 188: tabs of the old modal that were renamed or split (and 183's `mesh`).
+    const renamed = MOVED_TABS[params.tab]
+    if (renamed) throw redirect({ to: '/settings/$tab', params: { tab: renamed }, search, replace: true })
+    if (!isTab(params.tab)) throw redirect({ to: '/settings/$tab', params: { tab: 'appearance' }, search })
   },
   component: Settings,
 })
 
 function Settings() {
-  const tab = Route.useParams().tab as Tab
-  const { session, peer, focus } = Route.useSearch()
+  const { tab } = Route.useParams()
+  const { focus } = Route.useSearch()
   const router = useRouter()
   const navigate = useNavigate()
   // The inset behind the modal is otherwise empty; keep the header band draggable.
@@ -41,16 +38,7 @@ function Settings() {
       <SettingsDialog
         tab={tab}
         focus={focus ?? null}
-        session={session ?? null}
-        peer={peer ?? null}
-        onTab={(t) =>
-          void navigate({
-            to: '/settings/$tab',
-            params: { tab: t },
-            search: { session },
-            replace: true,
-          })
-        }
+        onTab={(t) => void navigate({ to: '/settings/$tab', params: { tab: t }, search: {}, replace: true })}
         onClose={() => {
           if (router.history.canGoBack()) router.history.back()
           else void navigate({ to: '/' })

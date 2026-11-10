@@ -36,13 +36,16 @@ import { ContactAllowStrip } from '@/components/chat/ContactAllowStrip'
 import { KernelStrip } from '@/components/cells/KernelStrip'
 
 /** `seq`: a search hit's stored message seq (49 §7); anything but a safe non-negative integer is dropped.
- * `cell` (171 §14.3): `theuth://c/<session>?cell=<name|ordinal>` — the cell to scroll to and focus. */
-type Search = { seq?: number; cell?: string }
+ * `cell` (171 §14.3): `theuth://c/<session>?cell=<name|ordinal>` — the cell to scroll to and focus.
+ * `messaging=1` (188): open this chat's Messaging… sheet; `peer` also focuses that pending peer request (a message id). */
+type Search = { seq?: number; cell?: string; messaging?: '1'; peer?: string }
 
 export const Route = createFileRoute('/c/$session')({
   validateSearch: (s: Record<string, unknown>): Search => ({
     ...(typeof s.seq === 'number' && Number.isSafeInteger(s.seq) && s.seq >= 0 ? { seq: s.seq } : {}),
     ...((typeof s.cell === 'string' || typeof s.cell === 'number') && /^[a-z0-9-]{1,48}$/.test(String(s.cell)) ? { cell: String(s.cell) } : {}),
+    ...(s.messaging === '1' || s.messaging === 1 ? { messaging: '1' as const } : {}),
+    ...(typeof s.peer === 'string' && s.peer ? { peer: s.peer } : {}),
   }),
   component: SessionRoute,
 })
