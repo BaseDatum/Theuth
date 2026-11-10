@@ -1,13 +1,17 @@
 import { Link } from '@tanstack/react-router'
 import { FlaskConical } from 'lucide-react'
+import { useEffect } from 'react'
 import { useModels } from '@/components/agents/queries'
-import { KEY, useAutoresearchApi, useAutoresearchSettings } from '@/components/autoresearch/queries'
+import { KEY, useAutoresearchApi, useAutoresearchSettings, useMechanism } from '@/components/autoresearch/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Mechanism } from '@/components/settings/Mechanism'
 import { Count, Empty, Row, Section, bounded, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { useRestartPending } from '@/lib/restart-pending'
+import { RpcError } from '@/rpc/client'
 import type { AutoresearchConfig } from '@/rpc/bindings/AutoresearchConfig'
 
 type Role = 'executor' | 'review' | 'advisor'
@@ -33,7 +37,20 @@ export function secondsOf(d: string): number | null {
   return Math.round(unit === 'ms' ? v / 1000 : unit === 's' ? v : unit === 'h' ? v * 3600 : v * 60)
 }
 
-/** Settings › Autoresearch (140 §13.1): defaults, model pickers, reviewer action, bench lock + load threshold, keep-finished days; then the W7 Mechanism section. Reads/writes `autoresearch.settings.get|set`. */
+/** The engine's `NOT_RUNNING` JSON-RPC code: a plugin method called while the plugin is off. */
+const NOT_RUNNING = -32001
+
+/**
+ * 188 F3: whether the saved `enabled` waits for a restart. The plugin runs now when `autoresearch.mechanism {op: list}`
+ * (the Mechanism section's own query) answers, and is off when it answers `NOT_RUNNING`; `autoresearch.list` cannot
+ * tell, it answers `[]` either way. `null` while either side is unknown (loading, or another error).
+ */
+export function awaitsRestart(enabled: boolean | undefined, mechanism: { isSuccess: boolean; error: unknown }): boolean | null {
+  const running = mechanism.isSuccess ? true : mechanism.error instanceof RpcError && mechanism.error.code === NOT_RUNNING ? false : null
+  return enabled === undefined || running === null ? null : enabled !== running
+}
+
+/** Settings › Agent › Autoresearch (140 §13.1): the plugin switch (188 F3), defaults, model pickers, reviewer action, bench lock + load threshold, keep-finished days; then the W7 Mechanism section. Reads/writes `autoresearch.settings.get|set`. */
 export function Autoresearch() {
   const api = useAutoresearchApi()
   const settings = useAutoresearchSettings()
@@ -46,6 +63,13 @@ export function Autoresearch() {
     if (s) save.mutate(f(s))
   }
   const count = (f: (cur: AutoresearchConfig, n: number) => AutoresearchConfig) => ({ mutate: (n: number) => change((cur) => f(cur, n)), isPending: save.isPending })
+  const restart = awaitsRestart(s?.enabled, useMechanism())
+  useEffect(() => {
+    if (restart === null) return
+    const pending = useRestartPending.getState()
+    if (restart) pending.mark('autoresearch.enabled', 'Autoresearch')
+    else pending.clear('autoresearch.enabled')
+  }, [restart])
 
   return (
     <>
@@ -60,8 +84,16 @@ export function Autoresearch() {
         }
       >
         {settings.isError ? <Empty>{settings.error.message}</Empty> : null}
-        <Row label="Enabled" description={s?.enabled === false ? 'autoresearch.enabled is off in config: no tools, no studies. Existing study files stay paused.' : 'Set in config.yaml (autoresearch.enabled). Start a study from any chat with /autoresearch <goal>.'}>
-          <span className="text-sm text-fg-secondary">{s ? (s.enabled ? 'on' : 'off') : '…'}</span>
+        <Row
+          label="Enabled"
+          description={
+            <>
+              {s?.enabled === false ? 'Off: no study runs and the study tools are gone. Existing studies stay paused.' : 'Studies, their tools and their routine. Start one from any chat with /autoresearch <goal>.'}
+              {restart && <span className="block">Applies after theuth restarts.</span>}
+            </>
+          }
+        >
+          <Switch aria-label="Autoresearch enabled" checked={s?.enabled ?? false} disabled={busy} onCheckedChange={(enabled) => change((c) => ({ ...c, enabled }))} />
         </Row>
         <Row label="Budget per study" description="Pre-filled in every draft card; the card lets you change them before Start. Money · hours · experiments.">
           <Money value={s?.defaults.budget.usd} aria-label="Budget USD" disabled={busy} onCommit={(usd) => change((c) => ({ ...c, defaults: { ...c.defaults, budget: { ...c.defaults.budget, usd } } }))} />

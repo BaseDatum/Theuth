@@ -7,7 +7,8 @@ import type * as Rpc from '@/lib/rpc'
 import type { LocalServer } from '@/rpc/bindings/LocalServer'
 import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
 import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
-import { Connections, CustomProviderForm, LocalServerForm, ModelLimits, ProbeRows } from './Connections'
+import type { LoginInfo } from '@/rpc/extra'
+import { CustomProviderForm, LocalServerForm, ModelLimits, ModelProviders, ProbeRows } from './ModelProviders'
 import {
   BUILTIN_LABEL,
   builtinKeyNote,
@@ -18,7 +19,9 @@ import {
   limitsSave,
   limitValue,
   localAddArgs,
+  loginText,
   orderProviders,
+  pairLogins,
   presetForm,
   probeForm,
   probeLine,
@@ -46,7 +49,7 @@ const withCache = (el: ReactElement, fill: (qc: QueryClient) => void = () => {})
   fill(qc)
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, el))
 }
-const render = (providers: ProviderInfo[]) => withCache(createElement(Connections), (qc) => qc.setQueryData(queryKeys.providers, providers))
+const render = (providers: ProviderInfo[]) => withCache(createElement(ModelProviders), (qc) => qc.setQueryData(queryKeys.providers, providers))
 const text = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
 
 test('built-ins come first, custom providers after, engine order kept within each', () => {
@@ -91,8 +94,34 @@ test('no custom provider: the muted empty line', () => {
 
 test('built-in labels and key notes', () => {
   expect(BUILTIN_LABEL.opencode).toBe('OpenCode Zen')
-  expect(builtinKeyNote('openrouter')).toBe('OpenRouter key (Settings > Connections)')
-  expect(builtinKeyNote('zen')).toBe('zen key (Settings > Connections)')
+  expect(builtinKeyNote('openrouter')).toBe('OpenRouter key (Settings > Models > Providers)')
+  expect(builtinKeyNote('zen')).toBe('zen key (Settings > Models > Providers)')
+})
+
+const login = (name: string, logged_in: boolean, account: string | null = null): LoginInfo => ({ name, logged_in, account, expires_at: null })
+
+test('188 A6: a login pairs with the provider row of its name; the rest stand alone, engine order kept', () => {
+  const providers = [row('opencode', true, true), row('rwx', false, true)]
+  const { byProvider, alone } = pairLogins(providers, [login('anthropic', true), login('rwx', false), login('openai', false)])
+  expect([...byProvider.keys()]).toEqual(['rwx'])
+  expect(alone.map((l) => l.name)).toEqual(['anthropic', 'openai'])
+  expect(pairLogins([], [login('anthropic', true)]).alone).toHaveLength(1)
+  expect(pairLogins(providers, []).byProvider.size).toBe(0)
+  expect([loginText(login('a', false, 'x')), loginText(login('a', true)), loginText(login('a', true, 'me@x.io'))]).toEqual(['not logged in', 'logged in', 'logged in (me@x.io)'])
+})
+
+test('188 A6: no Accounts section — a paired login sits on its provider row, a lone login gets a built-in row after the built-ins', () => {
+  const html = withCache(createElement(ModelProviders), (qc) => {
+    qc.setQueryData(queryKeys.providers, [row('opencode', true, true), row('rwx', false, true)])
+    qc.setQueryData(queryKeys.logins, [login('anthropic', true, 'me@x.io'), login('rwx', false)])
+  })
+  const t = text(html)
+  expect(t).not.toContain('Accounts')
+  expect(t).toMatch(/rwx custom rwx\/… · 1 models · https:\/\/rwx\/v1\/ · not logged in/)
+  expect(t).toMatch(/anthropic built-in logged in \(me@x\.io\) Log out/)
+  expect(t.indexOf('OpenCode Zen')).toBeLessThan(t.indexOf('anthropic'))
+  expect(t.indexOf('anthropic')).toBeLessThan(t.indexOf('Local servers'))
+  expect(t.match(/Log in/g)).toHaveLength(1)
 })
 
 test('177 U1: Local servers sits between the built-ins and the custom providers; a local row has the "local" tag, address, count, Refresh models and Remove', () => {
@@ -122,7 +151,7 @@ test('177 R1-1: the probe rows stay while a re-probe runs (with the "Looking for
   qc.setQueryData(queryKeys.providers, [row('mlx', false, true, true, true)])
   qc.setQueryData(queryKeys.localServers, probe)
   void qc.prefetchQuery({ queryKey: queryKeys.localServers, queryFn: () => new Promise<LocalServer[]>(() => {}) })
-  const paint = () => text(renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Connections))))
+  const paint = () => text(renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(ModelProviders))))
   const running = paint()
   expect(running).toContain('Looking for servers on this node…')
   expect(running).toContain('Ollama http://127.0.0.1:11434/v1/ · 3 models')

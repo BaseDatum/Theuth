@@ -1,18 +1,17 @@
 import { Cloud, Cpu, Wand2 } from 'lucide-react'
-import { Chat } from '@/components/settings/Chat'
-import { Connections } from '@/components/settings/Connections'
-import { Loop } from '@/components/settings/Loop'
+import { Helpers } from '@/components/settings/Helpers'
+import { ModelDefaults } from '@/components/settings/ModelDefaults'
+import { ModelProviders } from '@/components/settings/ModelProviders'
 import type { SettingsCategory } from '@/components/settings/types'
 
-// 188 C0: each tab renders one of today's components until this category's worker splits it
-// (docs/design/188-settings-full-page.md, Contract). Only that worker edits this file.
+// 188: tab ids, labels, icons and order are frozen by C0 (docs/design/188-settings-full-page.md, Contract).
 export const models: SettingsCategory = {
   id: 'models',
   label: 'Models',
   icon: Cpu,
   tabs: [
-    { id: 'models', label: 'Defaults', icon: Cpu, Component: Chat },
-    { id: 'helpers', label: 'Helpers', icon: Wand2, Component: Loop },
-    { id: 'providers', label: 'Providers', icon: Cloud, Component: Connections },
+    { id: 'models', label: 'Defaults', icon: Cpu, Component: ModelDefaults },
+    { id: 'helpers', label: 'Helpers', icon: Wand2, Component: Helpers },
+    { id: 'providers', label: 'Providers', icon: Cloud, Component: ModelProviders },
   ],
 }
