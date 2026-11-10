@@ -460,7 +460,7 @@ function BacklogRow({ session, m, b, fold }: { session: string; m: SessionMemory
         <div className="flex flex-wrap items-center gap-2">
           {toggle(false, 'Resume for today', true)}
           <FoldButton fold={fold} />
-          <Button size="xs" variant="link" className="px-1" onClick={() => void settings(navigate, 'memory', session, 'spend')}>
+          <Button size="xs" variant="link" className="px-1" onClick={() => void settings(navigate, 'memory', 'spend')}>
             Spend limit settings
           </Button>
         </div>

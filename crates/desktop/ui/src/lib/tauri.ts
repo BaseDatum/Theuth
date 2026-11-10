@@ -55,7 +55,7 @@ const on = <T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> =>
   isTauri() ? listen<T>(event, (e) => cb(e.payload)) : Promise.resolve(() => {})
 
 export const onLaunchLog = (cb: (chunk: string) => void) => on<string>('launch-log', cb)
-/** Tray menu / app menu: show the window and go to `path` (`/`, `/knowledge`, `/settings/general`). */
+/** Tray menu / app menu: show the window and go to `path` (`/`, `/knowledge`, `/settings/appearance`). */
 export const onNavigate = (cb: (path: string) => void) => on<string>('navigate', cb)
 /** `quit::Requested`: `restart` on Settings › Install and restart. */
 export type QuitRequested = { restart: boolean }

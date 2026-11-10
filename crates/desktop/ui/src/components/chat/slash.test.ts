@@ -186,7 +186,7 @@ test('157 D3: /endless on|off switches the session through set_session_memory; a
   expect(set_session_memory).toHaveBeenCalledTimes(2)
 })
 
-test('162 D8: /provider refresh <name> toasts the counts, bare refresh opens Connections, an engine error surfaces verbatim', async () => {
+test('162 D8: /provider refresh <name> toasts the counts, bare refresh opens Providers, an engine error surfaces verbatim', async () => {
   const provider = { name: 'rwx', base_url: 'https://rwx/v1/', models: 14, builtin: false, configured: true, refreshable: true }
   const refresh_provider_models = vi.fn().mockResolvedValue({ provider, added: ['a', 'b'], removed: ['c'] })
   await run('/provider refresh rwx', ctxFor({ refresh_provider_models }))
@@ -197,14 +197,14 @@ test('162 D8: /provider refresh <name> toasts the counts, bare refresh opens Con
   expect(toast).toHaveBeenLastCalledWith('rwx: 14 models, no change')
   const ctx = ctxFor({ refresh_provider_models })
   await run('/provider refresh', ctx)
-  expect(ctx.navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'connections' }, search: { session: 'abc' } })
+  expect(ctx.navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'providers' }, search: {} })
   refresh_provider_models.mockRejectedValueOnce(new Error('rwx has no key; set it first'))
   await expect(run('/provider refresh rwx', ctxFor({ refresh_provider_models }))).rejects.toThrow('rwx has no key; set it first')
   await expect(run('/provider bogus', ctxFor({}))).rejects.toThrow('usage: /provider [add <name> <url> [key] | find | limits <provider> <model> <context> [output] | refresh <name> | rm <name>]')
   expect(refresh_provider_models).toHaveBeenCalledTimes(3)
 })
 
-test('177 U6: /provider add takes an optional key (none = null, a local server), bare add opens Connections', async () => {
+test('177 U6: /provider add takes an optional key (none = null, a local server), bare add opens Providers', async () => {
   const add_provider = vi.fn().mockResolvedValue({})
   await run('/provider add mlx http://127.0.0.1:8080/v1/', ctxFor({ add_provider }))
   expect(add_provider).toHaveBeenLastCalledWith('mlx', 'http://127.0.0.1:8080/v1/', null)
@@ -212,11 +212,18 @@ test('177 U6: /provider add takes an optional key (none = null, a local server),
   expect(add_provider).toHaveBeenLastCalledWith('rwx', 'https://rwx/v1/', 'sk-fake')
   const ctx = ctxFor({ add_provider })
   await run('/provider add mlx', ctx)
-  expect(ctx.navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'connections' }, search: { session: 'abc' } })
+  expect(ctx.navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'providers' }, search: {} })
   // The engine's refusal of a keyless cloud URL surfaces verbatim.
   add_provider.mockRejectedValueOnce(new Error('api key is empty'))
   await expect(run('/provider add rwx https://rwx/v1/', ctxFor({ add_provider }))).rejects.toThrow('api key is empty')
   expect(add_provider).toHaveBeenCalledTimes(3)
+})
+
+test('188: /peers opens this chat’s Messaging sheet; without a chat it fails', async () => {
+  const ctx = ctxFor({})
+  await run('/peers', ctx)
+  expect(ctx.navigate).toHaveBeenLastCalledWith({ to: '/c/$session', params: { session: 'abc' }, search: { messaging: '1' } })
+  await expect(run('/peers', { ...ctxFor({}), session: null })).rejects.toThrow('no session')
 })
 
 test('177 U6: /provider find probes and lists each server in one toast', async () => {

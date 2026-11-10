@@ -14,8 +14,8 @@ export function SectionRow({
   children,
   className,
 }: {
-  /** A link back to the section's list; `className: 'md:hidden'` where the back is phone-only. */
-  back?: { to: Tab; label: string; className?: string }
+  /** A link back to the section's list (188: Settings' category list on a phone); `className: 'md:hidden'` where the back is phone-only. */
+  back?: { to: Tab | '/settings'; label: string; className?: string }
   /** A detail page's title; when absent, put `ml-auto` on the first right-aligned control. */
   title?: ReactNode
   children?: ReactNode
