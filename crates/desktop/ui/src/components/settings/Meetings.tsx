@@ -7,7 +7,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { SAME_AS_NEW } from '@/components/settings/Chat'
+import { SAME_AS_NEW } from '@/components/settings/ModelDefaults'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { SETTINGS_KEY, useMeetingBlock } from '@/components/settings/meeting-queries'

@@ -67,10 +67,10 @@ export const onQuitProgress = (cb: (p: QuitProgress) => void) => on<QuitProgress
 /** 39 §3.3: the app downloaded and verified a newer bundle; it installs at quit. */
 export const onUpdateReady = (cb: (p: { version: string }) => void) =>
   on<{ version: string }>('update-ready', cb)
-/** Settings › General: check now; the parked version, or `null` when current. */
+/** Settings › General › App: check now; the parked version, or `null` when current. */
 export const checkUpdate = (): Promise<string | null> =>
   isTauri() ? invoke<string | null>('check_update') : Promise.resolve(null)
-/** Settings › General: run the quit handshake and relaunch into the parked bundle. */
+/** Settings › General › App: run the quit handshake and relaunch into the parked bundle. */
 export const installUpdate = (): Promise<void> =>
   isTauri() ? invoke<void>('install_update') : Promise.resolve()
 /** `crates/desktop/src/models.rs`: model files fetched from the release bucket at start; `verifying` = hashing a pre-existing file once. */

@@ -38,7 +38,7 @@ export function shareCopy(mesh: Mesh, home: string | null, via: LinkVia | undefi
   const name = home ? machineName(mesh, home) : ''
   const can = role === 'viewer' ? 'can view' : 'can edit'
   if (!home) return { text: `Anyone with this link ${can} the document. It is served by your mesh.`, small: 'Older links keep working.' }
-  if (unavailable) return { text: `Link sharing is off on ${name}, and no hub is reachable to make a mesh link.`, small: `Turn on Settings › Link on ${name}, or retry when the hub is back.` }
+  if (unavailable) return { text: `Link sharing is off on ${name}, and no hub is reachable to make a mesh link.`, small: `Turn on Relay in Settings › Network › Devices on ${name}, or retry when the hub is back.` }
   if (via === 'mesh') return { text: `Anyone with this link ${can} the note. It is served by your mesh, which passes it to ${name}.`, small: `Link sharing is off on ${name}, so this is a mesh link. Older links keep working.` }
   return { text: `Anyone with this link ${can} the note. It is served by ${name}; if ${name} is offline, by your mesh.`, small: 'Older links keep working.' }
 }

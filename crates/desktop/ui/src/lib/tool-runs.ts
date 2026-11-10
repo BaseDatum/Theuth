@@ -1,4 +1,4 @@
-// Settings › Chat › Collapse tool calls by default (70 TOOL-COLLAPSE): a client-only display preference, persisted
+// Settings › General › Appearance › Collapse tool calls by default (70 TOOL-COLLAPSE): a client-only display preference, persisted
 // like the theme, plus the in-memory open state of thinking blocks and every other disclosure (runs included). Nothing
 // here changes the session or its context.
 

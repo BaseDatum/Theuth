@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useModels } from '@/components/agents/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
-import { SAME_AS_NEW } from '@/components/settings/Chat'
 import { Row, Section, useAction } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
+
+/** `none` of the pickers that fall back to the new-sessions model (148 R2/R3): Subagents and theuth agent here, the Agents page and Meetings › Defaults. */
+export const SAME_AS_NEW = { label: 'Same as new sessions' }
 
 /** 188 A4: Settings › Models › Defaults — the model defaults (148, engine settings): new sessions, native subagents, the theuth agent. */
 export function ModelDefaults() {

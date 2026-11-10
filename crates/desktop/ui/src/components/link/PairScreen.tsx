@@ -151,7 +151,7 @@ export function PairScreen({ replace, onPaired, onBack }: { replace?: Engine; on
           </Button>
         )}
         <h1 className="text-2xl font-semibold">{replace ? `Re-pair ${replace.name}` : 'Pair with a mesh'}</h1>
-        {replace && <p className="text-sm text-fg-secondary">Show a new pairing code on the engine (Settings › Link, or `t --link`) and paste or scan it here.</p>}
+        {replace && <p className="text-sm text-fg-secondary">Show a new pairing code on the engine (Settings › Network › Devices, or `t --link`) and paste or scan it here.</p>}
         {pairingWith !== null ? (
           <p className="flex items-center gap-2 text-fg-secondary">
             <Loader2 className="size-4 animate-spin" /> Pairing with {pairingWith}…

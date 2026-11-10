@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
-import { SAME_AS_NEW } from '@/components/settings/Chat'
+import { SAME_AS_NEW } from '@/components/settings/ModelDefaults'
 import { useAction } from '@/components/settings/shared'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ExternalLink, Trash2 } from 'lucide-react'
@@ -366,7 +366,7 @@ function Charter({ file: f }: { file: AgentFile }) {
   )
 }
 
-/** 148 R3: theuth's model (`roster.theuth_model`) — the same picker, RPC and query as Settings › Chat; the roster refetches so the header's model updates. */
+/** 148 R3: theuth's model (`roster.theuth_model`) — the same picker, RPC and query as Settings › Models › Defaults; the roster refetches so the header's model updates. */
 function TheuthRuntime() {
   const api = useApi()
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
@@ -386,7 +386,7 @@ function TheuthRuntime() {
         />
       </Field>
       <p>
-        The built-in root runs with tools <code>destructive</code>, every MCP server and no budget; only its model is configured here (or in Settings › Chat).
+        The built-in root runs with tools <code>destructive</code>, every MCP server and no budget; only its model is configured here (or in Settings › Models › Defaults).
       </p>
     </div>
   )

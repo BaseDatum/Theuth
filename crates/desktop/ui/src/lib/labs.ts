@@ -1,4 +1,4 @@
-// 57 §7.1: Settings › Labs — the text and reducers behind the three cards, kept pure so `bun run test` covers them.
+// 57 §7.1: Settings › Learning › Decision models (was Labs) — the text and reducers behind the three cards, kept pure so `bun run test` covers them.
 
 import { fmtBytes } from '@/lib/files'
 import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
