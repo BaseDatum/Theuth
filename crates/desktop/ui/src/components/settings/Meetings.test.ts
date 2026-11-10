@@ -1,14 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createElement, type ReactNode } from 'react'
+import { type ComponentType, createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import { DEFAULT_LIVE_TOOLS, Meetings, added, echoSummary } from './Meetings'
+import { DEFAULT_LIVE_TOOLS, MeetingDefaults, MeetingDetection, MeetingLive, added, echoSummary } from './Meetings'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
-vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children?: ReactNode }) => createElement('a', null, children) }))
 vi.mock('@/lib/tauri', () => ({ setHiddenFromCapture: vi.fn() }))
 vi.mock('@/components/sidebar/ProjectStyle', () => ({ ProjectIcon: () => null }))
 
@@ -57,7 +56,6 @@ const api = {
   meeting_speaker_delete: vi.fn(),
   meeting_live_diarization: vi.fn(async () => true),
   set_meeting_live_diarization: vi.fn(async (on: boolean) => on),
-  decision_mode: vi.fn(async () => ({ effective: 'off' })),
   meeting_list: vi.fn(async () => [{ id: 'm1' }, { id: 'm2' }, { id: 'm3' }]),
   meeting_get: vi.fn(async (id: string) => ({ id, stats: { m1: { echo_dupes: 3, mic_segments: 40, speakers: true }, m2: { echo_dupes: 1, mic_segments: 10, speakers: null }, m3: null }[id] })),
 }
@@ -65,9 +63,9 @@ vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), u
 
 beforeEach(() => vi.clearAllMocks())
 
-async function render(): Promise<string> {
+async function render(tab: ComponentType): Promise<string> {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Meetings) as ReactNode }))
+  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(tab) as ReactNode }))
   paint()
   for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
   return paint()
@@ -78,39 +76,41 @@ const write = (n: number) =>
     return api.meeting_settings_set.mock.calls[n - 1]![0]
   })
 
-test('§6.3: Defaults, Detection and Live tools lead, above Screen capture; the block is read once and shown', async () => {
-  const html = await render()
-  const at = (s: string) => html.indexOf(s)
-  expect(at('Defaults')).toBeGreaterThan(-1)
-  expect(at('Defaults')).toBeLessThan(at('Detection'))
-  expect(at('Detection')).toBeLessThan(at('Live tools'))
-  expect(at('Live tools')).toBeLessThan(at('Screen capture'))
+test('§6.3: Defaults, Detection and Live each read the block once and show it', async () => {
+  const defaults = await render(MeetingDefaults)
   expect(api.meeting_settings_get).toHaveBeenCalledTimes(1)
-  expect(html).toMatch(/aria-label="Meeting model">Same as new sessions</)
-  expect(html).toMatch(/aria-label="Summary model">Same as meeting model</)
-  expect(html).toContain('English only until the multilingual tier')
-  expect(html).toMatch(/aria-label="Detect meetings"/)
-  expect(html).toContain('com.apple.FaceTime')
-  expect(html).toContain('obs64.exe')
-  expect(html).toContain('aria-label="Remove com.apple.FaceTime"')
-  expect(html).toContain('meeting_topic')
+  expect(defaults).toMatch(/aria-label="Meeting model">Same as new sessions</)
+  expect(defaults).toMatch(/aria-label="Summary model">Same as meeting model</)
+  expect(defaults).toContain('English only until the multilingual tier')
+
+  const detection = await render(MeetingDetection)
+  expect(api.meeting_settings_get).toHaveBeenCalledTimes(2)
+  expect(detection).toMatch(/aria-label="Detect meetings"/)
+  expect(detection).toContain('com.apple.FaceTime')
+  expect(detection).toContain('obs64.exe')
+  expect(detection).toContain('aria-label="Remove com.apple.FaceTime"')
+
+  const live = await render(MeetingLive)
+  expect(api.meeting_settings_get).toHaveBeenCalledTimes(3)
+  expect(live).toContain('meeting_topic')
   // Reset is idle while the list is the engine's default.
-  expect(html).toMatch(/<button disabled="">Reset to default<\/button>/)
+  expect(live).toMatch(/<button disabled="">Reset to default<\/button>/)
 })
 
 test('round-trip: each control writes the whole block with one field changed (§6.2), never a partial', async () => {
-  await render()
+  await render(MeetingDefaults)
   handlers['Meeting model']?.(haiku.id as never)
   expect(await write(1)).toEqual({ ...block, model: haiku.id })
   handlers['Summary model']?.(haiku.id as never)
   expect(await write(2)).toEqual({ ...block, summary_model: haiku.id })
+  await render(MeetingDetection)
   handlers['Detect meetings']?.(false as never)
   expect(await write(3)).toEqual({ ...block, detect: { ...block.detect, enabled: false } })
 })
 
 test('the ignore list and live tools: Reset writes the default list; added() trims, drops blanks and repeats', async () => {
   api.meeting_settings_get.mockResolvedValueOnce({ ...block, live_tools: ['meeting_topic'] })
-  const html = await render()
+  const html = await render(MeetingLive)
   expect(html).toMatch(/<button>Reset to default<\/button>/)
   handlers['Reset to default']?.(undefined as never)
   expect((await write(1)).live_tools).toEqual(DEFAULT_LIVE_TOOLS)
@@ -120,7 +120,7 @@ test('the ignore list and live tools: Reset writes the default list; added() tri
 })
 
 test('158 §13: the Echo row (not macOS here) sums stats over the last 10 manifests; unmeasured meetings are skipped', async () => {
-  const html = await render()
+  const html = await render(MeetingLive)
   expect(api.meeting_list).toHaveBeenCalledWith(10)
   expect(html).toContain('Echo in your microphone')
   expect(html).toContain('8 % of your microphone segments repeated the other side (4 of 50) over the last 2 meetings, 1 on speakers.')

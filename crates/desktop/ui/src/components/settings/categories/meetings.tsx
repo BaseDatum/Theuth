@@ -1,18 +1,18 @@
 import { LayoutTemplate, Radar, Radio, SlidersHorizontal, Users } from 'lucide-react'
-import { Meetings } from '@/components/settings/Meetings'
+import { MeetingDefaults, MeetingDetection, MeetingLive, MeetingSpeakers } from '@/components/settings/Meetings'
+import { MeetingTemplates } from '@/components/settings/MeetingTemplates'
 import type { SettingsCategory } from '@/components/settings/types'
 
-// 188 C0: each tab renders one of today's components until this category's worker splits it
-// (docs/design/188-settings-full-page.md, Contract). Only that worker edits this file.
+// 188: Meetings is its own category; one component per tab. Its two hotkeys live in General › Shortcuts. Only W-VOICE edits this file.
 export const meetings: SettingsCategory = {
   id: 'meetings',
   label: 'Meetings',
   icon: Users,
   tabs: [
-    { id: 'meetings', label: 'Defaults', icon: SlidersHorizontal, Component: Meetings },
-    { id: 'detection', label: 'Detection', icon: Radar, Component: Meetings },
-    { id: 'live', label: 'Live', icon: Radio, Component: Meetings },
-    { id: 'speakers', label: 'Speakers', icon: Users, Component: Meetings },
-    { id: 'templates', label: 'Templates', icon: LayoutTemplate, Component: Meetings },
+    { id: 'meetings', label: 'Defaults', icon: SlidersHorizontal, Component: MeetingDefaults },
+    { id: 'detection', label: 'Detection', icon: Radar, Component: MeetingDetection },
+    { id: 'live', label: 'Live', icon: Radio, Component: MeetingLive },
+    { id: 'speakers', label: 'Speakers', icon: Users, Component: MeetingSpeakers },
+    { id: 'templates', label: 'Templates', icon: LayoutTemplate, Component: MeetingTemplates },
   ],
 }

@@ -1,9 +1,11 @@
-// 158 §7.6 (W2U): Settings › Calendar — the macOS Calendar switch with the companion-reported state line, ICS
-// subscriptions (rows from `calendar_sources`; add / refresh / delete), the pre-meeting briefs switch and the next
-// 24 h from `calendar_events`. The ICS URL is a vault secret: pasted once here, never returned by any RPC.
+// 158 §7.6 (W2U): Settings › Calendar, one component per tab. Calendars: the macOS Calendar switch with the
+// companion-reported state line and ICS subscriptions (rows from `calendar_sources`; add / refresh / delete). Briefs: the
+// pre-meeting briefs switch. Upcoming: the next 24 h from `calendar_events`. The ICS URL is a vault secret: pasted
+// once here, never returned by any RPC. The tabs share their queries through `calendar-queries.ts`.
 
 import { useQuery } from '@tanstack/react-query'
 import { type FormEvent, useState } from 'react'
+import { nextDay, useCalendarConfig } from '@/components/settings/calendar-queries'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,21 +16,14 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
 import type { Api } from '@/rpc/api'
 import type { CalSource } from '@/rpc/bindings/CalSource'
-import type { CalendarConfig } from '@/rpc/bindings/CalendarConfig'
 
-/** `SettingsDialog` lists the tab once this is `true`. */
-export const ready = true
-
-export function Calendar() {
+/** Calendar › Calendars: macOS Calendar and the ICS subscriptions. */
+export function CalendarSources() {
   const api = useApi()
   const mac = isMacDesktop()
-  const settings = useQuery({ queryKey: calendarKeys.settings, queryFn: () => api.calendar_settings_get() })
+  const { settings, config, save, busy } = useCalendarConfig()
   const sources = useQuery({ queryKey: calendarKeys.sources, queryFn: () => api.calendar_sources() })
-  // The window is rounded to the minute so re-renders share one query key instead of refetching every paint.
-  const now = Math.floor(Date.now() / 60_000) * 60_000
-  const day: [string, string] = [new Date(now).toISOString(), new Date(now + 86_400_000).toISOString()]
-  const events = useQuery({ queryKey: calendarKeys.events(...day), queryFn: () => api.calendar_events(...day) })
-  const save = useAction((config: CalendarConfig) => api.calendar_settings_set(config), { keys: [calendarKeys.settings, calendarKeys.sources] })
+  const day = nextDay()
   const add = useAction((v: { name: string; url: string }) => addSource(api, v.name, v.url), {
     keys: [calendarKeys.sources],
     onSuccess: () => {
@@ -41,15 +36,12 @@ export function Calendar() {
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
 
-  const config = settings.data
-  const busy = settings.isLoading || settings.isError || save.isPending
   const ics = sources.data?.filter((s) => s.kind === 'ics') ?? []
   const eventkit = sources.data?.find((s) => s.kind === 'eventkit')
   const submit = (e: FormEvent) => {
     e.preventDefault()
     add.mutate({ name, url })
   }
-  const upcoming = events.data?.filter((e) => !e.cancelled).sort((a, b) => a.start.localeCompare(b.start)) ?? []
 
   return (
     <>
@@ -119,24 +111,42 @@ export function Calendar() {
           The long URL is the key: it is stored in the vault, never shown in full again. Read-only, refreshed every 15 min.
         </p>
       </Section>
-      <Section title="Pre-meeting briefs">
-        <Row label="Pre-meeting briefs" description="Shown on the island up to 5 minutes before a matched event.">
-          <Switch
-            aria-label="Pre-meeting briefs"
-            checked={config?.prebrief ?? true}
-            disabled={busy}
-            onCheckedChange={(on) => config && save.mutate({ ...config, prebrief: on })}
-          />
-        </Row>
-      </Section>
-      <Section title="Upcoming">
-        {events.isError && <Empty>{errorText(events.error)}</Empty>}
-        {events.data && upcoming.length === 0 && <Empty>Nothing in the next 24 hours.</Empty>}
-        {upcoming.map((e) => (
-          <Row key={e.id} label={eventLine(e)} description={[e.location, e.join_host].filter(Boolean).join(' · ') || undefined} />
-        ))}
-      </Section>
     </>
+  )
+}
+
+/** Calendar › Briefs: the pre-meeting brief on the island. */
+export function CalendarBriefs() {
+  const { settings, config, save, busy } = useCalendarConfig()
+  return (
+    <Section title="Pre-meeting briefs">
+      <Row label="Pre-meeting briefs" description="Shown on the island up to 5 minutes before a matched event.">
+        <Switch
+          aria-label="Pre-meeting briefs"
+          checked={config?.prebrief ?? true}
+          disabled={busy}
+          onCheckedChange={(on) => config && save.mutate({ ...config, prebrief: on })}
+        />
+      </Row>
+      {settings.isError && <Empty>{errorText(settings.error)}</Empty>}
+    </Section>
+  )
+}
+
+/** Calendar › Upcoming: the next 24 hours of events, cancelled ones left out. */
+export function CalendarUpcoming() {
+  const api = useApi()
+  const day = nextDay()
+  const events = useQuery({ queryKey: calendarKeys.events(...day), queryFn: () => api.calendar_events(...day) })
+  const upcoming = events.data?.filter((e) => !e.cancelled).sort((a, b) => a.start.localeCompare(b.start)) ?? []
+  return (
+    <Section title="Upcoming">
+      {events.isError && <Empty>{errorText(events.error)}</Empty>}
+      {events.data && upcoming.length === 0 && <Empty>Nothing in the next 24 hours.</Empty>}
+      {upcoming.map((e) => (
+        <Row key={e.id} label={eventLine(e)} description={[e.location, e.join_host].filter(Boolean).join(' · ') || undefined} />
+      ))}
+    </Section>
   )
 }
 

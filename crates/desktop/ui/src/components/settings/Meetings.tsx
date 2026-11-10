@@ -1,20 +1,17 @@
-// 53 decisions 9–10 / 03 §3: Settings › Meetings — the eye (hidden from capture) with its hotkey, the
-// push-to-talk hotkey, and the black-screenshot note. All desktop-local (`lib/meeting-settings.ts`) — except
-// the live speaker labels switch (07 §6, `meeting.live_diarization` in the daemon's config) and the enrolled
-// speaker profiles (04 §7), which are the daemon's. The decision-oracle switch moved to Labs (57 §7.1).
-// 158 §6.3 (W1): the engine's one-tap defaults lead — Defaults (models, template, language, project),
-// Detection (switch + ignore list), Live tools — bound whole to `meeting_settings_get/set` (§6.2). 158 §13 (W6): outside
-// macOS an "Echo" row sums `Manifest.stats` over the last 10 meetings (the measure-first gate; nothing is dropped).
+// 53 decisions 9–10 / 03 §3, 158 §6.3: Settings › Meetings, one component per tab. Defaults, Detection and Live edit
+// the engine's `meeting` block whole (`meeting-queries.ts`, §6.2). Live adds the eye (hidden from capture, desktop-local
+// in `lib/meeting-settings.ts`), the live speaker labels switch (07 §6, `meeting.live_diarization`) and, outside macOS,
+// the 158 §13 (W6) Echo row; Speakers lists the daemon's enrolled profiles (04 §7). 188: the eye and push-to-talk
+// hotkeys moved to General › Shortcuts, the decision-oracle pointer went (Learning › Decision models holds it).
 
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
 import { X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { SAME_AS_NEW } from '@/components/settings/Chat'
-import { MeetingTemplates } from '@/components/settings/MeetingTemplates'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { useProjects } from '@/components/chat/ProjectPicker'
-import { ChordInput, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
+import { SETTINGS_KEY, useMeetingBlock } from '@/components/settings/meeting-queries'
+import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -22,17 +19,13 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { DEFAULT_EYE, DEFAULT_PTT, useMeetingSettings } from '@/lib/meeting-settings'
+import { useMeetingSettings } from '@/lib/meeting-settings'
 import { offerMeetingDefault } from '@/lib/meeting-model-offer'
 import { useProjectStyles } from '@/lib/project-style'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { probeShortcut } from '@/lib/shortcuts'
 import { setHiddenFromCapture } from '@/lib/tauri'
 import type { Manifest } from '@/rpc/bindings/Manifest'
-import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
 
-export const SETTINGS_KEY = ['meeting-settings'] as const
-const TEMPLATES_KEY = queryKeys.meetingTemplates
 /** `MeetingConfig::default().live_tools` (`crates/meeting/src/lib.rs`); "Reset to default" writes this list. */
 export const DEFAULT_LIVE_TOOLS = [
   'meeting_topic',
@@ -66,31 +59,13 @@ export function echoSummary(manifests: Manifest[]): string {
   return `${Math.round((100 * dupes) / mic)} % of your microphone segments repeated the other side (${dupes} of ${mic}) over the last ${rows.length} meeting${rows.length === 1 ? '' : 's'}, ${speakers} on speakers.`
 }
 
-export function Meetings() {
+/** Meetings › Defaults: the models, template, language and project a meeting starts with. */
+export function MeetingDefaults() {
   const api = useApi()
-  const hidden = useMeetingSettings((s) => s.hidden)
-  const ptt = useMeetingSettings((s) => s.ptt)
-  const eye = useMeetingSettings((s) => s.eye)
-  const local = isMacDesktop()
-  const speakers = useQuery({ queryKey: queryKeys.meetingSpeakers, queryFn: () => api.meeting_speakers() })
-  const del = useAction((profile: string) => api.meeting_speaker_delete(profile), { keys: [queryKeys.meetingSpeakers] })
-  const liveDiar = useQuery({ queryKey: queryKeys.meetingLiveDiarization, queryFn: () => api.meeting_live_diarization() })
-  // The block carries `live_diarization` too, so the switch refreshes the block and the block refreshes the switch.
-  const setLiveDiar = useAction((on: boolean) => api.set_meeting_live_diarization(on), { keys: [queryKeys.meetingLiveDiarization, SETTINGS_KEY] })
-  const settings = useQuery({ queryKey: SETTINGS_KEY, queryFn: () => api.meeting_settings_get() })
-  const templates = useQuery({ queryKey: TEMPLATES_KEY, queryFn: () => api.meeting_templates() })
+  const { settings, block: s, save, set, busy } = useMeetingBlock()
+  const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const projects = [...new Set([...useProjects(), ...Object.keys(useProjectStyles())])].sort()
-  const save = useAction((next: MeetingSettings) => api.meeting_settings_set(next), { keys: [SETTINGS_KEY, queryKeys.meetingLiveDiarization] })
-  // 158 §13: the last 10 manifests, read only where the mic has no echo cancellation (Windows/Linux).
-  const echo = useQuery({
-    queryKey: [...queryKeys.meetings, 'echo'],
-    queryFn: async () => Promise.all((await api.meeting_list(10)).map((m) => api.meeting_get(m.id))),
-    enabled: !local,
-  })
-  const s = settings.data
-  const busy = !s || save.isPending
-  const set = (patch: Partial<MeetingSettings>) => s && save.mutate({ ...s, ...patch })
   // §6.4: once per install, offer the start form's remembered model as `meeting.model` when the engine has none.
   useEffect(() => {
     if (!s || !models.data) return
@@ -100,85 +75,112 @@ export function Meetings() {
   // W4 fills `meeting_templates`; until then the one slug on file reads "General".
   const templateRows = templates.data?.length ? templates.data : [{ slug: s?.template ?? 'meeting', name: 'General' }]
   return (
+    <Section title="Defaults">
+      {settings.isError && <Empty>{errorText(settings.error)}</Empty>}
+      <Row stack label="Meeting model" description="The meeting's own session: topics and briefs while it runs, the pre-meeting brief, speaker-name suggestions.">
+        <ModelCombobox
+          aria-label="Meeting model"
+          className="max-w-64 max-md:w-full max-md:max-w-none"
+          models={models.data ?? []}
+          value={s?.model}
+          none={SAME_AS_NEW}
+          disabled={busy}
+          onChange={(model) => set({ model })}
+        />
+      </Row>
+      <Row stack label="Summary model" description="The post-meeting summary turn only.">
+        <ModelCombobox
+          aria-label="Summary model"
+          className="max-w-64 max-md:w-full max-md:max-w-none"
+          models={models.data ?? []}
+          value={s?.summary_model}
+          none={SAME_AS_MEETING}
+          disabled={busy}
+          onChange={(summary_model) => set({ summary_model })}
+        />
+      </Row>
+      <Row label="Template" description="The note template a meeting gets unless the start form, the prompt or the event picks another.">
+        <Select value={s?.template} disabled={busy} onValueChange={(template) => set({ template })}>
+          <SelectTrigger className="w-64" aria-label="Template">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {templateRows.map((t) => (
+              <SelectItem key={t.slug} value={t.slug}>
+                {t.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Row>
+      <Row label="Transcript language" description="Stored for the post-meeting pass. Live transcription is English only until the multilingual tier.">
+        <Select value={s?.language ?? 'en'} disabled={busy} onValueChange={(language) => set({ language })}>
+          <SelectTrigger className="w-64" aria-label="Transcript language">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="en">English</SelectItem>
+          </SelectContent>
+        </Select>
+      </Row>
+      <Row label="Default project" description="The project a meeting gets when nothing is remembered for its calendar series.">
+        <Select value={s?.project ? `p:${s.project}` : NONE} disabled={busy} onValueChange={(v) => set({ project: v.startsWith('p:') ? v.slice(2) : null })}>
+          <SelectTrigger className="w-64" aria-label="Default project">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>None</SelectItem>
+            {projects.map((p) => (
+              <SelectItem key={p} value={`p:${p}`}>
+                <ProjectIcon project={p} className="size-3.5" />
+                {p}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Row>
+    </Section>
+  )
+}
+
+/** Meetings › Detection: whether another app holding the microphone prompts, and which apps never do. */
+export function MeetingDetection() {
+  const { settings, block: s, set, busy } = useMeetingBlock()
+  return (
+    <Section title="Detection">
+      {settings.isError && <Empty>{errorText(settings.error)}</Empty>}
+      <Row label="Detect meetings from the microphone" description="Ask when another app has held the microphone for 15 seconds. Nothing is recorded until you start.">
+        <Switch aria-label="Detect meetings" checked={s?.detect.enabled ?? true} disabled={busy} onCheckedChange={(enabled) => s && set({ detect: { ...s.detect, enabled } })} />
+      </Row>
+      <Row wide label="Ignored apps" description="Apps on this list never prompt. theuth's own dictation is always ignored. Bundle id on macOS (com.apple.FaceTime), image name on Windows (obs64.exe), application name on Linux.">
+        <Chips
+          label="Ignored app"
+          items={s?.detect.ignore ?? []}
+          disabled={busy}
+          onChange={(ignore) => s && set({ detect: { ...s.detect, ignore } })}
+        />
+      </Row>
+    </Section>
+  )
+}
+
+/** Meetings › Live: what runs while a meeting records — echo count, live tools, hidden from capture, speaker labels. */
+export function MeetingLive() {
+  const api = useApi()
+  const { settings, block: s, set, busy } = useMeetingBlock()
+  const hidden = useMeetingSettings((st) => st.hidden)
+  const local = isMacDesktop()
+  const liveDiar = useQuery({ queryKey: queryKeys.meetingLiveDiarization, queryFn: () => api.meeting_live_diarization() })
+  // The block carries `live_diarization` too, so the switch refreshes the block and the block refreshes the switch.
+  const setLiveDiar = useAction((on: boolean) => api.set_meeting_live_diarization(on), { keys: [queryKeys.meetingLiveDiarization, SETTINGS_KEY] })
+  // 158 §13: the last 10 manifests, read only where the mic has no echo cancellation (Windows/Linux).
+  const echo = useQuery({
+    queryKey: [...queryKeys.meetings, 'echo'],
+    queryFn: async () => Promise.all((await api.meeting_list(10)).map((m) => api.meeting_get(m.id))),
+    enabled: !local,
+  })
+  return (
     <>
-      <Section title="Defaults">
-        {settings.isError && <Empty>{errorText(settings.error)}</Empty>}
-        <Row stack label="Meeting model" description="The meeting's own session: topics and briefs while it runs, the pre-meeting brief, speaker-name suggestions.">
-          <ModelCombobox
-            aria-label="Meeting model"
-            className="max-w-64 max-md:w-full max-md:max-w-none"
-            models={models.data ?? []}
-            value={s?.model}
-            none={SAME_AS_NEW}
-            disabled={busy}
-            onChange={(model) => set({ model })}
-          />
-        </Row>
-        <Row stack label="Summary model" description="The post-meeting summary turn only.">
-          <ModelCombobox
-            aria-label="Summary model"
-            className="max-w-64 max-md:w-full max-md:max-w-none"
-            models={models.data ?? []}
-            value={s?.summary_model}
-            none={SAME_AS_MEETING}
-            disabled={busy}
-            onChange={(summary_model) => set({ summary_model })}
-          />
-        </Row>
-        <Row label="Template" description="The note template a meeting gets unless the start form, the prompt or the event picks another.">
-          <Select value={s?.template} disabled={busy} onValueChange={(template) => set({ template })}>
-            <SelectTrigger className="w-64" aria-label="Template">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {templateRows.map((t) => (
-                <SelectItem key={t.slug} value={t.slug}>
-                  {t.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Row>
-        <Row label="Transcript language" description="Stored for the post-meeting pass. Live transcription is English only until the multilingual tier.">
-          <Select value={s?.language ?? 'en'} disabled={busy} onValueChange={(language) => set({ language })}>
-            <SelectTrigger className="w-64" aria-label="Transcript language">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="en">English</SelectItem>
-            </SelectContent>
-          </Select>
-        </Row>
-        <Row label="Default project" description="The project a meeting gets when nothing is remembered for its calendar series.">
-          <Select value={s?.project ? `p:${s.project}` : NONE} disabled={busy} onValueChange={(v) => set({ project: v.startsWith('p:') ? v.slice(2) : null })}>
-            <SelectTrigger className="w-64" aria-label="Default project">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NONE}>None</SelectItem>
-              {projects.map((p) => (
-                <SelectItem key={p} value={`p:${p}`}>
-                  <ProjectIcon project={p} className="size-3.5" />
-                  {p}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Row>
-      </Section>
-      <Section title="Detection">
-        <Row label="Detect meetings from the microphone" description="Ask when another app has held the microphone for 15 seconds. Nothing is recorded until you start.">
-          <Switch aria-label="Detect meetings" checked={s?.detect.enabled ?? true} disabled={busy} onCheckedChange={(enabled) => s && set({ detect: { ...s.detect, enabled } })} />
-        </Row>
-        <Row wide label="Ignored apps" description="Apps on this list never prompt. theuth's own dictation is always ignored. Bundle id on macOS (com.apple.FaceTime), image name on Windows (obs64.exe), application name on Linux.">
-          <Chips
-            label="Ignored app"
-            items={s?.detect.ignore ?? []}
-            disabled={busy}
-            onChange={(ignore) => s && set({ detect: { ...s.detect, ignore } })}
-          />
-        </Row>
-      </Section>
       {!local && (
         <Section title="Echo">
           <Row wide label="Echo in your microphone" description="Without echo cancellation the other side can leak back in through your microphone and be transcribed twice. This counts it; nothing is removed. Review asks per meeting whether you used speakers.">
@@ -187,6 +189,7 @@ export function Meetings() {
         </Section>
       )}
       <Section title="Live tools" actions={<Button variant="outline" size="sm" disabled={busy || JSON.stringify(s?.live_tools) === JSON.stringify(DEFAULT_LIVE_TOOLS)} onClick={() => set({ live_tools: DEFAULT_LIVE_TOOLS })}>Reset to default</Button>}>
+        {settings.isError && <Empty>{errorText(settings.error)}</Empty>}
         <Row wide label="Allowed while a meeting runs" description="The meeting session's toolset: topics, briefs, knowledge and the web by default. Tool names as the Tools page lists them.">
           <Chips label="Live tool" items={s?.live_tools ?? []} disabled={busy} onChange={(live_tools) => set({ live_tools })} />
         </Row>
@@ -194,20 +197,9 @@ export function Meetings() {
       <Section title="Screen capture">
         <Row
           label="Hidden from capture"
-          description="Both windows are excluded from screen sharing and screenshots (NSWindow sharingType none). Never automatic: theuth does not detect screen sharing. Your own ⌘⇧3/4 screenshots of the windows come out black while this is on."
+          description="Both windows are excluded from screen sharing and screenshots (NSWindow sharingType none). Never automatic: theuth does not detect screen sharing. Your own ⌘⇧3/4 screenshots of the windows come out black while this is on. The eye hotkey that flips it is in General › Shortcuts."
         >
           <Switch checked={hidden} disabled={!local} onCheckedChange={(on) => void setHiddenFromCapture(on)} />
-        </Row>
-        <Row label="Eye hotkey" description="Flips hidden from capture while a meeting records. Click the field and press a chord.">
-          <Hotkey kind="eye" value={eye} fallback={DEFAULT_EYE} />
-        </Row>
-      </Section>
-      <Section title="Push-to-talk">
-        <Row
-          label="Push-to-talk hotkey"
-          description="Hold to ask the meeting session a question; what you say while it is held is tagged as a request and answered as a brief. Registered only while a meeting records or is paused."
-        >
-          <Hotkey kind="ptt" value={ptt} fallback={DEFAULT_PTT} />
         </Row>
       </Section>
       <Section title="Live transcript">
@@ -223,22 +215,27 @@ export function Meetings() {
         </Row>
         {liveDiar.isError && <Empty>{errorText(liveDiar.error)}</Empty>}
       </Section>
-      <Section title="Local decision oracle">
-        <OraclePointer />
-      </Section>
-      <Section title="Enrolled speakers">
-        {speakers.isError && <Empty>{errorText(speakers.error)}</Empty>}
-        {speakers.data?.length === 0 && <Empty>No enrolled speakers yet. Enroll one from a meeting's review pane.</Empty>}
-        {speakers.data?.map((p) => (
-          <Row key={p.id} label={p.name} description={`${p.entity ?? '—'} · ${p.samples} sample${p.samples === 1 ? '' : 's'}`}>
-            <Button variant="outline" size="sm" disabled={del.isPending} onClick={() => del.mutate(p.id)}>
-              Delete
-            </Button>
-          </Row>
-        ))}
-      </Section>
-      <MeetingTemplates />
     </>
+  )
+}
+
+/** Meetings › Speakers: the voice profiles enrolled from meeting reviews. */
+export function MeetingSpeakers() {
+  const api = useApi()
+  const speakers = useQuery({ queryKey: queryKeys.meetingSpeakers, queryFn: () => api.meeting_speakers() })
+  const del = useAction((profile: string) => api.meeting_speaker_delete(profile), { keys: [queryKeys.meetingSpeakers] })
+  return (
+    <Section title="Enrolled speakers">
+      {speakers.isError && <Empty>{errorText(speakers.error)}</Empty>}
+      {speakers.data?.length === 0 && <Empty>No enrolled speakers yet. Enroll one from a meeting's review pane.</Empty>}
+      {speakers.data?.map((p) => (
+        <Row key={p.id} label={p.name} description={`${p.entity ?? '—'} · ${p.samples} sample${p.samples === 1 ? '' : 's'}`}>
+          <Button variant="outline" size="sm" disabled={del.isPending} onClick={() => del.mutate(p.id)}>
+            Delete
+          </Button>
+        </Row>
+      ))}
+    </Section>
   )
 }
 
@@ -280,33 +277,5 @@ function Chips({ label, items, disabled, onChange }: { label: string; items: str
         </Button>
       </div>
     </div>
-  )
-}
-
-/** 57 §7.1: the switch lives in Labs; this line shows the effective state and links there (same query key, so both update together). */
-function OraclePointer() {
-  const api = useApi()
-  const info = useQuery({ queryKey: queryKeys.decisionMode('meeting'), queryFn: () => api.decision_mode('meeting') })
-  const state = info.isError ? errorText(info.error) : info.data ? info.data.effective : '…'
-  return (
-    <Row label={`Local decision oracle: ${state}`} description="Off · Shadow · Active, counters and training-data consent are in Labs.">
-      <Button asChild variant="outline" size="sm">
-        <Link to="/settings/$tab" params={{ tab: 'labs' }} search={{}}>
-          Change in Labs
-        </Link>
-      </Button>
-    </Row>
-  )
-}
-
-/** A meeting global shortcut: probed with the plugin (a conflict rejects) before it is saved. */
-function Hotkey({ kind, value, fallback }: { kind: 'ptt' | 'eye'; value: string; fallback: string }) {
-  const setHotkey = useMeetingSettings((s) => s.setHotkey)
-  return (
-    <ChordInput
-      value={value}
-      fallback={fallback}
-      commit={(chord) => (chord === fallback ? setHotkey(kind, chord) : probeShortcut(chord).then(() => setHotkey(kind, chord)))}
-    />
   )
 }

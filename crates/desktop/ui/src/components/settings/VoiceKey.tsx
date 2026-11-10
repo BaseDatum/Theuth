@@ -1,8 +1,8 @@
 // 96 §5.4: Settings › Voice key — the key on/off, whether the screen travels with the words, the accessibility
 // reading, when the trail is drawn, where the panel sits, the first-use hints, and the disclosure (52 §8). All
-// desktop-local (`lib/voice-key.ts`); the chords live in Settings › Shortcuts and the permission states in Settings › Computer.
+// desktop-local (`lib/voice-key.ts`); the chords live only in General › Shortcuts (188: the Keys summary row went)
+// and the permission states in Tools › Computer use.
 
-import { Link } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { Row, Section } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
@@ -16,7 +16,6 @@ import { useVoiceKeySettings } from '@/lib/voice-key'
 export function VoiceKey() {
   const s = useVoiceKeySettings()
   const chord = useShortcuts((st) => st.chords['voice-key'])
-  const dictate = useShortcuts((st) => st.chords.dictate)
   // The island answers `voice-key:placed` when its Done is pressed or a gesture starts; leaving the tab hides a panel it showed.
   const [placing, setPlacing] = useState(false)
   const shown = useRef(false)
@@ -45,7 +44,7 @@ export function VoiceKey() {
         </Row>
         <Row
           label="Read what the pointer touched"
-          description="Name the links, buttons and text under the pointer from the accessibility tree (needs the Accessibility permission; its state is in Settings › Computer)."
+          description="Name the links, buttons and text under the pointer from the accessibility tree (needs the Accessibility permission; its state is in Tools › Computer use)."
         >
           <Switch
             checked={s.accessibility !== 'off'}
@@ -85,13 +84,6 @@ export function VoiceKey() {
         <Row label="Hints" description="“Hold to talk · double-tap to lock” shows on the first three uses.">
           <Button variant="outline" size="sm" disabled={s.hintsShown === 0} onClick={() => s.set({ hintsShown: 0 })}>
             Reset hints
-          </Button>
-        </Row>
-        <Row label="Keys" description={`Voice key ${label(chord)} · Dictate ${label(dictate)}`}>
-          <Button asChild variant="outline" size="sm">
-            <Link to="/settings/$tab" params={{ tab: 'shortcuts' }} search={{}}>
-              Change the keys
-            </Link>
           </Button>
         </Row>
       </Section>
