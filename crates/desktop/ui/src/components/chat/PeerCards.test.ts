@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement as h, type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { toast } from 'sonner'
-import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
 import type * as Rpc from '@/lib/rpc'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
@@ -11,7 +11,9 @@ import { apply, empty } from '@/store/reduce'
 import type { Entry } from '@/store/sessions'
 import { Message } from './Message'
 import { MessagePeer, useAnswerDrafts } from './MessagePeer'
-import { type Scroller, SendCard, answerFor, stepTo } from './SendCard'
+import { SendCard, answerFor } from './SendCard'
+import { settleOn, jumpIndex, takeJump, useTranscriptJump } from './jump'
+import { buildRows } from './rows'
 import { ToolRunCard } from './ToolRunCard'
 import { DisclosureScope } from './disclosure'
 
@@ -241,61 +243,70 @@ test('a settled outside card puts its remove control in the header row, below th
   expect(html).not.toContain('pr-12')
 })
 
-/** A transcript scroller stand-in: `scrollTop` the loop and a "virtualiser" both write; listeners by event type. */
-function fakeScroller(height = 10_000): Scroller & { fire: (type: string) => void } {
-  const on: Record<string, (() => void)[]> = {}
-  return {
-    scrollTop: 0,
-    clientHeight: 500,
-    scrollHeight: height,
-    addEventListener: (type: string, fn: () => void) => void (on[type] = [...(on[type] ?? []), fn]),
-    removeEventListener: (type: string, fn: () => void) => void (on[type] = (on[type] ?? []).filter((f) => f !== fn)),
-    fire: (type: string) => (on[type] ?? []).forEach((f) => f()),
-  } as unknown as Scroller & { fire: (type: string) => void }
-}
+const rowsOf = (entries: Entry[]) => buildRows(entries, [], 's', undefined, true)
+const say = (id: string): Entry => ({ id, kind: 'assistant', text: id, open: false })
 
-afterEach(() => vi.useRealTimers())
-
-test('jump: a virtualiser rewriting scrollTop mid-loop does not stop it; the card is reached', () => {
-  vi.useFakeTimers()
-  const s = fakeScroller()
-  let found = false
-  stepTo(s, () => found, {})
-  vi.advanceTimersByTime(150)
-  // Rows measured: the virtualiser moves scrollTop under the loop (what stalled R3 after one step).
-  s.scrollTop -= 137
-  vi.advanceTimersByTime(150)
-  vi.advanceTimersByTime(150)
-  expect(s.scrollTop).toBeGreaterThan(400 - 137 + 400)
-  found = true
-  const at = s.scrollTop
-  vi.advanceTimersByTime(600)
-  expect(s.scrollTop).toBe(at)
-  expect(toast.message).not.toHaveBeenCalled()
+test('jump: the row index of a plain entry and of an entry inside a folded peer group', () => {
+  const rows = rowsOf([say('a1'), peer('p1', 'one', 0), say('a2'), peer('g1', 'x', 1), peer('g2', 'y', 2), say('a3')])
+  expect(jumpIndex(rows, 'p1')).toBe(1)
+  expect(jumpIndex(rows, 'g2')).toBe(3)
+  expect(jumpIndex(rows, 'nope')).toBe(-1)
 })
 
-test('jump: the reader’s wheel cancels it with no toast; the bottom gives up with the toast; a new jump cancels the old', () => {
-  vi.useFakeTimers()
+test('jump: a request is consumed once per nonce, by its own session only; a folded line opens; a missing entry toasts', () => {
   vi.mocked(toast.message).mockClear()
-  const s = fakeScroller()
-  stepTo(s, () => false, {})
-  vi.advanceTimersByTime(150)
-  s.fire('wheel')
-  const at = s.scrollTop
-  vi.advanceTimersByTime(3000)
-  expect(s.scrollTop).toBe(at)
-  expect(toast.message).not.toHaveBeenCalled()
-  const short = fakeScroller(1200)
-  stepTo(short, () => false, {})
-  vi.advanceTimersByTime(1500)
+  const rows = rowsOf([say('a1'), peer('g1', 'x', 1), peer('g2', 'y', 2)])
+  useTranscriptJump.getState().request('s', 'g2')
+  expect(takeJump('other', rows)).toBeNull()
+  expect(takeJump('s', rows)).toMatchObject({ index: 1, entry: { id: 'g2' } })
+  expect(useToolRuns.getState().disclosed[disclosureKey('g2', 'line')]).toBe(true)
+  expect(takeJump('s', rows)).toBeNull()
+  // A new click is a new nonce: served again.
+  useTranscriptJump.getState().request('s', 'g2')
+  expect(takeJump('s', rows)?.index).toBe(1)
+  useTranscriptJump.getState().request('s', 'gone')
+  expect(takeJump('s', rows)).toBeNull()
   expect(toast.message).toHaveBeenCalledWith("The answer isn't loaded in this view")
-  const a = fakeScroller()
-  const b = fakeScroller()
-  stepTo(a, () => false, {})
-  stepTo(b, () => false, {})
-  vi.advanceTimersByTime(450)
-  expect(a.scrollTop).toBe(0)
-  expect(b.scrollTop).toBeGreaterThan(0)
+  expect(useTranscriptJump.getState().entryId).toBeNull()
+})
+
+test('jump: the request outlives the send card, and the fine-tune centres and marks the card once it mounts and the scroller holds still', () => {
+  vi.useFakeTimers()
+  vi.stubGlobal('requestAnimationFrame', (f: () => void) => setTimeout(f, 16))
+  vi.stubGlobal('cancelAnimationFrame', (t: number) => clearTimeout(t))
+  try {
+    // The card renders, asks, and is gone (its row left the virtual window): the transcript still takes the request.
+    render(h(SendCard, { tool: send(`session:${KID}`, `session:${KID} accepted id=${A}`), session: 's' }))
+    useTranscriptJump.getState().request('s', 'p1')
+    expect(takeJump('s', rowsOf([say('a1'), peer('p1', 'answer', 0)]))?.index).toBe(1)
+    const stub = () => ({ scrollIntoView: vi.fn(), setAttribute: vi.fn(), removeAttribute: vi.fn() })
+    const card = stub()
+    const on: Record<string, () => void> = {}
+    const scroller = { scrollTop: 0, addEventListener: (t: string, f: () => void) => void (on[t] = f), removeEventListener: (t: string) => void delete on[t] } as unknown as HTMLElement
+    settleOn(scroller, () => card as unknown as Element)
+    // Mounted, but the virtualiser is still reconciling its scroll: no fine-tune yet.
+    for (let i = 0; i < 6; i++) {
+      scroller.scrollTop += 40
+      vi.advanceTimersByTime(16)
+    }
+    expect(card.scrollIntoView).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(16 * 4)
+    expect(card.scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+    expect(card.setAttribute).toHaveBeenCalledWith('data-jumped', '')
+    vi.advanceTimersByTime(1600)
+    expect(card.removeAttribute).toHaveBeenCalledWith('data-jumped')
+    // The reader's wheel before the card mounts cancels the fine-tune.
+    const late = stub()
+    let ready = false
+    settleOn(scroller, () => (ready ? (late as unknown as Element) : null))
+    on.wheel?.()
+    ready = true
+    vi.advanceTimersByTime(16 * 10)
+    expect(late.scrollIntoView).not.toHaveBeenCalled()
+  } finally {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  }
 })
 
 test('send card: the label is the call’s `to` (sky · hi-there), whatever the receipt line says', () => {

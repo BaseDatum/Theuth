@@ -1,17 +1,16 @@
 import { CircleHelp, Hourglass, X } from 'lucide-react'
 import { useQueries } from '@tanstack/react-query'
-import { Fragment, type MouseEvent, useEffect, useMemo, useRef } from 'react'
-import { toast } from 'sonner'
+import { Fragment, useMemo } from 'react'
 import { Streamdown } from 'streamdown'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
-import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import { type Entry, useSessions } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
 import { Chip, Clock, useOverflow } from './MessagePeer'
 import { useScopedDisclosure } from './disclosure'
+import { useTranscriptJump } from './jump'
 import { NIL, type SentReceipt, type Track, isOutside, isTerminal, parseReceipts, recipientLabel, trackOf, useDirectory } from './peer-identity'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
@@ -69,59 +68,6 @@ export function answerFor(entries: readonly Entry[] | undefined, id: string | un
   return entries?.find((e): e is Peer => e.kind === 'peer' && e.origin?.reply_to === id)
 }
 
-const GIVE_UP = "The answer isn't loaded in this view"
-/** The reader's own input on the scroller ends a jump: the position is theirs again. */
-const INPUT = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const
-
-/** The one running jump: a new click, the reader's input, or the owning card's unmount cancels it. */
-let jumping: { owner: object; stop: () => void } | null = null
-
-/** What the jump loop drives: the transcript scroller (an element in the app, a stand-in in tests). */
-export type Scroller = Pick<HTMLElement, 'scrollTop' | 'clientHeight' | 'scrollHeight' | 'addEventListener' | 'removeEventListener'>
-
-/**
- * Step `scroller` down until `find()` brings the card into view: the deep-link retry of `routes/c.$session.tsx`
- * `scrollToCell` for a virtualised transcript, where the card mounts only once its row is in range. Only the reader's
- * input (wheel, touch, a key, a pointer press), the owner's unmount or a new jump cancels it: the virtualiser rewrites
- * `scrollTop` itself as rows measure, so a moved `scrollTop` is no sign of the reader. Reaching the bottom or 10 s
- * without the card gives up with a toast.
- */
-export function stepTo(scroller: Scroller, find: () => boolean, owner: object): void {
-  jumping?.stop()
-  const stop = (gaveUp: boolean) => {
-    clearInterval(timer)
-    clearTimeout(deadline)
-    for (const type of INPUT) scroller.removeEventListener(type, cancel)
-    if (jumping?.stop === cancel) jumping = null
-    if (gaveUp) toast.message(GIVE_UP)
-  }
-  const cancel = () => stop(false)
-  for (const type of INPUT) scroller.addEventListener(type, cancel, { passive: true })
-  // ponytail: steps downward only; an answer always lands after its send.
-  const timer = setInterval(() => {
-    if (find()) return stop(false)
-    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1) return stop(true)
-    scroller.scrollTop += scroller.clientHeight * 0.8
-  }, 150)
-  const deadline = setTimeout(() => stop(true), 10_000)
-  jumping = { owner, stop: cancel }
-}
-
-/** Jump to the answer's card: open its group line in case it is folded, then scroll to it (`stepTo` while unmounted). */
-function jump(e: MouseEvent<HTMLElement>, owner: object, entry: string, exchange: string) {
-  jumping?.stop()
-  useToolRuns.getState().setDisclosed(disclosureKey(entry, 'line'), true)
-  const find = () => {
-    const el = document.getElementById(`peer-msg-${exchange}`)
-    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    return !!el
-  }
-  if (find()) return
-  const scroller = e.currentTarget.closest<HTMLElement>('.overflow-y-auto')
-  if (scroller) stepTo(scroller, find, owner)
-  else toast.message(GIVE_UP)
-}
-
 /** `Show all` / `Show less` under a clamped block; its open state is a scoped disclosure (171F B13). */
 function More({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   return (
@@ -132,7 +78,7 @@ function More({ open, onToggle }: { open: boolean; onToggle: () => void }) {
 }
 
 /** One recipient's answer, clamped to about three lines with a measured `Show all`. An outside agent's words stay plain text. */
-function Answer({ label, text, outside, part, at, onJump }: { label: string; text: string; outside: boolean; part: string; at?: number; onJump?: (e: MouseEvent<HTMLElement>) => void }) {
+function Answer({ label, text, outside, part, at, onJump }: { label: string; text: string; outside: boolean; part: string; at?: number; onJump?: () => void }) {
   const [open, setOpen] = useScopedDisclosure(part)
   const [ref, hidden] = useOverflow<HTMLDivElement>(!open)
   return (
@@ -166,18 +112,11 @@ function Answer({ label, text, outside, part, at, onJump }: { label: string; tex
  * format); each receipt's `peer_message(session, id)` record, refetched by `PeerMessageChanged` (`lib/rpc`), is the
  * truth for its state and reply. It is fetched while not terminal, and for every `replied` receipt of a fan-out. A
  * lone recipient's answer: `receipt.reply`, else the reply text, else the incoming message whose `reply_to` is this id,
- * with a jump to its card. Several recipients: one chip and one answer each. Details: what was sent and the raw output.
+ * with a jump to its card (a `useTranscriptJump` request the transcript carries out). Several recipients: one chip and
+ * one answer each. Details: what was sent and the raw output.
  */
 export function SendCard({ tool, session, at }: { tool: Tool; session: string; at?: number }) {
   const api = useApi()
-  const owner = useRef({}).current
-  useEffect(
-    () => () => {
-      const j = jumping
-      if (j?.owner === owner) j.stop()
-    },
-    [owner],
-  )
   const args = (tool.args ?? {}) as { to?: unknown; message?: unknown }
   const message = typeof args.message === 'string' ? args.message : ''
   const to = [...new Set(typeof args.to === 'string' ? [args.to] : Array.isArray(args.to) ? args.to.filter((t): t is string => typeof t === 'string') : [])]
@@ -230,7 +169,6 @@ export function SendCard({ tool, session, at }: { tool: Tool; session: string; a
   // Refused before any receipt (communication off, a bad `to`): the output is the reason.
   const refused = tool.result && receipts.length === 0 ? tool.result.output : undefined
   const tone = refused ? 'danger' : one?.track.tone
-  const target = answer?.origin?.id
   const chips = allChips ? rows : rows.slice(0, CHIPS)
   return (
     <div
@@ -281,7 +219,7 @@ export function SendCard({ tool, session, at }: { tool: Tool; session: string; a
               outside={outside}
               part="send-answer"
               at={answer?.at}
-              onJump={answer && target ? (e) => jump(e, owner, answer.id, target) : undefined}
+              onJump={answer ? () => useTranscriptJump.getState().request(session, answer.id) : undefined}
             />
           ) : null}
         </>

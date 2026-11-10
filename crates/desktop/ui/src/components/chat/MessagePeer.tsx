@@ -273,7 +273,8 @@ function PeerCard({
     <div
       id={id}
       className={cn(
-        'my-2 overflow-hidden rounded-xl border bg-layer-1 text-sm',
+        // `data-jumped`: the brief highlight "jump to message" sets (`jump.ts` `settleOn`).
+        'my-2 overflow-hidden rounded-xl border bg-layer-1 text-sm transition-shadow data-jumped:ring-2 data-jumped:ring-info-border data-jumped:ring-offset-2 data-jumped:ring-offset-background',
         outside ? 'border-warning-border' : tone === 'info' ? 'border-info-border' : 'border-border-subtle',
       )}
     >
