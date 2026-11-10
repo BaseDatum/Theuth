@@ -9,6 +9,7 @@ description = "JSON-RPC 2.0 over WebSocket: commands as methods, bus events as a
 platform = { workspace = true }
 dirs = { workspace = true }
 runtime = { workspace = true }
+figment = { workspace = true }  # 188: `config_flag_get` reads config.yaml's `enabled` fresh
 tools = { workspace = true }
 agent = { workspace = true }
 document = { workspace = true }
@@ -75,7 +76,6 @@ libc = { workspace = true }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
-figment = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }  # 183 §5.6: `tests/new_chat_elsewhere.rs` reads the WARN
 tempfile = "3"
