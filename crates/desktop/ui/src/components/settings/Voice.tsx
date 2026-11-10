@@ -1,7 +1,7 @@
 // Settings › Voice (153 §8.1, §4.5, §7.2, §9.2, §6.7, §8.7): the microphone, the shaping preset per surface, the
 // spoken end phrases, the polish model, the dictation history and the latency debug row. Everything reads and writes
-// the engine; the shape preset and end phrases have no getter in the frozen contract, so the last value written here
-// is remembered locally until the engine exposes them.
+// the engine except the talk view's turn chime (client-only, `lib/talk-settings.ts`). 188: one component per tab —
+// Microphone (with the chime, from Chat › Talk), Dictation, History; the query keys below are what they share.
 
 import { useQuery } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
@@ -13,8 +13,10 @@ import { Button } from '@/components/ui/button'
 import { pcmSamples, playPcm } from '@/components/ui/DictionarySuggestion'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { ago } from '@/lib/codemap/map'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { useTalkSettings } from '@/lib/talk-settings'
 import type { DictationTimings } from '@/rpc/bindings/DictationTimings'
 import type { EndPhrases } from '@/rpc/bindings/EndPhrases'
 import type { HistoryRow } from '@/rpc/bindings/HistoryRow'
@@ -76,36 +78,18 @@ export function phrases(raw: string): string[] {
     .filter(Boolean)
 }
 
-export function Voice() {
+/** Voice › Microphone: the input device and the talk view's turn chime. */
+export function Microphone() {
   const api = useApi()
   const devices = useQuery({ queryKey: keys.devices, queryFn: () => api.list_input_devices() })
   const status = useQuery({ queryKey: keys.status, queryFn: () => api.voice_status() })
-  const settings = useQuery({ queryKey: keys.settings, queryFn: () => api.voice_settings() })
-  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
-  const polishModel = useQuery({ queryKey: keys.polishModel, queryFn: () => api.polish_model() })
-  const history = useQuery({ queryKey: keys.history, queryFn: () => api.dictation_history(HISTORY) })
-  const dictation = useQuery({ queryKey: keys.dictation, queryFn: () => api.dictation_status() })
-
   const setDevice = useAction((name: string) => api.set_input_devices(inputDevicesFor(name)), { keys: [keys.status, keys.settings] })
-  const setShape = useAction(({ surface, preset }: { surface: Surface; preset: Preset }) => api.set_shape(surface, preset), { keys: [keys.settings] })
-  const setEnd = useAction((p: EndPhrases) => api.set_end_phrases(p), { keys: [keys.settings] })
-  const setPolishModel = useAction((id: string | null) => api.set_polish_model(id), { keys: [keys.polishModel, keys.settings] })
-  const forget = useAction((id: string | null) => api.dictation_history_forget(id), { keys: [keys.history] })
+  const cue = useTalkSettings((s) => s.cue)
 
-  const shape = settings.data?.shape
-  const end = settings.data?.end_commands ?? END_DEFAULTS
   const preferred = status.data?.input_devices[0]
   // A preferred device the host no longer enumerates stays visible, never silently "System default".
   const deviceNames = devices.data?.map((d) => d.name) ?? []
   const device = preferred ?? DEFAULT_DEVICE
-
-  const play = async (id: string) => {
-    try {
-      await playPcm(pcmSamples(await api.dictation_audio_get(id, null)))
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
-  }
 
   return (
     <>
@@ -131,6 +115,31 @@ export function Voice() {
           </Select>
         </Row>
       </Section>
+      <Section title="Talk">
+        <Row label="Turn chime" description="A soft two-tone chime when you stop talking and the model takes the turn.">
+          <Switch checked={cue} onCheckedChange={useTalkSettings.getState().setCue} />
+        </Row>
+      </Section>
+    </>
+  )
+}
+
+/** Voice › Dictation: how dictated words are shaped, the spoken end phrases and the polish model. */
+export function Dictation() {
+  const api = useApi()
+  const settings = useQuery({ queryKey: keys.settings, queryFn: () => api.voice_settings() })
+  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const polishModel = useQuery({ queryKey: keys.polishModel, queryFn: () => api.polish_model() })
+
+  const setShape = useAction(({ surface, preset }: { surface: Surface; preset: Preset }) => api.set_shape(surface, preset), { keys: [keys.settings] })
+  const setEnd = useAction((p: EndPhrases) => api.set_end_phrases(p), { keys: [keys.settings] })
+  const setPolishModel = useAction((id: string | null) => api.set_polish_model(id), { keys: [keys.polishModel, keys.settings] })
+
+  const shape = settings.data?.shape
+  const end = settings.data?.end_commands ?? END_DEFAULTS
+
+  return (
+    <>
       <Section title="Shaping">
         {SURFACES.map(([surface, label, description]) => (
           <Row key={surface} label={label} description={`${description} Full writes punctuation, numbers, code words, dictionary terms and takes "send it" / "scratch that"; Plain skips the dictionary and the end phrases; Off keeps the model's words.`}>
@@ -193,6 +202,27 @@ export function Voice() {
           />
         </Row>
       </Section>
+    </>
+  )
+}
+
+/** Voice › History: the last dictations with their audio, and the latency of the last one. */
+export function VoiceHistory() {
+  const api = useApi()
+  const history = useQuery({ queryKey: keys.history, queryFn: () => api.dictation_history(HISTORY) })
+  const dictation = useQuery({ queryKey: keys.dictation, queryFn: () => api.dictation_status() })
+  const forget = useAction((id: string | null) => api.dictation_history_forget(id), { keys: [keys.history] })
+
+  const play = async (id: string) => {
+    try {
+      await playPcm(pcmSamples(await api.dictation_audio_get(id, null)))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <>
       <Section
         title="History"
         actions={

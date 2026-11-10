@@ -1,13 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createElement, type ReactNode } from 'react'
+import { type ComponentType, createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { CalSource } from '@/rpc/bindings/CalSource'
 import type { CalEvent } from '@/rpc/bindings/CalEvent'
-import { Calendar, addSource, deleteSource, ready } from './Calendar'
+import { CalendarSources, CalendarUpcoming, addSource, deleteSource } from './Calendar'
 
-// Frozen clock: the panel's Upcoming key is the minute-rounded `Date.now()`; two paints must share it.
+// Frozen clock: Upcoming's key is the minute-rounded `Date.now()`; two paints must share it.
 vi.useFakeTimers({ toFake: ['Date'] })
 const SECRET = 'https://calendar.google.com/calendar/ical/sky%40example.com/private-0123456789abcdef/basic.ics'
 const sources: CalSource[] = [
@@ -25,20 +25,16 @@ const api = {
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 vi.mock('@/lib/hotkeys', () => ({ isMacDesktop: () => true }))
 
-async function render(): Promise<string> {
+async function render(tab: ComponentType): Promise<string> {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Calendar) as ReactNode }))
+  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(tab) as ReactNode }))
   paint()
   for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
   return paint()
 }
 
-test('the tab is live', () => {
-  expect(ready).toBe(true)
-})
-
-test('sources list: ICS rows by name with sync age or the amber error, the EventKit row drives the state line, and no URL appears anywhere', async () => {
-  const html = await render()
+test('Calendars: ICS rows by name with sync age or the amber error, the EventKit row drives the state line, and no URL appears anywhere', async () => {
+  const html = await render(CalendarSources)
   expect(html).toContain('Work')
   expect(html).toContain('synced 3 min ago')
   expect(html).toMatch(/class="text-warning">URL rejected/)
@@ -49,6 +45,10 @@ test('sources list: ICS rows by name with sync age or the amber error, the Event
   expect(html).not.toContain('private-')
   expect(html).not.toContain(SECRET)
   expect(html).toContain('never shown in full again')
+})
+
+test('Upcoming lists the next 24 h with the location', async () => {
+  const html = await render(CalendarUpcoming)
   expect(html).toContain('Weekly sync · ')
   expect(html).toContain('Room 4')
 })
