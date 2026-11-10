@@ -69,7 +69,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
           className="-my-1.5 -mr-2 size-8 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
         />
       ) : undefined
-      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} at={entry.at} remove={remove} />
+      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} at={entry.at} remove={remove} contact={entry.contact} />
     }
     case 'engine':
       return <EngineNotice notice={entry.notice} text={entry.text} />

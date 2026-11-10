@@ -136,13 +136,15 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
   /** `⟵ from` card: a peer message, a subagent result or a job result. `origin` is the engine-authenticated
    * provenance (50 §9) of a peer exchange, from `PeerDelivered` live or `HistoryEntry::User.peer` on replay; a card
    * parsed from a legacy `<message>` wrapper has none and renders a label only, never inspect/answer controls.
-   * `seq` is the stored row the live delivery became. */
+   * `seq` is the stored row the live delivery became. A stored row a contact wrapper opened (183 §11.5/§11.6) carries
+   * its inner words as `text` and the wrapper's facts and harness note as `contact`; the tag itself is never kept. */
   | {
       kind: "peer";
       from: string;
       text: string;
       origin?: PeerOrigin;
       seq?: number;
+      contact?: ContactNote & { note: string };
     }
   | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'child' | 'autoresearch' | 'moved' | 'engine_restart' | 'contact_inbox' | 'contact_message' }>
   /** 171 §9.1: a cell result the agent read; `turn` when its stored row opened the turn (`foldCells` hands it on). */

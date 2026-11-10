@@ -7,6 +7,7 @@ import type { A2aPeerStatus } from '@/rpc/bindings/A2aPeerStatus'
 import type { Contact } from '@/rpc/bindings/Contact'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { ContactNote } from '@/lib/injected'
 import type { AgentInfo } from '@/rpc/extra'
 import { useSessionField } from '@/store/sessions'
 
@@ -41,6 +42,9 @@ export type Directory = {
   mesh?: Pick<MeshStatus, 'self_id' | 'self_name' | 'peers'>
   /** The export this chat is published as, for `via <export>` on an incoming contact message. */
   exported?: string
+  /** 183 §11.5/§11.6: the facts of the contact wrapper the card's row came in, the fallback when the caches above name
+   * no contact, machine or export. */
+  note?: ContactNote
 }
 
 /** The short id a uuid falls back to. */
@@ -97,7 +101,8 @@ export function resolveSender(address: string, dir: Directory): Sender {
     if (holder && dir.mesh && holder === dir.mesh.self_id) return contactSender(alias, undefined, dir, key)
     // Never a raw engine id: a holder the (loaded) mesh does not name is "another machine".
     const on = dir.mesh?.peers.find((p) => p.id === holder)?.name ?? 'another machine'
-    return { name: alias, subtitle: ['Contact', `held on ${on}`, dir.exported && `via ${dir.exported}`].filter(Boolean).join(' · '), key }
+    const via = dir.exported ?? dir.note?.export
+    return { name: alias, subtitle: ['Contact', `held on ${on}`, via && `via ${via}`].filter(Boolean).join(' · '), key }
   }
   if (address.startsWith('peer:')) {
     // `peer:<binding uuid>` inbound, `peer:<alias>` or `peer:<alias>/<export>` outbound.
@@ -125,10 +130,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function contactSender(alias: string, exp: string | undefined, dir: Directory, key: string): Sender {
   const contact = dir.contacts?.find((c) => c.name === alias)
-  const via = exp ?? dir.exported
-  if (contact) {
-    const parts = ['Contact', contact.machine && `on ${contact.machine}`, via && `via ${via}`].filter(Boolean)
-    return { name: contact.name, subtitle: parts.join(' · '), key }
+  const note = dir.note
+  const via = exp ?? dir.exported ?? note?.export
+  if (contact || note) {
+    const machine = contact?.machine || note?.machine
+    const parts = ['Contact', machine && `on ${machine}`, via && `via ${via}`].filter(Boolean)
+    // An unknown binding is only an id: the wrapper's contact name reads better.
+    return { name: contact?.name ?? (note && UUID.test(alias) ? note.contact : alias), subtitle: parts.join(' · '), key }
   }
   // An unknown binding is only an id; a configured A2A peer keeps its alias.
   if (UUID.test(alias)) return { name: shortId(alias), subtitle: 'Outside agent', key }

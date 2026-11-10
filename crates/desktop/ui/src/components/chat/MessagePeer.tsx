@@ -12,6 +12,7 @@ import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt, fullAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import type { ContactNote } from '@/lib/injected'
 import type { PeerOrigin } from '@/rpc/bindings/PeerOrigin'
 import type { PeerRecord } from '@/rpc/bindings/PeerRecord'
 import { useSessionField } from '@/store/sessions'
@@ -56,8 +57,9 @@ export function SenderCircle({ sender, className }: { sender: Sender; className?
   )
 }
 
-/** The circle, the name (with `count`, a folded group's size, never truncated) and the subtitle; `children` sit on the right (chips, the time). */
-export function SenderHead({ sender, children, count }: { sender: Sender; children?: ReactNode; count?: string }) {
+/** The circle, the name (with `count`, a folded group's size, never truncated) and the subtitle with its muted `tag`
+ * (a contact's cap); `children` sit on the right (chips, the time). */
+export function SenderHead({ sender, children, count, tag }: { sender: Sender; children?: ReactNode; count?: string; tag?: string }) {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
       <SenderCircle sender={sender} />
@@ -66,7 +68,12 @@ export function SenderHead({ sender, children, count }: { sender: Sender; childr
           <span className="truncate">{sender.name}</span>
           {count ? <span className="shrink-0 text-xs font-normal whitespace-nowrap text-fg-tertiary tabular-nums">{count}</span> : null}
         </span>
-        {sender.subtitle ? <span className="truncate text-xs text-fg-secondary">{sender.subtitle}</span> : null}
+        {sender.subtitle || tag ? (
+          <span className="flex min-w-0 items-center gap-1.5 text-xs text-fg-secondary">
+            {sender.subtitle ? <span className="truncate">{sender.subtitle}</span> : null}
+            {tag ? <span className="shrink-0 rounded bg-layer-2 px-1.5 text-[11px] whitespace-nowrap text-fg-tertiary">{tag}</span> : null}
+          </span>
+        ) : null}
       </div>
       <span className="flex-1" />
       {children}
@@ -126,7 +133,7 @@ function answeredBy(r: PeerRecord | undefined): string | undefined {
  * authenticated, and the durable record. Every fact here is a `PeerOrigin` field or a `peer_message` reply, never
  * parsed from the body.
  */
-function Provenance({ origin, seq, session, request }: { origin: PeerOrigin; seq?: number; session: string; request: PeerRecord | undefined }) {
+function Provenance({ origin, seq, session, request, contact }: { origin: PeerOrigin; seq?: number; session: string; request: PeerRecord | undefined; contact?: PeerContact }) {
   const record = useRecord(session, origin.id)
   const rec = record.data
   return (
@@ -157,6 +164,23 @@ function Provenance({ origin, seq, session, request }: { origin: PeerOrigin; seq
         <Row label="accepted" value={rec?.created_at} />
         {origin.reply_to ? <Row label="request answered by" value={answeredBy(request)} /> : null}
       </dl>
+      {contact ? (
+        <>
+          <p className="mt-3 mb-1 font-medium text-fg-secondary">What the agent was told</p>
+          <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
+            <Row label="Contact" value={contact.contact} />
+            <Row label="Machine" value={contact.machine} />
+            <Row label="Shared chat" value={contact.export} />
+            <Row label="Access" value={capLabel(contact.cap)} />
+            {contact.note ? (
+              <>
+                <dt className="text-fg-secondary">Note to the agent</dt>
+                <dd className="min-w-0 wrap-anywhere">{contact.note}</dd>
+              </>
+            ) : null}
+          </dl>
+        </>
+      ) : null}
       {record.isPending ? <p className="mt-2 text-fg-secondary">Loading record…</p> : null}
       {record.error ? (
         <p role="alert" className="mt-2 text-danger">
@@ -242,8 +266,12 @@ function AnswerForm({ session, id, onDone }: { session: string; id: string; onDo
 }
 
 /** `remove`: `Message`'s remove-from-context control for a stored row; it sits in the header row, after the time, so it
- * never overlaps the outside band above. */
-type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number; remove?: ReactNode }
+ * never overlaps the outside band above. `contact`: the facts and harness note of the contact wrapper the row came in. */
+type PeerContact = ContactNote & { note: string }
+type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number; remove?: ReactNode; contact?: PeerContact }
+
+/** A contact's cap in words: the header tag and Details › Access say it alike. */
+const capLabel = (cap: string) => (cap === 'read_only' ? 'read-only' : cap === 'mutating' ? 'can make changes' : cap)
 
 /**
  * The card frame: sender header, the reply quote, the body (clamped), then the footer. `origin` parts (the answer
@@ -253,6 +281,7 @@ function PeerCard({
   text,
   at,
   remove,
+  contact,
   sender,
   tone,
   id,
@@ -267,7 +296,7 @@ function PeerCard({
   const raw = sender.kind === 'job'
   // 183: an outside agent's words (a contact or an A2A peer: `contact:` / `peer:` senders) are untrusted: plain text,
   // never Markdown, so no remote image loads and no link is live.
-  const outside = isOutside(sender.key)
+  const outside = isOutside(sender.key) || !!contact
   const [body, hidden] = useOverflow<HTMLDivElement>(!open)
   return (
     <div
@@ -285,7 +314,7 @@ function PeerCard({
         </div>
       ) : null}
       <div className="px-4 pt-2.5">
-        <SenderHead sender={sender}>
+        <SenderHead sender={sender} tag={contact && capLabel(contact.cap)}>
           {chips}
           <Clock at={at} />
           {remove}
@@ -380,7 +409,7 @@ function OriginCard({ origin, session, seq, sender, ...rest }: Props & { origin:
       after={
         <>
           {awaiting && answering ? <AnswerForm session={session} id={origin.id} onDone={() => setAnswering(false)} /> : null}
-          {details ? <Provenance origin={origin} seq={seq} session={session} request={request} /> : null}
+          {details ? <Provenance origin={origin} seq={seq} session={session} request={request} contact={rest.contact} /> : null}
         </>
       }
     />
@@ -399,7 +428,7 @@ function OpenChat({ sender, session }: { sender: Sender; session: string }) {
 }
 
 function Addressed(props: Props & { address: string }) {
-  const sender = resolveSender(props.address, useDirectory(props.session, isOutside(props.address)))
+  const sender = resolveSender(props.address, { ...useDirectory(props.session, isOutside(props.address) || !!props.contact), note: props.contact })
   return props.origin ? (
     <OriginCard {...props} origin={props.origin} sender={sender} />
   ) : (
@@ -410,7 +439,7 @@ function Addressed(props: Props & { address: string }) {
 /** A label sender (`job j4`, `Reminder r3`, a legacy wrapper's name): no lookups beyond the session's own subtree. */
 function Labelled(props: Props) {
   const children = useSessionField(props.session, 'children')
-  const sender = resolveSender(props.from, { self: props.session, children })
+  const sender = resolveSender(props.from, { self: props.session, children, note: props.contact })
   return <PeerCard {...props} sender={sender} actions={<OpenChat sender={sender} session={props.session} />} />
 }
 

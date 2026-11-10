@@ -64,7 +64,7 @@ function Folded({ lines, sender, session }: { lines: { entry: Peer; repeat: bool
 export function PeerGroup({ run, session }: { run: Peer[]; session: string }) {
   const first = run[0] as Peer
   const address = first.origin?.from ?? first.from
-  const sender = resolveSender(address, useDirectory(session, isOutside(address)))
+  const sender = resolveSender(address, { ...useDirectory(session, isOutside(address) || !!first.contact), note: first.contact })
   const awaiting = useAwaitingAnswer(session).data
   // Maximal stretches of folded lines between the awaited messages; a stretch of one is a plain card too.
   const parts: { entry: Peer; repeat: boolean }[][] = []
