@@ -1107,7 +1107,7 @@ async fn paired(a: &Engine, b: &Engine) -> (String, String) {
         .pair(ContactTarget::Ticket { ticket: w.ticket })
         .await
         .unwrap();
-    let va = until("the inviter's code", || ceremony_of(&a)).await;
+    let va = until("the inviter's code", || ceremony_of(a)).await;
     a.ctx.answer(va.id, true).unwrap();
     b.ctx.answer(vb.id, true).unwrap();
     let of = |e: &Engine| e.ctx.shared.read().staged.contacts.keys().next().cloned();

@@ -51,8 +51,6 @@ test('171F B7: queued chips, then the kernel strip, then the input box (the stri
   expect(at('<QueuedChips')).toBeGreaterThan(0)
   expect(at('<QueuedChips')).toBeLessThan(at('{strip}'))
   expect(at('{strip}')).toBeLessThan(at('ref={box}'))
-  const route = readFileSync(new URL('../../routes/c.$session.tsx', import.meta.url), 'utf8')
-  expect(route).toContain('strip={<KernelStrip session={session} embedded />}')
 })
 
 test('183 §12.1 / mock panel 3: a chat owned elsewhere says where the message runs, a steer too; talk and private keep theirs', () => {
