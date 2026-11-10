@@ -19,6 +19,7 @@ Every worker branches from C0. C0 changes no behaviour except that the old modal
 | `crates/desktop/ui/src/components/settings/registry.ts` | `CATEGORIES` (column order), `placeOf`, `isTab`, `MOVED_TABS` | W-SHELL (may add helpers; ids and order frozen) |
 | `crates/desktop/ui/src/components/settings/categories/<id>.tsx` (10 files) | each category's tabs (id, label, icon, order) rendering today's components | the category's worker; it swaps each `Component` for its split one. Tab ids, labels, icons and order are frozen. |
 | `crates/desktop/ui/src/lib/restart-pending.ts` | `useRestartPending` store: `mark(key, label)`, `clear(key)`, `reset()` | frozen |
+| `crates/desktop/ui/src/components/settings/ConfigFlagRow.tsx` (C0b) | `useConfigFlag(key)` and `ConfigFlagRow({ flag, label, description })`: the switch for a `config_flag_*` key, its restart note and its banner entry | frozen; used by W-LEARN (decision, computer) and W-NET (a2a) |
 | `crates/desktop/ui/src/rpc/api.ts` | `ConfigFlagKey`, `ConfigFlag`, `config_flag_get`, `config_flag_set` (interface + `METHODS`) | frozen; W-ENG implements the engine side |
 | `crates/desktop/ui/src/components/settings/SettingsDialog.tsx` | the old modal, now listing `CATEGORIES` tabs and rendering `placeOf(tab).tab.Component` | W-SHELL (deletes it) |
 | `crates/desktop/ui/src/routes/settings.$tab.tsx` | redirects through `MOVED_TABS`; unknown → `appearance` | W-SHELL |
