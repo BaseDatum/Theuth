@@ -3,80 +3,55 @@ import { useNavigate } from '@tanstack/react-router'
 import { Copy, RefreshCw } from 'lucide-react'
 import { Fragment } from 'react'
 import { toast } from 'sonner'
-import { Peers } from '@/components/chat/Peers'
+import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
 import { Dot, Empty, Row, Section, errorText, refreshInfo, useAction } from '@/components/settings/shared'
-import { ContactAccess, WaitingRow } from '@/components/settings/Contacts'
-import { CAP, MODE_LABEL, capBinds, fingerprint, modeOf, useContacts, useFirstWaiting } from '@/lib/contacts'
+import { WaitingRow } from '@/components/settings/Contacts'
+import { MODE_LABEL, useContacts, useFirstWaiting } from '@/lib/contacts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
-import type { PeerScope } from '@/rpc/bindings/PeerScope'
-import { useSessions } from '@/store/sessions'
-import { hasLocal } from '@/link/engines'
-
-const SCOPES: readonly [PeerScope, string][] = [
-  ['isolated', 'Isolated — reachable only inside its own tree'],
-  ['owner', 'Owner — may exchange with other owner roots'],
-]
 
 /** Touch target for a text button beside a row (44px under a coarse pointer). */
 const TOUCH = 'pointer-coarse:min-h-11'
 
-/** Human text for `CommunicationState.source`. */
-function sourceText(s: CommunicationState): string {
+/** Human text for `CommunicationState.source`; `null` when the saved setting is all there is to say. */
+function sourceText(s: CommunicationState): string | null {
   switch (s.source) {
     case 'env':
-      return 'Set by the environment (THEUTH_AGENT__COMMUNICATION); `always` writes config.yaml, but the environment wins again on restart.'
+      return 'Set by an environment variable (THEUTH_AGENT__COMMUNICATION), which wins again when theuth restarts.'
     case 'config':
-      return 'From config.yaml.'
+      return null
     case 'command':
-      return 'Changed by a command; saved to config.yaml.'
+      return 'Changed with /communication.'
+    case 'mesh':
+      return 'On by default because this machine has paired machines.'
     default:
       return 'Not configured: off.'
   }
 }
 
 /**
- * 50 §2.1/§10 Settings › Communication: the authoritative `get_communication`
- * snapshot for the global switch and the open chat, the root's scope and
- * alias, the A2A network status with its reload, and the peer picker with
- * pending requests. Nothing here is guessed: every row renders the server's
- * state and every control is one RPC whose reply replaces the snapshot.
+ * 188 Settings › Network › Messaging (50 §2.1/§10): the node-wide switch from the authoritative `get_communication`
+ * snapshot, then A2A over HTTP. Every row renders the server's state and every control is one RPC whose reply
+ * replaces the snapshot. What one chat may do lives in that chat's menu.
  */
-export function Communication({ session, focus }: { session: string | null; focus: string | null }) {
+export function MessagingTab() {
   const api = useApi()
   const qc = useQueryClient()
-  const navigate = useNavigate()
   const state = useQuery({
-    queryKey: queryKeys.communication(session),
-    queryFn: () => api.get_communication(session),
+    queryKey: queryKeys.communication(null),
+    queryFn: () => api.get_communication(null),
   })
-  // Root identity only from the loaded session itself: a top-level session is its own root.
-  const slice = useSessions((s) => (session ? s.sessions[session] : undefined))
-  const isRoot = !!session && !!slice?.loaded && slice.parent === null
 
-  /**
-   * Install a setter's reply when it is still the snapshot this pane shows: the
-   * same session and not older than what an event-driven refetch already landed.
-   */
-  const install = (next: CommunicationState | undefined) => {
-    // 183 §4.4: `routed` resolves undefined when the owner is unreachable and the call is parked behind the chat's card.
-    if (!next || next.session !== session) return
-    const cur = qc.getQueryData<CommunicationState>(queryKeys.communication(session))
+  /** Install the setter's reply unless an event-driven refetch already landed a newer snapshot. */
+  const install = (next: CommunicationState) => {
+    if (next.session !== null) return
+    const cur = qc.getQueryData<CommunicationState>(queryKeys.communication(null))
     if (cur && BigInt(next.revision) < BigInt(cur.revision)) return
-    qc.setQueryData(queryKeys.communication(session), next)
+    qc.setQueryData(queryKeys.communication(null), next)
   }
   const setGlobal = useAction(
     async (on: boolean) => {
@@ -86,23 +61,12 @@ export function Communication({ session, focus }: { session: string | null; focu
     },
     { keys: [['communication'], ['peers']], onSuccess: install },
   )
-  const setSession = useAction((on: boolean) => routed(session ?? '', () => api.set_communication(session, on)), {
-    keys: [['communication'], ['peers']],
-    onSuccess: install,
-  })
-  const setScope = useAction(
-    (v: { scope: PeerScope; alias: string | null }) => routed(session as string, () => api.set_peer_scope(session as string, v.scope, v.alias)),
-    { keys: [['communication'], ['peers']], onSuccess: install },
-  )
 
   const s = state.data
-  const busy = !s || setGlobal.isPending || setSession.isPending
-  const openSession = (id: string) => void navigate({ to: '/c/$session', params: { session: id } })
-
   return (
     <>
       <Section
-        title="Communication"
+        title="Messaging"
         actions={
           state.isError && (
             <Button variant="outline" size="sm" className={TOUCH} onClick={() => void state.refetch()}>
@@ -117,8 +81,7 @@ export function Communication({ session, focus }: { session: string | null; focu
           label="Let sessions message each other"
           description={
             <>
-              Node-wide ceiling for discovery, sends, delegation and child results; off blocks every session. Saved
-              to config.yaml. {s && sourceText(s)}
+              Node-wide ceiling for discovery, sends, delegation and child results; off blocks every session. {s && sourceText(s)}
             </>
           }
         >
@@ -126,138 +89,22 @@ export function Communication({ session, focus }: { session: string | null; focu
             aria-label="Let sessions message each other, node-wide"
             aria-busy={setGlobal.isPending || undefined}
             checked={s?.global ?? false}
-            disabled={busy}
+            disabled={!s || setGlobal.isPending}
             onCheckedChange={(v) => setGlobal.mutate(v)}
           />
         </Row>
-        {session && (
-          <Row
-            label="This chat may communicate"
-            description={
-              <>
-                Turning it off opts this chat and its subagents out. Kept in memory: it survives compaction and
-                switching frontends, not a restart of the node.
-                {s && !s.global && ' Globally off right now, so this switch alone cannot enable it.'}
-              </>
-            }
-          >
-            <Switch
-              aria-label="This chat may communicate"
-              aria-busy={setSession.isPending || undefined}
-              checked={s ? !s.opted_out : false}
-              disabled={busy}
-              onCheckedChange={(v) => setSession.mutate(v)}
-            />
-          </Row>
-        )}
-        {s && (
-          <Row
-            label={
-              <span className="flex items-center gap-2" aria-live="polite">
-                <Dot on={s.effective} />
-                Effective: {s.effective ? 'on' : 'off'}
-              </span>
-            }
-            description={
-              s.effective
-                ? 'A route still needs the peer in scope, and network peers an explicit grant.'
-                : !s.global
-                  ? 'Blocked: the node-wide switch is off.'
-                  : s.inherited_from && s.inherited_from !== s.session
-                    ? `Blocked: an ancestor session opted out (${s.inherited_from}).`
-                    : s.opted_out
-                      ? 'Blocked: this chat opted out.'
-                      : 'Blocked.'
-            }
-          >
-            {!s.effective && s.global && s.inherited_from && s.inherited_from !== s.session && (
-              <Button variant="outline" size="sm" className={TOUCH} onClick={() => openSession(s.inherited_from as string)}>
-                Open ancestor
-              </Button>
-            )}
-          </Row>
-        )}
       </Section>
 
-      {session && s && (
-        <Section title="Root scope">
-          {isRoot ? (
-            <>
-              <Row
-                label="Who may discover this tree"
-                description="Owner roots can message one another; isolated trees stay private even to a raw id. Owner-only, never a model tool."
-              >
-                <Select
-                  value={s.scope}
-                  disabled={setScope.isPending}
-                  onValueChange={(v) => setScope.mutate({ scope: v as PeerScope, alias: null })}
-                >
-                  <SelectTrigger className={`max-w-72 ${TOUCH}`} aria-label="Root scope">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SCOPES.map(([id, label]) => (
-                      <SelectItem key={id} value={id}>
-                        {label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Row>
-              <Row label="Alias" description="Short name other owner roots see instead of the id. Empty clears it.">
-                <Input
-                  key={s.alias ?? ''}
-                  aria-label="Root alias"
-                  defaultValue={s.alias ?? ''}
-                  disabled={setScope.isPending}
-                  maxLength={64}
-                  className={`w-48 ${TOUCH}`}
-                  onBlur={(e) => {
-                    const alias = e.currentTarget.value.trim()
-                    if (alias !== (s.alias ?? '')) setScope.mutate({ scope: s.scope, alias })
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') e.currentTarget.blur()
-                  }}
-                />
-              </Row>
-            </>
-          ) : (
-            <Row
-              label={
-                <span className="flex items-center gap-2">
-                  Scope <Badge variant="outline">{s.scope}</Badge>
-                  {s.alias && <span className="text-fg-secondary">alias {s.alias}</span>}
-                </span>
-              }
-              description={
-                slice?.loaded
-                  ? 'Inherited from the root of this tree; change it from the root session.'
-                  : 'Open the chat once to know whether it is a root before editing its scope.'
-              }
-            >
-              {slice?.parent && (
-                <Button variant="outline" size="sm" className={TOUCH} onClick={() => openSession(slice.parent as string)}>
-                  Open parent
-                </Button>
-              )}
-            </Row>
-          )}
-        </Section>
-      )}
-
-      <Network state={s} session={session} />
-
-      {hasLocal() && <ContactAccess />}
-
-      {session && <Peers session={session} focus={focus} />}
+      <A2aSection state={s} />
     </>
   )
 }
 
-/** 50 §6.1/§10: `a2a_status` with peers, exports, the error and `reload_a2a`. 183 §7: contacts (`contact_list`) are
- * shown as built — theuth/a2a/1 over iroh, pinned, one cap per contact — never as HTTP peers with roots. */
-export function Network({ state, session = null }: { state: CommunicationState | undefined; session?: string | null }) {
+/**
+ * 50 §6.1/§10: A2A over HTTP — its switch, `a2a_status` with the HTTP peers, the exports, the error and `reload_a2a`.
+ * 183 §7: a contact is listed under Network › Contacts, never here as an HTTP peer with roots.
+ */
+export function A2aSection({ state }: { state: CommunicationState | undefined }) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -270,14 +117,12 @@ export function Network({ state, session = null }: { state: CommunicationState |
     },
   })
   const a = status.data
-  const contacts = useContacts(hasLocal()).data ?? []
-  const waiting = useFirstWaiting(hasLocal()).data ?? []
-  // This chat's held first messages whose export has no row above still show here.
-  const stray = waiting.filter((w) => w.session === session && !a?.exports.some((x) => x.name === w.export))
+  const contacts = useContacts().data ?? []
+  const waiting = useFirstWaiting().data ?? []
   const contactNames = new Set(contacts.map((c) => c.name))
   return (
     <Section
-      title="Network (A2A)"
+      title="A2A"
       actions={
         <>
           {status.isError && (
@@ -300,6 +145,11 @@ export function Network({ state, session = null }: { state: CommunicationState |
         </>
       }
     >
+      <ConfigFlagRow
+        flag="a2a.enabled"
+        label="A2A over HTTP"
+        description="An HTTP listener, client and credential for agents outside theuth. Contacts don't need it: they reach this machine over theuth/a2a/1."
+      />
       {status.isPending && <Empty>Loading…</Empty>}
       {status.isError && <p className="py-2 text-sm text-destructive">{errorText(status.error)}</p>}
       {a && (
@@ -308,12 +158,12 @@ export function Network({ state, session = null }: { state: CommunicationState |
             label={
               <span className="flex items-center gap-2">
                 <Dot on={a.listening} />
-                {!a.enabled ? 'Disabled' : a.listening ? 'Listening' : 'Not listening'}
+                {!a.enabled ? 'Off' : a.listening ? 'Listening' : 'Not listening'}
               </span>
             }
             description={
               !a.enabled
-                ? 'a2a.enabled is false in config.yaml: no HTTP listener, client or credential is loaded (enabling it needs a restart). Contacts do not need it: they reach this machine over theuth/a2a/1.'
+                ? undefined
                 : a.listening
                   ? `Bound to ${a.address ?? 'the configured address'}${a.public_url ? `, published at ${a.public_url}` : ''}.`
                   : state && !state.global
@@ -324,34 +174,6 @@ export function Network({ state, session = null }: { state: CommunicationState |
           {a.error && (
             <Row label="Problem" description={<span className="text-destructive">{a.error}</span>} />
           )}
-          {a.enabled && a.peers.length === 0 && a.exports.length === 0 && (
-            <Row label="No peers or exports yet" description="Contacts and what they may reach are managed in Settings › Network › Contacts.">
-              <Button variant="outline" size="sm" className={TOUCH} onClick={() => void navigate({ to: '/settings/$tab', params: { tab: 'network' }, search: {} })}>
-                Contacts…
-              </Button>
-            </Row>
-          )}
-          {contacts.map((c) => (
-            <Row
-              key={`contact:${c.name}`}
-              label={
-                <span className="flex flex-wrap items-center gap-2">
-                  <Dot on={c.path !== 'offline' && !c.blocked} />
-                  {c.name}
-                  <Badge variant="outline">contact</Badge>
-                  {c.blocked && <Badge variant="outline">blocked</Badge>}
-                </span>
-              }
-              description={[
-                c.machine,
-                `theuth/a2a/1 over iroh · pinned ${c.fingerprint || fingerprint(c.endpoint)}`,
-                capBinds(c) && CAP[c.cap],
-                c.exports.length > 0 ? `may reach ${c.exports.map((n) => `${n} (${modeOf(c, n)})`).join(', ')}` : 'reaches nothing yet',
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            />
-          ))}
           {a.peers
             .filter((p) => !contactNames.has(p.name))
             .map((p) => (
@@ -375,9 +197,6 @@ export function Network({ state, session = null }: { state: CommunicationState |
                 }
               />
             ))}
-          {stray.map((w) => (
-            <WaitingRow key={`${w.contact}:${w.export}`} w={w} />
-          ))}
           {a.exports.map((x) => (
             <Fragment key={x.name}>
             <Row

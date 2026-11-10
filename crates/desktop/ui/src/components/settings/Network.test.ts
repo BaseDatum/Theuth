@@ -4,7 +4,6 @@ import { Children, type ComponentType, type ReactNode, act, createElement, isVal
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import type * as Engines from '@/link/engines'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { dispatch } from '@/store/sessions'
@@ -15,7 +14,7 @@ import type { NearbyEngine } from '@/rpc/bindings/NearbyEngine'
 import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import type { RotationState } from '@/rpc/bindings/RotationState'
 import type { UnpairPreview } from '@/rpc/bindings/UnpairPreview'
-import { Network, messagingWhy, pathChip, relayChip } from './Network'
+import { MachineTab, MachinesTab, pathChip, relayChip } from './Network'
 import { PairBody, type PairView, pairView, usePairFlow } from './PairDialog'
 import { RotationProgress, UnpairBody, UnpairDialog, useRotation } from './UnpairDialog'
 
@@ -23,8 +22,6 @@ const state = vi.hoisted(() => ({ on: false }))
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => vi.fn() }))
-vi.mock('@/components/settings/SandboxVms', () => ({ SandboxVms: () => null }))
-vi.mock('@/link/engines', async (original) => ({ ...(await original<typeof Engines>()), hasLocal: () => true }))
 // Portals render nothing on the server: the dialogs' content renders in place. `state.on` (the DOM tests) uses the real ones.
 vi.mock('@/components/ui/dialog', async (original) => {
   const a = await original<typeof import('@/components/ui/dialog')>()
@@ -116,13 +113,11 @@ const api = {
   vault_rotate: vi.fn(async () => {
     throw new Error('disk full')
   }),
-  get_communication: vi.fn(async () => ({ global: true, source: 'mesh' })),
+  mesh_set_hub: vi.fn(async () => null),
   sessions_status: vi.fn(async () => ({ here: 3, elsewhere: 5, log_seq: 9, last_snapshot: null })),
   list_nodes: vi.fn(async () => []),
   mesh_pair_nearby: vi.fn(async (_id: string) => CEREMONY),
   mesh_pair_answer: vi.fn(async (_id: string, _accept: boolean) => null),
-  contact_list: vi.fn(async () => []),
-  a2a_exports: vi.fn(async () => []),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
@@ -141,17 +136,30 @@ async function render(el: ReactNode, qc = new QueryClient({ defaultOptions: { qu
   return { html: paint(), qc, paint }
 }
 
-test('§6.7 sections in order: This machine, Nearby, Machines in this mesh, Contacts, Agent messaging, Advanced', async () => {
-  const { html } = await render(createElement(Network))
+test('188 This machine: the name, short id, LAN/mDNS and relay chips and the Nearby switch, then the mesh rows from Advanced, shown flat', async () => {
+  const { html } = await render(createElement(MachineTab))
   const at = (s: string) => html.indexOf(s)
-  const order = ['This machine', 'Nearby', 'Machines in this mesh', 'Contacts', 'Agent messaging', 'Advanced']
+  const order = ['>This machine<', 'Let nearby machines find this one while pairing', '>Mesh<', 'Prefer this node as hub', '>Sessions<', 'Replication log', '>Rotate vault key<']
   expect(order.map(at).every((i, n, a) => i >= 0 && (n === 0 || i > a[n - 1]!))).toBe(true)
-  // This machine: the name, the short id, LAN/mDNS and the relay with latency.
   expect(html).toContain('mac7f3a9')
   expect(html).toContain('LAN · mDNS ✓')
   expect(html).toContain('Relay · iroh.relay.theuth.io · 38 ms ✓')
-  expect(html).toContain('Let nearby machines find this one while pairing')
+  expect(html).toContain('>home<')
+  expect(html).toContain('3 here · 5 elsewhere')
+  expect(html).toContain('seq 9')
+  expect(html).toContain('hub: xeus · prefer')
+  // Nothing collapsed, and the machines list lives on its own tab.
+  expect(html).not.toContain('Advanced')
+  expect(html).not.toContain('Agents can message')
+})
+
+test('188 Machines: the machines in this mesh, Nearby, then pairing by string; the Nearby switch stays on This machine', async () => {
+  const { html } = await render(createElement(MachinesTab))
+  const at = (s: string) => html.indexOf(s)
+  const order = ['>Machines in this mesh<', '>Nearby<', '>Pair with a string<', 'Paste another node&#x27;s pairing string']
+  expect(order.map(at).every((i, n, a) => i >= 0 && (n === 0 || i > a[n - 1]!))).toBe(true)
   expect(html).toContain('Only shown while this page is open.')
+  expect(html).not.toContain('aria-label="Let nearby machines find this one while pairing"')
   // Machines: class line, path chips, hub badge; this machine has no switch, each peer has one.
   expect(html).toContain('Arch Linux · desktop')
   expect(html).toContain('LAN 2 ms')
@@ -164,15 +172,11 @@ test('§6.7 sections in order: This machine, Nearby, Machines in this mesh, Cont
   expect(html).toMatch(/aria-checked="false" aria-label="Agents can message cloud-1"/)
   expect(html).toMatch(/aria-checked="true" aria-label="Agents can message xeus"/)
   expect(html).toContain('agent messaging between Sky&#x27;s MacBook and cloud-1 is off on Sky&#x27;s MacBook')
-  // Contacts (183 §12.7) and the messaging line.
-  expect(html).toContain('A contact reaches only what you share, and you choose how each time.')
-  expect(html).toContain('No contacts yet.')
-  expect(html).toMatch(/<button>[^<]*<svg[^>]*>.*?<\/svg> Add contact…<\/button>/)
-  expect(html).toContain('on by default because this machine has paired machines')
 })
 
 test('switches call their RPCs: Agents can message → mesh_set_messaging(id, on); the Nearby switch → mesh_set_nearby', async () => {
-  await render(createElement(Network))
+  await render(createElement(MachinesTab))
+  await render(createElement(MachineTab))
   handlers['Agents can message xeus']!(false as never)
   handlers['Agents can message cloud-1']!(true as never)
   handlers['Let nearby machines find this one while pairing']!(false as never)
@@ -182,7 +186,7 @@ test('switches call their RPCs: Agents can message → mesh_set_messaging(id, on
 })
 
 test('Nearby: empty, then the rows a MeshEvent.nearby carries, each with Pair…', async () => {
-  const { html, qc, paint } = await render(createElement(Network))
+  const { html, qc, paint } = await render(createElement(MachinesTab))
   expect(html).toContain('No unpaired machine found on this network.')
   qc.setQueryData(queryKeys.meshNearby, [XEUS2])
   const after = paint()
@@ -192,19 +196,19 @@ test('Nearby: empty, then the rows a MeshEvent.nearby carries, each with Pair…
   expect(after).toContain('aria-label="Pair with xeus-2"')
 })
 
-test('Nearby off: the section points at the switch instead of "No unpaired machine found"', async () => {
+test('Nearby off: the section points at the switch on This machine instead of "No unpaired machine found"', async () => {
   api.mesh_status.mockResolvedValueOnce({ ...MESH, nearby: false })
-  const { html } = await render(createElement(Network))
+  const { html } = await render(createElement(MachinesTab))
   expect(html).toContain('Nearby is off')
-  expect(html).toContain('Let nearby machines find this one while pairing')
+  expect(html).toContain('” on This machine to see machines here.')
   expect(html).not.toContain('No unpaired machine found')
 })
 
 test('183 R1/R5 quarantine: a row with the warning; Remove is the primary → mesh_confirm_peer(id, false), Keep paired… only opens a confirm; an empty list adds nothing', async () => {
-  const none = await render(createElement(Network))
+  const none = await render(createElement(MachinesTab))
   expect(none.html).not.toContain('not paired with this machine')
   api.mesh_status.mockResolvedValueOnce({ ...MESH, quarantined: [{ id: 'ghost', name: 'ghost-pc', added_by: 'old', added_by_name: 'old-laptop' }] })
-  const { html } = await render(createElement(Network))
+  const { html } = await render(createElement(MachinesTab))
   expect(html).toContain('Added by old-laptop after it was unpaired — not paired with this machine until you remove or keep it')
   expect(html).toMatch(/<button aria-label="Keep ghost-pc paired">Keep paired…<\/button><button aria-label="Remove ghost-pc">Remove<\/button>/)
   handlers['Keep ghost-pc paired']!({} as never)
@@ -213,14 +217,12 @@ test('183 R1/R5 quarantine: a row with the warning; Remove is the primary → me
   expect(api.mesh_confirm_peer).not.toHaveBeenCalledWith('ghost', true)
 })
 
-test('path, relay and messaging words', () => {
+test('path and relay words', () => {
   expect(pathChip({ reachable: true, path: 'lan', rtt_ms: null, last_seen_ms: NOW }, NOW).text).toBe('LAN')
   expect(pathChip({ reachable: true, path: 'offline', rtt_ms: null, last_seen_ms: NOW }, NOW).text).toBe('online')
   expect(pathChip({ reachable: false, path: 'lan', rtt_ms: 3, last_seen_ms: 0 }, NOW)).toEqual({ text: 'offline', dot: 'off' })
   expect(relayChip({ url: 'https://r.example', connected: false, rtt_ms: null, error: 'dns failed' })).toEqual({ text: 'Relay · r.example · dns failed', ok: false })
   expect(relayChip(undefined).ok).toBe(false)
-  expect(messagingWhy({ global: false, source: 'config' })).toBe('off in config')
-  expect(messagingWhy({ global: true, source: 'command' })).toBe('turned on with /communication')
 })
 
 const CEREMONY: PairCeremony = { id: 'c1', peer: 'xeus2', name: 'xeus-2', os_name: 'Arch Linux', code: '482913', state: 'waiting', expires_ms: NOW + 120_000, addr: '192.168.8.140:4433' }
@@ -551,7 +553,7 @@ test('183 R5 a11y: the pair dialog is described by the vault warning; the code i
 test('183 R5 Keep paired…: a confirm with the name, short id, who added it and the vault warning; Cancel keeps nothing', async () => {
   useConnection.setState({ state: 'open' })
   api.mesh_status.mockResolvedValue({ ...MESH, quarantined: [{ id: 'ghost0123456789', name: 'ghost-pc', added_by: 'old', added_by_name: 'old-laptop' }] })
-  await mount(createElement(Network))
+  await mount(createElement(MachinesTab))
   await settle()
   await run(async () => document.querySelector<HTMLButtonElement>('[aria-label="Keep ghost-pc paired"]')!.click())
   const dialog = document.querySelector('[role=alertdialog]')!
@@ -572,7 +574,7 @@ test('183 R5 Keep paired…: a confirm with the name, short id, who added it and
 test('Nearby lifetime: mount sends watch(true), a heartbeat re-sends it every 10 s, unmount sends false', async () => {
   vi.useFakeTimers()
   useConnection.setState({ state: 'open' })
-  const { unmount } = await mount(createElement(Network))
+  const { unmount } = await mount(createElement(MachinesTab))
   expect(api.mesh_nearby_watch.mock.calls).toEqual([[true]])
   await run(async () => void vi.advanceTimersByTime(10_000))
   expect(api.mesh_nearby_watch.mock.calls).toEqual([[true], [true]])

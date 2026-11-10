@@ -127,3 +127,10 @@ export function contactFirstOf(id: string): { contact: string; exp: string } | n
   const m = /^contact_first:([a-z0-9_-]+):([a-z0-9_-]+)$/.exec(id)
   return m ? { contact: m[1] as string, exp: m[2] as string } : null
 }
+
+/** 188: `?focus=access:<contact name>` on Settings › Network › Contacts scrolls to that contact's Access row. */
+const ACCESS_FOCUS = 'access:'
+export const accessFocus = (contact: string): string => `${ACCESS_FOCUS}${contact}`
+/** The contact an `accessFocus` value names; `null` for any other `?focus=` (or none). */
+export const focusedContact = (focus: string | null): string | null =>
+  focus?.startsWith(ACCESS_FOCUS) && focus.length > ACCESS_FOCUS.length ? focus.slice(ACCESS_FOCUS.length) : null
