@@ -5,6 +5,7 @@ import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
 import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
 import type { RefreshedModels } from '@/rpc/bindings/RefreshedModels'
 import type { SummaryTest } from '@/rpc/bindings/SummaryTest'
+import type { LoginInfo } from '@/rpc/extra'
 
 /** Display names of the built-in key providers (85 §0.9); the engine sends the ids. */
 export const BUILTIN_LABEL: Record<string, string> = {
@@ -12,15 +13,30 @@ export const BUILTIN_LABEL: Record<string, string> = {
   openrouter: 'OpenRouter',
 }
 
-/** The one Connections › Providers list (162 D2): built-ins first, then custom providers, engine order kept within each. */
+/** The one Models › Providers list (162 D2): built-ins first, then custom providers, engine order kept within each. */
 export function orderProviders(list: ProviderInfo[] | undefined): ProviderInfo[] {
   return [...(list?.filter((p) => p.builtin) ?? []), ...(list?.filter((p) => !p.builtin) ?? [])]
 }
 
 /** Secret note written beside a built-in key, as the other Settings key forms do. */
 export function builtinKeyNote(name: string) {
-  return `${BUILTIN_LABEL[name] ?? name} key (Settings > Connections)`
+  return `${BUILTIN_LABEL[name] ?? name} key (Settings > Models > Providers)`
 }
+
+/**
+ * 188 A6: the `list_logins` rows beside the provider rows. A login sits on the provider row of the same name
+ * (`byProvider`); one that matches no row (`alone`) gets a row of its own. Engine order is kept in both.
+ */
+export function pairLogins(providers: readonly ProviderInfo[], logins: readonly LoginInfo[]): { byProvider: ReadonlyMap<string, LoginInfo>; alone: LoginInfo[] } {
+  const names = new Set(providers.map((p) => p.name))
+  return {
+    byProvider: new Map(logins.filter((l) => names.has(l.name)).map((l) => [l.name, l])),
+    alone: logins.filter((l) => !names.has(l.name)),
+  }
+}
+
+/** A login's state: `not logged in`, `logged in`, or `logged in (<account>)` when the provider names it. */
+export const loginText = (l: LoginInfo): string => (!l.logged_in ? 'not logged in' : l.account ? `logged in (${l.account})` : 'logged in')
 
 /** Toast of a `refresh_provider_models` reply (162 D7): `rwx: 14 models (+2, −1)` or `rwx: 14 models, no change`. */
 export function refreshedText({ provider: p, added, removed }: RefreshedModels): string {

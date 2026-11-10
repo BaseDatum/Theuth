@@ -70,11 +70,11 @@ export function Dreaming() {
   const settings = useDreamSettings()
   const nights = useDreamNights()
   const proposals = useDreamProposals()
-  // The Enabled switch is the routine's own toggle (§8): read from the schedule table, written with `enable_schedule`.
+  // The routine's state (Dream now's blocker, the Tidy tier's default); its switch lives on Agents › Routines (188 removal 3).
   const schedules = useQuery({ queryKey: SCHEDULES, queryFn: () => api.list_schedules() })
   const routine = schedules.data?.find((s) => s.name === 'dreaming')
-  const enable = useAction((enabled: boolean) => api.enable_schedule('dreaming', enabled), { keys: [SCHEDULES, KEY] })
-  const save = useAction((next: DreamSettings) => api['dreaming.set_settings'](next), { keys: [KEY] })
+  // 188 F2: `enabled` turns the routine and its sensor off and on with it, so the schedules refresh too.
+  const save = useAction((next: DreamSettings) => api['dreaming.set_settings'](next), { keys: [KEY, SCHEDULES] })
   const change = (c: SettingsChange) => {
     const next = settings.data && reduceSettings(settings.data, c)
     if (next) save.mutate(next)
@@ -117,17 +117,12 @@ export function Dreaming() {
         <Row
           label="Enabled"
           description={
-            s?.enabled === false
-              ? 'dreaming.enabled is off in config: no routine, no sensor, no signals. Knowledge keys are still honoured.'
-              : 'The dreaming routine: the same switch as its row on the Routines page.'
+            settings.data?.enabled === false
+              ? 'Off: no nightly run, no sensor, no signals. Knowledge keys are still honoured.'
+              : 'Nightly review of your knowledge, cases and skills, inside the window below.'
           }
         >
-          <Switch
-            checked={routine?.enabled ?? false}
-            disabled={!routine || enable.isPending}
-            aria-label="Dreaming enabled"
-            onCheckedChange={(v) => enable.mutate(v)}
-          />
+          <Switch checked={settings.data?.enabled ?? false} disabled={busy} aria-label="Dreaming enabled" onCheckedChange={(v) => change({ kind: 'enabled', on: v })} />
         </Row>
         <Row stack label="Window" description="Local hours in which a night may start; the sensor also waits for 20 idle minutes and power.">
           <Input type="time" dictate={false} aria-label="Window start" className="w-36 tabular-nums" disabled={busy} value={settings.data?.window[0] ?? ''} onChange={(e) => change({ kind: 'window', index: 0, time: e.target.value })} />

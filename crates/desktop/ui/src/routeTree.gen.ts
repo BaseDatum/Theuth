@@ -42,6 +42,7 @@ import { Route as NotebooksIdRouteImport } from './routes/notebooks_.$id'
 import { Route as NotesIdRouteImport } from './routes/notes_.$id'
 import { Route as RoutinesIndexRouteImport } from './routes/routines.index'
 import { Route as RoutinesNewRouteImport } from './routes/routines.new'
+import { Route as SettingsIndexRouteImport } from './routes/settings.index'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 import { Route as SkillsIndexRouteImport } from './routes/skills.index'
 import { Route as SkillsNameRouteImport } from './routes/skills.$name'
@@ -222,6 +223,11 @@ const RoutinesNewRoute = RoutinesNewRouteImport.update({
   path: '/routines/new',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/settings/',
+  path: '/settings/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsTabRoute = SettingsTabRouteImport.update({
   id: '/settings/$tab',
   path: '/settings/$tab',
@@ -333,6 +339,7 @@ export interface FileRoutesByFullPath {
   '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
   '/routines/': typeof RoutinesIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/skills/': typeof SkillsIndexRoute
   '/tasks/': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
@@ -381,6 +388,7 @@ export interface FileRoutesByTo {
   '/attention': typeof AttentionIndexRoute
   '/meetings': typeof MeetingsIndexRoute
   '/routines': typeof RoutinesIndexRoute
+  '/settings': typeof SettingsIndexRoute
   '/skills': typeof SkillsIndexRoute
   '/tasks': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
@@ -431,6 +439,7 @@ export interface FileRoutesById {
   '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
   '/routines/': typeof RoutinesIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/skills/': typeof SkillsIndexRoute
   '/tasks/': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
@@ -482,6 +491,7 @@ export interface FileRouteTypes {
     | '/attention/'
     | '/meetings/'
     | '/routines/'
+    | '/settings/'
     | '/skills/'
     | '/tasks/'
     | '/agents/$name/$tab'
@@ -530,6 +540,7 @@ export interface FileRouteTypes {
     | '/attention'
     | '/meetings'
     | '/routines'
+    | '/settings'
     | '/skills'
     | '/tasks'
     | '/agents/$name/$tab'
@@ -579,6 +590,7 @@ export interface FileRouteTypes {
     | '/attention/'
     | '/meetings/'
     | '/routines/'
+    | '/settings/'
     | '/skills/'
     | '/tasks/'
     | '/agents/$name/$tab'
@@ -623,6 +635,7 @@ export interface RootRouteChildren {
   AgentsIndexRoute: typeof AgentsIndexRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
   RoutinesIndexRoute: typeof RoutinesIndexRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
   SkillsIndexRoute: typeof SkillsIndexRoute
   TasksIndexRoute: typeof TasksIndexRoute
   AgentsNameTabRoute: typeof AgentsNameTabRoute
@@ -866,6 +879,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RoutinesNewRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/settings'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings/$tab': {
       id: '/settings/$tab'
       path: '/settings/$tab'
@@ -1053,6 +1073,7 @@ const rootRouteChildren: RootRouteChildren = {
   AgentsIndexRoute: AgentsIndexRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,
   RoutinesIndexRoute: RoutinesIndexRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
   SkillsIndexRoute: SkillsIndexRoute,
   TasksIndexRoute: TasksIndexRoute,
   AgentsNameTabRoute: AgentsNameTabRoute,

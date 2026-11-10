@@ -1,13 +1,16 @@
-// 57 §7.1: Settings › Labs — everything experimental about the local decision oracle in one pane: the header's
-// "Decision models loaded now" line (`decision_loaded`, 57 §2.1), the meeting oracle and browser System-1 mode
-// switches (`decision_mode` / `set_decision_mode`), and per-family training-data Capture (`set_decision_training`)
-// and Share (`set_decision_share`) consent. Every control is a live config write; each mode control shows its
-// *effective* state. Hidden entirely when `decision.enabled` is false (`useLabsVisible`).
+// 57 §7.1: Settings › Decision models (was Labs) — everything experimental about the local decision oracle in one pane:
+// the plugin's Enabled switch (188 F4, `config_flag_*`), the "Decision models loaded now" line (`decision_loaded`,
+// 57 §2.1), the meeting oracle and browser System-1 mode switches (`decision_mode` / `set_decision_mode`), and
+// per-family training-data Capture (`set_decision_training`) and Share (`set_decision_share`) consent. Every control is
+// a live config write; each mode control shows its *effective* state. While the engine runs with the plugin off only
+// the switch shows.
 
 import { useQuery } from '@tanstack/react-query'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { type ReactNode, useState } from 'react'
 import { toast } from 'sonner'
+import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
+import { useFlagRuns } from '@/components/settings/flag-runs'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -32,14 +35,21 @@ import type { Mode } from '@/rpc/bindings/Mode'
 /** The design doc every card links to. */
 const DESIGN_NOTES = 'https://github.com/skymoore/wth/blob/main/docs/design/57-decision.md'
 
-/** 57 §7.1: the pane exists only while `decision.enabled` is true (false → no nav entry either). */
-export function useLabsVisible(): boolean {
-  const api = useApi()
-  const info = useQuery({ queryKey: queryKeys.decisionMode('meeting'), queryFn: () => api.decision_mode('meeting') })
-  return info.data?.enabled === true
+export function Labs() {
+  const runs = useFlagRuns('decision.enabled')
+  return (
+    <>
+      <Section title="Decision models">
+        <ConfigFlagRow flag="decision.enabled" name="Decision models" label="Enabled" description="The local decision models behind the meeting oracle, the browser's System-1 and the double." />
+        {runs === false && <Empty>While they run, this tab also holds the meeting oracle and browser System-1 modes, training-data capture and the models loaded now.</Empty>}
+      </Section>
+      {runs && <Families />}
+    </>
+  )
 }
 
-export function Labs() {
+/** Everything that needs the running plugin; not rendered (so not queried) while it is off. */
+function Families() {
   const api = useApi()
   const stats = useQuery({ queryKey: queryKeys.decisionStats, queryFn: () => api.decision_stats(), refetchInterval: 30_000 })
   return (

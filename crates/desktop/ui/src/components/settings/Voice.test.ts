@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createElement, type ReactNode } from 'react'
+import { type ComponentType, createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { HistoryRow } from '@/rpc/bindings/HistoryRow'
-import { SYSTEM_DEFAULT, Voice, inputDevicesFor, phrases, timingsLine } from './Voice'
+import { Dictation, Microphone, SYSTEM_DEFAULT, VoiceHistory, inputDevicesFor, phrases, timingsLine } from './Voice'
 
 const row: HistoryRow = {
   id: 'd1',
@@ -66,17 +66,23 @@ vi.mock('@/lib/rpc', async (original) => ({
   }),
 }))
 
-async function render(): Promise<string> {
+async function render(tab: ComponentType): Promise<string> {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Voice) as ReactNode }))
+  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(tab) as ReactNode }))
   paint()
   for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
   return paint()
 }
 
-test('the page reads the engine: the preferred mic is selected, shaping + end phrases come from voice_settings (nothing remembered locally), the polish row names the chain, history rows show raw → shaped (+ polished), the debug row the four numbers', async () => {
-  const html = await render()
-  expect(html).toMatch(/aria-label="Input device"[^>]*>.*Shure MV7/s)
+test('Microphone: the device list lands (the select is enabled); the turn chime sits beside it', async () => {
+  const html = await render(Microphone)
+  // Radix renders no value text server-side (the old whole-page match on "Shure MV7" hit the debug row instead).
+  expect(html).toMatch(/<button(?![^>]*\sdisabled(?:=""|\s|>))[^>]*aria-label="Input device"/)
+  expect(html).toContain('Turn chime')
+})
+
+test('Dictation: shaping + end phrases come from voice_settings (nothing remembered locally), the polish row names the chain', async () => {
+  const html = await render(Dictation)
   expect(calls.voice_settings).toHaveLength(1)
   // Radix renders no value text server-side; the enabled trigger proves `voice_settings` landed, the phrase inputs its content.
   expect(html).toMatch(/<button(?![^>]*\sdisabled(?:=""|\s|>))[^>]*aria-label="Composer shaping"/)
@@ -84,6 +90,10 @@ test('the page reads the engine: the preferred mic is selected, shaping + end ph
   expect(html).toContain('value="verbatim"')
   expect(html).toContain('Chain (title model, then session)')
   expect(html).toContain('never polished')
+})
+
+test('History: rows show raw → shaped (+ polished), the debug row the four numbers', async () => {
+  const html = await render(VoiceHistory)
   expect(calls.dictation_history?.[0]).toEqual([50])
   expect(html).toContain('3 min ago · Composer')
   expect(html).toMatch(/line-through">git hub comma twenty three <\/span>→ GitHub, 23/)

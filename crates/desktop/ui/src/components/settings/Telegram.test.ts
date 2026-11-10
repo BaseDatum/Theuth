@@ -5,20 +5,13 @@ import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { TelegramEvent } from '@/rpc/bindings/TelegramEvent'
 import type { TelegramStatus } from '@/rpc/bindings/TelegramStatus'
-import { Channels, mmss, secondsLeft, telegramId, telegramState } from './Channels'
+import { Telegram, mmss, secondsLeft, telegramId, telegramState } from './Telegram'
 
 let telegram: TelegramStatus
 let telegramError: Error | null = null
-let manifestError: Error | null = null
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({
-    signal_status: async () => ({ state: null, registered: false, number: null, owner: '', allowed: [] }),
-    slack_status: async () => ({ state: null, bot_user: null, team: null, owner: '', allowed: [], channels: [] }),
-    slack_manifest: async () => {
-      if (manifestError) throw manifestError
-      return 'display_information:\n  name: theuth\n'
-    },
     telegram_status: async () => {
       if (telegramError) throw telegramError
       return telegram
@@ -28,7 +21,7 @@ vi.mock('@/lib/rpc', async (original) => ({
 
 async function render(): Promise<string> {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Channels) as ReactNode }))
+  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Telegram) as ReactNode }))
   paint()
   for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
   return paint()
@@ -131,7 +124,7 @@ test('card: Starting (vault not answered yet) → "starting…", no token input,
 test('card: while telegram_status is pending the section shows "loading…", never nothing', () => {
   telegram = base({ type: 'Unconfigured' }, false, false)
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Channels) as ReactNode }))
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Telegram) as ReactNode }))
   expect(html).toContain('Telegram')
   expect(html).toContain('loading…')
 })
@@ -141,7 +134,7 @@ test('card: a failing telegram_status renders the error and a Retry button', asy
   try {
     // `retryOnMount: false`: a fresh server-render observer would otherwise show the errored query as pending again.
     const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, retryOnMount: false } } })
-    const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Channels) as ReactNode }))
+    const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Telegram) as ReactNode }))
     paint()
     for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey }).catch(() => undefined)
     const html = paint()
@@ -149,30 +142,5 @@ test('card: a failing telegram_status renders the error and a Retry button', asy
     expect(html).toMatch(/<button[^>]*>Retry</)
   } finally {
     telegramError = null
-  }
-})
-
-test('slack: "App manifest" is the first Slack row and renders before slack_status resolves (170 D2)', () => {
-  telegram = base({ type: 'Unconfigured' }, false, false)
-  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Channels) as ReactNode }))
-  const slack = html.slice(html.indexOf('>Slack<'))
-  expect(slack.indexOf('App manifest')).toBeGreaterThan(0)
-  expect(slack.indexOf('App manifest')).toBeLessThan(slack.indexOf('Telegram'))
-  expect(slack).toMatch(/<button[^>]*disabled[^>]*>.*Copy manifest</)
-})
-
-test('slack: a failing slack_manifest is one error line; the row stays', async () => {
-  manifestError = new Error('Method not found')
-  try {
-    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, retryOnMount: false } } })
-    const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Channels) as ReactNode }))
-    paint()
-    for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey }).catch(() => undefined)
-    const html = paint()
-    expect(html).toContain('manifest unavailable: Method not found')
-    expect(html).toContain('Open Slack apps')
-  } finally {
-    manifestError = null
   }
 })

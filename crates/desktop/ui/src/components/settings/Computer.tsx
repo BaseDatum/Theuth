@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { toast } from 'sonner'
+import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
+import { useFlagRuns } from '@/components/settings/flag-runs'
 import { Dot, Empty, Row, Section, errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { container } from '@/lib/platform'
@@ -9,12 +11,15 @@ import { LOCAL, useEngines } from '@/link/engines'
 
 const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
 
-/** 27 §6: the two macOS permissions the `computer_*` tools need, plus the displays they will see. */
+/** 27 §6: the `computer_*` tools' switch (188 F6), then the two macOS permissions they need and the displays they will see. */
 export function Computer() {
   const api = useApi()
+  // Off, the engine has no computer actor to answer, so the permissions are not asked for.
+  const runs = useFlagRuns('computer.enabled')
   const perms = useQuery({
     queryKey: queryKeys.computer,
     queryFn: () => api.computer_permissions(),
+    enabled: runs === true,
   })
   const p = perms.data
 
@@ -22,18 +27,22 @@ export function Computer() {
     <Section
       title="Computer"
       actions={
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={perms.isFetching}
-          onClick={() => void perms.refetch()}
-        >
-          Refresh
-        </Button>
+        runs && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={perms.isFetching}
+            onClick={() => void perms.refetch()}
+          >
+            Refresh
+          </Button>
+        )
       }
     >
-      {perms.isError && <Empty>Computer control is disabled (`computer.enabled: false`)</Empty>}
-      {p && (
+      <ConfigFlagRow flag="computer.enabled" name="Computer use" label="Enabled" description="Lets agents see and drive this desktop." />
+      {runs === false && <Empty>The displays and permissions show once computer use runs.</Empty>}
+      {runs && perms.isError && <Empty>{errorText(perms.error)}</Empty>}
+      {runs && p && (
         <>
           <Permission
             label="Accessibility"

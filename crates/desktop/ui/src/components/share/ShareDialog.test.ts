@@ -39,7 +39,7 @@ test('homed, via mesh: the mesh passes it to the home', () => {
 test('mesh_link_unavailable: no hub is reachable', () => {
   expect(shareCopy(mesh, 'X', undefined, 'editor', true)).toEqual({
     text: 'Link sharing is off on xeus, and no hub is reachable to make a mesh link.',
-    small: 'Turn on Settings › Link on xeus, or retry when the hub is back.',
+    small: 'Turn on Relay in Settings › Network › Devices on xeus, or retry when the hub is back.',
   })
 })
 

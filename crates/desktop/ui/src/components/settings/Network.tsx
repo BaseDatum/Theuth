@@ -1,16 +1,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
-import { ArrowDown, ArrowUp, ChevronRight, Command, Copy, Monitor, MoreHorizontal, Plus, Terminal } from 'lucide-react'
+import { Command, Copy, Monitor, MoreHorizontal, Terminal } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { CLASS } from '@/components/chat/NewChatPane'
-import { Dot as PresenceDot, meshChip, useMembersLine } from '@/components/link/EngineSwitcher'
-import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
 import { Editable } from '@/components/settings/Link'
-import { Contacts } from '@/components/settings/Contacts'
 import { VaultWarning, usePairFlow } from '@/components/settings/PairDialog'
-import { SandboxVms } from '@/components/settings/SandboxVms'
 import { Dot, Empty, RenameInput, Row, Section, useAction } from '@/components/settings/shared'
 import { RotationBanner, UnpairDialog, nameOfIn } from '@/components/settings/UnpairDialog'
 import { ago } from '@/components/sidebar/AgentTree'
@@ -35,9 +30,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngines } from '@/link/engines'
+import { LOCAL, useEngines } from '@/link/engines'
 import { NODES_KEY, useHasNodes, useNodes } from '@/link/nodes'
-import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { HubPref } from '@/rpc/bindings/HubPref'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { NearbyEngine } from '@/rpc/bindings/NearbyEngine'
@@ -61,26 +55,32 @@ const NEARBY_SWITCH = 'Let nearby machines find this one while pairing'
 const HUB = <span className="rounded-full bg-layer-3 px-1.5 text-xs text-fg-secondary">hub</span>
 
 /**
- * Settings › Network (183 §6.7, mock panel 1): this machine, Nearby, the machines in this mesh, Contacts (Phase 3),
- * agent messaging, Advanced, VMs, and the meshes this app reaches as a device. A bare device (web/phone, no local
- * node) gets only that last section; its pairing entry is Settings › Link.
+ * 188 Settings › Network › This machine (183 §6.7): its name, id and paths and the Nearby switch, then the mesh rows
+ * that sat under Advanced. The tab is listed only where a local node runs.
  */
-export function Network() {
-  if (!hasLocal()) return <Reachable />
+export function MachineTab() {
+  const status = useMesh()
+  const active = useEngines((s) => s.active)
+  const info = useConnection((s) => s.info)
+  if (status.isPending) return <Empty>Loading…</Empty>
+  if (status.isError) return <Empty>{status.error.message}</Empty>
+  const s = status.data
   return (
     <>
-      <ThisNetwork />
-      <Reachable />
+      <RotationBanner nameOf={nameOfIn(s)} />
+      <ThisMachine s={s} managing={active !== LOCAL ? (info?.name ?? s.self_name) : null} />
+      <MeshSettings s={s} />
     </>
   )
 }
 
-/** The node-side sections: `mesh_status` of the active node. The Nearby window is open while this is mounted. */
-function ThisNetwork() {
+/**
+ * 188 Settings › Network › Machines (183 §6.7–§6.8): the machines in this mesh, Nearby with Pair…, the pairing string
+ * and SSH nodes. The engine's Nearby window is open while this tab is mounted.
+ */
+export function MachinesTab() {
   const api = useApi()
   const status = useMesh()
-  const active = useEngines((s) => s.active)
-  const info = useConnection((s) => s.info)
   const pairing = usePairFlow()
   const [unpair, setUnpair] = useState<Peer | null>(null)
   const open = useConnection((c) => c.state === 'open')
@@ -97,19 +97,14 @@ function ThisNetwork() {
   if (status.isPending) return <Empty>Loading…</Empty>
   if (status.isError) return <Empty>{status.error.message}</Empty>
   const s = status.data
-  const nameOf = nameOfIn(s)
   return (
     <>
-      <RotationBanner nameOf={nameOf} />
-      <ThisMachine s={s} managing={active !== LOCAL ? (info?.name ?? s.self_name) : null} />
-      <NearbyList on={s.nearby} onPair={pairing.start} />
       <Machines s={s} onUnpair={setUnpair} />
-      <Contacts />
-      <MessagingStatus />
-      <Advanced s={s} />
-      <SandboxVms />
+      <NearbyList on={s.nearby} onPair={pairing.start} />
+      <PairString />
+      <OverSsh />
       {pairing.dialog}
-      {unpair && <UnpairDialog id={unpair.id} name={unpair.name} nameOf={nameOf} onClose={() => setUnpair(null)} />}
+      {unpair && <UnpairDialog id={unpair.id} name={unpair.name} nameOf={nameOfIn(s)} onClose={() => setUnpair(null)} />}
     </>
   )
 }
@@ -206,7 +201,7 @@ function NearbyList({ on, onPair }: { on: boolean; onPair: (n: NearbyEngine) => 
     <Section title="Nearby">
       <p className="text-[13px] text-fg-secondary">Found on this network, not paired.</p>
       {nearby.isError && <Empty>{nearby.error.message}</Empty>}
-      {!on && <Empty>Nearby is off: turn on “{NEARBY_SWITCH}” to see machines here.</Empty>}
+      {!on && <Empty>Nearby is off: turn on “{NEARBY_SWITCH}” on This machine to see machines here.</Empty>}
       {on && nearby.data?.length === 0 && <Empty>No unpaired machine found on this network.</Empty>}
       {on && nearby.data?.map((n) => (
         <div key={n.id} className="flex flex-wrap items-center gap-3 border-b border-border-subtle py-3 last:border-0">
@@ -253,7 +248,7 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
         </div>
         <Chip tone="plain">this machine</Chip>
       </div>
-      {s.peers.length === 0 && <Empty>No other machine paired yet. Pair one from Nearby, or with a pairing string under Advanced.</Empty>}
+      {s.peers.length === 0 && <Empty>No other machine paired yet. Pair one from Nearby, or with a pairing string below.</Empty>}
       {s.peers.map((p) => {
         const on = messaging.isPending && messaging.variables.id === p.id ? messaging.variables.on : !s.messaging_off.includes(p.id)
         const detail = detailOf(s, p.id)
@@ -335,68 +330,20 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
   )
 }
 
-/** 183 §6.1: why agent messaging is on or off on this machine (`CommunicationState.global` and `source`). */
-export function messagingWhy(c: Pick<CommunicationState, 'global' | 'source'>): string {
-  const word = c.global ? 'on' : 'off'
-  switch (c.source) {
-    case 'mesh':
-      return 'on by default because this machine has paired machines'
-    case 'config':
-      return `${word} in config`
-    case 'env':
-      return `${word} by an environment variable`
-    case 'command':
-      return `turned ${word} with /communication`
-    default:
-      return `${word} by default`
-  }
-}
-
-function MessagingStatus() {
-  const api = useApi()
-  const state = useQuery({ queryKey: queryKeys.communication(null), queryFn: () => api.get_communication(null) })
-  const c = state.data
-  return (
-    <Section title="Agent messaging">
-      <Row label={c ? (c.global ? 'On' : 'Off') : '—'} description={c ? messagingWhy(c) : state.isError ? state.error.message : undefined}>
-        {c && <Dot on={c.global} />}
-      </Row>
-    </Section>
-  )
-}
-
-/** §6.7 Advanced (collapsed): the mesh name, the hub preference, sessions, Rotate vault key, the pairing string and QR, SSH nodes. */
-function Advanced({ s }: { s: MeshStatus }) {
+/** §6.7's Advanced rows, shown flat on This machine: the mesh name, the hub preference, sessions and Rotate vault key. */
+function MeshSettings({ s }: { s: MeshStatus }) {
   const api = useApi()
   const qc = useQueryClient()
-  const [pasted, setPasted] = useState('')
-  const [showPairing, setShowPairing] = useState(false)
-  const pairing = useQuery({
-    queryKey: [...keys.mesh, 'pairing'],
-    queryFn: () => (mockOn() ? PAIRING : api.mesh_pairing_string()),
-    enabled: showPairing,
-  })
   const sessions = useQuery({ queryKey: queryKeys.sessionsStatus, queryFn: () => api.sessions_status() })
   const setHub = useAction((pref: HubPref) => api.mesh_set_hub(pref), { keys: [keys.mesh] })
-  const add = useAction((p: string) => api.mesh_add(p), {
-    keys: [keys.mesh],
-    onSuccess: (peer) => {
-      setPasted('')
-      toast.success(`Paired ${peer.name}`)
-    },
-  })
   const rotate = useAction(() => api.vault_rotate(), { onSuccess: (r: RotationState) => qc.setQueryData(queryKeys.vaultRotation, r) })
   const hub = s.lease.holder === s.self_id
   const holder = s.lease.holder === null ? null : hub ? 'this node' : (s.peers.find((p) => p.id === s.lease.holder)?.name ?? s.lease.holder.slice(0, 8))
   const ss = sessions.data
   const snapshot = ss?.last_snapshot ? `${age(Date.parse(ss.last_snapshot))} ago` : 'none yet'
   return (
-    <details className="group mb-8">
-      <summary className="flex h-9 cursor-pointer list-none items-center gap-1 text-base font-semibold [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />
-        Advanced
-      </summary>
-      <Row label="Mesh" description="The name devices pair with; the first node's name until one is set.">
+    <Section title="Mesh">
+      <Row label="Name" description="The name devices pair with; the first node's name until one is set.">
         <span className="text-[13px]">{s.mesh_name ?? '—'}</span>
       </Row>
       <Row label="Prefer this node as hub" description={holder ? `hub: ${holder} · ${s.lease.reason} · since ${age(s.lease.since_ms)} ago` : 'no hub — handover, or no eligible node'}>
@@ -425,12 +372,36 @@ function Advanced({ s }: { s: MeshStatus }) {
           Rotate vault key
         </Button>
       </Row>
-      <div className="flex h-9 items-center justify-between pt-4">
-        <span className="text-sm font-medium">Pair with a string</span>
+    </Section>
+  )
+}
+
+/** §6.7 pairing by string, for a machine not on this network: this node's string and QR, or paste the other node's. */
+function PairString() {
+  const api = useApi()
+  const [pasted, setPasted] = useState('')
+  const [showPairing, setShowPairing] = useState(false)
+  const pairing = useQuery({
+    queryKey: [...keys.mesh, 'pairing'],
+    queryFn: () => (mockOn() ? PAIRING : api.mesh_pairing_string()),
+    enabled: showPairing,
+  })
+  const add = useAction((p: string) => api.mesh_add(p), {
+    keys: [keys.mesh],
+    onSuccess: (peer) => {
+      setPasted('')
+      toast.success(`Paired ${peer.name}`)
+    },
+  })
+  return (
+    <Section
+      title="Pair with a string"
+      actions={
         <Button variant="outline" size="sm" onClick={() => setShowPairing((v) => !v)}>
           {showPairing ? 'Hide' : 'Show pairing string'}
         </Button>
-      </div>
+      }
+    >
       <p className="pb-2 text-[13px] text-fg-secondary">For a machine not on this network — show this node's string, or paste the other node's:</p>
       {showPairing && pairing.data && (
         <div className="flex flex-wrap items-start gap-5 py-2">
@@ -439,7 +410,7 @@ function Advanced({ s }: { s: MeshStatus }) {
           </div>
           <div className="flex min-w-0 flex-1 flex-col gap-3 text-sm">
             <p>
-              On the other node: <code>t mesh add &lt;this string&gt;</code>, or paste it into its Network settings. Pairing is mutual and transitive — it learns every node from this one.
+              On the other node: <code>t mesh add &lt;this string&gt;</code>, or paste it under Settings › Network › Machines there. Pairing is mutual and transitive — it learns every node from this one.
             </p>
             <Button variant="outline" size="sm" className="self-start" onClick={() => void copy(pairing.data)}>
               <Copy /> Copy
@@ -461,8 +432,7 @@ function Advanced({ s }: { s: MeshStatus }) {
           Add
         </Button>
       </form>
-      <OverSsh />
-    </details>
+    </Section>
   )
 }
 
@@ -496,9 +466,9 @@ function OverSsh() {
 
   if (!hasNodes) return null
   return (
-    <>
-      <p className="pt-3 pb-2 text-[13px] text-fg-secondary">
-        On another computer over SSH: run <code>t --install-service</code> there and paste the key it prints. That computer joins this mesh as a node this one runs sessions on.
+    <Section title="On another computer over SSH">
+      <p className="pb-2 text-[13px] text-fg-secondary">
+        Run <code>t --install-service</code> there and paste the key it prints. That computer joins this mesh as a node this one runs sessions on.
       </p>
       <div className="flex items-center gap-2 py-2">
         <Input
@@ -520,7 +490,7 @@ function OverSsh() {
       {nodes.data?.map((n) => (
         <NodeRow key={n.id} node={n} onRename={(name) => rename.mutate({ id: n.id, name })} onRemove={() => remove.mutate(n.id)} />
       ))}
-    </>
+    </Section>
   )
 }
 
@@ -554,7 +524,7 @@ function NodeRow({ node: n, onRename, onRemove }: { node: Node; onRename: (name:
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {n.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This node stops running sessions there. Your devices stay paired with {n.name}; revoke them in its own Link settings if you want that too.
+              This node stops running sessions there. Your devices stay paired with {n.name}; revoke them under Settings › Network › Devices there if you want that too.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -565,143 +535,4 @@ function NodeRow({ node: n, onRename, onRemove }: { node: Node; onRename: (name:
       </AlertDialog>
     </Row>
   )
-}
-
-/** Local label of a reachable mesh/node; Enter/blur saves, Escape restores. */
-function Name({ engine }: { engine: Engine }) {
-  const rename = useEngines((s) => s.rename)
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(engine.name)
-  const save = () => {
-    const name = draft.trim()
-    if (name && name !== engine.name) rename(engine.id, name)
-    else setDraft(engine.name)
-    setEditing(false)
-  }
-  if (editing) {
-    return (
-      <Input
-        autoFocus
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={save}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') save()
-          if (e.key === 'Escape') {
-            setDraft(engine.name)
-            setEditing(false)
-          }
-        }}
-        className="h-7 w-48"
-      />
-    )
-  }
-  return (
-    <button type="button" className="group flex items-center gap-1.5 text-left" onClick={() => setEditing(true)} aria-label="Rename">
-      <span className="truncate">{engine.name}</span>
-    </button>
-  )
-}
-
-/**
- * The device side (31 §7.5 "Manage"): meshes and nodes this app paired with, with presence, local rename, reorder
- * and Forget. Forgetting the active one falls back to the local node or the first remaining; with none left `App`
- * shows the pair screen. A mesh row (69 §4) shows its name, `n of m nodes online` and the failover chip.
- */
-function Reachable() {
-  const navigate = useNavigate()
-  const engines = useEngines((s) => s.engines)
-  const presence = useEngines((s) => s.presence)
-  const { remove, reorder } = useEngines.getState()
-  const [forget, setForget] = useState<Engine | null>(null)
-  const bare = !hasLocal()
-
-  const move = (i: number, by: -1 | 1) => {
-    const ids = engines.map((h) => h.id)
-    const [id] = ids.splice(i, 1)
-    ids.splice(i + by, 0, id!)
-    reorder(ids)
-  }
-
-  return (
-    <>
-      <Section
-        title={bare ? 'Meshes this device can reach' : 'Other meshes this app can reach'}
-        actions={
-          <Button variant="outline" size="sm" onClick={() => void navigate({ to: '/link' })}>
-            <Plus /> Pair with a mesh…
-          </Button>
-        }
-      >
-        {engines.length === 0 && <Empty>{bare ? 'No mesh paired yet. Pair with one under Settings › Link.' : 'No other mesh paired as a device.'}</Empty>}
-        {engines.map((h, i) => {
-          const p = presence[h.id] ?? 'offline'
-          const via = h.parent && (h.parent === LOCAL ? LOCAL_NAME : engines.find((x) => x.id === h.parent)?.name)
-          const paired = h.pairedAt ? `paired ${ago(new Date(h.pairedAt).toISOString())} ago` : 'not paired yet'
-          return (
-            <Row
-              key={h.id}
-              label={
-                <span className="flex items-center gap-2">
-                  <PresenceDot presence={p} />
-                  <Name engine={h} />
-                  {via && <span className="text-[13px] text-fg-tertiary">via {via}</span>}
-                  <span className="text-[13px] text-fg-tertiary">{h.kind === 'mesh' ? `mesh${h.meshName && h.meshName !== h.name ? ` · ${h.meshName}` : ''}` : 'node'}</span>
-                </span>
-              }
-              description={<EngineLine engine={h} presence={p} paired={paired} />}
-            >
-              <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
-                <ArrowUp />
-              </Button>
-              <Button variant="ghost" size="icon-sm" aria-label="Move down" disabled={i === engines.length - 1} onClick={() => move(i, 1)}>
-                <ArrowDown />
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => setForget(h)}>
-                Forget
-              </Button>
-            </Row>
-          )
-        })}
-      </Section>
-      <AlertDialog open={forget !== null} onOpenChange={(o) => !o && setForget(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Forget {forget?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>This device stays listed on {forget?.name} until you revoke it there.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (forget) remove(forget.id)
-                setForget(null)
-              }}
-            >
-              Forget
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
-  )
-}
-
-/**
- * `relay · paired … · 2 of 3 nodes online · relay connected` (mesh) or `relay · paired … · online` (node) — with the
- * named failure and its Re-pair (LINK-MSG) instead of the trailing state while the socket is failing.
- */
-function EngineLine({ engine: h, presence, paired }: { engine: Engine; presence: Presence; paired: string }) {
-  const navigate = useNavigate()
-  const members = useMembersLine(h.id)
-  const failure = useLinkFailure(h.id)
-  const chip = h.kind === 'mesh' ? meshChip(presence) : presence
-  if (failure)
-    return (
-      <span className="flex flex-col gap-0.5">
-        <span>{[h.relayHost, paired].join(' · ')}</span>
-        <FailureText compact failure={failure} onRepair={() => void navigate({ to: '/link', search: { repair: h.id } })} />
-      </span>
-    )
-  return <>{[h.relayHost, paired, chip ?? members, h.kind === 'mesh' && !chip ? 'relay connected' : null].filter(Boolean).join(' · ')}</>
 }

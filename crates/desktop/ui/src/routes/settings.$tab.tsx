@@ -1,61 +1,31 @@
-import { createFileRoute, redirect, useNavigate, useRouter } from '@tanstack/react-router'
-import { movedTab } from '@/components/library/moved'
-import { movedSettingsTab } from '@/components/routines/helpers'
-import { SettingsDialog, type Tab, isTab } from '@/components/settings/SettingsDialog'
-import { isMacDesktop } from '@/lib/hotkeys'
-
-/** `?session=<id>`: the chat the dialog was opened from, for per-session rows; `?peer=<message id>` focuses one pending peer request on the communication tab; `?focus=model` the compactor model on the memory tab. */
-type Search = { session?: string; peer?: string; focus?: string }
+import { createFileRoute, redirect } from '@tanstack/react-router'
+import { SettingsPage } from '@/components/settings/SettingsPage'
+import { type SettingsSearch, routeTarget } from '@/components/settings/route-target'
 
 export const Route = createFileRoute('/settings/$tab')({
-  validateSearch: (s: Record<string, unknown>): Search => ({
+  validateSearch: (s: Record<string, unknown>): SettingsSearch => ({
     ...(typeof s.session === 'string' && { session: s.session }),
     ...(typeof s.peer === 'string' && { peer: s.peer }),
     ...(typeof s.focus === 'string' && { focus: s.focus }),
   }),
   beforeLoad: ({ params, search }) => {
-    // Skills and Tools became Agents pages, Secrets a Library page, and Schedules became Routines; old links and `/settings/<tab>` bookmarks follow.
-    const moved = movedTab(params.tab) ?? movedSettingsTab(params.tab)
-    if (moved) throw redirect({ to: moved, replace: true, search: search.session ? { session: search.session } : {} })
-    // 183 §12.6: Settings › Mesh became Settings › Network.
-    if (params.tab === 'mesh') throw redirect({ to: '/settings/$tab', params: { tab: 'network' }, search, replace: true })
-    if (!isTab(params.tab))
-      throw redirect({
-        to: '/settings/$tab',
-        params: { tab: 'general' },
-        search,
-      })
+    const target = routeTarget(params.tab, search)
+    switch (target.kind) {
+      case 'render':
+        return
+      case 'page':
+        throw redirect({ to: target.to, search: target.search, replace: true })
+      case 'chat':
+        throw redirect({ to: '/c/$session', params: { session: target.session }, search: target.search, replace: true })
+      case 'tab':
+        throw redirect({ to: '/settings/$tab', params: { tab: target.tab }, search: target.search, replace: true })
+    }
   },
   component: Settings,
 })
 
 function Settings() {
-  const tab = Route.useParams().tab as Tab
-  const { session, peer, focus } = Route.useSearch()
-  const router = useRouter()
-  const navigate = useNavigate()
-  // The inset behind the modal is otherwise empty; keep the header band draggable.
-  return (
-    <>
-      <div data-tauri-drag-region={isMacDesktop() || undefined} className="h-[52px]" />
-      <SettingsDialog
-        tab={tab}
-        focus={focus ?? null}
-        session={session ?? null}
-        peer={peer ?? null}
-        onTab={(t) =>
-          void navigate({
-            to: '/settings/$tab',
-            params: { tab: t },
-            search: { session },
-            replace: true,
-          })
-        }
-        onClose={() => {
-          if (router.history.canGoBack()) router.history.back()
-          else void navigate({ to: '/' })
-        }}
-      />
-    </>
-  )
+  const { tab } = Route.useParams()
+  const { focus } = Route.useSearch()
+  return <SettingsPage tab={tab} focus={focus ?? null} />
 }

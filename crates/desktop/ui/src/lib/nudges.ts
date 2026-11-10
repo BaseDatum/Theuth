@@ -1,4 +1,4 @@
-// Settings › Agent loop › Show engine nudges: a client-only display preference, persisted like the
+// Settings › General › Appearance › Show theuth nudges: a client-only display preference, persisted like the
 // theme. Nothing here changes what the engine sends; hidden nudges stay in the session and its context.
 
 import { create } from 'zustand'

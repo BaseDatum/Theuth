@@ -92,9 +92,9 @@ export const queryKeys = {
   notes: ['notes'] as const,
   info: ['info'] as const,
   titleModel: ['title-model'] as const,
-  /** `subagent_model()`; Settings › Chat sets it (148 R2: native subagents' default). */
+  /** `subagent_model()`; Settings › Models › Defaults sets it (148 R2: native subagents' default). */
   subagentModel: ['subagent-model'] as const,
-  /** `theuth_agent_model()` (148 R3); Settings › Chat and the Agents page's theuth tab set it. */
+  /** `theuth_agent_model()` (148 R3); Settings › Models › Defaults and the Agents page's theuth tab set it. */
   theuthAgentModel: ['theuth-agent-model'] as const,
   /** `vision_model()` (52 §3.2); slash setters and the General dropdown invalidate this same key. */
   visionModel: ['vision-model'] as const,

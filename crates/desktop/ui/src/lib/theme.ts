@@ -1,4 +1,4 @@
-/** Settings › General theme; `system` follows `prefers-color-scheme`. */
+/** Settings › General › Appearance theme; `system` follows `prefers-color-scheme`. */
 export type Theme = 'light' | 'dark' | 'system'
 
 const KEY = 'theme'

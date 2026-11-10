@@ -2452,6 +2452,16 @@ pub trait Api {
         &self,
         settings: search_providers::SearchSettings,
     ) -> RpcResult<search_providers::SearchSettings>;
+    /// 188: `decision.enabled`, `a2a.enabled`, `computer.enabled` or `double.enabled`
+    /// as config.yaml holds it and as this engine started with it. Node-level, never
+    /// forwarded; any other key is `INVALID_PARAMS` naming the four.
+    #[method(name = "config_flag_get")]
+    fn config_flag_get(&self, key: ConfigFlagKey) -> RpcResult<ConfigFlag>;
+    /// 188: write only `<section>.enabled: <on>` into config.yaml (every other line,
+    /// comments included, untouched). Nothing changes live: the plugin keeps its boot
+    /// state until theuth restarts, so the reply's `restart_required` says whether one is due.
+    #[method(name = "config_flag_set")]
+    fn config_flag_set(&self, key: ConfigFlagKey, on: bool) -> RpcResult<ConfigFlag>;
     /// One probe query through one registered provider (built-in or external):
     /// ok, latency, rows, error text. Unknown / unregistered names are errors.
     #[method(name = "search_provider_test")]
@@ -3097,6 +3107,76 @@ impl PendingPrompts {
     }
 }
 
+/// 188: the four `enabled` flags Settings had no write path for. Any other
+/// string fails to deserialize, an `INVALID_PARAMS` error listing these four.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum ConfigFlagKey {
+    /// `decision.enabled` (57 §7.1): off, the decision actor escalates every ask.
+    #[serde(rename = "decision.enabled")]
+    Decision,
+    /// `a2a.enabled` (183): the A2A HTTP client/server machinery.
+    #[serde(rename = "a2a.enabled")]
+    A2a,
+    /// `computer.enabled` (27): the computer-use actor, tools and input thread.
+    #[serde(rename = "computer.enabled")]
+    Computer,
+    /// `double.enabled` (126): the double actors, tools and prompt paragraph. Its own
+    /// `double_settings_set` needs the running scheduler, so it cannot turn it on.
+    #[serde(rename = "double.enabled")]
+    Double,
+}
+
+impl ConfigFlagKey {
+    /// The config.yaml section whose `enabled` this is.
+    fn section(self) -> &'static str {
+        match self {
+            Self::Decision => "decision",
+            Self::A2a => "a2a",
+            Self::Computer => "computer",
+            Self::Double => "double",
+        }
+    }
+
+    /// The flag in `config` as its plugin reads it at start: a missing or
+    /// unreadable section is the section type's default.
+    fn read(self, config: &figment::Figment) -> bool {
+        let s = self.section();
+        match self {
+            Self::Decision => {
+                let c: decision::DecisionConfig = config.extract_inner(s).unwrap_or_default();
+                c.enabled
+            }
+            Self::A2a => {
+                let c: a2a::config::A2aConfig = config.extract_inner(s).unwrap_or_default();
+                c.enabled
+            }
+            Self::Computer => {
+                let c: computer::ComputerConfig = config.extract_inner(s).unwrap_or_default();
+                c.enabled
+            }
+            Self::Double => {
+                let c: double::DoubleConfig = config.extract_inner(s).unwrap_or_default();
+                c.enabled
+            }
+        }
+    }
+}
+
+/// 188: a [`ConfigFlagKey`] as config.yaml holds it and as this engine runs it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ConfigFlag {
+    /// Which flag.
+    pub key: ConfigFlagKey,
+    /// The value `<data_dir>/config.yaml` holds now (the section's default when absent).
+    pub enabled: bool,
+    /// The value this process started with (its boot config); plugins keep it until a restart.
+    pub running: bool,
+    /// `enabled != running`: the saved value applies after theuth restarts.
+    pub restart_required: bool,
+}
+
 /// Members of private trees this process knows: `member → (root, owner
 /// peer)`. The event filter drops any event naming a member for every peer
 /// but its owner (51 §4.2). Insert-only: broadcast fan-out hands every
@@ -3194,6 +3274,19 @@ impl Server {
             _ => unreachable!("one or two key levels"),
         }
         .map_err(|e| failed(format!("config.yaml: {e}")))
+    }
+
+    /// 188: `key` in config.yaml now (read fresh) and in the boot config (never re-read).
+    fn config_flag(&self, key: ConfigFlagKey) -> ConfigFlag {
+        use figment::providers::{Format, Yaml};
+        let file = figment::Figment::from(Yaml::file_exact(self.rt.data_dir.join("config.yaml")));
+        let (enabled, running) = (key.read(&file), key.read(&self.rt.config));
+        ConfigFlag {
+            key,
+            enabled,
+            running,
+            restart_required: enabled != running,
+        }
     }
 }
 
@@ -9175,6 +9268,22 @@ impl ApiServer for Server {
         })
     }
 
+    fn config_flag_get(&self, key: ConfigFlagKey) -> RpcResult<ConfigFlag> {
+        Ok(self.config_flag(key))
+    }
+
+    fn config_flag_set(&self, key: ConfigFlagKey, on: bool) -> RpcResult<ConfigFlag> {
+        let path = self.rt.data_dir.join("config.yaml");
+        runtime::write_config_value(
+            &path,
+            key.section(),
+            "enabled",
+            if on { "true" } else { "false" },
+        )
+        .map_err(|e| failed(format!("config.yaml: {e}")))?;
+        Ok(self.config_flag(key))
+    }
+
     async fn search_provider_test(
         &self,
         name: String,
@@ -10897,6 +11006,143 @@ mod tests {
         assert_eq!(v["result"].as_str(), Some(slack::MANIFEST), "{v}");
         let m: serde_yaml::Value = serde_yaml::from_str(slack::MANIFEST).unwrap();
         assert_eq!(m["features"]["slash_commands"][0]["command"], "/theuth");
+    }
+
+    /// 188: `config_flag_*` over the wire against a boot config (`running`) and a
+    /// different config.yaml in the data dir (`enabled`).
+    async fn config_flag_call(
+        boot: &str,
+        file: Option<&str>,
+        method: &str,
+        params: &str,
+    ) -> (serde_json::Value, tempfile::TempDir) {
+        use figment::providers::{Format, Yaml};
+        let dir = tempfile::tempdir().unwrap();
+        if let Some(f) = file {
+            std::fs::write(dir.path().join("config.yaml"), f).unwrap();
+        }
+        let rt = Runtime::new(
+            figment::Figment::from(Yaml::string(boot)),
+            dir.path().to_path_buf(),
+        );
+        let methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        let req = format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{params},"id":1}}"#);
+        let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
+        (serde_json::from_str(resp.get()).unwrap(), dir)
+    }
+
+    /// 188: `get` reports the file value, the boot value and their difference for each
+    /// key; an absent key or section is that section's default (decision and computer
+    /// on, a2a off, double `DoubleConfig::default()`).
+    #[tokio::test]
+    async fn config_flag_get_reports_file_boot_and_restart() {
+        let flag = |key: &str, enabled: bool, running: bool| serde_json::json!({ "key": key, "enabled": enabled, "running": running, "restart_required": enabled != running });
+        let boot = "decision:\n  enabled: false\na2a:\n  enabled: true\n";
+        let file =
+            "decision:\n  enabled: true\ncomputer:\n  enabled: false\ndouble:\n  enabled: true\n";
+        for (key, want) in [
+            ("decision.enabled", flag("decision.enabled", true, false)),
+            ("a2a.enabled", flag("a2a.enabled", false, true)),
+            ("computer.enabled", flag("computer.enabled", false, true)),
+            ("double.enabled", flag("double.enabled", true, false)),
+        ] {
+            let (v, _dir) = config_flag_call(
+                boot,
+                Some(file),
+                "config_flag_get",
+                &format!(r#"["{key}"]"#),
+            )
+            .await;
+            assert_eq!(v["result"], want, "{key}: {v}");
+        }
+        for (key, on) in [
+            ("decision.enabled", true),
+            ("a2a.enabled", false),
+            ("computer.enabled", true),
+            ("double.enabled", double::DoubleConfig::default().enabled),
+        ] {
+            let (v, _dir) =
+                config_flag_call("", None, "config_flag_get", &format!(r#"["{key}"]"#)).await;
+            assert_eq!(v["result"], flag(key, on, on), "{key} defaults: {v}");
+        }
+    }
+
+    /// 188: `set` rewrites only the section's `enabled` line (comments and every other
+    /// key byte-for-byte), creates a missing section, and changes nothing live.
+    #[tokio::test]
+    async fn config_flag_set_writes_only_the_key() {
+        let file = "# mine\nagent:\n  model: x  # keep\na2a:\n  listen: 127.0.0.1:1  # port\n  enabled: false # off for now\n";
+        let (v, dir) = config_flag_call(
+            "",
+            Some(file),
+            "config_flag_set",
+            r#"["a2a.enabled", true]"#,
+        )
+        .await;
+        assert_eq!(
+            v["result"],
+            serde_json::json!({ "key": "a2a.enabled", "enabled": true, "running": false, "restart_required": true }),
+            "{v}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
+            file.replace("enabled: false #", "enabled: true #")
+        );
+
+        let (v, dir) = config_flag_call(
+            "",
+            Some(file),
+            "config_flag_set",
+            r#"["computer.enabled", false]"#,
+        )
+        .await;
+        assert_eq!(v["result"]["enabled"], false, "{v}");
+        assert_eq!(v["result"]["running"], true, "{v}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
+            format!("{file}\ncomputer:\n  enabled: false\n")
+        );
+
+        let file = "double:\n  retention_days: 30  # short\n  enabled: false\n";
+        let (v, dir) = config_flag_call(
+            "",
+            Some(file),
+            "config_flag_set",
+            r#"["double.enabled", true]"#,
+        )
+        .await;
+        assert_eq!(
+            v["result"],
+            serde_json::json!({ "key": "double.enabled", "enabled": true, "running": false, "restart_required": true }),
+            "{v}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
+            file.replace("enabled: false", "enabled: true")
+        );
+    }
+
+    /// 188: only the four keys parse; anything else is `INVALID_PARAMS` naming them,
+    /// and nothing is written.
+    #[tokio::test]
+    async fn config_flag_rejects_an_unknown_key() {
+        for (method, params) in [
+            ("config_flag_get", r#"["dreaming.enabled"]"#),
+            ("config_flag_set", r#"["agent.model", true]"#),
+        ] {
+            let (v, dir) = config_flag_call("", None, method, params).await;
+            assert_eq!(v["error"]["code"], -32602, "{v}");
+            let text = v["error"].to_string();
+            for key in [
+                "decision.enabled",
+                "a2a.enabled",
+                "computer.enabled",
+                "double.enabled",
+            ] {
+                assert!(text.contains(key), "{key} missing from {text}");
+            }
+            assert!(!dir.path().join("config.yaml").exists());
+        }
     }
 
     /// 139 §9.2 (D18): the owner side of a routed `resume_turn` / `answer_ask` /

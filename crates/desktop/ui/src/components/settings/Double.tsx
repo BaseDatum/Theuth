@@ -7,6 +7,8 @@ import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { LineChartView } from '@/components/chat/surface/diagrams/LineChart'
+import { ConfigFlagRow, useConfigFlag } from '@/components/settings/ConfigFlagRow'
+import { flagRuns } from '@/components/settings/flag-runs'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { useMesh } from '@/components/tasks/queries'
 import {
@@ -107,9 +109,15 @@ export const forgetClass = (api: Pick<Api, 'double_forget'>, key: string) => api
 export function Double() {
   const api = useApi()
   const qc = useQueryClient()
-  const status = useQuery({ queryKey: queryKeys.doubleStatus, queryFn: () => api.double_status(), refetchInterval: 30_000 })
-  const classes = useQuery({ queryKey: queryKeys.doubleClasses, queryFn: () => api.double_classes() })
-  const settings = useQuery({ queryKey: queryKeys.doubleSettings, queryFn: () => api.double_settings_get() })
+  const flag = useConfigFlag('double.enabled')
+  // Off, the engine has no double actors to answer, so nothing below the switch is asked for (188 F1).
+  const runs = flagRuns(flag)
+  const status = useQuery({ queryKey: queryKeys.doubleStatus, queryFn: () => api.double_status(), refetchInterval: 30_000, enabled: runs === true })
+  const classes = useQuery({ queryKey: queryKeys.doubleClasses, queryFn: () => api.double_classes(), enabled: runs === true })
+  const loaded = useQuery({ queryKey: queryKeys.doubleSettings, queryFn: () => api.double_settings_get(), enabled: runs === true })
+  // `double_settings_set` persists the whole section: carry the saved Enabled, not the running copy's, so a training
+  // save never undoes the switch.
+  const settings = loaded.data && flag.data ? { ...loaded.data, enabled: flag.data.enabled } : loaded.data
   // Live: a run's state or a version switch refreshes everything; the run states also feed the log below.
   const [live, setLive] = useState<DoubleTrainingState[]>([])
   useEffect(() => {
@@ -126,15 +134,27 @@ export function Double() {
     ]
     return () => offs.forEach((off) => off())
   }, [qc])
+  const enabled = (
+    <ConfigFlagRow
+      flag="double.enabled"
+      name="Double"
+      label="Enabled"
+      description={flag.data?.enabled ? 'Predicting every captured card; learning from your answers.' : 'Off: nothing is predicted or learned.'}
+    />
+  )
+  if (runs !== true)
+    return (
+      <Section title="Status">
+        {enabled}
+        {runs === false && <Empty>While the double runs, this tab also holds Pause learning, the active version and last run, the improvement curve, the classes, training and the training log.</Empty>}
+      </Section>
+    )
   const s = status.data
   return (
     <>
       <Section title="Status">
-        {status.isError ? (
-          <Empty>{errorText(status.error)}</Empty>
-        ) : (
-          <Status s={s} />
-        )}
+        {enabled}
+        {status.isError ? <Empty>{errorText(status.error)}</Empty> : <Status s={s} />}
       </Section>
       <Section title="Improvement">
         <p className="mb-2 text-[13px] text-fg-secondary">
@@ -147,7 +167,7 @@ export function Double() {
         <Classes classes={classes.data ?? []} loading={classes.isPending} error={classes.isError ? errorText(classes.error) : undefined} />
       </Section>
       <Section title="Training">
-        <Training s={s} settings={settings.data} />
+        <Training s={s} settings={settings} />
       </Section>
       <Section title="Training log">
         <RunLog last={s?.last_run} live={live} />
@@ -162,9 +182,6 @@ function Status({ s }: { s: DoubleStatus | undefined }) {
   if (!s) return <Empty>loading…</Empty>
   return (
     <>
-      <Row label="Enabled" description={s.enabled ? 'Predicting every captured card; learning from your answers.' : '`double.enabled` is off: nothing is predicted or learned. Turn it on in config.yaml and restart.'}>
-        <span className={`inline-block size-2 shrink-0 rounded-full ${s.enabled ? 'bg-success' : 'bg-fg-tertiary/40'}`} />
-      </Row>
       <Row label="Pause learning" description="Predictions and rungs continue; labels stop accruing (the curve shows the gap).">
         <Switch checked={s.paused} disabled={pause.isPending || !s.enabled} onCheckedChange={(v) => pause.mutate(v)} aria-label="Pause learning" />
       </Row>
@@ -350,7 +367,6 @@ function Training({ s, settings }: { s: DoubleStatus | undefined; settings: Doub
   const win = draft?.window ?? settings?.training.window ?? ''
   const venue = draft?.venue ?? settings?.training.venue ?? ''
   const patch = (f: (c: DoubleConfig) => DoubleConfig) => settings && save.mutate(f(structuredClone(settings)))
-  const tierC = settings?.training.tiers.c.enabled === true
   return (
     <>
       <Row wide label="Train now" description="Tier A: temperatures, k-NN memory and heads, in process, seconds. Tier B: the LoRA adapter on the whole corpus, gate-promoted, minutes to an hour.">
@@ -376,7 +392,7 @@ function Training({ s, settings }: { s: DoubleStatus | undefined; settings: Doub
           <Button size="sm" variant="outline" disabled={busy || off || !node} onClick={() => train.mutate({ tier: 'b', venue: { venue: 'node', name: node } })}>
             Tier B on node
           </Button>
-          <Button size="sm" variant="outline" disabled title={tierC ? 'Tier C (full fine-tune) arrives with wave W3.' : 'Tier C is off (`double.training.tiers.c.enabled`) and arrives with wave W3.'}>
+          <Button size="sm" variant="outline" disabled title="Tier C (full fine-tune) arrives with wave W3.">
             Rebuild (tier C)
           </Button>
         </div>

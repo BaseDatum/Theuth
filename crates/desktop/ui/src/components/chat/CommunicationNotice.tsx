@@ -5,7 +5,7 @@ import { useContacts } from '@/lib/contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { A2aExportStatus } from '@/rpc/bindings/A2aExportStatus'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
-import { settings } from './slash'
+import { useMessagingSheet } from './messaging-sheet'
 
 const NONE: A2aExportStatus[] = []
 
@@ -63,9 +63,14 @@ export function CommunicationNotice({
     <button
       type="button"
       className="min-h-11 shrink-0 px-2 underline underline-offset-2 hover:text-foreground"
-      onClick={() => void settings(navigate, 'communication', session)}
+      // 188: a chat's own messaging is its Messaging… sheet; without a chat only the node-wide switch is left.
+      onClick={() =>
+        session
+          ? useMessagingSheet.getState().show(session)
+          : void navigate({ to: '/settings/$tab', params: { tab: 'messaging' } })
+      }
     >
-      Settings
+      {session ? 'Messaging…' : 'Settings'}
     </button>
   )
   if (!state.effective) {

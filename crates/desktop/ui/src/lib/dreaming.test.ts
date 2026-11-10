@@ -87,6 +87,11 @@ describe('reduceSettings', () => {
     expect(reduceSettings(SETTINGS, { kind: 'digest_day', day: 'Mon' })).toBeNull()
   })
 
+  test('enabled flips the plugin switch; the same value is a no-op', () => {
+    expect(reduceSettings(SETTINGS, { kind: 'enabled', on: !SETTINGS.enabled })).toEqual({ ...SETTINGS, enabled: !SETTINGS.enabled })
+    expect(reduceSettings(SETTINGS, { kind: 'enabled', on: SETTINGS.enabled })).toBeNull()
+  })
+
   test('pause is seven days from now; resume clears; enabled is never touched', () => {
     const now = new Date('2026-10-08T12:00:00Z')
     const paused = reduceSettings(SETTINGS, { kind: 'pause', now })!
@@ -109,13 +114,13 @@ describe('dreamNowBlocker (R-46)', () => {
   test('runs only when enabled, switched on, not paused and no night in flight; the first reason wins', () => {
     expect(dreamNowBlocker(live, now)).toBeNull()
     expect(dreamNowBlocker({ ...live, routineEnabled: undefined }, now)).toBeNull()
-    expect(dreamNowBlocker({ ...live, enabled: false }, now)).toMatch(/off in config/)
+    expect(dreamNowBlocker({ ...live, enabled: false }, now)).toBe('dreaming is off')
     expect(dreamNowBlocker({ ...live, routineEnabled: false }, now)).toMatch(/routine is switched off/)
     expect(dreamNowBlocker({ ...live, pausedUntil: '2026-10-13T12:00:00Z' }, now)).toMatch(/^dreaming is paused until /)
     expect(dreamNowBlocker({ ...live, pausedUntil: '2026-10-01T12:00:00Z' }, now)).toBeNull()
     expect(dreamNowBlocker({ ...live, running: true }, now)).toBe('a night is already running')
     expect(dreamNowUnavailable('a night is already running')).toBe('Dream now is unavailable: a night is already running.')
-    expect(dreamNowBlocker({ ...live, enabled: false, running: true }, now)).toMatch(/off in config/)
+    expect(dreamNowBlocker({ ...live, enabled: false, running: true }, now)).toBe('dreaming is off')
   })
 })
 

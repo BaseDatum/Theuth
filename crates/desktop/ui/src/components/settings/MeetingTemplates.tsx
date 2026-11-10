@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { CharterEditor } from '@/components/agents/CharterEditor'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
+import type { TabProps } from '@/components/settings/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -21,8 +22,8 @@ export interface Draft {
   body: string
 }
 
-/** `initial` opens the editor at mount (tests; a "New template…" link could pass one). */
-export function MeetingTemplates({ initial = null }: { initial?: Draft | null }) {
+/** Meetings › Templates (188: a whole tab; it takes no `focus`). `initial` opens the editor at mount (tests; a "New template…" link could pass one). */
+export function MeetingTemplates({ initial = null }: Partial<TabProps> & { initial?: Draft | null }) {
   const api = useApi()
   const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
   const [draft, setDraft] = useState<Draft | null>(initial)

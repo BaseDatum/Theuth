@@ -42,7 +42,7 @@ function Root() {
   useEffect(() => {
     const toggle = () => setOpen((o) => !o)
     const fresh = () => openNewChat(navigate)
-    const shortcuts = () => void settings(navigate, 'shortcuts', session)
+    const shortcuts = () => void settings(navigate, 'shortcuts')
     window.addEventListener('theuth:toggle-sidebar', toggle)
     window.addEventListener('theuth:new-chat', fresh)
     window.addEventListener('theuth:shortcuts', shortcuts)
@@ -51,7 +51,7 @@ function Root() {
       window.removeEventListener('theuth:new-chat', fresh)
       window.removeEventListener('theuth:shortcuts', shortcuts)
     }
-  }, [navigate, session])
+  }, [navigate])
 
   return (
     <SidebarProvider open={open} onOpenChange={setOpen} className="h-band min-h-0">

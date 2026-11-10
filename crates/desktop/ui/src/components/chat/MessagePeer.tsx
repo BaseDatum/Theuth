@@ -187,9 +187,10 @@ function Provenance({ origin, seq, session, request, contact }: { origin: PeerOr
           {errorText(record.error)}
         </p>
       ) : null}
+      {/* 188: the chat's Messaging… sheet, focused on this request; a link, so it works from any transcript. */}
       <Button asChild variant="link" size="xs" className={cn('mt-1 px-0', TOUCH)}>
-        <Link to="/settings/$tab" params={{ tab: 'communication' }} search={{ session, peer: origin.id }}>
-          Open in Communication
+        <Link to="/c/$session" params={{ session }} search={{ messaging: '1', peer: origin.id }}>
+          Open in Messaging
         </Link>
       </Button>
     </div>
@@ -220,7 +221,7 @@ export function useOverflow<T extends HTMLElement>(clamped: boolean): [RefObject
   return [ref, hidden]
 }
 
-/** The owner answers a request this chat owes (`answer_peer_request`, as Settings › Communication does). */
+/** The owner answers a request this chat owes (`answer_peer_request`, as the chat's Messaging… sheet does). */
 function AnswerForm({ session, id, onDone }: { session: string; id: string; onDone: () => void }) {
   const api = useApi()
   const key = `${session}|${id}`

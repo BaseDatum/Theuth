@@ -1,10 +1,11 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { Contact, Monitor } from 'lucide-react'
 import { expect, test, vi } from 'vitest'
-import { SectionBand } from './SectionBand'
+import { SectionBand, TabBand } from './SectionBand'
 
 type State = { location: { pathname: string } }
-const env = vi.hoisted(() => ({ pathname: '/agents', popped: false, open: true, isMobile: false }))
+const env = vi.hoisted(() => ({ pathname: '/agents', popped: false, open: true, isMobile: false, mac: false }))
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => () => Promise.resolve(),
   useRouterState: ({ select }: { select: (s: State) => string }) => select({ location: { pathname: env.pathname } }),
@@ -14,6 +15,7 @@ vi.mock('@/components/ui/sidebar', () => ({
 }))
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))
 vi.mock('@/lib/popout', () => ({ isPopout: () => env.popped }))
+vi.mock('@/lib/hotkeys', () => ({ isMacDesktop: () => env.mac }))
 
 const render = (group: 'agents' | 'library') => renderToStaticMarkup(createElement(SectionBand, { group }))
 const active = (html: string) => [...html.matchAll(/<button[^>]*data-state="active"[^>]*aria-label="([^"]+)"/g)].map((m) => m[1])
@@ -60,4 +62,29 @@ test('the sidebar toggle shows on a phone or when the rail is closed', () => {
   expect(render('library')).toContain('aria-label="Show sidebar"')
   env.open = true
   expect(render('library')).not.toContain('aria-label="Show sidebar"')
+})
+
+test('188: a band of any tabs marks its value active; beside a column it leaves the traffic-light inset to the column', () => {
+  const band = (inset?: boolean) =>
+    renderToStaticMarkup(
+      createElement(TabBand, {
+        tabs: [
+          { id: 'machine', label: 'This machine', icon: Monitor },
+          { id: 'contacts', label: 'Contacts', icon: Contact },
+        ],
+        value: 'contacts',
+        onValueChange: () => {},
+        inset,
+      }),
+    )
+  env.mac = true
+  env.open = false
+  expect(tabs(band())).toBe(2)
+  expect(active(band())).toEqual(['Contacts'])
+  expect(band()).toContain('pl-20')
+  expect(band(false)).not.toContain('pl-20')
+  // The rail is closed: the toggle still shows, so the sidebar can come back.
+  expect(band(false)).toContain('aria-label="Show sidebar"')
+  env.mac = false
+  env.open = true
 })

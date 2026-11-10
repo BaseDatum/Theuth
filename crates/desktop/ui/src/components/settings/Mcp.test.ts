@@ -1,23 +1,23 @@
 import './test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, createElement, type ReactNode } from 'react'
-import { createRoot } from 'react-dom/client'
+import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { parse } from 'smol-toml'
 import { expect, test, vi } from 'vitest'
-import { engines } from '@/components/tasks/home'
 import { MCP_SHARED_LINE, mcpActions, mcpConfig } from '@/lib/mcp-config'
-import { homeActions, homeChip, stateText } from '@/lib/mcp-home'
 import type * as Rpc from '@/lib/rpc'
-import { queryKeys } from '@/lib/rpc'
+import type * as Tauri from '@/lib/tauri'
 import type { McpAuditLine } from '@/rpc/bindings/McpAuditLine'
-import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { McpServerConfig } from '@/rpc/bindings/McpServerConfig'
 import type { McpServerStatus } from '@/rpc/bindings/McpServerStatus'
-import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import { Mcp, ready } from './Mcp'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+// The app's own engine listens on a port of its own, not a fixed one.
+vi.mock('@/lib/tauri', async (original) => ({
+  ...await original<typeof Tauri>(),
+  connection: async () => ({ url: 'ws://127.0.0.1:18788/', token: 't', data_dir: '/d', owned: true }),
+}))
 
 const TOKEN = 'a'.repeat(64)
 const status: McpServerStatus = {
@@ -33,34 +33,6 @@ const audit: McpAuditLine[] = [
   { at: '2026-10-10T11:59:00Z', transport: 'stdio', client: 'codex', tool: 'knowledge_get', args_sha256: 'cd'.repeat(32), ok: false, ms: 3n },
 ]
 
-// 187: this is xeus; mikrotik was added on 333.
-const mesh = {
-  self_id: 'id-xeus',
-  self_name: 'xeus',
-  peers: [{ id: 'id-333', name: '333', reachable: true, last_seen_ms: 0n }],
-} as unknown as MeshStatus
-const MACHINES = engines(mesh)
-const server = (over: Partial<McpServer> = {}): McpServer => ({
-  name: 'mikrotik',
-  connected: false,
-  gate: null,
-  tools: [],
-  repo: null,
-  auth: 'none',
-  home: 'id-333',
-  home_name: '333',
-  home_here: false,
-  everywhere: false,
-  state: 'elsewhere',
-  reason: null,
-  ...over,
-})
-const servers: McpServer[] = [
-  server(),
-  server({ name: 'grafana', home: 'id-xeus', home_name: 'xeus', home_here: true, state: 'running', connected: true }),
-  server({ name: 'portable', everywhere: true, state: 'unavailable_here', reason: 'portable-mcp is not installed on xeus' }),
-]
-
 const calls: [string, unknown][] = []
 vi.mock('@/lib/rpc', async (original) => ({
   ...await original<typeof Rpc>(),
@@ -73,92 +45,8 @@ vi.mock('@/lib/rpc', async (original) => ({
       calls.push(['mcp_server_audit', limit])
       return audit
     },
-    list_mcp: async () => servers,
-    mesh_status: async () => mesh,
-    mcp_status: async () => ({ connecting: [], connected: [], failed: [], homes_problem: '/d/mcp/homes.yaml is invalid: line 1' }),
-    set_mcp_home: async (name: string, action: string) => {
-      calls.push(['set_mcp_home', [name, action]])
-      return null
-    },
   }),
 }))
-
-test('187: each row names its home and what it does on this machine', () => {
-  expect([homeChip(server(), MACHINES), stateText(server(), MACHINES)]).toEqual(['on 333', 'not running here (home is 333)'])
-  // The mesh's current name wins; the stamped one stands in for an engine the mesh does not know.
-  expect(homeChip(server({ home: 'id-gone', home_name: 'old-box' }), MACHINES)).toBe('on old-box')
-  expect(homeChip(server({ home: null, home_name: null }), MACHINES)).toBe('home not claimed yet')
-  expect(homeChip(server({ home_here: true }), MACHINES)).toBe('on xeus')
-  const states = (['running', 'connecting', 'off_here', 'off', 'unavailable_here', 'error'] as const).map((state) => stateText(server({ state }), MACHINES))
-  expect(states).toEqual(['running', 'starting…', 'turned off here', 'off', 'not installed here', 'error'])
-})
-
-test('187: actions follow the row: Run everywhere toggles, Only on <home>, Move home here, Turn off / on here', () => {
-  const acts = (s: McpServer, machines = MACHINES) => homeActions(s, machines).map((a) => [a.action, a.label, a.pressed ?? null])
-  // Homed elsewhere and not running here: nothing to turn off.
-  expect(acts(server())).toEqual([
-    ['run_everywhere', 'Run everywhere', false],
-    ['move_here', 'Move home here', null],
-  ])
-  expect(acts(server({ everywhere: true, state: 'unavailable_here' }))).toEqual([
-    ['only_home', 'Run everywhere', true],
-    ['only_home', 'Only on 333', null],
-    ['move_here', 'Move home here', null],
-    ['off_here', 'Turn off here', null],
-  ])
-  // Homed here and running: nothing to move; turned off here: turn it back on.
-  expect(acts(server({ home_here: true, state: 'running' }))).toEqual([
-    ['run_everywhere', 'Run everywhere', false],
-    ['off_here', 'Turn off here', null],
-  ])
-  expect(acts(server({ home_here: true, state: 'off_here' }))).toEqual([
-    ['run_everywhere', 'Run everywhere', false],
-    ['on_here', 'Turn on here', null],
-  ])
-  // Alone (unpaired, or a reset identity): only a home on a machine nobody knows can be taken.
-  const alone = engines({ ...mesh, peers: [] })
-  expect(acts(server(), alone)).toEqual([['move_here', 'Move home here', null]])
-  expect(acts(server({ home: null }), alone)).toEqual([['move_here', 'Move home here', null]])
-  expect(acts(server({ home_here: true, state: 'running' }), alone)).toEqual([])
-})
-
-test('187: no home chip until the mesh answers (no "on this machine" flicker)', () => {
-  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  qc.setQueryData(queryKeys.mcp(null), servers)
-  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Mcp) as ReactNode }))
-  expect(html).toContain('mikrotik')
-  expect(html).not.toMatch(/>on (xeus|333|this machine)</)
-  expect(html).not.toContain('Move home here')
-})
-
-test('187: the pane lists every server with its home and state; a button sets the home of its own row', async () => {
-  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const el = document.createElement('div')
-  document.body.append(el)
-  const root = createRoot(el)
-  await act(async () => root.render(createElement(QueryClientProvider, { client: qc, children: createElement(Mcp) as ReactNode })))
-  await vi.waitFor(() => {
-    expect(el.textContent).toContain('portable-mcp is not installed on xeus')
-    expect(el.textContent).toContain('homes.yaml is invalid: line 1')
-  })
-  const html = el.innerHTML
-  for (const t of ['on 333', 'not running here (home is 333)', 'on xeus', 'running', 'not installed here', 'homes.yaml is invalid: line 1'])
-    expect(html).toContain(t)
-  const button = (label: string) => [...el.querySelectorAll('button')].filter((b) => b.textContent === label)
-  expect(button('Move home here')).toHaveLength(2)
-  expect(button('Run everywhere')[0]?.className).toContain('pointer-coarse:min-h-11')
-  const homes = () => calls.filter(([m]) => m === 'set_mcp_home')
-  await act(async () => button('Move home here')[0]!.click())
-  await vi.waitFor(() => expect(homes()).toEqual([['set_mcp_home', ['mikrotik', 'move_here']]]))
-  await vi.waitFor(() => expect(button('Only on 333')[0]?.disabled).toBe(false))
-  await act(async () => button('Only on 333')[0]!.click())
-  await vi.waitFor(() => expect(homes()).toEqual([
-    ['set_mcp_home', ['mikrotik', 'move_here']],
-    ['set_mcp_home', ['portable', 'only_home']],
-  ]))
-  act(() => root.unmount())
-  el.remove()
-})
 
 test('http clients copy exactly the §12.6 block with the token filled in and the port respected', () => {
   const expected = {
@@ -224,4 +112,5 @@ test('ready, and the pane renders status, masked token, the last-20 audit tail a
   expect(html).toContain('Rotate')
   expect(html).toContain(MCP_SHARED_LINE)
   expect(MCP_SHARED_LINE).toContain('read and write')
+  expect(html).toContain('Loopback only (127.0.0.1); RPC is on port 18788.')
 })

@@ -14,7 +14,9 @@ import {
   limitsSave,
   localAddArgs,
   type LocalForm,
+  loginText,
   orderProviders,
+  pairLogins,
   presetForm,
   probeForm,
   probeState,
@@ -50,47 +52,33 @@ import { useConnection } from '@/store/connection'
 import type { LocalServer } from '@/rpc/bindings/LocalServer'
 import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
 import type { ProviderModel } from '@/rpc/bindings/ProviderModel'
+import type { LoginInfo } from '@/rpc/extra'
 import { on } from '@/store/sessions'
 
-export function Connections() {
+/** 188 A6: Settings › Models › Providers — every model provider with its key or login, then the AWS profile Bedrock signs with. */
+export function ModelProviders() {
   return (
     <>
-      <Logins />
-      <Providers />
+      <ProviderList />
       <Bedrock />
     </>
   )
 }
 
-/** OAuth providers and OAuth MCP servers in one list, as the TUI's `/login` menu. */
-function Logins() {
+/** A provider's OAuth login (the TUI's `/login`): Log in opens the browser, Log out forgets the tokens. */
+function useLogins() {
   const api = useApi()
   const active = useEngines((s) => s.active)
-  const engineName = useConnection((s) => s.info?.name)
-  const logins = useQuery({
-    queryKey: queryKeys.logins,
-    queryFn: () => api.list_logins(),
-  })
-  const mcp = useQuery({
-    queryKey: queryKeys.mcp(null),
-    queryFn: () => api.list_mcp(null),
-  })
-  // A logout changes which providers `list_models` may offer (52 §3.2); a login refreshes via `LoginFinished`.
-  const keys = [queryKeys.logins, queryKeys.mcp(null), queryKeys.models]
+  const logins = useQuery({ queryKey: queryKeys.logins, queryFn: () => api.list_logins() })
   // Over link the daemon opens its own browser on the engine (31 §9): the URL is only shown here, as text.
   const [remote, setRemote] = useState<{ name: string; url: string } | null>(null)
-  const login = useAction(async (v: { name: string; mcp: boolean }) => {
-    const url = await (v.mcp ? api.mcp_login(v.name) : api.login(v.name))
-    if (active !== LOCAL) setRemote({ name: v.name, url })
+  const login = useAction(async (name: string) => {
+    const url = await api.login(name)
+    if (active !== LOCAL) setRemote({ name, url })
     else window.open(url, '_blank')
   })
-  const logout = useAction(
-    (v: { name: string; mcp: boolean }) => (v.mcp ? api.mcp_logout(v.name) : api.logout(v.name)),
-    {
-      keys,
-    },
-  )
-
+  // A logout changes which providers `list_models` may offer (52 §3.2); a login refreshes via `LoginFinished`.
+  const logout = useAction((name: string) => api.logout(name), { keys: [queryKeys.logins, queryKeys.models] })
   useEffect(
     () =>
       on('LoginFinished', (e) => {
@@ -100,63 +88,39 @@ function Logins() {
       }),
     [],
   )
+  return { list: logins.data, remote, login, logout }
+}
 
-  const rows = [
-    ...(logins.data ?? []).map((l) => ({
-      name: l.name,
-      mcp: false,
-      on: l.logged_in,
-      status: !l.logged_in ? 'not logged in' : l.account ? `logged in (${l.account})` : 'logged in',
-    })),
-    ...(mcp.data ?? [])
-      .filter((s) => s.auth !== 'none')
-      .map((s) => ({
-        name: s.name,
-        mcp: true,
-        on: s.auth === 'logged_in',
-        status: s.auth === 'logged_in' ? 'logged in' : 'login required',
-      })),
-  ]
+type Logins = ReturnType<typeof useLogins>
 
+/** A login's state, or while a remote sign-in waits, the URL to open on the node. */
+function LoginState({ l, logins }: { l: LoginInfo; logins: Logins }) {
+  const engineName = useConnection((s) => s.info?.name)
+  if (logins.remote?.name !== l.name) return <>{loginText(l)}</>
   return (
-    <Section title="Accounts">
-      {logins.isSuccess && mcp.isSuccess && rows.length === 0 && (
-        <Empty>Nothing to log in to.</Empty>
-      )}
-      {rows.map((r) => (
-        <Row
-          key={`${r.mcp ? 'mcp' : 'provider'}:${r.name}`}
-          label={
-            <span className="flex items-center gap-2">
-              <Dot on={r.on} />
-              {r.name}
-              <Badge variant="outline" className="font-normal">
-                {r.mcp ? 'mcp' : 'provider'}
-              </Badge>
-            </span>
-          }
-          description={
-            remote?.name === r.name ? (
-              <>
-                Sign in from the node ({engineName ?? 'node'}):{' '}
-                <code className="select-all break-all font-mono text-xs">{remote.url}</code>
-              </>
-            ) : (
-              r.status
-            )
-          }
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={login.isPending || logout.isPending}
-            onClick={() => (r.on ? logout.mutate(r) : login.mutate(r))}
-          >
-            {r.on ? 'Logout' : 'Login'}
-          </Button>
-        </Row>
-      ))}
-    </Section>
+    <span className="block">
+      Sign in from the node ({engineName ?? 'node'}): <code className="select-all break-all font-mono text-xs">{logins.remote.url}</code>
+    </span>
+  )
+}
+
+/** A provider row's login after its key or address; nothing for a provider without one. */
+function LoginSuffix({ l, logins }: { l: LoginInfo | undefined; logins: Logins }) {
+  if (!l) return null
+  return (
+    <>
+      {' · '}
+      <LoginState l={l} logins={logins} />
+    </>
+  )
+}
+
+function LoginButton({ l, logins }: { l: LoginInfo | undefined; logins: Logins }) {
+  if (!l) return null
+  return (
+    <Button variant="outline" size="sm" disabled={logins.login.isPending || logins.logout.isPending} onClick={() => (l.logged_in ? logins.logout.mutate(l.name) : logins.login.mutate(l.name))}>
+      {l.logged_in ? 'Log out' : 'Log in'}
+    </Button>
   )
 }
 
@@ -165,17 +129,21 @@ const SUB = 'mt-6 text-[13px] font-semibold'
 
 /**
  * One list of model providers (162 D2/D9): the built-in key providers (85 §0.9: OpenCode Zen, OpenRouter, keyed by the
- * `opencode` / `openrouter` secret through the masked `set_secret` entry; the value is never read back), then the local
- * model servers (177 U1), then the other custom OpenAI-compatible providers (key sent once with `add_provider`, never
- * echoed). A custom or local row expands to its models' limits (177 U2).
+ * `opencode` / `openrouter` secret through the masked `set_secret` entry; the value is never read back) and the OAuth
+ * providers, then the local model servers (177 U1), then the other custom OpenAI-compatible providers (key sent once
+ * with `add_provider`, never echoed). A custom or local row expands to its models' limits (177 U2). A provider with a
+ * login carries it on its row (188 A6); a login with no provider row gets a row of its own after the built-ins.
  */
-function Providers() {
+function ProviderList() {
   const api = useApi()
   const providers = useQuery({
     queryKey: queryKeys.providers,
     queryFn: () => api.list_providers(),
   })
+  const logins = useLogins()
   const rows = orderProviders(providers.data)
+  // Until the providers answer, every login would look unpaired.
+  const paired = pairLogins(rows, providers.data ? (logins.list ?? []) : [])
   const custom = rows.filter((p) => !p.builtin && !p.local)
   const local = rows.filter((p) => !p.builtin && p.local)
   // A provider change changes which models `list_models` may offer (85 §2).
@@ -211,8 +179,8 @@ function Providers() {
       <Row
         label={
           <span className="flex items-center gap-2">
-            {/* A keyless local server is as ready as a keyed one. */}
-            <Dot on={p.configured || p.local} />
+            {/* A keyless local server is as ready as a keyed one, a logged-in provider too. */}
+            <Dot on={p.configured || p.local || !!paired.byProvider.get(p.name)?.logged_in} />
             {BUILTIN_LABEL[p.name] ?? p.name}
             <Badge variant="outline" className="font-normal">
               {p.builtin ? 'built-in' : p.local ? 'local' : 'custom'}
@@ -230,6 +198,7 @@ function Providers() {
             ) : (
               `no key (secret \`${p.name}\`)`
             )}
+            <LoginSuffix l={paired.byProvider.get(p.name)} logins={logins} />
           </>
         }
       >
@@ -270,6 +239,7 @@ function Providers() {
                 <RefreshCw className={refresh.isPending && refresh.variables === p.name ? 'animate-spin' : undefined} /> Refresh models
               </Button>
             )}
+            <LoginButton l={paired.byProvider.get(p.name)} logins={logins} />
             {p.builtin ? (
               <Button size="sm" variant="outline" onClick={() => setOpen(p.name)}>
                 {p.configured ? 'Replace key…' : 'Set key…'}
@@ -303,6 +273,23 @@ function Providers() {
   return (
     <Section title="Providers">
       {rows.filter((p) => p.builtin).map(row)}
+      {paired.alone.map((l) => (
+        <Row
+          key={l.name}
+          label={
+            <span className="flex items-center gap-2">
+              <Dot on={l.logged_in} />
+              {BUILTIN_LABEL[l.name] ?? l.name}
+              <Badge variant="outline" className="font-normal">
+                built-in
+              </Badge>
+            </span>
+          }
+          description={<LoginState l={l} logins={logins} />}
+        >
+          <LoginButton l={l} logins={logins} />
+        </Row>
+      ))}
       <LocalServers names={names} empty={!!providers.data && local.length === 0}>
         {local.map(row)}
       </LocalServers>

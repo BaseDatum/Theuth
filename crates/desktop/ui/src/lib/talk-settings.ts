@@ -1,4 +1,4 @@
-// Settings › Chat › Talk (76 TALK-UI-A A2): client-only talk preferences, persisted like the theme.
+// Settings › Voice › Microphone › Talk (76 TALK-UI-A A2; 188 moved it from Chat): client-only talk preferences, persisted like the theme.
 
 import { create } from 'zustand'
 

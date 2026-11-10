@@ -2,6 +2,7 @@ import { toast } from 'sonner'
 import { ChordInput, Empty, Row, Section } from '@/components/settings/shared'
 import { touch } from '@/lib/hotkeys'
 import { label } from '@/lib/chord'
+import { DEFAULT_EYE, DEFAULT_PTT, useMeetingSettings } from '@/lib/meeting-settings'
 import { DEFS, IDS, type ShortcutId, fallback, probeShortcut, useShortcuts } from '@/lib/shortcuts'
 import { voiceKeyBind } from '@/lib/tauri'
 import { useVoiceKeySettings } from '@/lib/voice-key'
@@ -19,6 +20,8 @@ const TERMINAL_KEYS = ['Control+D', 'Control+C', 'Control+Z']
 export function Shortcuts() {
   const chords = useShortcuts((s) => s.chords)
   const set = useShortcuts((s) => s.set)
+  const eye = useMeetingSettings((s) => s.eye)
+  const ptt = useMeetingSettings((s) => s.ptt)
   // Touch keeps only Mod+K for a hardware keyboard (49 §5.3, `useHotkeys`).
   if (touch()) {
     return (
@@ -61,6 +64,31 @@ export function Shortcuts() {
           ))}
         </Section>
       ))}
+      {/* 188: the meeting hotkeys, moved from Settings › Meetings; they live in `lib/meeting-settings.ts`, not `lib/shortcuts.ts`. */}
+      <Section title="Meetings">
+        <Row label="Eye hotkey" description="Flips hidden from capture while a meeting records. Click the field and press a chord.">
+          <MeetingHotkey kind="eye" value={eye} fallback={DEFAULT_EYE} />
+        </Row>
+        <Row
+          label="Push-to-talk hotkey"
+          description="Hold to ask the meeting session a question; what you say while it is held is tagged as a request and answered as a brief. Registered only while a meeting records or is paused."
+        >
+          <MeetingHotkey kind="ptt" value={ptt} fallback={DEFAULT_PTT} />
+        </Row>
+      </Section>
     </>
+  )
+}
+
+/** A meeting global shortcut: probed with the plugin (a conflict rejects) before it is saved. */
+function MeetingHotkey({ kind, value, fallback }: { kind: 'ptt' | 'eye'; value: string; fallback: string }) {
+  const setHotkey = useMeetingSettings((s) => s.setHotkey)
+  return (
+    <ChordInput
+      value={value}
+      fallback={fallback}
+      display={label}
+      commit={(chord) => (chord === fallback ? setHotkey(kind, chord) : probeShortcut(chord).then(() => setHotkey(kind, chord)))}
+    />
   )
 }

@@ -1,4 +1,4 @@
-// Settings › General › Serif prose on boards (71 §0 Q1): board prose is set in Newsreader (`--font-serif`) unless the
+// Settings › General › Appearance › Serif prose on boards (71 §0 Q1): board prose is set in Newsreader (`--font-serif`) unless the
 // reader opts out, in which case the prose register falls back to `--font-sans`. Chrome stays mono either way.
 
 import { create } from 'zustand'

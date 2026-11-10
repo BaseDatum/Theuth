@@ -39,6 +39,7 @@ import { ModelDialog, ModelMenu, ModelRow } from './ModelMenu'
 import { MemoryBadge, MemoryPanel } from './MemoryPanel'
 import { BrowserIndicator } from './Indicators'
 import { SessionMenu } from './SessionMenu'
+import { MessagingSheet } from './MessagingSheet'
 import { TerminalButton, TerminalViewer, useHasTerminals } from './TerminalViewer'
 import { EyeMark } from './ObservedBar'
 
@@ -390,6 +391,8 @@ export function Header({
           <ArtifactPanel session={session} />
           <CodeMapSheet session={session} />
           <MemoryPanel session={session} open={memory} onOpenChange={setMemory} />
+          {/* 188: here, not in the ⋯ menu, so it outlives the menu closing; `?messaging=1` opens it too. */}
+          <MessagingSheet session={session} />
         </>
       )}
     </header>

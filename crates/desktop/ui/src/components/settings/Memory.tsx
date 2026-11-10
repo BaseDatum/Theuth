@@ -2,15 +2,24 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
-import { Count, Row, Section, useAction } from '@/components/settings/shared'
+import { Count, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { SummaryTestCall } from '@/components/settings/SummaryTestCall'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { ENDLESS_DEFAULTS, tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
+import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
+import { useConnection } from '@/store/connection'
 
 type Key = keyof typeof ENDLESS_DEFAULTS
+
+const COMPACT: [CompactStyle, string][] = [
+  ['summary', 'Summary'],
+  ['cut', 'Cut'],
+  ['snap', 'Snap'],
+]
 
 /** The Advanced rows by group: key, label, help, the engine's validated range, and the step (1 = whole numbers). The engine default is the placeholder while the key is absent. */
 export const ADVANCED: readonly (readonly [string | null, readonly (readonly [Key, string, string, number, number, number])[]])[] = [
@@ -47,7 +56,7 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
     <input
       type="range"
       aria-label={ariaLabel}
-      className="w-48 accent-primary disabled:opacity-50"
+      className="w-48 accent-primary disabled:opacity-50 max-md:w-full"
       min={min}
       max={max}
       step={step}
@@ -61,18 +70,21 @@ function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-labe
 }
 
 /**
- * Settings › Memory (137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`).
+ * Settings › Agent › Memory (137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`),
+ * and the compact style of chats that are not endless (188 A9, from the old Agent loop tab).
  * `focus`: `model` focuses the compactor model (the Memory panel's "Change model", 137F); `spend` opens Advanced on the
  * daily spend cap (the paused-by-spend row's link, 137G).
  */
 export function Memory({ focus = null }: { focus?: string | null }) {
   const api = useApi()
+  const info = useConnection((s) => s.info)
   const settings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const save = useAction((next: EndlessConfig) => api.endless_settings_set(next), { keys: [queryKeys.endlessSettings] })
   const s = settings.data
   const busy = !s || save.isPending
   const patch = (p: Partial<EndlessConfig>) => s && save.mutate({ ...s, ...p })
+  const setCompact = useAction((style: CompactStyle) => api.set_compact_style(style).then(() => refreshInfo(api)))
   // Live preview while the slider moves: the label and the token estimate follow the thumb before the write.
   const [viewKb, setViewKb] = useState<number | null>(null)
   const [slackPct, setSlackPct] = useState<number | null>(null)
@@ -102,9 +114,24 @@ export function Memory({ focus = null }: { focus?: string | null }) {
         <Row label="Meetings start endless" description="The ∞ switch on the meeting start form starts on: the meeting keeps a compressed memory of the whole call behind the live transcript.">
           <Switch aria-label="Meetings start endless" checked={s?.default_meeting ?? false} disabled={busy} onCheckedChange={(v) => patch({ default_meeting: v })} />
         </Row>
+        <Row label="Default compact style" description="How a compaction builds the new context head.">
+          <Select value={info?.compact_style} disabled={!info || setCompact.isPending} onValueChange={(v) => setCompact.mutate(v as CompactStyle)}>
+            <SelectTrigger className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {COMPACT.map(([id, label]) => (
+                <SelectItem key={id} value={id}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Row>
       </Section>
       <Section title="View">
         <Row
+          stack
           label={
             <>
               View size · <span className="tabular-nums">{kb} KB</span>
@@ -131,6 +158,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
           />
         </Row>
         <Row
+          stack
           label={
             <>
               Slack · <span className="tabular-nums">{pct} %</span>
@@ -181,7 +209,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
         >
           <SummaryTestCall model={testModel} />
         </Row>
-        <Row label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
+        <Row stack label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
           <span className="text-sm text-fg-secondary">copy · grounding · status · format — always on</span>
         </Row>
         <Collapsible defaultOpen={focus === 'spend'}>

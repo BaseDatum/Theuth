@@ -143,7 +143,7 @@ export function UnpairBody({
         <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={reset} onChange={(e) => onReset(e.currentTarget.checked)} />
         <span>
           Also reset phone and iPad pairing
-          {reset && <span className="mt-0.5 block text-[13px] text-fg-secondary">Every phone and iPad paired to this mesh must scan the pairing QR again (Settings › Link).</span>}
+          {reset && <span className="mt-0.5 block text-[13px] text-fg-secondary">Every phone and iPad paired to this mesh must scan the pairing QR again (Settings › Network › Devices).</span>}
         </span>
       </label>
       {error && <p className="text-sm text-danger">{error}</p>}

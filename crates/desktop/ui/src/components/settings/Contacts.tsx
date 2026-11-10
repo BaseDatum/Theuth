@@ -6,6 +6,7 @@ import { type ReactNode, type Ref, useCallback, useEffect, useRef, useState } fr
 import { toast } from 'sonner'
 import { type PairView, pairView, spaced } from '@/components/settings/PairDialog'
 import { Empty, RenameInput, Section, errorText, useAction } from '@/components/settings/shared'
+import type { TabProps } from '@/components/settings/types'
 import { useAgents, useMesh } from '@/components/tasks/queries'
 import {
   AlertDialog,
@@ -24,7 +25,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { CAP, MODE_LABEL, PAIRED_RULE, SHARE_RULE, capBinds, exportName, fingerprint, modeHint, modeOf, names, updateNeeded, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { CAP, MODE_LABEL, PAIRED_RULE, SHARE_RULE, accessFocus, capBinds, exportName, fingerprint, focusedContact, modeHint, modeOf, names, updateNeeded, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -54,8 +55,8 @@ const CAPS: [Risk, string][] = [
   ['mutating', 'Can change things'],
 ]
 const MODES: ShareMode[] = ['full', 'cautious']
-const toCommunication = { to: '/settings/$tab', params: { tab: 'communication' }, search: {} } as const
-const toNetwork = { to: '/settings/$tab', params: { tab: 'network' }, search: {} } as const
+/** 188: Settings › Network › Contacts, scrolled to `contact`'s Access row when one is named. */
+const toContacts = (contact?: string) => ({ to: '/settings/$tab', params: { tab: 'contacts' }, search: contact ? { focus: accessFocus(contact) } : {} }) as const
 
 function PathChip({ path }: { path: PeerPath }) {
   const [text, dot] = PATH[path]
@@ -70,7 +71,7 @@ function PathChip({ path }: { path: PeerPath }) {
 /** 183 review 1: how many first messages wait for one (contact, export), when more than one. */
 export const waitingCount = (w: FirstWaiting) => (w.waiting > 1 ? ` · ${w.waiting} messages` : '')
 
-/** 183 Phase 3: the line under a held first message — shared by the chat's Communication page, Contacts and the strip. */
+/** 183 Phase 3: the line under a held first message — shared by Network › Messaging, Contacts and the strip. */
 export const waitingLine = (w: FirstWaiting) =>
   `${w.contact}${w.machine ? ` (${w.machine})` : ''} is waiting for you to allow its first message to ${w.export}${waitingCount(w)}`
 
@@ -137,9 +138,19 @@ export function ExportChip({ name, exp, mode }: { name: string; exp: Export | un
   )
 }
 
+/** 188 Settings › Network › Contacts: the contacts, then what each may reach; `?focus=access:<name>` scrolls to one. */
+export function ContactsTab({ focus }: TabProps) {
+  return (
+    <>
+      <Contacts />
+      <ContactAccess focus={focusedContact(focus)} />
+    </>
+  )
+}
+
 /**
- * 183 §12.7: Settings › Network › Contacts — each contact with its machine (from its card), path, fingerprint and the
- * exports it may reach; ⋯ Rename · Choose what it may reach · Block · Remove. Add contact… opens the window.
+ * 183 §12.7: the contacts list — each contact with its machine (from its card), path, fingerprint and the exports it
+ * may reach; ⋯ Rename · Choose what it may reach · Block · Remove. Add contact… opens the window.
  */
 export function Contacts({ adding: initial = false }: { adding?: boolean }) {
   const api = useApi()
@@ -209,7 +220,7 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onSelect={() => setRenaming(c.name)}>Rename</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => void navigate(toCommunication)}>Choose what {c.name} may reach…</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void navigate(toContacts(c.name))}>Choose what {c.name} may reach…</DropdownMenuItem>
                 {c.blocked ? (
                   <DropdownMenuItem onSelect={() => update.mutate({ name: c.name, patch: { blocked: false } })}>Unblock</DropdownMenuItem>
                 ) : (
@@ -223,7 +234,7 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
           </div>
         </div>
       ))}
-      {adding && <AddContact onClose={() => setAdding(false)} onAccess={() => void navigate(toCommunication)} />}
+      {adding && <AddContact onClose={() => setAdding(false)} onAccess={(peer) => void navigate(toContacts(contacts.data?.find((c) => c.endpoint === peer)?.name))} />}
       <AlertDialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -387,9 +398,9 @@ function windowCall<T>(call: () => Promise<T>): Promise<T> {
  * 183 §7.4, §12.7: Add contact… — opens the contact window (`contact_window(true)`, closed on unmount) and its two tabs:
  * Nearby agents (`contact_nearby`, patched by `contact_nearby` events) and Invite (this window's ticket as text and QR,
  * or paste theirs). A ceremony this side starts, or a stranger's that arrives while the window is open, replaces the
- * tabs with the code until it ends.
+ * tabs with the code until it ends. "Choose what … may reach" calls `onAccess` with the new contact's endpoint id.
  */
-export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { onClose: () => void; onAccess: () => void; tab?: 'nearby' | 'invite' }) {
+export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { onClose: () => void; onAccess: (peer: string | undefined) => void; tab?: 'nearby' | 'invite' }) {
   const api = useApi()
   const qc = useQueryClient()
   const [tab, setTab] = useState(initialTab)
@@ -517,7 +528,7 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
             onDone={close}
             onAccess={() => {
               close()
-              onAccess()
+              onAccess(ceremony?.peer)
             }}
             cancelRef={cancelMount}
           />
@@ -732,37 +743,33 @@ function useShareable(enabled: boolean): Pick_[] {
 }
 
 /**
- * 183 §7.6, §12.10 (D9): Settings › Communication › Contacts' access — per contact its cap (`Read only` / `Can change
- * things`), what it may reach (agents and chats, each with its first-contact answer and Paused state), and Share… to
- * pick another agent or chat.
+ * 183 §7.6, §12.10 (D9): Access, under the contacts list — per contact its cap (`Read only` / `Can change things`), what
+ * it may reach (agents and chats, each with its first-contact answer and Paused state), and Share… to pick another agent
+ * or chat. `focus` names the contact whose row scrolls into view (188).
  */
-export function ContactAccess() {
-  const navigate = useNavigate()
+export function ContactAccess({ focus = null }: { focus?: string | null }) {
   const contacts = useContacts()
   const exports = useExports()
   return (
-    <Section
-      title="Contacts' access"
-      actions={
-        <Button variant="outline" size="sm" onClick={() => void navigate(toNetwork)}>
-          Contacts…
-        </Button>
-      }
-    >
+    <Section title="Access">
       <p className="text-[13px] text-fg-secondary">
-        {SHARE_RULE} Cautious shares open a fresh capped session per agent, or one capped turn per message in a shared chat.
+        Choose, per contact, which agents and chats it may reach, which tools it may use there (read only, or able to change things), and how each share answers its first message.
       </p>
       <p className="text-[13px] text-fg-secondary">A new share starts on "Always allow". "Ask first" holds a contact's first message until you press Allow.</p>
       <p className="text-[13px] text-fg-secondary">{toolsLine(exports.data ?? [])}</p>
       {contacts.isPending && <Empty>Loading…</Empty>}
       {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
-      {contacts.data?.length === 0 && <Empty>No contacts yet. Add one in Settings › Network › Contacts.</Empty>}
-      {contacts.data?.map((c) => <Access key={c.name} c={c} all={contacts.data} exports={exports.data ?? []} />)}
+      {contacts.data?.length === 0 && <Empty>Add a contact above to choose what it may reach.</Empty>}
+      {contacts.data?.map((c) => <Access key={c.name} c={c} all={contacts.data} exports={exports.data ?? []} focused={c.name === focus} />)}
     </Section>
   )
 }
 
-function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; exports: readonly Export[] }) {
+function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contact[]; exports: readonly Export[]; focused: boolean }) {
+  const row = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (focused) row.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }, [focused])
   const api = useApi()
   const [picking, setPicking] = useState(false)
   const [chosen, setChosen] = useState<Pick_ | null>(null)
@@ -781,7 +788,7 @@ function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; expo
   // 186 D6: the cap bounds cautious turns only; with every grant full there is nothing for it to bound.
   const allFull = c.exports.length > 0 && c.exports.every((n) => modeOfRow(n) === 'full')
   return (
-    <div className="border-b border-border-subtle py-3 last:border-0">
+    <div ref={row} className="border-b border-border-subtle py-3 last:border-0">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="min-w-0 flex-1 basis-40">
           <div className="text-sm font-medium">
@@ -924,7 +931,7 @@ const READS: Record<string, string> = {
 /** 183 Z4-R1: the warning under a tool in Add tool, if any (a reader's reach, an MCP tool's self-declared risk). */
 export function toolNote(tool: string): string | null {
   if (READS[tool]) return `Sees ALL your ${READS[tool]}, not just what you share here`
-  if (tool.startsWith('mcp:')) return 'Read-only as the server declares it; for a server you don’t control, pin its risk in mcp/config.yaml'
+  if (tool.startsWith('mcp:')) return 'Read-only as the server declares it; for a server you don’t control, pin its risk on Agents › Tools'
   return null
 }
 
@@ -1078,7 +1085,7 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
               variant="ghost"
               onClick={() => {
                 onClose()
-                void navigate(toNetwork)
+                void navigate(toContacts())
               }}
             >
               Contacts…
