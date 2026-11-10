@@ -1,7 +1,7 @@
 import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
 import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
-import { classify, type CellResultInput, humanSecs, type Injected, movedFromRecord, splitLeading, splitParentView } from "@/lib/injected";
+import { classify, type CellResultInput, type ContactNote, humanSecs, type Injected, movedFromRecord, splitLeading, splitParentView } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitRestart, splitTime } from "@/lib/time";
 import { live, observedState } from "@/lib/session-tree";
@@ -381,16 +381,22 @@ function stampUser(entries: Entry[], turn: number, cells: CellResultInput[] = []
   return u?.kind === "user" ? replaceAt(entries, at, { ...u, turn, ...(cells.length ? { cells } : {}) }) : entries;
 }
 
-/** The body of a stored peer row: the `<message>` wrapper's content when the row is exactly one wrapper (50 §9 stores
- * the provider-visible form), the raw text otherwise. Display only; identity comes from the typed `PeerOrigin`. */
-function peerBody(text: string): string {
-  const cls = classify(text)
-  const only = cls?.length === 1 ? cls[0] : undefined
-  return only?.kind === 'peer' ? only.text : text
+/** The body of a stored peer row (50 §9 stores the provider-visible form): the words inside the one `<message>`
+ * wrapper, the one `<contact_message>` (183 §11.6) or an inbox's `<contact_inbox/>` notice plus its `<message>`
+ * (§11.5); the raw text otherwise. A contact wrapper also gives the contact facts and the harness note the model read
+ * (Details lists them, never the tag). Display only; identity comes from the typed `PeerOrigin`. */
+function peerBody(text: string): { text: string; contact?: ContactNote & { note: string } } {
+  const [head, next, more] = classify(text) ?? []
+  if (more) return { text }
+  if (head?.kind === 'peer' && !next) return { text: head.text }
+  // The contact's words: the lone `<contact_message>`'s, or the `<message>` after an inbox's notice.
+  const words = head?.kind === 'contact_message' && !next ? head.text : head?.kind === 'contact_inbox' && !head.message && next?.kind === 'peer' ? next.text : undefined
+  if (words === undefined || (head?.kind !== 'contact_message' && head?.kind !== 'contact_inbox')) return { text }
+  return { text: words, contact: { contact: head.contact, machine: head.machine, export: head.export, cap: head.cap, note: head.note } }
 }
 
 /** The card a peer exchange renders as, from its authenticated provenance; never from the wrapper's attributes. */
-function peerEntry(origin: PeerOrigin, text: string, seq?: number, context?: ContextEntry): Entry {
+function peerEntry(origin: PeerOrigin, text: string, seq?: number, context?: ContextEntry): Extract<Entry, { kind: 'peer' }> {
   return { id: nextId(), kind: 'peer', from: origin.from, text, origin, seq, context }
 }
 
@@ -432,8 +438,10 @@ function historyEntries(h: HistoryEntry): Entry[] {
             context,
           },
         ];
-      if (h.peer)
-        return [peerEntry(h.peer, peerBody(text), undefined, context)];
+      if (h.peer) {
+        const { text: words, contact } = peerBody(text)
+        return [{ ...peerEntry(h.peer, words, undefined, context), ...(contact ? { contact } : {}) }];
+      }
       const rows = userEntries(
         text,
         classify(text),

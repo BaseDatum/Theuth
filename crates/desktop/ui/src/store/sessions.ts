@@ -136,13 +136,15 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
   /** `⟵ from` card: a peer message, a subagent result or a job result. `origin` is the engine-authenticated
    * provenance (50 §9) of a peer exchange, from `PeerDelivered` live or `HistoryEntry::User.peer` on replay; a card
    * parsed from a legacy `<message>` wrapper has none and renders a label only, never inspect/answer controls.
-   * `seq` is the stored row the live delivery became. */
+   * `seq` is the stored row the live delivery became. A stored row a contact wrapper opened (183 §11.5/§11.6) carries
+   * its inner words as `text` and the wrapper's facts and harness note as `contact`; the tag itself is never kept. */
   | {
       kind: "peer";
       from: string;
       text: string;
       origin?: PeerOrigin;
       seq?: number;
+      contact?: ContactNote & { note: string };
     }
   | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'child' | 'autoresearch' | 'moved' | 'engine_restart' | 'contact_inbox' | 'contact_message' }>
   /** 171 §9.1: a cell result the agent read; `turn` when its stored row opened the turn (`foldCells` hands it on). */
@@ -838,13 +840,14 @@ export const useBrowserBusy = (id: string) =>
   useSessions((s) => browserBusy(s.sessions[id]));
 
 /** 183 §12.10: the contact whose capped turn runs in this exported chat: the running turn's `TurnStarted` carried a
- * `<contact_message>`, or (a page loaded mid-turn) the last opener in the transcript is one. `null` otherwise.
+ * `<contact_message>`, or (a page loaded mid-turn) the last opener in the transcript is one: a `contact_message`
+ * card, or a peer card its stored contact wrapper gave `contact` facts. `null` otherwise.
  * ponytail: after a reload the owner's own steer into a contact's turn (§13 row 50) hides the chip; the turn stays capped. */
 export const contactTurn = (s: SessionSlice | undefined): ContactNote | null => {
   if (!s?.running) return null;
   if (s.contactNote) return s.contactNote;
-  const opener = s.entries.findLast((e) => e.kind === "user" || e.kind === "contact_message");
-  return opener?.kind === "contact_message" ? opener : null;
+  const opener = s.entries.findLast((e) => e.kind === "user" || e.kind === "contact_message" || (e.kind === "peer" && !!e.contact));
+  return opener?.kind === "contact_message" ? opener : opener?.kind === "peer" && opener.contact ? opener.contact : null;
 };
 
 type Listener<T extends WireEvent["type"]> = (
