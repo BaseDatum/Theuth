@@ -11,7 +11,7 @@
 //! [`Vault::expand`]; [`Vault::redact`] turns them back into placeholders.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, PoisonError, RwLock, RwLockReadGuard};
@@ -293,6 +293,10 @@ struct Scrubber {
     placeholders: Vec<String>,
     /// Longest pattern, in bytes.
     max_len: usize,
+    /// Every distinct entry of `placeholders`: the spans [`hits`] leaves alone.
+    held: HashSet<String>,
+    /// Longest of `held`, in bytes.
+    held_max: usize,
 }
 
 struct Inner {
@@ -759,10 +763,9 @@ impl Vault {
     /// Byte ranges [`Vault::redact`] would replace, ascending and
     /// non-overlapping (51 §7.2).
     pub fn redact_spans(&self, text: &str) -> Vec<std::ops::Range<usize>> {
-        self.read()
-            .scrubber
-            .as_ref()
-            .map_or_else(Vec::new, |sc| hits(sc, text).map(|(r, _)| r).collect())
+        self.read().scrubber.as_ref().map_or_else(Vec::new, |sc| {
+            hits(sc, text).into_iter().map(|(r, _)| r).collect()
+        })
     }
 
     /// Longest value [`Vault::redact_spans`] can match, in bytes; `0` = none.
@@ -1087,34 +1090,39 @@ fn strings(
     }
 }
 
-/// Matches outside every `{{secret:…}}` span already in `text`, with their
-/// placeholder index: masking is idempotent, so a secret whose value is part
-/// of a placeholder (its own name, say) never rewrites that placeholder.
-fn hits<'a>(
-    sc: &'a Scrubber,
-    text: &'a str,
-) -> impl Iterator<Item = (std::ops::Range<usize>, usize)> + 'a {
-    let mut at = 0;
-    std::iter::from_fn(move || {
-        if at >= text.len() {
-            return None;
+/// Matches with their placeholder index, outside every placeholder this
+/// scrubber itself emits that is already in `text`: masking is idempotent, so
+/// a secret whose value is part of a placeholder (its own name, say) never
+/// rewrites it. Only an exact emitted placeholder is skipped; any other
+/// `{{secret:` text (a fake one around a value, an unknown name, `env`
+/// output before a JSON close) is scanned like the rest.
+fn hits(sc: &Scrubber, text: &str) -> Vec<(std::ops::Range<usize>, usize)> {
+    let mut held: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut from = 0;
+    while let Some(i) = text[from..].find("{{secret:") {
+        let start = from + i;
+        let window = &text.as_bytes()[start..text.len().min(start + sc.held_max)];
+        match window.windows(2).position(|w| w == b"}}") {
+            Some(j) if sc.held.contains(&text[start..start + j + 2]) => {
+                held.push(start..start + j + 2);
+                from = start + j + 2;
+            }
+            // `{` is one byte: still a char boundary.
+            _ => from = start + 1,
         }
-        let (end, next) = match text[at..].find("{{secret:") {
-            Some(i) => match text[at + i..].find("}}") {
-                Some(j) => (at + i, at + i + j + 2),
-                None => (text.len(), text.len()),
-            },
-            None => (text.len(), text.len()),
-        };
-        let base = at;
-        at = next;
-        Some(
+    }
+    let mut out = Vec::new();
+    let mut base = 0;
+    let ends = held.iter().map(|h| (h.start, h.end));
+    for (stop, resume) in ends.chain([(text.len(), text.len())]) {
+        out.extend(
             sc.ac
-                .find_iter(&text[base..end])
-                .map(move |m| (base + m.start()..base + m.end(), m.pattern().as_usize())),
-        )
-    })
-    .flatten()
+                .find_iter(&text[base..stop])
+                .map(|m| (base + m.start()..base + m.end(), m.pattern().as_usize())),
+        );
+        base = resume;
+    }
+    out
 }
 
 fn scrub<'a>(sc: Option<&Scrubber>, text: &'a str) -> Cow<'a, str> {
@@ -1165,6 +1173,8 @@ fn scrubber(entries: &BTreeMap<String, Entry>) -> Option<Scrubber> {
         return None;
     }
     let max_len = patterns.iter().map(|p| p.len()).max().unwrap_or(0);
+    let held: HashSet<String> = placeholders.iter().cloned().collect();
+    let held_max = held.iter().map(String::len).max().unwrap_or(0);
     let ac = AhoCorasickBuilder::new()
         .match_kind(MatchKind::LeftmostLongest)
         .build(&patterns);
@@ -1173,6 +1183,8 @@ fn scrubber(entries: &BTreeMap<String, Entry>) -> Option<Scrubber> {
             ac,
             placeholders,
             max_len,
+            held,
+            held_max,
         }),
         Err(e) => {
             tracing::warn!("secrets: building the redaction automaton failed: {e}");
@@ -1421,6 +1433,48 @@ mod tests {
             v.redact("mikrotik {{secret:mikrotik.password}}mikrotik"),
             "{{secret:mikrotik.password}} {{secret:mikrotik.password}}{{secret:mikrotik.password}}"
         );
+    }
+
+    /// Only a placeholder the scrubber itself emits is left alone: text that
+    /// merely opens like one never hides a value.
+    #[tokio::test]
+    async fn redact_masks_values_inside_anything_but_a_real_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("tok", "first-secret-value", None, "user")
+            .await
+            .unwrap();
+        v.set("tok", "second-secret-value", None, "user")
+            .await
+            .unwrap();
+        let masked = |text: &str| v.redact(text).into_owned();
+        // A value wrapped in the placeholder form is not a placeholder.
+        assert_eq!(
+            masked("{{secret:second-secret-value}}"),
+            "{{secret:{{secret:tok}}}}"
+        );
+        // An unknown name, and a version the vault does not keep.
+        assert_eq!(
+            masked("{{secret:nope second-secret-value}} {{secret:tok:-3 first-secret-value}}"),
+            "{{secret:nope {{secret:tok}}}} {{secret:tok:-3 {{secret:tok:-1}}}}"
+        );
+        // A span over several lines.
+        assert_eq!(
+            masked("{{secret:\nsecond-secret-value\n}}"),
+            "{{secret:\n{{secret:tok}}\n}}"
+        );
+        // `env` output, then any JSON's closing braces.
+        assert_eq!(
+            masked("{{secret: HOME=/u TOKEN=second-secret-value\n{\"a\": {\"b\": 1}}"),
+            "{{secret: HOME=/u TOKEN={{secret:tok}}\n{\"a\": {\"b\": 1}}"
+        );
+        // Real placeholders, current and older, stay as they are, and so does the text after them.
+        let both = "{{secret:tok}} {{secret:tok:-1}} second-secret-value";
+        assert_eq!(
+            masked(both),
+            "{{secret:tok}} {{secret:tok:-1}} {{secret:tok}}"
+        );
+        assert_eq!(v.redact_spans(both).len(), 1);
     }
 
     #[tokio::test]

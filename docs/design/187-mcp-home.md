@@ -22,16 +22,36 @@ placeholders.
 
 | What | Where |
 |---|---|
-| **Sidecar `mcp/homes.yaml`** (`servers: {<name>: {engine, name, everywhere, off: [engine…]}}`), theuth-owned, keyed by server name so every `mcp.json` shape and multi-server files work and third-party files are never rewritten. It replicates with the directory (one row, last writer wins; a lost claim is made again by the next reconcile of its engine). `.homes.yaml.tmp` is a dotfile, so the mirror never ships a half file | `crates/tools/src/mcp.rs:441` `Homes`/`Home`, `load_homes` :476, `write_homes` :494 |
-| **This engine** = its mesh id + name (`tools::set_machine`). `t` seeds it from the stored mesh identity before the plugins start (tools starts before mesh, and `--acp` has no mesh); the mesh plugin sets it at start and on a rename. Never set (no mesh) = every server runs here, nothing is claimed | `mcp.rs:518`; `crates/theuth/src/main.rs:1812`; `crates/mesh/src/lib.rs:1147,1248` |
-| **Stamp on add**: `AddServer` writes this engine as home before the entry. Every add path goes through it: `add_mcp_server` RPC, the `add_mcp_server` tool, the UI, Slack/Telegram/Signal `/mcp add` | `mcp.rs:1386` |
-| **Placement**: an engine starts a server only if it is the home, or the server runs everywhere, and it is not turned off here; the rest are listed, not started, so their tools never register here | `place` `mcp.rs:548`, `reconcile` :1531, `Settled` :1811 |
-| **Home of a hand-written file / migration** (`claim`): a server without a home in `homes.yaml` is claimed by the engine that last wrote its file's replica row — the origin of the row's HLC (`replica::files::writers`), compared with this engine's replica origin (`replica::files::stored_origin`). No row at all means the file never went through the replica, i.e. it appeared on this engine (a peer's file is a row before it is a file), so this engine claims it. Only self-claims are written; a peer's file shows `home not claimed yet` until that peer claims it. A claim is made once: a later edit elsewhere does not move the home | `claim` `mcp.rs:1597`, `written_here` :562; `crates/replica/src/files.rs:148,168` |
-| **Migration**: the same rule on the first boot after the upgrade — every existing server is homed on the engine that last wrote its file. The brief's fallback ("unknown → the hub lease holder") is not needed: with a replica, every file has a row once scanned, and a file without one exists only here. One INFO line per server and change: `mcp: <name> home is <machine>` | `tell_homes` `mcp.rs:1634` |
-| **Calm failure**: a start that fails with ENOENT is `unavailable_here` with `<command> is not installed on <machine>` (or `<cwd> does not exist on …`); every failure (also other connect errors and login-required) waits out a backoff — 30 s, doubling, capped at 30 min — before the next start; reconciles in between start nothing. A changed entry, `Restart`, a move or re-enabling retries at once. One log line per state change (`said`), never per attempt; repeats at debug | `missing_here` :584, `backoff` :599, `settle` :1649 |
-| **RPC**: `list_mcp` rows gain `home`, `home_name`, `home_here`, `everywhere`, `state` (`running · connecting · elsewhere · off_here · off · unavailable_here · error`) and `reason`; `set_mcp_home(server, action)` with `run_everywhere · only_home · move_here · off_here · on_here` | `McpServer` `mcp.rs:962`, `McpState` :993, `SetMcpHome` :1769; `crates/rpc/src/api.rs:841` |
-| **UI**: Settings › MCP gains *Tool servers*: per row `on <home>` (the mesh's current name, else the stamped one), the state here (`running`, `not running here (home is 333)`, `not installed here` + reason, `error`, …) and the actions Run everywhere (toggle), Only on <home>, Move home here, Turn off here / Turn on here — shown only when the mesh has peers. Library › Tools rows say why a server is not running here | `crates/desktop/ui/src/lib/mcp-home.ts`, `components/settings/Mcp.tsx`, `components/library/Tools.tsx` |
-| **Masking is idempotent**: `scrub` (and `redact_spans`) never match inside an existing `{{secret:…}}` span | `crates/secrets/src/vault.rs:1093` `hits`, :1120 `scrub` |
+| **Sidecar `mcp/homes.yaml`** (`servers: {<name>: {engine, name, everywhere, off: [engine…]}}`), theuth-owned, keyed by server name so every `mcp.json` shape and multi-server files work and third-party files are never rewritten. It replicates with the directory (one row, last writer wins; a lost claim is made again by the next reconcile of its engine). `.homes.yaml.tmp` is a dotfile, so the mirror never ships a half file | `crates/tools/src/mcp.rs:441` `Homes`/`Home`, `load_homes` :477, `write_homes` :489 |
+| **This engine** = its mesh id + name (`tools::set_machine`). `t` seeds it from the stored mesh identity before the plugins start (tools starts before mesh, and `--acp` has no mesh); the mesh plugin sets it at start and on a rename. Never set (no mesh) = every server runs here, nothing is claimed | `mcp.rs:513`; `crates/theuth/src/main.rs:1812`; `crates/mesh/src/lib.rs:1147,1248` |
+| **Stamp on add**: `AddServer` writes this engine as home before the entry. Every add path goes through it: `add_mcp_server` RPC, the `add_mcp_server` tool, the UI, Slack/Telegram/Signal `/mcp add` | `mcp.rs:1426` |
+| **Placement**: an engine starts a server only if it is the home, or the server runs everywhere, and it is not turned off here; the rest are listed, not started, so their tools never register here | `place` `mcp.rs:570`, `reconcile` :1570, `Settled` :1932 |
+| **Home of a hand-written file / migration** (`claim`): a server without a home in `homes.yaml` is claimed by the engine that last wrote its file's replica row — the origin of the row's HLC (`replica::files::writers`), compared with this engine's replica origin (`replica::files::stored_origin`). No row at all means the file never went through the replica, i.e. it appeared on this engine (a peer's file is a row before it is a file), so this engine claims it. Only self-claims are written; a peer's file shows `home not claimed yet` until that peer claims it. A claim is made once: a later edit elsewhere does not move the home | `claim` `mcp.rs:1654`, `written_here` :585; `crates/replica/src/files.rs:149,174` |
+| **Migration**: the same rule on the first boot after the upgrade — every existing server is homed on the engine that last wrote its file. The brief's fallback ("unknown → the hub lease holder") is not needed: with a replica, every file has a row once scanned, and a file without one exists only here. One INFO line per server and change: `mcp: <name> home is <machine>` | `tell_homes` `mcp.rs:1750` |
+| **Calm failure**: a start that fails with ENOENT is `unavailable_here` with `<command> is not installed on <machine>` (or `<cwd> does not exist on …`); every failure (also other connect errors and login-required) waits out a backoff — 30 s, doubling, capped at 30 min — before the next start; reconciles in between start nothing. A changed entry, `Restart`, a move or re-enabling retries at once. One log line per state change (`said`), never per attempt; repeats at debug | `missing_here` :611, `backoff` :626, `settle` :1765 |
+| **RPC**: `list_mcp` rows gain `home`, `home_name`, `home_here`, `everywhere`, `state` (`running · connecting · elsewhere · off_here · off · unavailable_here · error`) and `reason`; `set_mcp_home(server, action)` with `run_everywhere · only_home · move_here · off_here · on_here` | `McpServer` `mcp.rs:994`, `McpState` :1025, `SetMcpHome` :1888; `crates/rpc/src/api.rs:841` |
+| **UI**: Settings › MCP gains *Tool servers*: per row `on <home>` (the mesh's current name, else the stamped one; nothing until the mesh answers), the state here (`running`, `not running here (home is 333)`, `not installed here` + reason, `error`, …) and the actions Run everywhere (toggle), Only on <home>, Move home here, Turn off here (only where it would run) / Turn on here. Alone in the mesh only Move home here, for a home on a machine the mesh does not know. Library › Tools rows say why a server is not running here | `crates/desktop/ui/src/lib/mcp-home.ts`, `components/settings/Mcp.tsx`, `components/library/Tools.tsx` |
+| **Masking is idempotent**: `scrub` (and `redact_spans`) skip only a placeholder the scrubber itself emits (an exact `sc.placeholders` entry); any other `{{secret:` text is scanned and masked like the rest | `crates/secrets/src/vault.rs` `hits`, `scrub` |
+
+## Upgrade note
+
+After the upgrade, an MCP server runs only on its home machine — the one it was added on, or for an existing or
+hand-written file the machine that last wrote it — unless **Run everywhere** is set. Other machines list it as
+`not running here (home is …)` and do not offer its tools. Portable servers (remote URLs, runtimes installed
+everywhere) need **Run everywhere** once.
+
+## Review round 1
+
+| # | Finding | As built |
+|---|---|---|
+| 1 | The skip rule left any `{{secret:` … `}}` run unmasked: a value wrapped in the form, `env` output before a JSON close | `hits` protects only an exact emitted placeholder (`Scrubber.held`, at most `held_max` bytes); negative tests: a wrapped value, unknown name, unkept version, multi-line span, `env` + JSON (`redact_masks_values_inside_anything_but_a_real_placeholder`) |
+| 2 | Servers homed on an ex-peer ran nowhere; Move home here hidden when alone | `claim` takes every server whose home engine is not paired here (`mesh::is_paired == Some(false)`, handed over as `tools::set_paired_check`; unknown = left alone); the mesh reconciles MCP when the paired set shrinks and once it is known at start (`tools::peers_changed`). UI: alone, Move home here for a home the mesh does not know |
+| 3 | A broken `homes.yaml` loaded as empty and was written over | `load_homes` → `Result`; on Err the last good homes stay, nothing is claimed or written, one WARN (`note_unreadable`), a reconcile in 30 s; `AddServer`, `RemoveServer`, `SetMcpHome` return the error before writing anything |
+| 4 | A replica read error looked like "no row" | `replica::files::writers` / `stored_origin` → `Result`; only a missing file is no rows; a row without a stamp is never this engine's; on Err the claim round is skipped (one WARN, retried in 30 s) |
+| 5 | Raw connect errors over RPC | `McpServer.reason` goes through `secrets::redact` |
+| 6 | LWW on the sidecar; stale lines of deleted servers | Documented (`SetMcpHome`: one replicated row, set it again if a concurrent change lost it). `claim` drops this engine's own lines of servers no file wants, only when every file parsed |
+| 7 | A panicking connect left `pending` set; a stale error beside `unavailable` | The connect task's `JoinHandle` is awaited, a `JoinError` settles as a failure; `unavailable` clears `errors`/`login` |
+| 8 | UI flicker and Turn off here everywhere | No chip or actions until `mesh_status` answers; Turn off here only on rows that would run here |
 
 ## Decisions
 
@@ -39,7 +59,8 @@ placeholders.
 - Home id = mesh engine id (the 182 `tasks.home` / schedule `engine:` convention); the stamped name is display only.
 - "Turn off here" is a per-engine list in the replicated sidecar, so every engine can show it; `off` in `config.yaml` stays the everywhere switch.
 - PATH-change retries: not built. The engine's own PATH does not change at runtime; the backoff (≤ 30 min) and an edit of the entry cover an install.
-- An engine whose replica identity was recreated sees its old rows as another writer's: those servers wait for a claim; **Move home here** fixes it.
+- An engine whose identity was recreated sees its old home id as an engine that left (not paired) and claims those servers again; its old replica rows read as another writer's until then.
+- A home on an engine no longer paired is claimed by every engine still in the mesh; the sidecar's last writer wins, so one keeps it (a partial mesh, A–B and B–C but not A–C, would let A take C's servers: not a supported topology).
 
 ## TODO (out of scope)
 
@@ -65,3 +86,9 @@ on A; on B listed `elsewhere` (home A), no start, one `mcp: hello home is A` lin
 B, after Only on A): A dropped it, both `homes.yaml` name B; Move home here on A brought it back. A hand-written file
 on B was claimed by B from its replica row; A logged `not claimed yet`, then `home is B`. PNGs:
 `1-b-run-everywhere-not-installed.png`, `2-a-running-at-home.png`, `3-b-after-move-home-here.png`.
+
+Review round 1 rig (same file, "Review round 1 rig"): a typo in `homes.yaml` on B — both engines warn once, keep their
+homes, write nothing over it, and `set_mcp_home` / `add_mcp_server` return the parse error; restored, B claims its new
+file. A replica read error (B's `mcp.sqlite` without its table, and at B's next boot before the mirror recreated it) —
+one WARN, nothing claimed, claimed on the 30 s retry. A unpairs B: A claims `fresh` and `handb` (homed on B) and backs
+off on them; B, still counting A as an offline peer, keeps `hello` homed on A until it removes A too, then claims it.

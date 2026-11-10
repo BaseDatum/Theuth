@@ -70,7 +70,7 @@ pub use journal::{
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpHomeAction, McpLogin, McpLogout, McpProgress,
     McpServer, McpState, McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate,
-    SetMcpHome, SyncMcp, set_machine,
+    SetMcpHome, SyncMcp, peers_changed, set_machine, set_paired_check,
 };
 pub use proctree::{PtyThresholds, TreeQuiet};
 pub use pty::{

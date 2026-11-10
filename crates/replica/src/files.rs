@@ -142,46 +142,60 @@ pub async fn mirror_at(
 }
 
 /// 187: per live file of `table` in `db` (a [`mirror_at`] database), the
-/// engine that last wrote its row — the origin of the row's `hlc`. Rows
-/// without a parsable stamp are left out. Empty when `db` or `table` does not
-/// exist (never creates either).
-pub async fn writers(db: &Path, table: &str) -> HashMap<String, crate::PeerId> {
-    let rows: anyhow::Result<Vec<(String, Option<String>)>> = async {
-        let mut conn = open_existing(db).await?;
-        Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT path, hlc FROM {} WHERE deleted = 0",
-            quote(table)
-        )))
-        .fetch_all(&mut conn)
-        .await?)
-    }
-    .await;
-    rows.unwrap_or_default()
+/// engine that last wrote its row — the origin of the row's `hlc`, `None`
+/// for a row without a parsable stamp. Empty only when `db` does not exist
+/// (never creates it); any read error (a locked or broken file, no `table`)
+/// is an error, never "no rows".
+pub async fn writers(
+    db: &Path,
+    table: &str,
+) -> anyhow::Result<HashMap<String, Option<crate::PeerId>>> {
+    let Some(mut conn) = open_existing(db).await? else {
+        return Ok(HashMap::new());
+    };
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT path, hlc FROM {} WHERE deleted = 0",
+        quote(table)
+    )))
+    .fetch_all(&mut conn)
+    .await?;
+    Ok(rows
         .into_iter()
-        .filter_map(|(path, hlc)| Some((path, crate::Hlc::parse(&hlc?)?.origin)))
-        .collect()
+        .map(|(path, hlc)| {
+            let origin = hlc.as_deref().and_then(crate::Hlc::parse).map(|h| h.origin);
+            (path, origin)
+        })
+        .collect())
 }
 
 /// 187: the replica origin stored in `db` (`<data_dir>/replica.sqlite`), the
 /// id [`writers`] reports for this engine's writes; `None` before the replica
-/// plugin ever ran (never creates it).
-pub async fn stored_origin(db: &Path) -> Option<crate::PeerId> {
-    let mut conn = open_existing(db).await.ok()?;
-    sqlx::query_scalar::<_, String>("SELECT peer FROM identity WHERE id = 1")
-        .fetch_optional(&mut conn)
-        .await
-        .ok()
-        .flatten()
-        .map(crate::PeerId)
+/// plugin ever ran (never creates it). A read error is an error.
+pub async fn stored_origin(db: &Path) -> anyhow::Result<Option<crate::PeerId>> {
+    let Some(mut conn) = open_existing(db).await? else {
+        return Ok(None);
+    };
+    Ok(
+        sqlx::query_scalar::<_, String>("SELECT peer FROM identity WHERE id = 1")
+            .fetch_optional(&mut conn)
+            .await?
+            .map(crate::PeerId),
+    )
 }
 
-async fn open_existing(db: &Path) -> anyhow::Result<sqlx::SqliteConnection> {
+/// `None` when `db` does not exist.
+async fn open_existing(db: &Path) -> anyhow::Result<Option<sqlx::SqliteConnection>> {
     use sqlx::ConnectOptions as _;
-    Ok(sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(db)
-        .busy_timeout(Duration::from_secs(5))
-        .connect()
-        .await?)
+    if !db.try_exists()? {
+        return Ok(None);
+    }
+    Ok(Some(
+        sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(db)
+            .busy_timeout(Duration::from_secs(5))
+            .connect()
+            .await?,
+    ))
 }
 
 struct Mirror {
@@ -849,25 +863,32 @@ mod tests {
         for s in [&a, &b] {
             let db = s._dir.path().join("data.sqlite");
             assert_eq!(
-                super::writers(&db, "agents").await.get("ops.md"),
-                Some(a.engine.origin())
+                super::writers(&db, "agents").await.unwrap().get("ops.md"),
+                Some(&Some(a.engine.origin().clone()))
             );
             assert_eq!(
-                super::stored_origin(&s._dir.path().join("replica.sqlite")).await,
+                super::stored_origin(&s._dir.path().join("replica.sqlite"))
+                    .await
+                    .unwrap(),
                 Some(s.engine.origin().clone())
             );
         }
+        // A missing file is no rows; a table that is not there is an error, never "no rows".
         let none = tempfile::tempdir().unwrap();
-        assert!(
-            super::writers(&none.path().join("x.sqlite"), "agents")
-                .await
-                .is_empty()
-        );
-        assert!(!none.path().join("x.sqlite").exists(), "never created");
+        let missing = none.path().join("x.sqlite");
+        assert!(super::writers(&missing, "agents").await.unwrap().is_empty());
+        assert!(!missing.exists(), "never created");
         assert_eq!(
-            super::stored_origin(&none.path().join("r.sqlite")).await,
+            super::stored_origin(&none.path().join("r.sqlite"))
+                .await
+                .unwrap(),
             None
         );
+        let db = a._dir.path().join("data.sqlite");
+        assert!(super::writers(&db, "no_such_table").await.is_err());
+        std::fs::write(&missing, b"not a database").unwrap();
+        assert!(super::writers(&missing, "agents").await.is_err());
+        assert!(super::stored_origin(&missing).await.is_err());
     }
 
     /// 67 worker V: the three directories the plugins mirror at start, each

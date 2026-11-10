@@ -38,12 +38,13 @@ export function Mcp() {
 function ToolServers() {
   const api = useApi()
   const servers = useQuery({ queryKey: queryKeys.mcp(null), queryFn: () => api.list_mcp(null) })
-  const machines = engines(useMesh().data)
+  const mesh = useMesh()
+  const machines = engines(mesh.data)
   const setHome = useAction((v: { server: string; action: McpHomeAction }) => api.set_mcp_home(v.server, v.action), {
     keys: [queryKeys.mcp(null)],
   })
-  // One machine: nothing runs anywhere else, so there is nothing to choose.
-  const meshed = machines.length > 1
+  // Until the mesh answers, no home chip and no actions: "on this machine" would flicker to the real name.
+  const ready = !mesh.isPending
   return (
     <Section title="Tool servers">
       {servers.isError ? (
@@ -60,9 +61,11 @@ function ToolServers() {
             label={
               <span className="flex flex-wrap items-center gap-2">
                 <span className="font-medium break-all">{s.name}</span>
-                <Badge variant="outline" className="font-normal">
-                  {homeChip(s, machines)}
-                </Badge>
+                {ready && (
+                  <Badge variant="outline" className="font-normal">
+                    {homeChip(s, machines)}
+                  </Badge>
+                )}
               </span>
             }
             description={
@@ -73,7 +76,7 @@ function ToolServers() {
               </span>
             }
           >
-            {meshed && (
+            {ready && (
               <div className="flex flex-wrap items-center gap-2">
                 {homeActions(s, machines).map((a) => (
                   <Button

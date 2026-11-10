@@ -1323,6 +1323,10 @@ impl Net {
             gone
         };
         drop(refreshing);
+        if !gone.is_empty() {
+            // 187: servers homed on an engine that left are claimed by one still here.
+            ::tools::peers_changed();
+        }
         for id in gone {
             self.close_conns(&id).await;
         }

@@ -42,12 +42,19 @@ export function stateText(s: Server, engines: readonly Engine[]): string {
 
 export type HomeAction = { action: McpHomeAction; label: string; pressed?: boolean }
 
-/** What a row offers on this machine: the Run everywhere toggle (pressed while on, then also Only on <home>), Move home here, Turn off / on here. */
+/**
+ * What a row offers on this machine: the Run everywhere toggle (pressed while on, then also Only on <home>), Move home
+ * here, and Turn off here (only where it would run) / Turn on here. Alone in the mesh only Move home here, and only for
+ * a home on a machine the mesh does not know (an unpaired one, a reset identity).
+ */
 export function homeActions(s: Server, engines: readonly Engine[]): HomeAction[] {
   const home = homeName(s, engines)
+  const move: HomeAction = { action: 'move_here', label: 'Move home here' }
+  if (engines.length <= 1) return !s.home_here && !engines.some((e) => e.id === s.home) ? [move] : []
   const out: HomeAction[] = [{ action: s.everywhere ? 'only_home' : 'run_everywhere', label: 'Run everywhere', pressed: s.everywhere }]
   if (s.everywhere) out.push({ action: 'only_home', label: home ? `Only on ${home}` : 'Only at home' })
-  if (!s.home_here) out.push({ action: 'move_here', label: 'Move home here' })
-  out.push(s.state === 'off_here' ? { action: 'on_here', label: 'Turn on here' } : { action: 'off_here', label: 'Turn off here' })
+  if (!s.home_here) out.push(move)
+  if (s.state === 'off_here') out.push({ action: 'on_here', label: 'Turn on here' })
+  else if (['running', 'connecting', 'unavailable_here', 'error'].includes(s.state)) out.push({ action: 'off_here', label: 'Turn off here' })
   return out
 }

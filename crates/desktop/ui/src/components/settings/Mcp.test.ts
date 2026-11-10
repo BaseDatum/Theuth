@@ -9,6 +9,7 @@ import { engines } from '@/components/tasks/home'
 import { MCP_SHARED_LINE, mcpActions, mcpConfig } from '@/lib/mcp-config'
 import { homeActions, homeChip, stateText } from '@/lib/mcp-home'
 import type * as Rpc from '@/lib/rpc'
+import { queryKeys } from '@/lib/rpc'
 import type { McpAuditLine } from '@/rpc/bindings/McpAuditLine'
 import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { McpServerConfig } from '@/rpc/bindings/McpServerConfig'
@@ -92,11 +93,11 @@ test('187: each row names its home and what it does on this machine', () => {
 })
 
 test('187: actions follow the row: Run everywhere toggles, Only on <home>, Move home here, Turn off / on here', () => {
-  const acts = (s: McpServer) => homeActions(s, MACHINES).map((a) => [a.action, a.label, a.pressed ?? null])
+  const acts = (s: McpServer, machines = MACHINES) => homeActions(s, machines).map((a) => [a.action, a.label, a.pressed ?? null])
+  // Homed elsewhere and not running here: nothing to turn off.
   expect(acts(server())).toEqual([
     ['run_everywhere', 'Run everywhere', false],
     ['move_here', 'Move home here', null],
-    ['off_here', 'Turn off here', null],
   ])
   expect(acts(server({ everywhere: true, state: 'unavailable_here' }))).toEqual([
     ['only_home', 'Run everywhere', true],
@@ -104,11 +105,29 @@ test('187: actions follow the row: Run everywhere toggles, Only on <home>, Move 
     ['move_here', 'Move home here', null],
     ['off_here', 'Turn off here', null],
   ])
-  // Homed here: nothing to move; turned off here: turn it back on.
+  // Homed here and running: nothing to move; turned off here: turn it back on.
+  expect(acts(server({ home_here: true, state: 'running' }))).toEqual([
+    ['run_everywhere', 'Run everywhere', false],
+    ['off_here', 'Turn off here', null],
+  ])
   expect(acts(server({ home_here: true, state: 'off_here' }))).toEqual([
     ['run_everywhere', 'Run everywhere', false],
     ['on_here', 'Turn on here', null],
   ])
+  // Alone (unpaired, or a reset identity): only a home on a machine nobody knows can be taken.
+  const alone = engines({ ...mesh, peers: [] })
+  expect(acts(server(), alone)).toEqual([['move_here', 'Move home here', null]])
+  expect(acts(server({ home: null }), alone)).toEqual([['move_here', 'Move home here', null]])
+  expect(acts(server({ home_here: true, state: 'running' }), alone)).toEqual([])
+})
+
+test('187: no home chip until the mesh answers (no "on this machine" flicker)', () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  qc.setQueryData(queryKeys.mcp(null), servers)
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Mcp) as ReactNode }))
+  expect(html).toContain('mikrotik')
+  expect(html).not.toMatch(/>on (xeus|333|this machine)</)
+  expect(html).not.toContain('Move home here')
 })
 
 test('187: the pane lists every server with its home and state; a button sets the home of its own row', async () => {
