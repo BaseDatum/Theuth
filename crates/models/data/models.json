@@ -16514,6 +16514,34 @@
         "protocol": "gemini",
         "canonical": "google/gemini-4-argon"
       },
+      "gemini-4-carbon": {
+        "id": "gemini-4-carbon",
+        "name": "Gemini 4 Carbon",
+        "limit": {
+          "context": 1048576,
+          "output": 32768
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "protocol": "gemini",
+        "canonical": "google/gemini-4-carbon"
+      },
       "gemini-embedding-001": {
         "id": "gemini-embedding-001",
         "name": "Gemini Embedding 001",
@@ -17826,6 +17854,34 @@
         ],
         "protocol": "openai_chat",
         "canonical": "google/gemini-4-argon"
+      },
+      "gemini-4-carbon": {
+        "id": "gemini-4-carbon",
+        "name": "Gemini 4 Carbon",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "google/gemini-4-carbon"
       },
       "gemini-embedding-001": {
         "id": "gemini-embedding-001",
@@ -22886,7 +22942,7 @@
       },
       "deepseek-v4.1-flash": {
         "id": "deepseek-v4.1-flash",
-        "name": "DeepSeek V4.1 Flash",
+        "name": "DeepSeek V4.1 Flash 1017",
         "limit": {
           "context": 1000000,
           "output": 384000
@@ -22913,7 +22969,7 @@
           }
         ],
         "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-v4.1-flash"
+        "canonical": "deepseek/deepseek-v4.1-flash-1017"
       },
       "deepseek-v4.1-flash-free": {
         "id": "deepseek-v4.1-flash-free",
@@ -22944,7 +23000,7 @@
           }
         ],
         "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-v4.1-flash"
+        "canonical": "deepseek/deepseek-v4.1-flash-1017"
       },
       "exo-free": {
         "id": "exo-free",
@@ -23280,6 +23336,34 @@
         ],
         "protocol": "gemini",
         "canonical": "google/gemini-4-argon"
+      },
+      "gemini-4-carbon": {
+        "id": "gemini-4-carbon",
+        "name": "Gemini 4 Carbon",
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "protocol": "gemini",
+        "canonical": "google/gemini-4-carbon"
       },
       "glm-4.6": {
         "id": "glm-4.6",
@@ -25185,7 +25269,8 @@
             ]
           }
         ],
-        "protocol": "openai_responses"
+        "protocol": "openai_responses",
+        "canonical": "meta/muse-ember-1.0"
       },
       "muse-spark-1.2": {
         "id": "muse-spark-1.2",
@@ -25933,7 +26018,7 @@
       },
       "deepseek-v4.1-flash": {
         "id": "deepseek-v4.1-flash",
-        "name": "DeepSeek V4.1 Flash",
+        "name": "DeepSeek V4.1 Flash 1017",
         "limit": {
           "context": 1000000,
           "output": 384000
@@ -25957,7 +26042,7 @@
           }
         ],
         "protocol": "openai_chat",
-        "canonical": "deepseek/deepseek-v4.1-flash"
+        "canonical": "deepseek/deepseek-v4.1-flash-1017"
       },
       "gemini-4-argon": {
         "id": "gemini-4-argon",
@@ -27591,6 +27676,59 @@
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-sonnet-5-5"
       },
+      "baidu/ernie-5.5-flash-preview": {
+        "id": "baidu/ernie-5.5-flash-preview",
+        "name": "ERNIE-5.5-Flash-Preview",
+        "limit": {
+          "context": 1024000,
+          "output": 921600
+        },
+        "cost": {
+          "input": 0.28,
+          "output": 1.13,
+          "cache_read": 0.028
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "high"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
+      },
+      "baidu/ernie-light-dt-1.0-intl": {
+        "id": "baidu/ernie-light-dt-1.0-intl",
+        "name": "ERNIE-Light-DT-1.0",
+        "limit": {
+          "context": 1024000,
+          "output": 131072
+        },
+        "cost": {
+          "input": 1.13,
+          "output": 3.94,
+          "cache_read": 0.113
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
+      },
       "bytedance-seed/seed-1.6": {
         "id": "bytedance-seed/seed-1.6",
         "name": "Seed 1.6",
@@ -28191,9 +28329,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.051,
-          "output": 0.567,
-          "cache_read": 0.018
+          "input": 0.3,
+          "output": 1.2,
+          "cache_read": 0.006
         },
         "reasoning": true,
         "tool_call": true,
@@ -28832,9 +28970,9 @@
           "output": 65536
         },
         "cost": {
-          "input": 0.825,
-          "output": 4.125,
-          "cache_read": 0.0825,
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075,
           "cache_write": 0.041667
         },
         "reasoning": true,
@@ -28881,6 +29019,35 @@
         ],
         "protocol": "openai_chat",
         "canonical": "google/gemini-4-argon"
+      },
+      "google/gemini-4-carbon": {
+        "id": "google/gemini-4-carbon",
+        "name": "Gemini 4 Carbon",
+        "limit": {
+          "context": 1048576,
+          "output": 943718
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 10.0,
+          "cache_read": 0.1,
+          "cache_write": 0.1875
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "google/gemini-4-carbon"
       },
       "google/gemini-nano-banana-2.1": {
         "id": "google/gemini-nano-banana-2.1",
@@ -28958,7 +29125,8 @@
             ]
           }
         ],
-        "protocol": "openai_chat"
+        "protocol": "openai_chat",
+        "canonical": "google/gemini-omni-1.2-flash"
       },
       "google/gemma-2-27b-it": {
         "id": "google/gemma-2-27b-it",
@@ -29581,7 +29749,7 @@
         "id": "meta-llama/llama-4-scout",
         "name": "Llama 4 Scout",
         "limit": {
-          "context": 1310720,
+          "context": 327680,
           "output": 16384
         },
         "cost": {
@@ -29828,7 +29996,7 @@
         "name": "Muse Spark Open",
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 262144
         },
         "cost": {
           "input": 1.25,
@@ -30701,6 +30869,32 @@
         ],
         "protocol": "openai_chat"
       },
+      "nex-agi/nex-n2.6": {
+        "id": "nex-agi/nex-n2.6",
+        "name": "Nex-N2.6",
+        "limit": {
+          "context": 262144,
+          "output": 235929
+        },
+        "cost": {
+          "input": 0.12,
+          "output": 0.4,
+          "cache_read": 0.024
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
+      },
       "nousresearch/hermes-4-405b": {
         "id": "nousresearch/hermes-4-405b",
         "name": "Hermes 4 405B",
@@ -31494,24 +31688,6 @@
         ],
         "protocol": "openai_chat",
         "canonical": "openai/gpt-5.2"
-      },
-      "openai/gpt-5.2-chat": {
-        "id": "openai/gpt-5.2-chat",
-        "name": "GPT-5.2 Chat",
-        "limit": {
-          "context": 128000,
-          "output": 32000
-        },
-        "cost": {
-          "input": 1.75,
-          "output": 14.0,
-          "cache_read": 0.175
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [],
-        "protocol": "openai_chat"
       },
       "openai/gpt-5.2-codex": {
         "id": "openai/gpt-5.2-codex",
@@ -33533,7 +33709,7 @@
         "id": "qwen/qwen3.8-27b",
         "name": "Qwen3.8 27B",
         "limit": {
-          "context": 1024000,
+          "context": 1048575,
           "output": 235929
         },
         "cost": {
@@ -34151,9 +34327,9 @@
           "output": 128000
         },
         "cost": {
-          "input": 0.132,
-          "output": 0.528,
-          "cache_read": 0.033
+          "input": 0.0825,
+          "output": 0.33,
+          "cache_read": 0.020625
         },
         "reasoning": true,
         "tool_call": true,
@@ -34235,9 +34411,9 @@
           "output": 64000
         },
         "cost": {
-          "input": 0.834,
-          "output": 2.501,
-          "cache_read": 0.042
+          "input": 0.7506,
+          "output": 2.2509,
+          "cache_read": 0.0378
         },
         "reasoning": true,
         "tool_call": true,
@@ -35096,9 +35272,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.006,
+          "input": 0.007,
           "output": 6.8,
-          "cache_read": 0.005
+          "cache_read": 0.006
         },
         "reasoning": true,
         "tool_call": true,
@@ -35149,11 +35325,11 @@
         "name": "GLM-5.3-Flash",
         "limit": {
           "context": 1048576,
-          "output": 943717
+          "output": 131072
         },
         "cost": {
-          "input": 0.15,
-          "output": 0.5,
+          "input": 0.0399,
+          "output": 0.0784,
           "cache_read": 0.03
         },
         "reasoning": true,
@@ -35546,7 +35722,7 @@
         },
         "cost": {
           "input": 0.1824,
-          "output": 10.5572,
+          "output": 9.3388,
           "cache_read": 0.18
         },
         "reasoning": true,
@@ -35771,8 +35947,8 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.0335,
-          "output": 0.083,
+          "input": 0.0399,
+          "output": 0.0784,
           "cache_read": 0.03
         },
         "reasoning": true,
