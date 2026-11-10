@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { humanSecs } from '@/lib/injected'
+import { useRestartPending } from '@/lib/restart-pending'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
 import type { Api } from '@/rpc/api'
@@ -104,6 +105,10 @@ export const setCap = (api: Pick<Api, 'double_set_cap'>, c: DoubleClass, rung: n
 export const setOptIn = (api: Pick<Api, 'double_set_cap'>, c: DoubleClass, on: boolean) => api.double_set_cap(c.key, c.cap, on)
 export const forgetClass = (api: Pick<Api, 'double_forget'>, key: string) => api.double_forget({ target: 'class', key })
 
+/** 188 F1: `enabled` takes a restart, so it waits while the saved value differs from the running one; `null` until both are known. */
+export const enabledRestartPending = (saved: boolean | undefined, running: boolean | undefined): boolean | null =>
+  saved === undefined || running === undefined ? null : saved !== running
+
 export function Double() {
   const api = useApi()
   const qc = useQueryClient()
@@ -133,7 +138,7 @@ export function Double() {
         {status.isError ? (
           <Empty>{errorText(status.error)}</Empty>
         ) : (
-          <Status s={s} />
+          <Status s={s} settings={settings.data} />
         )}
       </Section>
       <Section title="Improvement">
@@ -156,14 +161,30 @@ export function Double() {
   )
 }
 
-function Status({ s }: { s: DoubleStatus | undefined }) {
+function Status({ s, settings }: { s: DoubleStatus | undefined; settings: DoubleConfig | undefined }) {
   const api = useApi()
   const pause = useAction((on: boolean) => api.double_pause(on), { keys: [queryKeys.doubleStatus] })
+  const save = useAction((next: DoubleConfig) => api.double_settings_set(next), { keys: [queryKeys.doubleSettings] })
+  const pending = enabledRestartPending(settings?.enabled, s?.enabled)
+  useEffect(() => {
+    if (pending === null) return
+    const restart = useRestartPending.getState()
+    if (pending) restart.mark('double.enabled', 'Double')
+    else restart.clear('double.enabled')
+  }, [pending])
   if (!s) return <Empty>loading…</Empty>
   return (
     <>
-      <Row label="Enabled" description={s.enabled ? 'Predicting every captured card; learning from your answers.' : '`double.enabled` is off: nothing is predicted or learned. Turn it on in config.yaml and restart.'}>
-        <span className={`inline-block size-2 shrink-0 rounded-full ${s.enabled ? 'bg-success' : 'bg-fg-tertiary/40'}`} />
+      <Row
+        label="Enabled"
+        description={
+          <>
+            {settings?.enabled === false ? 'Off: nothing is predicted or learned.' : 'Predicting every captured card; learning from your answers.'}
+            {pending && <span className="block">Applies after theuth restarts.</span>}
+          </>
+        }
+      >
+        <Switch checked={settings?.enabled ?? false} disabled={!settings || save.isPending} onCheckedChange={(v) => settings && save.mutate({ ...settings, enabled: v })} aria-label="Double enabled" />
       </Row>
       <Row label="Pause learning" description="Predictions and rungs continue; labels stop accruing (the curve shows the gap).">
         <Switch checked={s.paused} disabled={pause.isPending || !s.enabled} onCheckedChange={(v) => pause.mutate(v)} aria-label="Pause learning" />
@@ -350,7 +371,6 @@ function Training({ s, settings }: { s: DoubleStatus | undefined; settings: Doub
   const win = draft?.window ?? settings?.training.window ?? ''
   const venue = draft?.venue ?? settings?.training.venue ?? ''
   const patch = (f: (c: DoubleConfig) => DoubleConfig) => settings && save.mutate(f(structuredClone(settings)))
-  const tierC = settings?.training.tiers.c.enabled === true
   return (
     <>
       <Row wide label="Train now" description="Tier A: temperatures, k-NN memory and heads, in process, seconds. Tier B: the LoRA adapter on the whole corpus, gate-promoted, minutes to an hour.">
@@ -376,7 +396,7 @@ function Training({ s, settings }: { s: DoubleStatus | undefined; settings: Doub
           <Button size="sm" variant="outline" disabled={busy || off || !node} onClick={() => train.mutate({ tier: 'b', venue: { venue: 'node', name: node } })}>
             Tier B on node
           </Button>
-          <Button size="sm" variant="outline" disabled title={tierC ? 'Tier C (full fine-tune) arrives with wave W3.' : 'Tier C is off (`double.training.tiers.c.enabled`) and arrives with wave W3.'}>
+          <Button size="sm" variant="outline" disabled title="Tier C (full fine-tune) arrives with wave W3.">
             Rebuild (tier C)
           </Button>
         </div>

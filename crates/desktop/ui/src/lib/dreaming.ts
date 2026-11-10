@@ -90,13 +90,13 @@ export const isPaused = (pausedUntil: string | null, now: Date): boolean => paus
 
 /**
  * Why Dream now cannot run right now (R-46), as the tail of "Dream now is unavailable: …" for the button's tooltip and
- * the note under the status card; `null` when it can. Config off beats the routine switch beats the pause beats a running night.
+ * the note under the status card; `null` when it can. Dreaming off beats the routine switch beats the pause beats a running night.
  */
 export function dreamNowBlocker(
   s: { enabled: boolean; routineEnabled: boolean | undefined; pausedUntil: string | null; running: boolean },
   now: Date,
 ): string | null {
-  if (!s.enabled) return 'dreaming is off in config (dreaming.enabled: false)'
+  if (!s.enabled) return 'dreaming is off'
   if (s.routineEnabled === false) return 'the dreaming routine is switched off'
   if (isPaused(s.pausedUntil, now)) return `dreaming is paused until ${new Date(s.pausedUntil as string).toLocaleDateString()}`
   if (s.running) return 'a night is already running'
@@ -108,6 +108,7 @@ export const dreamNowWhere = (runsOn: string | null): string => (runsOn ? `Runs 
 
 /** One edit of Settings › Dreaming; `set_settings` takes the whole object, so the reducer produces it. */
 export type SettingsChange =
+  | { kind: 'enabled'; on: boolean }
   | { kind: 'budget'; usd: number }
   | { kind: 'window'; index: 0 | 1; time: string }
   | { kind: 'model'; tier: Tier; model: string | null }
@@ -119,10 +120,12 @@ export type SettingsChange =
 
 /**
  * The next `DreamSettings`, or `null` when the change is a no-op or invalid (a budget outside `(0, 1000]`, a malformed
- * time) so the caller skips the round trip. `enabled` is never touched here: it is the routine's switch (`enable_schedule`).
+ * time) so the caller skips the round trip. `enabled` is the dreaming plugin's switch (188 F2), not the routine's (`enable_schedule`).
  */
 export function reduceSettings(s: DreamSettings, c: SettingsChange): DreamSettings | null {
   switch (c.kind) {
+    case 'enabled':
+      return s.enabled === c.on ? null : { ...s, enabled: c.on }
     case 'budget':
       if (!Number.isFinite(c.usd) || c.usd <= 0 || c.usd > MAX_BUDGET_USD || c.usd === s.budget_usd) return null
       return { ...s, budget_usd: c.usd }

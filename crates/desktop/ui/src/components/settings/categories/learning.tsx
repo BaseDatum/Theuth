@@ -4,8 +4,7 @@ import { Dreaming } from '@/components/settings/Dreaming'
 import { Labs } from '@/components/settings/Labs'
 import type { SettingsCategory } from '@/components/settings/types'
 
-// 188 C0: each tab renders one of today's components until this category's worker splits it
-// (docs/design/188-settings-full-page.md, Contract). Only that worker edits this file.
+// 188: Learning (docs/design/188-settings-full-page.md); Decision models is today's Labs, always listed (F4).
 export const learning: SettingsCategory = {
   id: 'learning',
   label: 'Learning',
