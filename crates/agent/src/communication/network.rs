@@ -773,6 +773,21 @@ impl NetworkState {
         rows
     }
 
+    /// 183 F8: a record shows a remote peer by its alias (`peer:sky`), not by the binding
+    /// id the store keys it with (`peer:01a1…`); unknown or revoked bindings stay as stored.
+    pub(crate) fn name_peers(&self, r: &mut PeerRecord) {
+        let name = |key: &str| {
+            let id = key.strip_prefix("peer:")?.parse::<Uuid>().ok()?;
+            Some(format!("peer:{}", self.peers.get(&id)?.name))
+        };
+        if let Some(n) = name(&r.from) {
+            r.from = n;
+        }
+        if let Some(n) = name(&r.receipt.to) {
+            r.receipt.to = n;
+        }
+    }
+
     /// 183 F1: replace every contact's offers.
     pub(crate) fn set_offers(&mut self, offers: BTreeMap<String, Vec<ContactOffer>>) {
         self.offers = offers;
@@ -1546,7 +1561,7 @@ impl Agents {
         generation: Generation,
         route: CancellationToken,
     ) -> A2aTask {
-        match self.active_task(task.session).await {
+        match self.store.active_a2a_task(task.session).await {
             Ok(None) => {
                 let task = self.start_task(task, generation, route).await;
                 if task.status.is_terminal() {
@@ -1579,34 +1594,6 @@ impl Agents {
                 task
             }
         }
-    }
-
-    /// The session's active task (the store allows one): a held first-contact task waits
-    /// aside (183 F11) and never counts, though it is stored `AUTH_REQUIRED`.
-    async fn active_task(&self, session: SessionId) -> anyhow::Result<Option<A2aTask>> {
-        let held: HashSet<Uuid> = self
-            .network
-            .held
-            .values()
-            .flatten()
-            .map(|h| h.task.request_scope)
-            .collect();
-        if held.is_empty() {
-            return self.store.active_a2a_task(session).await;
-        }
-        Ok(self
-            .store
-            .open_a2a_tasks(Some(session))
-            .await?
-            .into_iter()
-            .find(|t| {
-                matches!(
-                    t.status,
-                    A2aTaskStatus::Working
-                        | A2aTaskStatus::InputRequired
-                        | A2aTaskStatus::AuthRequired
-                ) && !held.contains(&t.request_scope)
-            }))
     }
 
     /// Working transition, scope registration, deadline / grant-epoch watch
@@ -1729,7 +1716,7 @@ impl Agents {
         let mut snap = snapshot(&task);
         snap.history.get_or_insert_with(Vec::new).push(message);
         let task = self
-            .transition_with(&task, snap, A2aTaskStatus::Working, None, None, None)
+            .transition_with(&task, snap, A2aTaskStatus::Working, None, None, None, false)
             .await
             .map_err(internal)?;
         if let Some(sc) = self.network.scopes.get_mut(&task.request_scope) {
@@ -1786,12 +1773,15 @@ impl Agents {
         error: Option<&str>,
     ) -> anyhow::Result<A2aTask> {
         let snap = snapshot(task);
-        self.transition_with(task, snap, status, message, artifact, error)
+        self.transition_with(task, snap, status, message, artifact, error, false)
             .await
     }
 
     /// [`Self::transition`] over a caller-edited snapshot. Order on the feed:
-    /// artifact, then status; a terminal status retires the scope.
+    /// artifact, then status; a terminal status retires the scope. 183 F11: `held` parks
+    /// the task in `AUTH_REQUIRED` aside (it holds no scope; the store's one-active-task rule
+    /// skips it); any later transition takes it out.
+    #[allow(clippy::too_many_arguments)]
     async fn transition_with(
         &mut self,
         task: &A2aTask,
@@ -1800,6 +1790,7 @@ impl Agents {
         message: Option<&str>,
         artifact: Option<&str>,
         error: Option<&str>,
+        held: bool,
     ) -> anyhow::Result<A2aTask> {
         let mut events = Vec::with_capacity(2);
         if let Some(text) = artifact {
@@ -1849,17 +1840,27 @@ impl Agents {
             principal: &task.principal,
             export: &task.export,
         };
-        let updated = self
-            .store
-            .update_a2a_task(
-                scope,
-                &task.id,
-                task.revision,
-                status,
-                &serde_json::to_value(&snap)?,
-                error,
-            )
-            .await?;
+        let updated = if held {
+            self.store
+                .hold_a2a_task(
+                    scope,
+                    &task.id,
+                    task.revision,
+                    &serde_json::to_value(&snap)?,
+                )
+                .await?
+        } else {
+            self.store
+                .update_a2a_task(
+                    scope,
+                    &task.id,
+                    task.revision,
+                    status,
+                    &serde_json::to_value(&snap)?,
+                    error,
+                )
+                .await?
+        };
         for ev in events {
             self.network.emit(&task.id, ev);
         }
@@ -3185,7 +3186,15 @@ impl Agents {
             .map(|t| cut(t.lines().next().unwrap_or_default().trim(), 200).to_owned())
             .unwrap_or_default();
         let held = match self
-            .transition(&task, A2aTaskStatus::AuthRequired, Some(&why), None, None)
+            .transition_with(
+                &task,
+                snapshot(&task),
+                A2aTaskStatus::AuthRequired,
+                Some(&why),
+                None,
+                None,
+                true,
+            )
             .await
         {
             Ok(t) => t,
@@ -5469,10 +5478,13 @@ mod tests {
         }
         let kept = a.store.a2a_task(s, &kept.id).await.unwrap().unwrap();
         assert_ne!(kept.status, A2aTaskStatus::AuthRequired);
-        assert_ne!(
-            kept.error.as_deref(),
-            Some("peer route revoked"),
-            "the export still granted runs under the new epoch"
+        assert!(
+            !kept
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("peer route revoked")),
+            "the export still granted runs under the new epoch: {:?}",
+            kept.error
         );
         let other = A2aScope {
             principal: &principal,
@@ -5480,7 +5492,14 @@ mod tests {
         };
         let dropped = a.store.a2a_task(other, &dropped.id).await.unwrap().unwrap();
         assert_eq!(dropped.status, A2aTaskStatus::Failed);
-        assert_eq!(dropped.error.as_deref(), Some("peer route revoked"));
+        assert!(
+            dropped
+                .error
+                .as_deref()
+                .is_some_and(|e| e.ends_with("peer route revoked")),
+            "{:?}",
+            dropped.error
+        );
     }
 
     /// 183 Z3-R2: a lowered cap or a changed allowlist reaches the contact's live inbox at

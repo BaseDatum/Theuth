@@ -2007,8 +2007,9 @@ impl Store {
             }
         }
         if status.is_active() && !cur.status.is_active() {
+            // 183 F11: a task held for a contact's owner waits aside.
             let (other,): (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM a2a_tasks WHERE session = ? AND id <> ? \
+                "SELECT COUNT(*) FROM a2a_tasks WHERE session = ? AND id <> ? AND held = 0 \
                  AND status IN ('working', 'input_required', 'auth_required')",
             )
             .bind(cur.session.to_string())
@@ -2021,7 +2022,7 @@ impl Store {
         }
         let n = sqlx::query(
             "UPDATE a2a_tasks SET status = ?, snapshot = ?, error = COALESCE(?, error), \
-             revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?",
+             held = 0, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?",
         )
         .bind(status.as_str())
         .bind(serde_json::to_string(snapshot)?)
@@ -2048,6 +2049,42 @@ impl Store {
         let task = task_in(&mut tx, scope, id)
             .await?
             .ok_or(CommError::NotFound)?;
+        tx.commit().await?;
+        Ok(task)
+    }
+
+    /// 183 W-27, F11: park a contact's first task for its owner's answer: `auth_required`
+    /// (what the contact reads) and `held`, so it is not the session's active task and
+    /// takes no scope ([`Self::active_a2a_task`] and the busy rule skip it). Only from
+    /// `submitted`; the next [`Self::update_a2a_task`] takes it out.
+    pub async fn hold_a2a_task(
+        &self,
+        scope: A2aScope<'_>,
+        id: &str,
+        expected_revision: i64,
+        snapshot: &serde_json::Value,
+    ) -> anyhow::Result<A2aTask> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE a2a_tasks SET status = 'auth_required', snapshot = ?, held = 1, \
+             revision = revision + 1, updated_at = ? \
+             WHERE id = ? AND revision = ? AND status = 'submitted'",
+        )
+        .bind(serde_json::to_string(snapshot)?)
+        .bind(now())
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let task = task_in(&mut tx, scope, id)
+            .await?
+            .ok_or(CommError::NotFound)?;
+        if n != 1 {
+            anyhow::bail!(CommError::Stale {
+                current: task.revision
+            });
+        }
         tx.commit().await?;
         Ok(task)
     }
@@ -2135,12 +2172,13 @@ impl Store {
         row.map(A2aTask::try_from).transpose()
     }
 
-    /// The task holding `session`'s active request scope, if any.
+    /// The task holding `session`'s active request scope, if any (183 F11: a held task
+    /// waits aside and never does).
     pub async fn active_a2a_task(&self, session: SessionId) -> anyhow::Result<Option<A2aTask>> {
         let row: Option<TaskRow> = sqlx::query_as(concat!(
             "SELECT ",
             task_cols!(),
-            " FROM a2a_tasks WHERE session = ? \
+            " FROM a2a_tasks WHERE session = ? AND held = 0 \
              AND status IN ('working', 'input_required', 'auth_required') ORDER BY seq LIMIT 1"
         ))
         .bind(session.to_string())

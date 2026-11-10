@@ -6860,11 +6860,14 @@ impl Message<GetPeerMessage> for Agents {
         m: GetPeerMessage,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.store
+        let mut r = self
+            .store
             .peer_record(m.session, m.id)
             .await
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| "unknown message".to_string())
+            .ok_or_else(|| "unknown message".to_string())?;
+        self.network.name_peers(&mut r);
+        Ok(r)
     }
 }
 
@@ -6921,6 +6924,9 @@ impl Message<ListPeerMessages> for Agents {
                 }
             }
             messages.sort_by_key(|m| std::cmp::Reverse(m.created_at));
+            for r in &mut messages {
+                self.network.name_peers(r);
+            }
             return Ok(PeerMessagePage {
                 awaiting_answer: received,
                 awaiting_reply: sent,
@@ -6928,11 +6934,14 @@ impl Message<ListPeerMessages> for Agents {
                 cursor: None,
             });
         }
-        let messages = self
+        let mut messages = self
             .store
             .peer_records(m.session, after, limit)
             .await
             .map_err(|e| e.to_string())?;
+        for r in &mut messages {
+            self.network.name_peers(r);
+        }
         let cursor = (messages.len() == usize::from(limit))
             .then(|| messages.last().map(|r| r.receipt.id.to_string()))
             .flatten();
@@ -17571,6 +17580,94 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(released, "the spawn permit goes when y's turn ends");
+    }
+
+    /// 183 F11: a contact's first message waiting for the owner never blocks the chat it
+    /// asks for: the owner's own turn runs, another session's peer message is delivered,
+    /// and the first message still waits for the owner afterwards.
+    #[tokio::test]
+    async fn a_waiting_first_message_leaves_the_chat_working() {
+        use crate::communication::network::{A2aPrincipal, ContactsHeld, contact_endpoint};
+        let (_scratch, mut a) = agents_with(true).await;
+        let mut rx = tap(&a.rt).await;
+        // Two owner roots: they may message each other (as two chats of the owner do).
+        let owner = crate::communication::PeerScope::Owner;
+        let chat = a.new_root(None, owner, None, None).await.unwrap();
+        let other = a.new_root(None, owner, None, None).await.unwrap();
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = A2aPrincipal {
+            binding: binding.id,
+            export: "hi-there".into(),
+            session: chat,
+            route: CancellationToken::new(),
+            contact: Some(crate::communication::ContactOrigin {
+                contact: "bob".into(),
+                machine: "b".into(),
+                export: "hi-there".into(),
+                cap: tools::Risk::ReadOnly,
+                holder: "me".into(),
+                tools: Vec::new(),
+            }),
+            ask_first: true,
+        };
+        let mut m = a2a_types::Message::new(
+            a2a_types::Role::User,
+            vec![a2a_types::Part::text("hello owner")],
+        );
+        m.message_id = "m-1".into();
+        let req = a2a_types::SendMessageRequest {
+            message: m,
+            configuration: None,
+            metadata: None,
+            tenant: None,
+        };
+        let held = a.admit_send(&principal, &req).await.unwrap().task;
+        assert_eq!(
+            held.status,
+            crate::store::communication::A2aTaskStatus::AuthRequired
+        );
+        let agents = Agents::spawn(a);
+        agents
+            .ask(SendInput {
+                session: Some(chat),
+                text: "the owner's own turn".into(),
+                files: Vec::new(),
+                delivery: Default::default(),
+                id: None,
+                channel: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            next_turn(&mut rx, chat)
+                .await
+                .contains("the owner's own turn")
+        );
+        agents.tell(finished(chat)).await.unwrap();
+        agents
+            .ask(Deliver {
+                from: other,
+                to: format!("session:{chat}"),
+                text: "a peer's message".into(),
+                await_reply: false,
+                reply_to: None,
+                request_id: None,
+                admitted: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(next_turn(&mut rx, chat).await.contains("a peer's message"));
+        let waiting = agents.ask(ContactsHeld).await.unwrap();
+        assert_eq!(
+            waiting.len(),
+            1,
+            "the first message still waits for the owner"
+        );
+        assert_eq!(waiting[0].preview, "hello owner");
     }
 
     /// T3: a queued child stopped by the user never gets its brief: the
