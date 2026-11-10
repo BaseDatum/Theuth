@@ -119,6 +119,26 @@ The TUI status line shows `mcp <connected>/<total>` and `connecting …` or
 `N failed`; the `/mcp` rows show `● connected`, `○ login required`,
 `○ not connected` or `○ off`.
 
+## Which machine runs a server
+
+`mcp/*.json` replicate to every engine of your [mesh](/docs/automation/mesh),
+but a server runs only on its **home**: the machine it was added on (`/mcp
+add`, the UI, `add_mcp_server`), or for a hand-written file the machine that
+wrote it. Homes live in `<data_dir>/mcp/homes.yaml`, which replicates too;
+the log says `mcp: <name> home is <machine>` once per server. Other machines
+list the server as `not running here (home is 333)` and its tools do not
+appear there.
+
+Settings › MCP › Tool servers shows each server's home and its state on this
+machine, with **Run everywhere** (start it on every machine; for servers
+whose runtime is installed everywhere, or remote URLs), **Only on <home>**,
+**Move home here** and **Turn off here**.
+
+A start that fails because the command is not on this machine shows `not
+installed here` (`<command> is not installed on <machine>`); every failed
+start is retried after 30 s, doubling up to 30 min, and immediately when its
+entry changes. The log gets one line per change of state, not per attempt.
+
 ## Risk gates: mcp/config.yaml
 
 Every MCP tool gets a risk class for the [approval gate](/docs/reference/tools-permissions).

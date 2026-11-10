@@ -32,6 +32,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
+import { stateText } from '@/lib/mcp-home'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { Gate } from '@/rpc/bindings/Gate'
 import type { McpServer } from '@/rpc/bindings/McpServer'
@@ -223,7 +224,8 @@ function ServerRow({
   const sw = serverSwitch(s)
   const live = s.tools.some((t) => t.registered !== null)
   const on = sw !== 'always' && s.connected
-  const status = sw === 'always' ? 'off' : s.connected ? 'connected' : s.auth === 'required' ? 'login required' : 'not connected'
+  // 187: a server not running here says why (homed elsewhere, not installed here, …).
+  const status = sw === 'always' ? 'off' : s.connected ? 'connected' : s.auth === 'required' ? 'login required' : stateText(s, [])
   const sessionHint = !session ? 'Open a chat first' : !live ? 'Not connected' : undefined
   return (
     <Collapsible

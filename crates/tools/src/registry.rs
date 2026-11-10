@@ -2301,7 +2301,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{Tool, ToolCall};
 
@@ -2368,7 +2368,10 @@ mod tests {
         }
     }
 
-    fn registry(tools: Vec<DynTool>, activity: Option<ActivitySink>) -> ActorRef<ToolRegistry> {
+    pub(crate) fn registry(
+        tools: Vec<DynTool>,
+        activity: Option<ActivitySink>,
+    ) -> ActorRef<ToolRegistry> {
         ToolRegistry::spawn(build(tools, activity))
     }
 

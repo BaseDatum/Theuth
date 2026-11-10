@@ -759,9 +759,10 @@ impl Vault {
     /// Byte ranges [`Vault::redact`] would replace, ascending and
     /// non-overlapping (51 §7.2).
     pub fn redact_spans(&self, text: &str) -> Vec<std::ops::Range<usize>> {
-        self.read().scrubber.as_ref().map_or_else(Vec::new, |sc| {
-            sc.ac.find_iter(text).map(|m| m.start()..m.end()).collect()
-        })
+        self.read()
+            .scrubber
+            .as_ref()
+            .map_or_else(Vec::new, |sc| hits(sc, text).map(|(r, _)| r).collect())
     }
 
     /// Longest value [`Vault::redact_spans`] can match, in bytes; `0` = none.
@@ -1086,13 +1087,52 @@ fn strings(
     }
 }
 
-fn scrub<'a>(sc: Option<&Scrubber>, text: &'a str) -> Cow<'a, str> {
-    match sc {
-        Some(sc) if sc.ac.find(text).is_some() => {
-            Cow::Owned(sc.ac.replace_all(text, &sc.placeholders))
+/// Matches outside every `{{secret:…}}` span already in `text`, with their
+/// placeholder index: masking is idempotent, so a secret whose value is part
+/// of a placeholder (its own name, say) never rewrites that placeholder.
+fn hits<'a>(
+    sc: &'a Scrubber,
+    text: &'a str,
+) -> impl Iterator<Item = (std::ops::Range<usize>, usize)> + 'a {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        if at >= text.len() {
+            return None;
         }
-        _ => Cow::Borrowed(text),
+        let (end, next) = match text[at..].find("{{secret:") {
+            Some(i) => match text[at + i..].find("}}") {
+                Some(j) => (at + i, at + i + j + 2),
+                None => (text.len(), text.len()),
+            },
+            None => (text.len(), text.len()),
+        };
+        let base = at;
+        at = next;
+        Some(
+            sc.ac
+                .find_iter(&text[base..end])
+                .map(move |m| (base + m.start()..base + m.end(), m.pattern().as_usize())),
+        )
+    })
+    .flatten()
+}
+
+fn scrub<'a>(sc: Option<&Scrubber>, text: &'a str) -> Cow<'a, str> {
+    let Some(sc) = sc else {
+        return Cow::Borrowed(text);
+    };
+    let mut out = String::new();
+    let mut last = 0;
+    for (r, p) in hits(sc, text) {
+        out.push_str(&text[last..r.start]);
+        out.push_str(&sc.placeholders[p]);
+        last = r.end;
     }
+    if last == 0 && out.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    out.push_str(&text[last..]);
+    Cow::Owned(out)
 }
 
 /// Newest version first per name and each text once, so a value two
@@ -1358,6 +1398,29 @@ mod tests {
         // A restored value lives in two versions; the current placeholder wins.
         v.restore("tok", 1).await.unwrap();
         assert_eq!(v.redact("first-secret-value"), "{{secret:tok}}");
+    }
+
+    /// The xeus log: `mikrotik.password` = `mikrotik` masked inside its own
+    /// placeholder on a second pass. A placeholder is never rewritten.
+    #[tokio::test]
+    async fn redact_is_idempotent_for_a_value_inside_its_own_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("mikrotik.password", "mikrotik", None, "user")
+            .await
+            .unwrap();
+        let once = v.redact("server=mikrotik user=mikrotik").into_owned();
+        assert_eq!(
+            once,
+            "server={{secret:mikrotik.password}} user={{secret:mikrotik.password}}"
+        );
+        assert!(matches!(v.redact(&once), Cow::Borrowed(_)));
+        assert!(v.redact_spans(&once).is_empty());
+        // Text around and between placeholders is still masked.
+        assert_eq!(
+            v.redact("mikrotik {{secret:mikrotik.password}}mikrotik"),
+            "{{secret:mikrotik.password}} {{secret:mikrotik.password}}{{secret:mikrotik.password}}"
+        );
     }
 
     #[tokio::test]

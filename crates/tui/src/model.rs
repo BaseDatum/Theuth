@@ -15764,6 +15764,16 @@ mod tests {
             connected: gate != Some(Gate::Off),
             repo: None,
             auth: McpAuth::None,
+            home: None,
+            home_name: None,
+            home_here: true,
+            everywhere: false,
+            state: if gate == Some(Gate::Off) {
+                tools::McpState::Off
+            } else {
+                tools::McpState::Running
+            },
+            reason: None,
             gate,
             tools: vec![McpToolInfo {
                 name: "read".into(),
@@ -17364,6 +17374,12 @@ mod tests {
             repo: None,
             auth: McpAuth::None,
             gate: Some(Gate::Destructive),
+            home: None,
+            home_name: None,
+            home_here: true,
+            everywhere: false,
+            state: tools::McpState::Running,
+            reason: None,
             tools: vec![McpToolInfo {
                 name: "read".into(),
                 description: String::new(),

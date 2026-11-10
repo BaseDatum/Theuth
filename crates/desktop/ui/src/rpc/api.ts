@@ -76,6 +76,7 @@ import type { JobView } from '@/rpc/bindings/JobView'
 import type { LiveCountsRow } from '@/rpc/bindings/LiveCountsRow'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { McpServer } from '@/rpc/bindings/McpServer'
+import type { McpHomeAction } from '@/rpc/bindings/McpHomeAction'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefId } from '@/rpc/bindings/BriefId'
 import type { EditOp } from '@/rpc/bindings/EditOp'
@@ -1216,6 +1217,8 @@ export interface Api {
   set_max_salvages(count: number): Promise<null>
   set_max_tool_rounds(rounds: number): Promise<null>
   set_mcp_gate(server: string, tool: string | null, gate: Gate | null): Promise<null>
+  /** 187: where a server runs; persists to the replicated `mcp/homes.yaml`. */
+  set_mcp_home(server: string, action: McpHomeAction): Promise<null>
   set_mcp_hidden(session: SessionId, tools: string[], hidden: boolean): Promise<null>
   /** Switch to `model` (148 R1): with a `session`, that session only, whatever `manual`; with `null` + `manual`, the default model for new chats (Settings › Chat); `null` + `!manual` only resolves `model` to its `ModelInfo`. */
   set_model(session: SessionId | null, model: string, manual: boolean): Promise<ModelInfo>
@@ -1864,6 +1867,7 @@ export const METHODS = [
   'set_max_tool_rounds',
   'set_mcp_gate',
   'set_mcp_hidden',
+  'set_mcp_home',
   'set_meeting_live_diarization',
   'set_meeting_oracle_mode',
   'set_model',
