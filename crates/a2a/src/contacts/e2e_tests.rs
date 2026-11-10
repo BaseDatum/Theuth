@@ -592,7 +592,11 @@ async fn a_contact_reaches_its_export_first_contact_waits_and_block_refuses_at_t
         })
     };
     settings(FirstContact::Ask).await.unwrap();
-    assert_eq!(standing(), None, "Ask first drops the entry");
+    assert_eq!(
+        standing(),
+        Some(FirstContact::Ask),
+        "an explicit Ask first is stored"
+    );
     settings(FirstContact::Block).await.unwrap();
     assert_eq!(standing(), Some(FirstContact::Block));
     assert!(
@@ -606,7 +610,7 @@ async fn a_contact_reaches_its_export_first_contact_waits_and_block_refuses_at_t
         refused.message
     );
     settings(FirstContact::Ask).await.unwrap();
-    assert_eq!(standing(), None);
+    assert_eq!(standing(), Some(FirstContact::Ask));
 
     // Block on the Attention item (a task waits, here for `zulu`, whose inbox runs nothing
     // else): the contact is blocked and refused at the gate from now on.
@@ -1211,7 +1215,7 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
         "Settings › Network › Contacts: Shared with you"
     );
 
-    // F2: an explicit "Ask first" stays when the grant is sent again unchanged.
+    // F2: the owner switches research to "Ask first" (stored as such).
     a.ctx
         .first_answer(ContactFirstAnswer {
             contact: a_alias.clone(),
@@ -1220,11 +1224,9 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
         })
         .await
         .unwrap();
-    let again = grant(&["research"]).await.unwrap();
     assert_eq!(
-        again.first_contact.get("research"),
-        None,
-        "Ask first is kept"
+        a.ctx.contact_list()[0].first_contact.get("research"),
+        Some(&FirstContact::Ask)
     );
     until("B sees research ask first", || {
         b.ctx
@@ -1252,6 +1254,30 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
             .iter()
             .any(|p| p.address == format!("peer:{b_alias}")),
         "the contact's own row stays"
+    );
+
+    // F2 (review 1): sharing it again keeps the owner's last explicit choice (Ask first);
+    // an export never answered starts on Always allow (the first grant above).
+    let again = grant(&["research"]).await.unwrap();
+    assert_eq!(
+        again.first_contact.get("research"),
+        Some(&FirstContact::Ask),
+        "regrant keeps the owner's Ask first"
+    );
+
+    // 183 review 1: the card is per reader — a third contact of A sees none of it.
+    let c = engine("c", &lan, true, cfg(600)).await;
+    paired(&a, &c).await;
+    let card = a.ctx.contact_card(&c.eid()).await.unwrap();
+    assert!(card.skills.is_empty(), "nothing is granted to C");
+    let card = a.ctx.contact_card(&b.eid()).await.unwrap();
+    assert_eq!(
+        card.skills
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect::<Vec<_>>(),
+        ["research"],
+        "B's card lists what B is granted"
     );
 }
 

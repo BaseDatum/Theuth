@@ -23,10 +23,12 @@ const GROUP_ORDER = [
   ['double', 'Answered by double'],
   // 130 E3: finished turns — receipts, nothing to decide.
   ['done', 'Done'],
+  // 183 review 1: a kind a newer engine sends that this UI does not know yet (tsc only checks the kinds it knows).
+  ['other', 'Other'],
 ] as const
 
 /** Every kind's group. A `Record`, so tsc fails when a new kind has none — a kind outside the rail would never be listed. */
-const GROUP_OF: Record<Kind, (typeof GROUP_ORDER)[number][0]> = {
+const GROUP_OF: Record<Kind, Exclude<(typeof GROUP_ORDER)[number][0], 'other'>> = {
   decision: 'decisions',
   review: 'reviews',
   ask: 'questions',
@@ -56,7 +58,7 @@ export function groupItems(items: readonly AttentionItem[]): Group[] {
   const urgent = items.filter((i) => i.priority === 'urgent')
   const rest = items.filter((i) => i.priority !== 'urgent')
   const groups = GROUP_ORDER.flatMap(([key, label]) => {
-    const mine = rest.filter((i) => GROUP_OF[i.kind] === key)
+    const mine = rest.filter((i) => (GROUP_OF[i.kind] ?? 'other') === key)
     return mine.length > 0 ? [{ key, label, items: mine }] : []
   })
   return urgent.length > 0 ? [{ key: 'urgent', label: 'Urgent', items: urgent }, ...groups] : groups

@@ -1,5 +1,27 @@
 # 183 — build notes
 
+## 183 follow-ups, review round 1 (CF-R1)
+
+On fd4de033, 17 items. Evidence `/tmp/rs183f/evidence.txt` (section "CF-R1"), shots `shots/r1-*.png`.
+
+1. **Rebinding a hold checks the export's definition, not only its name.** `Staged::unchanged_exports` (a2a `config.rs`): exports granted in both epochs with the same `exports`/`agents` definition and the same contact cap. `reload_as` asks `RebindHeld` for every contact whose cap or grant changed, right after `CommitPeerConfig`; holds of exports not in that list fail at once with `HOLD_CHANGED` ("the shared chat or agent changed while this waited; send it again"), so a re-pointed chat, changed agent tools or a changed cap never runs an old first message under the new authority. Live: hi-there re-pointed to another chat with a message waiting → B's task failed with that text, nothing ran in the new chat, C's receipt failed with it.
+2. **The held line is bounded.** `held_line` clips machine and export to 64 characters, drops control characters, at most 512 in all; the export comes from the alias as written, and for a plain `peer:<contact>` the holder's export is named only when it is a valid export name.
+3. **The card route is admitted like any contact request** (`Live::admit_contact`: rate and concurrency limits before the card or the notice). Offer refreshes coalesce per contact (one in flight, notices collapse into one follow-up), errors are clipped to 200 characters, and `A2aChanged` fires only when the offers changed. The card's alg/kid in a verify error are clipped.
+4. **A held message on the sender at the sender's restart fails honestly.** Re-arming the follower is not possible (the store keeps no export per exchange for the follow route), so boot accounting fails outbound held/consumed contact rows with `HELD_AT_RESTART` ("the contact's owner may still allow and deliver it, and its answer would not reach this session; check with them before sending it again").
+5. **The sender keeps following a held task.** While the remote task is `AUTH_REQUIRED` the follow deadline slides by `FOLLOW_MAX`, capped at `HOLD_TTL + FOLLOW_MAX`, so an Allow late in the 24 h still reports back.
+6. **Non-await sends ask for contacts only.** `peers.rs` asks `IsContact` per `peer:` receipt and fetches first answers for contacts only, concurrently.
+7. **Directory order and caps.** Three groups: own tree, then contacts with at most 8 export rows each (the contact's row then reads `+N more: discover_peers(kind="contact", query="<contact>")`), then the rest. New filter `kind: contact` (`DirectoryKind`) lists every contact row uncapped.
+8. **Tests that fail on the base.** The supervisor F11 test now sends an allowed message into the same chat while one is held (on v2.19.0 it queued behind the held one) and then Allow once; the network test's Allow-once half is unconditional. The hold timer is tested on a paused clock (`held_wait`). F2 is a real ungrant and regrant: **decision** — an explicit "Ask first" is now stored as `ask` (it was the absence of an entry), so a regrant keeps the owner's last explicit choice, and an export never answered starts on Always allow. Also: per-reader card (a third contact sees no skills), the offers TTL, and an upgrade from a pre-0055 store with an `auth_required` task (opens with `held = 0`, boot fails it).
+9. **Touch targets.** The three answers are `pointer-coarse:min-h-11` with `gap-2` (strip, Communication, Contacts rows: all `FirstButtons`).
+10. **One answer per row.** The buttons stay disabled after success until the list drops the row; a second click would only have set the standing default.
+11. **Unknown Attention kinds are listed.** A runtime catch-all group "Other" (last) and a plain screen for a kind a newer engine sends.
+12. **Remote strings wrap.** `break-words` on the waiting line and on "Shared with you".
+13. **Receipt lines stay one line.** `\r`, `\n`, U+2028 and U+2029 become spaces, in the address too.
+14. **The contact's `tasks/cancel` on a held task cancels it at once** (as a never-started task: no `CANCEL_WAIT`); its retire drops the hold, so a later Allow runs nothing.
+15. **Every dropped hold refreshes the surfaces.** `NetworkState::retire` publishes `ContactsHeldChanged` (via `HeldGone`) when it removes a hold.
+16. **Offer titles** are cut to the card's 64 characters, without control characters, names deduplicated.
+17. **Counts and `held`.** The strip and rows say "· N messages" when more than one waits; the boot UPDATE clears `held`.
+
 ## 183 follow-ups (F1–F11), after Sky's live test of 2026-11-10
 
 Branch `fix/183-contacts-followup` from v2.19.0 (e2f3608e, Sky's version bump on 4a2b2fd3). F6–F11 came from the orchestrator after the first brief (`.contactfix-addenda.md` and the queued messages); F11 as revised (a strip, the held task waits aside). Evidence `/tmp/rs183f/evidence.txt`, shots `/tmp/rs183f/shots/`, rig `/tmp/rs183f/rig/`.

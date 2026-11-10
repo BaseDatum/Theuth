@@ -63,6 +63,15 @@ test.each([
   await click(label)
   expect(api.contact_first_answer).toHaveBeenCalledWith('sky', 'ops', answer)
   expect(toast).toHaveBeenCalledWith(text)
+  // Answered: until the list drops it, a second click cannot set the standing default by accident.
+  const answers = [...document.querySelectorAll('button')].filter((b) => ['Allow once', 'Always', 'Block'].includes(b.textContent ?? ''))
+  expect(answers.map((b) => b.disabled)).toEqual([true, true, true])
+})
+
+test('several first messages from one contact: the row says how many', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [{ ...W, waiting: 3 }])
+  await mount()
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · 3 messages")
 })
 
 test('several waiting: collapsed "N contacts waiting"; expanded one row each with its own buttons', async () => {

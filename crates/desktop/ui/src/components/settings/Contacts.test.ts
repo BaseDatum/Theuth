@@ -580,10 +580,11 @@ test('183 F3 Communication: a held first message sits under its export row; Allo
   expect(buttons).toHaveLength(2)
   await run(() => (buttons[0] as HTMLElement).click())
   expect(api.contact_first_answer).toHaveBeenLastCalledWith('bob', 'ops-chat', 'ask')
-  await run(() => [...document.querySelectorAll('button')].filter((b) => b.textContent === 'Always')[0]!.click())
-  expect(api.contact_first_answer).toHaveBeenLastCalledWith('bob', 'ops-chat', 'allow')
-  await run(() => [...document.querySelectorAll('button')].filter((b) => b.textContent === 'Block')[0]!.click())
-  expect(api.contact_first_answer).toHaveBeenLastCalledWith('bob', 'ops-chat', 'block')
+  // One answer per row: bob's are spent, alice's still answer.
+  const always = [...document.querySelectorAll('button')].filter((b) => b.textContent === 'Always') as HTMLButtonElement[]
+  expect(always.map((b) => b.disabled)).toEqual([true, false])
+  await run(() => always[1]!.click())
+  expect(api.contact_first_answer).toHaveBeenLastCalledWith('alice', 'ops-chat', 'allow')
 })
 
 test('183 F3 Communication: a held message of this chat whose export has no row still shows; another chat\'s does not', async () => {

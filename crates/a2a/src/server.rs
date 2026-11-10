@@ -278,6 +278,20 @@ impl Live {
             .map(|(_, p)| p)
     }
 
+    /// 183 F1 (review 1): admit one contact-only request on `theuth/a2a/1` (its card, the
+    /// offers notice) from the contact pinned to `eid`, under the same per-principal rate and
+    /// concurrency bounds `dispatch` applies to the A2A routes.
+    pub(crate) fn admit_contact(&self, eid: &str) -> Result<OwnedSemaphorePermit, StatusCode> {
+        let p = self.contacts.get(eid).ok_or(StatusCode::UNAUTHORIZED)?;
+        if !p.admit_rate() {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+        p.concurrent
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+    }
+
     /// The export exists and its session is effectively enabled right now; an agent export
     /// while agent communication is on (its inbox is checked at admission).
     fn open(&self, export: &str) -> bool {

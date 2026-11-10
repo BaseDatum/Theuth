@@ -505,9 +505,47 @@ pub struct ListPeers {
     /// export rows always stay.
     #[serde(default)]
     pub active_only: bool,
-    /// 183 F6: keep only rows of this kind (`native` | `acp` | `a2a` | …).
+    /// 183 F6: keep only rows of this kind; `contact` lists every contact row uncapped.
     #[serde(default)]
-    pub kind: Option<PeerKind>,
+    pub kind: Option<DirectoryKind>,
+}
+
+/// 183 F6: the `discover_peers` `kind` filter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectoryKind {
+    /// theuth sessions.
+    Native,
+    /// External harness children.
+    Acp,
+    /// Paired node children.
+    Node,
+    /// Remote agents and contacts (with their shared chats and agents).
+    A2a,
+    /// The session on another engine that opened this one.
+    Parent,
+    /// Contacts and every chat or agent they share with you, none left out.
+    Contact,
+}
+
+impl DirectoryKind {
+    /// Whether `p` is a row of this kind.
+    pub fn admits(self, p: &PeerInfo) -> bool {
+        match self {
+            Self::Native => p.kind == PeerKind::Native,
+            Self::Acp => p.kind == PeerKind::Acp,
+            Self::Node => p.kind == PeerKind::Node,
+            Self::A2a => p.kind == PeerKind::A2a,
+            Self::Parent => p.kind == PeerKind::Parent,
+            Self::Contact => is_contact_row(p),
+        }
+    }
+}
+
+/// 183 F6: a contact's row or one of its export rows (a local session's title model may tag
+/// a session `contact`, so the kind is checked too).
+pub fn is_contact_row(p: &PeerInfo) -> bool {
+    p.kind == PeerKind::A2a && p.tags.first().is_some_and(|t| t == "contact")
 }
 
 /// `ask` → `Result<PeerRecord, String>`: `session`'s own record of message
@@ -1038,12 +1076,21 @@ impl ContactRefusal {
     }
 }
 
-/// 183 F7: what a sender's tools show for a message a contact's owner holds.
+/// 183 F7: what a sender's tools show for a message a contact's owner holds. The contact
+/// name and the export come from the sender's own facts (its contact list, the address it
+/// wrote); `machine` is the holder's text, so it is cut to 64 characters with control
+/// characters dropped (the export too, when the address named none), and the whole line to
+/// 512.
 pub fn held_line(contact: &str, machine: &str, export: &str) -> String {
-    format!(
-        "held: {contact} ({machine}) has not allowed messages to {export} yet; it will be \
-         delivered when they press Allow — do not resend"
-    )
+    let clean =
+        |s: &str, n: usize| -> String { s.chars().filter(|c| !c.is_control()).take(n).collect() };
+    let line = format!(
+        "held: {contact} ({}) has not allowed messages to {} yet; it will be delivered when \
+         they press Allow — do not resend",
+        clean(machine, 64),
+        clean(export, 64),
+    );
+    line.chars().take(512).collect()
 }
 
 impl std::error::Error for ContactRefusal {}

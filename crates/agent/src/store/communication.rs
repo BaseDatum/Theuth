@@ -42,6 +42,10 @@ pub const PENDING_BYTES_PER_HARNESS: i64 = 32 << 20;
 pub const EXTERNAL_ID_MAX: usize = 256;
 /// `list_a2a_tasks` page bound.
 pub const TASK_PAGE_MAX: u16 = 100;
+/// 183 review 1: why an outbound message a contact's owner held, or had let through, ends
+/// at the sender's restart (nothing follows it any more).
+pub const HELD_AT_RESTART: &str = "the contact's owner may still allow and deliver it, and \
+its answer would not reach this session; check with them before sending it again";
 /// Ancestry walks stop here: deeper is a cycle in persisted topology.
 const LINEAGE_MAX: i64 = 64;
 
@@ -1618,13 +1622,30 @@ impl Store {
         .bind(&spare)
         .fetch_all(&mut *tx)
         .await?;
-        let exchanges = rows
+        let mut exchanges = rows
             .iter()
             .map(ExchangeRow::receipt)
             .collect::<anyhow::Result<Vec<_>>>()?;
+        // 183 review 1: an outbound message a contact's owner held (or let through, its answer
+        // still to come) has nothing following it after a restart: it ends, saying it may
+        // still arrive, so the sender checks before sending again.
+        let followed: Vec<ExchangeRow> = sqlx::query_as(concat!(
+            "UPDATE peer_exchanges SET state = 'failed', error = ?, updated_at = ? \
+             WHERE state IN ('held', 'consumed') AND recipient LIKE 'peer:%' \
+               AND recipient_session IS NULL RETURNING ",
+            exchange_cols!()
+        ))
+        .bind(format!("{reason}: {HELD_AT_RESTART}"))
+        .bind(&ts)
+        .fetch_all(&mut *tx)
+        .await?;
+        for r in &followed {
+            exchanges.push(r.receipt()?);
+        }
         let tasks: Vec<TaskRow> = sqlx::query_as(concat!(
-            "UPDATE a2a_tasks SET status = 'failed', error = ?, revision = revision + 1, updated_at = ? \
-             WHERE status NOT IN ('completed', 'failed', 'canceled', 'rejected') RETURNING ",
+            "UPDATE a2a_tasks SET status = 'failed', error = ?, held = 0, revision = revision + 1, \
+             updated_at = ? WHERE status NOT IN ('completed', 'failed', 'canceled', 'rejected') \
+             RETURNING ",
             task_cols!()
         ))
         .bind(reason)
@@ -3340,5 +3361,112 @@ mod tests {
                 "{bad}: {e}"
             );
         }
+    }
+
+    /// 183 F11 (review 1): a held task waits aside in the store — not the session's active
+    /// task, no bar to another one starting — and a v2.19.0 store (before 0055) holding an
+    /// `auth_required` task opens with `held = 0` (as it behaved then: the active task), which
+    /// the boot accounting fails with `held` clear.
+    #[tokio::test]
+    async fn held_tasks_wait_aside_and_a_pre_0055_store_upgrades() {
+        let (store, session, dir) = fresh().await;
+        let lab = A2aScope {
+            principal: "peer:lab",
+            export: "research",
+        };
+        let ctx = store
+            .create_a2a_context(lab, "ctx-1", session)
+            .await
+            .unwrap();
+        let to = format!("session:{session}");
+        let new = |n: &'static str, task: &'static str| {
+            let mut req = accept("peer:lab", &to, None, None, n);
+            req.request_id = Some(n);
+            (req, task)
+        };
+        let (r1, t1) = new("msg-1", "task-1");
+        let (_, held) = store
+            .accept_a2a_request(
+                lab,
+                &r1,
+                A2aRequest::New {
+                    task_id: t1,
+                    context_id: &ctx.id,
+                    snapshot: snap("submitted"),
+                },
+            )
+            .await
+            .unwrap();
+        let held = store
+            .hold_a2a_task(lab, &held.id, held.revision, &snap("auth-required"))
+            .await
+            .unwrap();
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        assert!(store.active_a2a_task(session).await.unwrap().is_none());
+        let (r2, t2) = new("msg-2", "task-2");
+        let (_, next) = store
+            .accept_a2a_request(
+                lab,
+                &r2,
+                A2aRequest::New {
+                    task_id: t2,
+                    context_id: &ctx.id,
+                    snapshot: snap("submitted"),
+                },
+            )
+            .await
+            .unwrap();
+        let next = store
+            .update_a2a_task(
+                lab,
+                &next.id,
+                next.revision,
+                A2aTaskStatus::Working,
+                &snap("working"),
+                None,
+            )
+            .await
+            .expect("starts though one is held");
+        assert_eq!(
+            store.active_a2a_task(session).await.unwrap().map(|t| t.id),
+            Some(next.id)
+        );
+
+        // A v2.19.0 store: no `held` column, migration 0055 not applied, one task waiting.
+        let path = dir.0.join("sessions.sqlite");
+        store.close().await;
+        drop(store);
+        {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+                .await
+                .unwrap();
+            sqlx::query("ALTER TABLE a2a_tasks DROP COLUMN held")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 55")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        }
+        let store = Store::open(&path, None).await.unwrap();
+        let waiting: Vec<(String, i64)> =
+            sqlx::query_as("SELECT status, held FROM a2a_tasks WHERE id = 'task-1'")
+                .fetch_all(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(waiting, [("auth_required".to_owned(), 0)]);
+        let i = store
+            .fail_interrupted("interrupted_by_restart")
+            .await
+            .unwrap();
+        assert_eq!(i.tasks.len(), 2, "the waiting task and the working one");
+        let after: Vec<(String, i64)> =
+            sqlx::query_as("SELECT status, held FROM a2a_tasks ORDER BY seq")
+                .fetch_all(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(after, [("failed".to_owned(), 0), ("failed".to_owned(), 0)]);
     }
 }

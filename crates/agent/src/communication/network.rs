@@ -610,6 +610,10 @@ pub const HOLD_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// 183 F5: what a held task fails with when [`HOLD_TTL`] passes.
 pub const HOLD_EXPIRED: &str = "the owner did not answer";
 
+/// 183 F4: what a held task fails with when its export was taken away or redefined (another
+/// chat or agent, other tools, another cap) while it waited.
+pub const HOLD_CHANGED: &str = "the shared chat or agent changed while this waited; send it again";
+
 /// 183 W-27: one task held for a first-contact answer.
 struct HeldTask {
     task: A2aTask,
@@ -907,12 +911,18 @@ impl NetworkState {
     /// opening a private turn. Each row goes when its producer settles it.
     fn retire(&mut self, scope: Uuid) {
         self.contact_scopes.remove(&scope);
+        let mut dropped = false;
         for tasks in self.held.values_mut() {
             if let Some(i) = tasks.iter().position(|h| h.task.request_scope == scope) {
                 tasks.remove(i).watch.abort();
+                dropped = true;
             }
         }
         self.held.retain(|_, v| !v.is_empty());
+        if dropped {
+            // 183 review 1: no stale strip, row or Attention item (a cancel, a revoke).
+            tokio::spawn(crate::continuation::notify(HeldGone));
+        }
         if let Some(q) = self.queued.remove(&scope) {
             q.watch.abort();
             self.feeds.remove(&q.task);
@@ -2591,7 +2601,15 @@ impl Agents {
                 Some(CommError::Terminal) => A2AError::task_not_cancelable(id),
                 _ => internal(e),
             })?;
-        if cur.status == A2aTaskStatus::Submitted {
+        // 183 review 1: a first message held for the owner never started either; canceled at
+        // once (its retire drops the hold, so a later Allow finds nothing to run).
+        let held = self
+            .network
+            .held
+            .values()
+            .flatten()
+            .any(|h| h.task.request_scope == cur.request_scope);
+        if cur.status == A2aTaskStatus::Submitted || held {
             // Never started: nothing runs, nothing to wait for.
             let t = self
                 .transition(
@@ -3129,25 +3147,31 @@ struct HeldEnded {
 /// ends or `ttl` passes, whichever comes first.
 fn held_watch(scope: Uuid, route: CancellationToken, ttl: Duration) -> AbortHandle {
     tokio::spawn(async move {
-        let expired = tokio::select! {
-            () = route.cancelled() => false,
-            () = tokio::time::sleep(ttl) => true,
-        };
+        let expired = held_wait(&route, ttl).await;
         crate::continuation::notify(HeldEnded { scope, expired }).await;
     })
     .abort_handle()
 }
 
-/// `ask` → `()` (183 F4): `contact`'s grant changed and its grant epoch is about to end
-/// (`route` is the new one). Its held tasks for an export it still grants (`exports`) wait
-/// on under `route`; the others fail when the old epoch ends. Asked before the old epoch is
-/// cancelled, so editing a contact (or sharing another export with it) never drops a
-/// waiting first message.
+/// [`held_watch`]'s wait: `true` when `ttl` passed first, `false` when `route` ended.
+async fn held_wait(route: &CancellationToken, ttl: Duration) -> bool {
+    tokio::select! {
+        () = route.cancelled() => false,
+        () = tokio::time::sleep(ttl) => true,
+    }
+}
+
+/// `ask` → `()` (183 F4): `contact`'s grant changed, or its cap (`route` is its epoch
+/// now). Its held tasks for an export whose definition is unchanged (`exports`) wait on
+/// under `route`; every other one fails at once ([`HOLD_CHANGED`]). Asked right after the
+/// commit, before the old epoch is cancelled, so editing a contact (or sharing another export
+/// with it) never drops a waiting first message, and never lets one run under authority that
+/// is gone.
 #[derive(Clone, Debug)]
 pub struct RebindHeld {
     /// The contact's alias.
     pub contact: String,
-    /// The exports it is granted now.
+    /// The exports it holds in both epochs with an unchanged definition and cap.
     pub exports: Vec<String>,
     /// Its new grant epoch.
     pub route: CancellationToken,
@@ -3157,7 +3181,7 @@ impl Message<RebindHeld> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: RebindHeld, _: &mut Context<Self, Self::Reply>) {
-        self.rebind_held(m);
+        self.rebind_held(m).await;
     }
 }
 
@@ -3222,8 +3246,15 @@ impl Agents {
     }
 
     /// [`RebindHeld`].
-    fn rebind_held(&mut self, m: RebindHeld) {
+    async fn rebind_held(&mut self, m: RebindHeld) {
         let now = Utc::now().timestamp_millis().max(0) as u64;
+        let changed: Vec<(String, String)> = self
+            .network
+            .held
+            .keys()
+            .filter(|(c, e)| *c == m.contact && !m.exports.contains(e))
+            .cloned()
+            .collect();
         for ((c, e), tasks) in self.network.held.iter_mut() {
             if *c != m.contact || !m.exports.contains(e) {
                 continue;
@@ -3238,6 +3269,19 @@ impl Agents {
                 );
                 h.route = m.route.clone();
             }
+        }
+        // Taken away or redefined (another chat, other tools, another cap): admitted under
+        // authority that is gone, so it fails now rather than run on a later Allow.
+        for key in &changed {
+            for h in self.network.held.remove(key).unwrap_or_default() {
+                h.watch.abort();
+                if let Err(e) = self.fail_task(&h.task, HOLD_CHANGED).await {
+                    tracing::warn!(task = %h.task.id, "a2a: fail held task: {e:#}");
+                }
+            }
+        }
+        if !changed.is_empty() {
+            self.rt.publish(ContactsHeldChanged).await;
         }
     }
 
@@ -3339,6 +3383,29 @@ impl Message<ContactOffers> for Agents {
 
     async fn handle(&mut self, m: ContactOffers, _: &mut Context<Self, Self::Reply>) {
         self.network.set_offers(m.0);
+    }
+}
+
+/// `ask` → `bool` (183 review 1): `peer:<name>` (or `<name>/<export>`) is a live contact.
+#[derive(Clone, Debug)]
+pub struct IsContact(pub String);
+
+impl Message<IsContact> for Agents {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: IsContact, _: &mut Context<Self, Self::Reply>) -> bool {
+        self.network.is_contact(&m.0)
+    }
+}
+
+/// `tell` (internal, 183 review 1): [`NetworkState::retire`] dropped a held task.
+struct HeldGone;
+
+impl Message<HeldGone> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, _: HeldGone, _: &mut Context<Self, Self::Reply>) {
+        self.rt.publish(ContactsHeldChanged).await;
     }
 }
 
@@ -4014,8 +4081,29 @@ impl Agents {
             TaskState::AuthRequired => {
                 // 183 F7: a contact's first-contact hold is a state of this message, not a
                 // question to answer: `held`, with the line the sender's tools show.
-                if contact && let Some((machine, export)) = super::ContactRefusal::waiting(&text) {
-                    let name = alias.split('/').next().unwrap_or_default();
+                if contact
+                    && let Some((machine, remote_export)) = super::ContactRefusal::waiting(&text)
+                {
+                    // 183 review 1: the name and export from our own facts; the holder's
+                    // export only when the address named none and it is an export name.
+                    let (name, written) = match alias.split_once('/') {
+                        Some((n, e)) => (n, Some(e)),
+                        None => (alias.as_str(), None),
+                    };
+                    let export = written.map(str::to_owned).unwrap_or_else(|| {
+                        let ok = remote_export.len() <= 64
+                            && remote_export.bytes().all(|b| {
+                                b.is_ascii_lowercase()
+                                    || b.is_ascii_digit()
+                                    || b == b'-'
+                                    || b == b'_'
+                            });
+                        if ok {
+                            remote_export
+                        } else {
+                            "its first shared chat".to_owned()
+                        }
+                    });
                     let to = format!("peer:{alias}");
                     let why = held_line(name, &machine, &export);
                     match self.store.hold_exchange(exchange, &why).await {
@@ -5024,9 +5112,9 @@ mod tests {
         a.network.retire(busy.request_scope);
         a.start_next(session).await;
         let allowed = a.store.a2a_task(s, &allowed.id).await.unwrap().unwrap();
-        assert_ne!(
+        assert_eq!(
             allowed.status,
-            A2aTaskStatus::Submitted,
+            A2aTaskStatus::Working,
             "the allowed message starts though one still waits for the owner"
         );
         let still = a.store.a2a_task(s, &first.id).await.unwrap().unwrap();
@@ -5043,14 +5131,11 @@ mod tests {
         assert_eq!(n, 1);
         assert!(a.network.held.is_empty());
         let now = a.store.a2a_task(s, &first.id).await.unwrap().unwrap();
-        assert_ne!(now.status, A2aTaskStatus::AuthRequired);
-        if allowed.status.is_active() {
-            assert_eq!(
-                now.status,
-                A2aTaskStatus::Submitted,
-                "behind the running one"
-            );
-        }
+        assert_eq!(
+            now.status,
+            A2aTaskStatus::Submitted,
+            "queued behind the running one, as any admitted message"
+        );
 
         // Block: a first-contact task still waiting fails as not a contact.
         let waiting = a.admit_send(&p(true), &send("m-c")).await.unwrap().task;
@@ -5110,6 +5195,109 @@ mod tests {
         a.held_ended(held.request_scope, false).await;
         let again = a.store.a2a_task(s, &held.id).await.unwrap().unwrap();
         assert_eq!(again.error.as_deref(), Some(HOLD_EXPIRED));
+    }
+
+    /// 183 F5 (review 1): the hold's own timer, on a paused clock: nothing before
+    /// `HOLD_TTL`, expiry at it; the grant epoch ending first wins and is not an expiry.
+    #[tokio::test(start_paused = true)]
+    async fn the_hold_timer_fires_at_the_ttl_and_not_before() {
+        let route = CancellationToken::new();
+        let timer = tokio::spawn({
+            let route = route.clone();
+            async move { held_wait(&route, HOLD_TTL).await }
+        });
+        tokio::time::advance(HOLD_TTL - Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !timer.is_finished(),
+            "still waiting a second before the TTL"
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(timer.await.unwrap(), "expired at the TTL");
+
+        let revoked = tokio::spawn({
+            let route = route.clone();
+            async move { held_wait(&route, HOLD_TTL).await }
+        });
+        tokio::time::advance(Duration::from_secs(60)).await;
+        route.cancel();
+        assert!(
+            !revoked.await.unwrap(),
+            "the route ended first: not an expiry"
+        );
+    }
+
+    /// 183 review 1: the contact's own `tasks/cancel` on a held first message cancels it at
+    /// once (no wait for work that never started), and a later Allow finds nothing to run.
+    #[tokio::test]
+    async fn a_contact_cancel_of_a_held_message_ends_it_at_once() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        let p = A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            ask_first: true,
+        };
+        let held = a.admit_send(&p, &send("m-a")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        let done = a
+            .cancel_task(&p, &held.id)
+            .await
+            .unwrap()
+            .expect("settled at once");
+        assert_eq!(done.status, A2aTaskStatus::Canceled);
+        assert!(a.network.held.is_empty(), "no longer waiting anywhere");
+        let n = a
+            .release_held(ContactRelease {
+                contact: "bob".into(),
+                export: Some("research".into()),
+                allow: true,
+            })
+            .await;
+        assert_eq!(n, 0, "Allow finds nothing to run");
+    }
+
+    /// 183 review 1: the held line takes the holder's machine text cut to 64 characters
+    /// without control characters, and is at most 512 characters.
+    #[test]
+    fn held_lines_are_bounded() {
+        let machine = format!("33\n3\u{1b}[31m{}", "x".repeat(4096));
+        let line = held_line("sky", &machine, "hi-there");
+        assert!(line.chars().count() <= 512);
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(line.starts_with("held: sky (333[31mxxx"), "{line}");
+        let between = line.split_once('(').unwrap().1.split_once(')').unwrap().0;
+        assert_eq!(between.chars().count(), 64);
+        assert!(line.contains("has not allowed messages to hi-there yet"));
+    }
+
+    /// 183 F1 (review 1): `discover_peers` asks for a refresh of the contacts' offers at most
+    /// once per `OFFERS_TTL`, and never without a contact.
+    #[tokio::test]
+    async fn offers_are_due_once_per_ttl_with_a_contact() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        assert!(!a.network.offers_due(), "no contact, nothing to refresh");
+        a.network.insert_contact_for_test("sky");
+        assert!(a.network.offers_due(), "the first listing asks");
+        assert!(
+            !a.network.offers_due(),
+            "within the TTL it does not ask again"
+        );
+        a.network.offers_asked_ms.store(
+            (Utc::now().timestamp_millis() as u64)
+                .saturating_sub(OFFERS_TTL.as_millis() as u64 + 1),
+            Ordering::Relaxed,
+        );
+        assert!(a.network.offers_due(), "after the TTL it asks again");
     }
 
     /// Z3-R3: a contact that never reuses a context (our own sender passes none) is never
@@ -5421,9 +5609,9 @@ mod tests {
         assert_eq!(r.reply.as_deref(), Some("hi back"));
     }
 
-    /// 183 F4: a grant change keeps a held first message whose export the contact still
-    /// has: it moves to the new grant epoch, so Allow once runs it after the old epoch ended;
-    /// one whose export was taken away keeps the old epoch and fails at Allow.
+    /// 183 F4: a grant change keeps a held first message whose export is unchanged: it moves
+    /// to the new grant epoch, so Allow once runs it after the old epoch ended; one whose
+    /// export was taken away or redefined fails at once (`HOLD_CHANGED`), before any Allow.
     #[tokio::test]
     async fn a_grant_change_keeps_held_first_messages_of_exports_still_granted() {
         let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
@@ -5456,7 +5644,16 @@ mod tests {
             contact: "bob".into(),
             exports: vec!["research".into()],
             route: new.clone(),
-        });
+        })
+        .await;
+        let other = A2aScope {
+            principal: &principal,
+            export: "other",
+        };
+        let now = a.store.a2a_task(other, &dropped.id).await.unwrap().unwrap();
+        assert_eq!(now.status, A2aTaskStatus::Failed, "failed at the rebind");
+        assert_eq!(now.error.as_deref(), Some(HOLD_CHANGED));
+        assert!(!a.network.held.contains_key(&("bob".into(), "other".into())));
         old.cancel();
         // The session's own task ends, so a released task can start at once.
         let s = A2aScope {
@@ -5468,37 +5665,19 @@ mod tests {
             .await
             .unwrap();
         a.network.retire(busy.request_scope);
-        for export in ["research", "other"] {
-            a.release_held(ContactRelease {
-                contact: "bob".into(),
-                export: Some(export.into()),
-                allow: true,
-            })
-            .await;
-        }
+        a.release_held(ContactRelease {
+            contact: "bob".into(),
+            export: Some("research".into()),
+            allow: true,
+        })
+        .await;
         let kept = a.store.a2a_task(s, &kept.id).await.unwrap().unwrap();
         assert_ne!(kept.status, A2aTaskStatus::AuthRequired);
-        assert!(
-            !kept
-                .error
-                .as_deref()
-                .is_some_and(|e| e.contains("peer route revoked")),
-            "the export still granted runs under the new epoch: {:?}",
+        assert_ne!(
+            kept.status,
+            A2aTaskStatus::Failed,
+            "the unchanged export runs under the new epoch: {:?}",
             kept.error
-        );
-        let other = A2aScope {
-            principal: &principal,
-            export: "other",
-        };
-        let dropped = a.store.a2a_task(other, &dropped.id).await.unwrap().unwrap();
-        assert_eq!(dropped.status, A2aTaskStatus::Failed);
-        assert!(
-            dropped
-                .error
-                .as_deref()
-                .is_some_and(|e| e.ends_with("peer route revoked")),
-            "{:?}",
-            dropped.error
         );
     }
 

@@ -180,7 +180,7 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
 }
 
 /** The chip of one item: a `misplaced:<task>` item (182: the task's agent lives on another machine) is kind `home` but nothing is offline. */
-export const itemLabel = (item: Pick<AttentionItem, 'id' | 'kind'>): string => (item.id.startsWith('misplaced:') ? 'agent elsewhere' : KIND_LABEL[item.kind])
+export const itemLabel = (item: Pick<AttentionItem, 'id' | 'kind'>): string => (item.id.startsWith('misplaced:') ? 'agent elsewhere' : (KIND_LABEL[item.kind] ?? item.kind))
 
 /** The inbox's empty state; `/attention`'s rail says the same (101, 104). */
 export const ATTENTION_EMPTY = 'Nothing needs you. Agents\u2019 questions and what they show you, tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs, secret requests and turns a restart could not finish cleanly land here.'

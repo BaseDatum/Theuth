@@ -208,33 +208,40 @@ pub(crate) async fn serve_http(
     Ok(())
 }
 
-/// 183 F1: the contact-only routes of [`serve_http`]; `None` for everything else.
+/// 183 F1: the contact-only routes of [`serve_http`]; `None` for everything else. Both run
+/// under the contact's rate and concurrency bounds (review 1).
 async fn contact_route<B>(
     c: &Arc<Ctx>,
     remote: &str,
     req: &hyper::Request<B>,
 ) -> Option<axum::response::Response> {
     use axum::response::IntoResponse as _;
-    match (req.method(), req.uri().path()) {
-        (&hyper::Method::GET, super::offers::CARD_PATH) => {
-            Some(match c.contact_card(remote).await {
-                Ok(card) => (
-                    [(hyper::header::CACHE_CONTROL, "private, no-store")],
-                    axum::Json(card),
-                )
-                    .into_response(),
-                Err(e) => {
-                    tracing::warn!(%remote, "a2a: contact card: {e}");
-                    hyper::StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                }
-            })
+    let route = match (req.method(), req.uri().path()) {
+        (&hyper::Method::GET, super::offers::CARD_PATH) => true,
+        (&hyper::Method::POST, super::offers::NOTICE_PATH) => false,
+        _ => return None,
+    };
+    let admitted = c.shared.read().admit_contact(remote);
+    let _permit = match admitted {
+        Ok(p) => p,
+        Err(status) => return Some(status.into_response()),
+    };
+    Some(if route {
+        match c.contact_card(remote).await {
+            Ok(card) => (
+                [(hyper::header::CACHE_CONTROL, "private, no-store")],
+                axum::Json(card),
+            )
+                .into_response(),
+            Err(e) => {
+                tracing::warn!(%remote, "a2a: contact card: {}", super::offers::clip(&e));
+                hyper::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }
-        (&hyper::Method::POST, super::offers::NOTICE_PATH) => {
-            c.offers_noticed(remote);
-            Some(hyper::StatusCode::NO_CONTENT.into_response())
-        }
-        _ => None,
-    }
+    } else {
+        c.offers_noticed(remote);
+        hyper::StatusCode::NO_CONTENT.into_response()
+    })
 }
 
 /// Where to dial a contact: its pinned id and the latest hints for it.

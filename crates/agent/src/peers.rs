@@ -379,8 +379,10 @@ async fn first_answer(agents: &ActorRef<Agents>, session: runtime::SessionId, r:
 /// text in `task=`/`error=` has its line breaks turned into spaces, so it cannot forge a
 /// receipt line (183: the transcript's send card parses this grammar).
 fn receipt_line(r: &PeerReceipt) -> String {
-    let one = |s: &str| s.replace(['\r', '\n'], " ");
-    let mut s = format!("{} {} id={}", r.to, r.state.as_str(), r.id);
+    // Every line break a reader may honour: \r, \n, U+2028 and U+2029 (a failed row's address
+    // is the text the model wrote, so it goes through the same).
+    let one = |s: &str| s.replace(['\r', '\n', '\u{2028}', '\u{2029}'], " ");
+    let mut s = format!("{} {} id={}", one(&r.to), r.state.as_str(), r.id);
     if let Some(t) = &r.task_id {
         s.push_str(&format!(" task={}", one(t)));
     }
@@ -523,12 +525,24 @@ impl Tool for SendMessageTool {
         // 183 F7: a remote peer answers a send within a moment (held until its owner
         // presses Allow, refused, or taken as a task); this call says so instead of `accepted`.
         if !args.await_reply {
+            // Contacts only (an HTTP peer's answer needs no wait here), all at once.
+            let mut waiting = Vec::new();
             for r in receipts
                 .iter_mut()
-                .filter(|r| r.state == PeerMessageState::Accepted && r.to.starts_with("peer:"))
+                .filter(|r| r.state == PeerMessageState::Accepted)
             {
-                first_answer(&agents, cx.session, r).await;
+                let contact = match r.to.strip_prefix("peer:") {
+                    Some(name) => agents
+                        .ask(crate::communication::network::IsContact(name.to_owned()))
+                        .await
+                        .unwrap_or(false),
+                    None => false,
+                };
+                if contact {
+                    waiting.push(first_answer(&agents, cx.session, r));
+                }
             }
+            futures::future::join_all(waiting).await;
         }
         // One shared deadline for every awaited reply.
         let secs = self.cfg.subagents.reply_timeout_secs;
@@ -594,9 +608,9 @@ pub struct DiscoverPeersArgs {
     /// Only peers working now: a turn in flight (running, approval, awaiting) or a running job/PTY. Contacts and their shared chats and agents always stay.
     #[serde(default)]
     pub active_only: bool,
-    /// Only rows of this kind: `native` (theuth sessions), `acp` (external harnesses), `a2a` (contacts, their shared chats and agents, remote agents), `node`, `parent`.
+    /// Only rows of this kind: `native` (theuth sessions), `acp` (external harnesses), `a2a` (remote agents and contacts), `node`, `parent`, or `contact` (contacts and EVERY chat or agent they share, none left out).
     #[serde(default)]
-    pub kind: Option<crate::communication::PeerKind>,
+    pub kind: Option<crate::communication::DirectoryKind>,
 }
 
 /// The permitted peer directory (50 §5.1).
@@ -625,10 +639,12 @@ impl Tool for DiscoverPeersTool {
              `unavailable`). `title` is filled only \
              for your own tree (parent, children, siblings, ancestors, descendants); `tags` (short keywords the title \
              model assigned, e.g. `[rust, merge]`) come with every local peer, empty until it has a model-written title, \
-             and say what a peer is working on so you can tell which are relevant to you. Contacts and their rows come \
-             first, then working rows, then most recently active; `active_only` keeps contacts and the peers with a \
-             turn in flight or a running job/PTY (never a `remote` session); `kind` keeps one kind (`a2a`: contacts \
-             and remote agents). Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the \
+             and say what a peer is working on so you can tell which are relevant to you. Rows come in three groups: \
+             your own tree, then contacts with their shared rows (at most 8 per contact; the contact's row then reads \
+             `+N more: discover_peers(kind=\"contact\", query=\"<contact>\")`), then everything else; inside each, \
+             working rows first, then most recently active. `active_only` keeps contacts and the peers with a \
+             turn in flight or a running job/PTY (never a `remote` session); `kind` keeps one kind (`contact`: every \
+             contact row, uncapped). Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the \
              next page. Listing wakes nobody; it may refresh the contacts' shared lists in the background."
         )
     }
@@ -1205,6 +1221,16 @@ mod tests {
         // One failure beside one acceptance is not an error.
         let out = receipts_output(&[a, failed("session:c".into(), "busy".into())]);
         assert!(!out.is_error);
+        // 183 review 1: a failed row's address is the model's text; it and the error stay on
+        // one line, whatever line break they carry (\n, U+2028, U+2029).
+        let out = receipts_output(&[failed(
+            "bog\nus\u{2028}x".into(),
+            "unknown\u{2029}peer\r".into(),
+        )]);
+        assert_eq!(
+            out.content,
+            "bog us x failed id=00000000-0000-0000-0000-000000000000 error=unknown peer "
+        );
 
         // 183: an awaited fan-out of three shows every receipt line first, then one
         // `reply id=` block per reply; a reply that carries a fake receipt line stays

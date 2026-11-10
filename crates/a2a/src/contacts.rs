@@ -585,9 +585,11 @@ pub fn verify_card(card: &AgentCard, eid: &str) -> Result<(), String> {
     let protected: JwsProtected = serde_json::from_slice(&b64(&sig.protected)?)
         .map_err(|_| "the card signature header is not JSON".to_owned())?;
     if protected.alg != JWS_ALG || protected.kid != eid {
+        // Remote text: cut, so a forged header cannot flood a log or a status line.
         return Err(format!(
             "the card is signed {} by {}, not {JWS_ALG} by its endpoint",
-            protected.alg, protected.kid
+            clip(&protected.alg),
+            clip(&protected.kid)
         ));
     }
     let bytes: [u8; 64] = b64(&sig.signature)?
@@ -1903,7 +1905,9 @@ impl crate::Ctx {
     /// through and keeps asking; Always writes `first_contact: allow` first; Block writes
     /// `blocked: true` (the gate refuses the contact from now on, its waiting tasks fail).
     /// With no task waiting for (contact, export) — the select in Settings — the answer is
-    /// only that export's standing default (§9.4): `ask` (the entry goes), `allow`, `block`.
+    /// only that export's standing default (§9.4): `ask`, `allow`, `block`, each stored, so an
+    /// owner's explicit Ask first survives taking the share back and giving it again (F2,
+    /// review 1; an absent entry also reads Ask first, and a new grant writes Always allow).
     async fn first_answer(&self, m: ContactFirstAnswer) -> Result<(), String> {
         let ContactFirstAnswer {
             contact,
@@ -1922,11 +1926,9 @@ impl crate::Ctx {
         if !waiting {
             return self
                 .edit(|file| {
-                    let e = entry(file, &contact)?;
-                    match answer {
-                        FirstContact::Ask => e.first_contact.remove(&export),
-                        a => e.first_contact.insert(export.clone(), a),
-                    };
+                    entry(file, &contact)?
+                        .first_contact
+                        .insert(export.clone(), answer);
                     Ok(())
                 })
                 .await;

@@ -25,8 +25,10 @@ pub const CARD_PATH: &str = crate::config::CARD_SUFFIX;
 pub const NOTICE_PATH: &str = "/theuth/offers-changed";
 /// Most offers kept from one card.
 pub const OFFERS_MAX: usize = 64;
-/// Longest offer title kept.
-pub const TITLE_MAX: usize = 200;
+/// Longest offer title kept (the card's text limit).
+pub const TITLE_MAX: usize = super::CARD_TEXT_MAX;
+/// Longest refresh or card error kept for a log line.
+const ERROR_MAX: usize = 200;
 /// One fetch or notice's deadline.
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 /// Pairing: both sides pin on their own Accept, so the first fetch may beat the other's pin.
@@ -44,6 +46,14 @@ pub(crate) struct Cached {
     pub at: Option<Instant>,
     /// The last refresh failure logged (each distinct one once).
     pub error: Option<String>,
+    /// A noticed refresh is running; `again` is one more asked for meanwhile.
+    busy: bool,
+    again: bool,
+}
+
+/// Remote error text cut for a log line.
+pub(crate) fn clip(s: &str) -> String {
+    s.chars().take(ERROR_MAX).collect()
 }
 
 /// The exports `staged` grants the contact `alias`, as its card lists them. A chat's pause
@@ -80,21 +90,31 @@ pub(crate) fn granted(staged: &Staged, alias: &str) -> Vec<ContactOffer> {
         .collect()
 }
 
-/// The offers a verified card lists (untrusted text: names checked, titles cut).
+/// The offers a verified card lists (untrusted text: names checked and unique, titles cut to
+/// [`TITLE_MAX`] without control characters).
 pub(crate) fn of_card(card: &AgentCard) -> Vec<ContactOffer> {
+    let mut seen = std::collections::HashSet::new();
     card.skills
         .iter()
-        .filter(|s| crate::config::check_alias(&s.id).is_ok())
+        .filter(|s| crate::config::check_alias(&s.id).is_ok() && seen.insert(s.id.as_str()))
         .take(OFFERS_MAX)
         .map(|s| {
             let tagged = |t: &str| s.tags.iter().any(|x| x == t);
-            let title = s.description.trim();
+            let title: String = s
+                .description
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+                .trim()
+                .chars()
+                .take(TITLE_MAX)
+                .collect();
             ContactOffer {
                 name: s.id.clone(),
                 title: if title.is_empty() {
                     s.id.clone()
                 } else {
-                    title.chars().take(TITLE_MAX).collect()
+                    title
                 },
                 kind: if tagged(OfferKind::Agent.as_str()) {
                     OfferKind::Agent
@@ -183,13 +203,35 @@ impl Ctx {
     }
 
     /// A contact said what it shares with us changed (`NOTICE_PATH`): fetch its card again.
+    /// At most one noticed refresh runs per contact; notices meanwhile collapse into one
+    /// more refresh after it (review 1).
     pub(crate) fn offers_noticed(self: &Arc<Self>, eid: &str) {
+        {
+            let mut all = self.offers.lock();
+            let c = all.entry(eid.to_owned()).or_default();
+            if c.busy {
+                c.again = true;
+                return;
+            }
+            c.busy = true;
+        }
         let (c, eid) = (self.clone(), eid.to_owned());
-        tokio::spawn(async move { c.refresh_offers(&eid).await });
+        tokio::spawn(async move {
+            loop {
+                c.refresh_offers(&eid).await;
+                let mut all = c.offers.lock();
+                let Some(e) = all.get_mut(&eid) else { return };
+                if !std::mem::take(&mut e.again) {
+                    e.busy = false;
+                    return;
+                }
+            }
+        });
     }
 
     /// Fetch the contact `eid`'s card, verify it against the pin and keep its offers; a
-    /// failure keeps the last list and is logged once. `true` when it took.
+    /// failure keeps the last list and is logged once (cut to 200 characters). `true` when
+    /// it took; the agent and `A2aChanged` hear of it only when the list changed.
     pub(crate) async fn refresh_offers(&self, eid: &str) -> bool {
         let outcome = match self.net() {
             Some(net) => match call(&net, eid, hyper::Method::GET, CARD_PATH).await {
@@ -205,23 +247,26 @@ impl Ctx {
             None => Err("this engine has no mesh endpoint".to_owned()),
         };
         let took = outcome.is_ok();
-        {
+        let changed = {
             let mut all = self.offers.lock();
             let c = all.entry(eid.to_owned()).or_default();
             c.at = Some(Instant::now());
             match outcome {
                 Ok(offers) => {
-                    c.offers = offers;
                     c.error = None;
+                    std::mem::replace(&mut c.offers, offers) != c.offers
                 }
-                Err(e) if c.error.as_ref() != Some(&e) => {
-                    tracing::info!(%eid, "a2a: contact's shared list not refreshed (kept the last one): {e}");
-                    c.error = Some(e);
+                Err(e) => {
+                    let e = clip(&e);
+                    if c.error.as_ref() != Some(&e) {
+                        tracing::info!(%eid, "a2a: contact's shared list not refreshed (kept the last one): {e}");
+                        c.error = Some(e);
+                    }
+                    false
                 }
-                Err(_) => {}
             }
-        }
-        if took {
+        };
+        if changed {
             self.push_offers().await;
             self.rt.publish(crate::A2aChanged {}).await;
         }

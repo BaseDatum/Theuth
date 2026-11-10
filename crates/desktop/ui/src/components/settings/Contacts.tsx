@@ -65,8 +65,12 @@ function PathChip({ path }: { path: PeerPath }) {
   )
 }
 
+/** 183 review 1: how many first messages wait for one (contact, export), when more than one. */
+export const waitingCount = (w: FirstWaiting) => (w.waiting > 1 ? ` · ${w.waiting} messages` : '')
+
 /** 183 Phase 3: the line under a held first message — shared by the chat's Communication page, Contacts and the strip. */
-export const waitingLine = (w: FirstWaiting) => `${w.contact}${w.machine ? ` (${w.machine})` : ''} is waiting for you to allow its first message to ${w.export}`
+export const waitingLine = (w: FirstWaiting) =>
+  `${w.contact}${w.machine ? ` (${w.machine})` : ''} is waiting for you to allow its first message to ${w.export}${waitingCount(w)}`
 
 const ANSWERED: Record<FirstContact, (c: string) => string> = { ask: (c) => `Allowed ${c} once`, allow: (c) => `Allowed ${c} · always`, block: (c) => `Blocked ${c}` }
 
@@ -79,11 +83,11 @@ export function useFirstAnswer() {
   })
 }
 
-/** Allow once · Always · Block for `contact`'s held first message to `exp`. */
+/** Allow once · Always · Block for `contact`'s held first message to `exp`; one answer per row (a second click would only set the standing default). */
 export function FirstButtons({ contact, exp }: { contact: string; exp: string }) {
   const answer = useFirstAnswer()
   return (
-    <span className="flex shrink-0 items-center gap-1">
+    <span className="flex shrink-0 items-center gap-2">
       {(
         [
           ['ask', 'Allow once'],
@@ -91,7 +95,14 @@ export function FirstButtons({ contact, exp }: { contact: string; exp: string })
           ['block', 'Block'],
         ] as const
       ).map(([v, label]) => (
-        <Button key={v} variant={v === 'block' ? 'ghost' : 'outline'} size="sm" disabled={answer.isPending} onClick={() => answer.mutate({ contact, exp, answer: v })}>
+        <Button
+          key={v}
+          variant={v === 'block' ? 'ghost' : 'outline'}
+          size="sm"
+          className="pointer-coarse:min-h-11"
+          disabled={answer.isPending || answer.isSuccess}
+          onClick={() => answer.mutate({ contact, exp, answer: v })}
+        >
           {label}
         </Button>
       ))}
@@ -103,7 +114,7 @@ export function FirstButtons({ contact, exp }: { contact: string; exp: string })
 export function WaitingRow({ w }: { w: FirstWaiting }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg bg-layer-2 px-2.5 py-1.5 text-[13px]">
-      <span className="min-w-0 flex-1 basis-56">{waitingLine(w)}</span>
+      <span className="min-w-0 flex-1 basis-56 break-words">{waitingLine(w)}</span>
       <FirstButtons contact={w.contact} exp={w.export} />
     </div>
   )
@@ -173,7 +184,7 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
               )}
             </div>
             {c.shared.length > 0 && (
-              <p className="mt-1 text-[13px] text-fg-secondary">
+              <p className="mt-1 break-words text-[13px] text-fg-secondary">
                 Shared with you: {c.shared.map((o) => `${o.title}${o.state === 'ask_first' ? ' (asks first)' : o.state === 'unavailable' ? ' (paused)' : ''}`).join(', ')}
               </p>
             )}

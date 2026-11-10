@@ -604,10 +604,20 @@ impl PeerClient {
         }
         let _done = Done(&self, task.id.clone());
 
-        let deadline = tokio::time::Instant::now() + FOLLOW_MAX;
+        // 183 review 1: a contact's owner may take up to the hold TTL to answer a first
+        // message; while the task waits for that (`AUTH_REQUIRED`) the ceiling slides with
+        // it, so the answer after a late Allow still reaches the sender.
+        let started = tokio::time::Instant::now();
+        let ceiling = started + agent::communication::network::HOLD_TTL + FOLLOW_MAX;
+        let mut deadline = started + FOLLOW_MAX;
         let mut seen = fingerprint(&task);
         let mut backoff = POLL_MIN;
         loop {
+            if task.status.state == TaskState::AuthRequired {
+                deadline = deadline
+                    .max(tokio::time::Instant::now() + FOLLOW_MAX)
+                    .min(ceiling);
+            }
             if self.generation.is_cancelled() {
                 self.report(
                     exchange,

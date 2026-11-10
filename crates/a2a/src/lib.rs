@@ -499,10 +499,36 @@ impl Ctx {
             .filter(|a| !staged.peers.contains_key(*a))
             .cloned()
             .collect();
+        // 183 F4: a contact whose grant epoch rotates, or whose cap changes, keeps a held
+        // first message only for an export whose definition is unchanged (it moves to the new
+        // epoch); every other held message fails now, before an Allow could run it under
+        // authority that is gone.
+        let rebind: Vec<agent::communication::network::RebindHeld> = staged
+            .contacts
+            .iter()
+            .filter(|(alias, f)| {
+                let cap_changed = prev.staged.contacts.get(*alias).map(|c| c.cap) != Some(f.cap);
+                !f.blocked
+                    && prev.staged.peers.contains_key(*alias)
+                    && (cap_changed || !prev.staged.same_grant(&staged, alias))
+            })
+            .filter_map(|(alias, _)| {
+                Some(agent::communication::network::RebindHeld {
+                    contact: alias.clone(),
+                    exports: prev.staged.unchanged_exports(&staged, alias),
+                    route: epochs.get(alias)?.clone(),
+                })
+            })
+            .collect();
         let committed = self
             .ask(&agents, CommitPeerConfig { routes, revoke })
             .await
             .map_err(|e| format!("commit peer configuration: {e}"))?;
+        for m in rebind {
+            if let Err(e) = agents.ask(m).await {
+                tracing::warn!("a2a: held first messages across a grant change: {e}");
+            }
+        }
         let bindings: BTreeMap<String, Uuid> = staged
             .peers
             .keys()
@@ -545,25 +571,6 @@ impl Ctx {
             .collect();
         // 183 F1: a contact whose grants here changed hears it and fetches our card again.
         let notice = contacts::offers::changed(&prev.staged, &live.staged);
-        // 183 F4: a contact whose grant epoch rotates keeps its held first messages for the
-        // exports it still has: they move to the new epoch before the old one ends.
-        let rebind: Vec<agent::communication::network::RebindHeld> = live
-            .staged
-            .contacts
-            .iter()
-            .filter(|(alias, f)| {
-                !f.blocked
-                    && prev.staged.peers.contains_key(*alias)
-                    && !prev.staged.same_grant(&live.staged, alias)
-            })
-            .filter_map(|(alias, _)| {
-                Some(agent::communication::network::RebindHeld {
-                    contact: alias.clone(),
-                    exports: live.staged.peers.get(alias)?.exports.clone(),
-                    route: epochs.get(alias)?.clone(),
-                })
-            })
-            .collect();
         *self.shared.write() = live;
         let to = agents.clone();
         tokio::spawn(async move {
@@ -574,11 +581,6 @@ impl Ctx {
         self.notify_offers(notice);
         // A rename, removal or block changes whose offers the agent lists, and under what name.
         self.push_offers().await;
-        for m in rebind {
-            if let Err(e) = agents.ask(m).await {
-                tracing::warn!("a2a: keep held first messages across a grant change: {e}");
-            }
-        }
         for old in retired {
             old.cancel();
         }

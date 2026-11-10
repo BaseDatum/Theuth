@@ -1,5 +1,5 @@
 import { ChevronDown } from 'lucide-react'
-import { FirstButtons, waitingLine } from '@/components/settings/Contacts'
+import { FirstButtons, waitingCount, waitingLine } from '@/components/settings/Contacts'
 import { LIMITED, useFirstWaiting } from '@/lib/contacts'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
@@ -12,7 +12,7 @@ function Row({ w, detail }: { w: FirstWaiting; detail: boolean }) {
     <div className="flex min-w-0 flex-col gap-0.5">
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <span className="min-w-0 flex-1 basis-48 truncate text-fg-secondary" title={waitingLine(w)}>
-          {who(w)} wants to message this chat
+          {who(w)} wants to message this chat{waitingCount(w)}
         </span>
         <FirstButtons contact={w.contact} exp={w.export} />
       </div>
