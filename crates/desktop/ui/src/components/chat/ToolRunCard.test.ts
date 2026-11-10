@@ -92,8 +92,8 @@ test('foldRuns: adjacent peer cards from one sender fold; another sender, any ot
   const removed = peer('r', 'session:a', 'r', { context: { target: { kind: 'message', seq: 3 }, active: false, removed: true, remove_with: [], attachments: [] } } as Partial<Peer>)
   expect(foldRuns([a1, removed, a2])).toEqual([a1, removed, a2])
   // The authenticated endpoint decides, not the label.
-  const o1 = peer('o1', 'label', 'x', { origin: { id: 'm1', from: 'session:a', reply_to: null, scope: null } })
-  const o2 = peer('o2', 'other label', 'y', { origin: { id: 'm2', from: 'session:a', reply_to: null, scope: null } })
+  const o1 = peer('o1', 'label', 'x', { origin: { id: 'm1', from: 'session:a', reply_to: null, scope: null, contact_mode: null } })
+  const o2 = peer('o2', 'other label', 'y', { origin: { id: 'm2', from: 'session:a', reply_to: null, scope: null, contact_mode: null } })
   expect(foldRuns([o1, o2])).toEqual([[o1, o2]])
   // A send between two of its answers keeps them apart and stays its own card.
   const send = tool(5, { name: 'send_message', args: { to: 'session:a', message: 'hi' } })
@@ -114,15 +114,15 @@ test('foldRuns: a job result folds like a tool card — beside tools, with anoth
   expect(foldRuns([a, j1, s, b, c])).toEqual([[a, j1], s, [b, c]])
   expect(foldRuns([a, s, j1, b])).toEqual([a, s, [j1, b]])
   // A contact, subagent or reminder card is never a tool-run member, and a job never joins their group.
-  const contact = peer('k', 'contact:e1:sky', 'hi', { origin: { id: 'm1', from: 'contact:e1:sky', reply_to: null, scope: null } })
-  const kid = peer('s', 'session:kid', 'done', { origin: { id: 'm2', from: 'session:kid', reply_to: null, scope: null } })
+  const contact = peer('k', 'contact:e1:sky', 'hi', { origin: { id: 'm1', from: 'contact:e1:sky', reply_to: null, scope: null, contact_mode: null } })
+  const kid = peer('s', 'session:kid', 'done', { origin: { id: 'm2', from: 'session:kid', reply_to: null, scope: null, contact_mode: null } })
   const reminder = peer('rm', 'Reminder r3 · after 10 min', 'ping')
   for (const p of [contact, kid, reminder]) {
     expect(foldRuns([a, p, b])).toEqual([a, p, b])
     expect(foldRuns([p, j1, a])).toEqual([p, [j1, a]])
   }
   // The body never makes a job: only the sender does.
-  const looks = peer('l', 'session:kid', 'job j4', { origin: { id: 'm3', from: 'session:kid', reply_to: null, scope: null } })
+  const looks = peer('l', 'session:kid', 'job j4', { origin: { id: 'm3', from: 'session:kid', reply_to: null, scope: null, contact_mode: null } })
   expect(foldRuns([a, looks, b])).toEqual([a, looks, b])
   // A job removed from context stays its own tombstone.
   const removed = peer('jr', 'job j5', 'out', { context: { target: { kind: 'message', seq: 3 }, active: false, removed: true, remove_with: [], attachments: [] } } as Partial<Peer>)

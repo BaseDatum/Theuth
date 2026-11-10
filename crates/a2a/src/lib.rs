@@ -42,7 +42,7 @@ pub mod contacts;
 pub mod server;
 
 use client::{ConnectError, PeerClient, Sender};
-use config::{A2aConfig, Listener, PEERS_FILE, PeersFile, Staged};
+use config::{A2aConfig, Listener, PEERS_FILE, PeersFile, ShareMode, Staged};
 use server::{Live, Shared};
 
 /// Registry name of the [`A2aActor`].
@@ -123,6 +123,8 @@ pub struct A2aExportStatus {
     pub url: String,
     /// The one peer granted this export.
     pub peer: Option<String>,
+    /// 186: the granted peer's share mode (contacts only).
+    pub mode: Option<ShareMode>,
 }
 
 /// `ask` → [`A2aStatus`].
@@ -257,6 +259,18 @@ impl Ctx {
                 session: e.session,
                 url: format!("{}/agents/{}/rpc", base.as_deref().unwrap_or(""), e.name),
                 peer: e.peer.clone(),
+                mode: e
+                    .peer
+                    .as_ref()
+                    .and_then(|p| live.staged.peers.get(p))
+                    .filter(|p| p.eid.is_some())
+                    .map(|p| {
+                        if p.full.contains(&e.name) {
+                            ShareMode::Full
+                        } else {
+                            ShareMode::Cautious
+                        }
+                    }),
             })
             .collect();
         A2aStatus {
@@ -490,6 +504,7 @@ impl Ctx {
                     roots: p.sessions.clone(),
                     generation: epochs[&p.name].clone(),
                     sender,
+                    full: p.full.iter().cloned().collect(),
                 }
             })
             .collect();
@@ -557,16 +572,34 @@ impl Ctx {
             .map(|(alias, f)| agent::communication::network::ContactLimits {
                 contact: alias.clone(),
                 cap: f.cap,
+                // 186 (D6): an agent shared in full runs under its own policy.
                 exports: live
                     .staged
                     .peers
                     .get(alias)
-                    .map(|p| p.exports.as_slice())
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(|e| live.staged.agents.get(e))
-                    .map(|a| (a.name.clone(), a.tools.clone()))
-                    .collect(),
+                    .map(|p| {
+                        p.exports
+                            .iter()
+                            .filter(|e| !p.full.contains(*e))
+                            .filter_map(|e| live.staged.agents.get(e))
+                            .map(|a| (a.name.clone(), a.tools.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                // 186 review 2: and which agent exports it holds in full (every other inbox
+                // of the contact stops running in full).
+                full: live
+                    .staged
+                    .peers
+                    .get(alias)
+                    .map(|p| {
+                        p.full
+                            .iter()
+                            .filter(|e| live.staged.agents.contains_key(*e))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
             .collect();
         // 183 F1: a contact whose grants here changed hears it and fetches our card again.
@@ -1105,6 +1138,7 @@ mod tests {
                     inbound: Some(config::Token::for_test(token)),
                     sessions: vec![],
                     exports: vec![],
+                    full: Default::default(),
                     allow_private: false,
                     eid: None,
                 },

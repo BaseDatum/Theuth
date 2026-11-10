@@ -942,7 +942,7 @@ impl Store {
             .is_some_and(|s| {
                 matches!(
                     json(&s.payload)["source"].as_str(),
-                    Some("peer" | "scoped" | "contact")
+                    Some("peer" | "scoped" | "contact" | "contact_full" | "contact_inbox")
                 )
             });
         let mut kind = ResumeKind::Interrupted;
@@ -1106,6 +1106,30 @@ impl Store {
         Ok(rows.iter().map(|(p,)| json(p)).find_map(|p| {
             (p["source"].as_str() == Some("contact"))
                 .then(|| p["input_id"].as_str().map(str::to_owned))
+        }))
+    }
+
+    /// 186 (D8): `turn` of `session` took a contact's incoming message: an `input_accepted`
+    /// of source `contact` (a cautious chat turn), `contact_full` (a message shared in full) or
+    /// `contact_inbox` (a cautious agent inbox). Answers to our own messages are `peer`.
+    pub async fn turn_took_contact(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+    ) -> anyhow::Result<bool> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT payload FROM turn_steps \
+             WHERE session_id = ? AND turn_id = ? AND kind = 'input_accepted'",
+        )
+        .bind(session.to_string())
+        .bind(turn.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        Ok(rows.iter().any(|(p,)| {
+            matches!(
+                json(p)["source"].as_str(),
+                Some("contact" | "contact_full" | "contact_inbox")
+            )
         }))
     }
 
@@ -1985,6 +2009,15 @@ mod tests {
             assert!(store.resume_plan(s, t).await.unwrap().bounded);
             store.finish_turn(s, t, "stop").await.unwrap();
         }
+        // 186 (D6): a contact's turn shared in full is a peer turn: bounded, never capped.
+        let full = TurnId::new();
+        store
+            .input_accepted(s, full, Some("ex-2"), "contact_full")
+            .await
+            .unwrap();
+        assert_eq!(store.contact_turn_input(s, full).await.unwrap(), None);
+        assert!(store.resume_plan(s, full).await.unwrap().bounded);
+        store.finish_turn(s, full, "stop").await.unwrap();
         let owner = TurnId::new();
         store.input_accepted(s, owner, None, "user").await.unwrap();
         assert_eq!(store.contact_turn_input(s, owner).await.unwrap(), None);

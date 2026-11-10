@@ -398,8 +398,11 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         } => {
             let r: anyhow::Result<()> = async {
                 // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
+                // 186 (D8): as input: the engine keeps a contact's turn running and the text queues.
                 if interject {
-                    msg(api.cancel(session, None).await)?;
+                    msg(api
+                        .cancel(session, None, Some(agent::CancelReason::Input))
+                        .await)?;
                 }
                 msg(api
                     .steer(session, text.clone(), Some(id), files, None)
@@ -493,11 +496,13 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::Forked(id, msg(api.load_session(id, None, None, None).await)?)
         }
         Command::Cancel(session) => {
-            msg(api.cancel(session, None).await)?;
+            msg(api.cancel(session, None, None).await)?;
             return Ok(());
         }
         Command::CancelTree(session) => {
-            msg(api.cancel(session, Some(agent::CancelScope::Tree)).await)?;
+            msg(api
+                .cancel(session, Some(agent::CancelScope::Tree), None)
+                .await)?;
             return Ok(());
         }
         Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(session).await)?),

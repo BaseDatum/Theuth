@@ -3,6 +3,7 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import type { Contact } from '@/rpc/bindings/Contact'
 import type { Export } from '@/rpc/bindings/Export'
 import type { Risk } from '@/rpc/bindings/Risk'
+import type { ShareMode } from '@/rpc/bindings/ShareMode'
 
 /** §12.7: the cap as a contact row and a card say it. `destructive` is never offered (§7.6). */
 export const CAP: Record<Risk, string> = { read_only: 'read only', mutating: 'can change things', destructive: 'destructive' }
@@ -10,8 +11,32 @@ export const CAP: Record<Risk, string> = { read_only: 'read only', mutating: 'ca
 /** 183 W-27: what each first-contact answer does, one sentence per button (the Attention screen and the HUD row). */
 export const FIRST_ANSWERS = 'Allow once lets this message through. Always lets every later message to this export through. Block blocks this contact entirely.'
 
-/** 183 §7.5: what a contact gets, in one line (Contacts, Add contact, the ceremony). */
-export const LIMITED = 'Contacts are limited trust: no vault, no sessions, only the agents and chats you share.'
+/** 186: what a contact reaches, in one line (Contacts, Contacts' access): only what is shared, in the mode chosen each time. */
+export const SHARE_RULE =
+  'A contact reaches only what you share, and you choose how each time. Full collaboration: their agent and yours talk freely, with Markdown, links and images, and yours works with its normal tools and your usual approvals. Cautious: plain text, one limited turn per message, read-only tools.'
+
+/** 186: the pairing dialog's line: pairing alone shares nothing. */
+export const PAIRED_RULE =
+  'A paired contact reaches nothing until you share an agent or chat with them, and you choose how: Full collaboration (their agent and yours talk freely) or Cautious (plain text, one limited turn per message, read-only tools).'
+
+/** 186 D1: a grant's mode; an export with no entry is cautious (D2: fail closed). */
+export const modeOf = (c: Pick<Contact, 'modes'>, exp: string): ShareMode => c.modes[exp] ?? 'cautious'
+
+/** 186 D6: the cap bounds cautious shares only: it means something for a contact with no share yet or a cautious one. */
+export const capBinds = (c: Pick<Contact, 'exports' | 'modes'>): boolean => !c.exports.length || c.exports.some((n) => modeOf(c, n) === 'cautious')
+
+/** 186: `<Mode>: <hint>` once per distinct mode of `modes`, Full first (the allow strip, the Attention screen). */
+export const modeLines = (modes: readonly ShareMode[], kind: 'agent' | 'chat' = 'chat'): string[] =>
+  (['full', 'cautious'] as const).filter((m) => modes.includes(m)).map((m) => `${MODE_LABEL[m]}: ${modeHint(m, kind)}`)
+
+/** 186: each mode's name and what it lets through, said alike by the share buttons, the mode selects and the strip. */
+export const MODE_LABEL: Record<ShareMode, string> = { full: 'Full collaboration', cautious: 'Cautious' }
+export const modeHint = (mode: ShareMode, kind: 'agent' | 'chat' = 'chat'): string =>
+  mode === 'full'
+    ? `Their agent and ${kind === 'chat' ? 'this chat’s agent' : 'this agent'} talk freely, with Markdown, links and images, and ${kind === 'chat' ? 'this chat’s agent' : 'it'} works with its normal tools.`
+    : 'Plain text, one limited turn per message, read-only tools.'
+/** 186 D10: why Full collaboration is off for a contact on an older build. */
+export const updateNeeded = (c: Pick<Contact, 'name' | 'machine'>) => `update ${c.machine || c.name} to share in full`
 
 /** `contact_list()`: this machine's contacts, refreshed by `A2aChanged` and a finished ceremony. */
 export function useContacts(enabled = true) {
@@ -25,10 +50,12 @@ export function useExports(enabled = true) {
   return useQuery({ queryKey: queryKeys.exports, queryFn: () => api.a2a_exports(), enabled })
 }
 
-/** `contact_first_waiting()`: the (contact, export) pairs whose first message waits for the owner; live on `A2aChanged`. */
-export function useFirstWaiting(enabled = true) {
+/** `contact_first_waiting()`: the (contact, export) pairs whose first message waits for the owner; live on `A2aChanged`.
+ * 186: the engine also lists cautious messages queued behind a busy chat (`queued`); only the composer strip shows
+ * those (`withQueued`), every other surface answers holds. */
+export function useFirstWaiting(enabled = true, withQueued = false) {
   const api = useApi()
-  return useQuery({ queryKey: queryKeys.waiting, queryFn: () => api.contact_first_waiting(), enabled })
+  return useQuery({ queryKey: queryKeys.waiting, queryFn: () => api.contact_first_waiting(), enabled, select: withQueued ? undefined : (rows) => rows.filter((w) => !w.queued) })
 }
 
 /** 183 §12.10: an exported chat — its export and the contacts it is granted to (blocked ones excluded). */
@@ -46,11 +73,12 @@ export function useSharing(session: string | null, enabled = true): Sharing | nu
   return session ? sharingOf(session, exports.data, contacts.data) : null
 }
 
-/** 183 §12.10: the chat header's chip — `Shared with bob · read only`, each contact with its cap, `· paused (chat archived)`
- * when the export answers nothing; `null` when no contact can message the chat. */
+/** 183 §12.10: the chat header's chip — `Shared with bob · read only`, each contact with its cap (186: `· full` for a full
+ * share, whose turns the cap does not bound), `· paused (chat archived)` when the export answers nothing; `null` when no
+ * contact can message the chat. */
 export function sharedLabel(s: Sharing | null): string | null {
   if (!s?.contacts.length) return null
-  return `Shared with ${s.contacts.map((c) => `${c.name} · ${CAP[c.cap]}`).join(', ')}${s.exp.paused ? ` · paused (${s.exp.paused})` : ''}`
+  return `Shared with ${s.contacts.map((c) => `${c.name} · ${modeOf(c, s.exp.name) === 'full' ? 'full' : CAP[c.cap]}`).join(', ')}${s.exp.paused ? ` · paused (${s.exp.paused})` : ''}`
 }
 
 /** `Stop sharing with bob` / `with bob and alice` / `with bob, alice and carol`. */

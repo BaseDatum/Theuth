@@ -10,7 +10,7 @@ import { useToolRuns } from '@/lib/tool-runs'
 import { ContactAllowStrip } from './ContactAllowStrip'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
-const W: FirstWaiting = { contact: 'sky', machine: "Sky's Mac", export: 'ops', session: 's1', since_ms: 1, waiting: 1, preview: 'ping from sky' }
+const W: FirstWaiting = { contact: 'sky', machine: "Sky's Mac", export: 'ops', session: 's1', since_ms: 1, waiting: 1, preview: 'ping from sky', mode: 'cautious' }
 const api = {
   contact_first_waiting: vi.fn(async (): Promise<FirstWaiting[]> => [W]),
   contact_first_answer: vi.fn(async (_c: string, _e: string, _a: string) => null),
@@ -26,11 +26,12 @@ const run = (fn: () => unknown) =>
 const body = () => document.body.textContent ?? ''
 const click = (label: string) => run(() => [...document.querySelectorAll('button')].find((b) => b.textContent === label || b.getAttribute('aria-label') === label)!.click())
 let unmount = async () => {}
+let client: QueryClient
 async function mount(session = 's1') {
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await run(() => root.render(createElement(QueryClientProvider, { client, children: createElement(ContactAllowStrip, { session }) })))
   await run(() => undefined)
   unmount = () => run(() => root.unmount())
@@ -45,13 +46,31 @@ afterEach(async () => {
   document.body.innerHTML = ''
 })
 
-test('one waiting contact: a collapsed row with three answers; expanding adds the preview and the limited-trust line', async () => {
+test('one waiting contact: a collapsed row with its mode and three answers; expanding adds the preview and what the mode lets through', async () => {
   await mount()
-  expect(body()).toContain("sky (Sky's Mac) wants to message this chat")
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Cautious")
   expect(body()).not.toContain('ping from sky')
   await click('Details')
   expect(body()).toContain('ping from sky')
-  expect(body()).toContain('limited trust')
+  expect(body()).toContain('Cautious: Plain text, one limited turn per message, read-only tools.')
+  expect(body()).not.toContain('Full collaboration:')
+})
+
+test('186: a full share says so, and what it lets through; mixed modes print one line each', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [{ ...W, mode: 'full' }])
+  await mount()
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Full collaboration")
+  await click('Details')
+  expect(body()).toContain('Full collaboration: Their agent and this chat’s agent talk freely, with Markdown, links and images')
+  expect(body()).not.toContain('Cautious:')
+  await unmount()
+  document.body.innerHTML = ''
+  useToolRuns.setState({ disclosed: {} })
+  api.contact_first_waiting.mockImplementation(async () => [{ ...W, mode: 'full' }, { ...W, contact: 'eve', export: 'docs' }, { ...W, contact: 'kim', export: 'kb' }])
+  await mount()
+  await click('Details')
+  expect(body().match(/Full collaboration: /g)).toHaveLength(1)
+  expect(body().match(/Cautious: /g)).toHaveLength(1)
 })
 
 test.each([
@@ -71,7 +90,7 @@ test.each([
 test('several first messages from one contact: the row says how many', async () => {
   api.contact_first_waiting.mockImplementation(async () => [{ ...W, waiting: 3 }])
   await mount()
-  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · 3 messages")
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Cautious · 3 messages")
 })
 
 test('several waiting: collapsed "N contacts waiting"; expanded one row each with its own buttons', async () => {
@@ -87,5 +106,44 @@ test('several waiting: collapsed "N contacts waiting"; expanded one row each wit
 
 test('nothing waits for this session: no strip', async () => {
   await mount('other')
+  expect(document.querySelector('[role=region]')).toBeNull()
+})
+
+const Q: FirstWaiting = { ...W, preview: 'is the build green?', queued: true, position: 1 }
+
+test('186: a cautious message queued behind the running turn is a quiet row with no buttons; open, its first line', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [Q])
+  await mount()
+  expect(body()).toContain("sky (Sky's Mac) · 1 message waits for this turn to finish")
+  expect([...document.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['Details'])
+  expect(body()).not.toContain('is the build green?')
+  await click('Details')
+  expect(body()).toContain('“is the build green?”')
+  // No mode line: there is nothing to allow.
+  expect(body()).not.toContain('Cautious:')
+})
+
+test('186: queued counts are summed per contact; holds come first and keep their buttons', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [
+    Q,
+    { ...Q, export: 'docs', waiting: 2, preview: 'and the docs?', position: 2 },
+    { ...W, contact: 'eve', machine: '', export: 'kb' },
+  ])
+  await mount()
+  expect(body()).toContain('2 contacts waiting')
+  await click('Details')
+  const t = body()
+  expect(t).toContain("sky (Sky's Mac) · 3 messages wait for this turn to finish")
+  expect(t.match(/messages? waits? for this turn/g)).toHaveLength(1)
+  expect(t.indexOf('eve wants to message this chat')).toBeLessThan(t.indexOf('3 messages wait'))
+  expect([...document.querySelectorAll('button')].filter((b) => b.textContent === 'Allow once')).toHaveLength(1)
+})
+
+test("186: the queued row goes once its turn starts (the engine stops listing it)", async () => {
+  api.contact_first_waiting.mockImplementation(async () => [Q])
+  await mount()
+  expect(document.querySelector('[role=region]')).not.toBeNull()
+  api.contact_first_waiting.mockImplementation(async () => [])
+  await run(() => client.invalidateQueries())
   expect(document.querySelector('[role=region]')).toBeNull()
 })

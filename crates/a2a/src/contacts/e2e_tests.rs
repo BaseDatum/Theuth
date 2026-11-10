@@ -1128,6 +1128,14 @@ async fn paired(a: &Engine, b: &Engine) -> (String, String) {
     (a_alias, b_alias)
 }
 
+/// 186 (D3): `exports` shared cautiously (a share names its mode).
+fn cautious(exports: &[&str]) -> std::collections::BTreeMap<String, ShareMode> {
+    exports
+        .iter()
+        .map(|e| (e.to_string(), ShareMode::Cautious))
+        .collect()
+}
+
 /// 183 F1, F2: sharing an agent with a contact starts it on "Always allow" (an explicit "Ask
 /// first" is kept on a re-grant), the contact's engine hears of the grant and lists the
 /// export as its own `discover_peers` row (`peer:<contact>/<export>`, its description,
@@ -1156,6 +1164,8 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
             name: a_alias.clone(),
             patch: ContactPatch {
                 exports: Some(exports.iter().map(|s| s.to_string()).collect()),
+                // 186 (D3): every share picks its mode.
+                modes: Some(cautious(exports)),
                 ..ContactPatch::default()
             },
         })
@@ -1206,7 +1216,7 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
     }
     let row = row.expect("the granted export is a row on the contact's side");
     assert_eq!(row.title.as_deref(), Some("Answers research questions"));
-    assert_eq!(row.tags, ["contact", "agent", "allowed"]);
+    assert_eq!(row.tags, ["contact", "agent", "allowed", "cautious"]);
     assert!(row.send && row.reply);
     let all = rows().await;
     assert_eq!(
@@ -1319,6 +1329,8 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
             name: a_alias.clone(),
             patch: ContactPatch {
                 exports: Some(exports.iter().map(|s| s.to_string()).collect()),
+                // 186 (D3): every share picks its mode.
+                modes: Some(cautious(exports)),
                 ..ContactPatch::default()
             },
         })
@@ -1505,4 +1517,411 @@ async fn offers_notices_coalesce_and_never_stick() {
         done: false,
     });
     assert_eq!(state().map(|s| (s.0, s.1)), Some((false, false)));
+}
+
+/// Polls `f` until it yields (40 s: a contact's task is followed by polling, 2 s doubling).
+async fn eventually<T, F, Fut>(what: &str, mut f: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    for _ in 0..800 {
+        if let Some(t) = f().await {
+            return t;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// 186 (D3–D5, D10, D12): a chat shared in full. The share names its mode (none is refused,
+/// full needs the contact's build). The contact's message is a peer row in the shared chat
+/// (not `<contact_message>`), its receipt reads consumed, the chat's `send_message(reply_to)`
+/// lands in the contact's originating session as `<message from=peer:…>` and settles its
+/// awaiting send; the two go on answering each other, several times each way, on one
+/// conversation. Downgraded, an answer is refused here and the contact's return route ends
+/// the conversation (`TASK_NOT_FOUND`).
+#[tokio::test]
+async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
+    use agent::communication::network::{FullWire, RETURN_ROUTE};
+    use agent::{ListPeerMessages, PeerMessageState, ShareMode};
+
+    let lan = Lan::default();
+    let a = engine("a", &lan, true, cfg(600)).await;
+    let b = engine("b", &lan, true, cfg(600)).await;
+    let (a_alias, b_alias) = paired(&a, &b).await;
+    let (a_agents, b_agents) = (a.ctx.agents().unwrap(), b.ctx.agents().unwrap());
+    // The runners report consumption and outcomes to the registered supervisor (one per
+    // engine process): here A's, the side whose tasks complete on consumption. B's reports
+    // reach A and find nothing of theirs; B's own steps here go by direct refs.
+    a_agents
+        .register(agent::AGENT_ACTOR)
+        .expect("no other test registers a supervisor");
+    let chat_of = |agents: kameo::actor::ActorRef<agent::Agents>| async move {
+        agents
+            .ask(agent::CreateSession {
+                options: agent::CreateSessionOptions::default(),
+                peer: None,
+            })
+            .await
+            .unwrap()
+            .session
+    };
+    let chat = chat_of(a_agents.clone()).await;
+    let origin = chat_of(b_agents.clone()).await;
+    a.ctx
+        .put_export(Export {
+            name: "proj".into(),
+            target: ExportTarget::Chat { session: chat },
+            description: "The project chat".into(),
+            paused: None,
+            tools: None,
+        })
+        .await
+        .unwrap();
+    let share = |modes: Option<ShareMode>| {
+        a.ctx.update_contact(ContactUpdate {
+            name: a_alias.clone(),
+            patch: ContactPatch {
+                exports: Some(vec!["proj".into()]),
+                modes: modes.map(|m| std::collections::BTreeMap::from([("proj".into(), m)])),
+                ..ContactPatch::default()
+            },
+        })
+    };
+    // D3: the choice is required.
+    let none = share(None).await.unwrap_err();
+    assert!(none.contains("choose full or cautious"), "{none}");
+    // D10: full needs a contact whose card collaborates in full.
+    until("A read B's card", || a.ctx.full_of(&b.eid()).then_some(())).await;
+    if let Some(c) = a.ctx.offers.lock().get_mut(&b.eid()) {
+        c.full = false;
+    }
+    let old = share(Some(ShareMode::Full)).await.unwrap_err();
+    assert!(old.contains("to share in full"), "{old}");
+    a.ctx.refresh_offers(&b.eid()).await;
+    let shared = share(Some(ShareMode::Full)).await.unwrap();
+    assert!(shared.full_capable);
+    assert_eq!(shared.modes.get("proj"), Some(&ShareMode::Full));
+    // A contact that lost the capability: the existing full entry, sent back whole, passes.
+    if let Some(c) = a.ctx.offers.lock().get_mut(&b.eid()) {
+        c.full = false;
+    }
+    share(Some(ShareMode::Full)).await.unwrap();
+    a.ctx.refresh_offers(&b.eid()).await;
+    until("B sees proj shared in full", || {
+        b.ctx
+            .offers_of(&a.eid())
+            .iter()
+            .find(|o| o.name == "proj" && o.mode == ShareMode::Full)
+            .map(|_| ())
+    })
+    .await;
+
+    // B's agent lists it tagged `full` (what its send goes by).
+    let address = format!("peer:{b_alias}/proj");
+    let tags = eventually("B's discover_peers row in full", || {
+        let (b_agents, address) = (b_agents.clone(), address.clone());
+        async move {
+            b_agents
+                .ask(agent::ListPeers {
+                    session: origin,
+                    query: None,
+                    cursor: None,
+                    limit: None,
+                    active_only: false,
+                    kind: None,
+                })
+                .await
+                .unwrap()
+                .peers
+                .into_iter()
+                .find(|p| p.address == address && p.tags.iter().any(|t| t == "full"))
+                .map(|p| p.tags)
+        }
+    })
+    .await;
+    assert_eq!(tags, ["contact", "chat", "allowed", "full"]);
+    let deliver =
+        |from, to: String, text: &str, reply_to, await_reply| agent::supervisor::Deliver {
+            from,
+            to,
+            text: text.into(),
+            await_reply,
+            reply_to,
+            request_id: None,
+            admitted: tokio_util::sync::CancellationToken::new(),
+        };
+    // The newest record of `session` with `text`, once it is consumed.
+    let consumed = |agents: kameo::actor::ActorRef<agent::Agents>, session, text: &'static str| {
+        eventually(text, move || {
+            let agents = agents.clone();
+            async move {
+                agents
+                    .ask(ListPeerMessages {
+                        session,
+                        cursor: None,
+                        limit: None,
+                        pending_only: false,
+                    })
+                    .await
+                    .unwrap()
+                    .messages
+                    .into_iter()
+                    .find(|r| {
+                        r.text == text
+                            && r.receipt.to == format!("session:{session}")
+                            && r.receipt.state != PeerMessageState::Accepted
+                    })
+            }
+        })
+    };
+
+    // B writes, awaiting the answer.
+    let sent = b_agents
+        .ask(deliver(
+            origin,
+            format!("peer:{b_alias}/proj"),
+            "ping 1",
+            None,
+            true,
+        ))
+        .await
+        .unwrap();
+    let waiting = sent.reply.expect("an awaited send");
+    let x = consumed(a_agents.clone(), chat, "ping 1").await;
+    assert_eq!(
+        x.receipt.state,
+        PeerMessageState::Consumed,
+        "{:?}",
+        x.receipt.error
+    );
+    assert_eq!(
+        x.contact_mode,
+        Some(ShareMode::Full),
+        "a full contact's row"
+    );
+    assert!(x.from.starts_with("peer:"), "{}", x.from);
+    let receipt = eventually("B's receipt reads consumed", || {
+        let b_agents = b_agents.clone();
+        async move {
+            let r = b_agents
+                .ask(agent::GetPeerMessage {
+                    session: origin,
+                    id: sent.receipt.id,
+                })
+                .await
+                .unwrap();
+            (r.receipt.state != PeerMessageState::Accepted).then_some(r)
+        }
+    })
+    .await;
+    assert_eq!(
+        receipt.receipt.state,
+        PeerMessageState::Consumed,
+        "{:?}",
+        receipt.receipt
+    );
+    assert!(receipt.receipt.reply.is_none(), "a receipt, not a reply");
+    // The shared chat's history: a peer row, never `<contact_message>`.
+    let rows = eventually("A's chat history", || {
+        let a_agents = a_agents.clone();
+        async move {
+            let loaded = a_agents
+                .ask(agent::LoadSession {
+                    session: chat,
+                    before: None,
+                    limit: None,
+                    settled_only: false,
+                })
+                .await
+                .ok()?;
+            let rows: Vec<String> = loaded
+                .history
+                .iter()
+                .filter_map(|h| match h {
+                    agent::HistoryEntry::User { text, peer, .. } => {
+                        Some((text.clone(), peer.as_ref()?.contact_mode))
+                    }
+                    _ => None,
+                })
+                .filter(|(_, m)| *m == Some(ShareMode::Full))
+                .map(|(t, _)| t)
+                .collect();
+            (!rows.is_empty()).then_some(rows)
+        }
+    })
+    .await;
+    assert!(rows[0].starts_with("<message from=\"peer:"), "{}", rows[0]);
+    assert!(!rows[0].contains("<contact_message"), "{}", rows[0]);
+
+    // A answers with reply_to: B's awaiting send settles with it.
+    let answer = a_agents
+        .ask(deliver(
+            chat,
+            format!("peer:{a_alias}"),
+            "pong 1",
+            Some(x.receipt.id),
+            false,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(answer.receipt.state, PeerMessageState::Accepted);
+    let fin = tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the awaited send settles")
+        .unwrap();
+    assert_eq!(fin.state, PeerMessageState::Replied);
+    assert_eq!(fin.reply.as_deref(), Some("pong 1"));
+
+    // Any number of times: a second answer to the same message, then a ping-pong.
+    a_agents
+        .ask(deliver(
+            chat,
+            format!("peer:{a_alias}"),
+            "pong 1b",
+            Some(x.receipt.id),
+            false,
+        ))
+        .await
+        .unwrap();
+    let mut last = consumed(b_agents.clone(), origin, "pong 1b").await;
+    assert_eq!(last.contact_mode, Some(ShareMode::Full));
+    for (ping, pong) in [("ping 2", "pong 2"), ("ping 3", "pong 3")] {
+        b_agents
+            .ask(deliver(
+                origin,
+                format!("peer:{b_alias}"),
+                ping,
+                Some(last.receipt.id),
+                false,
+            ))
+            .await
+            .unwrap();
+        let got = consumed(a_agents.clone(), chat, ping).await;
+        assert!(
+            got.receipt.reply_to.is_some(),
+            "{ping} names the message it answers"
+        );
+        a_agents
+            .ask(deliver(
+                chat,
+                format!("peer:{a_alias}"),
+                pong,
+                Some(got.receipt.id),
+                false,
+            ))
+            .await
+            .unwrap();
+        last = consumed(b_agents.clone(), origin, pong).await;
+        assert_eq!(last.receipt.reply_to.map(|_| ()), Some(()), "{pong}");
+    }
+
+    // D12: downgraded, the chat's answer is refused here and the conversation ends there.
+    let context = {
+        let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
+            net: b.net.clone(),
+            eid: a.eid(),
+            hints: reach::Hints {
+                addrs: a.addrs(),
+                relay: None,
+            },
+            export: Some("proj".into()),
+        }) as Box<dyn a2a_client::Transport>);
+        client
+            .get_task(&a2a_types::GetTaskRequest {
+                id: x
+                    .receipt
+                    .task_id
+                    .clone()
+                    .expect("A's record names its task"),
+                history_length: Some(0),
+                tenant: None,
+            })
+            .await
+            .unwrap()
+            .context_id
+    };
+    share(Some(ShareMode::Cautious)).await.unwrap();
+    let refused = a_agents
+        .ask(deliver(
+            chat,
+            format!("peer:{a_alias}"),
+            "late",
+            Some(x.receipt.id),
+            false,
+        ))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("no longer shared in full"), "{refused}");
+    until("B sees proj cautious", || {
+        b.ctx
+            .offers_of(&a.eid())
+            .iter()
+            .find(|o| o.name == "proj" && o.mode == ShareMode::Cautious)
+            .map(|_| ())
+    })
+    .await;
+    let ret = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
+        net: a.net.clone(),
+        eid: b.eid(),
+        hints: reach::Hints {
+            addrs: b.addrs(),
+            relay: None,
+        },
+        export: Some(RETURN_ROUTE.into()),
+    }) as Box<dyn a2a_client::Transport>);
+    let mut m = a2a_types::Message::new(a2a_types::Role::User, vec![a2a_types::Part::text("late")]);
+    m.message_id = "late-1".into();
+    m.context_id = Some(context);
+    m.metadata = Some(FullWire::default().metadata());
+    let gone = ret
+        .send_message(&a2a_types::SendMessageRequest {
+            message: m,
+            configuration: None,
+            metadata: None,
+            tenant: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        gone.code,
+        a2a_types::error_code::TASK_NOT_FOUND,
+        "{}",
+        gone.message
+    );
+
+    // 186 review 1: full was chosen for what the export published; re-pointed to another
+    // chat, it is shared cautiously until the owner picks full again.
+    assert_eq!(
+        share(Some(ShareMode::Full))
+            .await
+            .unwrap()
+            .modes
+            .get("proj"),
+        Some(&ShareMode::Full)
+    );
+    let other = chat_of(a_agents.clone()).await;
+    a.ctx
+        .put_export(Export {
+            name: "proj".into(),
+            target: ExportTarget::Chat { session: other },
+            description: "The project chat".into(),
+            paused: None,
+            tools: None,
+        })
+        .await
+        .unwrap();
+    let after = a
+        .ctx
+        .contact_list()
+        .into_iter()
+        .find(|c| c.name == a_alias)
+        .unwrap();
+    assert_eq!(
+        after.modes.get("proj"),
+        Some(&ShareMode::Cautious),
+        "re-pointed: cautious"
+    );
 }

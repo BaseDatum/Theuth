@@ -164,7 +164,7 @@ pub use communication::{
     GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers, MeshRefusal, PeerConsumed,
     PeerDeliver, PeerDeliverError, PeerDelivered, PeerEnvelope, PeerInfo, PeerIntakeFailed,
     PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
-    PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication, SetPeerScope,
+    PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication, SetPeerScope, ShareMode,
 };
 pub use compact::CompactStyle;
 pub use context::{
@@ -429,6 +429,22 @@ pub enum CancelScope {
     Tree,
 }
 
+/// 186 (D8): why a turn is cancelled. `Input`: the owner's message (interject, flush) —
+/// refused while the turn is a contact's, so the owner never cancels a contact turn by
+/// typing. `Stop` (the default): an explicit Stop.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum CancelReason {
+    /// The owner's input interrupting the turn.
+    Input,
+    /// An explicit Stop.
+    #[default]
+    Stop,
+}
+
 /// `ask` → `()`. Abort the in-flight turn of `session` — and, with
 /// [`CancelScope::Tree`], of every running descendant (design doc 19 §2.3,
 /// 133 §2); each emits `TurnFinished { stop_reason: "cancelled" }`.
@@ -447,6 +463,9 @@ pub struct Cancel {
     /// Root (default) or the whole running subtree (133 §2).
     #[serde(default)]
     pub scope: CancelScope,
+    /// 186 (D8): `Input` is refused while the session's turn is a contact's.
+    #[serde(default)]
+    pub reason: CancelReason,
 }
 
 /// Answer a pending `ask_user`: one answer per question, or
@@ -478,6 +497,7 @@ pub async fn answer_ask(
                     session,
                     keep: None,
                     scope: CancelScope::Root,
+                    reason: crate::CancelReason::Stop,
                 })
                 .await?;
             Ok(true)

@@ -275,7 +275,8 @@ export const capLabel = (cap: string) => (cap === 'read_only' ? 'read-only' : ca
 
 /**
  * The card frame: sender header, the reply quote, the body (clamped), then the footer. `origin` parts (the answer
- * form, Details) come in through `chips`, `actions` and `after`.
+ * form, Details) come in through `chips`, `actions` and `after`. `full`: a contact's message under a full share (186,
+ * the typed `PeerOrigin.contact_mode`), which reads like a mesh peer's.
  */
 function PeerCard({
   text,
@@ -289,14 +290,15 @@ function PeerCard({
   quote,
   actions,
   after,
-}: Props & { sender: Sender; tone?: 'info'; id?: string; chips?: ReactNode; quote?: string; actions?: ReactNode; after?: ReactNode }) {
+  full,
+}: Props & { sender: Sender; tone?: 'info'; id?: string; chips?: ReactNode; quote?: string; actions?: ReactNode; after?: ReactNode; full?: boolean }) {
   const [open, setOpen] = useScopedDisclosure('peer')
   // A job result is raw command output (14 §3): markdown would fold its lines into one paragraph (and make `omp 66726`
   // a heading). Live (`job j4`) and stored (`j4 · cmd · exit 0`) labels alike.
   const raw = sender.kind === 'job'
   // 183: an outside agent's words (a contact or an A2A peer: `contact:` / `peer:` senders) are untrusted: plain text,
-  // never Markdown, so no remote image loads and no link is live.
-  const outside = isOutside(sender.key) || !!contact
+  // never Markdown, so no remote image loads and no link is live. 186 D7: a full share's contact reads like the mesh.
+  const outside = !full && (isOutside(sender.key) || !!contact)
   const [body, hidden] = useOverflow<HTMLDivElement>(!open)
   return (
     <div
@@ -314,7 +316,7 @@ function PeerCard({
         </div>
       ) : null}
       <div className="px-4 pt-2.5">
-        <SenderHead sender={sender} tag={contact && capLabel(contact.cap)}>
+        <SenderHead sender={sender} tag={contact ? capLabel(contact.cap) : full ? 'Contact · full' : undefined}>
           {chips}
           <Clock at={at} />
           {remove}
@@ -373,6 +375,7 @@ function OriginCard({ origin, session, seq, sender, ...rest }: Props & { origin:
       sender={sender}
       id={`peer-msg-${origin.id}`}
       tone={awaiting ? 'info' : undefined}
+      full={origin.contact_mode === 'full'}
       quote={quote}
       chips={
         <>

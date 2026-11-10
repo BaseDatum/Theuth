@@ -196,6 +196,7 @@ impl Port for Actors {
                 session,
                 keep: None,
                 scope: agent::CancelScope::Root,
+                reason: agent::CancelReason::Stop,
             })
             .await
             .map_err(|e| e.to_string())
@@ -4443,6 +4444,7 @@ pub(crate) mod tests {
                 from: from.into(),
                 reply_to: None,
                 scope: None,
+                contact_mode: None,
             },
             text: text.into(),
             seq: 1,

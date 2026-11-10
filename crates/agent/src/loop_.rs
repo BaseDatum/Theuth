@@ -205,6 +205,11 @@ pub struct PeerMeta {
     pub(crate) cap: Option<tools::Risk>,
     /// 183 Z3-R2: that turn's allowlist (default-deny); set with `cap`.
     pub(crate) tools: Option<Vec<String>>,
+    /// 186: a contact's uncapped message, journaled as such: `contact_full` (shared in full: a
+    /// peer turn a resume never caps) or `contact_inbox` (a cautious agent inbox). The owner's
+    /// input never cancels a turn that took one (D8). `None`: journaled `contact` (capped) or
+    /// `peer`.
+    pub(crate) contact: Option<&'static str>,
 }
 
 /// 183 §11.5, §11.6: how a contact's message reaches the model.
@@ -1805,6 +1810,12 @@ impl Message<PeerInput> for Session {
                 (text, m.request_scope, m.isolated, None, None)
             }
         };
+        let journal = match &m.contact {
+            Some(ContactFrame::Inbox { .. }) => Some("contact_inbox"),
+            Some(ContactFrame::Chat { .. }) => None,
+            None => (m.record.contact_mode == Some(crate::communication::ShareMode::Full))
+                .then_some("contact_full"),
+        };
         let input = Input {
             channel: None,
             text,
@@ -1819,6 +1830,7 @@ impl Message<PeerInput> for Session {
                 isolated,
                 cap,
                 tools,
+                contact: journal,
             }),
             defer: false,
             advisory: None,
@@ -5624,10 +5636,12 @@ impl Turn {
                 // leaves the exchange consumed and the turn without this
                 // step (as-built W1 deviation). 183 Z3-R3: a contact's turn in an
                 // exported chat is journaled `contact`, what a resume trusts.
+                // 186 (D6, D8): a contact's uncapped message is journaled `contact_full` or
+                // `contact_inbox`: bounded, never capped on resume, never cancelled by input.
                 let source = if peer.cap.is_some() {
                     "contact"
                 } else {
-                    "peer"
+                    peer.contact.unwrap_or("peer")
                 };
                 if let Err(e) = store
                     .input_accepted(session, turn, Some(&peer.id.to_string()), source)
@@ -9866,6 +9880,7 @@ mod tests {
                 isolated,
                 cap: None,
                 tools: None,
+                contact: None,
             }),
             defer: false,
             advisory: None,
@@ -9939,6 +9954,7 @@ mod tests {
                 isolated: true,
                 cap: Some(tools::Risk::ReadOnly),
                 tools: Some(vec!["search_web".into()]),
+                contact: None,
             }),
             ..peer_input(Uuid::now_v7(), &generation, Some(scope), true)
         };
@@ -9971,6 +9987,7 @@ mod tests {
             cap: tools::Risk::ReadOnly,
             holder: "e".into(),
             tools: Vec::new(),
+            mode: crate::communication::ShareMode::Cautious,
         };
         let w = contact_message(
             &origin,
@@ -10074,6 +10091,7 @@ mod tests {
                 .unwrap()
                 .with_timezone(&chrono::Utc),
             request_scope: None,
+            contact_mode: None,
         };
         let now = |s: &str| {
             chrono::DateTime::parse_from_rfc3339(s)

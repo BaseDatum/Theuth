@@ -15,9 +15,12 @@ export function press(p: Phase, filled: boolean): 'send' | 'steer' | null {
 /**
  * `interject`: cancel the turn, the box's text is the next input. `flush`: the box is empty but steers are queued —
  * cancel the turn and deliver them now instead of dropping them. Idle: same as a press. `null`: nothing to do.
+ * 186 D8: `contact` (a contact's turn runs) — the owner's input never cancels it: the text queues behind it (`steer`)
+ * and queued steers wait.
  */
-export function interrupt(p: Phase, filled: boolean): 'send' | 'interject' | 'flush' | null {
+export function interrupt(p: Phase, filled: boolean, contact = false): 'send' | 'steer' | 'interject' | 'flush' | null {
   if (p === 'idle') return filled ? 'send' : null
+  if (contact) return filled ? 'steer' : null
   if (filled) return 'interject'
   return p === 'queued' ? 'flush' : null
 }

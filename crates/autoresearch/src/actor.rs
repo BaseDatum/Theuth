@@ -4721,6 +4721,7 @@ pub async fn control_env(env: &Env, m: Control) -> Result<StudyInfo> {
                         session,
                         keep: None,
                         scope: agent::CancelScope::Tree,
+                        reason: agent::CancelReason::Stop,
                     })
                     .await;
             }
@@ -5573,6 +5574,7 @@ pub async fn recover(env: &Env) -> Result<()> {
                             session,
                             keep: None,
                             scope: agent::CancelScope::Tree,
+                            reason: agent::CancelReason::Stop,
                         })
                         .await;
                 }

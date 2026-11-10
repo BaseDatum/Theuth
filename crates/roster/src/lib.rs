@@ -513,6 +513,12 @@ impl Roster {
             file::default_agent(&self.rt.data_dir, self.cfg.theuth_model.clone()),
         );
         self.publish_agents().await;
+        // 186 review 2: a contact's inbox shared in full follows its agent's `tools:` now.
+        if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+            let _ = agents
+                .tell(agent::communication::network::InboxPersonasChanged)
+                .await;
+        }
         self.sync_desks().await;
         for (name, model) in remodelled {
             self.apply_desk_model(&name, model).await;

@@ -676,6 +676,7 @@ impl Advisors {
                     session: advisor,
                     keep: None,
                     scope: crate::CancelScope::Root,
+                    reason: crate::CancelReason::Stop,
                 })
                 .await;
             } else {
@@ -1133,6 +1134,7 @@ impl Message<Detach> for Advisors {
                 session: link.row.advisor,
                 keep: None,
                 scope: crate::CancelScope::Root,
+                reason: crate::CancelReason::Stop,
             })
             .await;
         }
@@ -1554,6 +1556,7 @@ impl Message<CancelConsult> for Advisors {
                 session: advisor,
                 keep: None,
                 scope: crate::CancelScope::Root,
+                reason: crate::CancelReason::Stop,
             })
             .await;
         }
@@ -1626,6 +1629,7 @@ impl Message<AgentEvent> for Advisors {
                             session,
                             keep: None,
                             scope: crate::CancelScope::Root,
+                            reason: crate::CancelReason::Stop,
                         })
                         .await;
                     }
@@ -1677,6 +1681,7 @@ impl Message<AgentEvent> for Advisors {
                         session: advisor,
                         keep: None,
                         scope: crate::CancelScope::Root,
+                        reason: crate::CancelReason::Stop,
                     })
                     .await;
                 }

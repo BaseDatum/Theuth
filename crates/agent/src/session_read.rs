@@ -512,6 +512,7 @@ mod tests {
                 from: "ops".into(),
                 reply_to: None,
                 scope: None,
+                contact_mode: None,
             }),
             vision: None,
         };

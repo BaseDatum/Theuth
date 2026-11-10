@@ -231,6 +231,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
                     session,
                     keep: None,
                     scope: agent::CancelScope::Root,
+                    reason: agent::CancelReason::Stop,
                 })
                 .await
                 .map_err(err)?;
@@ -253,6 +254,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
                             session: a.id,
                             keep: None,
                             scope: agent::CancelScope::Root,
+                            reason: agent::CancelReason::Stop,
                         })
                         .await
                         .map_err(err)?;

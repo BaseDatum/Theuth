@@ -761,6 +761,8 @@ impl Message<InstallIdentitySource> for Agents {
 
     async fn handle(&mut self, m: InstallIdentitySource, _: &mut Context<Self, Self::Reply>) {
         self.identity = Some(m.0);
+        // 186 review 2: the roster joined: full inboxes take their agents' live ceilings.
+        self.refresh_full_inboxes().await;
     }
 }
 
@@ -2186,6 +2188,40 @@ impl Agents {
     pub(crate) async fn revoking<R>(&self, f: impl FnOnce(&mut Policy) -> R) -> R {
         let _barrier = PEER_INTAKE.write().await;
         f(&mut self.communication.0.write())
+    }
+
+    /// 186 (D9): `session`'s peer-chain count, what a full contact message carries.
+    pub(crate) fn chain_of(&self, session: SessionId) -> u32 {
+        self.ledger.chain(session)
+    }
+
+    /// 186: the model turn owning `session`'s state.
+    pub(crate) fn turn_of(&self, session: SessionId) -> Option<TurnId> {
+        self.ledger.turn_of(session)
+    }
+
+    /// 186: `id` is handed to a runner now (`false`: already queued in this process).
+    pub(crate) fn claim_enqueued(&mut self, id: Uuid) -> bool {
+        self.enqueued.insert(id)
+    }
+
+    /// 186: the claim of [`Self::claim_enqueued`] failed before any runner took it.
+    pub(crate) fn unclaim_enqueued(&mut self, id: Uuid) {
+        self.enqueued.remove(&id);
+    }
+
+    /// 186 (D9): [`Self::enqueue_peer`] (unscoped) of a message from another engine that
+    /// carries its sender's chain count, bounded as a mesh peer's (183 §6.5).
+    pub(crate) async fn enqueue_peer_chained(
+        &mut self,
+        record: PeerRecord,
+        generation: Generation,
+        chain: u32,
+    ) -> Result<(), String> {
+        self.inbound_chain = Some((record.receipt.id, chain));
+        let r = self.enqueue_peer(record, generation, false, false).await;
+        self.inbound_chain = None;
+        r
     }
 
     /// Schedule an accepted exchange into its local recipient (50 §7): the
@@ -4114,7 +4150,20 @@ impl Message<ForkSession> for Agents {
 impl Message<Cancel> for Agents {
     type Reply = ();
 
-    async fn handle(&mut self, mut m: Cancel, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, m: Cancel, _: &mut Context<Self, Self::Reply>) {
+        self.cancel(m).await;
+    }
+}
+
+impl Agents {
+    /// [`Cancel`].
+    pub(crate) async fn cancel(&mut self, mut m: Cancel) {
+        // 186 (D8): the owner's input (interject, flush) never cancels a contact's turn; the
+        // input itself queues behind it. An explicit Stop still does.
+        if m.reason == crate::CancelReason::Input && self.contact_turn(m.session).await {
+            tracing::info!(session = %m.session, "cancel for input refused: a contact's turn is running");
+            return;
+        }
         // `Tree`: every running descendant, not one level (design doc 19 §2.3).
         // `Root` (the default): the target alone; its children keep working and
         // their later `TurnFinished` reaches the parent as when it is idle (133 §2).
@@ -5575,6 +5624,7 @@ impl Agents {
         self.enqueued.remove(&m.id);
         self.ledger.release(m.session, m.ticket);
         self.network_input_dropped(m.ticket).await;
+        self.full_intake_failed(m.id, &m.reason).await;
         match self.store.exchange_receipt(m.id).await {
             Ok(Some(r)) if r.state == PeerMessageState::Accepted => {
                 // The runner did not settle the row itself (closed mailbox, refusal).
@@ -6272,6 +6322,8 @@ impl Message<PeerConsumed> for Agents {
             }
             Err(e) => tracing::error!(id = %m.id, "peer_record: {e:#}"),
         }
+        // 186 (D4): a full contact's task completes on consumption.
+        self.full_consumed(m.id).await;
     }
 }
 
@@ -6282,6 +6334,7 @@ fn origin_of(r: &PeerRecord) -> PeerOrigin {
         from: r.from.clone(),
         reply_to: r.receipt.reply_to,
         scope: r.request_scope,
+        contact_mode: r.contact_mode,
     }
 }
 
@@ -14864,6 +14917,43 @@ pub(crate) mod tests {
         words.next().unwrap().parse().unwrap()
     }
 
+    /// 186 (D8): the owner's input (interject, flush) cancels the owner's own turn but never a
+    /// turn that took a contact's message, in either mode; an explicit Stop still does.
+    #[tokio::test]
+    async fn input_never_cancels_a_contact_turn_and_stop_does() {
+        let (_scratch, mut a) = agents_with(true).await;
+        let (p, t) = in_turn(&mut a).await;
+        let cancel = |reason| Cancel {
+            session: p,
+            keep: None,
+            scope: CancelScope::Root,
+            reason,
+        };
+        let before = a.ledger.epoch(p);
+        a.cancel(cancel(crate::CancelReason::Input)).await;
+        assert!(a.ledger.epoch(p) > before, "the owner's own turn");
+        // An answer to ours (journaled `peer`) is no contact's turn; a full contact's message is.
+        a.store
+            .input_accepted(p, t, Some("answer"), "peer")
+            .await
+            .unwrap();
+        let before = a.ledger.epoch(p);
+        a.cancel(cancel(crate::CancelReason::Input)).await;
+        assert!(
+            a.ledger.epoch(p) > before,
+            "an answer's turn is the owner's to interject"
+        );
+        a.store
+            .input_accepted(p, t, Some("contact"), "contact_full")
+            .await
+            .unwrap();
+        let before = a.ledger.epoch(p);
+        a.cancel(cancel(crate::CancelReason::Input)).await;
+        assert_eq!(a.ledger.epoch(p), before, "a contact's turn keeps running");
+        a.cancel(cancel(crate::CancelReason::Stop)).await;
+        assert!(a.ledger.epoch(p) > before, "Stop stops it");
+    }
+
     /// A certified root in turn `t` with its opener consumed.
     async fn in_turn(a: &mut Agents) -> (SessionId, TurnId) {
         a.ledger.certify();
@@ -16304,6 +16394,8 @@ pub(crate) mod tests {
             cap: Risk::Destructive,
             holder: "a".into(),
             tools: Vec::new(),
+            // 186 (D11): sent full; the owner serves it cautiously.
+            mode: crate::communication::ShareMode::Full,
         };
         let p = network::A2aPrincipal {
             binding: binding.id,
@@ -16343,6 +16435,11 @@ pub(crate) mod tests {
             env.origin.cap,
             Risk::Mutating,
             "the owner never raises a cap"
+        );
+        assert_eq!(
+            env.origin.mode,
+            crate::communication::ShareMode::Cautious,
+            "the owner lowers full (no return route from here)"
         );
         assert_eq!(env.text, "did the build pass?");
         let record = b
@@ -17708,6 +17805,7 @@ pub(crate) mod tests {
                 cap: tools::Risk::ReadOnly,
                 holder: "me".into(),
                 tools: Vec::new(),
+                mode: crate::communication::ShareMode::Cautious,
             }),
             ask_first: true,
         };
@@ -17827,6 +17925,7 @@ pub(crate) mod tests {
                 session: y,
                 keep: None,
                 scope: CancelScope::Root,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -17886,6 +17985,7 @@ pub(crate) mod tests {
                 session: p,
                 keep: None,
                 scope: CancelScope::Root,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -17908,6 +18008,7 @@ pub(crate) mod tests {
                 session: p,
                 keep: None,
                 scope: CancelScope::Tree,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -18621,6 +18722,7 @@ pub(crate) mod tests {
                 session: child,
                 scope: CancelScope::Root,
                 keep: None,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -18633,6 +18735,7 @@ pub(crate) mod tests {
                 session: e1,
                 scope: CancelScope::Tree,
                 keep: None,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();
@@ -19999,6 +20102,7 @@ done
                 session: c,
                 keep: None,
                 scope: CancelScope::Root,
+                reason: crate::CancelReason::Stop,
             })
             .await
             .unwrap();

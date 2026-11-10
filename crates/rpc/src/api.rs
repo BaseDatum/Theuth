@@ -265,8 +265,15 @@ pub trait Api {
     #[method(name = "list_queued", with_extensions)]
     async fn list_queued(&self, session: SessionId) -> RpcResult<Vec<QueuedInput>>;
     /// Abort the in-flight turn; `scope` `tree` also stops every running descendant (133 §4; default `root`).
+    /// 186 (D8): `reason` `input` (the owner's interject or flush) is refused while the turn is a
+    /// contact's; `stop` (the default) is an explicit Stop.
     #[method(name = "cancel", with_extensions)]
-    async fn cancel(&self, session: SessionId, scope: Option<CancelScope>) -> RpcResult<()>;
+    async fn cancel(
+        &self,
+        session: SessionId,
+        scope: Option<CancelScope>,
+        reason: Option<agent::CancelReason>,
+    ) -> RpcResult<()>;
     /// Background jobs of a session (14 §2): id, state, seconds, log path, tail.
     #[method(name = "list_jobs", with_extensions)]
     async fn list_jobs(&self, session: SessionId) -> RpcResult<Vec<JobView>>;
@@ -2676,7 +2683,8 @@ pub trait Api {
         answer: a2a::config::FirstContact,
     ) -> RpcResult<()>;
     /// 183 F3, F11: every (contact, export) whose first message waits for the owner's
-    /// answer — the source of the `contact_first` Attention item; refetch on `A2aChanged`.
+    /// answer — the source of the `contact_first` Attention item; refetch on `A2aChanged`. 186
+    /// review 1: then every contact message queued behind its chat's running turn (`queued`).
     #[method(name = "contact_first_waiting")]
     async fn contact_first_waiting(&self) -> RpcResult<Vec<a2a::contacts::FirstWaiting>>;
     /// Every sandbox record (docker, ssh, vm) with state, resources, shares, metrics (79 §4.5).
@@ -4511,9 +4519,16 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: SessionId,
         scope: Option<CancelScope>,
+        reason: Option<agent::CancelReason>,
     ) -> RpcResult<()> {
         self.authorize_fwd(ext, session).await?;
-        if let Some(r) = forward::route(ext, session, "cancel", (session, &scope)).await? {
+        // 186 (D8): the reason travels with a forwarded cancel; a plain Stop keeps the old
+        // two-parameter call, so an engine that predates the reason still takes it.
+        let routed = match &reason {
+            Some(_) => forward::route(ext, session, "cancel", (session, &scope, &reason)).await?,
+            None => forward::route(ext, session, "cancel", (session, &scope)).await?,
+        };
+        if let Some(r) = routed {
             return Ok(r);
         }
         ask::<Agents, _>(
@@ -4522,6 +4537,7 @@ impl ApiServer for Server {
                 session,
                 keep: None,
                 scope: scope.unwrap_or_default(),
+                reason: reason.unwrap_or_default(),
             },
         )
         .await
