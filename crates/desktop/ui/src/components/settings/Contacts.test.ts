@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type * as Engines from '@/link/engines'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
-import { contactFirstOf, exportName, fingerprint, names, sharedLabel, sharingOf } from '@/lib/contacts'
+import { accessFocus, contactFirstOf, exportName, fingerprint, focusedContact, names, sharedLabel, sharingOf } from '@/lib/contacts'
 import { ContactFirstScreen } from '@/components/attention/PlainScreens'
 import { KindActions } from '@/components/hud/Hud'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
@@ -20,7 +20,7 @@ import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import { dispatch } from '@/store/sessions'
 import { Dialog } from '@/components/ui/dialog'
 import { AddContact, CeremonyBody, type CeremonyView, ContactAccess, Contacts, ShareDialog, SharingItems } from './Contacts'
-import { Network } from './Communication'
+import { A2aSection } from './Communication'
 import { CommunicationNotice, useCommunication } from '@/components/chat/CommunicationNotice'
 import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
@@ -126,6 +126,7 @@ const api = {
   ),
   reload_a2a: vi.fn(async (): Promise<A2aStatus> => A2A),
   get_communication: vi.fn(async () => ({ effective: true, global: true, opted_out: false, inherited_from: null, source: 'config' }) as unknown as CommunicationState),
+  config_flag_get: vi.fn(async () => ({ key: 'a2a.enabled', enabled: false, running: false, restart_required: false })),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
@@ -190,6 +191,11 @@ test('contact words: export names, fingerprint, first-contact ids, sharing and i
   expect(sharedLabel(sharingOf('s-ops', EXPORTS, []))).toBeNull()
 })
 
+test('188 ?focus=access:<contact>: the contact it names, colons and all; any other focus names none', () => {
+  for (const name of ['bob', 'Bob: lab', 'access:x']) expect(focusedContact(accessFocus(name))).toBe(name)
+  for (const focus of [null, '', 'access:', 'model', 'spend', 'contact:bob']) expect(focusedContact(focus)).toBeNull()
+})
+
 test('§12.7 Contacts: each row has name, machine, cap, fingerprint, path and the exports it may reach (paused named)', async () => {
   await mount(createElement(Contacts))
   const t = body()
@@ -230,7 +236,7 @@ test('⋯ Rename → contact_update(name), Block… and Remove… confirm → co
   await click('Unblock')
   await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('alice', { name: null, cap: null, exports: null, blocked: false, modes: null }))
   await click('Choose what bob may reach…')
-  expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'communication' }, search: {} })
+  expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'contacts' }, search: { focus: 'access:bob' } })
 })
 
 test('Add contact: opens the window, Nearby lists theuth agents first and other vendors as A2A · HTTPS; closing closes the window', async () => {
@@ -446,7 +452,7 @@ test('183 Z3-R2 tools: each export row lists its allowlist (default the public w
   expect(items().map((b) => b.querySelector('.font-mono')?.textContent)).toEqual(['knowledge_search', 'mcp:files/search'])
   // Z4-R1: a reader warns that it sees all of its kind; an MCP tool that its risk is the server's word.
   expect(items()[0]!.textContent).toContain('Sees ALL your knowledge, not just what you share here')
-  expect(items()[1]!.textContent).toContain('Read-only as the server declares it; for a server you don’t control, pin its risk in mcp/config.yaml')
+  expect(items()[1]!.textContent).toContain('Read-only as the server declares it; for a server you don’t control, pin its risk on Agents › Tools')
   await run(() => (items()[0] as HTMLButtonElement).click())
   await vi.waitFor(() => expect(api.a2a_export_put).toHaveBeenCalledWith({ ...EXPORTS[0], tools: ['search_web', 'read_url', 'knowledge_search'] }))
 })
@@ -555,15 +561,21 @@ test('the contact_nearby and contact_pair events write the cache; paired refetch
   expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.contacts })
 })
 
-test('Settings › Communication shows a contact as built (theuth/a2a/1, pinned, its cap), not as an HTTP peer with roots', async () => {
-  await mount(createElement(Network, { state: undefined }))
+test('188 Messaging › A2A lists only the HTTP peers: a contact is no peer row and reads nowhere in roots; its export has no URL to copy', async () => {
+  await mount(createElement(A2aSection, { state: undefined }))
   const t = body()
-  expect(t).toContain('bobcontact')
-  expect(t).toContain("Bob's MacBook · theuth/a2a/1 over iroh · pinned K3J9 Q2M4 X7P1 R8T5 W6Y0 · read only · may reach research (cautious), ops-chat (cautious)")
-  expect(t).toContain('Contacts do not need it')
-  // Only the HTTP peer reads in roots; bob's row never does.
+  expect(t).toContain("A2A over HTTPAn HTTP listener, client and credential for agents outside theuth. Contacts don't need it")
+  // a2a_status says the engine runs without it: the listener row says only that.
+  expect(t).toContain('Off')
+  expect(t).not.toContain('Disabled')
+  // No second contacts list: Network › Contacts is the one.
+  expect(t).not.toContain('bobcontact')
+  expect(t).not.toContain('theuth/a2a/1 over iroh')
+  expect(t).not.toContain('No peers or exports yet')
+  // The HTTP peer lab is listed, the contact bob is not.
   expect(t.match(/local roots? may send/g)).toEqual(['local root may send'])
   expect(t).toContain('1 local root may send · may call docs')
+  expect(t).not.toContain('0 local roots may send')
   // The contact's chat export has no HTTP URL to copy; the HTTP peer's export keeps it.
   expect(t).toContain('reached by the contact over theuth/a2a/1, cautious: one capped turn per message')
   expect(t).not.toContain('http://127.0.0.1:7780/agents/ops-chat/rpc')
@@ -589,7 +601,7 @@ const WAIT: FirstWaiting = { contact: 'bob', machine: "Bob's MacBook", export: '
 
 test('183 F3 Communication: a held first message sits under its export row; Allow once · Always · Block answer it; no machine, no parentheses', async () => {
   api.contact_first_waiting.mockImplementation(async () => [WAIT, { ...WAIT, contact: 'alice', machine: '' }])
-  await mount(createElement(Network, { state: undefined, session: 's-ops' }))
+  await mount(createElement(A2aSection, { state: undefined }))
   await vi.waitFor(() => expect(body()).toContain("bob (Bob's MacBook) is waiting for you to allow its first message to ops-chat"))
   expect(body()).toContain('alice is waiting for you to allow its first message to ops-chat')
   expect(body()).not.toContain('alice ()')
@@ -602,16 +614,6 @@ test('183 F3 Communication: a held first message sits under its export row; Allo
   expect(always.map((b) => b.disabled)).toEqual([true, false])
   await run(() => always[1]!.click())
   expect(api.contact_first_answer).toHaveBeenLastCalledWith('alice', 'ops-chat', 'allow')
-})
-
-test('183 F3 Communication: a held message of this chat whose export has no row still shows; another chat\'s does not', async () => {
-  api.contact_first_waiting.mockImplementation(async () => [
-    { ...WAIT, export: 'ghost', contact: 'carol' },
-    { ...WAIT, export: 'ghost2', contact: 'dave', session: 's-other' },
-  ])
-  await mount(createElement(Network, { state: undefined, session: 's-ops' }))
-  await vi.waitFor(() => expect(body()).toContain('carol (Bob\'s MacBook) is waiting for you to allow its first message to ghost'))
-  expect(body()).not.toContain('dave')
 })
 
 test('183 F3 Contacts: each contact\'s row carries its own waiting line and answers; 186: a queued message is no hold and never shows here', async () => {
@@ -725,7 +727,7 @@ test('186: each grant shows its mode and changes it; a full grant hides the tool
 
 test('186 Communication: a full export says so; a cautious one keeps "one capped turn per message"', async () => {
   api.a2a_status.mockImplementation(async () => ({ ...A2A, exports: [{ ...A2A.exports[0]!, mode: 'full' }, A2A.exports[1]!] }))
-  await mount(createElement(Network, { state: undefined }))
+  await mount(createElement(A2aSection, { state: undefined }))
   expect(body()).toContain('Full collaboration')
   expect(body()).toContain('reached by the contact over theuth/a2a/1, full collaboration')
   expect(body()).not.toContain('one capped turn per message')

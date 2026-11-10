@@ -1,9 +1,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Copy, Pencil, Plus } from 'lucide-react'
+import { ArrowDown, ArrowUp, Copy, Pencil, Plus } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { Dot as PresenceDot, meshChip, useMembersLine } from '@/components/link/EngineSwitcher'
+import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
 import { Dot, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { ago } from '@/components/sidebar/AgentTree'
 import { age } from '@/components/tasks/helpers'
@@ -23,7 +25,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { useApi } from '@/lib/rpc'
-import { LOCAL, hasLocal, useEngines } from '@/link/engines'
+import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngines } from '@/link/engines'
 import type { Device } from '@/rpc/bindings/Device'
 import type { DeviceInfo } from '@/rpc/bindings/DeviceInfo'
 import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
@@ -45,26 +47,35 @@ const PLATFORM: Record<string, string> = { ios: 'iOS', macos: 'macOS', web: 'Web
 const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.message('Copied'))
 
 /**
- * Settings › Link: devices pair with a mesh here. On a node: the mesh's devices (69 §3–§4), the relay with both
- * identities, and the per-node legacy devices (31 §7.5) read-only. On a bare device: the device's own side, "Pair with a mesh".
+ * 188 Settings › Network › Devices: phones and browsers pair with a mesh here. On a node: the mesh's devices (69 §3–§4),
+ * the relay with both identities, the per-node legacy devices (31 §7.5), then the other meshes this app reaches. On a
+ * bare device (web/phone, no local node): "Pair with a mesh" and the meshes it reaches.
  */
-export function Link() {
+export function DevicesTab() {
   const navigate = useNavigate()
   if (!hasLocal()) {
     return (
-      <Section
-        title="Pair with a mesh"
-        actions={
-          <Button variant="outline" size="sm" onClick={() => void navigate({ to: '/link' })}>
-            <Plus /> Pair…
-          </Button>
-        }
-      >
-        <Empty>Scan the QR a node shows under Settings › Link, or paste its key. The meshes this device reaches are listed under Settings › Network.</Empty>
-      </Section>
+      <>
+        <Section
+          title="Pair with a mesh"
+          actions={
+            <Button variant="outline" size="sm" onClick={() => void navigate({ to: '/link' })}>
+              <Plus /> Pair…
+            </Button>
+          }
+        >
+          <Empty>Scan the QR a node shows under Settings › Network › Devices, or paste its key.</Empty>
+        </Section>
+        <Reachable />
+      </>
     )
   }
-  return <NodeSide />
+  return (
+    <>
+      <NodeSide />
+      <Reachable />
+    </>
+  )
 }
 
 function NodeSide() {
@@ -116,9 +127,6 @@ function NodeSide() {
         >
           <Editable value={s.relay} width="w-72" disabled={enable.isPending} onSave={(relay) => enable.mutate({ enabled: s.enabled, relay })} />
         </Row>
-        <Row label="Node name" description="Shown on legacy devices paired with this node.">
-          <Editable value={s.name} width="w-56" disabled={rename.isPending} onSave={(name) => rename.mutate(name)} />
-        </Row>
         {s.harness_id && (
           <Row label="This node" description="Its Link identity: what legacy devices dial.">
             <span className="font-mono text-[13px] text-fg-tertiary">{s.harness_id.slice(0, 8)}…</span>
@@ -143,21 +151,25 @@ function NodeSide() {
             </Button>
           </Row>
         )}
+        <p className="pt-3 text-[13px] text-fg-tertiary">
+          The relay carries encrypted traffic between your devices and this node. It can see that they are connected, not what
+          they say. Share links connect the other person to this computer through the relay the same way your devices connect;
+          the document is never stored on the relay, so it is available while this computer is.
+        </p>
       </Section>
 
+      {/* 188: the node name is what legacy devices show, not the machine's name, so it sits with them. */}
       {s.devices.length > 0 && (
         <Section title="Legacy devices">
           <p className="pb-2 text-[13px] text-fg-secondary">Paired with this node alone, before meshes. They keep working; re-pair them with the mesh above to reach every node.</p>
+          <Row label="Node name" description="Shown on legacy devices paired with this node.">
+            <Editable value={s.name} width="w-56" disabled={rename.isPending} onSave={(name) => rename.mutate(name)} />
+          </Row>
           {s.devices.map((d) => (
             <LegacyRow key={d.id} device={d} onRevoke={() => revoke.mutate(d.id)} />
           ))}
         </Section>
       )}
-      <p className="text-[13px] text-fg-tertiary">
-        The relay carries encrypted traffic between your devices and this node. It can see that they are connected, not what
-        they say. Share links connect the other person to this computer through the relay the same way your devices connect;
-        the document is never stored on the relay, so it is available while this computer is.
-      </p>
     </>
   )
 }
@@ -300,6 +312,145 @@ export function Countdown({ until }: { until: number }) {
       expires in {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}
     </>
   )
+}
+
+/** Local label of a reachable mesh/node; Enter/blur saves, Escape restores. */
+function Name({ engine }: { engine: Engine }) {
+  const rename = useEngines((s) => s.rename)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(engine.name)
+  const save = () => {
+    const name = draft.trim()
+    if (name && name !== engine.name) rename(engine.id, name)
+    else setDraft(engine.name)
+    setEditing(false)
+  }
+  if (editing) {
+    return (
+      <Input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') save()
+          if (e.key === 'Escape') {
+            setDraft(engine.name)
+            setEditing(false)
+          }
+        }}
+        className="h-7 w-48"
+      />
+    )
+  }
+  return (
+    <button type="button" className="group flex items-center gap-1.5 text-left" onClick={() => setEditing(true)} aria-label="Rename">
+      <span className="truncate">{engine.name}</span>
+    </button>
+  )
+}
+
+/**
+ * The device side (31 §7.5 "Manage"): meshes and nodes this app paired with, with presence, local rename, reorder
+ * and Forget. Forgetting the active one falls back to the local node or the first remaining; with none left `App`
+ * shows the pair screen. A mesh row (69 §4) shows its name, `n of m nodes online` and the failover chip.
+ */
+function Reachable() {
+  const navigate = useNavigate()
+  const engines = useEngines((s) => s.engines)
+  const presence = useEngines((s) => s.presence)
+  const { remove, reorder } = useEngines.getState()
+  const [forget, setForget] = useState<Engine | null>(null)
+  const bare = !hasLocal()
+
+  const move = (i: number, by: -1 | 1) => {
+    const ids = engines.map((h) => h.id)
+    const [id] = ids.splice(i, 1)
+    ids.splice(i + by, 0, id!)
+    reorder(ids)
+  }
+
+  return (
+    <>
+      <Section
+        title={bare ? 'Meshes this device can reach' : 'Other meshes this app can reach'}
+        actions={
+          <Button variant="outline" size="sm" onClick={() => void navigate({ to: '/link' })}>
+            <Plus /> Pair with a mesh…
+          </Button>
+        }
+      >
+        {engines.length === 0 && <Empty>{bare ? 'No mesh paired yet.' : 'No other mesh paired as a device.'}</Empty>}
+        {engines.map((h, i) => {
+          const p = presence[h.id] ?? 'offline'
+          const via = h.parent && (h.parent === LOCAL ? LOCAL_NAME : engines.find((x) => x.id === h.parent)?.name)
+          const paired = h.pairedAt ? `paired ${ago(new Date(h.pairedAt).toISOString())} ago` : 'not paired yet'
+          return (
+            <Row
+              key={h.id}
+              label={
+                <span className="flex items-center gap-2">
+                  <PresenceDot presence={p} />
+                  <Name engine={h} />
+                  {via && <span className="text-[13px] text-fg-tertiary">via {via}</span>}
+                  <span className="text-[13px] text-fg-tertiary">{h.kind === 'mesh' ? `mesh${h.meshName && h.meshName !== h.name ? ` · ${h.meshName}` : ''}` : 'node'}</span>
+                </span>
+              }
+              description={<EngineLine engine={h} presence={p} paired={paired} />}
+            >
+              <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
+                <ArrowUp />
+              </Button>
+              <Button variant="ghost" size="icon-sm" aria-label="Move down" disabled={i === engines.length - 1} onClick={() => move(i, 1)}>
+                <ArrowDown />
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setForget(h)}>
+                Forget
+              </Button>
+            </Row>
+          )
+        })}
+      </Section>
+      <AlertDialog open={forget !== null} onOpenChange={(o) => !o && setForget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Forget {forget?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>This device stays listed on {forget?.name} until you revoke it there.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (forget) remove(forget.id)
+                setForget(null)
+              }}
+            >
+              Forget
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}
+
+/**
+ * `relay · paired … · 2 of 3 nodes online · relay connected` (mesh) or `relay · paired … · online` (node) — with the
+ * named failure and its Re-pair (LINK-MSG) instead of the trailing state while the socket is failing.
+ */
+function EngineLine({ engine: h, presence, paired }: { engine: Engine; presence: Presence; paired: string }) {
+  const navigate = useNavigate()
+  const members = useMembersLine(h.id)
+  const failure = useLinkFailure(h.id)
+  const chip = h.kind === 'mesh' ? meshChip(presence) : presence
+  if (failure)
+    return (
+      <span className="flex flex-col gap-0.5">
+        <span>{[h.relayHost, paired].join(' · ')}</span>
+        <FailureText compact failure={failure} onRepair={() => void navigate({ to: '/link', search: { repair: h.id } })} />
+      </span>
+    )
+  return <>{[h.relayHost, paired, chip ?? members, h.kind === 'mesh' && !chip ? 'relay connected' : null].filter(Boolean).join(' · ')}</>
 }
 
 /** Text with a pencil; click to edit inline, Enter/blur saves, Escape reverts. */
