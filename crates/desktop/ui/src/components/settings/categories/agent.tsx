@@ -7,8 +7,7 @@ import { Loop } from '@/components/settings/Loop'
 import { Memory } from '@/components/settings/Memory'
 import type { SettingsCategory } from '@/components/settings/types'
 
-// 188 C0: each tab renders one of today's components until this category's worker splits it
-// (docs/design/188-settings-full-page.md, Contract). Only that worker edits this file.
+// 188: tab ids, labels, icons and order are frozen by C0 (docs/design/188-settings-full-page.md, Contract).
 export const agent: SettingsCategory = {
   id: 'agent',
   label: 'Agent',
@@ -16,7 +15,7 @@ export const agent: SettingsCategory = {
   tabs: [
     { id: 'loop', label: 'Loop', icon: RefreshCw, Component: Loop },
     { id: 'memory', label: 'Memory', icon: InfinityIcon, Component: Memory },
-    { id: 'approvals', label: 'Approvals', icon: ShieldCheck, Component: () => <Approvals session={null} onClose={() => {}} /> },
+    { id: 'approvals', label: 'Approvals', icon: ShieldCheck, Component: Approvals },
     { id: 'advisor', label: 'Advisor', icon: Eye, Component: Advisor },
     { id: 'autoresearch', label: 'Autoresearch', icon: FlaskConical, Component: Autoresearch },
     { id: 'harnesses', label: 'Harnesses', icon: Bot, Component: Agents },
