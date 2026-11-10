@@ -7378,6 +7378,37 @@
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-fable-5-1"
       },
+      "anthropic.claude-fable-5-2": {
+        "id": "anthropic.claude-fable-5-2",
+        "name": "Claude Fable 5.2",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.2,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "anthropic/claude-fable-5-2"
+      },
       "anthropic.claude-haiku-4-5-20251001-v1:0": {
         "id": "anthropic.claude-haiku-4-5-20251001-v1:0",
         "name": "Claude Haiku 4.5",
@@ -8997,6 +9028,37 @@
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-fable-5-1"
       },
+      "global.anthropic.claude-fable-5-2": {
+        "id": "global.anthropic.claude-fable-5-2",
+        "name": "Claude Fable 5.2 (Global)",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.2,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "anthropic/claude-fable-5-2"
+      },
       "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
         "id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
         "name": "Claude Haiku 4.5 (Global)",
@@ -9442,6 +9504,38 @@
         "reasoning_options": [],
         "protocol": "openai_chat",
         "canonical": "moonshotai/kimi-k3"
+      },
+      "global.moonshotai.kimi-k3.1": {
+        "id": "global.moonshotai.kimi-k3.1",
+        "name": "Kimi K3.1 Pro Highspeed (Global)",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 4.0,
+          "output": 20.0,
+          "cache_read": 0.2,
+          "cache_write": 5.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
       },
       "global.openai.gpt-5.6-luna": {
         "id": "global.openai.gpt-5.6-luna",
@@ -11656,6 +11750,37 @@
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-fable-5-1"
       },
+      "us.anthropic.claude-fable-5-2": {
+        "id": "us.anthropic.claude-fable-5-2",
+        "name": "Claude Fable 5.2 (US)",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.8,
+          "output": 44.0,
+          "cache_read": 0.22,
+          "cache_write": 11.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "anthropic/claude-fable-5-2"
+      },
       "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
         "id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         "name": "Claude Haiku 4.5 (US)",
@@ -12255,6 +12380,38 @@
         "reasoning_options": [],
         "protocol": "openai_chat",
         "canonical": "moonshotai/kimi-k3"
+      },
+      "us.moonshotai.kimi-k3.1": {
+        "id": "us.moonshotai.kimi-k3.1",
+        "name": "Kimi K3.1 Pro Highspeed (US)",
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 4.4,
+          "output": 22.0,
+          "cache_read": 0.22,
+          "cache_write": 5.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "moonshotai/kimi-k3.1-pro"
       },
       "us.openai.gpt-5.6-luna": {
         "id": "us.openai.gpt-5.6-luna",
@@ -12864,6 +13021,37 @@
         ],
         "protocol": "anthropic",
         "canonical": "anthropic/claude-fable-5-1"
+      },
+      "claude-fable-5-2": {
+        "id": "claude-fable-5-2",
+        "name": "Claude Fable 5.2",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.2,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "anthropic",
+        "canonical": "anthropic/claude-fable-5-2"
       },
       "claude-haiku-4-5": {
         "id": "claude-haiku-4-5",
@@ -15691,7 +15879,7 @@
         "id": "deep-research-max-preview-04-2026",
         "name": "Deep Research Max Preview (Apr-21-2026)",
         "limit": {
-          "context": 131072,
+          "context": 1048576,
           "output": 65536
         },
         "cost": {
@@ -15710,7 +15898,7 @@
         "id": "deep-research-preview-04-2026",
         "name": "Deep Research Preview (Apr-21-2026)",
         "limit": {
-          "context": 131072,
+          "context": 1048576,
           "output": 65536
         },
         "cost": {
@@ -16573,6 +16761,37 @@
         ],
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-fable-5-1"
+      },
+      "claude-fable-5-2@default": {
+        "id": "claude-fable-5-2@default",
+        "name": "Claude Fable 5.2",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.2,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "anthropic/claude-fable-5-2"
       },
       "claude-fable-5@default": {
         "id": "claude-fable-5@default",
@@ -18110,6 +18329,37 @@
         ],
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-fable-5-1"
+      },
+      "claude-fable-5-2@default": {
+        "id": "claude-fable-5-2@default",
+        "name": "Claude Fable 5.2",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.2,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "anthropic/claude-fable-5-2"
       },
       "claude-fable-5@default": {
         "id": "claude-fable-5@default",
@@ -22032,6 +22282,37 @@
         "protocol": "anthropic",
         "canonical": "anthropic/claude-fable-5-1"
       },
+      "claude-fable-5-2": {
+        "id": "claude-fable-5-2",
+        "name": "Claude Fable 5.2",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.2,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "anthropic",
+        "canonical": "anthropic/claude-fable-5-2"
+      },
       "claude-haiku-4-5": {
         "id": "claude-haiku-4-5",
         "name": "Claude Haiku 4.5",
@@ -22432,7 +22713,7 @@
         "cost": {
           "input": 2.0,
           "output": 10.0,
-          "cache_read": 0.2,
+          "cache_read": 0.1,
           "cache_write": 2.5
         },
         "reasoning": true,
@@ -22895,9 +23176,9 @@
           "output": 65536
         },
         "cost": {
-          "input": 1.5,
-          "output": 7.5,
-          "cache_read": 0.15
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075
         },
         "reasoning": true,
         "tool_call": true,
@@ -22924,9 +23205,9 @@
           "output": 65536
         },
         "cost": {
-          "input": 1.5,
-          "output": 7.5,
-          "cache_read": 0.15
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075
         },
         "reasoning": true,
         "tool_call": true,
@@ -22952,9 +23233,9 @@
           "output": 65536
         },
         "cost": {
-          "input": 1.5,
-          "output": 7.5,
-          "cache_read": 0.15
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075
         },
         "reasoning": true,
         "tool_call": true,
@@ -24536,6 +24817,29 @@
         "protocol": "openai_chat",
         "canonical": "meituan/longcat-2.0"
       },
+      "longcat-2.5-free": {
+        "id": "longcat-2.5-free",
+        "name": "LongCat 2.5 Free",
+        "limit": {
+          "context": 1000000,
+          "output": 262144
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0,
+          "cache_read": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "meituan/longcat-2.5"
+      },
       "longcat-2.5-preview-free": {
         "id": "longcat-2.5-preview-free",
         "name": "LongCat 2.5 Preview Free",
@@ -24851,6 +25155,37 @@
         ],
         "protocol": "openai_chat",
         "canonical": "mistral/mistral-large-4"
+      },
+      "muse-ember-1.0": {
+        "id": "muse-ember-1.0",
+        "name": "Muse Ember 1.0",
+        "limit": {
+          "context": 1048576,
+          "output": 270000
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.004,
+          "cache_write": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_responses"
       },
       "muse-spark-1.2": {
         "id": "muse-spark-1.2",
@@ -26054,6 +26389,29 @@
         "protocol": "openai_chat",
         "canonical": "meituan/longcat-2.0"
       },
+      "longcat-2.5-free": {
+        "id": "longcat-2.5-free",
+        "name": "LongCat 2.5 Free",
+        "limit": {
+          "context": 1000000,
+          "output": 262144
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0,
+          "cache_read": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "meituan/longcat-2.5"
+      },
       "longcat-2.5-preview-free": {
         "id": "longcat-2.5-preview-free",
         "name": "LongCat 2.5 Preview Free",
@@ -26817,6 +27175,37 @@
         ],
         "protocol": "openai_chat",
         "canonical": "anthropic/claude-fable-5-1"
+      },
+      "anthropic/claude-fable-5.2": {
+        "id": "anthropic/claude-fable-5.2",
+        "name": "Claude Fable 5.2",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.2,
+          "cache_write": 10.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "anthropic/claude-fable-5-2"
       },
       "anthropic/claude-haiku-4.5": {
         "id": "anthropic/claude-haiku-4.5",
@@ -27745,9 +28134,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.353046,
-          "output": 0.706092,
-          "cache_read": 0.029421
+          "input": 0.95526,
+          "output": 1.91052,
+          "cache_read": 0.079605
         },
         "reasoning": true,
         "tool_call": true,
@@ -27775,7 +28164,7 @@
         "cost": {
           "input": 0.111,
           "output": 4.44,
-          "cache_read": 0.101
+          "cache_read": 0.097
         },
         "reasoning": true,
         "tool_call": true,
@@ -28443,9 +28832,9 @@
           "output": 65536
         },
         "cost": {
-          "input": 0.75,
-          "output": 3.75,
-          "cache_read": 0.075,
+          "input": 0.825,
+          "output": 4.125,
+          "cache_read": 0.0825,
           "cache_write": 0.041667
         },
         "reasoning": true,
@@ -28616,7 +29005,7 @@
         },
         "cost": {
           "input": 0.08,
-          "output": 0.35,
+          "output": 0.45,
           "cache_read": 0.04
         },
         "reasoning": false,
@@ -28649,12 +29038,12 @@
         "name": "Gemma 4 26B A4B IT",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 128000
         },
         "cost": {
-          "input": 0.0675,
-          "output": 0.225,
-          "cache_read": 0.0375
+          "input": 0.08,
+          "output": 0.1,
+          "cache_read": 0.046
         },
         "reasoning": true,
         "tool_call": true,
@@ -29101,12 +29490,11 @@
         "name": "Llama-3.1-8B-Instruct",
         "limit": {
           "context": 131072,
-          "output": 117964
+          "output": 16384
         },
         "cost": {
-          "input": 0.05,
-          "output": 0.08,
-          "cache_read": 0.025
+          "input": 0.02,
+          "output": 0.04
         },
         "reasoning": false,
         "tool_call": true,
@@ -29156,12 +29544,12 @@
         "name": "Llama-3.3-70B-Instruct",
         "limit": {
           "context": 131072,
-          "output": 32768
+          "output": 115200
         },
         "cost": {
-          "input": 0.59,
-          "output": 0.79,
-          "cache_read": 0.295
+          "input": 0.71,
+          "output": 0.71,
+          "cache_read": 0.71
         },
         "reasoning": false,
         "tool_call": true,
@@ -29193,7 +29581,7 @@
         "id": "meta-llama/llama-4-scout",
         "name": "Llama 4 Scout",
         "limit": {
-          "context": 327680,
+          "context": 1310720,
           "output": 16384
         },
         "cost": {
@@ -29224,6 +29612,37 @@
         "reasoning_options": [],
         "protocol": "openai_chat",
         "canonical": "meta/llama-guard-4-12b"
+      },
+      "meta/muse-ember": {
+        "id": "meta/muse-ember",
+        "name": "Muse Ember",
+        "limit": {
+          "context": 1048576,
+          "output": 943718
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.004,
+          "cache_write": 0.125
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat"
       },
       "meta/muse-glimmer-30b": {
         "id": "meta/muse-glimmer-30b",
@@ -29409,7 +29828,7 @@
         "name": "Muse Spark Open",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
           "input": 1.25,
@@ -29480,32 +29899,11 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "minimax/minimax-m1": {
-        "id": "minimax/minimax-m1",
-        "name": "MiniMax M1",
-        "limit": {
-          "context": 1000000,
-          "output": 40000
-        },
-        "cost": {
-          "input": 0.55,
-          "output": 2.2
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ],
-        "protocol": "openai_chat"
-      },
       "minimax/minimax-m2.5": {
         "id": "minimax/minimax-m2.5",
         "name": "MiniMax-M2.5",
         "limit": {
-          "context": 204800,
+          "context": 200000,
           "output": 58982
         },
         "cost": {
@@ -29524,7 +29922,7 @@
         "id": "minimax/minimax-m2.7",
         "name": "MiniMax-M2.7",
         "limit": {
-          "context": 204800,
+          "context": 196608,
           "output": 176947
         },
         "cost": {
@@ -29570,9 +29968,9 @@
           "output": 524288
         },
         "cost": {
-          "input": 0.15,
-          "output": 0.6,
-          "cache_read": 0.015
+          "input": 0.075,
+          "output": 0.3,
+          "cache_read": 0.0075
         },
         "reasoning": true,
         "tool_call": true,
@@ -29941,11 +30339,12 @@
         "name": "Mistral Small 3.2 24B",
         "limit": {
           "context": 256000,
-          "output": 16384
+          "output": 26214
         },
         "cost": {
-          "input": 0.075,
-          "output": 0.2
+          "input": 0.1,
+          "output": 0.3,
+          "cache_read": 0.01
         },
         "reasoning": false,
         "tool_call": true,
@@ -30544,7 +30943,7 @@
         },
         "cost": {
           "input": 0.15,
-          "output": 0.5,
+          "output": 0.47,
           "cache_read": 0.02
         },
         "reasoning": true,
@@ -31095,6 +31494,24 @@
         ],
         "protocol": "openai_chat",
         "canonical": "openai/gpt-5.2"
+      },
+      "openai/gpt-5.2-chat": {
+        "id": "openai/gpt-5.2-chat",
+        "name": "GPT-5.2 Chat",
+        "limit": {
+          "context": 128000,
+          "output": 32000
+        },
+        "cost": {
+          "input": 1.75,
+          "output": 14.0,
+          "cache_read": 0.175
+        },
+        "reasoning": false,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [],
+        "protocol": "openai_chat"
       },
       "openai/gpt-5.2-codex": {
         "id": "openai/gpt-5.2-codex",
@@ -31950,9 +32367,9 @@
           "output": 65536
         },
         "cost": {
-          "input": 0.022,
-          "output": 0.08,
-          "cache_read": 0.02
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.075
         },
         "reasoning": true,
         "tool_call": true,
@@ -32459,11 +32876,11 @@
         "name": "Qwen3 14B",
         "limit": {
           "context": 40960,
-          "output": 16384
+          "output": 36864
         },
         "cost": {
-          "input": 0.12,
-          "output": 0.24
+          "input": 0.1,
+          "output": 0.22
         },
         "reasoning": true,
         "tool_call": true,
@@ -32813,12 +33230,12 @@
         "name": "Qwen3.5 397B-A17B",
         "limit": {
           "context": 262144,
-          "output": 235929
+          "output": 64000
         },
         "cost": {
-          "input": 0.5,
+          "input": 0.6,
           "output": 3.6,
-          "cache_read": 0.3
+          "cache_read": 0.12
         },
         "reasoning": true,
         "tool_call": true,
@@ -33386,10 +33803,14 @@
           "output": 0.6,
           "cache_read": 0.05
         },
-        "reasoning": false,
+        "reasoning": true,
         "tool_call": true,
         "image": false,
-        "reasoning_options": [],
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
         "protocol": "openai_chat"
       },
       "sakana/fugu-max": {
@@ -33573,35 +33994,6 @@
         "reasoning_options": [],
         "protocol": "openai_chat"
       },
-      "stealth/crouton-alpha": {
-        "id": "stealth/crouton-alpha",
-        "name": "Crouton Alpha",
-        "limit": {
-          "context": 1048576,
-          "output": 943718
-        },
-        "cost": {
-          "input": 0.0,
-          "output": 0.0
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "effort",
-            "values": [
-              "minimal",
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          }
-        ],
-        "protocol": "openai_chat"
-      },
       "stepfun/step-3.5-flash": {
         "id": "stepfun/step-3.5-flash",
         "name": "Step 3.5 Flash",
@@ -33652,7 +34044,7 @@
         "id": "stepfun/step-5-preview",
         "name": "Step 5 Preview",
         "limit": {
-          "context": 1048576,
+          "context": 1000000,
           "output": 64000
         },
         "cost": {
@@ -33949,6 +34341,35 @@
         ],
         "protocol": "openai_chat",
         "canonical": "thinkingmachines/inkling"
+      },
+      "thinkingmachines/inkling-2-small:free": {
+        "id": "thinkingmachines/inkling-2-small:free",
+        "name": "Inkling 2 Small (free)",
+        "limit": {
+          "context": 1048576,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "protocol": "openai_chat",
+        "canonical": "thinkingmachines/inkling-2-small"
       },
       "thinkingmachines/inkling-small": {
         "id": "thinkingmachines/inkling-small",
@@ -34329,7 +34750,7 @@
         "id": "xiaomi/mimo-v2.5-pro",
         "name": "MiMo-V2.5-Pro",
         "limit": {
-          "context": 1050000,
+          "context": 1024000,
           "output": 235929
         },
         "cost": {
@@ -34469,9 +34890,9 @@
           "output": 98304
         },
         "cost": {
-          "input": 0.13,
-          "output": 0.85,
-          "cache_read": 0.025
+          "input": 0.2,
+          "output": 1.1,
+          "cache_read": 0.03
         },
         "reasoning": true,
         "tool_call": true,
@@ -34728,11 +35149,11 @@
         "name": "GLM-5.3-Flash",
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 943717
         },
         "cost": {
-          "input": 0.0335,
-          "output": 0.083,
+          "input": 0.15,
+          "output": 0.5,
           "cache_read": 0.03
         },
         "reasoning": true,
@@ -34863,10 +35284,10 @@
           "output": 128000
         },
         "cost": {
-          "input": 10.0,
-          "output": 50.0,
-          "cache_read": 0.25,
-          "cache_write": 12.5
+          "input": 8.0,
+          "output": 40.0,
+          "cache_read": 0.2,
+          "cache_write": 10.0
         },
         "reasoning": true,
         "tool_call": true,
@@ -35124,9 +35545,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.1672,
-          "output": 10.1366,
-          "cache_read": 0.16
+          "input": 0.1824,
+          "output": 10.5572,
+          "cache_read": 0.18
         },
         "reasoning": true,
         "tool_call": true,

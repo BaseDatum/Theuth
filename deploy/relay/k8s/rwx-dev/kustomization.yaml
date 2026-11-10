@@ -11,7 +11,7 @@ resources:
 
 images:
   - name: ghcr.io/skymoore/theuth/relay
-    newTag: ead30467
+    newTag: 4a2b2fd3
 patches:
   - target:
       kind: Deployment
