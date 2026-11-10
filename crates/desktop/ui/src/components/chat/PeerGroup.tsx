@@ -5,7 +5,7 @@ import { formatAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import type { Entry } from '@/store/sessions'
 import { Message } from './Message'
-import { SenderHead, useAwaitingAnswer } from './MessagePeer'
+import { SenderHead, capLabel, useAwaitingAnswer } from './MessagePeer'
 import { useDisclosed } from './disclosure'
 import { type Sender, firstLine, isOutside, resolveSender, sameText, useDirectory } from './peer-identity'
 
@@ -40,7 +40,7 @@ function Folded({ lines, sender, session }: { lines: { entry: Peer; repeat: bool
     useToolRuns.setState((s) => ({ disclosed: { ...s.disclosed, ...Object.fromEntries(lines.map((l) => [lineKey(l.entry.id), next])) } }))
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-2.5 text-sm">
-      <SenderHead sender={sender} count={`${lines.length} messages`}>
+      <SenderHead sender={sender} count={`${lines.length} messages`} tag={lines[0]?.entry.contact && capLabel(lines[0].entry.contact.cap)}>
         <Button type="button" variant="ghost" size="xs" className="pointer-coarse:min-h-11" aria-expanded={all} onClick={() => setAll(!all)}>
           {all ? 'Collapse all' : 'Expand all'}
         </Button>

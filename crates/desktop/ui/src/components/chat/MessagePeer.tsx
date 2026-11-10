@@ -271,7 +271,7 @@ type PeerContact = ContactNote & { note: string }
 type Props = { from: string; text: string; origin?: PeerOrigin; seq?: number; session: string; at?: number; remove?: ReactNode; contact?: PeerContact }
 
 /** A contact's cap in words: the header tag and Details › Access say it alike. */
-const capLabel = (cap: string) => (cap === 'read_only' ? 'read-only' : cap === 'mutating' ? 'can make changes' : cap)
+export const capLabel = (cap: string) => (cap === 'read_only' ? 'read-only' : cap === 'mutating' ? 'can make changes' : cap)
 
 /**
  * The card frame: sender header, the reply quote, the body (clamped), then the footer. `origin` parts (the answer

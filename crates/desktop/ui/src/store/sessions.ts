@@ -840,13 +840,14 @@ export const useBrowserBusy = (id: string) =>
   useSessions((s) => browserBusy(s.sessions[id]));
 
 /** 183 §12.10: the contact whose capped turn runs in this exported chat: the running turn's `TurnStarted` carried a
- * `<contact_message>`, or (a page loaded mid-turn) the last opener in the transcript is one. `null` otherwise.
+ * `<contact_message>`, or (a page loaded mid-turn) the last opener in the transcript is one: a `contact_message`
+ * card, or a peer card its stored contact wrapper gave `contact` facts. `null` otherwise.
  * ponytail: after a reload the owner's own steer into a contact's turn (§13 row 50) hides the chip; the turn stays capped. */
 export const contactTurn = (s: SessionSlice | undefined): ContactNote | null => {
   if (!s?.running) return null;
   if (s.contactNote) return s.contactNote;
-  const opener = s.entries.findLast((e) => e.kind === "user" || e.kind === "contact_message");
-  return opener?.kind === "contact_message" ? opener : null;
+  const opener = s.entries.findLast((e) => e.kind === "user" || e.kind === "contact_message" || (e.kind === "peer" && !!e.contact));
+  return opener?.kind === "contact_message" ? opener : opener?.kind === "peer" && opener.contact ? opener.contact : null;
 };
 
 type Listener<T extends WireEvent["type"]> = (

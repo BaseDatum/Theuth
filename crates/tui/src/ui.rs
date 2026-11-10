@@ -1972,7 +1972,9 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Restart | CardKind::Memory | CardKind::Moved | CardKind::EngineRestart => PROMPT,
             };
             let v = text.view();
-            let lines = v.lines().count();
+            // 183: an outside agent's words are plain text: no Markdown, no OSC 8 links, no control characters.
+            let outside = crate::model::outside_card(*kind, title).then(|| crate::model::clean(text.raw()));
+            let lines = outside.as_ref().map_or_else(|| v.lines().count(), |t| t.lines().count());
             let glyph = kind.glyph();
             let header = if *expanded {
                 format!("{glyph} {title}   ctrl+o collapses")
@@ -1983,7 +1985,10 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: color, padding_left: 1, padding_right: 1, margin_top: 1) {
                     Text(content: header, color, weight: Weight::Bold)
                     #(expanded.then(|| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
-                        #(v.lines().map(line))
+                        #(match &outside {
+                            Some(t) => vec![element!(Text(content: t.clone(), wrap: TextWrap::Wrap)).into_any()],
+                            None => v.lines().map(line).collect(),
+                        })
                     })))
                 }
             }
@@ -2841,6 +2846,37 @@ mod tests {
         assert!(frame.contains("spoken 5 s · cut in"), "{frame}");
         assert!(frame.contains("hello"), "{frame}");
         assert!(!frame.contains("[spoken"), "{frame}");
+    }
+
+    /// 183: an outside sender's card draws its words as written: no Markdown,
+    /// no link, no control character; a mesh session's card is still Markdown.
+    #[test]
+    fn outside_peer_card_is_plain_text() {
+        let frame = |title: &str| {
+            let e = Entry::Card {
+                kind: CardKind::Peer,
+                title: title.into(),
+                text: Box::new(markdown::Text::complete(
+                    "**now** [click](http://x/go)\u{1b}[2J",
+                )),
+                expanded: true,
+            };
+            element! {
+                View(flex_direction: FlexDirection::Column, width: 60u16) {
+                    #(entry(&e, "", 0, 60))
+                }
+            }
+            .to_string()
+        };
+        let outside = frame("contact:studio:bob · 00000000");
+        assert!(
+            outside.contains("**now** [click](http://x/go)[2J"),
+            "{outside}"
+        );
+        assert!(!outside.contains('\u{1b}'), "{outside:?}");
+        let mesh = frame("session:abc · 00000000");
+        assert!(!mesh.contains("**now**"), "{mesh}");
+        assert!(mesh.contains("now"), "{mesh}");
     }
 
     /// 109 §10.3: the resume divider takes the `Compacted` shape — a

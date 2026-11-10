@@ -181,6 +181,16 @@ test('183 §12.10 contactTurn: a running turn a contact message opened names the
   expect(contactTurn(undefined)).toBeNull()
 })
 
+test('183 §12.10 contactTurn: a page loaded mid-turn finds the stored contact row, now a peer card with its facts', () => {
+  const text = '<contact_message contact="bob" machine="m" export="ops" cap="mutating">\nThis message comes from bob, a contact outside your mesh.\nhi\n</contact_message>'
+  const card = fromHistory({ role: 'user', text, turn: 1, peer: { id: 'm1', from: 'contact:studio:bob', reply_to: null, scope: null } })
+  const s: SessionSlice = { ...empty(S), running: true, entries: card }
+  expect(contactTurn(s)).toMatchObject({ contact: 'bob', cap: 'mutating', export: 'ops' })
+  // A plain peer card is no contact turn, and the owner's later words end it.
+  expect(contactTurn({ ...s, entries: [{ id: 'p', kind: 'peer', from: 'session:x', text: 'hi' }] })).toBeNull()
+  expect(contactTurn({ ...s, entries: [...card, { id: 'u', kind: 'user', text: 'mine' } as Entry] })).toBeNull()
+})
+
 test('detached harvest: Harvesting after TurnFinished shows only while idle, a new turn takes over, Harvested clears it', () => {
   let s = run([
     { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },

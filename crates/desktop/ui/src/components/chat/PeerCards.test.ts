@@ -188,6 +188,12 @@ test('a folded group: one header, one line per message, a repeat marked, a click
   expect(render(h(ToolRunCard, { run, prompts: null, session: 's' }))).toContain('more')
 })
 
+test('a folded run of a contact\'s messages carries the cap tag in its one header', () => {
+  const contact = { contact: 'sky-moore', machine: 'm', export: 'hi-there', cap: 'mutating', note: '' }
+  const run = [{ ...peer('c1', 'one', 0), contact }, { ...peer('c2', 'two', 60_000), contact }]
+  expect(render(h(ToolRunCard, { run, prompts: null, session: 's' }))).toMatch(/2 messages[\s\S]*>can make changes<\/span>/)
+})
+
 test('an incoming reply quotes the first line of what this chat sent, Markdown marks removed', () => {
   qc.setQueryData(queryKeys.peerMessage('s', A), { receipt: { id: A, to: `session:${KID}`, state: 'replied', reply_to: null, reply: null, task_id: null, error: null, answered_by: null }, from: 'session:s', session: 's', text: '\n**Z4-R1**, the last round.\nmore', created_at: '', request_scope: null })
   const origin = { id: B, from: `session:${KID}`, reply_to: A, scope: null }
