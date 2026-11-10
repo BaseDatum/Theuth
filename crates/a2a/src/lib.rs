@@ -504,6 +504,7 @@ impl Ctx {
                     roots: p.sessions.clone(),
                     generation: epochs[&p.name].clone(),
                     sender,
+                    full: p.full.iter().cloned().collect(),
                 }
             })
             .collect();
@@ -571,16 +572,20 @@ impl Ctx {
             .map(|(alias, f)| agent::communication::network::ContactLimits {
                 contact: alias.clone(),
                 cap: f.cap,
+                // 186 (D6): an agent shared in full runs under its own policy.
                 exports: live
                     .staged
                     .peers
                     .get(alias)
-                    .map(|p| p.exports.as_slice())
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(|e| live.staged.agents.get(e))
-                    .map(|a| (a.name.clone(), a.tools.clone()))
-                    .collect(),
+                    .map(|p| {
+                        p.exports
+                            .iter()
+                            .filter(|e| !p.full.contains(*e))
+                            .filter_map(|e| live.staged.agents.get(e))
+                            .map(|a| (a.name.clone(), a.tools.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
             .collect();
         // 183 F1: a contact whose grants here changed hears it and fetches our card again.

@@ -14,7 +14,8 @@ use a2a_server::{RequestHandler, ServiceParams};
 use a2a_types::*;
 use agent::Agents;
 use agent::communication::network::{
-    A2aCancel, A2aGet, A2aList, A2aPrincipal, A2aSend, A2aStream, A2aSubscribe, TaskStream,
+    A2aCancel, A2aGet, A2aList, A2aPrincipal, A2aReturn, A2aSend, A2aStream, A2aSubscribe,
+    RETURN_ROUTE, TaskStream,
 };
 use async_trait::async_trait;
 use axum::Router;
@@ -263,6 +264,25 @@ impl Live {
                 .layer(RequestBodyLimitLayer::new(BODY_LIMIT));
             router = router.nest(&prefix, export_router);
         }
+        // 186 (D5): the contact-only return route: answers in conversations we opened. No
+        // card; the gate admits only a contact's own `theuth/a2a/1` stream to it.
+        if !contacts.is_empty() {
+            let handler = Arc::new(Handler {
+                export: RETURN_ROUTE.to_owned(),
+                target: Target::Return,
+                tools: Vec::new(),
+                agents: agents.clone(),
+                subscribers: subscribers.clone(),
+                epochs: epochs.clone(),
+                grants: grants.clone(),
+            });
+            router = router.nest(
+                &format!("/agents/{RETURN_ROUTE}"),
+                Router::new()
+                    .nest_service("/rpc", jsonrpc_router(handler))
+                    .layer(RequestBodyLimitLayer::new(BODY_LIMIT)),
+            );
+        }
         Self {
             router,
             principals,
@@ -379,8 +399,12 @@ async fn dispatch(State(shared): State<Shared>, mut req: Request) -> Response {
         export = first;
     }
     // Granted, existing and effectively enabled right now, or not found: a
-    // disabled export is not disclosed and its cached routes never answer.
-    let Some(export) = export.filter(|e| principal.exports.contains(e) && live.open(e)) else {
+    // disabled export is not disclosed and its cached routes never answer. 186 (D5): the
+    // return route is every contact's, on its own stream only.
+    let contact = req.extensions().get::<ContactCaller>().is_some();
+    let Some(export) = export.filter(|e| {
+        (contact && e == RETURN_ROUTE) || (principal.exports.contains(e) && live.open(e))
+    }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     if !principal.admit_rate() {
@@ -549,6 +573,8 @@ enum Target {
     Chat(SessionId),
     /// 183 §7.6: an agent: each contact gets its own capped inbox.
     Agent(String),
+    /// 186 (D5): the return route: a contact's answers in conversations this engine opened.
+    Return,
 }
 
 /// Application seam per export: typed requests → agent commands (§4).
@@ -570,7 +596,8 @@ fn revoked() -> A2AError {
 }
 
 impl Handler {
-    async fn admit(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
+    /// Version, the verified binding and its live grant epoch.
+    fn caller(&self, params: &ServiceParams) -> Result<(Uuid, &CancellationToken), A2AError> {
         check_version(params)?;
         let binding = params
             .get(PRINCIPAL_HEADER)
@@ -584,6 +611,11 @@ impl Handler {
         if route.is_cancelled() {
             return Err(revoked());
         }
+        Ok((binding, route))
+    }
+
+    async fn admit(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
+        let (binding, route) = self.caller(params)?;
         // 183 §7.6: a contact's origin rides with every admission: the inbox's cap, the
         // exported chat's turn cap, the first-contact hold.
         let grant = self.grants.get(&binding);
@@ -624,6 +656,11 @@ impl Handler {
             (Target::Agent(_), None) => {
                 return Err(A2AError::unsupported_operation(
                     "export unavailable: only contacts reach agent exports",
+                ));
+            }
+            (Target::Return, _) => {
+                return Err(A2AError::unsupported_operation(
+                    "the return route takes answers (SendMessage) only",
                 ));
             }
         };
@@ -706,6 +743,22 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SendMessageRequest,
     ) -> Result<SendMessageResponse, A2AError> {
+        // 186 (D5): an answer on the return route, from a contact (the gate let only its own
+        // stream here).
+        if matches!(self.target, Target::Return) {
+            let (binding, route) = self.caller(params)?;
+            if !self.grants.contains_key(&binding) {
+                return Err(A2AError::task_not_found("conversation"));
+            }
+            validate_send(&req)?;
+            return self
+                .ask(A2aReturn {
+                    binding,
+                    route: route.clone(),
+                    request: req,
+                })
+                .await;
+        }
         let principal = self.admit(params).await?;
         validate_send(&req)?;
         let history_length = req.configuration.as_ref().and_then(|c| c.history_length);

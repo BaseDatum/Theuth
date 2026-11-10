@@ -245,6 +245,10 @@ pub struct PeerRecord {
     pub created_at: DateTime<Utc>,
     /// Owning A2A request scope, when the exchange belongs to one.
     pub request_scope: Option<Uuid>,
+    /// 186: a contact's share mode when a contact's message (or its answer) made the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub contact_mode: Option<ShareMode>,
 }
 
 /// Backend behind a peer address (§5.1).

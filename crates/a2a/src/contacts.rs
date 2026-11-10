@@ -1686,7 +1686,11 @@ impl crate::Ctx {
                 if let Some(x) = modes.keys().find(|x| !exports.contains(x)) {
                     return Err(format!("{x} is not shared with {name}"));
                 }
-                if !capable && modes.values().any(|m| *m == ShareMode::Full) {
+                // Only a new or upgraded full entry needs it: one already full may be sent back.
+                let upgraded = modes.iter().any(|(x, m)| {
+                    *m == ShareMode::Full && e.modes.get(x) != Some(&ShareMode::Full)
+                });
+                if !capable && upgraded {
                     let machine = e.machine.clone().unwrap_or_else(|| name.clone());
                     return Err(format!("update {machine} to share in full"));
                 }
@@ -2351,9 +2355,10 @@ mod tests {
             .unwrap(),
             format!(r#"{{"alg":"EdDSA","kid":"{eid}","typ":"JOSE"}}"#)
         );
+        // 186: the card carries the full-collaboration extension too.
         assert_eq!(
             sig.signature,
-            "vPiiKhUVfrwQ4TTwaeUDt7-XqrOyBwJ2OJqmsUAhtqWWEjo4eN5Z5BRroXFx5C-T5zvHjdhCk9N8s7FJ0nPYDw"
+            "ffspQrmo4NZ4XBudLJTKE-KXL0-xbw_b4RbippZgTzdXdoNabg3aQ-Po00ZNFuj1nmH8dVw8DH3MT-CyTAh-Bw"
         );
         verify_card(&signed, &eid).unwrap();
         assert_eq!(card_machine(&signed), ("xeus".into(), "Arch Linux".into()));

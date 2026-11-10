@@ -260,6 +260,19 @@ impl std::str::FromStr for A2aTaskStatus {
     }
 }
 
+/// 186 (D5): one conversation of a contact share in full (`contact_threads`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContactThread {
+    /// The originating session (`outbound`) or the exported one.
+    pub session: SessionId,
+    /// The export it addresses (the contact's when `outbound`, ours otherwise).
+    pub export: String,
+    /// Minted here: this engine sent the first message.
+    pub outbound: bool,
+    /// Last message either way (ms since epoch): the return grant slides from it.
+    pub last_ms: i64,
+}
+
 /// An authorized A2A context: the caller's handle on one exported session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A2aContext {
@@ -353,7 +366,7 @@ macro_rules! exchange_cols {
     () => {
         "id, sender, recipient, sender_session, recipient_session, session, \
          reply_to, request_scope, generation, body, state, reply, task_id, error, history_seq, \
-         answered_by, created_at"
+         answered_by, created_at, contact_mode"
     };
 }
 
@@ -376,6 +389,7 @@ struct ExchangeRow {
     history_seq: Option<i64>,
     answered_by: Option<String>,
     created_at: String,
+    contact_mode: Option<String>,
 }
 
 impl ExchangeRow {
@@ -408,6 +422,11 @@ impl TryFrom<ExchangeRow> for PeerRecord {
             text: r.body,
             created_at: parse_time(&r.created_at)?,
             request_scope: parse_opt(r.request_scope.as_deref())?,
+            contact_mode: match r.contact_mode.as_deref() {
+                Some("full") => Some(crate::communication::ShareMode::Full),
+                Some(_) => Some(crate::communication::ShareMode::Cautious),
+                None => None,
+            },
         })
     }
 }
@@ -1424,6 +1443,145 @@ impl Store {
         Ok(r)
     }
 
+    /// 186 (D4, D5): a contact read the outbound message `id` shared in full (its task
+    /// completed with `theuth.receipt`): `consumed`, nothing imported as a reply.
+    pub async fn read_exchange(&self, id: Uuid) -> anyhow::Result<PeerReceipt> {
+        let mut tx = self.begin_write().await?;
+        let r = finish_in(
+            &mut tx,
+            id,
+            &[PeerMessageState::Accepted, PeerMessageState::Held],
+            PeerMessageState::Consumed,
+            None,
+            None,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(r)
+    }
+
+    /// 186: a contact's exchange `id`: its share mode and, in full, its conversation `context`.
+    pub async fn set_exchange_contact(
+        &self,
+        id: Uuid,
+        mode: crate::communication::ShareMode,
+        context: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if let Some(c) = context {
+            bounded("context_id", c, EXTERNAL_ID_MAX)?;
+        }
+        sqlx::query(
+            "UPDATE peer_exchanges SET contact_mode = ?, context_id = COALESCE(?, context_id) \
+             WHERE id = ?",
+        )
+        .bind(mode.as_str())
+        .bind(context)
+        .bind(id.to_string())
+        .execute(&self.write)
+        .await?;
+        Ok(())
+    }
+
+    /// 186 (D5): exchange `id`'s conversation and its idempotency key (the A2A `messageId`),
+    /// when it belongs to a full contact share.
+    pub async fn exchange_thread(&self, id: Uuid) -> anyhow::Result<Option<(String, String)>> {
+        let row: Option<(Option<String>, String)> =
+            sqlx::query_as("SELECT context_id, request_id FROM peer_exchanges WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(row.and_then(|(c, r)| Some((c?, r))))
+    }
+
+    /// 186 (D5): the exchange `sender` sent under idempotency key `request_id` (the A2A
+    /// `messageId` a contact's answer names in `theuth.re`).
+    pub async fn exchange_by_request_id(
+        &self,
+        sender: &str,
+        request_id: &str,
+    ) -> anyhow::Result<Option<Uuid>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM peer_exchanges WHERE sender = ? AND request_id = ?")
+                .bind(sender)
+                .bind(request_id)
+                .fetch_optional(&self.read)
+                .await?;
+        row.map(|(id,)| id.parse().context("bad exchange id"))
+            .transpose()
+    }
+
+    /// 186 (D5): open (or touch) the conversation `context` with the contact `binding`:
+    /// `outbound` = minted here for a send from `session` to its export `export`; else the
+    /// contact's, into our export `export` published by `session`.
+    pub async fn open_contact_thread(
+        &self,
+        binding: Uuid,
+        context: &str,
+        session: SessionId,
+        export: &str,
+        outbound: bool,
+    ) -> anyhow::Result<()> {
+        bounded("context_id", context, EXTERNAL_ID_MAX)?;
+        sqlx::query(
+            "INSERT INTO contact_threads (binding, context_id, session, export, outbound, last_ms) \
+             VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (binding, context_id) DO UPDATE SET last_ms = excluded.last_ms",
+        )
+        .bind(binding.to_string())
+        .bind(context)
+        .bind(session.to_string())
+        .bind(export)
+        .bind(outbound)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.write)
+        .await?;
+        Ok(())
+    }
+
+    /// 186 (D5): the conversation this engine minted for `session` → the contact `binding`'s
+    /// export `export`.
+    pub async fn outbound_contact_thread(
+        &self,
+        binding: Uuid,
+        session: SessionId,
+        export: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT context_id FROM contact_threads WHERE binding = ? AND session = ? \
+             AND export = ? AND outbound = 1 ORDER BY last_ms DESC LIMIT 1",
+        )
+        .bind(binding.to_string())
+        .bind(session.to_string())
+        .bind(export)
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.map(|(c,)| c))
+    }
+
+    /// 186 (D5): the conversation `context` with the contact `binding`.
+    pub async fn contact_thread(
+        &self,
+        binding: Uuid,
+        context: &str,
+    ) -> anyhow::Result<Option<ContactThread>> {
+        let row: Option<(String, String, bool, i64)> = sqlx::query_as(
+            "SELECT session, export, outbound, last_ms FROM contact_threads \
+             WHERE binding = ? AND context_id = ?",
+        )
+        .bind(binding.to_string())
+        .bind(context)
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(|(session, export, outbound, last_ms)| {
+            Ok(ContactThread {
+                session: session.parse()?,
+                export,
+                outbound,
+                last_ms,
+            })
+        })
+        .transpose()
+    }
+
     /// Current receipt of any exchange (harness-internal; not caller-scoped).
     pub async fn exchange_receipt(&self, id: Uuid) -> anyhow::Result<Option<PeerReceipt>> {
         let mut conn = self.read.acquire().await?;
@@ -1684,6 +1842,23 @@ impl Store {
         Ok(())
     }
 
+    /// Tests: the conversation `context` with `binding` was last active at `last_ms`.
+    #[cfg(test)]
+    pub(crate) async fn age_contact_thread_for_test(
+        &self,
+        binding: Uuid,
+        context: &str,
+        last_ms: i64,
+    ) {
+        sqlx::query("UPDATE contact_threads SET last_ms = ? WHERE binding = ? AND context_id = ?")
+            .bind(last_ms)
+            .bind(binding.to_string())
+            .bind(context)
+            .execute(&self.write)
+            .await
+            .unwrap();
+    }
+
     /// Tests: how many contexts `scope` has.
     #[cfg(test)]
     pub(crate) async fn a2a_context_count_for_test(&self, scope: A2aScope<'_>) -> i64 {
@@ -1771,15 +1946,30 @@ impl Store {
         &self,
         session: SessionId,
         identity: Option<&str>,
+        full: bool,
     ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
-        sqlx::query("UPDATE a2a_contexts SET inbox = 1, inbox_identity = ? WHERE session = ?")
-            .bind(identity)
-            .bind(session.to_string())
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE a2a_contexts SET inbox = 1, inbox_identity = ?, inbox_full = ? WHERE session = ?",
+        )
+        .bind(identity)
+        .bind(full)
+        .bind(session.to_string())
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// 186 (D6): `session` is a contact's inbox whose last admission was shared in full.
+    pub async fn a2a_inbox_full(&self, session: SessionId) -> anyhow::Result<bool> {
+        let row: Option<(bool,)> = sqlx::query_as(
+            "SELECT inbox_full FROM a2a_contexts WHERE session = ? AND inbox = 1 LIMIT 1",
+        )
+        .bind(session.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.is_some_and(|(f,)| f))
     }
 
     /// 183 Z3-R2: `session` is a contact's inbox: `Some(its persona)` (`Some(None)`: the
@@ -2078,20 +2268,23 @@ impl Store {
     /// 183 W-27, F11: park a contact's first task for its owner's answer: `auth_required`
     /// (what the contact reads) and `held`, so it is not the session's active task and
     /// takes no scope ([`Self::active_a2a_task`] and the busy rule skip it). Only from
-    /// `submitted`; the next [`Self::update_a2a_task`] takes it out.
+    /// `submitted`; the next [`Self::update_a2a_task`] takes it out. 186 (D4): a full
+    /// contact's message waits aside the same way, `working` until its consumption.
     pub async fn hold_a2a_task(
         &self,
         scope: A2aScope<'_>,
         id: &str,
         expected_revision: i64,
         snapshot: &serde_json::Value,
+        status: A2aTaskStatus,
     ) -> anyhow::Result<A2aTask> {
         let mut tx = self.begin_write().await?;
         let n = sqlx::query(
-            "UPDATE a2a_tasks SET status = 'auth_required', snapshot = ?, held = 1, \
+            "UPDATE a2a_tasks SET status = ?, snapshot = ?, held = 1, \
              revision = revision + 1, updated_at = ? \
              WHERE id = ? AND revision = ? AND status = 'submitted'",
         )
+        .bind(status.as_str())
         .bind(serde_json::to_string(snapshot)?)
         .bind(now())
         .bind(id)
@@ -3399,7 +3592,13 @@ mod tests {
             .await
             .unwrap();
         let held = store
-            .hold_a2a_task(lab, &held.id, held.revision, &snap("auth-required"))
+            .hold_a2a_task(
+                lab,
+                &held.id,
+                held.revision,
+                &snap("auth-required"),
+                A2aTaskStatus::AuthRequired,
+            )
             .await
             .unwrap();
         assert_eq!(held.status, A2aTaskStatus::AuthRequired);

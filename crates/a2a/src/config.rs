@@ -1063,6 +1063,39 @@ exports:
         }
     }
 
+    /// 186 (D2): a grant with no mode is cautious; `modes` is written only when a full grant
+    /// exists (an older build refuses the unknown key); a mode change is a new grant epoch
+    /// and keeps no held message of that export.
+    #[test]
+    fn modes_default_to_cautious_and_are_written_only_for_a_full_grant() {
+        let bob = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
+        let yaml = |modes: &str| {
+            format!(
+                "peers:\n  bob:\n    endpoint: {bob}\n    exports: [research]\n{modes}exports:\n  research: {{ agent: research@xeus, name: Research }}\n"
+            )
+        };
+        let old = file(&yaml(""));
+        let cautious = stage(&old, &resolver(S), None).unwrap();
+        assert!(cautious.peers["bob"].full.is_empty(), "no mode is cautious");
+        let mut entry = old.peers["bob"].clone();
+        entry.modes.insert("research".into(), ShareMode::Cautious);
+        let written = serde_yaml::to_string(&entry).unwrap();
+        assert!(!written.contains("modes"), "{written}");
+        entry.modes.insert("research".into(), ShareMode::Full);
+        let written = serde_yaml::to_string(&entry).unwrap();
+        assert!(written.contains("research: full"), "{written}");
+
+        let full = stage(
+            &file(&yaml("    modes: { research: full }\n")),
+            &resolver(S),
+            None,
+        )
+        .unwrap();
+        assert!(full.peers["bob"].full.contains("research"));
+        assert!(!cautious.same_grant(&full, "bob"), "a new grant epoch");
+        assert!(cautious.unchanged_exports(&full, "bob").is_empty());
+    }
+
     /// 183 F4 (review 1, 2): a held first message may outlive a grant change only for an
     /// export whose authority is unchanged: a chat re-pointed to another session, changed
     /// tools, a removed grant or a changed contact cap each drop it; a new title or

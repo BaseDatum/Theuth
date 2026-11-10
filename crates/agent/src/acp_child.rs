@@ -1864,6 +1864,7 @@ impl Message<PeerInput> for AcpChild {
                 isolated: false,
                 cap: None,
                 tools: None,
+                full: false,
             }),
             channel: None,
             admitted: Instant::now(),
