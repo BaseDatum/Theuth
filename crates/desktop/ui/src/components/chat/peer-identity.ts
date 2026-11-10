@@ -174,7 +174,9 @@ export const NIL = '00000000-0000-0000-0000-000000000000'
 
 const UUID_SRC = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 // peers.rs `receipt_line`: `<to> <state> id=<uuid>`, then ` task=<t>` and ` error=<e>` when set; either may hold spaces.
-const RECEIPT = new RegExp(`^(\\S+) (accepted|consumed|replied|suppressed|failed|unknown|held) id=(${UUID_SRC})(?: task=.*?)?(?: error=(.*))?$`)
+// `s`: JavaScript's `.` stops at U+2028/U+2029, which a remote task, error or machine name may carry; the output is
+// already split on `\n`, so dotAll cannot reach the next line.
+const RECEIPT = new RegExp(`^(\\S+) (accepted|consumed|replied|suppressed|failed|unknown|held) id=(${UUID_SRC})(?: task=.*?)?(?: error=(.*))?$`, 's')
 // The current engine's reply block header; an older engine has none.
 const HEADER = new RegExp(`^reply id=(${UUID_SRC}):$`)
 

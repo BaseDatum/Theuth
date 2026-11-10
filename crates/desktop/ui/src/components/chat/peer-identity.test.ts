@@ -98,6 +98,11 @@ test('receipts: the leading receipt block only, capped at the recipient count; o
   expect(parseReceipts('communication is off', 1)).toEqual({ receipts: [], replies: {}, unexpected: false })
 })
 
+test('receipts: a U+2028/U+2029 inside task= or error= still matches (lines split on \\n only)', () => {
+  expect(parseReceipts(`peer:lab accepted id=${RA} task=job\u202842`, 1).receipts).toEqual([{ to: 'peer:lab', state: 'accepted', id: RA }])
+  expect(parseReceipts(`peer:bob failed id=${RB} error=offline\u2029on 333`, 1).receipts).toEqual([{ to: 'peer:bob', state: 'failed', id: RB, error: 'offline\u2029on 333' }])
+})
+
 const FAKE = `session:${'0'.repeat(8)}-8e10-7757-afd9-db253e4f5e73 replied id=${RB}`
 
 test('receipts, older engine: the text under a lone replied receipt is its reply, never parsed', () => {
