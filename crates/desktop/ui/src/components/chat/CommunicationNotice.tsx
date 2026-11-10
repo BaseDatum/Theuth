@@ -63,7 +63,7 @@ export function CommunicationNotice({
     <button
       type="button"
       className="min-h-11 shrink-0 px-2 underline underline-offset-2 hover:text-foreground"
-      onClick={() => void settings(navigate, 'communication', session)}
+      onClick={() => void (session ? navigate({ to: '/c/$session', params: { session }, search: { messaging: '1' } }) : settings(navigate, 'messaging'))}
     >
       Settings
     </button>

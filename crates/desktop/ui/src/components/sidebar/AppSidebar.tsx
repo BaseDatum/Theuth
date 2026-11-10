@@ -332,9 +332,11 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       <SidebarFooter className="px-1.5">
         <SidebarMenu>
           <SidebarMenuItem>
+            {/* 188: Settings is a page; a phone opens its category list first. */}
             <SidebarMenuButton
+              isActive={section === 'settings'}
               className="h-9 rounded-[10px] px-2.5"
-              onClick={() => void settings(navigate, 'general', session)}
+              onClick={() => void (isMobile ? navigate({ to: '/settings' }) : settings(navigate, 'appearance'))}
             >
               <Settings /> Settings
               <span className="ml-auto text-xs text-fg-tertiary">v{__APP_VERSION__}</span>

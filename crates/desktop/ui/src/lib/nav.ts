@@ -38,9 +38,9 @@ export const tabOf = (group: Group, pathname: string): string | null =>
 export const groupOf = (pathname: string): Group | null =>
   tabOf('agents', pathname) ? 'agents' : tabOf('library', pathname) ? 'library' : null
 
-export type Section = 'home' | 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | 'costs' | null
+export type Section = 'home' | 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | 'costs' | 'settings' | null
 
-/** Which sidebar row `pathname` lights up; null for chats, settings, and the rest. */
+/** Which sidebar row `pathname` lights up; null for chats and the rest. */
 export const sectionOf = (pathname: string): Section => {
   if (pathname === '/') return 'home'
   if (pathname.startsWith('/talk/')) return 'talk'
@@ -50,5 +50,7 @@ export const sectionOf = (pathname: string): Section => {
   if (pathname === '/meetings/new') return 'meeting'
   if (tabOf('library', pathname)) return 'library'
   if (pathname === '/costs' || pathname.startsWith('/costs/')) return 'costs'
+  // 188: Settings is a page now, its footer button lit like any row.
+  if (pathname === '/settings' || pathname.startsWith('/settings/')) return 'settings'
   return null
 }

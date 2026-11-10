@@ -104,7 +104,7 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
         <p className="text-xs text-fg-tertiary">
           An agent is not tied to one harness: theuth picks native or an external harness (
           {harnesses.data?.length ? harnesses.data.map((h) => h.name).join(', ') : 'none configured'}) per task, from what the task needs. Manage them in{' '}
-          <Link to="/settings/$tab" params={{ tab: 'agents' }} className="text-primary hover:underline">
+          <Link to="/settings/$tab" params={{ tab: 'harnesses' }} className="text-primary hover:underline">
             Settings › Harnesses
           </Link>
           .

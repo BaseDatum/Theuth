@@ -1,6 +1,7 @@
 import type { UseNavigateResult } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { limitsArgs, limitValue, probeLine, refreshedText } from '@/components/settings/providers'
+import type { SettingsTabId } from '@/components/settings/registry'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys } from '@/lib/rpc'
 import { openSearch } from '@/lib/search'
@@ -118,7 +119,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   {
     name: '/approvals',
     hint: '[on|off] [always]',
-    desc: 'tool approval prompts; `always` persists to config.yaml',
+    desc: 'tool approval prompts; `always` persists the node-wide default',
   },
   {
     name: '/communication',
@@ -240,30 +241,11 @@ export function surfaceOf(e: Event): Surface | null {
   return d === 'model' || d === 'prompt' || d === 'jobs' || d === 'todos' ? d : null
 }
 
-export type SettingsTab =
-  | 'general'
-  | 'chat'
-  | 'loop'
-  | 'approvals'
-  | 'communication'
-  | 'computer'
-  | 'agents'
-  | 'link'
-  | 'network'
-  | 'connections'
-  | 'channels'
-  | 'shortcuts'
-  | 'memory'
-
 type Navigate = UseNavigateResult<string>
 
-/** Open the settings dialog on `tab`; `session` scopes the per-session switches; `focus` names a control the tab focuses (Memory: `model`). */
-export function settings(navigate: Navigate, tab: SettingsTab, session: string | null | undefined, focus?: string) {
-  return navigate({
-    to: '/settings/$tab',
-    params: { tab },
-    search: { ...(session && { session }), ...(focus && { focus }) },
-  })
+/** Open Settings on `tab`; `focus` names a control the tab focuses (Memory: `model` | `spend`). */
+export function settings(navigate: Navigate, tab: SettingsTabId, focus?: string) {
+  return navigate({ to: '/settings/$tab', params: { tab }, search: focus ? { focus } : {} })
 }
 
 export type Ctx = {
@@ -409,7 +391,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     case '/title': {
-      if (!arg) return settings(navigate, 'loop', session)
+      if (!arg) return settings(navigate, 'helpers')
       const m = await api.set_title_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.titleModel, m)
       // 57 §0.9: the escalation model inherits it.
@@ -419,14 +401,14 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     }
     // 57 §0.9: tier 2 of the decision oracle; the server rejects ids that are not catalog entries.
     case '/escalate': {
-      if (!arg) return settings(navigate, 'loop', session)
+      if (!arg) return settings(navigate, 'helpers')
       const m = await api.set_escalate_model(arg === 'off' || arg === 'clear' ? null : arg)
       void active().qc.invalidateQueries({ queryKey: queryKeys.escalateModel })
       toast(m ? `escalation model: ${m.id}` : 'escalation model: off (inherits title model)')
       return
     }
     case '/subagent': {
-      if (!arg) return settings(navigate, 'chat', session)
+      if (!arg) return settings(navigate, 'models')
       const m = await api.set_subagent_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.subagentModel, m)
       toast(m ? `subagent model: ${m.id}` : 'subagent model: same as new sessions')
@@ -434,14 +416,14 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     }
     // 52 §3.2: the Agent loop dropdown's RPC and query; the server rejects unavailable/text-only ids.
     case '/vision': {
-      if (!arg) return settings(navigate, 'loop', session)
+      if (!arg) return settings(navigate, 'helpers')
       const m = await api.set_vision_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.visionModel, m)
       toast(m ? `vision fallback: ${m.id}` : 'vision fallback: off')
       return
     }
     case '/approvals': {
-      if (!arg) return settings(navigate, 'approvals', session)
+      if (!arg) return settings(navigate, 'approvals')
       if (sub !== 'on' && sub !== 'off')
         throw new Error(`/approvals: expected on|off, got ${JSON.stringify(sub)}`)
       if (rest && rest !== 'always')
@@ -454,7 +436,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     case '/communication': {
-      if (!arg) return settings(navigate, 'communication', session)
+      if (!arg) return settings(navigate, 'messaging')
       if (sub !== 'on' && sub !== 'off')
         throw new Error(`/communication: expected on|off, got ${JSON.stringify(sub)}`)
       if (rest && rest !== 'always')
@@ -472,14 +454,14 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     case '/peers':
-      need(session)
-      return settings(navigate, 'communication', session)
+      // 188: a chat's peer requests live in its Messaging… sheet.
+      return navigate({ to: '/c/$session', params: { session: need(session) }, search: { messaging: '1' } })
     // Mirror of the TUI entry (62 §5.1): a leading selector word presets the ticks, the rest prefills the message.
     case '/broadcast':
       if (sub === 'running' || sub === 'roots') return openBroadcastDialog({ preset: sub, text: rest })
       return openBroadcastDialog({ text: arg })
     case '/a2a': {
-      if (!arg) return settings(navigate, 'communication', session)
+      if (!arg) return settings(navigate, 'messaging')
       if (sub !== 'reload') throw new Error('usage: /a2a [reload]')
       const status = await api.reload_a2a()
       active().qc.setQueryData(queryKeys.a2a, status)
@@ -506,7 +488,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       }
       throw new Error('usage: /mcp [add <url|json> | sync]')
     case '/acp':
-      if (!arg) return settings(navigate, 'agents', session)
+      if (!arg) return settings(navigate, 'harnesses')
       if (sub === 'add' && rest) {
         const e = await api.add_acp(rest)
         toast(`added ${e.name}`)
@@ -583,7 +565,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       }
       return navigate({ to: '/knowledge', search: { q: arg } })
     case '/login': {
-      if (!arg) return settings(navigate, 'connections', session)
+      if (!arg) return settings(navigate, 'providers')
       // A provider name first, else an MCP server.
       const url = await api.login(arg).catch(() => api.mcp_login(arg))
       // Over link the daemon opens its own browser on the engine (31 §9); here the URL is only shown.
@@ -603,11 +585,11 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       toast(`logged out of ${arg}`)
       return
     case '/provider':
-      if (!arg) return settings(navigate, 'connections', session)
+      if (!arg) return settings(navigate, 'providers')
       if (sub === 'add') {
         const [name, after] = split(rest)
         const [url, key] = split(after)
-        if (!name || !url) return settings(navigate, 'connections', session)
+        if (!name || !url) return settings(navigate, 'providers')
         // 177: the key is optional; the engine refuses a missing one for a non-local URL ("api key is empty").
         await api.add_provider(name, url, key || null)
         providersChanged()
@@ -636,7 +618,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         return
       }
       if (sub === 'refresh') {
-        if (!rest) return settings(navigate, 'connections', session)
+        if (!rest) return settings(navigate, 'providers')
         toast(refreshedText(await api.refresh_provider_models(rest)))
         providersChanged()
         return
@@ -649,7 +631,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       }
       throw new Error('usage: /provider [add <name> <url> [key] | find | limits <provider> <model> <context> [output] | refresh <name> | rm <name>]')
     case '/aws': {
-      if (!arg) return settings(navigate, 'connections', session)
+      if (!arg) return settings(navigate, 'providers')
       const r = await api.set_aws_profile(arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.awsProfiles, r)
       toast(r.selected ? `bedrock: profile ${r.selected}` : `bedrock: AWS default chain (${r.default_profile})`)

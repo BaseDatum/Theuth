@@ -557,7 +557,7 @@ export function SessionMenu({ session }: { session: string }) {
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('prompt')}>Show prompt</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('jobs')}>Jobs</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void settings(navigate, 'communication', session)}>
+          <DropdownMenuItem onSelect={() => void settings(navigate, 'messaging')}>
             Communication &amp; peers…
           </DropdownMenuItem>
           {/* 183 §12.10: contacts live on this machine; a phone or iPad never shares (§12.8). */}
