@@ -1,4 +1,4 @@
-// 187: an MCP server's home machine and its state on this one, as Settings › MCP and the Tools page show them.
+// 187: an MCP server's home machine and its state on this one, as each server's row on Agents › Tools shows them (188 D2).
 // Pure: the mesh (for current machine names) comes in, nothing is fetched here.
 
 import { type Engine, UNNAMED_MACHINE } from '@/components/tasks/home'

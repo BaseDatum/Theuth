@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
-import { openUrl } from '@tauri-apps/plugin-opener'
 import { ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Fragment, useState } from 'react'
 import { toast } from 'sonner'
+import { type HomeAction, homeActions, homeChip, stateText } from '@/components/library/mcp-home'
 import { Column, Page } from '@/components/library/Page'
 import { segments } from '@/components/library/names'
 import { type Action, Dot, Empty, toastSync, useAction } from '@/components/settings/shared'
+import { type Engine, engines } from '@/components/tasks/home'
+import { useMesh } from '@/components/tasks/queries'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,13 +34,15 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
-import { stateText } from '@/lib/mcp-home'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { LOCAL, useEngines } from '@/link/engines'
 import type { Gate } from '@/rpc/bindings/Gate'
+import type { McpHomeAction } from '@/rpc/bindings/McpHomeAction'
 import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { McpToolInfo } from '@/rpc/bindings/McpToolInfo'
 import type { Risk } from '@/rpc/bindings/Risk'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
+import { useConnection } from '@/store/connection'
 
 /** `tui/model.rs::Switch`: on, hidden in this session, or `off` in `mcp/config.yaml`. */
 type SwitchState = 'on' | 'session' | 'always'
@@ -68,8 +72,10 @@ type Actions = {
   gate: Action<{ server: string; tool: string | null; gate: Gate | null }, null>
   hidden: Action<{ names: string[]; hidden: boolean }, null>
   switchTo: Action<{ server: McpServer; to: SwitchState }, void>
-  login: Action<string, void>
+  /** The sign-in URL when it must be opened on the node (over link), else null: it opened here. */
+  login: Action<string, string | null>
   logout: Action<string, null>
+  home: Action<{ server: string; action: McpHomeAction }, null>
   remove: Action<string, null>
   sync: Action<void, SyncResult[]>
   add: Action<string, string>
@@ -77,6 +83,7 @@ type Actions = {
 
 function useMcpActions(session: string | null): Actions {
   const api = useApi()
+  const active = useEngines((s) => s.active)
   const keys = [queryKeys.mcp(session), queryKeys.mcp(null)]
   return {
     gate: useAction(
@@ -106,8 +113,17 @@ function useMcpActions(session: string | null): Actions {
       },
       { keys },
     ),
-    login: useAction((server: string) => api.mcp_login(server).then((url) => openUrl(url))),
+    // As Settings' provider logins: over link the daemon opens its own browser on the engine (31 §9), so the URL is
+    // only shown here.
+    login: useAction(async (server: string) => {
+      const url = await api.mcp_login(server)
+      if (active !== LOCAL) return url
+      window.open(url, '_blank')
+      return null
+    }),
     logout: useAction((server: string) => api.mcp_logout(server), { keys }),
+    // 187: which machine runs it (`mcp/homes.yaml`).
+    home: useAction((v: { server: string; action: McpHomeAction }) => api.set_mcp_home(v.server, v.action), { keys }),
     remove: useAction((server: string) => api.remove_mcp_server(server), {
       keys,
     }),
@@ -126,14 +142,19 @@ function useMcpActions(session: string | null): Actions {
   }
 }
 
-/** `/tools`: the MCP servers (design doc 37 §4) — status, risk gates, login, per-tool overrides. `session`
- * (`?session=`) is the chat the page was opened from; the "off here" switches need one. */
+/** `/tools`: the MCP servers (design doc 37 §4) — status, risk gates, login, home machine (187), per-tool overrides.
+ * `session` (`?session=`) is the chat the page was opened from; the "off here" switches need one. */
 export function Tools({ session }: { session: string | null }) {
   const api = useApi()
   const servers = useQuery({
     queryKey: queryKeys.mcp(session),
     queryFn: () => api.list_mcp(session),
   })
+  // Under the `mcp` prefix: every `McpProgress` event refreshes it with the list.
+  const status = useQuery({ queryKey: ['mcp', 'status'], queryFn: () => api.mcp_status() })
+  const mesh = useMesh()
+  // Until the mesh answers, no home chip and no home actions: "on this machine" would flicker to the real name.
+  const machines = mesh.isPending ? null : engines(mesh.data)
   const act = useMcpActions(session)
   return (
     <Page
@@ -153,6 +174,11 @@ export function Tools({ session }: { session: string | null }) {
       }
     >
       <Column>
+        {status.data?.homes_problem && (
+          <p className="py-2 text-[13px] break-words text-destructive">
+            {status.data.homes_problem} — homes stay as they were and nothing is written until it reads again.
+          </p>
+        )}
         {servers.data?.length === 0 && (
           <Empty>
             No tool servers yet. An MCP server gives the harness tools (files, browsers, APIs…); add one with a git URL
@@ -160,7 +186,7 @@ export function Tools({ session }: { session: string | null }) {
           </Empty>
         )}
         {servers.data?.map((s) => (
-          <ServerRow key={s.name} server={s} session={session} act={act} />
+          <ServerRow key={s.name} server={s} session={session} machines={machines} act={act} />
         ))}
       </Column>
     </Page>
@@ -214,18 +240,23 @@ function AddPopover({ add }: { add: Actions['add'] }) {
 function ServerRow({
   server: s,
   session,
+  machines,
   act,
 }: {
   server: McpServer
   session: string | null
+  /** The mesh's engines; null until it answers. */
+  machines: Engine[] | null
   act: Actions
 }) {
   const [open, setOpen] = useState(false)
+  const [remote, setRemote] = useState<string | null>(null)
+  const engineName = useConnection((st) => st.info?.name)
   const sw = serverSwitch(s)
   const live = s.tools.some((t) => t.registered !== null)
   const on = sw !== 'always' && s.connected
   // 187: a server not running here says why (homed elsewhere, not installed here, …).
-  const status = sw === 'always' ? 'off' : s.connected ? 'connected' : s.auth === 'required' ? 'login required' : stateText(s, [])
+  const status = sw === 'always' ? 'off' : s.connected ? 'connected' : s.auth === 'required' ? 'login required' : stateText(s, machines ?? [])
   const sessionHint = !session ? 'Open a chat first' : !live ? 'Not connected' : undefined
   return (
     <Collapsible
@@ -254,6 +285,11 @@ function ServerRow({
                 ⟳ {s.repo}
               </Badge>
             )}
+            {machines && (
+              <Badge variant="outline" className="shrink-0 font-normal">
+                {homeChip(s, machines)}
+              </Badge>
+            )}
           </button>
         </CollapsibleTrigger>
         <Status on={on} label={status} className="hidden sm:flex" />
@@ -267,8 +303,7 @@ function ServerRow({
             <AlertDialogHeader>
               <AlertDialogTitle>Remove {s.name}?</AlertDialogTitle>
               <AlertDialogDescription>
-                Its entry is deleted from the config file, or disabled when the file holds other
-                servers
+                Its entry is deleted, or disabled when it is defined alongside other servers
                 {s.repo ? '; the clone stays on disk' : ''}.
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -305,23 +340,51 @@ function ServerRow({
           onChange={(gate) => act.gate.mutate({ server: s.name, tool: null, gate })}
         />
         {s.auth !== 'none' && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              s.auth === 'required' ? act.login.mutate(s.name) : act.logout.mutate(s.name)
-            }
-          >
-            {s.auth === 'required' ? 'Login' : 'Logout'}
-          </Button>
+          <>
+            {s.auth === 'logged_in' && <span className="text-[13px] text-fg-secondary">logged in</span>}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={act.login.isPending || act.logout.isPending}
+              onClick={() =>
+                s.auth === 'required' ? act.login.mutate(s.name, { onSuccess: setRemote }) : act.logout.mutate(s.name)
+              }
+            >
+              {s.auth === 'required' ? 'Log in' : 'Log out'}
+            </Button>
+          </>
         )}
+        {machines && homeActions(s, machines).map((a) => <HomeButton key={a.label} server={s.name} action={a} act={act} />)}
       </div>
+      {s.reason && <p className="mt-1 ml-6 text-[13px] break-words text-fg-tertiary">{s.reason}</p>}
+      {remote && s.auth === 'required' && (
+        <p className="mt-1 ml-6 text-[13px] text-fg-secondary">
+          Sign in from the node ({engineName ?? 'node'}):{' '}
+          <code className="select-all break-all font-mono text-xs">{remote}</code>
+        </p>
+      )}
       <CollapsibleContent className="mt-2 ml-6">
         {s.tools.map((t) => (
           <ToolRow key={t.name} server={s.name} tool={t} session={session} act={act} />
         ))}
       </CollapsibleContent>
     </Collapsible>
+  )
+}
+
+/** 187: one of a row's home actions (Run everywhere, Only on <home>, Move home here, Turn off / on here). */
+function HomeButton({ server, action: a, act }: { server: string; action: HomeAction; act: Actions }) {
+  return (
+    <Button
+      size="sm"
+      variant={a.pressed ? 'secondary' : 'outline'}
+      aria-pressed={a.pressed}
+      className="pointer-coarse:min-h-11"
+      disabled={act.home.isPending}
+      onClick={() => act.home.mutate({ server, action: a.action })}
+    >
+      {a.label}
+    </Button>
   )
 }
 
