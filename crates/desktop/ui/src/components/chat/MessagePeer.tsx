@@ -187,9 +187,10 @@ function Provenance({ origin, seq, session, request, contact }: { origin: PeerOr
           {errorText(record.error)}
         </p>
       ) : null}
+      {/* 188: the chat's Messaging… sheet, focused on this request; a link, so it works from any transcript. */}
       <Button asChild variant="link" size="xs" className={cn('mt-1 px-0', TOUCH)}>
-        <Link to="/settings/$tab" params={{ tab: 'communication' }} search={{ session, peer: origin.id }}>
-          Open in Communication
+        <Link to="/c/$session" params={{ session }} search={{ messaging: '1', peer: origin.id }}>
+          Open in Messaging
         </Link>
       </Button>
     </div>

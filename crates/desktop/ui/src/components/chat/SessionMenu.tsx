@@ -53,7 +53,8 @@ import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { useModels } from './ModelMenu'
-import { type Ctx, openSurface, run, settings, type Surface, surfaceOf } from './slash'
+import { useMessagingSheet } from './messaging-sheet'
+import { type Ctx, openSurface, run, type Surface, surfaceOf } from './slash'
 import { PopoutTerminalButton } from './TerminalViewer'
 
 /** One row of the ⋯ menu's settings block (183 §12.2, mock panel 3), in order; `move` is 181's Move to ▸. */
@@ -557,9 +558,7 @@ export function SessionMenu({ session }: { session: string }) {
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('prompt')}>Show prompt</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('jobs')}>Jobs</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void settings(navigate, 'communication', session)}>
-            Communication &amp; peers…
-          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => useMessagingSheet.getState().show(session)}>Messaging…</DropdownMenuItem>
           {/* 183 §12.10: contacts live on this machine; a phone or iPad never shares (§12.8). */}
           {hasLocal() && <SharingItems session={session} onShare={() => setShare(true)} />}
         </DropdownMenuContent>

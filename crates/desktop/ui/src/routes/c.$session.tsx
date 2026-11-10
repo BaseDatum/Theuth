@@ -8,6 +8,7 @@ import { AdvisorPill } from '@/components/chat/AdvisorPill'
 import { useAdvisor } from '@/components/chat/advisor'
 import { CodeMapPane } from '@/components/codemap/CodeMapHost'
 import { Composer } from '@/components/chat/Composer'
+import { messagingSearch, type MessagingSearch, useMessagingSheet, withoutMessaging } from '@/components/chat/messaging-sheet'
 import { Header } from '@/components/chat/Header'
 import { ObservedBar } from '@/components/chat/ObservedBar'
 import { LinkBanner } from '@/components/link/LinkFailure'
@@ -38,14 +39,13 @@ import { KernelStrip } from '@/components/cells/KernelStrip'
 /** `seq`: a search hit's stored message seq (49 §7); anything but a safe non-negative integer is dropped.
  * `cell` (171 §14.3): `theuth://c/<session>?cell=<name|ordinal>` — the cell to scroll to and focus.
  * `messaging=1` (188): open this chat's Messaging… sheet; `peer` also focuses that pending peer request (a message id). */
-type Search = { seq?: number; cell?: string; messaging?: '1'; peer?: string }
+type Search = { seq?: number; cell?: string } & MessagingSearch
 
 export const Route = createFileRoute('/c/$session')({
   validateSearch: (s: Record<string, unknown>): Search => ({
     ...(typeof s.seq === 'number' && Number.isSafeInteger(s.seq) && s.seq >= 0 ? { seq: s.seq } : {}),
     ...((typeof s.cell === 'string' || typeof s.cell === 'number') && /^[a-z0-9-]{1,48}$/.test(String(s.cell)) ? { cell: String(s.cell) } : {}),
-    ...(s.messaging === '1' || s.messaging === 1 ? { messaging: '1' as const } : {}),
-    ...(typeof s.peer === 'string' && s.peer ? { peer: s.peer } : {}),
+    ...messagingSearch(s),
   }),
   component: SessionRoute,
 })
@@ -62,10 +62,17 @@ type ReloadDetail = { session?: string; settled?: boolean }
  * tree is not mounted under `seq`, so nothing loads or appends to the canonical tail behind the preview. */
 function SessionRoute() {
   const { session } = Route.useParams()
-  const { seq, cell } = Route.useSearch()
+  const { seq, cell, messaging, peer } = Route.useSearch()
+  const navigate = useNavigate()
   // The URL names the focused pane: a sidebar click lands in it, a pane press moves the URL to it.
   useEffect(() => usePanes.getState().show(session), [session])
   useEffect(() => (cell === undefined ? undefined : scrollToCell(cell)), [session, cell])
+  // 188: open the chat's Messaging… sheet once, then drop the params so a reload does not reopen it.
+  useEffect(() => {
+    if (messaging !== '1') return
+    useMessagingSheet.getState().show(session, peer)
+    void navigate({ to: '/c/$session', params: { session }, search: withoutMessaging, replace: true })
+  }, [session, messaging, peer, navigate])
   if (seq !== undefined) return <SearchSession key={`${session}:${seq}`} session={session} seq={seq} />
   // A draft leaf (a dropped New chat) has no session yet; it renders the `/` body until its first send.
   return (
