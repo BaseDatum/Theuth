@@ -46,7 +46,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessageReasoning id={entry.id} text={entry.text} done={entry.done} ms={entry.ms} />
     case 'tool': {
       // Sky 2026-11-10: a send is its own card with its delivery track.
-      const card = entry.name === 'send_message' ? <SendCard tool={entry} session={session} at={entry.at} /> : <MessageTool tool={entry} session={session} readOnly={readOnly} />
+      const card = entry.name === 'send_message' ? <SendCard tool={entry} session={session} at={entry.at} readOnly={readOnly} /> : <MessageTool tool={entry} session={session} readOnly={readOnly} />
       // 183 §12.4: a resumed batch's restart note is its own card above the call, never raw XML in the result.
       return entry.restart ? (
         <>
@@ -59,7 +59,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
     }
     case 'peer': {
       // The remove control sits in the card's header row (after the time), never over the outside band.
-      const ctx = readOnly ? undefined : entry.context
+      // A removed row's archived original (shown under its tombstone) is already outside the context: no control.
+      const ctx = readOnly || entry.context?.removed ? undefined : entry.context
       const remove = ctx ? (
         <RemoveButton
           session={session}
@@ -287,7 +288,8 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
 }
 
 /** One transcript row: the entry's card plus the prompts waiting on it. Entries are immutable and `session` is stable, so `memo` skips untouched rows.
- * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool/peer/engine cards get it from `Card`.
+ * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool and
+ * engine cards get it from `Card`, a peer card draws it in its own header (`MessagePeer` `remove`).
  * `readOnly` drops every control that would edit the session or its context; `reveal` opens a removed row's archive at once.
  * Every disclosure inside is scoped by the entry id (`DisclosureScope`, 171F B13). */
 export const Message = memo(function Message({

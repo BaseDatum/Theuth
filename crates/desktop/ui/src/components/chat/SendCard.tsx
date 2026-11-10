@@ -113,9 +113,10 @@ function Answer({ label, text, outside, part, at, onJump }: { label: string; tex
  * truth for its state and reply. It is fetched while not terminal, and for every `replied` receipt of a fan-out. A
  * lone recipient's answer: `receipt.reply`, else the reply text, else the incoming message whose `reply_to` is this id,
  * with a jump to its card (a `useTranscriptJump` request the transcript carries out). Several recipients: one chip and
- * one answer each. Details: what was sent and the raw output.
+ * one answer each. Details: what was sent and the raw output. `readOnly` (search's Earlier messages): no jump, as no
+ * live transcript of it is there to scroll.
  */
-export function SendCard({ tool, session, at }: { tool: Tool; session: string; at?: number }) {
+export function SendCard({ tool, session, at, readOnly }: { tool: Tool; session: string; at?: number; readOnly?: boolean }) {
   const api = useApi()
   const args = (tool.args ?? {}) as { to?: unknown; message?: unknown }
   const message = typeof args.message === 'string' ? args.message : ''
@@ -219,15 +220,16 @@ export function SendCard({ tool, session, at }: { tool: Tool; session: string; a
               outside={outside}
               part="send-answer"
               at={answer?.at}
-              onJump={answer ? () => useTranscriptJump.getState().request(session, answer.id) : undefined}
+              onJump={answer && !readOnly ? () => useTranscriptJump.getState().request(session, answer.id) : undefined}
             />
           ) : null}
         </>
       ) : (
         <>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {chips.map((r) => (
-              <Chip key={`${r.id}-${r.name}`} tone={r.track.tone} title={r.track.note}>
+            {/* Index in the key: two spellings of one peer refused in one fan-out share the nil id and a label. */}
+            {chips.map((r, i) => (
+              <Chip key={`${i}-${r.id}-${r.name}`} tone={r.track.tone} title={r.track.note}>
                 {r.name} · {r.track.word}
               </Chip>
             ))}
@@ -245,7 +247,7 @@ export function SendCard({ tool, session, at }: { tool: Tool; session: string; a
               title={p.names.length > 1 ? p.names.join(', ') : undefined}
             />
           ))}
-          {rows.map((r) => (r.reply ? <Answer key={`${r.id}-${r.name}-answer`} label={`Answer from ${r.name}`} text={r.reply} outside={outside} part={`send-answer-${r.id}`} /> : null))}
+          {rows.map((r, i) => (r.reply ? <Answer key={`${i}-${r.id}-answer`} label={`Answer from ${r.name}`} text={r.reply} outside={outside} part={`send-answer-${r.id}`} /> : null))}
         </>
       )}
       {unexpected ? <p className="mt-2 text-xs text-fg-secondary">Some recipients' outcomes could not be read here: see Details.</p> : null}
@@ -264,8 +266,8 @@ export function SendCard({ tool, session, at }: { tool: Tool; session: string; a
             <>
               <span>Recipients</span>
               <ul className="flex flex-col gap-0.5 rounded-lg bg-layer-2 p-3 text-foreground">
-                {rows.map((r) => (
-                  <li key={`${r.id}-${r.name}`} className="wrap-anywhere">
+                {rows.map((r, i) => (
+                  <li key={`${i}-${r.id}-${r.name}`} className="wrap-anywhere">
                     <b className="font-semibold">{r.name}</b> · {r.track.word}
                     {r.track.note ? <span className="text-fg-secondary"> · {r.track.note}</span> : null}
                   </li>

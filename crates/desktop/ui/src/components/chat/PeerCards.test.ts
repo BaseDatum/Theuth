@@ -174,7 +174,7 @@ test('the answer selector returns the same entry object across a TextDelta, so a
 })
 
 type Peer = Extract<Entry, { kind: 'peer' }>
-const peer = (id: string, text: string, at: number): Peer => ({ id, kind: 'peer', from: `session:${KID}`, text, at, origin: { id: `m-${id}`, from: `session:${KID}`, reply_to: null, scope: null } })
+const peer = (id: string, text: string, at: number, replyTo: string | null = null): Peer => ({ id, kind: 'peer', from: `session:${KID}`, text, at, origin: { id: `m-${id}`, from: `session:${KID}`, reply_to: replyTo, scope: null } })
 
 test('a folded group: one header, one line per message, a repeat marked, a clicked line opens its card', () => {
   const run = [peer('p1', 'DONE Z3-R4 e815e520\nmore', 0), peer('p2', 'HANDOFF WRITTEN', 60_000), peer('p3', ' HANDOFF   WRITTEN ', 60_000)]
@@ -268,6 +268,26 @@ test('jump: a request is consumed once per nonce, by its own session only; a fol
   expect(takeJump('s', rows)).toBeNull()
   expect(toast.message).toHaveBeenCalledWith("The answer isn't loaded in this view")
   expect(useTranscriptJump.getState().entryId).toBeNull()
+})
+
+test('jump: a request older than the TTL is dropped, never served to a later mount', () => {
+  vi.mocked(toast.message).mockClear()
+  const rows = rowsOf([say('a1'), peer('p1', 'answer', 0)])
+  useTranscriptJump.getState().request('s', 'p1')
+  const at = useTranscriptJump.getState().at
+  expect(takeJump('s', rows, at + 3_001)).toBeNull()
+  expect(useTranscriptJump.getState().entryId).toBeNull()
+  expect(toast.message).not.toHaveBeenCalled()
+  useTranscriptJump.getState().request('s', 'p1')
+  expect(takeJump('s', rows, useTranscriptJump.getState().at + 2_000)?.index).toBe(1)
+})
+
+test('an archived peer original under its tombstone draws no remove control', () => {
+  const context = { target: { kind: 'message', seq: 3 }, active: false, removed: true, remove_with: [], attachments: [] } as Entry['context']
+  useToolRuns.setState({ disclosed: { [disclosureKey('t1', 'tombstone')]: true } })
+  const html = render(h(Message, { entry: { id: 't1', kind: 'peer', from: 'peer:lab', text: 'archived words', context }, prompts: null, session: 's' }))
+  expect(html).toContain('archived words')
+  expect(html).not.toContain('aria-label="Remove from context"')
 })
 
 test('jump: the request outlives the send card, and the fine-tune centres and marks the card once it mounts and the scroller holds still', () => {

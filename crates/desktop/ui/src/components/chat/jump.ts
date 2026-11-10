@@ -7,10 +7,12 @@ import type { Entry } from '@/store/sessions'
 import type { Row } from './rows'
 
 type JumpStore = {
-  /** The session whose transcript should scroll, and the entry to bring into view; `nonce` makes each click a new request. */
+  /** The session whose transcript should scroll, and the entry to bring into view; `nonce` makes each click a new
+   * request, `at` (ms) when it was made. */
   session: string | null
   entryId: string | null
   nonce: number
+  at: number
   request(session: string, entryId: string): void
   clear(): void
 }
@@ -19,9 +21,13 @@ export const useTranscriptJump = create<JumpStore>()((set) => ({
   session: null,
   entryId: null,
   nonce: 0,
-  request: (session, entryId) => set((s) => ({ session, entryId, nonce: s.nonce + 1 })),
+  at: 0,
+  request: (session, entryId) => set((s) => ({ session, entryId, nonce: s.nonce + 1, at: Date.now() })),
   clear: () => set({ session: null, entryId: null }),
 }))
+
+/** A request no transcript took within this long is stale: a later mount of that chat must not jump by surprise. */
+export const JUMP_TTL_MS = 3_000
 
 export const NOT_LOADED = "The answer isn't loaded in this view"
 
@@ -35,10 +41,11 @@ export function jumpIndex(rows: readonly Row[], entryId: string): number {
  * of the same session (or a re-render) never repeats it. A folded peer group's line is opened first, so its card
  * mounts with the row. `null`: nothing pending here, or no row holds the entry (the toast says so).
  */
-export function takeJump(session: string, rows: readonly Row[]): { index: number; entry: Entry } | null {
-  const { session: target, entryId, clear } = useTranscriptJump.getState()
+export function takeJump(session: string, rows: readonly Row[], now = Date.now()): { index: number; entry: Entry } | null {
+  const { session: target, entryId, at, clear } = useTranscriptJump.getState()
   if (target !== session || entryId === null) return null
   clear()
+  if (now - at > JUMP_TTL_MS) return null
   const index = jumpIndex(rows, entryId)
   const row = rows[index]
   const entry = row && ('entry' in row ? row.entry : 'run' in row ? row.run.find((e) => e.id === entryId) : undefined)
