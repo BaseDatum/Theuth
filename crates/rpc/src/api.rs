@@ -91,9 +91,9 @@ use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
     AskRequested, CancelJob, CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
-    JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpLogin, McpLogout, McpProgress,
-    McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate, SetHidden,
-    SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
+    JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpHomeAction, McpLogin,
+    McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals,
+    SetGate, SetHidden, SetMcpHome, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
 };
 use tools::{
     Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
@@ -845,6 +845,10 @@ pub trait Api {
         tool: Option<String>,
         gate: Option<Gate>,
     ) -> RpcResult<()>;
+    /// 187: where a server runs — `run_everywhere`, `only_home`, `move_here`,
+    /// `off_here`, `on_here` (this engine); persists to `mcp/homes.yaml`, which replicates.
+    #[method(name = "set_mcp_home")]
+    async fn set_mcp_home(&self, server: String, action: McpHomeAction) -> RpcResult<()>;
     /// Hide (or show again) registered tools for one session and its
     /// subagents, in memory: absent from the model's tool list, `unknown tool`
     /// when called. The persistent form is `set_mcp_gate(.., Some(Off))`.
@@ -3275,28 +3279,52 @@ impl Server {
 
     /// 183 §5.6: wait, at most [`CREATED_ROW_WAIT`], for a session `engine`
     /// just created to replicate here (§13 row 11: on timeout the caller
-    /// answers anyway; calls for it are forwarded by id meanwhile).
+    /// answers anyway; calls for it are forwarded by id meanwhile). A row
+    /// still missing after [`CREATED_ROW_LAG`] is a WARN: normal replication
+    /// takes a few seconds and logs nothing.
     async fn wait_for_row(&self, session: SessionId, engine: &str) {
         let Ok(store) = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await else {
             return;
         };
-        let deadline = Instant::now() + CREATED_ROW_WAIT;
-        while Instant::now() < deadline {
-            if store.session(session).await.ok().flatten().is_some() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if row_within(&store, session, CREATED_ROW_WAIT).await {
+            return;
         }
-        tracing::warn!(
-            "sessions: new row {session} from {engine} not here after {}s; forwarding by id",
-            CREATED_ROW_WAIT.as_secs()
-        );
+        let engine = engine.to_owned();
+        tokio::spawn(async move {
+            if !row_within(&store, session, CREATED_ROW_LAG - CREATED_ROW_WAIT).await {
+                tracing::warn!(
+                    "sessions: new row {session} from {engine} not here after {}s; forwarding by id",
+                    CREATED_ROW_LAG.as_secs()
+                );
+            }
+        });
+    }
+}
+
+/// `session`'s row is in `store` within `wait` (polled every 100 ms).
+async fn row_within(
+    store: &agent::store::Store,
+    session: SessionId,
+    wait: std::time::Duration,
+) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if store.session(session).await.ok().flatten().is_some() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 
 /// 183 §5.6: how long `create_session{engine}` waits for the new row before it
 /// answers (the chat works by id meanwhile; the wait only spares a lookup).
 const CREATED_ROW_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// 183 §5.6: a new row from another engine not here after this long is a WARN.
+const CREATED_ROW_LAG: std::time::Duration = std::time::Duration::from_secs(6);
 
 pub(crate) fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
     match ActorRef::<A>::lookup(name) {
@@ -5926,6 +5954,10 @@ impl ApiServer for Server {
         gate: Option<Gate>,
     ) -> RpcResult<()> {
         ask::<Mcp, _>(tools::MCP_ACTOR, SetGate { server, tool, gate }).await
+    }
+
+    async fn set_mcp_home(&self, server: String, action: McpHomeAction) -> RpcResult<()> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, SetMcpHome { server, action }).await
     }
 
     async fn set_mcp_hidden(
@@ -10264,7 +10296,9 @@ impl ApiServer for Server {
                     Some(set)
                 }
                 (Some(root), _) => {
-                    self.authorize(ext, root).await?;
+                    // 183 §5.6: a chat just created elsewhere streams through the
+                    // follow guard below (by id until its row lands).
+                    self.authorize_fwd(ext, root).await?;
                     None
                 }
                 _ => None,

@@ -5,7 +5,9 @@
 //! tool, or turns it `off` (design docs 01 §1.4, 12 §5). A tool's default risk
 //! comes from its `ToolAnnotations`. `<data_dir>/mcp/repos/` holds git clones
 //! of server sources; an entry's `cwd` resolves against the mcp dir (design
-//! doc 04 §3).
+//! doc 04 §3). `<data_dir>/mcp/homes.yaml` names each server's home engine:
+//! the directory replicates to every mesh engine, but a server runs only at
+//! home unless it runs everywhere; a failed start backs off (design doc 187).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -45,6 +47,11 @@ mod tools;
 /// legacy `initialize` after rmcp's 10 s discover probe) + `tools/list` by then
 /// is dropped and recorded as a connect error; the next reconcile retries it.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// 187: the first retry after a failed start; it doubles per failure up to [`RETRY_CAP`].
+const RETRY_FIRST: Duration = Duration::from_secs(30);
+const RETRY_CAP: Duration = Duration::from_secs(30 * 60);
+/// 187: the theuth-owned sidecar naming each server's home (replicates with the directory).
+const HOMES: &str = "homes.yaml";
 
 /// How to reach a server; the normalised form of one file entry.
 #[derive(Clone, Debug, PartialEq)]
@@ -431,6 +438,213 @@ fn load_gates(path: &Path) -> Gates {
     }
 }
 
+/// 187: `<data_dir>/mcp/homes.yaml`, keyed by server name so every file shape
+/// works and third-party files stay untouched. Machine-written; replicates
+/// with the directory (one row, last writer wins: a lost claim is made again
+/// by the next reconcile of the engine it belongs to).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Homes {
+    servers: BTreeMap<String, Home>,
+}
+
+/// One server's line in [`Homes`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Home {
+    /// Mesh engine id of the home; `None` until an engine claims it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine: Option<String>,
+    /// The home's name when it was stamped; display only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// Run on every engine, not only at home.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    everywhere: bool,
+    /// Engines it is turned off on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    off: Vec<String>,
+}
+
+impl Homes {
+    fn engine(&self, server: &str) -> Option<&str> {
+        self.servers.get(server)?.engine.as_deref()
+    }
+}
+
+/// Missing = no homes. Unreadable or unparsable is an error: the caller keeps
+/// what it had and writes nothing, so a typo never drops homes mesh-wide.
+fn load_homes(dir: &Path) -> Result<Homes, String> {
+    let path = dir.join(HOMES);
+    match std::fs::read_to_string(&path) {
+        Ok(t) => serde_yaml::from_str::<Option<Homes>>(&t)
+            .map(Option::unwrap_or_default)
+            .map_err(|e| format!("{} is invalid: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Homes::default()),
+        Err(e) => Err(format!("{} is unreadable: {e}", path.display())),
+    }
+}
+
+/// Dotfile temp then rename: the watcher and the mirror never read a half file.
+fn write_homes(dir: &Path, homes: &Homes) -> Result<(), String> {
+    let text = serde_yaml::to_string(homes).map_err(|e| e.to_string())?;
+    let path = dir.join(HOMES);
+    let tmp = dir.join(format!(".{HOMES}.tmp"));
+    std::fs::write(&tmp, text)
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// 187: this engine as the mesh names it — the id a [`Home`] holds, and the
+/// name shown for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Machine {
+    /// Mesh engine id.
+    id: String,
+    /// Display name (`mesh.name`, else the hostname).
+    name: String,
+}
+
+static MACHINE: parking_lot::RwLock<Option<Machine>> = parking_lot::RwLock::new(None);
+
+/// 187: name this engine for MCP homes. `t` calls it before the plugins start
+/// (from the stored mesh identity), the mesh plugin at start and on a rename.
+/// Never called (no mesh): every server runs here and none is claimed.
+pub fn set_machine(id: &str, name: &str) {
+    let m = Machine {
+        id: id.to_owned(),
+        name: name.to_owned(),
+    };
+    *MACHINE.write() = Some(m.clone());
+    if let Ok(Some(mcp)) = ActorRef::<Mcp>::lookup(MCP_ACTOR)
+        && let Ok(rt) = tokio::runtime::Handle::try_current()
+    {
+        rt.spawn(async move {
+            let _ = mcp.tell(SetMachine(m)).await;
+        });
+    }
+}
+
+fn machine() -> Option<Machine> {
+    MACHINE.read().clone()
+}
+
+/// This engine's paired peers (mesh ids, `mesh` `Net::paired_ids`); `None` = unknown (no endpoint yet).
+type Paired = fn() -> Option<Vec<String>>;
+
+static PAIRED: std::sync::OnceLock<Paired> = std::sync::OnceLock::new();
+
+/// 187: the mesh plugin hands over its paired set at start, so a server whose
+/// home is not paired here runs on one engine still in the mesh.
+pub fn set_paired_check(f: Paired) {
+    let _ = PAIRED.set(f);
+}
+
+fn paired() -> Option<Vec<String>> {
+    PAIRED.get().and_then(|f| f())
+}
+
+/// 187: the mesh plugin calls this when the paired set changed: homes on an
+/// engine that left (or came back) are placed again.
+pub fn peers_changed() {
+    if let Ok(Some(mcp)) = ActorRef::<Mcp>::lookup(MCP_ACTOR)
+        && let Ok(rt) = tokio::runtime::Handle::try_current()
+    {
+        rt.spawn(async move {
+            let _ = mcp.tell(Reconcile).await;
+        });
+    }
+}
+
+/// Where a wanted server stands on this engine, before any connect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    Here,
+    /// Its home is not paired here (it left, or a peer row not applied yet)
+    /// and this engine is the lowest id among itself and its peers: it runs
+    /// here, written nowhere, so a re-pair gives it back.
+    Adopted,
+    /// Its home is another engine (or nobody claimed it yet) and it does not run everywhere.
+    Elsewhere,
+    /// Turned off on this engine.
+    OffHere,
+}
+
+impl Place {
+    fn runs(self) -> bool {
+        matches!(self, Place::Here | Place::Adopted)
+    }
+}
+
+/// No machine (no mesh) = here: a lone engine runs everything. `peers` is
+/// this engine's paired set (`None` = unknown: a home is then never adopted).
+fn place(home: Option<&Home>, me: Option<&Machine>, peers: Option<&[String]>) -> Place {
+    let Some(me) = me else {
+        return Place::Here;
+    };
+    match home {
+        Some(h) if h.off.contains(&me.id) => Place::OffHere,
+        Some(h) if h.everywhere || h.engine.as_deref() == Some(me.id.as_str()) => Place::Here,
+        Some(Home {
+            engine: Some(e), ..
+        }) if peers.is_some_and(|p| !p.contains(e) && p.iter().all(|p| me.id < *p)) => {
+            Place::Adopted
+        }
+        _ => Place::Elsewhere,
+    }
+}
+
+/// 187: may this engine claim a server without a home? `writer` is its
+/// file's replica row: `None` = no row, so the file appeared here (a peer's
+/// file is a row before it is a file); `Some(None)` = a row whose writer is
+/// unknown, never claimed; else the row's last writer decides.
+fn written_here(writer: Option<&Option<replica::PeerId>>, mine: Option<&replica::PeerId>) -> bool {
+    match writer {
+        None => true,
+        Some(w) => w.is_some() && w.as_ref() == mine,
+    }
+}
+
+/// What `mcp: <name> home is <…>` says.
+fn home_text(home: Option<&Home>, me: Option<&Machine>) -> String {
+    let Some(me) = me else {
+        return "this machine (no mesh)".to_owned();
+    };
+    let mut text = match home.and_then(|h| Some((h.engine.as_deref()?, h.name.as_deref()))) {
+        Some((id, _)) if id == me.id => me.name.clone(),
+        Some((id, name)) => name.map_or_else(|| format!("engine {id}"), str::to_owned),
+        // Another engine wrote it, or the claim round could not read the replica.
+        None => "not claimed yet".to_owned(),
+    };
+    if home.is_some_and(|h| h.everywhere) {
+        text.push_str(", runs everywhere");
+    }
+    text
+}
+
+/// 187: a start that failed because the command (or its `cwd`) is not on this
+/// machine: the reason, else `None`.
+fn missing_here(spec: &ServerSpec, e: &anyhow::Error, machine: &str) -> Option<String> {
+    let Transport::Stdio { command, cwd, .. } = &spec.transport else {
+        return None;
+    };
+    let enoent = e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    });
+    enoent.then(|| match cwd {
+        Some(c) if !c.is_dir() => format!("{} does not exist on {machine}", c.display()),
+        _ => format!("{} is not installed on {machine}", secrets::redact(command)),
+    })
+}
+
+/// Wait after the `failures`-th failure in a row: 30 s, doubling, capped at 30 min.
+fn backoff(failures: u32) -> Duration {
+    RETRY_FIRST
+        .saturating_mul(1 << failures.saturating_sub(1).min(16))
+        .min(RETRY_CAP)
+}
+
 /// Risk from the remote tool's annotations: `read_only_hint` → read-only,
 /// `destructive_hint` → destructive, else mutating. rmcp's
 /// `is_destructive()` reads an *unset* hint as destructive; we do not (12 §5):
@@ -600,6 +814,8 @@ struct State {
     /// Servers with a connect task in flight.
     pending: HashSet<String>,
     gates: Gates,
+    /// `homes.yaml` as of the last reconcile (plus this engine's claims).
+    homes: Homes,
     /// Native tool names; always win a clash.
     natives: HashSet<String>,
     /// Last connect / list_tools failure per desired server; cleared on success
@@ -608,6 +824,30 @@ struct State {
     /// Servers that answered 401 on connect: the `WWW-Authenticate` challenge,
     /// consumed by [`McpLogin`]. Cleared with `errors`.
     login: HashMap<String, String>,
+    /// 187: failed starts waiting out their backoff; dropped when the entry
+    /// changes or the server stops being wanted here.
+    retry: HashMap<String, Retry>,
+    /// 187: the state each server was last logged in, so a line is written per change, not per attempt.
+    said: HashMap<String, String>,
+    /// 187: the home each server was last logged with (`mcp: <name> home is <machine>`).
+    told: HashMap<String, String>,
+    /// 187: why `homes.yaml` or the replica could not be read, logged once
+    /// per distinct problem; `None` while both read fine.
+    unreadable: Option<String>,
+    /// 187: when the one pending reconcile for `unreadable` fires.
+    unreadable_retry: Option<tokio::time::Instant>,
+    /// 187: servers running here while their home is not paired (logged once each).
+    adopted: HashSet<String>,
+}
+
+/// 187: a failed start and when the next one may run.
+struct Retry {
+    spec: ServerSpec,
+    /// Failures in a row.
+    failures: u32,
+    due: tokio::time::Instant,
+    /// `Some(reason)`: the command (or `cwd`) is not on this machine.
+    unavailable: Option<String>,
 }
 
 /// Event: a reconcile snapshot, published every time a server changes state
@@ -625,6 +865,9 @@ pub struct McpProgress {
     pub connected: Vec<String>,
     /// Servers whose last connect failed, sorted.
     pub failed: Vec<String>,
+    /// 187: why `mcp/homes.yaml` (or the replica) could not be read; homes stay
+    /// as they were and nothing is written to it until it reads again.
+    pub homes_problem: Option<String>,
 }
 
 /// The MCP actor. Look up with `ActorRef::<Mcp>::lookup(MCP_ACTOR)`.
@@ -639,7 +882,16 @@ pub struct Mcp {
     /// to show what a tool's risk resolves to ([`McpToolInfo::action`]).
     policy: Policy,
     rt: Runtime,
+    /// 187: this engine ([`set_machine`]); `None` without a mesh.
+    machine: Option<Machine>,
+    /// 187: this engine's replica origin, read once `replica.sqlite` exists.
+    origin: Option<replica::PeerId>,
+    /// 187: `mesh::is_paired` ([`set_paired_check`]); `None` = unknown.
+    paired: Paired,
 }
+
+/// `tell` from [`set_machine`]: this engine's id or name, then reconcile.
+struct SetMachine(Machine);
 
 /// `tell` from the watcher: re-read `<data_dir>/mcp` and apply.
 struct Reconcile;
@@ -775,6 +1027,68 @@ pub struct McpServer {
     pub repo: Option<String>,
     /// OAuth standing (design doc 05 §3.1).
     pub auth: McpAuth,
+    /// 187: mesh engine id of the home; `None` while no engine claimed it, or without a mesh.
+    pub home: Option<String>,
+    /// The home's name when it was stamped (a UI prefers the mesh's current name).
+    pub home_name: Option<String>,
+    /// The home is this engine (always, without a mesh).
+    pub home_here: bool,
+    /// Runs on every engine, not only at home.
+    pub everywhere: bool,
+    /// What the server does on this engine.
+    pub state: McpState,
+    /// Why, for `unavailable_here` and `error`.
+    pub reason: Option<String>,
+}
+
+/// 187: a server's state on the engine asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum McpState {
+    /// Connected; its tools are registered here.
+    Running,
+    /// A start is in flight.
+    Connecting,
+    /// Not started here: its home is another engine.
+    Elsewhere,
+    /// Turned off on this engine ([`McpHomeAction::OffHere`]).
+    OffHere,
+    /// `off` in `mcp/config.yaml`, on every engine.
+    Off,
+    /// Its command (or `cwd`) is not on this machine; retried with backoff.
+    UnavailableHere,
+    /// The last start failed; retried with backoff.
+    Error,
+}
+
+/// 187: what [`SetMcpHome`] does to a server's line in `mcp/homes.yaml`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum McpHomeAction {
+    /// Start it on every engine.
+    RunEverywhere,
+    /// Start it at home only.
+    OnlyHome,
+    /// Make this engine its home.
+    MoveHere,
+    /// Never start it on this engine.
+    OffHere,
+    /// Undo [`McpHomeAction::OffHere`].
+    OnHere,
+}
+
+/// `ask` → `Result<(), String>`: apply `action` to `server`'s home line,
+/// rewrite `mcp/homes.yaml` (it replicates), reconcile now. Err for a name
+/// no file wants, or on an engine without a mesh.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SetMcpHome {
+    /// Server name.
+    pub server: String,
+    /// What to change.
+    pub action: McpHomeAction,
 }
 
 /// One remote tool of a connected server.
@@ -838,6 +1152,33 @@ impl Mcp {
             })
             .unwrap_or_default();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
+        let home = state.homes.servers.get(&name);
+        let me = self.machine.as_ref();
+        let retry = state.retry.get(&name);
+        let (run, reason) = if state.gates.server_off(&name) {
+            (McpState::Off, None)
+        } else if running.is_some() {
+            (McpState::Running, None)
+        } else {
+            match place(home, me, (self.paired)().as_deref()) {
+                Place::Elsewhere => (McpState::Elsewhere, None),
+                Place::OffHere => (McpState::OffHere, None),
+                Place::Here | Place::Adopted if state.pending.contains(&name) => {
+                    (McpState::Connecting, None)
+                }
+                Place::Here | Place::Adopted => match (
+                    retry.and_then(|r| r.unavailable.clone()),
+                    state.errors.get(&name),
+                ) {
+                    (Some(why), _) => (
+                        McpState::UnavailableHere,
+                        Some(secrets::redact(&why).into_owned()),
+                    ),
+                    (None, Some(e)) => (McpState::Error, Some(secrets::redact(e).into_owned())),
+                    (None, None) => (McpState::Connecting, None),
+                },
+            }
+        };
         McpServer {
             connected: running.is_some(),
             gate: state.gates.for_server(&name),
@@ -853,6 +1194,13 @@ impl Mcp {
                 .map(|r| &r.spec)
                 .or(spec)
                 .and_then(|s| repo_of(&self.dir, s)),
+            home: home.and_then(|h| h.engine.clone()),
+            home_name: home.and_then(|h| h.name.clone()),
+            home_here: me
+                .is_none_or(|m| home.and_then(|h| h.engine.as_deref()) == Some(m.id.as_str())),
+            everywhere: home.is_some_and(|h| h.everywhere),
+            state: run,
+            reason,
             name,
         }
     }
@@ -1069,7 +1417,7 @@ impl Message<AddServer> for Mcp {
     async fn handle(
         &mut self,
         m: AddServer,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Result<McpServer, String> {
         if !git::valid_name(&m.name) {
             return Err(format!(
@@ -1090,13 +1438,31 @@ impl Message<AddServer> for Mcp {
         if self.state.gates.server_off(&m.name) {
             return Err(format!("`{}` is off in mcp/config.yaml", m.name));
         }
+        // 187: an unreadable homes.yaml is the caller's error, before anything is written.
+        let homes = match &self.machine {
+            Some(_) => Some(load_homes(&self.dir)?),
+            None => None,
+        };
         // Connect before writing: nothing half-added, the caller fixes the
         // entry and calls again. This one wait is the caller's own request.
         let result = attempt(&m.name, &spec, &self.auth_dir)
             .await
             .map_err(|e| format!("{}: connect failed: {e:#}", m.name))?;
+        // 187: added here, so homed here — before the entry, so no reconcile sees it homeless.
+        if let (Some(me), Some(mut homes)) = (&self.machine, homes) {
+            homes.servers.insert(
+                m.name.clone(),
+                Home {
+                    engine: Some(me.id.clone()),
+                    name: Some(me.name.clone()),
+                    ..Home::default()
+                },
+            );
+            write_homes(&self.dir, &homes)?;
+            self.state.homes = homes;
+        }
         write_json(&path, &m.entry)?;
-        settle(&mut self.state, m.name.clone(), spec, Ok(result));
+        self.settle(m.name.clone(), spec, Ok(result), ctx.actor_ref());
         register(&mut self.state, &self.dir, &self.registry, Vec::new()).await;
         self.rt.publish(progress(&self.state)).await;
         // The watcher's reconcile then finds it running with the same spec.
@@ -1112,6 +1478,7 @@ impl Message<RemoveServer> for Mcp {
         m: RemoveServer,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
+        let mut homes = load_homes(&self.dir)?;
         // Same order as `desired`, so the file that owns the name is the one edited.
         let hit = json_files(&self.dir).into_iter().find_map(|path| {
             let mut json = read_json(&path)?;
@@ -1125,6 +1492,9 @@ impl Message<RemoveServer> for Mcp {
             FileEdit::Delete => std::fs::remove_file(&path)
                 .map_err(|e| format!("remove {}: {e}", path.display()))?,
             FileEdit::Rewrite => write_json(&path, &json)?,
+        }
+        if homes.servers.remove(&m.name).is_some() {
+            write_homes(&self.dir, &homes)?;
         }
         self.reconcile(ctx.actor_ref()).await;
         Ok(())
@@ -1216,23 +1586,317 @@ impl Message<SyncMcp> for Mcp {
 }
 
 impl Mcp {
+    /// Bring the state in line with the files in `dir`: claim homeless servers
+    /// this engine wrote, drop servers whose entry changed, left or no longer
+    /// runs here, and start a connect task for every server wanted here that
+    /// is not running, connecting or waiting out a backoff. Tasks report back
+    /// as [`Settled`], so the actor never waits on a server. Publishes an
+    /// [`McpProgress`] when anything moved.
     async fn reconcile(&mut self, me: &ActorRef<Mcp>) {
-        reconcile(
-            &mut self.state,
-            &self.dir,
-            &self.auth_dir,
-            &self.registry,
-            &self.rt,
-            me,
-        )
-        .await;
+        let want = wanted(&self.dir);
+        let gates = load_gates(&self.dir.join("config.yaml"));
+        let mut changed = gates != self.state.gates;
+        self.state.gates = gates;
+        // An unreadable `homes.yaml` keeps the last good homes and writes nothing.
+        let read = match load_homes(&self.dir) {
+            Ok(homes) => {
+                changed |= homes != self.state.homes;
+                self.state.homes = homes;
+                self.claim(&want).await
+            }
+            Err(e) => Err(e),
+        };
+        changed |= self.note_unreadable(read.err(), me);
+        self.tell_homes(&want);
+
+        let machine = self.machine.as_ref();
+        let peers = (self.paired)();
+        let state = &mut self.state;
+        let places: Vec<(String, ServerSpec, Place)> = want
+            .into_iter()
+            .map(|(name, (_, spec))| {
+                let p = place(state.homes.servers.get(&name), machine, peers.as_deref());
+                (name, spec, p)
+            })
+            .collect();
+        let adopted: HashSet<String> = places
+            .iter()
+            .filter(|(_, _, p)| *p == Place::Adopted)
+            .map(|(name, _, _)| name.clone())
+            .collect();
+        for name in adopted.difference(&state.adopted) {
+            let home = state.homes.servers.get(name);
+            let who = home
+                .and_then(|h| h.name.clone().or_else(|| h.engine.clone()))
+                .unwrap_or_default();
+            tracing::info!("mcp: {name} runs here while its home {who} is not paired");
+        }
+        state.adopted = adopted;
+        let here: BTreeMap<String, ServerSpec> = places
+            .into_iter()
+            .filter(|(_, _, p)| p.runs())
+            .map(|(name, spec, _)| (name, spec))
+            .collect();
+        let stale: Vec<String> = state
+            .running
+            .iter()
+            .filter(|(name, r)| here.get(*name) != Some(&r.spec) || state.gates.server_off(name))
+            .map(|(name, _)| name.clone())
+            .collect();
+        let mut orphans: Vec<String> = Vec::new();
+        for name in stale {
+            changed = true;
+            tracing::info!(server = %name, "mcp server dropped");
+            // Removing drops `service`, which ends the child / session.
+            if let Some(r) = state.running.remove(&name) {
+                orphans.extend(r.tools.into_values());
+            }
+        }
+        state.errors.retain(|name, _| here.contains_key(name));
+        state.login.retain(|name, _| here.contains_key(name));
+        // A changed entry retries at once; so does a server that comes back here.
+        state
+            .retry
+            .retain(|name, r| here.get(name) == Some(&r.spec));
+        state.said.retain(|name, _| here.contains_key(name));
+        let now = tokio::time::Instant::now();
+        for (name, spec) in here {
+            if state.running.contains_key(&name)
+                || state.pending.contains(&name)
+                || state.gates.server_off(&name)
+                || state.retry.get(&name).is_some_and(|r| r.due > now)
+            {
+                continue;
+            }
+            changed = true;
+            state.pending.insert(name.clone());
+            let me = me.clone();
+            let auth_dir = self.auth_dir.clone();
+            let task = tokio::spawn({
+                let (name, spec) = (name.clone(), spec.clone());
+                async move { attempt(&name, &spec, &auth_dir).await }
+            });
+            tokio::spawn(async move {
+                // A panicking connect is a failed one: `pending` never sticks.
+                let result = task
+                    .await
+                    .unwrap_or_else(|e| Err(anyhow::anyhow!("connect task failed: {e}")));
+                let _ = me.tell(Settled { name, spec, result }).await;
+            });
+        }
+        if changed {
+            register(&mut self.state, &self.dir, &self.registry, orphans).await;
+            self.rt.publish(progress(&self.state)).await;
+        }
+    }
+
+    /// 187: home every wanted server `homes.yaml` has no home for and whose
+    /// file this engine wrote ([`written_here`]); drop this engine's own lines
+    /// of servers no file defines at all (disabled or malformed entries keep
+    /// theirs; nothing is dropped while a file fails to parse). Writes
+    /// `homes.yaml` when anything changed. A peer's file waits for that peer's
+    /// claim; a home that is not paired is adopted at runtime only
+    /// ([`Place::Adopted`]), never written. No machine: nothing to claim. Err
+    /// (nothing written) when the replica cannot be read: an unread row is
+    /// never "no row".
+    async fn claim(&mut self, want: &BTreeMap<String, (String, ServerSpec)>) -> Result<(), String> {
+        let Some(me) = self.machine.clone() else {
+            return Ok(());
+        };
+        let homes = &self.state.homes;
+        let homeless: Vec<(&String, &String)> = want
+            .iter()
+            .filter(|(name, _)| homes.engine(name).is_none())
+            .map(|(name, (file, _))| (name, file))
+            .collect();
+        let mine: Vec<&String> = homes
+            .servers
+            .iter()
+            .filter(|(name, h)| {
+                h.engine.as_deref() == Some(me.id.as_str()) && !want.contains_key(*name)
+            })
+            .map(|(name, _)| name)
+            .collect();
+        let gone: Vec<&String> = match (mine.is_empty(), defined(&self.dir)) {
+            (false, Some(defined)) => mine.into_iter().filter(|n| !defined.contains(*n)).collect(),
+            _ => Vec::new(),
+        };
+        if homeless.is_empty() && gone.is_empty() {
+            return Ok(());
+        }
+        let mut next = homes.clone();
+        if !homeless.is_empty() {
+            if self.origin.is_none() {
+                self.origin = replica::files::stored_origin(&self.dir.with_file_name(replica::DB))
+                    .await
+                    .map_err(|e| format!("replica.sqlite unreadable: {e:#}"))?;
+            }
+            let writers = replica::files::writers(&self.dir.with_file_name("mcp.sqlite"), "mcp")
+                .await
+                .map_err(|e| format!("mcp.sqlite unreadable: {e:#}"))?;
+            for (name, file) in &homeless {
+                if written_here(writers.get(*file), self.origin.as_ref()) {
+                    let h = next.servers.entry((*name).clone()).or_default();
+                    h.engine = Some(me.id.clone());
+                    h.name = Some(me.name.clone());
+                }
+            }
+        }
+        for name in gone {
+            next.servers.remove(name);
+        }
+        if next != self.state.homes {
+            write_homes(&self.dir, &next)?;
+            self.state.homes = next;
+        }
+        Ok(())
+    }
+
+    /// 187: one line when `homes.yaml` or the replica becomes unreadable (or a
+    /// different problem), one when it reads again; while it fails ONE
+    /// reconcile is pending, [`RETRY_FIRST`] out (a locked file at boot clears
+    /// by itself). True when the problem changed (the UI shows it).
+    fn note_unreadable(&mut self, problem: Option<String>, me: &ActorRef<Mcp>) -> bool {
+        let changed = self.state.unreadable != problem;
+        if changed {
+            match &problem {
+                Some(e) => {
+                    tracing::warn!("mcp homes: {e}; homes kept as they were, nothing claimed")
+                }
+                None => tracing::info!("mcp homes: readable again"),
+            }
+            self.state.unreadable.clone_from(&problem);
+        }
+        let now = tokio::time::Instant::now();
+        if problem.is_some() && self.state.unreadable_retry.is_none_or(|at| at <= now) {
+            self.state.unreadable_retry = Some(now + RETRY_FIRST);
+            let me = me.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(RETRY_FIRST).await;
+                let _ = me.tell(Reconcile).await;
+            });
+        }
+        changed
+    }
+
+    /// One `mcp: <name> home is <machine>` line per server and change.
+    fn tell_homes(&mut self, want: &BTreeMap<String, (String, ServerSpec)>) {
+        let state = &mut self.state;
+        state.told.retain(|name, _| want.contains_key(name));
+        for name in want.keys() {
+            let text = home_text(state.homes.servers.get(name), self.machine.as_ref());
+            if state.told.get(name) != Some(&text) {
+                tracing::info!("mcp: {name} home is {text}");
+                state.told.insert(name.clone(), text);
+            }
+        }
+    }
+
+    /// Record a settled attempt for a server still wanted here. A failure
+    /// backs off ([`backoff`]) and wakes a reconcile when due; a line is
+    /// logged only when the server's state changes, never per attempt.
+    fn settle(&mut self, name: String, spec: ServerSpec, result: Attempt, me: &ActorRef<Mcp>) {
+        let state = &mut self.state;
+        let e = match result {
+            Ok((service, remote)) => {
+                // rmcp keeps which lifecycle won private, so the version alone is
+                // logged; one past `NO_INITIALIZE` can only come from discover.
+                let protocol = service
+                    .peer_info()
+                    .map(|i| i.protocol_version.as_str().to_owned())
+                    .unwrap_or_default();
+                tracing::info!(server = %name, count = remote.len(), %protocol, "mcp server connected");
+                state.errors.remove(&name);
+                state.login.remove(&name);
+                state.retry.remove(&name);
+                state.said.insert(name.clone(), "running".to_owned());
+                state.running.insert(
+                    name,
+                    Running {
+                        spec,
+                        service,
+                        remote,
+                        tools: BTreeMap::new(),
+                    },
+                );
+                return;
+            }
+            Err(e) => e,
+        };
+        let failures = state
+            .retry
+            .remove(&name)
+            .filter(|r| r.spec == spec)
+            .map_or(1, |r| r.failures + 1);
+        let delay = backoff(failures);
+        let host = self.machine.as_ref().map_or_else(
+            || platform::process::hostname().to_owned(),
+            |m| m.name.clone(),
+        );
+        let unavailable = missing_here(&spec, &e, &host);
+        let challenge = e
+            .downcast_ref::<ClientInitializeError>()
+            .and_then(ClientInitializeError::auth_challenge);
+        let kind = if let Some(why) = &unavailable {
+            format!("unavailable: {why}")
+        } else if challenge.is_some() {
+            "login".to_owned()
+        } else {
+            "error".to_owned()
+        };
+        let new = state.said.get(&name) != Some(&kind);
+        if let Some(why) = &unavailable {
+            // Not an error any more: the reason is the state.
+            state.errors.remove(&name);
+            state.login.remove(&name);
+            if new {
+                tracing::warn!(server = %name, "mcp server not available here: {why}; retrying from {RETRY_FIRST:?}, backing off to {RETRY_CAP:?}");
+            } else {
+                tracing::debug!(server = %name, failures, "mcp server still not available here: {why}");
+            }
+        } else if let Some(challenge) = challenge {
+            if new {
+                tracing::info!(server = %name, "mcp server needs login");
+            }
+            state.login.insert(name.clone(), challenge.to_owned());
+            state.errors.insert(
+                name.clone(),
+                format!("{name}: login required (/login {name})"),
+            );
+        } else {
+            if new {
+                tracing::warn!(server = %name, error = %e, "mcp connect failed; retrying from {RETRY_FIRST:?}, backing off to {RETRY_CAP:?}");
+            } else {
+                tracing::debug!(server = %name, error = %e, failures, "mcp connect failed again");
+            }
+            state
+                .errors
+                .insert(name.clone(), format!("{name}: connect failed: {e:#}"));
+        }
+        state.said.insert(name.clone(), kind);
+        state.retry.insert(
+            name,
+            Retry {
+                spec,
+                failures,
+                due: tokio::time::Instant::now() + delay,
+                unavailable,
+            },
+        );
+        let me = me.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = me.tell(Reconcile).await;
+        });
     }
 
     /// Drop `names` (ending their processes) and unregister their tools, then
-    /// reconcile: every dropped server the files still want reconnects.
+    /// reconcile: every dropped server the files still want reconnects, at
+    /// once even if it was backing off.
     async fn restart(&mut self, me: &ActorRef<Mcp>, names: &[String]) {
         for name in names {
             tracing::info!(server = %name, "mcp server restarting");
+            self.state.retry.remove(name);
             if let Some(r) = self.state.running.remove(name) {
                 for tool in r.tools.into_values() {
                     let _ = self.registry.ask(UnregisterTool(tool)).await;
@@ -1240,6 +1904,52 @@ impl Mcp {
             }
         }
         self.reconcile(me).await;
+    }
+}
+
+impl Message<SetMachine> for Mcp {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetMachine, ctx: &mut Context<Self, Self::Reply>) {
+        if self.machine.as_ref() != Some(&m.0) {
+            self.machine = Some(m.0);
+            self.reconcile(ctx.actor_ref()).await;
+        }
+    }
+}
+
+impl Message<SetMcpHome> for Mcp {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetMcpHome,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        self.known(&m.server)?;
+        let Some(me) = self.machine.clone() else {
+            return Err("this engine is in no mesh: every server runs here".into());
+        };
+        // ponytail: one replicated row, last writer wins — two engines changing
+        // homes within a sync window can lose one change; set it again.
+        let mut homes = load_homes(&self.dir)?;
+        let h = homes.servers.entry(m.server.clone()).or_default();
+        match m.action {
+            McpHomeAction::RunEverywhere => h.everywhere = true,
+            McpHomeAction::OnlyHome => h.everywhere = false,
+            McpHomeAction::MoveHere => {
+                h.engine = Some(me.id.clone());
+                h.name = Some(me.name);
+                h.off.retain(|e| *e != me.id);
+            }
+            McpHomeAction::OffHere if !h.off.contains(&me.id) => h.off.push(me.id),
+            McpHomeAction::OffHere => {}
+            McpHomeAction::OnHere => h.off.retain(|e| *e != me.id),
+        }
+        write_homes(&self.dir, &homes)?;
+        tracing::info!(server = %m.server, action = ?m.action, "mcp home changed");
+        self.reconcile(ctx.actor_ref()).await;
+        Ok(())
     }
 }
 
@@ -1258,15 +1968,21 @@ impl Message<Settled> for Mcp {
     async fn handle(&mut self, m: Settled, ctx: &mut Context<Self, Self::Reply>) {
         self.state.pending.remove(&m.name);
         let wanted = desired(&self.dir).get(&m.name) == Some(&m.spec)
-            && !self.state.gates.server_off(&m.name);
+            && !self.state.gates.server_off(&m.name)
+            && place(
+                self.state.homes.servers.get(&m.name),
+                self.machine.as_ref(),
+                (self.paired)().as_deref(),
+            )
+            .runs();
         if !wanted {
-            // The entry changed or left while connecting: `result` is dropped
-            // (ending the process) and reconcile starts over if needed.
+            // The entry changed, left or moved away while connecting: `result`
+            // is dropped (ending the process) and reconcile starts over if needed.
             self.reconcile(ctx.actor_ref()).await;
             return;
         }
         let connected = m.result.is_ok();
-        settle(&mut self.state, m.name, m.spec, m.result);
+        self.settle(m.name, m.spec, m.result, ctx.actor_ref());
         if connected {
             register(&mut self.state, &self.dir, &self.registry, Vec::new()).await;
         }
@@ -1463,12 +2179,25 @@ fn stem(path: &Path) -> &str {
 
 /// Every server the files want; first server name wins.
 fn desired(dir: &Path) -> BTreeMap<String, ServerSpec> {
+    wanted(dir)
+        .into_iter()
+        .map(|(name, (_, spec))| (name, spec))
+        .collect()
+}
+
+/// [`desired`] with the name of the file each server comes from.
+fn wanted(dir: &Path) -> BTreeMap<String, (String, ServerSpec)> {
     let mut out = BTreeMap::new();
     let mut owner: HashMap<String, PathBuf> = HashMap::new();
     for path in json_files(dir) {
         let Some(json) = read_json(&path) else {
             continue;
         };
+        let file = path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or_default()
+            .to_owned();
         for (name, spec) in parse_file(stem(&path), &json, dir) {
             if let Some(first) = owner.get(&name) {
                 tracing::warn!(
@@ -1478,10 +2207,36 @@ fn desired(dir: &Path) -> BTreeMap<String, ServerSpec> {
                 continue;
             }
             owner.insert(name.clone(), path.clone());
-            out.insert(name, spec);
+            out.insert(name, (file.clone(), spec));
         }
     }
     out
+}
+
+/// 187: every server name any file defines, disabled or malformed entries
+/// too (the shapes of [`parse_file`]); `None` when a file does not parse.
+fn defined(dir: &Path) -> Option<HashSet<String>> {
+    let mut out = HashSet::new();
+    for path in json_files(dir) {
+        let json = read_json(&path)?;
+        if is_entry(&json) {
+            out.insert(stem(&path).to_owned());
+            continue;
+        }
+        for (k, v) in json.as_object().into_iter().flatten() {
+            if is_entry(v) {
+                out.insert(k.clone());
+            } else if let Some(wrapper) = v.as_object() {
+                out.extend(
+                    wrapper
+                        .iter()
+                        .filter(|(_, v2)| is_entry(v2))
+                        .map(|(k2, _)| k2.clone()),
+                );
+            }
+        }
+    }
+    Some(out)
 }
 
 /// Progress snapshot of `state`.
@@ -1495,6 +2250,7 @@ fn progress(state: &State) -> McpProgress {
         connecting: sorted(state.pending.iter().cloned().collect()),
         connected: sorted(state.running.keys().cloned().collect()),
         failed: sorted(state.errors.keys().cloned().collect()),
+        homes_problem: state.unreadable.clone(),
     }
 }
 
@@ -1508,108 +2264,6 @@ async fn attempt(name: &str, spec: &ServerSpec, auth_dir: &Path) -> Attempt {
     .await
     .map_err(|_| anyhow::anyhow!("no response within {CONNECT_TIMEOUT:?}"))
     .and_then(|r| r)
-}
-
-/// Record a settled attempt for a server the files still want.
-fn settle(state: &mut State, name: String, spec: ServerSpec, result: Attempt) {
-    match result {
-        Ok((service, remote)) => {
-            // rmcp keeps which lifecycle won private, so the version alone is
-            // logged; one past `NO_INITIALIZE` can only come from discover.
-            let protocol = service
-                .peer_info()
-                .map(|i| i.protocol_version.as_str().to_owned())
-                .unwrap_or_default();
-            tracing::info!(server = %name, count = remote.len(), %protocol, "mcp server connected");
-            state.errors.remove(&name);
-            state.login.remove(&name);
-            state.running.insert(
-                name,
-                Running {
-                    spec,
-                    service,
-                    remote,
-                    tools: BTreeMap::new(),
-                },
-            );
-        }
-        Err(e) => {
-            let challenge = e
-                .downcast_ref::<ClientInitializeError>()
-                .and_then(ClientInitializeError::auth_challenge);
-            if let Some(challenge) = challenge {
-                tracing::info!(server = %name, "mcp server needs login");
-                state.login.insert(name.clone(), challenge.to_owned());
-                state.errors.insert(
-                    name.clone(),
-                    format!("{name}: login required (/login {name})"),
-                );
-            } else {
-                tracing::warn!(server = %name, error = %e, "mcp connect failed");
-                state
-                    .errors
-                    .insert(name.clone(), format!("{name}: connect failed: {e:#}"));
-            }
-        }
-    }
-}
-
-/// Bring `state` in line with the files in `dir`: drop servers whose entry
-/// changed or left, and start a connect task for every wanted server not
-/// running or already connecting. Tasks report back as [`Settled`], so the
-/// actor never waits on a server. Publishes an [`McpProgress`] when anything
-/// moved.
-async fn reconcile(
-    state: &mut State,
-    dir: &Path,
-    auth_dir: &Path,
-    registry: &ActorRef<ToolRegistry>,
-    rt: &Runtime,
-    me: &ActorRef<Mcp>,
-) {
-    let want = desired(dir);
-    let gates = load_gates(&dir.join("config.yaml"));
-    let gates_changed = gates != state.gates;
-    state.gates = gates;
-
-    let mut changed = gates_changed;
-    let stale: Vec<String> = state
-        .running
-        .iter()
-        .filter(|(name, r)| want.get(*name) != Some(&r.spec) || state.gates.server_off(name))
-        .map(|(name, _)| name.clone())
-        .collect();
-    let mut orphans: Vec<String> = Vec::new();
-    for name in stale {
-        changed = true;
-        tracing::info!(server = %name, "mcp server dropped");
-        // Removing drops `service`, which ends the child / session.
-        if let Some(r) = state.running.remove(&name) {
-            orphans.extend(r.tools.into_values());
-        }
-    }
-    state.errors.retain(|name, _| want.contains_key(name));
-    state.login.retain(|name, _| want.contains_key(name));
-    for (name, spec) in want {
-        if state.running.contains_key(&name)
-            || state.pending.contains(&name)
-            || state.gates.server_off(&name)
-        {
-            continue;
-        }
-        changed = true;
-        state.pending.insert(name.clone());
-        let me = me.clone();
-        let auth_dir = auth_dir.to_owned();
-        tokio::spawn(async move {
-            let result = attempt(&name, &spec, &auth_dir).await;
-            let _ = me.tell(Settled { name, spec, result }).await;
-        });
-    }
-    if changed {
-        register(state, dir, registry, orphans).await;
-        rt.publish(progress(state)).await;
-    }
 }
 
 /// Effective risk of remote tool `t` on `server`: its gate line (tool → server)
@@ -1751,6 +2405,9 @@ pub async fn start(
             registry,
             policy,
             rt: rt.clone(),
+            machine: machine(),
+            origin: None,
+            paired,
         },
         runtime::subscriber_mailbox(),
     );
@@ -1759,7 +2416,14 @@ pub async fn start(
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
+        // 187: only server configs, `config.yaml` and `homes.yaml` matter; an
+        // audit append or an image write is no reason to reconcile.
+        let config = |p: &PathBuf| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                !n.starts_with('.') && (n.ends_with(".json") || n == "config.yaml" || n == HOMES)
+            })
+        };
+        if res.is_ok_and(|e| e.paths.iter().any(config)) {
             let _ = tx.send(());
         }
     })?;
@@ -2542,11 +3206,28 @@ mod tests {
             }),
         );
         let spec = serve_http(app).await;
-        let mut state = State::default();
-        let result = attempt("s", &spec, &dir.0).await;
-        settle(&mut state, "s".into(), spec, result);
-        assert_eq!(state.errors["s"], "s: login required (/login s)");
-        assert_eq!(state.login["s"], r#"Bearer realm="t""#);
+        let Transport::Http { url, .. } = &spec.transport else {
+            unreachable!()
+        };
+        let mcp = actor(&dir.0, None);
+        let entry = serde_json::json!({ "url": url });
+        std::fs::write(dir.0.join("mcp/s.json"), entry.to_string()).unwrap();
+        mcp.ask(Reconcile).await.unwrap();
+        settled(&mcp, "s").await;
+        let s = listed(&mcp, "s").await;
+        assert_eq!(
+            (s.state, s.reason.as_deref(), s.auth),
+            (
+                McpState::Error,
+                Some("s: login required (/login s)"),
+                McpAuth::Required
+            )
+        );
+        assert_eq!(
+            mcp.ask(Failures("s")).await.unwrap(),
+            Some(1),
+            "backs off too"
+        );
     }
 
     /// T3 (175), live: `mbx test -p tools github_mcp_live -- --ignored --nocapture`.
@@ -2622,5 +3303,631 @@ mod tests {
         assert!(protocol.has_initialize(), "{protocol:?}");
         assert!(!tools.is_empty());
         assert!(connected < Duration::from_secs(5), "{connected:?}");
+    }
+
+    // ---- 187: homes and the calm failure mode ----
+
+    const MISSING: &str = "/nonexistent/mcphome-test-server";
+
+    fn engine(id: &str) -> Machine {
+        Machine {
+            id: id.into(),
+            name: format!("box-{id}"),
+        }
+    }
+
+    /// An `Mcp` actor over `<root>/mcp`, not started: tests drive `Reconcile`.
+    fn actor(root: &Path, machine: Option<Machine>) -> ActorRef<Mcp> {
+        actor_paired(root, machine, || None)
+    }
+
+    fn actor_paired(root: &Path, machine: Option<Machine>, paired: Paired) -> ActorRef<Mcp> {
+        std::fs::create_dir_all(root.join("mcp")).unwrap();
+        Mcp::spawn(Mcp {
+            state: State::default(),
+            dir: root.join("mcp"),
+            auth_dir: root.join("oauth"),
+            registry: crate::registry::tests::registry(Vec::new(), None),
+            policy: Policy::default(),
+            rt: Runtime::new(figment::Figment::new(), root.to_owned()),
+            machine,
+            origin: None,
+            paired,
+        })
+    }
+
+    /// `<root>/mcp/<name>.json`: a stdio server whose command is on no machine.
+    fn missing(root: &Path, name: &str, args: &[&str]) {
+        let entry = serde_json::json!({"command": MISSING, "args": args});
+        std::fs::write(root.join(format!("mcp/{name}.json")), entry.to_string()).unwrap();
+    }
+
+    fn homes(root: &Path, yaml: &str) {
+        std::fs::write(root.join("mcp").join(HOMES), yaml).unwrap();
+    }
+
+    async fn listed(mcp: &ActorRef<Mcp>, name: &str) -> McpServer {
+        mcp.ask(ListServers::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == name)
+            .unwrap()
+    }
+
+    /// Failed starts in a row (= start attempts while failing); `None` = not backing off.
+    struct Failures(&'static str);
+
+    impl Message<Failures> for Mcp {
+        type Reply = Option<u32>;
+
+        async fn handle(&mut self, m: Failures, _: &mut Context<Self, Self::Reply>) -> Option<u32> {
+            self.state.retry.get(m.0).map(|r| r.failures)
+        }
+    }
+
+    /// Until the connect task of a just-reconciled server settled.
+    async fn settled(mcp: &ActorRef<Mcp>, name: &'static str) {
+        for _ in 0..200 {
+            if mcp.ask(Failures(name)).await.unwrap().is_some()
+                || listed(mcp, name).await.state != McpState::Connecting
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("{name} never settled");
+    }
+
+    /// Log lines written on this thread (a `#[tokio::test]` runtime's only one).
+    #[derive(Clone, Default)]
+    struct Lines(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Lines {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
+        type Writer = Lines;
+        fn make_writer(&'a self) -> Lines {
+            self.clone()
+        }
+    }
+
+    impl Lines {
+        fn count(&self, needle: &str) -> usize {
+            String::from_utf8_lossy(&self.0.lock())
+                .lines()
+                .filter(|l| l.contains(needle))
+                .count()
+        }
+    }
+
+    fn capture() -> (Lines, tracing::subscriber::DefaultGuard) {
+        let lines = Lines::default();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(lines.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        (lines.clone(), tracing::subscriber::set_default(sub))
+    }
+
+    #[test]
+    fn placement_backoff_and_who_may_claim() {
+        let (a, b) = (engine("a"), engine("b"));
+        let home = |engine: Option<&str>, everywhere: bool, off: &[&str]| Home {
+            engine: engine.map(str::to_owned),
+            name: None,
+            everywhere,
+            off: off.iter().map(|s| s.to_string()).collect(),
+        };
+        // `b` paired with `a` and `c`.
+        let peers = ["a".to_owned(), "c".to_owned()];
+        let p = Some(&peers[..]);
+        let at = |h: Option<&Home>, me: Option<&Machine>| place(h, me, p);
+        assert_eq!(
+            at(Some(&home(Some("a"), false, &[])), Some(&a)),
+            Place::Here
+        );
+        assert_eq!(
+            at(Some(&home(Some("a"), false, &[])), Some(&b)),
+            Place::Elsewhere
+        );
+        assert_eq!(at(Some(&home(Some("a"), true, &[])), Some(&b)), Place::Here);
+        assert_eq!(
+            at(Some(&home(Some("a"), true, &["b"])), Some(&b)),
+            Place::OffHere
+        );
+        assert_eq!(at(Some(&home(None, true, &[])), Some(&b)), Place::Here);
+        assert_eq!(at(None, Some(&a)), Place::Elsewhere, "unclaimed waits");
+        assert_eq!(
+            place(Some(&home(Some("b"), false, &[])), None, None),
+            Place::Here,
+            "no mesh"
+        );
+        // A home not paired here: only the lowest id among this engine and its peers runs it.
+        let left = home(Some("x"), false, &[]);
+        assert_eq!(
+            at(Some(&left), Some(&b)),
+            Place::Elsewhere,
+            "a is lower than b"
+        );
+        let (b_alone, a_peers) = (Vec::<String>::new(), ["b".to_owned()]);
+        assert_eq!(place(Some(&left), Some(&b), Some(&b_alone)), Place::Adopted);
+        assert_eq!(place(Some(&left), Some(&a), Some(&a_peers)), Place::Adopted);
+        assert_eq!(
+            place(Some(&left), Some(&a), None),
+            Place::Elsewhere,
+            "paired set unknown"
+        );
+        assert!(Place::Adopted.runs() && Place::Here.runs() && !Place::Elsewhere.runs());
+
+        let secs: Vec<u64> = (1..=10).map(|n| backoff(n).as_secs()).collect();
+        assert_eq!(secs, [30, 60, 120, 240, 480, 960, 1800, 1800, 1800, 1800]);
+        assert_eq!(backoff(u32::MAX), RETRY_CAP);
+
+        let (mine, theirs) = (replica::PeerId("ra".into()), replica::PeerId("rb".into()));
+        assert!(
+            written_here(None, Some(&mine)),
+            "no row: the file appeared here"
+        );
+        let (row_mine, row_theirs) = (Some(mine.clone()), Some(theirs));
+        assert!(written_here(Some(&row_mine), Some(&mine)));
+        assert!(!written_here(Some(&row_theirs), Some(&mine)));
+        assert!(!written_here(Some(&row_theirs), None));
+        assert!(
+            !written_here(Some(&None), Some(&mine)),
+            "a row with no stamp is never ours"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_stamps_this_engine_as_home_and_other_engines_list_it_unstarted() {
+        let a_root = crate::TestDir::new("mcp-home-add-a");
+        let a = actor(&a_root.0, Some(engine("a")));
+        let spec = serve_mcp(TestServer::default()).await;
+        let Transport::Http { url, .. } = &spec.transport else {
+            unreachable!()
+        };
+        let entry = serde_json::json!({"url": url, "headers": {"Authorization": "Bearer t"}});
+        let added = a
+            .ask(AddServer {
+                name: "remote".into(),
+                entry: entry.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                added.state,
+                added.home.as_deref(),
+                added.home_name.as_deref(),
+                added.home_here,
+                added.everywhere
+            ),
+            (McpState::Running, Some("a"), Some("box-a"), true, false)
+        );
+        assert_eq!(
+            load_homes(&a_root.0.join("mcp")).unwrap().engine("remote"),
+            Some("a")
+        );
+        // The entry itself stays as given: third-party readers see their own shape.
+        let file: Value =
+            serde_json::from_slice(&std::fs::read(a_root.0.join("mcp/remote.json")).unwrap())
+                .unwrap();
+        assert_eq!(file, entry);
+
+        // Engine b holds the replicated files: listed with its home, not started, no tools.
+        let b_root = crate::TestDir::new("mcp-home-add-b");
+        let b = actor(&b_root.0, Some(engine("b")));
+        for f in ["remote.json", HOMES] {
+            std::fs::copy(a_root.0.join("mcp").join(f), b_root.0.join("mcp").join(f)).unwrap();
+        }
+        b.ask(Reconcile).await.unwrap();
+        let s = listed(&b, "remote").await;
+        assert_eq!(
+            (s.state, s.home_name.as_deref(), s.home_here, s.tools.len()),
+            (McpState::Elsewhere, Some("box-a"), false, 0)
+        );
+        assert_eq!(
+            b.ask(Failures("remote")).await.unwrap(),
+            None,
+            "never started"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_home_starts_a_server_unless_it_runs_everywhere() {
+        let root = crate::TestDir::new("mcp-home-place");
+        let mcp = actor(&root.0, Some(engine("a")));
+        missing(&root.0, "gone", &[]);
+        homes(
+            &root.0,
+            "servers:\n  gone:\n    engine: b\n    name: box-b\n",
+        );
+        mcp.ask(Reconcile).await.unwrap();
+        let s = listed(&mcp, "gone").await;
+        assert_eq!(
+            (s.state, s.home_name.as_deref(), s.home_here),
+            (McpState::Elsewhere, Some("box-b"), false)
+        );
+        assert_eq!(
+            mcp.ask(Failures("gone")).await.unwrap(),
+            None,
+            "never started"
+        );
+
+        let set = async |action| {
+            mcp.ask(SetMcpHome {
+                server: "gone".into(),
+                action,
+            })
+            .await
+            .unwrap();
+            settled(&mcp, "gone").await;
+            listed(&mcp, "gone").await
+        };
+        let s = set(McpHomeAction::RunEverywhere).await;
+        assert_eq!((s.state, s.everywhere), (McpState::UnavailableHere, true));
+        assert_eq!(
+            s.reason.as_deref(),
+            Some(format!("{MISSING} is not installed on box-a").as_str())
+        );
+        assert_eq!(mcp.ask(Failures("gone")).await.unwrap(), Some(1));
+        assert_eq!(set(McpHomeAction::OffHere).await.state, McpState::OffHere);
+        assert_eq!(mcp.ask(Failures("gone")).await.unwrap(), None);
+        assert_eq!(
+            set(McpHomeAction::OnHere).await.state,
+            McpState::UnavailableHere
+        );
+        assert_eq!(
+            set(McpHomeAction::OnlyHome).await.state,
+            McpState::Elsewhere
+        );
+        let s = set(McpHomeAction::MoveHere).await;
+        assert_eq!(
+            (s.state, s.home.as_deref(), s.home_here, s.everywhere),
+            (McpState::UnavailableHere, Some("a"), true, false)
+        );
+        assert_eq!(
+            load_homes(&root.0.join("mcp")).unwrap().servers["gone"],
+            Home {
+                engine: Some("a".into()),
+                name: Some("box-a".into()),
+                everywhere: false,
+                off: Vec::new(),
+            }
+        );
+
+        // No mesh: a lone engine runs everything and has no homes to set.
+        let lone_root = crate::TestDir::new("mcp-home-lone");
+        let lone = actor(&lone_root.0, None);
+        missing(&lone_root.0, "gone", &[]);
+        homes(&lone_root.0, "servers:\n  gone:\n    engine: b\n");
+        lone.ask(Reconcile).await.unwrap();
+        settled(&lone, "gone").await;
+        assert_eq!(listed(&lone, "gone").await.state, McpState::UnavailableHere);
+        assert!(
+            lone.ask(SetMcpHome {
+                server: "gone".into(),
+                action: McpHomeAction::MoveHere
+            })
+            .await
+            .is_err()
+        );
+    }
+
+    /// Hand-written and pre-187 files: the engine that last wrote the file's
+    /// replica row claims it (no row = it appeared here); a peer's file waits
+    /// for that peer's claim. One `home is` line per server and change.
+    #[tokio::test]
+    async fn homeless_servers_are_claimed_by_their_last_writer() {
+        use sqlx::ConnectOptions as _;
+        let (lines, _log) = capture();
+        let root = crate::TestDir::new("mcp-home-claim");
+        let engine_a = replica::Engine::open(&root.0.join(replica::DB))
+            .await
+            .unwrap();
+        let mut rows = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(root.0.join("mcp.sqlite"))
+            .create_if_missing(true)
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE mcp (path TEXT PRIMARY KEY, bytes BLOB, mtime_ms INTEGER,
+             deleted INTEGER NOT NULL DEFAULT 0, hlc TEXT)",
+        )
+        .execute(&mut rows)
+        .await
+        .unwrap();
+        let row =
+            async |rows: &mut sqlx::SqliteConnection, path: &str, origin: &replica::PeerId| {
+                let hlc = replica::Hlc {
+                    wall_ms: 1,
+                    counter: 0,
+                    origin: origin.clone(),
+                };
+                sqlx::query("INSERT OR REPLACE INTO mcp (path, hlc) VALUES (?, ?)")
+                    .bind(path)
+                    .bind(hlc.to_text())
+                    .execute(rows)
+                    .await
+                    .unwrap();
+            };
+        let peer = replica::PeerId("replica-of-b".into());
+        row(&mut rows, "mine.json", engine_a.origin()).await;
+        row(&mut rows, "theirs.json", &peer).await;
+        let mcp = actor(&root.0, Some(engine("a")));
+        for name in ["local", "mine", "theirs"] {
+            missing(&root.0, name, &[]);
+        }
+        mcp.ask(Reconcile).await.unwrap();
+        mcp.ask(Reconcile).await.unwrap();
+        let homes_now = load_homes(&root.0.join("mcp")).unwrap();
+        assert_eq!(homes_now.engine("local"), Some("a"), "no row: written here");
+        assert_eq!(homes_now.engine("mine"), Some("a"), "our row");
+        assert_eq!(homes_now.engine("theirs"), None, "b claims its own");
+        let s = listed(&mcp, "theirs").await;
+        assert_eq!((s.state, s.home), (McpState::Elsewhere, None));
+        assert_eq!(lines.count("mcp: local home is box-a"), 1);
+        assert_eq!(lines.count("mcp: mine home is box-a"), 1);
+        assert_eq!(lines.count("mcp: theirs home is not claimed yet"), 1);
+
+        // b's claim replicates in; a later edit of `mine` on b does not move its home.
+        let mut text = std::fs::read_to_string(root.0.join("mcp").join(HOMES)).unwrap();
+        text.push_str("  theirs:\n    engine: b\n    name: box-b\n");
+        homes(&root.0, &text);
+        row(&mut rows, "mine.json", &peer).await;
+        mcp.ask(Reconcile).await.unwrap();
+        let homes_now = load_homes(&root.0.join("mcp")).unwrap();
+        assert_eq!(homes_now.engine("theirs"), Some("b"));
+        assert_eq!(homes_now.engine("mine"), Some("a"), "the first claim holds");
+        assert_eq!(lines.count("mcp: theirs home is box-b"), 1);
+        assert_eq!(lines.count("home is"), 4, "one line per server and change");
+    }
+
+    /// The xeus hot loop: a command missing here is `unavailable_here` after
+    /// one start; reconciles (mirror writes, editors) start nothing; retries
+    /// back off 30 s → 30 min; a changed entry retries at once; one log line.
+    #[tokio::test(start_paused = true)]
+    async fn missing_command_backs_off_without_a_hot_loop() {
+        let (lines, _log) = capture();
+        let root = crate::TestDir::new("mcp-home-enoent");
+        let mcp = actor(&root.0, Some(engine("a")));
+        missing(&root.0, "gone", &[]);
+        homes(&root.0, "servers:\n  gone:\n    engine: a\n");
+        let fails = async || mcp.ask(Failures("gone")).await.unwrap();
+        let wait = |secs: u64| tokio::time::sleep(Duration::from_secs(secs));
+        mcp.ask(Reconcile).await.unwrap();
+        wait(1).await;
+        assert_eq!(fails().await, Some(1));
+        let s = listed(&mcp, "gone").await;
+        assert_eq!(s.state, McpState::UnavailableHere);
+        assert_eq!(
+            s.reason,
+            Some(format!("{MISSING} is not installed on box-a"))
+        );
+        for _ in 0..50 {
+            mcp.tell(Reconcile).await.unwrap();
+        }
+
+        // One second past each due time; the next is due `delay` after the last.
+        for (n, delay) in [30, 60, 120, 240, 480, 960, 1800, 1800, 1800]
+            .into_iter()
+            .enumerate()
+        {
+            wait(delay - 2).await;
+            assert_eq!(
+                fails().await,
+                Some(n as u32 + 1),
+                "early retry before {delay}s"
+            );
+            wait(2).await;
+            assert_eq!(fails().await, Some(n as u32 + 2), "no retry after {delay}s");
+        }
+
+        // A changed entry starts at once, the count starts over.
+        missing(&root.0, "gone", &["--v2"]);
+        mcp.ask(Reconcile).await.unwrap();
+        wait(1).await;
+        assert_eq!(fails().await, Some(1));
+        assert_eq!(
+            lines.count("mcp server not available here"),
+            1,
+            "one line per state change, not per attempt"
+        );
+    }
+
+    /// A hand-edit typo in `homes.yaml`: the last good homes stay in force,
+    /// nothing is claimed or written over it, one line is logged, and the
+    /// RPCs that would write it say why.
+    #[tokio::test]
+    async fn a_broken_homes_file_is_kept_and_never_written_over() {
+        let (lines, _log) = capture();
+        let root = crate::TestDir::new("mcp-home-broken");
+        let mcp = actor(&root.0, Some(engine("a")));
+        missing(&root.0, "gone", &[]);
+        homes(
+            &root.0,
+            "servers:\n  gone:\n    engine: b\n    everywhere: true\n",
+        );
+        mcp.ask(Reconcile).await.unwrap();
+        settled(&mcp, "gone").await;
+        assert_eq!(listed(&mcp, "gone").await.state, McpState::UnavailableHere);
+
+        let broken = "servers: [this is: not\n";
+        homes(&root.0, broken);
+        missing(&root.0, "fresh", &[]);
+        for _ in 0..3 {
+            mcp.ask(Reconcile).await.unwrap();
+        }
+        let on_disk = std::fs::read_to_string(root.0.join("mcp").join(HOMES)).unwrap();
+        assert_eq!(on_disk, broken, "nothing claimed over it");
+        let s = listed(&mcp, "gone").await;
+        assert!(s.everywhere, "the last good homes stay in force");
+        assert_eq!(listed(&mcp, "fresh").await.state, McpState::Elsewhere);
+        let set = mcp
+            .ask(SetMcpHome {
+                server: "gone".into(),
+                action: McpHomeAction::OnlyHome,
+            })
+            .await;
+        assert!(format!("{set:?}").contains("is invalid"), "{set:?}");
+        let add = mcp
+            .ask(AddServer {
+                name: "other".into(),
+                entry: serde_json::json!({"command": MISSING}),
+            })
+            .await;
+        assert!(format!("{add:?}").contains("is invalid"), "{add:?}");
+        let rm = mcp
+            .ask(RemoveServer {
+                name: "fresh".into(),
+            })
+            .await;
+        assert!(format!("{rm:?}").contains("is invalid"), "{rm:?}");
+        assert!(root.0.join("mcp/fresh.json").exists(), "nothing removed");
+        assert_eq!(
+            std::fs::read_to_string(root.0.join("mcp").join(HOMES)).unwrap(),
+            broken
+        );
+        assert_eq!(lines.count("homes kept as they were"), 1);
+        let problem = mcp.ask(Progress).await.unwrap().homes_problem;
+        assert!(
+            problem.is_some_and(|p| p.contains("homes.yaml is invalid")),
+            "shown over RPC"
+        );
+
+        // Fixed: read again, and the homeless server is claimed.
+        homes(
+            &root.0,
+            "servers:\n  gone:\n    engine: b\n    everywhere: true\n",
+        );
+        mcp.ask(Reconcile).await.unwrap();
+        assert_eq!(lines.count("mcp homes: readable again"), 1);
+        assert_eq!(
+            load_homes(&root.0.join("mcp")).unwrap().engine("fresh"),
+            Some("a")
+        );
+    }
+
+    /// An unreadable replica is never "no row": nothing is claimed until it reads.
+    #[tokio::test]
+    async fn an_unreadable_replica_claims_nothing() {
+        let (lines, _log) = capture();
+        let root = crate::TestDir::new("mcp-home-locked");
+        let mcp = actor(&root.0, Some(engine("a")));
+        std::fs::write(root.0.join("mcp.sqlite"), b"not a database").unwrap();
+        missing(&root.0, "theirs", &[]);
+        mcp.ask(Reconcile).await.unwrap();
+        mcp.ask(Reconcile).await.unwrap();
+        assert!(!root.0.join("mcp").join(HOMES).exists(), "nothing claimed");
+        assert_eq!(listed(&mcp, "theirs").await.state, McpState::Elsewhere);
+        assert_eq!(lines.count("mcp.sqlite unreadable"), 1);
+        std::fs::remove_file(root.0.join("mcp.sqlite")).unwrap();
+        mcp.ask(Reconcile).await.unwrap();
+        assert_eq!(
+            load_homes(&root.0.join("mcp")).unwrap().engine("theirs"),
+            Some("a")
+        );
+    }
+
+    static B_PAIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+    /// Engine `a`'s paired set: `b` while [`B_PAIRED`], else nobody.
+    fn a_peers() -> Option<Vec<String>> {
+        Some(if B_PAIRED.load(std::sync::atomic::Ordering::SeqCst) {
+            vec!["b".to_owned()]
+        } else {
+            Vec::new()
+        })
+    }
+
+    /// Sky's pair: mikrotik is homed on b. b unpaired: a runs it, writes
+    /// nothing, says so once. b paired again: the home is b's as before.
+    #[tokio::test]
+    async fn an_unpaired_home_runs_here_unwritten_and_a_re_pair_restores_it() {
+        let (lines, _log) = capture();
+        let root = crate::TestDir::new("mcp-home-adopt");
+        let mcp = actor_paired(&root.0, Some(engine("a")), a_peers);
+        missing(&root.0, "mikrotik", &[]);
+        let yaml = "servers:\n  mikrotik:\n    engine: b\n    name: box-b\n";
+        homes(&root.0, yaml);
+        let on_disk = || std::fs::read_to_string(root.0.join("mcp").join(HOMES)).unwrap();
+        mcp.ask(Reconcile).await.unwrap();
+        assert_eq!(listed(&mcp, "mikrotik").await.state, McpState::Elsewhere);
+
+        B_PAIRED.store(false, std::sync::atomic::Ordering::SeqCst);
+        mcp.ask(Reconcile).await.unwrap();
+        settled(&mcp, "mikrotik").await;
+        mcp.ask(Reconcile).await.unwrap();
+        let s = listed(&mcp, "mikrotik").await;
+        assert_eq!(
+            (s.state, s.home.as_deref(), s.home_here),
+            (McpState::UnavailableHere, Some("b"), false)
+        );
+        assert_eq!(on_disk(), yaml, "adopted at runtime only");
+        assert_eq!(
+            lines.count("mcp: mikrotik runs here while its home box-b is not paired"),
+            1
+        );
+
+        B_PAIRED.store(true, std::sync::atomic::Ordering::SeqCst);
+        mcp.ask(Reconcile).await.unwrap();
+        let s = listed(&mcp, "mikrotik").await;
+        assert_eq!(
+            (s.state, s.home.as_deref()),
+            (McpState::Elsewhere, Some("b"))
+        );
+        assert_eq!(
+            mcp.ask(Failures("mikrotik")).await.unwrap(),
+            None,
+            "stopped here"
+        );
+        assert_eq!(on_disk(), yaml);
+    }
+
+    /// This engine's own lines of servers no file defines are dropped; a
+    /// disabled entry keeps its line (and flags), a peer's line stays, and
+    /// nothing is dropped while a file fails to parse.
+    #[tokio::test]
+    async fn own_lines_of_undefined_servers_are_dropped() {
+        let root = crate::TestDir::new("mcp-home-prune");
+        let mcp = actor(&root.0, Some(engine("a")));
+        let entry =
+            serde_json::json!({"mcpServers": {"paused": {"command": MISSING, "disabled": true}}});
+        std::fs::write(root.0.join("mcp/paused.json"), entry.to_string()).unwrap();
+        std::fs::write(root.0.join("mcp/broken.json"), "{ not json").unwrap();
+        homes(
+            &root.0,
+            "servers:\n  stale:\n    engine: a\n  paused:\n    engine: a\n    everywhere: true\n  peers:\n    engine: b\n",
+        );
+        mcp.ask(Reconcile).await.unwrap();
+        let h = load_homes(&root.0.join("mcp")).unwrap();
+        assert_eq!(
+            h.engine("stale"),
+            Some("a"),
+            "a file failed to parse: nothing dropped"
+        );
+
+        std::fs::remove_file(root.0.join("mcp/broken.json")).unwrap();
+        mcp.ask(Reconcile).await.unwrap();
+        let h = load_homes(&root.0.join("mcp")).unwrap();
+        assert_eq!(
+            (h.engine("stale"), h.engine("paused"), h.engine("peers")),
+            (None, Some("a"), Some("b"))
+        );
+        assert!(
+            h.servers["paused"].everywhere,
+            "a disabled entry keeps its flags"
+        );
     }
 }

@@ -9,10 +9,11 @@ import { isBoardCreate } from './BoardCard'
 import { Message, PromptCard } from './Message'
 import { PeerGroup } from './PeerGroup'
 import { toolKey, useDisclosed } from './disclosure'
+import { labelKind } from './peer-identity'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
-/** A run: tool rows, possibly with reasoning rows between them, starting and ending with a tool; or 2+ adjacent peer rows from one sender. */
+/** A run: tool rows and job results, possibly with reasoning rows between them, starting and ending with one of those; or 2+ adjacent peer rows from one sender. */
 export type Run = Entry[]
 
 /** Deliverable tools (Sky, 2026-10-06): "Show tool cards are never folded in with the collapsed sequential tools. They
@@ -28,6 +29,10 @@ export function isDeliverable(tool: Tool): boolean {
 
 type Peer = Extract<Entry, { kind: 'peer' }>
 const foldsPeer = (e: Entry | undefined): e is Peer => e?.kind === 'peer' && !e.context?.removed
+/** A job's result (`job j4`, `j4 · cmd · exit 0`): read from the sender, like `MessagePeer` does, never from the body. */
+const isJob = (e: Entry | undefined): e is Peer => foldsPeer(e) && labelKind(e.origin?.from ?? e.from) === 'job'
+/** A row a tool run is made of: a tool call that is no deliverable and carries no restart note, or a job result. */
+const foldsTool = (e: Entry | undefined): boolean => isJob(e) || (e?.kind === 'tool' && !isDeliverable(e) && !e.restart)
 
 const NONE: ReadonlySet<string> = new Set()
 
@@ -37,12 +42,24 @@ const NONE: ReadonlySet<string> = new Set()
  * `pinned` thinking block (`useToolRuns.pinned`, one the user opened while it streamed): the next tool call must not
  * fold the block the reader is watching into a collapsed card. 183 §12.4: a call carrying a restart note splits one too,
  * so its EngineRestartCard stays in view. Sky 2026-11-10: two or more adjacent peer cards from one sender fold into one
- * run too (`PeerGroup`); a row removed from context stays its own tombstone. */
+ * run too (`PeerGroup`); a row removed from context stays its own tombstone. Sky 2026-11-10: a job result (`isJob`) is a
+ * tool card here: it folds into the tool run around it and never into a `PeerGroup`. */
 export function foldRuns(entries: Entry[], pinned: ReadonlySet<string> = NONE): (Entry | Run)[] {
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < entries.length) {
     const e = entries[i] as Entry
+    if (foldsTool(e)) {
+      let end = i + 1
+      let last = i
+      while (end < entries.length && (foldsTool(entries[end]) || (entries[end]?.kind === 'reasoning' && !pinned.has(entries[end]!.id)))) {
+        if (entries[end]?.kind !== 'reasoning') last = end
+        end++
+      }
+      out.push(last > i ? entries.slice(i, last + 1) : e)
+      i = last + 1
+      continue
+    }
     if (foldsPeer(e)) {
       // Folded by the authenticated endpoint, else the label.
       const from = e.origin?.from ?? e.from
@@ -52,30 +69,14 @@ export function foldRuns(entries: Entry[], pinned: ReadonlySet<string> = NONE): 
       i = end
       continue
     }
-    if (e.kind !== 'tool' || isDeliverable(e) || e.restart) {
-      out.push(e)
-      i++
-      continue
-    }
-    let end = i + 1
-    let lastTool = i
-    while (
-      end < entries.length &&
-      ((entries[end]?.kind === 'tool' && !isDeliverable(entries[end] as Tool) && !(entries[end] as Tool).restart) || (entries[end]?.kind === 'reasoning' && !pinned.has(entries[end]!.id)))
-    ) {
-      if (entries[end]?.kind === 'tool') lastTool = end
-      end++
-    }
-    const run = entries.slice(i, lastTool + 1)
-    if (run.length > 1) out.push(run)
-    else out.push(e)
-    i = lastTool + 1
+    out.push(e)
+    i++
   }
   return out
 }
 
 export type Summary = {
-  /** Header line: `running \`name\` · 3 of 5` live, `5 tools · 2.1 s · 1 failed (name)` once every call has a result. */
+  /** Header line: `running \`name\` · 3 of 5` live, `5 tools · 1 job output · 2.1 s · 1 failed (name)` once every call has a result. */
   text: string
   running: boolean
   /** Red card (Sky, 2026-11-09): more of the completed calls failed than succeeded; a tie is not red. The header still names every failure. */
@@ -95,7 +96,8 @@ export function summarize(run: Run): Summary {
   if (current >= 0) {
     return { text: `running \`${tools[current]?.name}\` · ${current + 1} of ${tools.length}`, running: true, failed: mostlyFailed, hint }
   }
-  const parts = [`${tools.length} tool${tools.length === 1 ? '' : 's'}`]
+  const jobs = run.filter(isJob).length
+  const parts = [tools.length ? `${tools.length} tool${tools.length === 1 ? '' : 's'}` : '', jobs ? `${jobs} job output${jobs === 1 ? '' : 's'}` : ''].filter(Boolean)
   const start = tools[0]?.startedAt
   const end = tools[tools.length - 1]?.finishedAt
   // `2.1 s` under a minute, `3 min` from there.
@@ -104,21 +106,24 @@ export function summarize(run: Run): Summary {
   return { text: parts.join(' · '), running: false, failed: mostlyFailed, hint }
 }
 
-/** A folded run: consecutive peer cards from one sender (`PeerGroup`) or tool calls (`ToolRun`). */
+/** A folded run: consecutive peer cards from one sender (`PeerGroup`) or tool calls and job results (`ToolRun`). */
 export function ToolRunCard({ run, prompts, session }: { run: Run; prompts: Prompt[] | null; session: string }) {
-  return run[0]?.kind === 'peer' ? <PeerGroup run={run as Peer[]} session={session} /> : <ToolRun run={run} prompts={prompts} session={session} />
+  return run[0]?.kind === 'peer' && !isJob(run[0]) ? <PeerGroup run={run as Peer[]} session={session} /> : <ToolRun run={run} prompts={prompts} session={session} />
 }
 
 /** One card for a run of consecutive tool calls (70 TOOL-COLLAPSE): collapsed by default to a live status line, expanded
- * to the same cards the transcript shows ungrouped. Open state lives in the disclosure store keyed by the first call id, so
- * it survives the settled reload (new entry ids, same call ids); until the user toggles the run it is open whenever a
- * member's own card is (`toolKey`), so the next call folding an expanded tool card into a run keeps it on screen (171F B13).
+ * to the same cards the transcript shows ungrouped. Open state lives in the disclosure store keyed by the first call id
+ * (a job result's entry id when the run starts with one), so it survives the settled reload (new entry ids, same call
+ * ids); until the user toggles the run it is open whenever a member's own card is (`toolKey`, a job card's `peer`), so
+ * the next call folding an expanded tool card into a run keeps it on screen (171F B13).
  * Prompts waiting on a call in the run render under the header whether or not it is open: an approval must never hide
  * inside a collapsed run. */
 function ToolRun({ run, prompts, session }: { run: Run; prompts: Prompt[] | null; session: string }) {
-  const first = run[0] as Tool
-  const member = useDisclosed((open) => run.some((e) => e.kind === 'tool' && open[toolKey(e.callId)] === true))
-  const [open, setOpen] = useDisclosure(disclosureKey('run', first.callId), member)
+  const first = run[0] as Entry
+  const member = useDisclosed((open) =>
+    run.some((e) => (e.kind === 'tool' ? open[toolKey(e.callId)] : e.kind === 'peer' && open[disclosureKey(e.id, 'peer')]) === true),
+  )
+  const [open, setOpen] = useDisclosure(disclosureKey('run', first.kind === 'tool' ? first.callId : first.id), member)
   const { text, running, failed, hint } = summarize(run)
   return (
     <>

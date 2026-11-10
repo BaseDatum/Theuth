@@ -250,6 +250,8 @@ async fn export_bindings() {
         tools::PolicyAction,
         tools::Gate,
         tools::McpServer,
+        tools::McpState,
+        tools::McpHomeAction,
         tools::McpToolInfo,
         tools::McpProgress,
         tools::ApprovalRequested,

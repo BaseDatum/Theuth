@@ -11,7 +11,7 @@
 //! [`Vault::expand`]; [`Vault::redact`] turns them back into placeholders.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, PoisonError, RwLock, RwLockReadGuard};
@@ -293,6 +293,10 @@ struct Scrubber {
     placeholders: Vec<String>,
     /// Longest pattern, in bytes.
     max_len: usize,
+    /// Every distinct entry of `placeholders`: the spans [`hits`] leaves alone.
+    held: HashSet<String>,
+    /// Longest of `held`, in bytes.
+    held_max: usize,
 }
 
 struct Inner {
@@ -760,7 +764,7 @@ impl Vault {
     /// non-overlapping (51 §7.2).
     pub fn redact_spans(&self, text: &str) -> Vec<std::ops::Range<usize>> {
         self.read().scrubber.as_ref().map_or_else(Vec::new, |sc| {
-            sc.ac.find_iter(text).map(|m| m.start()..m.end()).collect()
+            hits(sc, text).into_iter().map(|(r, _)| r).collect()
         })
     }
 
@@ -1086,13 +1090,57 @@ fn strings(
     }
 }
 
-fn scrub<'a>(sc: Option<&Scrubber>, text: &'a str) -> Cow<'a, str> {
-    match sc {
-        Some(sc) if sc.ac.find(text).is_some() => {
-            Cow::Owned(sc.ac.replace_all(text, &sc.placeholders))
+/// Matches with their placeholder index, outside every placeholder this
+/// scrubber itself emits that is already in `text`: masking is idempotent, so
+/// a secret whose value is part of a placeholder (its own name, say) never
+/// rewrites it. Only an exact emitted placeholder is skipped; any other
+/// `{{secret:` text (a fake one around a value, an unknown name, `env`
+/// output before a JSON close) is scanned like the rest.
+fn hits(sc: &Scrubber, text: &str) -> Vec<(std::ops::Range<usize>, usize)> {
+    let mut held: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut from = 0;
+    while let Some(i) = text[from..].find("{{secret:") {
+        let start = from + i;
+        let window = &text.as_bytes()[start..text.len().min(start + sc.held_max)];
+        match window.windows(2).position(|w| w == b"}}") {
+            Some(j) if sc.held.contains(&text[start..start + j + 2]) => {
+                held.push(start..start + j + 2);
+                from = start + j + 2;
+            }
+            // `{` is one byte: still a char boundary.
+            _ => from = start + 1,
         }
-        _ => Cow::Borrowed(text),
     }
+    let mut out = Vec::new();
+    let mut base = 0;
+    let ends = held.iter().map(|h| (h.start, h.end));
+    for (stop, resume) in ends.chain([(text.len(), text.len())]) {
+        out.extend(
+            sc.ac
+                .find_iter(&text[base..stop])
+                .map(|m| (base + m.start()..base + m.end(), m.pattern().as_usize())),
+        );
+        base = resume;
+    }
+    out
+}
+
+fn scrub<'a>(sc: Option<&Scrubber>, text: &'a str) -> Cow<'a, str> {
+    let Some(sc) = sc else {
+        return Cow::Borrowed(text);
+    };
+    let mut out = String::new();
+    let mut last = 0;
+    for (r, p) in hits(sc, text) {
+        out.push_str(&text[last..r.start]);
+        out.push_str(&sc.placeholders[p]);
+        last = r.end;
+    }
+    if last == 0 && out.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    out.push_str(&text[last..]);
+    Cow::Owned(out)
 }
 
 /// Newest version first per name and each text once, so a value two
@@ -1125,6 +1173,8 @@ fn scrubber(entries: &BTreeMap<String, Entry>) -> Option<Scrubber> {
         return None;
     }
     let max_len = patterns.iter().map(|p| p.len()).max().unwrap_or(0);
+    let held: HashSet<String> = placeholders.iter().cloned().collect();
+    let held_max = held.iter().map(String::len).max().unwrap_or(0);
     let ac = AhoCorasickBuilder::new()
         .match_kind(MatchKind::LeftmostLongest)
         .build(&patterns);
@@ -1133,6 +1183,8 @@ fn scrubber(entries: &BTreeMap<String, Entry>) -> Option<Scrubber> {
             ac,
             placeholders,
             max_len,
+            held,
+            held_max,
         }),
         Err(e) => {
             tracing::warn!("secrets: building the redaction automaton failed: {e}");
@@ -1358,6 +1410,108 @@ mod tests {
         // A restored value lives in two versions; the current placeholder wins.
         v.restore("tok", 1).await.unwrap();
         assert_eq!(v.redact("first-secret-value"), "{{secret:tok}}");
+    }
+
+    /// The xeus log: `mikrotik.password` = `mikrotik` masked inside its own
+    /// placeholder on a second pass. A placeholder is never rewritten.
+    #[tokio::test]
+    async fn redact_is_idempotent_for_a_value_inside_its_own_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("mikrotik.password", "mikrotik", None, "user")
+            .await
+            .unwrap();
+        let once = v.redact("server=mikrotik user=mikrotik").into_owned();
+        assert_eq!(
+            once,
+            "server={{secret:mikrotik.password}} user={{secret:mikrotik.password}}"
+        );
+        assert!(matches!(v.redact(&once), Cow::Borrowed(_)));
+        assert!(v.redact_spans(&once).is_empty());
+        // Text around and between placeholders is still masked.
+        assert_eq!(
+            v.redact("mikrotik {{secret:mikrotik.password}}mikrotik"),
+            "{{secret:mikrotik.password}} {{secret:mikrotik.password}}{{secret:mikrotik.password}}"
+        );
+    }
+
+    /// Only a placeholder the scrubber itself emits is left alone: text that
+    /// merely opens like one never hides a value.
+    #[tokio::test]
+    async fn redact_masks_values_inside_anything_but_a_real_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("tok", "first-secret-value", None, "user")
+            .await
+            .unwrap();
+        v.set("tok", "second-secret-value", None, "user")
+            .await
+            .unwrap();
+        let masked = |text: &str| v.redact(text).into_owned();
+        // A value wrapped in the placeholder form is not a placeholder.
+        assert_eq!(
+            masked("{{secret:second-secret-value}}"),
+            "{{secret:{{secret:tok}}}}"
+        );
+        // An unknown name, and a version the vault does not keep.
+        assert_eq!(
+            masked("{{secret:nope second-secret-value}} {{secret:tok:-3 first-secret-value}}"),
+            "{{secret:nope {{secret:tok}}}} {{secret:tok:-3 {{secret:tok:-1}}}}"
+        );
+        // A span over several lines.
+        assert_eq!(
+            masked("{{secret:\nsecond-secret-value\n}}"),
+            "{{secret:\n{{secret:tok}}\n}}"
+        );
+        // `env` output, then any JSON's closing braces.
+        assert_eq!(
+            masked("{{secret: HOME=/u TOKEN=second-secret-value\n{\"a\": {\"b\": 1}}"),
+            "{{secret: HOME=/u TOKEN={{secret:tok}}\n{\"a\": {\"b\": 1}}"
+        );
+        // Real placeholders, current and older, stay as they are, and so does the text after them.
+        let both = "{{secret:tok}} {{secret:tok:-1}} second-secret-value";
+        assert_eq!(
+            masked(both),
+            "{{secret:tok}} {{secret:tok:-1}} {{secret:tok}}"
+        );
+        assert_eq!(v.redact_spans(both).len(), 1);
+    }
+
+    /// Adjacent placeholders, a name that is a prefix of another, and case:
+    /// only the exact emitted text is a placeholder.
+    #[tokio::test]
+    async fn redact_placeholder_edges_adjacent_prefix_and_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("tok", "token-secret-value", None, "user")
+            .await
+            .unwrap();
+        v.set("token", "other-secret-value", None, "user")
+            .await
+            .unwrap();
+        let masked = |text: &str| v.redact(text).into_owned();
+        // Adjacent, with nothing and with a value between them.
+        let adjacent = "{{secret:tok}}{{secret:token}}{{secret:tok}}";
+        assert_eq!(masked(adjacent), adjacent);
+        assert_eq!(
+            masked("{{secret:tok}}token-secret-value{{secret:token}}"),
+            "{{secret:tok}}{{secret:tok}}{{secret:token}}"
+        );
+        // A prefix of a real name, or a real name with more after it, is not one.
+        assert_eq!(
+            masked("{{secret:toke other-secret-value}} {{secret:tokens}}"),
+            "{{secret:toke {{secret:token}}}} {{secret:tokens}}"
+        );
+        assert_eq!(
+            masked("{{secret:tok token-secret-value}}"),
+            "{{secret:tok {{secret:tok}}}}"
+        );
+        // Case variants are not placeholders: a value inside them is masked.
+        assert_eq!(
+            masked("{{SECRET:tok other-secret-value}} {{secret:TOK token-secret-value}}"),
+            "{{SECRET:tok {{secret:token}}}} {{secret:TOK {{secret:tok}}}}"
+        );
+        assert_eq!(masked("{{Secret:tok}}"), "{{Secret:tok}}");
     }
 
     #[tokio::test]

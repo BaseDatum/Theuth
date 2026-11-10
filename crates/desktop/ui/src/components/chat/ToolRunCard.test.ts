@@ -100,6 +100,35 @@ test('foldRuns: adjacent peer cards from one sender fold; another sender, any ot
   expect(foldRuns([tool(1), send, tool(2), a1, send, a2])).toEqual([tool(1), send, tool(2), a1, send, a2])
 })
 
+test('foldRuns: a job result folds like a tool card — beside tools, with another job, never alone or into a peer group', () => {
+  const [a, b, c] = [tool(1), tool(2), tool(3)]
+  const [j1, j2] = [peer('j1', 'job j4', 'out'), peer('j2', 'j4 · make · exit 0 · 3s', 'out')]
+  const think: Entry = { id: 'r', kind: 'reasoning', text: 'hm', done: true }
+  expect(foldRuns([a, j1, b])).toEqual([[a, j1, b]])
+  expect(foldRuns([j1, a])).toEqual([[j1, a]])
+  expect(foldRuns([a, j1])).toEqual([[a, j1]])
+  expect(foldRuns([j1, think, j2])).toEqual([[j1, think, j2]])
+  expect(foldRuns([text('x'), j1, text('y')])).toEqual([text('x'), j1, text('y')])
+  // A deliverable splits a run that holds a job.
+  const s = tool(9, { name: 'show' })
+  expect(foldRuns([a, j1, s, b, c])).toEqual([[a, j1], s, [b, c]])
+  expect(foldRuns([a, s, j1, b])).toEqual([a, s, [j1, b]])
+  // A contact, subagent or reminder card is never a tool-run member, and a job never joins their group.
+  const contact = peer('k', 'contact:e1:sky', 'hi', { origin: { id: 'm1', from: 'contact:e1:sky', reply_to: null, scope: null } })
+  const kid = peer('s', 'session:kid', 'done', { origin: { id: 'm2', from: 'session:kid', reply_to: null, scope: null } })
+  const reminder = peer('rm', 'Reminder r3 · after 10 min', 'ping')
+  for (const p of [contact, kid, reminder]) {
+    expect(foldRuns([a, p, b])).toEqual([a, p, b])
+    expect(foldRuns([p, j1, a])).toEqual([p, [j1, a]])
+  }
+  // The body never makes a job: only the sender does.
+  const looks = peer('l', 'session:kid', 'job j4', { origin: { id: 'm3', from: 'session:kid', reply_to: null, scope: null } })
+  expect(foldRuns([a, looks, b])).toEqual([a, looks, b])
+  // A job removed from context stays its own tombstone.
+  const removed = peer('jr', 'job j5', 'out', { context: { target: { kind: 'message', seq: 3 }, active: false, removed: true, remove_with: [], attachments: [] } } as Partial<Peer>)
+  expect(foldRuns([a, removed, b])).toEqual([a, removed, b])
+})
+
 test('summarize: live status names the current call and its position; the ending summary counts, times and names failures', () => {
   const live = summarize([tool(1, { startedAt: 1000, finishedAt: 1400 }), tool(2, { result: undefined }), tool(3, { pending: true, result: undefined })])
   expect(live).toMatchObject({ text: 'running `t2` · 2 of 3', running: true, failed: false, hint: '✓ out 1  (+1 lines)' })
@@ -148,4 +177,26 @@ test('ToolRunCard: collapsed shows one header and no cards; expanded shows all t
   const expanded = render()
   expect(expanded).toContain('aria-expanded="true"')
   for (const name of ['t1', 't2', 't3']) expect(expanded).toContain(`>${name}<`)
+})
+
+test('summarize counts job outputs after tools; a jobs-only run names no tools', () => {
+  const job = (n: number) => peer(`j${n}`, `j${n} · make · exit 0 · 3s`, `out ${n}`)
+  const think: Entry = { id: 'r', kind: 'reasoning', text: 'hm', done: true }
+  expect(summarize([tool(1), tool(2), job(1), tool(3), think, tool(4)]).text).toBe('4 tools · 1 job output')
+  expect(summarize([job(1), tool(1, { startedAt: 1000 }), fail(2), job(2)]).text).toBe('2 tools · 2 job outputs · 1 failed (t2)')
+  expect(summarize([job(1), job(2)])).toMatchObject({ text: '2 job outputs', running: false, failed: false, hint: null })
+  // Live: the position counts calls only.
+  expect(summarize([job(1), tool(1, { result: undefined })]).text).toBe('running `t1` · 1 of 1')
+})
+
+test('ToolRunCard: a run that starts with a job is a tool run; expanded, the job card shows its raw output', () => {
+  const run = [peer('j1', 'job j4', 'raw *output*'), tool(1)]
+  const render = () => renderToStaticMarkup(createElement(ToolRunCard, { run, prompts: null, session: 's' }))
+  const collapsed = render()
+  expect(collapsed).toContain('1 tool · 1 job output')
+  expect(collapsed).not.toContain('raw *output*')
+  useToolRuns.setState({ disclosed: { [disclosureKey('run', 'j1')]: true } })
+  const expanded = render()
+  expect(expanded).toContain('raw *output*')
+  expect(expanded).toContain('>t1<')
 })

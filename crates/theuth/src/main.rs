@@ -1809,6 +1809,20 @@ async fn run() -> anyhow::Result<()> {
     browser::warmup(&browser_cfg);
 
     let rt = Runtime::new(config, data_dir);
+    // 187: MCP servers start only on their home engine, so the tools plugin needs this
+    // engine's mesh id before the mesh plugin (later in the list, absent under `--acp`) runs.
+    if let Some(id) = mesh::stored_self_id(&rt.data_dir) {
+        let name = rt
+            .section::<mesh::config::MeshConfig>("mesh")
+            .map(|c| c.name.trim().to_owned())
+            .unwrap_or_default();
+        let name = if name.is_empty() {
+            mesh::self_name()
+        } else {
+            name
+        };
+        tools::set_machine(&id, &name);
+    }
     let attached_client = attached.is_some();
 
     // Pairing needs no TUI, agent or tools; the plugin cancels `shutdown`

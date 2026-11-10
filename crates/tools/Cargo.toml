@@ -8,6 +8,7 @@ description = "Tool registry, approval gate, builtin tools (shell, fs), MCP tool
 [dependencies]
 runtime = { workspace = true }
 replica = { workspace = true }
+parking_lot = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
@@ -56,3 +57,6 @@ workspace = true
 [dev-dependencies]
 figment = { workspace = true }
 axum = { workspace = true }  # in-process MCP servers for the lifecycle tests (175)
+sqlx = { workspace = true }  # 187: a replica row naming another writer, for the home derivation test
+tracing-subscriber = { workspace = true }  # 187: count log lines per state change
+tokio = { workspace = true, features = ["test-util"] }  # 187: backoff under a paused clock

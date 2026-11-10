@@ -265,11 +265,16 @@ pub async fn expected(ext: &Extensions, session: SessionId) -> RpcResult<Option<
     }
 }
 
+/// How long [`to_creator`] waits for the creator when the row is here and a
+/// local answer is the fallback (a connected but hung creator must not cost
+/// [`TIMEOUT`] per read).
+const CREATOR_WAIT: Duration = Duration::from_secs(5);
+
 /// A read the front door answers from its replica, for a chat created
 /// elsewhere and in use ([`expected`]): forwarded to its creator, so a
 /// replica that has not caught up (or has no row yet) never answers for it.
 /// `Ok(None)`: answer here — nothing expected, or the creator cannot be
-/// reached and the row is here.
+/// reached (within [`CREATOR_WAIT`]) and the row is here.
 pub async fn to_creator<T: DeserializeOwned>(
     ext: &Extensions,
     session: SessionId,
@@ -279,7 +284,8 @@ pub async fn to_creator<T: DeserializeOwned>(
     let Some(Expected { engine, here }) = expected(ext, session).await? else {
         return Ok(None);
     };
-    match to_peer(ext, &engine, method, params).await {
+    let wait = if here { CREATOR_WAIT } else { TIMEOUT };
+    match to_peer_within(ext, &engine, method, params, wait).await {
         Ok(Some(v)) => Ok(Some(v)),
         Ok(None) if here => Ok(None),
         Err(e) if here && e.code() == OWNER_UNREACHABLE => Ok(None),
