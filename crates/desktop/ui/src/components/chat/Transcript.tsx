@@ -24,6 +24,7 @@ import { window as reach } from './lookahead'
 import { type Row, buildRows } from './rows'
 import { type Anchor, step } from './scroll-anchor'
 import { ToolRunCard } from './ToolRunCard'
+import { settleOn, takeJump, useTranscriptJump } from './jump'
 
 const PAGE = 60
 /** Distance from the bottom (px) within which new content keeps the view pinned. */
@@ -465,6 +466,28 @@ export function Transcript({ session, compact = false }: { session: string; comp
     setUnstuck(true)
     v.scrollToIndex(index, { align: 'start' })
   }
+  // "jump to message" (SendCard → `useTranscriptJump`): this transcript's virtualiser brings the row into range, then
+  // the card is centred and flashed once mounted. Nothing depends on the send card staying mounted; leaving the
+  // session drops a request still pending for it.
+  // The nonce alone: `takeJump` clearing the request must not re-run this effect (its cleanup would cancel the fine-tune).
+  const jumpNonce = useTranscriptJump((s) => s.nonce)
+  useEffect(() => {
+    const target = takeJump(session, rows)
+    if (!target) return
+    stuck.current = false
+    setUnstuck(true)
+    v.scrollToIndex(target.index, { align: 'center' })
+    const e = target.entry
+    const id = e.kind === 'peer' && e.origin ? `peer-msg-${e.origin.id}` : null
+    return settleOn(ref.current, () => (id ? document.getElementById(id) : null) ?? ref.current?.querySelector(`[data-index="${target.index}"]`) ?? null)
+  }, [jumpNonce]) // eslint-disable-line react-hooks/exhaustive-deps -- one run per request; `rows`/`v` as of it
+  useEffect(
+    () => () => {
+      const j = useTranscriptJump.getState()
+      if (j.session === session) j.clear()
+    },
+    [session],
+  )
 
   const items = v.getVirtualItems()
   // R2.2: the rows the library reports visible (± 1) render now; the rest of the window one priority lower through

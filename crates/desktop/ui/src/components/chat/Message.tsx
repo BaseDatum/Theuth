@@ -20,6 +20,7 @@ import { MessageTool } from './MessageTool'
 import { MeetingCard } from './MeetingCard'
 import { MessageUser } from './MessageUser'
 import { MessageVision } from './MessageVision'
+import { SendCard } from './SendCard'
 import { SecretRequestCard } from './SecretRequestCard'
 import { Details, DisclosureScope, useScopedDisclosure } from './disclosure'
 import { ResultCard } from '@/components/cells/ResultCard'
@@ -43,18 +44,33 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} context={entry.context} at={entry.at} readOnly={readOnly} />
     case 'reasoning':
       return <MessageReasoning id={entry.id} text={entry.text} done={entry.done} ms={entry.ms} />
-    case 'tool':
+    case 'tool': {
+      // Sky 2026-11-10: a send is its own card with its delivery track.
+      const card = entry.name === 'send_message' ? <SendCard tool={entry} session={session} at={entry.at} readOnly={readOnly} /> : <MessageTool tool={entry} session={session} readOnly={readOnly} />
       // 183 §12.4: a resumed batch's restart note is its own card above the call, never raw XML in the result.
       return entry.restart ? (
         <>
           <EngineRestartCard {...entry.restart} />
-          <MessageTool tool={entry} session={session} readOnly={readOnly} />
+          {card}
         </>
       ) : (
-        <MessageTool tool={entry} session={session} readOnly={readOnly} />
+        card
       )
-    case 'peer':
-      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} />
+    }
+    case 'peer': {
+      // The remove control sits in the card's header row (after the time), never over the outside band.
+      // A removed row's archived original (shown under its tombstone) is already outside the context: no control.
+      const ctx = readOnly || entry.context?.removed ? undefined : entry.context
+      const remove = ctx ? (
+        <RemoveButton
+          session={session}
+          target={ctx.target}
+          active={ctx.active}
+          className="-my-1.5 -mr-2 size-8 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
+        />
+      ) : undefined
+      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} at={entry.at} remove={remove} />
+    }
     case 'engine':
       return <EngineNotice notice={entry.notice} text={entry.text} />
     case 'desk':
@@ -222,11 +238,12 @@ function Tombstone({ entry, session, readOnly, reveal }: { entry: Entry; session
 }
 
 /** Tool, peer and engine cards keep their own layout (`show`/scrape cards included); the remove control sits over the card's
- * top-right corner as a sibling, with the card padded so no text hides under it. Cards without stored membership
- * (live, unsaved rows) get no control: a button without an authoritative target would only be guessing. The wrapper is
- * the same element either way, so the settled reload adding `context` never remounts the card (171F B13). */
+ * top-right corner as a sibling, with the card padded so no text hides under it (a peer card draws it in its own header
+ * row instead, `MessagePeer` `remove`). Cards without stored membership (live, unsaved rows) get no control: a button
+ * without an authoritative target would only be guessing. The wrapper is the same element either way, so the settled
+ * reload adding `context` never remounts the card (171F B13). */
 function Card({ entry, session, children }: { entry: Entry; session: string; children: ReactNode }) {
-  const ctx = entry.context
+  const ctx = entry.kind === 'peer' ? undefined : entry.context
   return (
     <div className={ctx ? 'group relative [&>:first-child]:pr-12' : 'group relative'}>
       {children}
@@ -271,7 +288,8 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
 }
 
 /** One transcript row: the entry's card plus the prompts waiting on it. Entries are immutable and `session` is stable, so `memo` skips untouched rows.
- * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool/peer/engine cards get it from `Card`.
+ * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool and
+ * engine cards get it from `Card`, a peer card draws it in its own header (`MessagePeer` `remove`).
  * `readOnly` drops every control that would edit the session or its context; `reveal` opens a removed row's archive at once.
  * Every disclosure inside is scoped by the entry id (`DisclosureScope`, 171F B13). */
 export const Message = memo(function Message({

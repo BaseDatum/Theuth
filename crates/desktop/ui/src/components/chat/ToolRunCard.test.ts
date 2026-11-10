@@ -57,7 +57,7 @@ test('foldRuns: a pinned thinking block splits a run like a deliverable; unpinne
 
 test('foldRuns: a deliverable never joins a run — it splits one; a board create still does; no deliverable, no change', () => {
   const [a, b, c, d] = [tool(1), tool(2), tool(3), tool(4)]
-  for (const name of ['show', 'app', 'agent_draft', 'task_draft', 'routine_draft']) {
+  for (const name of ['show', 'app', 'agent_draft', 'task_draft', 'routine_draft', 'send_message']) {
     const s = tool(9, { name })
     expect(isDeliverable(s)).toBe(true)
     expect(foldRuns([a, b, s, c, d])).toEqual([[a, b], s, [c, d]])
@@ -78,6 +78,26 @@ test('foldRuns: an answered ask_user is a deliverable — it splits a run and a 
   expect(foldRuns([a, b, ask, c, d])).toEqual([[a, b], ask, [c, d]])
   expect(foldRuns([text('x'), ask, text('y')])).toEqual([text('x'), ask, text('y')])
   for (const name of ['secret_request', 'desktop_handoff']) expect(isDeliverable(tool(8, { name }))).toBe(false)
+})
+
+type Peer = Extract<Entry, { kind: 'peer' }>
+const peer = (id: string, from: string, body = id, extra: Partial<Peer> = {}): Peer => ({ id, kind: 'peer', from, text: body, ...extra })
+
+test('foldRuns: adjacent peer cards from one sender fold; another sender, any other row or a removed row ends the fold', () => {
+  const [a1, a2, a3] = [peer('a1', 'session:a'), peer('a2', 'session:a'), peer('a3', 'session:a')]
+  const b = peer('b', 'session:b')
+  expect(foldRuns([a1, a2, a3, b])).toEqual([[a1, a2, a3], b])
+  expect(foldRuns([a1, text('x'), a2])).toEqual([a1, text('x'), a2])
+  expect(foldRuns([a1, b, a2])).toEqual([a1, b, a2])
+  const removed = peer('r', 'session:a', 'r', { context: { target: { kind: 'message', seq: 3 }, active: false, removed: true, remove_with: [], attachments: [] } } as Partial<Peer>)
+  expect(foldRuns([a1, removed, a2])).toEqual([a1, removed, a2])
+  // The authenticated endpoint decides, not the label.
+  const o1 = peer('o1', 'label', 'x', { origin: { id: 'm1', from: 'session:a', reply_to: null, scope: null } })
+  const o2 = peer('o2', 'other label', 'y', { origin: { id: 'm2', from: 'session:a', reply_to: null, scope: null } })
+  expect(foldRuns([o1, o2])).toEqual([[o1, o2]])
+  // A send between two of its answers keeps them apart and stays its own card.
+  const send = tool(5, { name: 'send_message', args: { to: 'session:a', message: 'hi' } })
+  expect(foldRuns([tool(1), send, tool(2), a1, send, a2])).toEqual([tool(1), send, tool(2), a1, send, a2])
 })
 
 test('summarize: live status names the current call and its position; the ending summary counts, times and names failures', () => {
