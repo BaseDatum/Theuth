@@ -24,7 +24,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { CAP, LIMITED, exportName, fingerprint, names, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { CAP, LIMITED, MODE_LABEL, exportName, fingerprint, modeHint, modeOf, names, updateNeeded, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -39,8 +39,9 @@ import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
 import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import type { PeerPath } from '@/rpc/bindings/PeerPath'
 import type { Risk } from '@/rpc/bindings/Risk'
+import type { ShareMode } from '@/rpc/bindings/ShareMode'
 
-const NO_PATCH: ContactPatch = { name: null, cap: null, exports: null, blocked: null }
+const NO_PATCH: ContactPatch = { name: null, cap: null, exports: null, blocked: null, modes: null }
 const PATH: Record<PeerPath, [string, string]> = { lan: ['LAN', 'bg-success'], relay: ['Relay', 'bg-warning'], offline: ['offline', 'ring-1 ring-fg-tertiary ring-inset'] }
 const CHIP = 'inline-flex items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-fg-secondary'
 const FIRST: [FirstContact, string][] = [
@@ -52,6 +53,7 @@ const CAPS: [Risk, string][] = [
   ['read_only', 'Read only'],
   ['mutating', 'Can change things'],
 ]
+const MODES: ShareMode[] = ['full', 'cautious']
 const toCommunication = { to: '/settings/$tab', params: { tab: 'communication' }, search: {} } as const
 const toNetwork = { to: '/settings/$tab', params: { tab: 'network' }, search: {} } as const
 
@@ -120,8 +122,8 @@ export function WaitingRow({ w }: { w: FirstWaiting }) {
   )
 }
 
-/** One export as a chip: an agent or a chat, and why it is paused (W-41, §12.10). */
-export function ExportChip({ name, exp }: { name: string; exp: Export | undefined }) {
+/** One export as a chip: an agent or a chat, why it is paused (W-41, §12.10) and, for a grant, its mode (186). */
+export function ExportChip({ name, exp, mode }: { name: string; exp: Export | undefined; mode?: ShareMode }) {
   const Icon = exp?.target.kind === 'agent' ? Bot : MessageSquare
   return (
     <span className={cn(CHIP, 'max-w-full', exp?.paused && 'text-fg-tertiary')}>
@@ -129,6 +131,7 @@ export function ExportChip({ name, exp }: { name: string; exp: Export | undefine
       <span className="truncate">
         {exp?.description || name}
         {exp?.paused && ` · Paused (${exp.paused})`}
+        {mode && ` · ${mode}`}
       </span>
     </span>
   )
@@ -180,12 +183,12 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
               {c.exports.length === 0 ? (
                 <span className="text-[13px] text-fg-tertiary">Nothing shared yet</span>
               ) : (
-                c.exports.map((n) => <ExportChip key={n} name={n} exp={exports.data?.find((x) => x.name === n)} />)
+                c.exports.map((n) => <ExportChip key={n} name={n} exp={exports.data?.find((x) => x.name === n)} mode={modeOf(c, n)} />)
               )}
             </div>
             {c.shared.length > 0 && (
               <p className="mt-1 break-words text-[13px] text-fg-secondary">
-                Shared with you: {c.shared.map((o) => `${o.title}${o.state === 'ask_first' ? ' (asks first)' : o.state === 'unavailable' ? ' (paused)' : ''}`).join(', ')}
+                Shared with you: {c.shared.map((o) => `${o.title}${o.mode === 'full' ? ' (full)' : ''}${o.state === 'ask_first' ? ' (asks first)' : o.state === 'unavailable' ? ' (paused)' : ''}`).join(', ')}
               </p>
             )}
             {waiting
@@ -622,11 +625,12 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
   )
 }
 
-/** Grant `target` to `contact`: its export when one exists, else a new one named from `title` (`a2a_export_put`), then `contact_update(exports)`. */
+/** Grant `target` to `contact` in `mode` (186 D3: a new grant always names one): its export when one exists, else a new
+ * one named from `title` (`a2a_export_put`), then `contact_update(exports, modes)`. */
 export function useGrant() {
   const api = useApi()
   return useAction(
-    ({ contact, target, title }: { contact: Contact; target: ExportTarget; title: string }) =>
+    ({ contact, target, title, mode }: { contact: Contact; target: ExportTarget; title: string; mode: ShareMode }) =>
       (async () => {
         const all = await api.a2a_exports()
         let exp = all.find((x) => (x.target.kind === 'agent' ? target.kind === 'agent' && x.target.agent === target.agent : target.kind === 'chat' && x.target.session === target.session))
@@ -634,9 +638,64 @@ export function useGrant() {
           exp = { name: exportName(title, all.map((x) => x.name)), target, description: title, paused: null }
           await api.a2a_export_put(exp)
         }
-        if (!contact.exports.includes(exp.name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name] })
+        if (!contact.exports.includes(exp.name))
+          await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name], modes: { ...contact.modes, [exp.name]: mode } })
       })(),
     { keys: [queryKeys.contacts, queryKeys.exports] },
+  )
+}
+
+/** 186: change the mode of `contact`'s grant of `exp` (a new epoch on the engine, D2). */
+export function useMode() {
+  const api = useApi()
+  return useAction(({ contact, exp, mode }: { contact: Contact; exp: string; mode: ShareMode }) => api.contact_update(contact.name, { ...NO_PATCH, modes: { ...contact.modes, [exp]: mode } }), {
+    keys: [queryKeys.contacts],
+  })
+}
+
+/**
+ * 186: the required choice when sharing — two equal buttons, neither preselected, each saying what it lets through.
+ * Full collaboration is off, with why, while the contact's build cannot take it (D10).
+ */
+export function ModeButtons({ c, what, kind, disabled, onPick }: { c: Contact; what: string; kind: 'agent' | 'chat'; disabled: boolean; onPick: (m: ShareMode) => void }) {
+  return (
+    <div role="group" aria-label={`Share ${what} with ${c.name}`} className="grid w-full grid-cols-2 gap-2">
+      {MODES.map((m) => {
+        const old = m === 'full' && !c.full_capable
+        return (
+          <Button
+            key={m}
+            variant="outline"
+            size="sm"
+            className="h-auto flex-col items-start justify-start gap-0.5 py-1.5 text-left whitespace-normal"
+            disabled={disabled || old}
+            aria-label={`${MODE_LABEL[m]}: share ${what} with ${c.name}`}
+            onClick={() => onPick(m)}
+          >
+            <span className="font-medium">{MODE_LABEL[m]}</span>
+            <span className="text-xs font-normal text-fg-secondary">{old ? updateNeeded(c) : modeHint(m, kind)}</span>
+          </Button>
+        )
+      })}
+    </div>
+  )
+}
+
+/** 186: a grant's mode as a select; Full collaboration is offered only to a contact that can take it (D10). */
+function ModeSelect({ c, exp, mode, onChange, disabled }: { c: Contact; exp: string; mode: ShareMode; onChange: (m: ShareMode) => void; disabled: boolean }) {
+  return (
+    <Select value={mode} disabled={disabled} onValueChange={(v) => onChange(v as ShareMode)}>
+      <SelectTrigger size="sm" className="w-44 shrink-0" aria-label={`Mode of ${exp} for ${c.name}`}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {MODES.map((m) => (
+          <SelectItem key={m} value={m} disabled={m === 'full' && !c.full_capable && mode !== 'full'}>
+            {m === 'full' && !c.full_capable && mode !== 'full' ? `${MODE_LABEL[m]} (${updateNeeded(c)})` : MODE_LABEL[m]}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   )
 }
 
@@ -690,7 +749,9 @@ export function ContactAccess() {
         </Button>
       }
     >
-      <p className="text-[13px] text-fg-secondary">{LIMITED} Each one opens a fresh capped session per agent, or one capped turn per message in a shared chat.</p>
+      <p className="text-[13px] text-fg-secondary">
+        {LIMITED} A cautious share opens a fresh capped session per agent, or one capped turn per message in a shared chat. A full one lets their agent and yours talk freely, like agents in your mesh, with your agent's normal tools and approvals.
+      </p>
       <p className="text-[13px] text-fg-secondary">A new share starts on "Always allow". "Ask first" holds a contact's first message until you press Allow.</p>
       <p className="text-[13px] text-fg-secondary">{toolsLine(exports.data ?? [])}</p>
       {contacts.isPending && <Empty>Loading…</Empty>}
@@ -704,9 +765,11 @@ export function ContactAccess() {
 function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; exports: readonly Export[] }) {
   const api = useApi()
   const [picking, setPicking] = useState(false)
+  const [chosen, setChosen] = useState<Pick_ | null>(null)
   const [q, setQ] = useState('')
   const grant = useGrant()
   const ungrant = useUngrant()
+  const mode = useMode()
   const shareable = useShareable(picking)
   const keys = [queryKeys.contacts]
   const cap = useAction((v: Risk) => api.contact_update(c.name, { ...NO_PATCH, cap: v }), { keys })
@@ -714,6 +777,9 @@ function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; expo
   const granted = new Set(c.exports.flatMap((n) => exports.find((x) => x.name === n) ?? []).map((x) => `${x.target.kind}|${x.target.kind === 'agent' ? x.target.agent : x.target.session}`))
   const options = shareable.filter((p) => !granted.has(p.key) && `${p.title} ${p.detail}`.toLowerCase().includes(q.trim().toLowerCase()))
   const busy = grant.isPending || ungrant.isPending
+  const modeOfRow = (n: string) => (mode.isPending && mode.variables?.exp === n ? mode.variables.mode : modeOf(c, n))
+  // 186 D6: the cap bounds cautious turns only; with every grant full there is nothing for it to bound.
+  const allFull = c.exports.length > 0 && c.exports.every((n) => modeOfRow(n) === 'full')
   return (
     <div className="border-b border-border-subtle py-3 last:border-0">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -724,8 +790,8 @@ function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; expo
           </div>
           <div className="text-[13px] text-fg-secondary">{c.machine}</div>
         </div>
-        <Select value={cap.isPending ? cap.variables : c.cap} disabled={cap.isPending} onValueChange={(v) => cap.mutate(v as Risk)}>
-          <SelectTrigger className="w-44" aria-label={`Cap of ${c.name}`}>
+        <Select value={cap.isPending ? cap.variables : c.cap} disabled={cap.isPending || allFull} onValueChange={(v) => cap.mutate(v as Risk)}>
+          <SelectTrigger className="w-44" aria-label={`Cap of ${c.name}`} title={allFull ? 'The cap applies to cautious shares only' : undefined}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -737,16 +803,19 @@ function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; expo
           </SelectContent>
         </Select>
       </div>
+      {allFull && <p className="mt-1 text-xs text-fg-tertiary">Every share with {c.name} is full: the cap applies to cautious shares only.</p>}
       <div className="mt-2 flex flex-col gap-1.5">
         {c.exports.length === 0 && <p className="text-[13px] text-fg-tertiary">{c.name} reaches nothing yet.</p>}
         {c.exports.map((n) => {
           const x = exports.find((e) => e.name === n)
+          const m = modeOfRow(n)
           return (
             <div key={n} className="flex flex-col gap-1.5 rounded-lg bg-layer-2 px-2.5 py-1.5">
-              <div className="flex items-center gap-2">
-                <div className="flex min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex min-w-0 flex-1 basis-40">
                   <ExportChip name={n} exp={x} />
                 </div>
+                <ModeSelect c={c} exp={n} mode={m} disabled={mode.isPending} onChange={(v) => mode.mutate({ contact: c, exp: n, mode: v })} />
                 <Select value={c.first_contact[n] ?? 'ask'} disabled={first.isPending} onValueChange={(v) => first.mutate({ exp: n, answer: v as FirstContact })}>
                   <SelectTrigger size="sm" className="w-36 shrink-0" aria-label={`First contact from ${c.name} to ${n}`}>
                     <SelectValue />
@@ -766,11 +835,36 @@ function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; expo
               <p className="text-xs text-fg-tertiary" title={`The full address is peer:<the name ${c.name} gave you>/${n}`}>
                 {c.name} reaches this as …/{n}
               </p>
-              {x && <ExportTools exp={x} />}
+              {m === 'full' ? (
+                <p className="text-xs text-fg-secondary">Full collaboration: {modeHint('full', x?.target.kind)}</p>
+              ) : (
+                x && <ExportTools exp={x} />
+              )}
             </div>
           )
         })}
-        {picking ? (
+        {chosen ? (
+          <div className="flex flex-col gap-2 rounded-lg border border-border-subtle p-2">
+            <p className="text-[13px]">
+              Share <b className="font-semibold">{chosen.title}</b> with {c.name}: choose how.
+            </p>
+            <ModeButtons
+              c={c}
+              what={chosen.title}
+              kind={chosen.target.kind}
+              disabled={busy}
+              onPick={(m) => {
+                grant.mutate({ contact: c, target: chosen.target, title: chosen.title, mode: m })
+                setChosen(null)
+              }}
+            />
+            <div>
+              <Button variant="ghost" size="sm" onClick={() => setChosen(null)}>
+                Back
+              </Button>
+            </div>
+          </div>
+        ) : picking ? (
           <div className="flex flex-col gap-1.5 rounded-lg border border-border-subtle p-2">
             <div className="flex gap-2">
               <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents and chats" aria-label={`Share with ${c.name}`} className="h-8 min-w-0 flex-1 text-base md:text-sm" />
@@ -790,7 +884,7 @@ function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; expo
                         type="button"
                         disabled={busy}
                         className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm hover:bg-layer-2 disabled:opacity-50 pointer-coarse:min-h-11"
-                        onClick={() => grant.mutate({ contact: c, target: p.target, title: p.title })}
+                        onClick={() => setChosen(p)}
                       >
                         {g === 'Agents' ? <Bot className="size-3.5 shrink-0" aria-hidden="true" /> : <MessageSquare className="size-3.5 shrink-0" aria-hidden="true" />}
                         <span className="min-w-0 flex-1 truncate">{p.title}</span>
@@ -840,7 +934,7 @@ export function toolsLine(exports: readonly Export[]): string {
   const hidden = kinds.includes('knowledge') ? 'files, sessions and vault' : 'files, sessions, knowledge and vault'
   const list = kinds.length < 2 ? kinds.join('') : `${kinds.slice(0, -1).join(', ')} and ${kinds.at(-1)}`
   const reads = kinds.length ? ` The readers granted below let them read ALL your ${list}, not just what you share.` : ''
-  return `Contacts can use only these tools. Everything else, including your ${hidden}, is hidden from them.${reads} Only the public web, read-only readers and read-only MCP tools can be added.`
+  return `Cautious shares can use only these tools. Everything else, including your ${hidden}, is hidden from them.${reads} Only the public web, read-only readers and read-only MCP tools can be added.`
 }
 
 /** 183 Z3-R2: an export's tool allowlist as chips — × takes one away, Add tool offers the rest of what the engine lets an
@@ -922,6 +1016,7 @@ export function SharingItems({ session, onShare }: { session: string; onShare: (
 /**
  * 183 §12.10: ⋯ Share with contact… — the open chat shared with (or taken back from) each contact. Sharing creates the
  * chat's export on first use; the contact's agents can then send into it and see only the answers to their own messages.
+ * 186: sharing is two equal buttons, Full collaboration or Cautious; a shared row shows its mode and changes it.
  */
 export function ShareDialog({ session, title, onClose }: { session: string; title: string; onClose: () => void }) {
   const navigate = useNavigate()
@@ -929,6 +1024,7 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
   const exports = useExports()
   const grant = useGrant()
   const ungrant = useUngrant()
+  const mode = useMode()
   const exp = exports.data?.find((x) => x.target.kind === 'chat' && x.target.session === session)
   const busy = grant.isPending || ungrant.isPending
   return (
@@ -948,20 +1044,22 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
               ?.filter((c) => !c.blocked)
               .map((c) => {
                 const on = !!exp && c.exports.includes(exp.name)
+                const m = exp && (mode.isPending && mode.variables?.contact.name === c.name ? mode.variables.mode : modeOf(c, exp.name))
                 return (
-                  <div key={c.name} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-subtle py-2.5 last:border-0">
-                    <div className="min-w-0 flex-1">
+                  <div key={c.name} className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border-subtle py-2.5 last:border-0">
+                    <div className="min-w-0 flex-1 basis-40">
                       <div className="text-sm font-medium">{c.name}</div>
-                      <div className="text-[13px] text-fg-secondary">{[c.machine, CAP[c.cap]].filter(Boolean).join(' · ')}</div>
+                      <div className="text-[13px] text-fg-secondary">{[c.machine, on && m === 'full' ? null : CAP[c.cap]].filter(Boolean).join(' · ')}</div>
                     </div>
-                    {on && exp ? (
-                      <Button size="sm" variant="outline" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name, contacts: contacts.data })}>
-                        Shared · Stop
-                      </Button>
+                    {on && exp && m ? (
+                      <div className="flex shrink-0 items-center gap-2">
+                        <ModeSelect c={c} exp={exp.name} mode={m} disabled={mode.isPending} onChange={(v) => mode.mutate({ contact: c, exp: exp.name, mode: v })} />
+                        <Button size="sm" variant="outline" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name, contacts: contacts.data })}>
+                          Shared · Stop
+                        </Button>
+                      </div>
                     ) : (
-                      <Button size="sm" disabled={busy} aria-label={`Share with ${c.name}`} onClick={() => grant.mutate({ contact: c, target: { kind: 'chat', session }, title })}>
-                        Share
-                      </Button>
+                      <ModeButtons c={c} what="this chat" kind="chat" disabled={busy} onPick={(v) => grant.mutate({ contact: c, target: { kind: 'chat', session }, title, mode: v })} />
                     )}
                   </div>
                 )

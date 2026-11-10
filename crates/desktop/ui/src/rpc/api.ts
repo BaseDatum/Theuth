@@ -25,6 +25,7 @@ import type { Joined } from '@/rpc/bindings/Joined'
 import type { LinkCreated } from '@/rpc/bindings/LinkCreated'
 import type { Members } from '@/rpc/bindings/Members'
 import type { Role } from '@/rpc/bindings/Role'
+import type { CancelReason } from '@/rpc/bindings/CancelReason'
 import type { CancelScope } from '@/rpc/bindings/CancelScope'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
@@ -382,8 +383,9 @@ export interface Api {
   app_call_status(request_id: string): Promise<AppToolResult>
   /** Close one open app view: stop its reads, drop queued work (46 §7); idempotent. */
   app_close(instance_id: string): Promise<null>
-  /** Abort the in-flight turn; `'tree'` also stops every running descendant (133 §4; default `'root'`). */
-  cancel(session: SessionId, scope?: CancelScope | null): Promise<null>
+  /** Abort the in-flight turn; `'tree'` also stops every running descendant (133 §4; default `'root'`). 186 D8: `reason`
+   * `'input'` (an interject or flush) is refused while a contact's turn runs; `'stop'` (the default) is the owner's Stop. */
+  cancel(session: SessionId, scope?: CancelScope | null, reason?: CancelReason | null): Promise<null>
   cancel_job(session: SessionId, id: JobId): Promise<null>
   /** Live terminals of `session` (51 §7.2), `descendants` widens to its subtree. */
   list_terminals(session: SessionId, descendants: boolean | null): Promise<TerminalSummary[]>

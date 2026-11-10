@@ -25,3 +25,11 @@ test('interrupt: text interjects, an empty box flushes queued steers, never drop
   expect(interrupt('idle', true)).toBe('send')
   expect(interrupt('idle', false)).toBeNull()
 })
+
+test('186 D8 interrupt during a contact turn: text queues behind it, an empty box waits, nothing cancels', () => {
+  expect(interrupt('running', true, true)).toBe('steer')
+  expect(interrupt('queued', true, true)).toBe('steer')
+  expect(interrupt('queued', false, true)).toBeNull()
+  expect(interrupt('running', false, true)).toBeNull()
+  expect(interrupt('idle', true, true)).toBe('send')
+})

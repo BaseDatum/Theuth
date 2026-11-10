@@ -10,7 +10,7 @@ import { useToolRuns } from '@/lib/tool-runs'
 import { ContactAllowStrip } from './ContactAllowStrip'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
-const W: FirstWaiting = { contact: 'sky', machine: "Sky's Mac", export: 'ops', session: 's1', since_ms: 1, waiting: 1, preview: 'ping from sky' }
+const W: FirstWaiting = { contact: 'sky', machine: "Sky's Mac", export: 'ops', session: 's1', since_ms: 1, waiting: 1, preview: 'ping from sky', mode: 'cautious' }
 const api = {
   contact_first_waiting: vi.fn(async (): Promise<FirstWaiting[]> => [W]),
   contact_first_answer: vi.fn(async (_c: string, _e: string, _a: string) => null),
@@ -45,13 +45,22 @@ afterEach(async () => {
   document.body.innerHTML = ''
 })
 
-test('one waiting contact: a collapsed row with three answers; expanding adds the preview and the limited-trust line', async () => {
+test('one waiting contact: a collapsed row with its mode and three answers; expanding adds the preview and the limited-trust line', async () => {
   await mount()
-  expect(body()).toContain("sky (Sky's Mac) wants to message this chat")
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Cautious")
   expect(body()).not.toContain('ping from sky')
   await click('Details')
   expect(body()).toContain('ping from sky')
   expect(body()).toContain('limited trust')
+})
+
+test('186: a full share says so, and what it lets through instead of the limited-trust line', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [{ ...W, mode: 'full' }])
+  await mount()
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Full collaboration")
+  await click('Details')
+  expect(body()).toContain('talk freely, with Markdown, links and images')
+  expect(body()).not.toContain('limited trust')
 })
 
 test.each([
@@ -71,7 +80,7 @@ test.each([
 test('several first messages from one contact: the row says how many', async () => {
   api.contact_first_waiting.mockImplementation(async () => [{ ...W, waiting: 3 }])
   await mount()
-  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · 3 messages")
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Cautious · 3 messages")
 })
 
 test('several waiting: collapsed "N contacts waiting"; expanded one row each with its own buttons', async () => {

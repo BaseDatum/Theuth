@@ -18,7 +18,7 @@ vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), u
 
 const A = '01a1c2c6-8f43-74dc-bc91-3bfa9d876af5'
 const KID = '01a1c28b-8e10-7757-afd9-db253e4f5e73'
-const answer: Entry = { id: 'p9', kind: 'peer', from: `session:${KID}`, text: 'the answer', origin: { id: 'm-p9', from: `session:${KID}`, reply_to: A, scope: null } }
+const answer: Entry = { id: 'p9', kind: 'peer', from: `session:${KID}`, text: 'the answer', origin: { id: 'm-p9', from: `session:${KID}`, reply_to: A, scope: null, contact_mode: null } }
 const tool: Extract<Entry, { kind: 'tool' }> = { id: 'e1', kind: 'tool', callId: 'c1', name: 'send_message', args: { to: `session:${KID}`, message: 'hi' }, pending: false, child: false, result: { output: `session:${KID} accepted id=${A}`, isError: false, files: [] } }
 
 afterEach(() => {

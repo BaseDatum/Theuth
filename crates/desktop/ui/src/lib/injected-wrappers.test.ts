@@ -98,7 +98,7 @@ test('183: every wrapper a peer exchange\'s row is written with unwraps on its p
     for (const m of s.slice(at, s.indexOf('\nimpl', at + 1)).matchAll(/\b([a-z_]+)\(/g)) if (strings.has(m[1] as string)) called.add(m[1] as string)
   }
   expect([...called].sort(), 'a new builder writes peer rows: add a sample to PEER_ROWS and unwrap it in reduce.ts peerBody').toEqual(Object.keys(PEER_ROWS).sort())
-  const peer = { id: 'm1', from: 'contact:studio:bob', reply_to: null, scope: null }
+  const peer = { id: 'm1', from: 'contact:studio:bob', reply_to: null, scope: null, contact_mode: null }
   for (const [name, text] of Object.entries(PEER_ROWS)) {
     if (text === null) continue
     const cards = fromHistory({ role: 'user', text, turn: 1, peer })
