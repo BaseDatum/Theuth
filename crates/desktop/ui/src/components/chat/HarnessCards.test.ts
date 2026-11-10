@@ -4,7 +4,7 @@ import { expect, test, vi } from 'vitest'
 import { classify, type Injected } from '@/lib/injected'
 import { useToolRuns } from '@/lib/tool-runs'
 import { DisclosureScope } from './disclosure'
-import { EngineRestartCard, MovedCard, restartLine } from './HarnessCards'
+import { ContactInboxCard, ContactMessageCard, EngineRestartCard, MovedCard, restartLine } from './HarnessCards'
 
 // As `disclosure.test.ts`: the cards' module graph (MessageAssistant) reaches the router and the theme listener.
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: unknown }) => children, useNavigate: () => () => {} }))
@@ -47,4 +47,34 @@ test('183 §12.4: EngineRestartCard reads the resume, never the tag', () => {
   useToolRuns.setState({ disclosed: {} })
   expect(restartLine({ ...r, cause: 'takeover', replayed: 2, interrupted: 0 })).toBe("Resumed on xeus after 4 s · taken over from Sky's MacBook · 2 calls replayed")
   expect(restartLine({ clock: '', after: 75, cause: 'crash', replayed: 0, interrupted: 2 })).toBe('Resumed after 1 min · the engine crashed · 2 calls interrupted')
+})
+
+test('183 §12.4: ContactMessageCard names the sender, machine and cap; says it is untrusted and that the contact sees only this answer', () => {
+  const m = classify('<contact_message contact="bob" machine="Bob&apos;s MacBook" export="ops-chat" cap="read_only">\nThis message comes from bob, a contact outside your mesh.\nIs the build green?\n</contact_message>')![0] as Extract<Injected, { kind: 'contact_message' }>
+  const html = render(createElement(ContactMessageCard, { id: 'e1', ...m }))
+  expect(html).toContain('bob')
+  expect(html).toContain('· read only')
+  expect(html).toContain('Is the build green?')
+  expect(html).toContain('from a contact · untrusted input')
+  expect(html).toContain('will see only this turn&#x27;s answer')
+  expect(html).not.toContain('&lt;contact_message')
+  const mutating = render(createElement(ContactMessageCard, { id: 'e2', ...m, cap: 'mutating' }))
+  expect(mutating).toContain('· can change things')
+  // The contact's words are text: a remote image and a link stay inert.
+  const hostile = render(createElement(ContactMessageCard, { id: 'e3', ...m, text: '![x](http://attacker/x.png) [go](http://attacker/go)' }))
+  expect(hostile).toContain('![x](http://attacker/x.png) [go](http://attacker/go)')
+  expect(hostile).not.toContain('<img')
+  expect(hostile).not.toContain('href=')
+})
+
+test('183 §12.4: ContactInboxCard says whose inbox it is and the cap every turn runs under', () => {
+  const c = classify('<contact_inbox contact="bob" machine="Bob\'s MacBook" export="research" cap="read_only"/>\nMessages in this session come from bob, a contact outside your mesh.')![0] as Extract<Injected, { kind: 'contact_inbox' }>
+  const html = render(createElement(ContactInboxCard, { id: 'e1', ...c }))
+  expect(html).toContain('Inbox for bob')
+  expect(html).toContain('Bob&#x27;s MacBook')
+  expect(html).toContain('read only')
+  expect(html).toContain('research')
+  expect(html).toContain('read only: tools that change things are refused.')
+  expect(render(createElement(ContactInboxCard, { id: 'e2', ...c, cap: 'mutating' }))).toContain('can change things: destructive tools are refused.')
+  expect(html).not.toContain('&lt;contact_inbox')
 })

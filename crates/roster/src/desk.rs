@@ -208,6 +208,28 @@ pub fn identity(f: &AgentFile, journal: Option<&str>, max_rounds: u32) -> String
     s
 }
 
+/// 183 §7.6, W-25: the identity block of a contact's inbox for an exported agent: who it
+/// is and its charter, never its journal or the desk manual (a contact is outside the mesh;
+/// the `<contact_inbox/>` row says so).
+pub fn inbox_identity(f: &AgentFile) -> String {
+    let mut s = format!(
+        "You are {title} (`{name}`), an agent on this theuth roster, answering a contact outside the mesh. \
+         Your charter:\n{charter}",
+        title = f.title,
+        name = f.name,
+        charter = f.body.trim(),
+    );
+    if let Some(c) = f
+        .capabilities
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        s.push_str(&format!("\n\nCapabilities: {c}"));
+    }
+    s
+}
+
 /// The identity block of a session a desk spawned for a task (70
 /// DESK-PROTOCOL): it works for the agent, not as theuth; `task` is the
 /// desk's checked-out task when one is known.

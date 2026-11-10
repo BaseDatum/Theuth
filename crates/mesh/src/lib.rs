@@ -230,6 +230,12 @@ pub fn stored_self_id(data_dir: &std::path::Path) -> Option<String> {
 /// The bound endpoint, for [`is_paired`]; set once at plugin start.
 static NET: std::sync::OnceLock<Arc<Net>> = std::sync::OnceLock::new();
 
+/// 183 §7.2: the bound endpoint, for the a2a plugin's `theuth/a2a/1` reach; `None` before the
+/// mesh plugin bound it (or without a mesh).
+pub fn net() -> Option<Arc<Net>> {
+    NET.get().cloned()
+}
+
 /// 182 S3/S8: `id` (a mesh engine id) is a paired peer of this engine;
 /// `None` (unknown) before the mesh plugin bound its endpoint.
 pub fn is_paired(id: &str) -> Option<bool> {

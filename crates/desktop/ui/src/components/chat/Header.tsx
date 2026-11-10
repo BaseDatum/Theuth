@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, CornerLeftUp, Eye, Gauge, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { AppWindow, Contact, CornerLeftUp, Eye, Gauge, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
 import { chatName } from '@/lib/attach'
+import { sharedLabel, useSharing } from '@/lib/contacts'
 import { previewText } from '@/lib/channel-origin'
 import { type HeaderId, type Mode, approvalsOff as pillOff, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
@@ -208,6 +209,8 @@ export function Header({
   const parked = useOwnerOffline((s) => !!session && s.by[session] !== undefined)
   const followed = useSessionField(session ?? '', 'following') === true
   const chip = row && !row.here ? ownerState(row.owner, mesh.data?.peers, parked, followed) : undefined
+  // 183 §12.10: a chat exported to contacts says who can message it, and under which cap.
+  const shared = sharedLabel(useSharing(session))
   const [sheet, setSheet] = useState(false)
   const [cost, setCost] = useState(false)
   const [terminal, setTerminal] = useState(false)
@@ -281,6 +284,15 @@ export function Header({
           <EngineChip owner={row.owner} epoch={row.epoch} prefix="on " state={chip} />
         )
       ) : null,
+    shared: (mode) =>
+      !shared ? null : mode === 'row' ? (
+        <MenuRow icon={Contact} label="Shared" detail={shared.replace(/^Shared with /, '')} />
+      ) : (
+        <Badge variant="outline" className="max-w-64 justify-start text-fg-secondary" title={shared}>
+          <Contact aria-hidden="true" />
+          <span className="truncate">{shared}</span>
+        </Badge>
+      ),
     desktop: (mode) =>
       !vm || !canPopout() ? null : mode === 'row' ? (
         <MenuRow icon={Monitor} label="Desktop" detail={vm.name} onSelect={() => void openPopout({ kind: 'vm', name: vm.name })} />

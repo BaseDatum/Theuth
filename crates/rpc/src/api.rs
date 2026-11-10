@@ -43,6 +43,7 @@ use agent::{
     SpendReportQuery,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use agent::{ContactDeliver, ContactEnvelope};
 use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
 use agent::{GetPolishModel, Polish, PolishReply, Rewrite, SetPolishModel};
 use app::{
@@ -243,6 +244,11 @@ pub trait Api {
         session: SessionId,
         envelope: PeerEnvelope,
     ) -> RpcResult<PeerReceipt>;
+    /// 183 §7.10 (W-40): a contact's message for an exported chat owned here, forwarded by
+    /// the engine that holds the contact. Mesh-internal like `peer_deliver`: a call without
+    /// the `Forwarded` marker is `-32002`. Returns the owner's receipt.
+    #[method(name = "contact_deliver", with_extensions)]
+    async fn contact_deliver(&self, envelope: ContactEnvelope) -> RpcResult<PeerReceipt>;
     /// One message to many sessions (62 §0.1): the selector is resolved on
     /// the harness, each row is authorized like `send_input`, and the reply
     /// carries one outcome per session. `dry_run: true` previews the rows.
@@ -2616,6 +2622,55 @@ pub trait Api {
     /// 183 §6.9.12: rotate the vault key without an unpair, or retry a failed rotation.
     #[method(name = "vault_rotate")]
     async fn vault_rotate(&self) -> RpcResult<secrets::RotationState>;
+    /// 183 §7.4: open (`true`, the Add contact sheet; returns the invite ticket) or close the
+    /// Add contact window.
+    #[method(name = "contact_window")]
+    async fn contact_window(&self, open: bool) -> RpcResult<Option<a2a::contacts::ContactWindow>>;
+    /// 183 §7.1: A2A agents the browse sees while the window is open, newest first, ≤ 32.
+    #[method(name = "contact_nearby")]
+    async fn contact_nearby(&self) -> RpcResult<Vec<a2a::contacts::NearbyAgent>>;
+    /// 183 §7.4: start the ceremony with a Nearby agent, a ticket or a card URL.
+    #[method(name = "contact_pair")]
+    async fn contact_pair(
+        &self,
+        target: a2a::contacts::ContactTarget,
+    ) -> RpcResult<mesh::PairCeremony>;
+    /// 183 §7.4: this side's Accept (`accept`) or Reject for a contact ceremony.
+    #[method(name = "contact_answer")]
+    async fn contact_answer(&self, ceremony: uuid::Uuid, accept: bool) -> RpcResult<()>;
+    /// 183 §12.7: this machine's contacts.
+    #[method(name = "contact_list")]
+    async fn contact_list(&self) -> RpcResult<Vec<a2a::contacts::Contact>>;
+    /// 183 §12.7: rename, cap, grant exports, block or unblock a contact.
+    #[method(name = "contact_update")]
+    async fn contact_update(
+        &self,
+        name: String,
+        patch: a2a::contacts::ContactPatch,
+    ) -> RpcResult<a2a::contacts::Contact>;
+    /// 183 §8.4: Remove (`block: false`) or Block a contact: local and immediate.
+    #[method(name = "contact_remove")]
+    async fn contact_remove(&self, name: String, block: bool) -> RpcResult<()>;
+    /// 183 §7.6, D9: this machine's exports (agents and chats), with `paused`.
+    #[method(name = "a2a_exports")]
+    async fn a2a_exports(&self) -> RpcResult<Vec<a2a::contacts::Export>>;
+    /// 183 §7.6: create or replace an export by name.
+    #[method(name = "a2a_export_put")]
+    async fn a2a_export_put(&self, export: a2a::contacts::Export) -> RpcResult<()>;
+    /// 183 §12.10: remove an export and its grants (Stop sharing).
+    #[method(name = "a2a_export_remove")]
+    async fn a2a_export_remove(&self, name: String) -> RpcResult<()>;
+    /// 183 Z4: the tools an export may allow a contact (the allowlist editor offers only these).
+    #[method(name = "a2a_grantable_tools")]
+    async fn a2a_grantable_tools(&self) -> RpcResult<Vec<tools::GrantableTool>>;
+    /// 183 §7.6 (W-27): the `contact_first` Attention item's Allow once · Always · Block.
+    #[method(name = "contact_first_answer")]
+    async fn contact_first_answer(
+        &self,
+        contact: String,
+        export: String,
+        answer: a2a::config::FirstContact,
+    ) -> RpcResult<()>;
     /// Every sandbox record (docker, ssh, vm) with state, resources, shares, metrics (79 §4.5).
     #[method(name = "sandboxes_list")]
     async fn sandboxes_list(&self) -> RpcResult<Vec<sandbox::SandboxInfo>>;
@@ -3949,6 +4004,24 @@ fn a2a(rt: &Runtime) -> RpcResult<Option<ActorRef<A2aActor>>> {
     Ok(None)
 }
 
+/// 183 §10.1: a contact RPC: the A2A actor's answer (it runs without `a2a.enabled` too,
+/// W-26), or `off` in a process without the a2a plugin.
+async fn contacts<M>(
+    rt: &Runtime,
+    msg: M,
+    off: RpcResult<<<A2aActor as Message<M>>::Reply as Reply>::Ok>,
+) -> RpcResult<<<A2aActor as Message<M>>::Reply as Reply>::Ok>
+where
+    A2aActor: Message<M>,
+    M: Send + 'static,
+    <<A2aActor as Message<M>>::Reply as Reply>::Error: Display,
+{
+    match a2a(rt)? {
+        Some(actor) => send(&actor, msg).await,
+        None => off,
+    }
+}
+
 /// The owner console's root: `NewRootSession { scope: Owner }`, trusted
 /// because the caller authenticated as the owner over the socket or is the
 /// in-process TUI. Never promotes an existing root (50 §2.3).
@@ -4246,6 +4319,39 @@ impl ApiServer for Server {
                 }
                 other => ErrorObjectOwned::owned(ASK_FAILED, other.to_string(), None::<()>),
             })
+    }
+
+    async fn contact_deliver(
+        &self,
+        ext: &Extensions,
+        envelope: ContactEnvelope,
+    ) -> RpcResult<PeerReceipt> {
+        let Some(forward::Forwarded(peer)) = ext.get::<forward::Forwarded>() else {
+            return Err(ErrorObjectOwned::owned(
+                UNAUTHORIZED,
+                "contact_deliver is mesh-internal",
+                None::<()>,
+            ));
+        };
+        let forwarder = Some(peer.0.clone());
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            ContactDeliver {
+                envelope,
+                forwarder,
+            },
+        )
+        .await
+        .map_err(|e| {
+            // 183 §13 row 53: the chat moved; the holder retries once on the new owner.
+            if e.message()
+                .starts_with(agent::communication::network::CONTACT_NOT_OWNER)
+            {
+                ErrorObjectOwned::owned(forward::NOT_OWNER, e.message().to_owned(), None::<()>)
+            } else {
+                e
+            }
+        })
     }
 
     async fn broadcast(
@@ -5264,12 +5370,18 @@ impl ApiServer for Server {
         archived: bool,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
-        if let Some(r) =
-            forward::route(ext, session, "archive_session", (session, archived)).await?
-        {
-            return Ok(r);
+        match forward::route(ext, session, "archive_session", (session, archived)).await? {
+            Some(r) => r,
+            None => {
+                ask::<Agents, _>(agent::AGENT_ACTOR, ArchiveSession { session, archived }).await?
+            }
         }
-        ask::<Agents, _>(agent::AGENT_ACTOR, ArchiveSession { session, archived }).await
+        // 183 W-41, §12.10: an exported chat's export row reads Paused while it is archived;
+        // this engine holds the export (contacts are local), so `A2aChanged` fires here.
+        if let Ok(Some(actor)) = a2a(&self.rt) {
+            let _ = actor.ask(a2a::contacts::ChatArchived { session }).await;
+        }
+        Ok(())
     }
 
     async fn delete_session(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
@@ -9215,6 +9327,85 @@ impl ApiServer for Server {
 
     async fn vault_rotate(&self) -> RpcResult<secrets::RotationState> {
         send(&mesh_actor()?, mesh::RotateVault).await
+    }
+
+    // 183 Phase 3 (§10.1): each asks the A2A actor, which runs whatever `a2a.enabled` says
+    // (W-26). Only a process without the a2a plugin answers the `off` values.
+
+    async fn contact_window(&self, open: bool) -> RpcResult<Option<a2a::contacts::ContactWindow>> {
+        let off = if open {
+            Err(failed(a2a::contacts::OFF))
+        } else {
+            Ok(None)
+        };
+        contacts(&self.rt, a2a::contacts::ContactWindowOpen(open), off).await
+    }
+
+    async fn contact_nearby(&self) -> RpcResult<Vec<a2a::contacts::NearbyAgent>> {
+        contacts(&self.rt, a2a::contacts::ContactsNearby, Ok(Vec::new())).await
+    }
+
+    async fn contact_pair(
+        &self,
+        target: a2a::contacts::ContactTarget,
+    ) -> RpcResult<mesh::PairCeremony> {
+        let off = Err(failed(a2a::contacts::OFF));
+        contacts(&self.rt, a2a::contacts::ContactPair(target), off).await
+    }
+
+    async fn contact_answer(&self, ceremony: uuid::Uuid, accept: bool) -> RpcResult<()> {
+        let msg = a2a::contacts::ContactAnswer { ceremony, accept };
+        contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
+    }
+
+    async fn contact_list(&self) -> RpcResult<Vec<a2a::contacts::Contact>> {
+        contacts(&self.rt, a2a::contacts::ContactsList, Ok(Vec::new())).await
+    }
+
+    async fn contact_update(
+        &self,
+        name: String,
+        patch: a2a::contacts::ContactPatch,
+    ) -> RpcResult<a2a::contacts::Contact> {
+        let msg = a2a::contacts::ContactUpdate { name, patch };
+        contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
+    }
+
+    async fn contact_remove(&self, name: String, block: bool) -> RpcResult<()> {
+        let msg = a2a::contacts::ContactRemove { name, block };
+        contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
+    }
+
+    async fn a2a_exports(&self) -> RpcResult<Vec<a2a::contacts::Export>> {
+        contacts(&self.rt, a2a::contacts::ExportsList, Ok(Vec::new())).await
+    }
+
+    async fn a2a_export_put(&self, export: a2a::contacts::Export) -> RpcResult<()> {
+        let msg = a2a::contacts::ExportPut(export);
+        contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
+    }
+
+    async fn a2a_export_remove(&self, name: String) -> RpcResult<()> {
+        let msg = a2a::contacts::ExportRemove { name };
+        contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
+    }
+
+    async fn a2a_grantable_tools(&self) -> RpcResult<Vec<tools::GrantableTool>> {
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, tools::ContactGrantable).await
+    }
+
+    async fn contact_first_answer(
+        &self,
+        contact: String,
+        export: String,
+        answer: a2a::config::FirstContact,
+    ) -> RpcResult<()> {
+        let msg = a2a::contacts::ContactFirstAnswer {
+            contact,
+            export,
+            answer,
+        };
+        contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
     }
 
     // 79: sandbox VMs. Each method is one `ask` to the `SandboxActor` (crates/sandbox/src/actor.rs).

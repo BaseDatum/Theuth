@@ -75,6 +75,11 @@ pub enum AttentionKind {
     /// or keep waiting; nothing runs elsewhere on its own. S1: a task homed
     /// here whose agent lives elsewhere (`misplaced:<task>`).
     Home,
+    /// 183 §7.6 (W-27): a contact's first task for an export waits — Allow once · Always ·
+    /// Block (`contact_first_answer`). Id `contact_first:<contact>:<export>` (both names are
+    /// `[a-z0-9_-]`); the title names the contact, its machine and the export.
+    // 183 P3: E — derive these items from the waiting tasks.
+    ContactFirst,
 }
 
 /// One inbox item. `id` is stable across derivations (dismiss / snooze key).

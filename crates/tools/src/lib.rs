@@ -85,7 +85,9 @@ pub use registry::{
     UnregisterTool, UserActivation,
 };
 pub use registry::{
-    CancelCalls, InstallResources, RemoveResources, RestoreApprovals, SetPromoteAfter,
+    Allowlisted, CONTACT_GRANTABLE, CancelCalls, ContactGrantable, ContactScoped, EffectiveCap,
+    GrantableTool, InstallResources, RemoveResources, RestoreApprovals, SetAllowOnly,
+    SetPromoteAfter, SetTurnCap, contact_grantable,
 };
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,

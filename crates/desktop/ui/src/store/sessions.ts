@@ -1,6 +1,6 @@
 import { type StoreApi, createStore } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import type { CellResultInput, Injected, ParentViewLine, RestartNote } from '@/lib/injected';
+import type { CellResultInput, ContactNote, Injected, ParentViewLine, RestartNote } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
@@ -144,7 +144,7 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       origin?: PeerOrigin;
       seq?: number;
     }
-  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'child' | 'autoresearch' | 'moved' | 'engine_restart' }>
+  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' | 'child' | 'autoresearch' | 'moved' | 'engine_restart' | 'contact_inbox' | 'contact_message' }>
   /** 171 §9.1: a cell result the agent read; `turn` when its stored row opened the turn (`foldCells` hands it on). */
   | (CellResultInput & { turn?: number })
   /** 152 D3: the view an endless parent handed a native child before its brief (137 R1-D1); folded, the lines render
@@ -282,6 +282,8 @@ export type SessionSlice = {
   lastInjected?: string;
   /** Opener seq of the running (or last) turn, from `TurnStarted`. */
   turnSeq?: number;
+  /** 183 §12.10: the `<contact_message>` that opened the running turn (live `TurnStarted`; cleared at `TurnFinished`). */
+  contactNote?: ContactNote;
   /** 125 §3: the advisor model the last `AdvisorChanged` named (`null` = off); the reducer prints `advisor → …` when it moves. */
   advisorModel?: string | null;
   /** A `browser_*` tool ran in this session: the header shows the live-view globe. */
@@ -834,6 +836,16 @@ export const browserBusy = (s: SessionSlice | undefined): boolean =>
 /** `browserBusy` of one session; the header's globe spins on it. */
 export const useBrowserBusy = (id: string) =>
   useSessions((s) => browserBusy(s.sessions[id]));
+
+/** 183 §12.10: the contact whose capped turn runs in this exported chat: the running turn's `TurnStarted` carried a
+ * `<contact_message>`, or (a page loaded mid-turn) the last opener in the transcript is one. `null` otherwise.
+ * ponytail: after a reload the owner's own steer into a contact's turn (§13 row 50) hides the chip; the turn stays capped. */
+export const contactTurn = (s: SessionSlice | undefined): ContactNote | null => {
+  if (!s?.running) return null;
+  if (s.contactNote) return s.contactNote;
+  const opener = s.entries.findLast((e) => e.kind === "user" || e.kind === "contact_message");
+  return opener?.kind === "contact_message" ? opener : null;
+};
 
 type Listener<T extends WireEvent["type"]> = (
   e: Extract<WireEvent, { type: T }>,

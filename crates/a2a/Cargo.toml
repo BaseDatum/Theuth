@@ -9,6 +9,24 @@ description = "A2A network boundary: official SDK client/server behind configure
 runtime = { workspace = true }
 agent = { workspace = true }
 secrets = { workspace = true }
+# 183 §14.4: contacts carry `tools::Risk` caps and `mesh::PeerPath`/`PairCeremony`.
+tools = { workspace = true }
+mesh = { workspace = true }
+# 183 §7: the theuth/a2a/1 reach (iroh streams), the signed card (Ed25519 + JWS), the
+# first-contact Attention items, the ceremony code and the LAN advert.
+replica = { workspace = true }
+roster = { workspace = true }
+iroh = { workspace = true }
+data-encoding = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+swarm-discovery = "0.6"
+a2a-pb = "=0.3.2"
+hyper = { version = "1", features = ["client", "server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+http-body-util = "0.1"
+bytes = { workspace = true }
+platform = { workspace = true }
 a2a-types = { workspace = true }
 a2a-client = { workspace = true }
 a2a-server = { workspace = true }
@@ -33,8 +51,13 @@ parking_lot = { workspace = true }
 zeroize = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
+[dev-dependencies]
+tempfile = "3"
+figment = { workspace = true }
+agent = { workspace = true, features = ["test-support"] }
+
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "agent/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "agent/ts", "tools/ts", "mesh/ts"]
 
 [lints]
 workspace = true

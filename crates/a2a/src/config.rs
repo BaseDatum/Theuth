@@ -32,7 +32,18 @@ pub struct A2aConfig {
     pub listen: String,
     /// HTTPS base the reverse proxy publishes; required for production exports.
     pub public_url: Option<String>,
+    /// 183 §9.3 (W-20): DNS-SD service types browsed while an Add contact window is open;
+    /// the first is advertised. Read, not acted on yet.
+    // 183 P3: E — advertise/browse these during the contact window.
+    pub mdns_types: Vec<String>,
+    /// 183 §9.3: how long an Add contact window (and its invite ticket) stays open.
+    pub contact_window_secs: u64,
+    /// 183 §9.3: the cap a new contact gets (`read_only` | `mutating`).
+    pub contact_cap: tools::Risk,
 }
+
+/// 183 §9.3: `a2a.mdns_types` default: draft-zhao first, then the two rival types.
+pub const MDNS_TYPES: [&str; 3] = ["_a2a._tcp", "_agent._tcp", "_lad-a2a._tcp"];
 
 impl Default for A2aConfig {
     fn default() -> Self {
@@ -40,6 +51,9 @@ impl Default for A2aConfig {
             enabled: false,
             listen: DEFAULT_LISTEN.to_owned(),
             public_url: None,
+            mdns_types: MDNS_TYPES.map(str::to_owned).to_vec(),
+            contact_window_secs: 600,
+            contact_cap: tools::Risk::ReadOnly,
         }
     }
 }
@@ -91,8 +105,8 @@ impl A2aConfig {
     }
 }
 
-/// `peers.yaml` as written by the owner (§6.1).
-#[derive(Clone, Debug, Default, Deserialize)]
+/// `peers.yaml` as written by the owner (§6.1); 183 §7.8: also by the contact RPCs.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PeersFile {
     /// Remote agents by owner alias.
@@ -101,8 +115,25 @@ pub struct PeersFile {
     pub exports: BTreeMap<String, ExportEntry>,
 }
 
-/// One configured remote agent.
-#[derive(Clone, Debug, Default, Deserialize)]
+/// 183 §9.4: a contact's first-contact answer for one export. Absent = `ask`.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum FirstContact {
+    /// Raise the Attention item; the task waits in `TASK_STATE_AUTH_REQUIRED`.
+    #[default]
+    Ask,
+    /// Let every task through (Always).
+    Allow,
+    /// Refuse (Block).
+    Block,
+}
+
+/// One configured remote agent. 183 §9.4: a contact is an entry with `endpoint` set; the
+/// new fields are skipped when unset so a file of HTTP peers still loads on an older build.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PeerEntry {
     /// Agent Card URL or its base; HTTPS unless loopback.
@@ -117,19 +148,95 @@ pub struct PeerEntry {
     pub exports: Vec<String>,
     /// Owner opt-in for a loopback/private-network card origin (§9).
     pub allow_private: bool,
+    /// 183 §7.3: the contact's iroh endpoint id, pinned by the ceremony.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// 183 §9.4: display name from the contact's card.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// 183 (after C3): the contact's machine, from its card's `EXT_MACHINE` extension.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
+    /// 183 §7.6: the contact's risk cap; `None` = `a2a.contact_cap`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap: Option<tools::Risk>,
+    /// 183 §7.6 (W-27): export → first-contact answer; a missing export is `ask`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub first_contact: BTreeMap<String, FirstContact>,
+    /// 183 §9.4: refused at the `theuth/a2a/1` gate.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub blocked: bool,
+    /// 183 §9.4: when the ceremony finished (ms since epoch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paired_ms: Option<u64>,
+    /// 183 §7.2: the contact's direct addresses from its last live connection (engine-local,
+    /// rewritten when they change), dialled beside discovery and the relay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addrs: Vec<String>,
 }
 
-/// One published local session.
-#[derive(Clone, Debug, Deserialize)]
+impl PeerEntry {
+    /// 183 §9.4: any contact field is set (the entry came from a ceremony).
+    pub fn is_contact(&self) -> bool {
+        self.endpoint.is_some()
+            || self.name.is_some()
+            || self.machine.is_some()
+            || self.cap.is_some()
+            || !self.first_contact.is_empty()
+            || self.blocked
+            || self.paired_ms.is_some()
+    }
+}
+
+/// One published local session; 183 §9.4: or one local agent. Exactly one of `session`,
+/// `agent` is set.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportEntry {
-    /// Exact native session (not its tree).
-    pub session: SessionId,
+    /// Exact native session (not its tree): a chat export (D9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionId>,
+    /// 183 §7.6: an agent export (`<agent>@<engine>` desk root, or `theuth`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// Card name.
     pub name: String,
     /// Card description; owner-written functional capability, no tool inventory.
     #[serde(default)]
     pub description: String,
+    /// 183 Z3-R2: what a contact session of this export (its inbox, or a contact's turn in
+    /// the chat) may use besides the reply; everything else is hidden. Engine-local. Z4: only
+    /// [`tools::CONTACT_GRANTABLE`] names and read-only MCP keys (`mcp:<server>/<tool>`).
+    #[serde(
+        default = "default_contact_tools",
+        skip_serializing_if = "is_default_contact_tools"
+    )]
+    pub tools: Vec<String>,
+}
+
+/// 183 Z3-R2: an export's allowlist when `tools` is unset: the public web only.
+pub fn default_contact_tools() -> Vec<String> {
+    vec!["search_web".into(), "read_url".into()]
+}
+
+/// `tools` without the ones a contact may never be granted ([`tools::contact_grantable`]),
+/// each dropped one logged (`export`'s name).
+pub fn contact_tools(export: &str, tools: &[String]) -> Vec<String> {
+    tools
+        .iter()
+        .filter(|t| {
+            let keep = tools::contact_grantable(t);
+            if !keep {
+                tracing::warn!(%export, tool = %t, "a2a: a contact may not be granted this tool; dropped from the export's tools");
+            }
+            keep
+        })
+        .cloned()
+        .collect()
+}
+
+fn is_default_contact_tools(t: &[String]) -> bool {
+    t == default_contact_tools().as_slice()
 }
 
 /// A resolved credential: zeroized on drop, never printed.
@@ -173,16 +280,60 @@ pub struct Peer {
     pub exports: Vec<String>,
     /// Private/loopback card origin permitted.
     pub allow_private: bool,
+    /// 183 §7.3: a contact's pinned endpoint id (its identity: a re-pin is a new grant).
+    pub eid: Option<String>,
 }
 
 impl Peer {
     /// Stable identity string for the store binding: the card origin+path, or
-    /// `inbound` for a peer that never gets called (§5.1).
+    /// `inbound` for a peer that never gets called (§5.1); 183 §7.3: `iroh:<eid>` for a
+    /// contact.
     pub fn endpoint(&self) -> String {
+        if let Some(eid) = &self.eid {
+            return agent::communication::network::contact_endpoint(eid);
+        }
         self.card
             .as_ref()
             .map_or_else(|| "inbound".to_owned(), ToString::to_string)
     }
+}
+
+/// 183 §9.4: what a contact entry adds beyond its [`Peer`] grant. Kept apart from [`Peer`] so
+/// a first-contact answer or a cap change is not a new grant epoch (open tasks survive it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContactFacts {
+    /// The pinned endpoint id.
+    pub eid: String,
+    /// Display name from its card.
+    pub display: String,
+    /// Its machine, from its card.
+    pub machine: String,
+    /// `read_only` | `mutating`.
+    pub cap: tools::Risk,
+    /// Export → answer; absent = `ask`.
+    pub first_contact: BTreeMap<String, FirstContact>,
+    /// Refused at the gate; a blocked contact is in no route.
+    pub blocked: bool,
+    /// When the ceremony finished.
+    pub paired_ms: u64,
+    /// Last known direct addresses (unparsable ones dropped).
+    pub addrs: Vec<std::net::SocketAddr>,
+}
+
+/// 183 §7.6: a validated agent export (contacts only): each (contact, export) gets its own
+/// capped inbox session running `agent`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentExport {
+    /// Path segment (`/agents/<name>`).
+    pub name: String,
+    /// `<agent>@<engine>` desk root, or `theuth`.
+    pub agent: String,
+    /// Card name.
+    pub title: String,
+    /// Card description.
+    pub description: String,
+    /// 183 Z3-R2: the contact session's allowlist ([`ExportEntry::tools`]).
+    pub tools: Vec<String>,
 }
 
 /// A validated export.
@@ -198,15 +349,21 @@ pub struct Export {
     pub description: String,
     /// The single peer granted this export, if any (§6.3: one principal per exported session).
     pub peer: Option<String>,
+    /// 183 Z3-R2: a contact turn's allowlist ([`ExportEntry::tools`]).
+    pub tools: Vec<String>,
 }
 
 /// Everything validation produced; installed atomically or not at all.
 #[derive(Clone, Debug, Default)]
 pub struct Staged {
-    /// By alias.
+    /// By alias. 183: contacts too, except blocked ones.
     pub peers: BTreeMap<String, Peer>,
-    /// By export name.
+    /// By export name: session (chat) exports.
     pub exports: BTreeMap<String, Export>,
+    /// 183 §7.6: agent exports by name (names are unique across both maps).
+    pub agents: BTreeMap<String, AgentExport>,
+    /// 183 §9.4: every contact entry by alias, blocked ones included.
+    pub contacts: BTreeMap<String, ContactFacts>,
 }
 
 impl Staged {
@@ -219,9 +376,18 @@ impl Staged {
             return false;
         };
         a == b
-            && a.exports
-                .iter()
-                .all(|e| self.exports.get(e) == other.exports.get(e))
+            && a.exports.iter().all(|e| {
+                self.exports.get(e) == other.exports.get(e)
+                    && self.agents.get(e) == other.agents.get(e)
+            })
+    }
+
+    /// 183 §7.2: the alias of the contact (blocked or not) pinned to `eid`.
+    pub fn contact_by_eid(&self, eid: &str) -> Option<&str> {
+        self.contacts
+            .iter()
+            .find(|(_, c)| c.eid == eid)
+            .map(|(alias, _)| alias.as_str())
     }
 }
 
@@ -239,6 +405,41 @@ fn check_name(kind: &str, name: &str, errors: &mut Vec<String>) {
             "{kind} name {name:?}: 1..={ALIAS_MAX} chars of [a-z0-9_-]"
         ));
     }
+}
+
+/// 183 §7.8: a peer or export name the contact RPCs are about to write.
+pub(crate) fn check_alias(name: &str) -> Result<(), String> {
+    let mut errors = Vec::new();
+    check_name("name", name, &mut errors);
+    errors.pop().map_or(Ok(()), Err)
+}
+
+/// 183 §7.4: a peer alias from a card name: lowercase `[a-z0-9_-]`, cut to fit, `contact`
+/// when nothing is left.
+pub(crate) fn alias_of(display: &str) -> String {
+    let mut out = String::new();
+    for c in display.trim().chars().flat_map(char::to_lowercase) {
+        let c = if c.is_ascii_alphanumeric() || c == '_' {
+            c
+        } else {
+            '-'
+        };
+        if !(c == '-' && (out.is_empty() || out.ends_with('-'))) {
+            out.push(c);
+        }
+    }
+    let mut out: String = out
+        .trim_end_matches('-')
+        .chars()
+        .take(ALIAS_MAX - 3)
+        .collect();
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        out.push_str("contact");
+    }
+    out
 }
 
 /// No credentials, query or fragment in an origin/base URL.
@@ -322,12 +523,102 @@ pub fn egress_allowed(ip: IpAddr, allow_private: bool) -> bool {
     }
 }
 
+/// Grant chat export `export` to peer `name`: it must exist, and one principal per exported
+/// session (§6.3), whether an HTTP peer or a contact holds it.
+fn grant_chat(name: &str, export: &str, staged: &mut Staged, errors: &mut Vec<String>) {
+    match staged.exports.get_mut(export) {
+        None => errors.push(format!("peer {name}: unknown export {export:?}")),
+        Some(x) => match &x.peer {
+            Some(other) if other != name => errors.push(format!(
+                "export {export} is granted to both {other} and {name}; one principal per exported session"
+            )),
+            _ => x.peer = Some(name.to_owned()),
+        },
+    }
+}
+
+/// 183 §9.4: one contact entry. A contact is its pinned endpoint id: no card URL, bearer or
+/// local roots (every root may reach it, W-26). A blocked contact keeps its facts (the gate
+/// refuses its id) and gets no route.
+fn stage_contact<'a>(
+    name: &'a str,
+    p: &'a PeerEntry,
+    contact_cap: tools::Risk,
+    pins: &mut HashMap<&'a str, &'a str>,
+    staged: &mut Staged,
+    errors: &mut Vec<String>,
+) {
+    let Some(eid) = p.endpoint.as_deref().map(str::trim) else {
+        errors.push(format!("peer {name}: a contact needs its endpoint"));
+        return;
+    };
+    if eid.parse::<iroh::EndpointId>().is_err() {
+        errors.push(format!(
+            "peer {name}: endpoint {eid:?} is not an endpoint id"
+        ));
+    }
+    if p.card_url.is_some()
+        || p.outbound_secret.is_some()
+        || p.inbound_secret.is_some()
+        || !p.sessions.is_empty()
+        || p.allow_private
+    {
+        errors.push(format!(
+            "peer {name}: a contact takes no card_url, secrets, sessions or allow_private"
+        ));
+    }
+    if let Some(other) = pins.insert(eid, name) {
+        errors.push(format!(
+            "peers {other} and {name} pin the same endpoint; one contact per endpoint"
+        ));
+    }
+    let cap = p.cap.unwrap_or(contact_cap);
+    if cap > tools::Risk::Mutating {
+        errors.push(format!("peer {name}: cap {cap:?}: read_only or mutating"));
+    }
+    if !p.blocked {
+        for export in &p.exports {
+            if !staged.agents.contains_key(export) {
+                grant_chat(name, export, staged, errors);
+            }
+        }
+        staged.peers.insert(
+            name.to_owned(),
+            Peer {
+                name: name.to_owned(),
+                card: None,
+                outbound: None,
+                inbound: None,
+                sessions: Vec::new(),
+                exports: p.exports.clone(),
+                allow_private: false,
+                eid: Some(eid.to_owned()),
+            },
+        );
+    }
+    staged.contacts.insert(
+        name.to_owned(),
+        ContactFacts {
+            eid: eid.to_owned(),
+            display: p.name.clone().unwrap_or_else(|| name.to_owned()),
+            machine: p.machine.clone().unwrap_or_default(),
+            cap: cap.min(tools::Risk::Mutating),
+            first_contact: p.first_contact.clone(),
+            blocked: p.blocked,
+            paired_ms: p.paired_ms.unwrap_or_default(),
+            addrs: p.addrs.iter().filter_map(|a| a.parse().ok()).collect(),
+        },
+    );
+}
+
 /// Validate the whole file (§6.1). `console` is the RPC console token, which
-/// no peer credential may equal. Returns every problem, not the first.
+/// no peer credential may equal; `contact_cap` is `a2a.contact_cap`, the cap of a contact
+/// entry without its own. Returns every problem, not the first.
 pub fn stage(
     file: &PeersFile,
     resolve: Resolve<'_>,
     console: Option<&str>,
+    contact_cap: tools::Risk,
 ) -> Result<Staged, Vec<String>> {
     let mut errors = Vec::new();
     let mut staged = Staged::default();
@@ -338,20 +629,45 @@ pub fn stage(
         if e.name.trim().is_empty() {
             errors.push(format!("export {name}: empty name"));
         }
-        if let Some(other) = export_sessions.insert(e.session, name) {
+        let session = match (e.session, &e.agent) {
+            (Some(s), None) => s,
+            (None, Some(agent)) => {
+                if agent.trim().is_empty() {
+                    errors.push(format!("export {name}: empty agent"));
+                }
+                staged.agents.insert(
+                    name.clone(),
+                    AgentExport {
+                        name: name.clone(),
+                        agent: agent.trim().to_owned(),
+                        title: e.name.trim().to_owned(),
+                        description: e.description.trim().to_owned(),
+                        tools: contact_tools(name, &e.tools),
+                    },
+                );
+                continue;
+            }
+            _ => {
+                errors.push(format!(
+                    "export {name}: set exactly one of session and agent"
+                ));
+                continue;
+            }
+        };
+        if let Some(other) = export_sessions.insert(session, name) {
             errors.push(format!(
-                "exports {other} and {name} publish the same session {}; one export per session",
-                e.session
+                "exports {other} and {name} publish the same session {session}; one export per session"
             ));
         }
         staged.exports.insert(
             name.clone(),
             Export {
                 name: name.clone(),
-                session: e.session,
+                session,
                 title: e.name.trim().to_owned(),
                 description: e.description.trim().to_owned(),
                 peer: None,
+                tools: contact_tools(name, &e.tools),
             },
         );
     }
@@ -382,8 +698,13 @@ pub fn stage(
     // a peer whose outbound bearer equals any inbound bearer would be
     // accepted as that other principal (§6.1), whatever the vault names.
     let mut credentials: Vec<(String, Token)> = Vec::new();
+    let mut pins: HashMap<&str, &str> = HashMap::new();
     for (name, p) in &file.peers {
         check_name("peer", name, &mut errors);
+        if p.is_contact() {
+            stage_contact(name, p, contact_cap, &mut pins, &mut staged, &mut errors);
+            continue;
+        }
         let outbound_side =
             p.card_url.is_some() || p.outbound_secret.is_some() || !p.sessions.is_empty();
         let inbound_side = p.inbound_secret.is_some() || !p.exports.is_empty();
@@ -439,15 +760,13 @@ pub fn stage(
                 errors.push(format!("peer {name}: inbound peer is granted no exports"));
             }
             for export in &p.exports {
-                match staged.exports.get_mut(export) {
-                    None => errors.push(format!("peer {name}: unknown export {export:?}")),
-                    Some(x) => match &x.peer {
-                        Some(other) if other != name => errors.push(format!(
-                            "export {export} is granted to both {other} and {name}; one principal per exported session"
-                        )),
-                        _ => x.peer = Some(name.clone()),
-                    },
+                if staged.agents.contains_key(export) {
+                    errors.push(format!(
+                        "peer {name}: export {export} is an agent export; only contacts reach agents"
+                    ));
+                    continue;
                 }
+                grant_chat(name, export, &mut staged, &mut errors);
             }
         }
 
@@ -461,6 +780,7 @@ pub fn stage(
                 sessions: p.sessions.clone(),
                 exports: p.exports.clone(),
                 allow_private: p.allow_private,
+                eid: None,
             },
         );
     }
@@ -499,6 +819,15 @@ mod tests {
 
     fn file(yaml: &str) -> PeersFile {
         serde_yaml::from_str(yaml).unwrap()
+    }
+
+    /// [`super::stage`] with `a2a.contact_cap` at its default.
+    fn stage(
+        file: &PeersFile,
+        resolve: Resolve<'_>,
+        console: Option<&str>,
+    ) -> Result<Staged, Vec<String>> {
+        super::stage(file, resolve, console, tools::Risk::ReadOnly)
     }
 
     const S: &[(&str, &str)] = &[
@@ -582,6 +911,105 @@ exports:
         assert_eq!(lab.endpoint(), "https://lab.example/agents/research");
         assert_eq!(s.exports["research"].peer.as_deref(), Some("lab"));
         assert!(!format!("{lab:?}").contains("o-token"));
+    }
+
+    /// 183: today's file round-trips with no Phase 3 key written; contact entries and agent
+    /// exports stage; a broken contact is refused with every reason.
+    #[test]
+    fn contacts_and_agent_exports_stage() {
+        let yaml = r#"
+peers:
+  lab:
+    inbound_secret: in
+    exports: [research]
+exports:
+  research:
+    session: "00000000-0000-0000-0000-000000000002"
+    name: Research
+"#;
+        let f = file(yaml);
+        assert!(!f.peers["lab"].is_contact());
+        let written = serde_yaml::to_string(&f).unwrap();
+        for key in [
+            "endpoint",
+            "machine",
+            "cap",
+            "first_contact",
+            "blocked",
+            "paired_ms",
+            "agent",
+        ] {
+            assert!(
+                !written.contains(key),
+                "{key} written for an HTTP peer: {written}"
+            );
+        }
+        assert!(stage(&file(&written), &resolver(S), None).is_ok());
+
+        let bob = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
+        let eve = iroh::SecretKey::from_bytes(&[8; 32]).public().to_string();
+        let f = file(&format!(
+            r#"
+peers:
+  bob:
+    endpoint: {bob}
+    name: Bob
+    machine: Bob's MacBook
+    cap: mutating
+    exports: [research, ops-chat]
+    first_contact: {{ research: allow, ops: block }}
+    paired_ms: 1
+  eve:
+    endpoint: {eve}
+    exports: [research]
+    blocked: true
+exports:
+  research: {{ agent: research@xeus, name: Research }}
+  ops-chat: {{ session: "00000000-0000-0000-0000-000000000003", name: Ops }}
+"#
+        ));
+        let s = super::stage(&f, &resolver(S), None, tools::Risk::ReadOnly).unwrap();
+        assert_eq!(s.peers["bob"].endpoint(), format!("iroh:{bob}"));
+        assert!(
+            !s.peers.contains_key("eve"),
+            "a blocked contact has no route"
+        );
+        assert!(s.contacts["eve"].blocked);
+        assert_eq!(s.contacts["eve"].cap, tools::Risk::ReadOnly);
+        assert_eq!(s.contacts["bob"].cap, tools::Risk::Mutating);
+        assert_eq!(s.contacts["bob"].machine, "Bob's MacBook");
+        assert_eq!(s.contact_by_eid(&eve), Some("eve"));
+        assert_eq!(s.agents["research"].agent, "research@xeus");
+        assert_eq!(s.exports["ops-chat"].peer.as_deref(), Some("bob"));
+
+        let f = file(&format!(
+            r#"
+peers:
+  bob:
+    endpoint: {bob}
+    card_url: https://lab.example/x
+    cap: destructive
+  bob2: {{ endpoint: {bob} }}
+  nopin: {{ name: X }}
+  lab:
+    inbound_secret: in
+    exports: [research]
+exports:
+  research: {{ agent: research@xeus, name: Research }}
+  both: {{ agent: x, session: "00000000-0000-0000-0000-000000000003", name: Both }}
+"#
+        ));
+        let errors = stage(&f, &resolver(S), None).unwrap_err();
+        for e in [
+            "peer bob: a contact takes no card_url, secrets, sessions or allow_private",
+            "peer bob: cap Destructive: read_only or mutating",
+            "peers bob and bob2 pin the same endpoint; one contact per endpoint",
+            "peer nopin: a contact needs its endpoint",
+            "peer lab: export research is an agent export; only contacts reach agents",
+            "export both: set exactly one of session and agent",
+        ] {
+            assert!(errors.contains(&e.to_owned()), "{e}: {errors:?}");
+        }
     }
 
     #[test]
@@ -739,5 +1167,27 @@ exports:
     fn empty_file_is_valid() {
         let s = stage(&PeersFile::default(), &resolver(S), None).unwrap();
         assert!(s.peers.is_empty() && s.exports.is_empty());
+    }
+
+    /// 183 Z4: a hand-written allowlist loads with every tool a contact may never be
+    /// granted stripped (each logged), for chat and agent exports alike.
+    #[test]
+    fn ungrantable_tools_are_stripped_when_the_file_loads() {
+        let f = file(
+            r#"
+exports:
+  chat:
+    session: "00000000-0000-0000-0000-000000000002"
+    name: Chat
+    tools: [read_url, knowledge_put, computer_screenshot, remind_me_in, shell, "mcp:files/search"]
+  research:
+    agent: research@xeus
+    name: Research
+    tools: [browser_open, knowledge_search, spawn_subagent]
+"#,
+        );
+        let s = stage(&f, &resolver(S), None).unwrap();
+        assert_eq!(s.exports["chat"].tools, ["read_url", "mcp:files/search"]);
+        assert_eq!(s.agents["research"].tools, ["knowledge_search"]);
     }
 }

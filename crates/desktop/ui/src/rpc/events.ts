@@ -33,6 +33,7 @@ import type { TelegramEvent } from '@/rpc/bindings/TelegramEvent'
 import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
 import type { TalkEvent } from '@/rpc/bindings/TalkEvent'
 import type { MeshEvent } from '@/rpc/bindings/MeshEvent'
+import type { ContactEvent } from '@/rpc/bindings/ContactEvent' // 183 P3: UI
 import type { SandboxEvent } from '@/rpc/bindings/SandboxEvent'
 import type {
   AppCallChanged,
@@ -130,6 +131,8 @@ export type WireEvent =
   | PeerMessageChanged
   | PeerDelivered
   | A2aChanged
+  /** 183 §10.4: a contact ceremony (`contact_pair`) or the Nearby agents list (`contact_nearby`). */
+  | ContactEvent // 183 P3: UI
   | AppCallChanged
   /** 70 HUD: a row was appended to the activity feed. */
   | ActivityAppended

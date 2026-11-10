@@ -8,11 +8,11 @@ import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { ApprovalScreen } from './ApprovalScreen'
 import { AskScreen } from './AskScreen'
 import { DecisionScreen } from './DecisionScreen'
-import { BlockedScreen, BudgetScreen, DoubleScreen, FinishedScreen, HandoffScreen, HireScreen, HomeScreen, NodeScreen, ResumeScreen, SecretScreen } from './PlainScreens'
+import { BlockedScreen, BudgetScreen, ContactFirstScreen, DoubleScreen, FinishedScreen, HandoffScreen, HireScreen, HomeScreen, NodeScreen, ResumeScreen, SecretScreen } from './PlainScreens'
 import { ReviewScreen } from './ReviewScreen'
 import { ShowScreen } from './ShowScreen'
 
-const TITLE: Partial<Record<AttentionItem['kind'], string>> = { decision: 'Decision', review: 'Review', ask: 'Question', show: 'Shown to you', approval: 'Approval', double: 'Double' }
+const TITLE: Partial<Record<AttentionItem['kind'], string>> = { decision: 'Decision', review: 'Review', ask: 'Question', show: 'Shown to you', approval: 'Approval', double: 'Double', contact_first: 'First contact' }
 
 /** 101 D7 / 104 A6: one screen per kind. */
 const SCREEN: Record<AttentionItem['kind'], ComponentType<{ item: AttentionItem }>> = {
@@ -31,6 +31,7 @@ const SCREEN: Record<AttentionItem['kind'], ComponentType<{ item: AttentionItem 
   resume: ResumeScreen,
   double: DoubleScreen,
   finished: FinishedScreen,
+  contact_first: ContactFirstScreen,
 }
 
 /** The selected item's screen (101 D7, 104 A6): every kind has one. Under `md` a 52 px header with the back chevron. */

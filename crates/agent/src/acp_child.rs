@@ -1862,6 +1862,8 @@ impl Message<PeerInput> for AcpChild {
                 id: m.record.receipt.id,
                 generation: m.generation,
                 isolated: false,
+                cap: None,
+                tools: None,
             }),
             channel: None,
             admitted: Instant::now(),

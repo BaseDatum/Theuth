@@ -321,6 +321,8 @@ function userEntries(
       case "autoresearch":
       case "moved":
       case "engine_restart":
+      case "contact_inbox":
+      case "contact_message":
         return { id: nextId(), ...c, context };
       // 171F B4: `turn` when this row opened the turn, so `foldCells` can hand it to the user's words that follow.
       case "cell_result":
@@ -996,6 +998,8 @@ function turn(
         model: e.model,
         turnSeq: e.turn_seq,
         lastInjected: undefined,
+        // 183 §12.10: a contact's capped turn (its wrapped row is not echoed into `entries` here).
+        contactNote: cls?.[0]?.kind === "contact_message" ? cls[0] : undefined,
         // The actor is busy; the settled reload after `TurnDone` restores the authoritative flag.
         contextEditable: false,
         // 109 §8.2: one banner, for the resumed turn only; the next turn clears it.
@@ -1182,6 +1186,7 @@ function turn(
         running: false,
         waiting: false,
         activity: "idle",
+        contactNote: undefined,
       };
     }
     case "Error":

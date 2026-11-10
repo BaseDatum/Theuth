@@ -617,6 +617,61 @@ pub struct PeerDeliver {
     pub forwarder: Option<String>,
 }
 
+/// 183 §14.6 (D9, W-40): who a contact's message into an exported chat comes from, as the
+/// engine that holds the contact vouches for it. The chat's owner may lower `cap`, never
+/// raise it above `mutating`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ContactOrigin {
+    /// The contact's name on the holding engine.
+    pub contact: String,
+    /// The contact's machine, from its card.
+    pub machine: String,
+    /// The export it addressed.
+    pub export: String,
+    /// `read_only` | `mutating`: the turn cap.
+    pub cap: tools::Risk,
+    /// Engine id that holds the contact and the A2A task.
+    pub holder: String,
+    /// 183 Z3-R2: the export's allowlist — the only tools that exist in this contact's
+    /// session (inbox) or turn (exported chat), besides the reply. Absent (an older holder)
+    /// = none.
+    #[serde(default)]
+    pub tools: Vec<String>,
+}
+
+/// 183 §14.6: one contact message for an exported chat owned by another engine of the
+/// mesh, the `contact_deliver` params (W-40). There is no `from` session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ContactEnvelope {
+    /// The message id, minted on the holding engine.
+    pub id: Uuid,
+    /// The exported chat.
+    pub to: SessionId,
+    /// Redacted, bounded body.
+    pub text: String,
+    /// Who sent it.
+    pub origin: ContactOrigin,
+    /// The message this one answers.
+    #[serde(default)]
+    pub reply_to: Option<Uuid>,
+    /// The holder's idempotency key (the A2A `messageId`).
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+/// `ask` → `Result<PeerReceipt, String>`: the chat owner's intake of `contact_deliver`
+/// (W-40): this engine's policy, then one capped turn (`tools::SetTurnCap`) opened by the
+/// `<contact_message>` row (§11.6).
+#[derive(Clone, Debug)]
+pub struct ContactDeliver {
+    /// The message.
+    pub envelope: ContactEnvelope,
+    /// The forwarding engine (the RPC's `Forwarded(peer)`); `None` = the holder is this engine.
+    pub forwarder: Option<String>,
+}
+
 /// Event: communication settings changed (§10). `session: None` = the global
 /// switch; reload every state and directory snapshot. `Some(root or session)`
 /// = that subtree's opt-out or scope changed.
@@ -913,6 +968,54 @@ impl fmt::Display for MeshRefusal {
 }
 
 impl std::error::Error for MeshRefusal {}
+
+/// 183 §11.4, §7.10: what a contact (or the engine holding it) reads when its message is not
+/// delivered. `Display` is the text after `waiting: ` (`NotAllowed`) or `failed: ` (the rest).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContactRefusal {
+    /// First contact not answered yet (W-27): the task waits in `TASK_STATE_AUTH_REQUIRED`.
+    NotAllowed {
+        /// Contact name.
+        contact: String,
+        /// Export name.
+        export: String,
+    },
+    /// Blocked or removed.
+    NotAContact {
+        /// Contact name.
+        contact: String,
+    },
+    /// W-41: the export answers nothing for now; `reason` is `Export.paused`.
+    Paused {
+        /// `chat archived`.
+        reason: String,
+    },
+    /// §13 row 55: the exported chat's `sessions.communication` is `0`.
+    NoAgentMessages,
+    /// W-15: the chat's owner is not connected. Z3-R2: a contact is not told which machine.
+    OwnerOffline,
+    /// §13 row 52: the owner answered `-32601` to `contact_deliver`.
+    OwnerOld,
+}
+
+impl fmt::Display for ContactRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAllowed { contact, export } => {
+                write!(f, "{contact} has not allowed messages to {export} yet")
+            }
+            Self::NotAContact { contact } => write!(f, "peer:{contact}: not a contact"),
+            Self::Paused { reason } => write!(f, "export paused: {reason}"),
+            Self::NoAgentMessages => {
+                f.write_str("export unavailable: this chat does not take agent messages")
+            }
+            Self::OwnerOffline => f.write_str("the chat's machine is offline"),
+            Self::OwnerOld => f.write_str("the chat's machine needs an update"),
+        }
+    }
+}
+
+impl std::error::Error for ContactRefusal {}
 
 /// 183 §6.5: why the owner's `peer_deliver` intake refused. `NotOwner` is typed so the RPC
 /// layer answers it `UNAUTHORIZED` without matching its text; `Display` is the plain text.
@@ -1242,10 +1345,18 @@ impl Policy {
     /// The local half of `remote_route(s, p)` (§2.1): `s` enabled and
     /// `a2a.enabled`. Grant and authentication belong to the A2A plugin.
     pub fn remote(&mut self, s: SessionId) -> Result<Generation, PolicyError> {
-        self.enabled(s)?;
         if !self.network_enabled {
+            self.enabled(s)?;
             return Err(PolicyError::NetworkDisabled);
         }
+        self.contact(s)
+    }
+
+    /// 183 W-26: [`Self::remote`] for a contact (a pinned endpoint on `theuth/a2a/1`):
+    /// `agent.communication` and the session's opt-out gate it, `a2a.enabled` does not (it
+    /// gates only the HTTP listener).
+    pub fn contact(&mut self, s: SessionId) -> Result<Generation, PolicyError> {
+        self.enabled(s)?;
         let t = self.token(s);
         Ok(Generation {
             revision: self.revision,

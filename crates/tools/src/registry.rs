@@ -70,6 +70,16 @@ pub struct ToolRegistry {
     /// listed for nor runnable by the session or its subagents, except
     /// [`CAP_EXEMPT`]. In memory only, like `hidden`.
     cap: HashMap<SessionId, Risk>,
+    /// 183 §14.6 (W-39): a contact's turn in an exported chat, from [`SetTurnCap`]; read
+    /// beside `cap` (the stricter wins, down the tree), never written into it.
+    turn_cap: HashMap<SessionId, Risk>,
+    /// 183 §7.6 (Z3-R2): contact sessions are default-deny. A session (a contact's inbox) or
+    /// a contact's turn (in an exported chat) with an allowlist here sees only the tools
+    /// named in it; every other tool is hidden, for it and its subagents. In memory only,
+    /// re-installed at every actor start of a contact session.
+    allow_only: HashMap<SessionId, HashSet<String>>,
+    /// The turn-scoped allowlist of a contact's turn, from [`SetAllowOnly`] with `turn`.
+    turn_allow_only: HashMap<SessionId, HashSet<String>>,
     /// `<data_dir>/config.yaml`, for the persistent switch.
     config_path: PathBuf,
     /// Per-root file capability from [`InstallResources`] (51 §4.5); a
@@ -523,6 +533,28 @@ impl Message<SetCap> for ToolRegistry {
     }
 }
 
+/// `tell` (183 §14.6, W-39): a turn-scoped ceiling beside [`SetCap`] for a contact's turn in
+/// an exported chat; the stricter of the two wins in `capped`, and the session's own
+/// [`SetCap`] entry is never overwritten or cleared. `None` ends it (`TurnFinished`, cancel).
+#[derive(Clone, Copy, Debug)]
+pub struct SetTurnCap {
+    /// The exported chat.
+    pub session: SessionId,
+    /// The contact's cap; `None` removes the turn cap.
+    pub cap: Option<Risk>,
+}
+
+impl Message<SetTurnCap> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetTurnCap, _: &mut Context<Self, Self::Reply>) {
+        match m.cap {
+            Some(cap) => self.turn_cap.insert(m.session, cap),
+            None => self.turn_cap.remove(&m.session),
+        };
+    }
+}
+
 /// `tell` (145 §0.4): inline calls of `session` whose body has not returned
 /// after `after` are promoted to background jobs ([`crate::Adopt`]); `None`
 /// never promotes. The agent sets it from `TalkLive.promote_after_ms` and
@@ -568,11 +600,151 @@ impl Message<CancelCalls> for ToolRegistry {
     }
 }
 
+/// An MCP tool's name on its server: the registered name, less `<server>__` after a clash.
+fn mcp_remote<'a>(name: &'a str, server: &str) -> &'a str {
+    name.strip_prefix(server)
+        .and_then(|rest| rest.strip_prefix("__"))
+        .unwrap_or(name)
+}
+
 /// Tools a capped subagent keeps whatever its ceiling: reporting to its
 /// parent is what a subagent is for, and `send_message` is `Mutating` for
 /// the approval policy (a peer's inbox changes), not because it touches
 /// anything the cap protects. The policy still runs for these.
 const CAP_EXEMPT: &[&str] = &["send_message"];
+
+/// 183 Z4: the only tools an export may EVER allow a contact — the public web and the
+/// read-only readers the owner opts into. Nothing else is grantable, read-only or not:
+/// anything that reaches past the contact's capped session (the screen, the browser and
+/// its cookies, knowledge writes, briefs, routines and drafts, reminders, the owner's
+/// sessions, the vault, tasks, agents, schedules, spawning, messaging) stays out. Besides
+/// these, an MCP tool at effective risk `read_only` is grantable as `mcp:<server>/<tool>`.
+/// Checked when `peers.yaml` loads, at `a2a_export_put`, and here at every [`SetAllowOnly`].
+pub const CONTACT_GRANTABLE: &[&str] = &[
+    "search_web",
+    "read_url",
+    "scrape_url",
+    "crawl",
+    "map_site",
+    "knowledge_search",
+    "knowledge_get",
+    "knowledge_list",
+    "doc_read",
+    "nb_search",
+    "artifact_read",
+];
+
+/// The allowlist key of an MCP tool: `mcp:<server>/<tool>` (the server's own tool name).
+const MCP_GRANT: &str = "mcp:";
+
+/// 183 Z4: `name` may stand in a contact allowlist: one of [`CONTACT_GRANTABLE`], or an
+/// MCP key (`mcp:<server>/<tool>`, whose risk only the registry knows; it admits the key
+/// only while that tool is `read_only`).
+pub fn contact_grantable(name: &str) -> bool {
+    CONTACT_GRANTABLE.contains(&name)
+        || name.len() <= 160
+            && name
+                .strip_prefix(MCP_GRANT)
+                .and_then(|k| k.split_once('/'))
+                .is_some_and(|(server, tool)| {
+                    !server.is_empty()
+                        && !tool.is_empty()
+                        && !name.chars().any(|c| c.is_whitespace() || c.is_control())
+                })
+}
+
+/// One tool an export may allow a contact (`a2a_grantable_tools`): `name` is what the
+/// allowlist holds (`mcp:<server>/<tool>` for an MCP tool).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct GrantableTool {
+    /// The allowlist key.
+    pub name: String,
+    /// The tool's risk (always `read_only` for an MCP tool).
+    pub risk: Risk,
+    /// The MCP server, for an MCP tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub mcp_server: Option<String>,
+}
+
+/// `ask` → `Vec<GrantableTool>` (183 Z4): the registered tools an export may allow a
+/// contact, sorted by name — the allowlist editor offers only these.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactGrantable;
+
+impl Message<ContactGrantable> for ToolRegistry {
+    type Reply = Vec<GrantableTool>;
+
+    async fn handle(
+        &mut self,
+        _: ContactGrantable,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let mut out: Vec<GrantableTool> = self
+            .tools
+            .iter()
+            .filter_map(|(name, t)| {
+                let name = self.grant_key(name)?;
+                let mcp_server = match t.source() {
+                    ToolSource::Mcp { server, .. } => Some(server),
+                    _ => None,
+                };
+                Some(GrantableTool {
+                    name: name.into_owned(),
+                    risk: t.spec().risk,
+                    mcp_server,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+}
+
+/// `tell` (183 §7.6, Z3-R2): contact sessions are default-deny — only the tools in `tools`
+/// exist for `session` (and its subagents); everything else is hidden. `turn` scopes it to
+/// the running contact turn of an exported chat (cleared at turn end), otherwise it is the
+/// session's own (a contact's inbox). `None` clears that entry.
+#[derive(Clone, Debug)]
+pub struct SetAllowOnly {
+    /// The inbox, or the exported chat whose contact turn runs.
+    pub session: SessionId,
+    /// The allowlist; `None` removes it.
+    pub tools: Option<Vec<String>>,
+    /// Turn-scoped (an exported chat's contact turn) rather than the session's own.
+    pub turn: bool,
+}
+
+impl Message<SetAllowOnly> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetAllowOnly, _: &mut Context<Self, Self::Reply>) {
+        let map = if m.turn {
+            &mut self.turn_allow_only
+        } else {
+            &mut self.allow_only
+        };
+        match m.tools {
+            // 183 Z4: `tools` may come from a paired engine (`origin.tools`): only what a
+            // contact may ever be granted is installed; the rest is dropped, fail closed.
+            Some(t) => {
+                let t = t
+                    .into_iter()
+                    .filter(|name| {
+                        let keep = contact_grantable(name);
+                        if !keep {
+                            tracing::warn!(session = %m.session, tool = %name, "a contact may not be granted this tool; left out of its allowlist");
+                        }
+                        keep
+                    })
+                    .collect();
+                map.insert(m.session, t)
+            }
+            None => map.remove(&m.session),
+        };
+    }
+}
 
 /// `tell`: `session`'s owners write under `resources` from now on (51 §4.5).
 /// The supervisor installs one per private root before its first turn;
@@ -772,6 +944,9 @@ impl Message<Forget> for ToolRegistry {
             self.hidden.remove(s);
             self.pin.remove(s);
             self.cap.remove(s);
+            self.turn_cap.remove(s);
+            self.allow_only.remove(s);
+            self.turn_allow_only.remove(s);
             crate::seat::forget(*s);
         }
     }
@@ -901,10 +1076,10 @@ impl ToolRegistry {
         }
     }
 
-    /// `name` is hidden for the session or an ancestor, or is an MCP tool the
-    /// session's agent may not see (67 §6.3).
+    /// `name` is hidden for the session or an ancestor, is an MCP tool the session's agent
+    /// may not see (67 §6.3), or is outside a contact session's allowlist (183 Z3-R2).
     fn is_hidden(&self, mut id: SessionId, name: &str) -> bool {
-        if self.mcp_hidden(id, name) {
+        if self.mcp_hidden(id, name) || !self.allowlist_admits(id, name) {
             return true;
         }
         loop {
@@ -913,6 +1088,62 @@ impl ToolRegistry {
             }
             match self.parents.get(&id) {
                 Some(p) => id = *p,
+                None => return false,
+            }
+        }
+    }
+
+    /// 183 Z3-R2: every allowlist on the session or an ancestor lists `name`, and so does a
+    /// contact turn's allowlist on the session itself (Z3-R3: not on the chat's existing
+    /// subagents, which keep the owner's tools). None applies: admitted. Z4: under any
+    /// allowlist only a grantable tool is admitted, by its [`Self::grant_key`].
+    fn allowlist_admits(&self, id: SessionId, name: &str) -> bool {
+        let key = std::cell::OnceCell::new();
+        let admits = |allowed: &HashSet<String>| {
+            key.get_or_init(|| self.grant_key(name))
+                .as_deref()
+                .is_some_and(|k| allowed.contains(k))
+        };
+        if self.turn_allow_only.get(&id).is_some_and(|a| !admits(a)) {
+            return false;
+        }
+        let mut cur = id;
+        loop {
+            if self.allow_only.get(&cur).is_some_and(|a| !admits(a)) {
+                return false;
+            }
+            match self.parents.get(&cur) {
+                Some(p) => cur = *p,
+                None => return true,
+            }
+        }
+    }
+
+    /// 183 Z4: what a contact allowlist must hold for `name` to be admitted: `name` itself
+    /// for one of [`CONTACT_GRANTABLE`] (not an MCP tool under that name), `mcp:<server>/<tool>`
+    /// for an MCP tool at effective risk `read_only`; `None`: never grantable.
+    fn grant_key<'a>(&self, name: &'a str) -> Option<std::borrow::Cow<'a, str>> {
+        let tool = self.tools.get(name);
+        match tool.map(|t| t.source()) {
+            Some(ToolSource::Mcp { server, .. }) => (tool?.spec().risk == Risk::ReadOnly)
+                .then(|| format!("{MCP_GRANT}{server}/{}", mcp_remote(name, &server)).into()),
+            _ => CONTACT_GRANTABLE.contains(&name).then_some(name.into()),
+        }
+    }
+
+    /// 183 Z3-R2: the session is a contact session: it, or an ancestor, is an inbox, or a
+    /// contact's turn runs in the session itself.
+    fn contact_scoped(&self, id: SessionId) -> bool {
+        if self.turn_allow_only.contains_key(&id) {
+            return true;
+        }
+        let mut cur = id;
+        loop {
+            if self.allow_only.contains_key(&cur) {
+                return true;
+            }
+            match self.parents.get(&cur) {
+                Some(p) => cur = *p,
                 None => return false,
             }
         }
@@ -932,33 +1163,33 @@ impl ToolRegistry {
         let ToolSource::Mcp { server, .. } = tool.source() else {
             return false;
         };
-        let remote = name
-            .strip_prefix(server.as_str())
-            .and_then(|rest| rest.strip_prefix("__"))
-            .unwrap_or(name);
+        let remote = mcp_remote(name, &server);
         !access.allows(id, &server, remote)
     }
 
-    /// The tightest [`SetCap`] on the session or an ancestor: a child never
-    /// exceeds an ancestor's ceiling. `None` = no ceiling.
-    fn cap_for(&self, mut id: SessionId) -> Option<Risk> {
-        let mut cap: Option<Risk> = None;
+    /// The tightest cap on `id`: its own or an ancestor's [`SetCap`], and a contact turn's
+    /// [`SetTurnCap`] on `id` itself (183 Z3-R3: not on the chat's running subagents, which
+    /// the owner started and which keep the owner's tools).
+    fn cap_for(&self, id: SessionId) -> Option<Risk> {
+        let mut cap = self.turn_cap.get(&id).copied();
+        let mut cur = id;
         loop {
-            if let Some(c) = self.cap.get(&id) {
+            if let Some(c) = self.cap.get(&cur) {
                 cap = Some(cap.map_or(*c, |k| k.min(*c)));
             }
-            match self.parents.get(&id) {
-                Some(p) => id = *p,
+            match self.parents.get(&cur) {
+                Some(p) => cur = *p,
                 None => return cap,
             }
         }
     }
 
     /// The cap that puts `name` at `risk` out of the session's reach, if any:
-    /// `risk` above [`Self::cap_for`] and the tool not in [`CAP_EXEMPT`].
+    /// `risk` above [`Self::cap_for`] and the tool not in [`CAP_EXEMPT`] — which never
+    /// applies in a contact session (183 Z3-R2: a contact's cap has no relay exemption).
     fn capped(&self, id: SessionId, name: &str, risk: Risk) -> Option<Risk> {
         self.cap_for(id)
-            .filter(|cap| risk > *cap && !CAP_EXEMPT.contains(&name))
+            .filter(|cap| risk > *cap && (!CAP_EXEMPT.contains(&name) || self.contact_scoped(id)))
     }
 
     /// The session's [`InstallResources`], else the nearest ancestor's, else durable.
@@ -1386,6 +1617,58 @@ impl Message<InstallExecutionGate> for ToolRegistry {
     }
 }
 
+/// `ask` → `Option<Risk>` (183 Z3-R2): the tightest ceiling on `session` right now — its own
+/// or an ancestor's [`SetCap`], or a contact turn's [`SetTurnCap`]. A child spawned now gets
+/// it as its own cap, so it never outlives the turn uncapped.
+#[derive(Clone, Copy, Debug)]
+pub struct EffectiveCap(pub SessionId);
+
+impl Message<EffectiveCap> for ToolRegistry {
+    type Reply = Option<Risk>;
+
+    async fn handle(
+        &mut self,
+        m: EffectiveCap,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<Risk> {
+        self.cap_for(m.0)
+    }
+}
+
+/// `ask` → `bool` (183 Z3-R3): `session` is a contact session (an inbox or under one, or a
+/// contact's turn runs in it): its prompt carries nothing about the owner's machine.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactScoped(pub SessionId);
+
+impl Message<ContactScoped> for ToolRegistry {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: ContactScoped, _: &mut Context<Self, Self::Reply>) -> bool {
+        self.contact_scoped(m.0)
+    }
+}
+
+/// `ask` → `Vec<String>` (183 Z3-R2): the names of `.1` a contact session's allowlist admits,
+/// so the loop's own tools (`python`, `todo`, …) obey it like the registry's. No allowlist on
+/// the session admits them all.
+#[derive(Clone, Debug)]
+pub struct Allowlisted(pub SessionId, pub Vec<String>);
+
+impl Message<Allowlisted> for ToolRegistry {
+    type Reply = Vec<String>;
+
+    async fn handle(
+        &mut self,
+        Allowlisted(id, names): Allowlisted,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<String> {
+        names
+            .into_iter()
+            .filter(|n| self.allowlist_admits(id, n))
+            .collect()
+    }
+}
+
 impl Message<HiddenTools> for ToolRegistry {
     type Reply = HashSet<String>;
 
@@ -1590,7 +1873,7 @@ impl Message<Invoke> for ToolRegistry {
 
     async fn handle(
         &mut self,
-        Invoke(call): Invoke,
+        Invoke(mut call): Invoke,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
@@ -1599,6 +1882,9 @@ impl Message<Invoke> for ToolRegistry {
             tx.send(ToolOutput::err(format!("unknown tool: {}", call.name)));
             return reply;
         };
+        if self.contact_scoped(call.session) {
+            bound_for_contact(&call.name, &mut call.args);
+        }
         let spec = tool.spec();
         // Availability before permission (50 §0.5): a gated tool that is off
         // does not exist for this session, so no approval card is ever shown.
@@ -1628,6 +1914,30 @@ impl Message<Invoke> for ToolRegistry {
             move |out| tx.send(out),
         );
         reply
+    }
+}
+
+/// 183 Z4-R1: per-call bounds on the web tools in a contact session, so one contact message
+/// cannot spend the owner's crawl or search quota: `(tool, argument, max)`. Set where absent
+/// too (the owner's defaults may be larger); a value that is not a whole number takes the max.
+const CONTACT_WEB_BOUNDS: &[(&str, &str, u64)] = &[
+    ("crawl", "limit", 20),
+    ("crawl", "max_depth", 2),
+    ("map_site", "limit", 200),
+    ("search_web", "limit", 8),
+    ("search_web", "read", 5),
+];
+
+fn bound_for_contact(name: &str, args: &mut serde_json::Value) {
+    let Some(obj) = args.as_object_mut() else {
+        return;
+    };
+    for (_, key, max) in CONTACT_WEB_BOUNDS.iter().filter(|(t, ..)| *t == name) {
+        let v = obj
+            .get(*key)
+            .and_then(serde_json::Value::as_u64)
+            .map_or(*max, |v| v.min(*max));
+        obj.insert((*key).into(), v.into());
     }
 }
 
@@ -1963,6 +2273,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             hidden: HashMap::new(),
             parents: HashMap::new(),
             cap: HashMap::new(),
+            turn_cap: HashMap::new(),
+            allow_only: HashMap::new(),
+            turn_allow_only: HashMap::new(),
             config_path: rt.data_dir.join("config.yaml"),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(&rt.data_dir),
@@ -2032,6 +2345,9 @@ mod tests {
             hidden: HashMap::new(),
             parents: HashMap::new(),
             cap: HashMap::new(),
+            turn_cap: HashMap::new(),
+            allow_only: HashMap::new(),
+            turn_allow_only: HashMap::new(),
             config_path: PathBuf::new(),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(std::path::Path::new("/tmp")),
@@ -2824,6 +3140,84 @@ mod tests {
         );
     }
 
+    /// 183 W-39: a contact's `read_only` turn cap refuses a mutating tool with approvals off,
+    /// the stricter of turn cap and session cap wins, and clearing the turn cap leaves the
+    /// session's own `SetCap` as it was. Z3-R3: the turn cap is the turn's own session's — a
+    /// child the owner started keeps its tools (one the turn spawns gets its own `SetCap`).
+    #[tokio::test]
+    async fn turn_cap_refuses_above_it_and_never_replaces_the_session_cap() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reg = registry(
+            vec![
+                Arc::new(Wipe(runs.clone())),
+                Arc::new(Touch),
+                Arc::new(Echo),
+            ],
+            None,
+        );
+        let (chat, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent: chat,
+        })
+        .await
+        .unwrap();
+        reg.ask(SetApprovals {
+            session: Some(chat),
+            enabled: false,
+            clear: false,
+        })
+        .await
+        .unwrap();
+        reg.tell(SetCap {
+            session: chat,
+            cap: Some(Risk::Mutating),
+        })
+        .await
+        .unwrap();
+        reg.tell(SetTurnCap {
+            session: chat,
+            cap: Some(Risk::ReadOnly),
+        })
+        .await
+        .unwrap();
+        let out = reg.ask(Invoke(call("touch", chat))).await.unwrap();
+        assert_eq!(
+            out.content,
+            "touch: denied: subagent is capped at read_only"
+        );
+        let out = reg.ask(Invoke(call("echo", chat))).await.unwrap();
+        assert!(!out.is_error, "read-only runs: {out:?}");
+        let out = reg.ask(Invoke(call("touch", child))).await.unwrap();
+        assert!(!out.is_error, "the owner's child keeps its tools: {out:?}");
+        // A looser turn cap than the session's does not loosen it.
+        reg.tell(SetTurnCap {
+            session: chat,
+            cap: Some(Risk::Destructive),
+        })
+        .await
+        .unwrap();
+        let out = reg
+            .ask(Invoke(app_call(
+                "wipe",
+                chat,
+                serde_json::json!({"target": "db"}),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(out.content, "wipe: denied: subagent is capped at mutating");
+        // The turn ends: the session's own cap is what remains.
+        reg.tell(SetTurnCap {
+            session: chat,
+            cap: None,
+        })
+        .await
+        .unwrap();
+        let out = reg.ask(Invoke(call("touch", chat))).await.unwrap();
+        assert!(!out.is_error, "mutating runs again: {out:?}");
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
     /// Stands in for the agent's `send_message`: counts body runs.
     struct Peer(Arc<std::sync::atomic::AtomicUsize>);
 
@@ -2929,6 +3323,338 @@ mod tests {
         sw.set(false);
         assert!(send().await.unwrap().is_error);
         assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Read-only stand-ins under a grantable and an ungrantable name.
+    macro_rules! read_only_tool {
+        ($ty:ident, $name:literal) => {
+            struct $ty;
+
+            #[async_trait::async_trait]
+            impl Tool for $ty {
+                const NAME: &'static str = $name;
+                const RISK: Risk = Risk::ReadOnly;
+                type Args = serde_json::Value;
+                fn description(&self) -> String {
+                    String::new()
+                }
+                async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+                    Ok(ToolOutput::ok($name))
+                }
+            }
+        };
+    }
+    read_only_tool!(ReadUrl, "read_url");
+    read_only_tool!(BrowserOpen, "browser_open");
+
+    /// An MCP tool of server `files` at a given risk.
+    struct FilesMcp(&'static str, Risk);
+
+    impl crate::ErasedTool for FilesMcp {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: self.0.into(),
+                description: String::new(),
+                schema: serde_json::json!({}),
+                risk: self.1,
+                direct: false,
+                returns: String::new(),
+            }
+        }
+        fn source(&self) -> ToolSource {
+            ToolSource::Mcp {
+                server: "files".into(),
+                entry: crate::McpEntry::Http {
+                    url: "http://127.0.0.1/".into(),
+                },
+            }
+        }
+        fn call(
+            &self,
+            _: serde_json::Value,
+            _: ToolCx,
+        ) -> futures::future::BoxFuture<'_, anyhow::Result<ToolOutput>> {
+            Box::pin(async { Ok(ToolOutput::ok("")) })
+        }
+    }
+
+    /// 183 Z3-R2: a contact session is default-deny. Only its allowlist exists (for the
+    /// session and its subagents, the session's own or the turn's), and only what a contact
+    /// may ever be granted (Z4): `send_message` and a mutating tool stay out even when listed.
+    #[tokio::test]
+    async fn contact_sessions_see_only_their_allowlist() {
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let allow = Policy {
+            mutating: PolicyAction::Allow,
+            ..Policy::default()
+        };
+        let reg = registry_with(
+            vec![
+                Arc::new(Peer(ran.clone())),
+                Arc::new(Echo),
+                Arc::new(Touch),
+                Arc::new(ReadUrl),
+            ],
+            None,
+            allow,
+            None,
+        );
+        reg.ask(InstallCommunicationAccess(Switch::new(true)))
+            .await
+            .unwrap();
+        let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.name).collect::<Vec<_>>();
+        let everything = ["echo", "read_url", "send_message", "touch"];
+        let (inbox, child, chat) = (SessionId::new(), SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent: inbox,
+        })
+        .await
+        .unwrap();
+
+        // The inbox: only `read_url` exists, for it and its subagent.
+        reg.tell(SetAllowOnly {
+            session: inbox,
+            tools: Some(vec!["read_url".into()]),
+            turn: false,
+        })
+        .await
+        .unwrap();
+        for s in [inbox, child] {
+            assert_eq!(
+                names(reg.ask(ListTools(Some(s))).await.unwrap()),
+                ["read_url"]
+            );
+            for hidden in ["echo", "touch", "send_message"] {
+                let out = reg.ask(Invoke(call(hidden, s))).await.unwrap();
+                assert!(
+                    out.is_error && out.content.contains("unknown tool"),
+                    "{out:?}"
+                );
+            }
+        }
+        // The loop's own tools (`python`, `todo`) obey the allowlist too.
+        let locals = || {
+            vec![
+                "python".to_owned(),
+                "todo".to_owned(),
+                "read_url".to_owned(),
+            ]
+        };
+        assert_eq!(
+            reg.ask(Allowlisted(child, locals())).await.unwrap(),
+            ["read_url"]
+        );
+        assert_eq!(
+            reg.ask(Allowlisted(chat, locals())).await.unwrap(),
+            locals()
+        );
+
+        // An exported chat's contact turn: listing `send_message` or a mutating tool does
+        // not make them grantable.
+        reg.tell(SetTurnCap {
+            session: chat,
+            cap: Some(Risk::Mutating),
+        })
+        .await
+        .unwrap();
+        reg.tell(SetAllowOnly {
+            session: chat,
+            tools: Some(
+                ["read_url", "send_message", "touch", "echo"]
+                    .map(String::from)
+                    .to_vec(),
+            ),
+            turn: true,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            names(reg.ask(ListTools(Some(chat))).await.unwrap()),
+            ["read_url"]
+        );
+        for hidden in ["send_message", "touch"] {
+            let out = reg.ask(Invoke(call(hidden, chat))).await.unwrap();
+            assert!(out.content.contains("unknown tool"), "{out:?}");
+        }
+        // Z3-R3: the turn's allowlist is the turn's own session's; a subagent the owner
+        // started before keeps its tools.
+        let bg = SessionId::new();
+        reg.tell(SetParent {
+            session: bg,
+            parent: chat,
+        })
+        .await
+        .unwrap();
+        let loop_tools = || vec!["python".to_owned(), "todo".to_owned()];
+        assert!(
+            reg.ask(Allowlisted(chat, loop_tools()))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reg.ask(Allowlisted(bg, loop_tools())).await.unwrap(),
+            loop_tools()
+        );
+        assert!(reg.ask(ContactScoped(chat)).await.unwrap());
+        assert!(!reg.ask(ContactScoped(bg)).await.unwrap());
+        // Nor does the turn's cap reach it.
+        assert_eq!(reg.ask(EffectiveCap(bg)).await.unwrap(), None);
+        assert_eq!(
+            names(reg.ask(ListTools(Some(bg))).await.unwrap()),
+            everything
+        );
+        // A child spawned now takes this ceiling as its own (M4).
+        assert_eq!(
+            reg.ask(EffectiveCap(chat)).await.unwrap(),
+            Some(Risk::Mutating)
+        );
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // The turn ends: the chat is the owner's again.
+        reg.tell(SetAllowOnly {
+            session: chat,
+            tools: None,
+            turn: true,
+        })
+        .await
+        .unwrap();
+        reg.tell(SetTurnCap {
+            session: chat,
+            cap: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            names(reg.ask(ListTools(Some(chat))).await.unwrap()),
+            everything
+        );
+        assert_eq!(
+            reg.ask(Allowlisted(chat, locals())).await.unwrap(),
+            locals()
+        );
+    }
+
+    /// 183 Z4: an allowlist holds only what a contact may ever be granted, whoever sent it
+    /// (a paired engine's `origin.tools`): `browser_open` is intersected away at install
+    /// though read-only; an MCP tool is admitted by its `mcp:<server>/<tool>` key only while
+    /// it is read-only, never by its bare name; and the editor's set is exactly that.
+    #[tokio::test]
+    async fn an_allowlist_from_a_peer_holds_only_grantable_tools() {
+        let reg = registry_with(
+            vec![
+                Arc::new(ReadUrl),
+                Arc::new(BrowserOpen),
+                Arc::new(Echo),
+                Arc::new(FilesMcp("search", Risk::ReadOnly)),
+                Arc::new(FilesMcp("delete", Risk::Mutating)),
+            ],
+            None,
+            Policy::default(),
+            None,
+        );
+        let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.name).collect::<Vec<_>>();
+        let origin = [
+            "read_url",
+            "browser_open",
+            "echo",
+            "search",
+            "mcp:files/search",
+            "mcp:files/delete",
+        ]
+        .map(String::from)
+        .to_vec();
+        for turn in [false, true] {
+            let s = SessionId::new();
+            reg.tell(SetAllowOnly {
+                session: s,
+                tools: Some(origin.clone()),
+                turn,
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                names(reg.ask(ListTools(Some(s))).await.unwrap()),
+                ["read_url", "search"],
+                "turn {turn}"
+            );
+            for hidden in ["browser_open", "delete"] {
+                let out = reg.ask(Invoke(call(hidden, s))).await.unwrap();
+                assert!(out.content.contains("unknown tool"), "{out:?}");
+            }
+        }
+        let grantable = |name: &str, mcp: bool| GrantableTool {
+            name: name.into(),
+            risk: Risk::ReadOnly,
+            mcp_server: mcp.then(|| "files".into()),
+        };
+        assert_eq!(
+            reg.ask(ContactGrantable).await.unwrap(),
+            [
+                grantable("mcp:files/search", true),
+                grantable("read_url", false)
+            ]
+        );
+    }
+
+    /// Stands in for `crawl`: answers with the arguments it was called with.
+    struct Crawl;
+
+    #[async_trait::async_trait]
+    impl Tool for Crawl {
+        const NAME: &'static str = "crawl";
+        const RISK: Risk = Risk::ReadOnly;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, a: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok(a.to_string()))
+        }
+    }
+
+    /// 183 Z4-R1: in a contact session `crawl` runs at most 20 pages and depth 2 whatever
+    /// the contact asked (absent or junk too); the owner's own call is passed as sent.
+    #[tokio::test]
+    async fn a_contact_crawl_is_bounded_per_call() {
+        let reg = registry_with(vec![Arc::new(Crawl)], None, Policy::default(), None);
+        let (inbox, owner) = (SessionId::new(), SessionId::new());
+        reg.tell(SetAllowOnly {
+            session: inbox,
+            tools: Some(vec!["crawl".into()]),
+            turn: false,
+        })
+        .await
+        .unwrap();
+        let crawl = |s, args| ToolCall {
+            args,
+            ..call("crawl", s)
+        };
+        let ran =
+            |out: ToolOutput| serde_json::from_str::<serde_json::Value>(&out.content).unwrap();
+        let asked = serde_json::json!({"url": "https://x.example", "limit": 5000, "max_depth": 9});
+        let out = reg.ask(Invoke(crawl(inbox, asked.clone()))).await.unwrap();
+        assert_eq!(
+            ran(out),
+            serde_json::json!({"url": "https://x.example", "limit": 20, "max_depth": 2})
+        );
+        let small = serde_json::json!({"url": "u", "limit": 3, "max_depth": "deep"});
+        let out = reg.ask(Invoke(crawl(inbox, small))).await.unwrap();
+        assert_eq!(
+            ran(out),
+            serde_json::json!({"url": "u", "limit": 3, "max_depth": 2})
+        );
+        let out = reg
+            .ask(Invoke(crawl(inbox, serde_json::json!({"url": "u"}))))
+            .await
+            .unwrap();
+        assert_eq!(
+            ran(out),
+            serde_json::json!({"url": "u", "limit": 20, "max_depth": 2})
+        );
+        let out = reg.ask(Invoke(crawl(owner, asked.clone()))).await.unwrap();
+        assert_eq!(ran(out), asked);
     }
 
     /// Bus subscriber standing in for the human: on the first request flips

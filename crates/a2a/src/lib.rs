@@ -8,12 +8,13 @@
 //! - DTOs: [`A2aStatus`], [`A2aPeerStatus`], [`A2aExportStatus`]
 //! - event: [`A2aChanged`]
 //!
-//! `a2a.enabled: false` (the default) starts nothing: no actor, listener,
-//! card fetch or credential load; `A2aStatus::disabled()` is the RPC answer
-//! then. A malformed `a2a:` section registers the actor with the error and
-//! everything closed. With `enabled: true` the actor registers immediately
-//! and finishes initialisation in the background once `agent` and `secrets`
-//! are up (plugin order is not assumed).
+//! The actor always registers and finishes initialisation in the background
+//! once `agent` and `secrets` are up (plugin order is not assumed). 183 W-26:
+//! contacts (`peers.yaml` entries with `endpoint`, reached over `theuth/a2a/1`)
+//! need it whatever `a2a.enabled` says; `a2a.enabled: false` (the default)
+//! keeps the loopback listener closed and HTTP peers dormant (no card fetch,
+//! no credential load). A malformed `a2a:` section registers the actor with
+//! the error and everything closed.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -37,6 +38,7 @@ use uuid::Uuid;
 
 pub mod client;
 pub mod config;
+pub mod contacts;
 pub mod server;
 
 use client::{ConnectError, PeerClient, Sender};
@@ -45,6 +47,9 @@ use server::{Live, Shared};
 
 /// Registry name of the [`A2aActor`].
 pub const A2A_ACTOR: &str = "a2a";
+
+/// 183 §7.8: how often `peers.yaml` is checked for a hand edit.
+pub const HOT_RELOAD: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Network status for `/a2a` and settings (§10). Never carries a credential.
 #[derive(
@@ -160,7 +165,17 @@ struct Ctx {
     /// One listener transition at a time; the mailbox is not held while
     /// binding or reporting to the agent.
     listener_lock: tokio::sync::Mutex<()>,
+    /// 183 §7.8: one `peers.yaml` rewrite (and its reload) at a time.
+    edit_lock: tokio::sync::Mutex<()>,
+    /// 183 §9.3: `a2a.contact_cap`, `.contact_window_secs`, `.mdns_types`.
+    cfg: A2aConfig,
     state: Mutex<State>,
+    /// 183 §7.2: the mesh endpoint `theuth/a2a/1` rides on, once bound.
+    net: std::sync::OnceLock<Arc<mesh::net::Net>>,
+    /// 183 §7.1: the Add contact window's advert and browse.
+    mdns: Arc<dyn contacts::discovery::Mdns>,
+    /// 183 §7.4: the window and the ceremonies.
+    contacts: Mutex<contacts::Contacts>,
 }
 
 #[derive(Default)]
@@ -184,6 +199,17 @@ struct State {
     epochs: BTreeMap<String, CancellationToken>,
     /// Per-peer transport problems from the last connect attempt.
     peer_errors: BTreeMap<String, String>,
+    /// 183 §7.8: `peers.yaml` as the last reload read or the last rewrite left it; the hot
+    /// reload compares against it.
+    stamp: Option<(std::time::SystemTime, u64)>,
+    /// The HTTP peers of the last good reload.
+    http_good: BTreeMap<String, config::PeerEntry>,
+    /// Last `peers.yaml` rewrite per contact for its remembered addresses (debounce).
+    addr_written: std::collections::HashMap<String, std::time::Instant>,
+    /// The last address-write failure logged (log each distinct one once).
+    addr_error: Option<String>,
+    /// The mode warning was logged.
+    mode_warned: bool,
 }
 
 impl Ctx {
@@ -267,6 +293,11 @@ impl Ctx {
     /// Read, validate and atomically install `peers.yaml` (§6.1). On `Err`
     /// the previous configuration stays live and the message lands in status.
     async fn reload(&self) -> Result<(), String> {
+        self.reload_as(false).await
+    }
+
+    /// [`Self::reload`]; `keep_http` puts the last good HTTP peers where the file's are.
+    async fn reload_as(&self, keep_http: bool) -> Result<(), String> {
         let _serial = self.reload_lock.lock().await;
         let agents = self.agents()?;
         let listener = self.listener.clone()?;
@@ -276,19 +307,60 @@ impl Ctx {
         };
         let policy = policy.ok_or_else(|| "agent policy not ready".to_owned())?;
         let path = self.rt.data_dir.join(PEERS_FILE);
-        let file: PeersFile = match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => PeersFile::default(),
+        // The stamp comes first: a write landing between it and the read is read next tick.
+        self.state.lock().stamp = contacts::store::stamp(&path);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
+        if let Some(mode) = contacts::store::loose_mode(&path)
+            && !std::mem::replace(&mut self.state.lock().mode_warned, true)
+        {
+            tracing::warn!(
+                "a2a: {} has mode {mode:o}; it names vault secrets, use 600",
+                path.display()
+            );
+        }
+        let (head, mut file) =
+            contacts::store::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        // 183 W-41: a chat export whose session was deleted is dropped from the file.
+        let mut gone = Vec::new();
+        for (name, e) in &file.exports {
+            if let Some(session) = e.session
+                && let Err(err) = self.ask(&agents, ValidateExport { session }).await
+                && err.starts_with(agent::communication::network::UNKNOWN_SESSION)
+            {
+                gone.push(name.clone());
+            }
+        }
+        if !gone.is_empty() {
+            for name in &gone {
+                contacts::drop_export(&mut file, name);
+            }
+            tracing::info!(exports = ?gone, "a2a: exported chats deleted; exports removed");
+            let text = contacts::store::render(&head, &file)?;
+            contacts::store::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+            self.state.lock().stamp = contacts::store::stamp(&path);
+        }
+        // 183 Z3-R2: after a failed full reload a contact edit retries with the last good
+        // HTTP peers, so a broken HTTP entry never blocks it.
+        if keep_http {
+            file.peers.retain(|_, p| p.is_contact());
+            for (k, p) in self.state.lock().http_good.clone() {
+                file.peers.entry(k).or_insert(p);
+            }
+        }
+        // 183 W-26: without `a2a.enabled` only contacts are live; HTTP peers stay dormant.
+        if !self.enabled {
+            file.peers.retain(|_, p| p.is_contact());
+        }
         let console = std::fs::read_to_string(self.rt.data_dir.join("token"))
             .ok()
             .map(|t| t.trim().to_owned());
         let resolve = |name: &str| vault.as_ref().and_then(|v| v.get(name, 0));
-        let staged =
-            config::stage(&file, &resolve, console.as_deref()).map_err(|e| e.join("; "))?;
+        let staged = config::stage(&file, &resolve, console.as_deref(), self.cfg.contact_cap)
+            .map_err(|e| e.join("; "))?;
 
         // Sessions are the agent's to validate (§6.3: native, existing).
         let mut errors = Vec::new();
@@ -324,23 +396,40 @@ impl Ctx {
         let mut peer_errors = BTreeMap::new();
         let mut probed = BTreeMap::new();
         let mut incompatible = Vec::new();
-        for p in staged.peers.values().filter(|p| p.card.is_some()) {
-            match tokio::time::timeout(
-                client::REQUEST_TIMEOUT + client::CONNECT_TIMEOUT,
-                client::probe(p),
-            )
-            .await
-            {
-                Ok(Ok(card_name)) => {
+        // An unchanged peer that probed fine last time is not probed again; the rest run
+        // together, so one unreachable peer costs one timeout, not one per peer.
+        let old_errors = self.state.lock().peer_errors.clone();
+        let http: Vec<_> = staged.peers.values().filter(|p| p.card.is_some()).collect();
+        let results = futures::future::join_all(http.iter().map(|p| {
+            let unchanged = old_clients.get(&p.name).is_some_and(|c| c.matches(p))
+                && !old_errors.contains_key(&p.name);
+            async move {
+                if unchanged {
+                    return None;
+                }
+                Some(
+                    tokio::time::timeout(
+                        client::REQUEST_TIMEOUT + client::CONNECT_TIMEOUT,
+                        client::probe(p),
+                    )
+                    .await,
+                )
+            }
+        }))
+        .await;
+        for (p, result) in http.into_iter().zip(results) {
+            match result {
+                None => {}
+                Some(Ok(Ok(card_name))) => {
                     probed.insert(p.name.clone(), card_name);
                 }
-                Ok(Err(ConnectError::Incompatible(e))) => {
+                Some(Ok(Err(ConnectError::Incompatible(e)))) => {
                     incompatible.push(format!("peer {}: {e}", p.name))
                 }
-                Ok(Err(ConnectError::Transport(e))) => {
+                Some(Ok(Err(ConnectError::Transport(e)))) => {
                     peer_errors.insert(p.name.clone(), e);
                 }
-                Err(_) => {
+                Some(Err(_)) => {
                     peer_errors.insert(p.name.clone(), "card fetch timed out".to_owned());
                 }
             }
@@ -357,6 +446,28 @@ impl Ctx {
                 c.set_probed_name(name);
             }
             clients.insert(p.name.clone(), c);
+        }
+        // 183 §7.7: a contact's route is `theuth/a2a/1` to its pinned endpoint, once this
+        // engine's endpoint is attached (until then the contact is inbound-only).
+        if let Some(net) = self.net.get() {
+            for p in staged.peers.values().filter(|p| p.eid.is_some()) {
+                let display = staged
+                    .contacts
+                    .get(&p.name)
+                    .map_or(p.name.as_str(), |c| c.display.as_str());
+                let c = match old_clients.get(&p.name).filter(|c| c.matches(p)) {
+                    Some(c) => c.clone(),
+                    None => Arc::new(PeerClient::contact(
+                        p,
+                        display,
+                        net.clone(),
+                        agents.clone(),
+                        vault.clone(),
+                        CancellationToken::new(),
+                    )?),
+                };
+                clients.insert(p.name.clone(), c);
+            }
         }
         if !incompatible.is_empty() {
             return Err(incompatible.join("; "));
@@ -408,7 +519,35 @@ impl Ctx {
             self.subscribers.clone(),
             policy,
         ));
+        // 183 Z3-R2: a contact's cap or an agent export's allowlist reaches its live inboxes
+        // at once (a running turn included), not at the contact's next request.
+        let limits: Vec<agent::communication::network::ContactLimits> = live
+            .staged
+            .contacts
+            .iter()
+            .filter(|(_, f)| !f.blocked)
+            .map(|(alias, f)| agent::communication::network::ContactLimits {
+                contact: alias.clone(),
+                cap: f.cap,
+                exports: live
+                    .staged
+                    .peers
+                    .get(alias)
+                    .map(|p| p.exports.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|e| live.staged.agents.get(e))
+                    .map(|a| (a.name.clone(), a.tools.clone()))
+                    .collect(),
+            })
+            .collect();
         *self.shared.write() = live;
+        let to = agents.clone();
+        tokio::spawn(async move {
+            for m in limits {
+                let _ = to.tell(m).await;
+            }
+        });
         for old in retired {
             old.cancel();
         }
@@ -422,8 +561,93 @@ impl Ctx {
             s.clients = clients;
             s.epochs = epochs;
             s.peer_errors = peer_errors;
+            s.http_good = file
+                .peers
+                .into_iter()
+                .filter(|(_, p)| !p.is_contact())
+                .collect();
         }
         Ok(())
+    }
+
+    /// 183 §7.8: change `peers.yaml` with `f`, rewrite it atomically and reload. A reload
+    /// that refuses the result puts the old text back (and reloads it), so the file on disk
+    /// is never one the engine refused; `A2aChanged` follows a change that took.
+    async fn edit<T>(
+        &self,
+        f: impl FnOnce(&mut PeersFile) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _serial = self.edit_lock.lock().await;
+        let path = self.rt.data_dir.join(PEERS_FILE);
+        let before = match std::fs::read_to_string(&path) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        let (head, mut file) = contacts::store::parse(before.as_deref().unwrap_or(""))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let out = f(&mut file)?;
+        let text = contacts::store::render(&head, &file)?;
+        let io = |e: std::io::Error| format!("{}: {e}", path.display());
+        contacts::store::write(&path, &text).map_err(io)?;
+        if let Err(e) = self.reload().await {
+            // 183 Z3-R2: an HTTP peer's problem (a broken entry, an incompatible card) must
+            // not undo a contact edit: retry with the last good HTTP peers in its place. A
+            // contact's own problem fails that retry too, and the old text goes back.
+            if self.reload_as(true).await.is_ok() {
+                tracing::warn!(
+                    "a2a: peers.yaml applied; its HTTP peers keep their old settings: {e}"
+                );
+                {
+                    let mut s = self.state.lock();
+                    s.error = Some(e);
+                    // Let the hot reload retry the full file (and report it once).
+                    s.stamp = None;
+                }
+                self.rt.publish(A2aChanged {}).await;
+                return Ok(out);
+            }
+            match &before {
+                Some(old) => contacts::store::write(&path, old).map_err(io)?,
+                None => std::fs::remove_file(&path).map_err(io)?,
+            }
+            if let Err(again) = self.reload().await {
+                tracing::warn!("a2a: peers.yaml restore: {again}");
+            }
+            return Err(e);
+        }
+        self.state.lock().error = None;
+        self.rt.publish(A2aChanged {}).await;
+        Ok(out)
+    }
+
+    /// 183 §7.8: hot reload: an owner's hand edit of `peers.yaml` is picked up within
+    /// [`HOT_RELOAD`] (the RPCs' own writes reload at once and move the stamp).
+    /// ponytail: mtime polling; a file watcher if two seconds is ever too slow.
+    async fn watch_file(self: Arc<Self>) {
+        let path = self.rt.data_dir.join(PEERS_FILE);
+        let stop = self.rt.shutdown.clone();
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(HOT_RELOAD) => {}
+            }
+            // 183 §7.2: keep each contact's last live direct addresses for the next dial.
+            self.remember_addrs().await;
+            let now = contacts::store::stamp(&path);
+            if now == self.state.lock().stamp {
+                continue;
+            }
+            let _serial = self.edit_lock.lock().await;
+            let outcome = self.reload().await;
+            if let Err(e) = &outcome {
+                tracing::warn!("a2a peers.yaml: {e}");
+                // Do not retry an unchanged broken file every tick.
+                self.state.lock().stamp = now;
+            }
+            self.state.lock().error = outcome.err();
+            self.rt.publish(A2aChanged {}).await;
+        }
     }
 
     /// Bind or stop the listener to match `a2a.enabled && global
@@ -439,7 +663,8 @@ impl Ctx {
             return;
         };
         let global = policy.0.read().global();
-        let want = global && self.listener.is_ok();
+        // 183 W-26: the actor also runs for contacts alone; `a2a.enabled` gates the listener.
+        let want = self.enabled && global && self.listener.is_ok();
         let changed = match transition(want, serving.is_some()) {
             Transition::Keep => false,
             Transition::Start => {
@@ -485,7 +710,7 @@ impl Ctx {
         if reported != Some(listening)
             && agents
                 .ask(NetworkStatus {
-                    enabled: true,
+                    enabled: self.enabled,
                     listening,
                 })
                 .await
@@ -526,8 +751,62 @@ impl Ctx {
             tracing::warn!("a2a peers.yaml: {e}");
             self.state.lock().error = Some(e);
         }
+        tokio::spawn(self.clone().watch_file());
+        tokio::spawn(self.clone().attach_mesh());
+        let source = Arc::new(contacts::FirstContactItems(Arc::downgrade(&self)));
+        let rt = self.rt.clone();
+        tokio::spawn(async move {
+            if let Some(inbox) = rt
+                .lookup_when::<roster::attention::Attention>(roster::attention::ATTENTION_ACTOR)
+                .await
+            {
+                let _ = inbox.tell(roster::attention::RegisterSource(source)).await;
+            }
+        });
         self.sync_listener().await;
         self.rt.publish(A2aChanged {}).await;
+    }
+
+    /// 183 §7.2: once the mesh plugin bound its endpoint, serve `theuth/a2a/1` on it, and
+    /// join the network (relay, address lookup) when this engine has a contact.
+    async fn attach_mesh(self: Arc<Self>) {
+        let stop = self.rt.shutdown.clone();
+        let net = loop {
+            if let Some(n) = mesh::net() {
+                break n;
+            }
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+            }
+        };
+        self.attach(net).await;
+    }
+
+    /// Serve `theuth/a2a/1` on `net` (the mesh's endpoint; a test's own).
+    async fn attach(self: &Arc<Self>, net: Arc<mesh::net::Net>) {
+        net.set_contacts(Arc::new(contacts::reach::Gate(Arc::downgrade(self))));
+        let _ = self.net.set(net.clone());
+        if !self.shared.read().staged.contacts.is_empty() {
+            net.join_network().await;
+        }
+        self.rewire_contacts().await;
+    }
+
+    /// Contacts' outbound routes ride on the endpoint: once it is attached, a reload
+    /// installs them.
+    async fn rewire_contacts(&self) {
+        if self
+            .shared
+            .read()
+            .staged
+            .peers
+            .values()
+            .any(|p| p.eid.is_some())
+            && let Err(e) = self.reload().await
+        {
+            tracing::warn!("a2a: contact routes: {e}");
+        }
     }
 }
 
@@ -588,9 +867,10 @@ impl runtime::Plugin for A2aPlugin {
         } else {
             (A2aConfig::default(), None)
         };
+        // 183 W-26: the actor runs without `a2a.enabled` too: contacts (and adding the first
+        // one) need it. `enabled: false` keeps HTTP peers dormant and the listener closed.
         if !cfg.enabled && config_error.is_none() {
-            tracing::info!("a2a disabled by config");
-            return Ok(());
+            tracing::info!("a2a: HTTP listener and peers disabled by config; contacts only");
         }
         let listener = match &config_error {
             Some(e) => Err(e.clone()),
@@ -612,6 +892,13 @@ impl runtime::Plugin for A2aPlugin {
             subscribers: Arc::new(Semaphore::new(server::SUBSCRIBERS_MAX)),
             reload_lock: tokio::sync::Mutex::new(()),
             listener_lock: tokio::sync::Mutex::new(()),
+            edit_lock: tokio::sync::Mutex::new(()),
+            cfg,
+            net: std::sync::OnceLock::new(),
+            mdns: contacts::discovery::default_mdns(),
+            contacts: Mutex::new(contacts::Contacts::new(
+                cfg!(debug_assertions) && std::env::var_os("THEUTH_DEV_CONTACTS_DIR").is_some(),
+            )),
         });
         let actor = A2aActor::spawn_with_mailbox(
             A2aActor { ctx: ctx.clone() },
@@ -619,11 +906,49 @@ impl runtime::Plugin for A2aPlugin {
         );
         actor.register(A2A_ACTOR)?;
         rt.subscribe::<A2aActor, CommunicationChanged>(&actor).await;
-        if ctx.enabled {
+        if config_error.is_none() {
             tokio::spawn(ctx.init());
         }
         Ok(())
     }
+}
+
+/// 183 tests: one engine's A2A context over `dir`, its mesh endpoint `net`, a fake LAN and,
+/// when given, its live agent (then `peers.yaml` reloads and the ceremony pins).
+#[cfg(test)]
+async fn test_ctx(
+    dir: &std::path::Path,
+    net: Arc<mesh::net::Net>,
+    mdns: Arc<dyn contacts::discovery::Mdns>,
+    cfg: A2aConfig,
+    agents: Option<ActorRef<Agents>>,
+) -> Arc<Ctx> {
+    let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
+    let listener = cfg.listener();
+    let ctx = Arc::new(Ctx {
+        rt,
+        enabled: cfg.enabled,
+        public_url: None,
+        state: Mutex::new(State::default()),
+        listener,
+        shared: Arc::new(parking_lot::RwLock::new(Arc::new(Live::empty()))),
+        subscribers: Arc::new(Semaphore::new(server::SUBSCRIBERS_MAX)),
+        reload_lock: tokio::sync::Mutex::new(()),
+        listener_lock: tokio::sync::Mutex::new(()),
+        edit_lock: tokio::sync::Mutex::new(()),
+        cfg,
+        net: std::sync::OnceLock::new(),
+        mdns,
+        contacts: Mutex::new(contacts::Contacts::new(true)),
+    });
+    if let Some(agents) = agents {
+        let policy = agents.ask(PeerPolicy).await.unwrap();
+        let mut s = ctx.state.lock();
+        s.agents = Some(agents);
+        s.policy = Some(policy);
+    }
+    ctx.attach(net).await;
+    ctx
 }
 
 /// Listener transition for the desired (`want`) and current (`serving`) state.
@@ -692,6 +1017,7 @@ mod tests {
                     sessions: vec![],
                     exports: vec![],
                     allow_private: false,
+                    eid: None,
                 },
             );
         }

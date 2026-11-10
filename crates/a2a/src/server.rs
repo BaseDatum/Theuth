@@ -111,9 +111,13 @@ pub struct Live {
     router: Router,
     /// Inbound bearer → principal. Linear, constant-time per entry: a few peers.
     principals: Vec<(Token, Arc<Principal>)>,
+    /// 183 §7.2: contact endpoint id → principal (`theuth/a2a/1`, no bearer).
+    contacts: HashMap<String, Arc<Principal>>,
     /// Export name → published session (for the 404-not-401 decision and
     /// the live enablement check).
     exports: HashMap<String, SessionId>,
+    /// 183 §7.6: agent export names (each contact's inbox is resolved per request).
+    agents: HashSet<String>,
     /// The agent's live availability predicate: a disabled session's export
     /// answers nothing, whatever the cached routes say (§2.2, §8).
     policy: Option<SharedPolicy>,
@@ -126,13 +130,27 @@ pub struct Live {
 /// Swappable pointer the HTTP layer dereferences per request.
 pub type Shared = Arc<RwLock<Arc<Live>>>;
 
+/// 183 §7.2: the caller of a `theuth/a2a/1` stream, put on the request by the reach. A
+/// request extension, so no HTTP client can set it; it replaces the bearer step.
+#[derive(Clone, Debug)]
+pub struct ContactCaller(pub String);
+
+/// 183 §7.6: what a contact principal carries into admission.
+#[derive(Clone, Debug)]
+struct ContactGrant {
+    alias: String,
+    facts: crate::config::ContactFacts,
+}
+
 impl Live {
     /// Nothing installed: every request is 404/401.
     pub fn empty() -> Self {
         Self {
             router: Router::new(),
             principals: Vec::new(),
+            contacts: HashMap::new(),
             exports: HashMap::new(),
+            agents: HashSet::new(),
             policy: None,
             staged: Staged::default(),
             bindings: BTreeMap::new(),
@@ -152,43 +170,84 @@ impl Live {
         subscribers: Arc<Semaphore>,
         policy: SharedPolicy,
     ) -> Self {
+        let principal = |p: &crate::config::Peer| {
+            Some(Arc::new(Principal::new(
+                *bindings.get(&p.name)?,
+                p.name.clone(),
+                p.exports.iter().cloned().collect(),
+                epochs.get(&p.name)?.clone(),
+            )))
+        };
         let principals: Vec<(Token, Arc<Principal>)> = staged
             .peers
             .values()
-            .filter_map(|p| {
-                let token = p.inbound.clone()?;
-                let binding = *bindings.get(&p.name)?;
-                Some((
-                    token,
-                    Arc::new(Principal::new(
-                        binding,
-                        p.name.clone(),
-                        p.exports.iter().cloned().collect(),
-                        epochs.get(&p.name)?.clone(),
-                    )),
-                ))
-            })
+            .filter_map(|p| Some((p.inbound.clone()?, principal(p)?)))
+            .collect();
+        let contacts: HashMap<String, Arc<Principal>> = staged
+            .peers
+            .values()
+            .filter_map(|p| Some((p.eid.clone()?, principal(p)?)))
             .collect();
         let epochs: Arc<HashMap<Uuid, CancellationToken>> = Arc::new(
             principals
                 .iter()
-                .map(|(_, p)| (p.binding, p.epoch.clone()))
+                .map(|(_, p)| p)
+                .chain(contacts.values())
+                .map(|p| (p.binding, p.epoch.clone()))
                 .collect(),
         );
+        let grants: Arc<HashMap<Uuid, ContactGrant>> = Arc::new(
+            contacts
+                .values()
+                .filter_map(|p| {
+                    let facts = staged.contacts.get(&p.peer)?.clone();
+                    Some((
+                        p.binding,
+                        ContactGrant {
+                            alias: p.peer.clone(),
+                            facts,
+                        },
+                    ))
+                })
+                .collect(),
+        );
+        let targets = staged
+            .exports
+            .values()
+            .map(|e| {
+                (
+                    &e.name,
+                    Target::Chat(e.session),
+                    &e.title,
+                    &e.description,
+                    &e.tools,
+                )
+            })
+            .chain(staged.agents.values().map(|a| {
+                (
+                    &a.name,
+                    Target::Agent(a.agent.clone()),
+                    &a.title,
+                    &a.description,
+                    &a.tools,
+                )
+            }));
         let mut router = Router::new();
-        for export in staged.exports.values() {
-            let prefix = format!("/agents/{}", export.name);
+        for (name, target, title, description, tools) in targets {
+            let prefix = format!("/agents/{name}");
             let handler = Arc::new(Handler {
-                export: export.name.clone(),
-                session: export.session,
+                export: name.clone(),
+                target,
+                tools: tools.clone(),
                 agents: agents.clone(),
                 subscribers: subscribers.clone(),
                 epochs: epochs.clone(),
+                grants: grants.clone(),
             });
             let card = Arc::new(StaticAgentCard::new(card(
                 &format!("{}{prefix}/rpc", base.as_str().trim_end_matches('/')),
-                &export.title,
-                &export.description,
+                title,
+                description,
             )));
             let export_router = Router::new()
                 .merge(agent_card_router(card).layer(middleware::map_response(private_card)))
@@ -199,11 +258,13 @@ impl Live {
         Self {
             router,
             principals,
+            contacts,
             exports: staged
                 .exports
                 .values()
                 .map(|e| (e.name.clone(), e.session))
                 .collect(),
+            agents: staged.agents.keys().cloned().collect(),
             policy: Some(policy),
             staged,
             bindings,
@@ -217,14 +278,19 @@ impl Live {
             .map(|(_, p)| p)
     }
 
-    /// The export exists and its session is effectively enabled right now.
+    /// The export exists and its session is effectively enabled right now; an agent export
+    /// while agent communication is on (its inbox is checked at admission).
     fn open(&self, export: &str) -> bool {
+        let Some(policy) = self.policy.as_ref() else {
+            return false;
+        };
+        if self.agents.contains(export) {
+            return policy.0.read().global();
+        }
         let Some(session) = self.exports.get(export) else {
             return false;
         };
-        self.policy
-            .as_ref()
-            .is_some_and(|p| p.0.read().enabled(*session).is_ok())
+        policy.0.read().enabled(*session).is_ok()
     }
 }
 
@@ -253,25 +319,43 @@ async fn dispatch(State(shared): State<Shared>, mut req: Request) -> Response {
     let live = shared.read().clone();
     // Any inbound copy of the trusted seam is an attack or a bug; never forward it.
     req.headers_mut().remove(PRINCIPAL_HEADER);
-    let export = req
+    let mut export = req
         .uri()
         .path()
         .strip_prefix("/agents/")
         .and_then(|rest| rest.split('/').next())
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
-    let bearer = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|t| !t.is_empty());
+    // 183 §7.2: a `theuth/a2a/1` stream's caller is its pinned endpoint (the reach put it
+    // on the request); everyone else presents a bearer.
+    let principal = match req.extensions().get::<ContactCaller>() {
+        Some(ContactCaller(eid)) => live.contacts.get(eid).cloned(),
+        None => req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .and_then(|b| live.authenticate(b))
+            .cloned(),
+    };
     // Credentials are checked before existence: an unauthenticated caller
     // learns nothing about which exports exist (§6.1).
-    let Some(principal) = bearer.and_then(|b| live.authenticate(b)).cloned() else {
+    let Some(principal) = principal else {
         return unauthorized();
     };
+    // 183 §7.7: a contact that names no export (`POST /rpc`) reaches the first one granted
+    // to it: `peer:<name>` addresses the contact, not one of its exports.
+    if export.is_none() && req.extensions().get::<ContactCaller>().is_some() {
+        let first = principal.exports.iter().min().cloned();
+        if let Some(e) = &first
+            && let Ok(uri) = format!("/agents/{e}{}", req.uri().path()).parse()
+        {
+            *req.uri_mut() = uri;
+        }
+        export = first;
+    }
     // Granted, existing and effectively enabled right now, or not found: a
     // disabled export is not disclosed and its cached routes never answer.
     let Some(export) = export.filter(|e| principal.exports.contains(e) && live.open(e)) else {
@@ -436,14 +520,27 @@ fn accepts_text(mode: &str) -> bool {
     m == "*/*" || m == "text/*" || m.starts_with("text/plain") || m == "text"
 }
 
+/// What one export route publishes.
+#[derive(Clone, Debug)]
+enum Target {
+    /// One exact session (an HTTP peer's export, or an exported chat, D9).
+    Chat(SessionId),
+    /// 183 §7.6: an agent: each contact gets its own capped inbox.
+    Agent(String),
+}
+
 /// Application seam per export: typed requests → agent commands (§4).
 struct Handler {
     export: String,
-    session: SessionId,
+    target: Target,
+    /// 183 Z3-R2: the export's allowlist for its contact sessions.
+    tools: Vec<String>,
     agents: ActorRef<Agents>,
     subscribers: Arc<Semaphore>,
     /// Binding → grant epoch of the configuration these routes belong to.
     epochs: Arc<HashMap<Uuid, CancellationToken>>,
+    /// 183 §7.6: contact binding → its alias and facts (cap, machine, first contact).
+    grants: Arc<HashMap<Uuid, ContactGrant>>,
 }
 
 fn revoked() -> A2AError {
@@ -451,7 +548,7 @@ fn revoked() -> A2AError {
 }
 
 impl Handler {
-    fn admit(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
+    async fn admit(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
         check_version(params)?;
         let binding = params
             .get(PRINCIPAL_HEADER)
@@ -465,11 +562,51 @@ impl Handler {
         if route.is_cancelled() {
             return Err(revoked());
         }
+        // 183 §7.6: a contact's origin rides with every admission: the inbox's cap, the
+        // exported chat's turn cap, the first-contact hold.
+        let grant = self.grants.get(&binding);
+        let contact = grant.map(|g| agent::communication::ContactOrigin {
+            contact: g.alias.clone(),
+            machine: g.facts.machine.clone(),
+            export: self.export.clone(),
+            cap: g.facts.cap,
+            holder: mesh::self_id().unwrap_or_default(),
+            tools: self.tools.clone(),
+        });
+        let ask_first = match grant.map(|g| g.facts.first_contact.get(&self.export)) {
+            None | Some(Some(crate::config::FirstContact::Allow)) => false,
+            Some(Some(crate::config::FirstContact::Block)) => {
+                return Err(A2AError::unsupported_operation(format!(
+                    "export unavailable: {} is not allowed to reach {}",
+                    grant.map(|g| g.alias.as_str()).unwrap_or_default(),
+                    self.export
+                )));
+            }
+            Some(_) => true,
+        };
+        let session = match (&self.target, &contact) {
+            (Target::Chat(s), _) => *s,
+            (Target::Agent(agent), Some(origin)) => {
+                self.ask(agent::communication::network::ContactInbox {
+                    binding,
+                    agent: agent.clone(),
+                    origin: origin.clone(),
+                })
+                .await?
+            }
+            (Target::Agent(_), None) => {
+                return Err(A2AError::unsupported_operation(
+                    "export unavailable: only contacts reach agent exports",
+                ));
+            }
+        };
         Ok(A2aPrincipal {
             binding,
             export: self.export.clone(),
-            session: self.session,
+            session,
             route: route.clone(),
+            contact,
+            ask_first,
         })
     }
 
@@ -542,8 +679,9 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SendMessageRequest,
     ) -> Result<SendMessageResponse, A2AError> {
-        let principal = self.admit(params)?;
+        let principal = self.admit(params).await?;
         validate_send(&req)?;
+        let held = principal.ask_first;
         let history_length = req.configuration.as_ref().and_then(|c| c.history_length);
         let mut response = self
             .ask(A2aSend {
@@ -551,6 +689,9 @@ impl RequestHandler for Handler {
                 request: req,
             })
             .await?;
+        if held {
+            crate::contacts::nudge_attention();
+        }
         if let SendMessageResponse::Task(task) = &mut response {
             trim_history(task, history_length);
         }
@@ -562,7 +703,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SendMessageRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
-        let principal = self.admit(params)?;
+        let principal = self.admit(params).await?;
         validate_send(&req)?;
         let stream = self
             .ask(A2aStream {
@@ -578,7 +719,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: GetTaskRequest,
     ) -> Result<Task, A2AError> {
-        let principal = self.admit(params)?;
+        let principal = self.admit(params).await?;
         let history_length = req.history_length;
         let mut task = self
             .ask(A2aGet {
@@ -595,7 +736,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: ListTasksRequest,
     ) -> Result<ListTasksResponse, A2AError> {
-        let principal = self.admit(params)?;
+        let principal = self.admit(params).await?;
         let history_length = req.history_length;
         let include_artifacts = req.include_artifacts == Some(true);
         let mut page = self
@@ -618,7 +759,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: CancelTaskRequest,
     ) -> Result<Task, A2AError> {
-        let principal = self.admit(params)?;
+        let principal = self.admit(params).await?;
         self.ask(A2aCancel {
             principal,
             request: req,
@@ -631,7 +772,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SubscribeToTaskRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
-        let principal = self.admit(params)?;
+        let principal = self.admit(params).await?;
         let stream = self
             .ask(A2aSubscribe {
                 principal: principal.clone(),
@@ -646,7 +787,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: TaskPushNotificationConfig,
     ) -> Result<TaskPushNotificationConfig, A2AError> {
-        self.admit(params)?;
+        self.admit(params).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -655,7 +796,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: GetTaskPushNotificationConfigRequest,
     ) -> Result<TaskPushNotificationConfig, A2AError> {
-        self.admit(params)?;
+        self.admit(params).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -664,7 +805,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: ListTaskPushNotificationConfigsRequest,
     ) -> Result<ListTaskPushNotificationConfigsResponse, A2AError> {
-        self.admit(params)?;
+        self.admit(params).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -673,7 +814,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: DeleteTaskPushNotificationConfigRequest,
     ) -> Result<(), A2AError> {
-        self.admit(params)?;
+        self.admit(params).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -682,7 +823,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: GetExtendedAgentCardRequest,
     ) -> Result<AgentCard, A2AError> {
-        self.admit(params)?;
+        self.admit(params).await?;
         Err(A2AError::unsupported_operation(
             "extended agent card not supported",
         ))
@@ -698,6 +839,44 @@ pub async fn serve(
     axum::serve(listener, app(shared))
         .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await
+}
+
+/// 183 §7.2: what the `theuth/a2a/1` gate decides for one inbound connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IrohGate {
+    /// A live, unblocked contact: each stream's HTTP request enters [`app`] with this binding
+    /// as the trusted principal (the bearer step is replaced; export, rate, concurrency and
+    /// body limits stay).
+    Contact {
+        /// Its `peer_bindings.id`.
+        binding: Uuid,
+        /// Its alias.
+        alias: String,
+    },
+    /// A stranger while an Add contact window is open: only a `{"pair": …}` ceremony.
+    Pair,
+    /// Anyone else: a stranger outside a window, a blocked or removed contact, a family peer.
+    Refuse,
+}
+
+/// The gate for the remote endpoint id `remote` (family peers never get here: the mesh
+/// refuses them first). A live contact is its binding; a blocked one is refused even inside
+/// a window; a stranger passes only for the ceremony while a window is open.
+pub fn iroh_gate(live: &Live, remote: &str, window_open: bool) -> IrohGate {
+    match live.staged.contact_by_eid(remote) {
+        Some(alias) => match (
+            live.staged.contacts[alias].blocked,
+            live.bindings.get(alias),
+        ) {
+            (false, Some(binding)) => IrohGate::Contact {
+                binding: *binding,
+                alias: alias.to_owned(),
+            },
+            _ => IrohGate::Refuse,
+        },
+        None if window_open => IrohGate::Pair,
+        None => IrohGate::Refuse,
+    }
 }
 
 #[cfg(test)]
@@ -753,7 +932,9 @@ mod tests {
         Arc::new(RwLock::new(Arc::new(Live {
             router,
             principals,
+            contacts: HashMap::new(),
             exports: exports.iter().map(|(e, s)| ((*e).to_owned(), *s)).collect(),
+            agents: HashSet::new(),
             policy: Some(policy),
             staged: Staged::default(),
             bindings: BTreeMap::new(),
@@ -1053,5 +1234,166 @@ mod tests {
         );
         let admitted = (0..20).filter(|_| p.admit_rate()).count();
         assert_eq!(admitted, 10);
+    }
+
+    /// The reach's handler over a fixed [`Live`]: the gate and the HTTP seam as
+    /// `contacts::reach` runs them, without an engine behind the router.
+    struct TestGate(Shared, bool);
+
+    impl mesh::net::ContactAlpn for TestGate {
+        fn admit(&self, remote: &str) -> bool {
+            iroh_gate(&self.0.read(), remote, self.1) != IrohGate::Refuse
+        }
+
+        fn stream(
+            &self,
+            remote: String,
+            mut stream: Box<dyn replica::ByteStream>,
+        ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+            let shared = self.0.clone();
+            Box::pin(async move {
+                let Ok(line) = crate::contacts::reach::read_line(&mut stream).await else {
+                    return;
+                };
+                if matches!(
+                    iroh_gate(&shared.read(), &remote, false),
+                    IrohGate::Contact { .. }
+                ) {
+                    let io = crate::contacts::reach::Prefixed::new(line, stream);
+                    let _ = crate::contacts::reach::serve_http(shared, remote, Box::new(io)).await;
+                }
+            })
+        }
+    }
+
+    /// One `POST /rpc` over `theuth/a2a/1` from `from` to `to`, with a forged seam header:
+    /// the status and the principal the export router saw.
+    async fn rpc_over_iroh(
+        from: &mesh::net::Net,
+        to: &mesh::net::Net,
+    ) -> Result<(StatusCode, String), String> {
+        use http_body_util::Full;
+        let addrs: Vec<std::net::SocketAddr> = to
+            .a2a_reach()
+            .0
+            .iter()
+            .filter_map(|a| a.parse().ok())
+            .collect();
+        let stream = from
+            .a2a_stream(&to.id.0, &addrs, None)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
+                .await
+                .map_err(|e| e.to_string())?;
+        tokio::spawn(conn);
+        let req = hyper::Request::post("/rpc")
+            .header(hyper::header::HOST, "theuth")
+            .header(PRINCIPAL_HEADER, "00000000-0000-0000-0000-00000000dead")
+            .body(Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let resp = tokio::time::timeout(Duration::from_secs(10), sender.send_request(req))
+            .await
+            .map_err(|_| "no answer".to_owned())?
+            .map_err(|e| e.to_string())?;
+        let seen = resp
+            .headers()
+            .get("x-seen-principal")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        Ok((resp.status(), seen))
+    }
+
+    /// 183 §7.2: on `theuth/a2a/1` a pinned contact's request reaches its export (no bearer:
+    /// its binding is the trusted seam, a forged header is replaced, `POST /rpc` addresses
+    /// its first granted export); a stranger is refused, inside a window too (only the
+    /// ceremony passes there), and so is a blocked contact.
+    #[tokio::test]
+    async fn the_contact_gate_admits_a_pinned_contact_and_refuses_strangers_and_blocked_ones() {
+        use agent::communication::{PeerScope, Policy};
+        use axum::http::HeaderMap;
+        use axum::routing::post;
+        async fn echo(headers: HeaderMap) -> Response {
+            let seen = headers
+                .get(PRINCIPAL_HEADER)
+                .cloned()
+                .unwrap_or_else(|| HeaderValue::from_static("none"));
+            (StatusCode::OK, [("x-seen-principal", seen)]).into_response()
+        }
+        let dirs: Vec<tempfile::TempDir> = (0..5).map(|_| tempfile::tempdir().unwrap()).collect();
+        let a = crate::contacts::e2e_tests::node("a", dirs[0].path()).await;
+        let b = crate::contacts::e2e_tests::node("b", dirs[1].path()).await;
+        let c = crate::contacts::e2e_tests::node("c", dirs[2].path()).await;
+        let research = SessionId::new();
+        let mut policy = Policy::new(true, "test");
+        policy.record_root(research, PeerScope::Owner).unwrap();
+        let policy = SharedPolicy::new(policy);
+        let binding = Uuid::from_u128(7);
+        let live = |blocked: bool, window: bool| {
+            let mut staged = Staged::default();
+            staged.contacts.insert(
+                "bob".into(),
+                crate::config::ContactFacts {
+                    eid: b.id.0.clone(),
+                    display: "bob".into(),
+                    machine: "Bob's MacBook".into(),
+                    cap: tools::Risk::ReadOnly,
+                    first_contact: BTreeMap::new(),
+                    blocked,
+                    paired_ms: 1,
+                    addrs: Vec::new(),
+                },
+            );
+            let shared: Shared = Arc::new(RwLock::new(Arc::new(Live {
+                router: Router::new().nest(
+                    "/agents/research",
+                    Router::new().nest_service("/rpc", post(echo)),
+                ),
+                principals: Vec::new(),
+                contacts: HashMap::from([(
+                    b.id.0.clone(),
+                    Arc::new(Principal::new(
+                        binding,
+                        "bob".into(),
+                        HashSet::from(["research".to_owned()]),
+                        CancellationToken::new(),
+                    )),
+                )]),
+                exports: HashMap::from([("research".to_owned(), research)]),
+                agents: HashSet::new(),
+                policy: Some(policy.clone()),
+                staged,
+                bindings: BTreeMap::from([("bob".to_owned(), binding)]),
+            })));
+            Arc::new(TestGate(shared, window))
+        };
+        // An endpoint takes one handler: one Net per gate state.
+        a.set_contacts(live(false, false));
+        let (status, seen) = rpc_over_iroh(&b, &a).await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            seen,
+            binding.to_string(),
+            "the contact's binding, not the forged one"
+        );
+        assert!(
+            rpc_over_iroh(&c, &a).await.is_err(),
+            "a stranger is refused"
+        );
+
+        let open = crate::contacts::e2e_tests::node("a-window", dirs[3].path()).await;
+        open.set_contacts(live(false, true));
+        assert!(
+            rpc_over_iroh(&c, &open).await.is_err(),
+            "inside a window a stranger gets only the ceremony"
+        );
+        let blocked = crate::contacts::e2e_tests::node("a-blocked", dirs[4].path()).await;
+        blocked.set_contacts(live(true, true));
+        assert!(
+            rpc_over_iroh(&b, &blocked).await.is_err(),
+            "a blocked contact is refused, window or not"
+        );
     }
 }

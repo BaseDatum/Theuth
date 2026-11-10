@@ -151,6 +151,9 @@ export const MessagePeer = memo(function MessagePeer({
   const more = text.length > first.length
   // A job result is raw command output (14 §3): markdown would fold its lines into one paragraph.
   const raw = from.startsWith('job ')
+  // 183: an outside agent's words (a contact or an A2A peer: `contact:` / `peer:` senders) are untrusted: plain text,
+  // never Markdown, so no remote image loads and no link is live.
+  const outside = /^(contact|peer):/.test(origin?.from ?? from)
   return (
     <div className="my-2 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
       <button
@@ -168,6 +171,8 @@ export const MessagePeer = memo(function MessagePeer({
           <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
             {text}
           </pre>
+        ) : outside ? (
+          <div className="mt-2 whitespace-pre-wrap wrap-anywhere">{text}</div>
         ) : (
           <Streamdown mode="static" className="mt-2 text-sm">
             {text}

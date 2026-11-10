@@ -1588,6 +1588,38 @@ impl Store {
 
     // ---- A2A contexts and tasks --------------------------------------------
 
+    /// 183 Z3-R4: drop context `id` of `scope` when no task names it — the one a request
+    /// minted before its acceptance turned out to be a retry (dedup) of an earlier one.
+    pub async fn drop_unused_a2a_context(
+        &self,
+        scope: A2aScope<'_>,
+        id: &str,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "DELETE FROM a2a_contexts WHERE id = ?1 AND principal = ?2 AND export = ?3 \
+             AND NOT EXISTS (SELECT 1 FROM a2a_tasks WHERE context_id = ?1)",
+        )
+        .bind(id)
+        .bind(scope.principal)
+        .bind(scope.export)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Tests: how many contexts `scope` has.
+    #[cfg(test)]
+    pub(crate) async fn a2a_context_count_for_test(&self, scope: A2aScope<'_>) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM a2a_contexts WHERE principal = ? AND export = ?")
+            .bind(scope.principal)
+            .bind(scope.export)
+            .fetch_one(&self.read)
+            .await
+            .unwrap()
+    }
+
     /// Mint a context for `(principal, export)` over `session` (50 §6.3).
     /// The caller passes the id so the SDK snapshot can name it.
     pub async fn create_a2a_context(
@@ -1637,6 +1669,57 @@ impl Store {
     ) -> anyhow::Result<Option<A2aContext>> {
         let mut conn = self.read.acquire().await?;
         context_in(&mut conn, scope, id).await
+    }
+
+    /// 183 §7.6: the inbox session of `scope` (a contact and an agent export): the session
+    /// of its oldest context whose session still exists; `None` before the first.
+    pub async fn a2a_inbox(&self, scope: A2aScope<'_>) -> anyhow::Result<Option<SessionId>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT c.session FROM a2a_contexts c JOIN sessions s ON s.id = c.session \
+             WHERE c.principal = ? AND c.export = ? ORDER BY c.created_at, c.id LIMIT 1",
+        )
+        .bind(scope.principal)
+        .bind(scope.export)
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(|(s,)| {
+            s.parse()
+                .map_err(|e| anyhow::anyhow!("a2a_contexts.session {s}: {e}"))
+        })
+        .transpose()
+    }
+
+    /// 183 Z3-R2: mark the contexts of `session` as a contact's inbox (its default-deny
+    /// limits come back at every actor start), speaking as `identity` (the exported agent's
+    /// persona at this admission, Z3-R3; `None`: the engine's own).
+    pub async fn mark_a2a_inbox(
+        &self,
+        session: SessionId,
+        identity: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE a2a_contexts SET inbox = 1, inbox_identity = ? WHERE session = ?")
+            .bind(identity)
+            .bind(session.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 183 Z3-R2: `session` is a contact's inbox: `Some(its persona)` (`Some(None)`: the
+    /// engine's own), `None` when it is not one.
+    pub async fn a2a_inbox_identity(
+        &self,
+        session: SessionId,
+    ) -> anyhow::Result<Option<Option<String>>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT inbox_identity FROM a2a_contexts WHERE session = ? AND inbox = 1 LIMIT 1",
+        )
+        .bind(session.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.map(|(a,)| a))
     }
 
     /// Inbound A2A acceptance in one transaction: the exchange is accepted

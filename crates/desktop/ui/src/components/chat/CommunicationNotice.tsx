@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Share2 } from 'lucide-react'
+import { useContacts } from '@/lib/contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { A2aExportStatus } from '@/rpc/bindings/A2aExportStatus'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
@@ -9,9 +10,11 @@ import { settings } from './slash'
 const NONE: A2aExportStatus[] = []
 
 /**
- * Authoritative switch state for `session` (`null` = the global default) and the A2A exports publishing
+ * Authoritative switch state for `session` (`null` = the global default) and the HTTP A2A exports publishing
  * it (50 §10). The engine computes effective/inherited; the UI only renders. Exports are listed even
  * while communication is off, so a session that is one toggle away from being reachable still says so.
+ * 183 §12.10: an export granted to a contact is not listed here: the header's `Shared with bob · read only`
+ * chip says it, and a contact's message runs one capped turn, not this banner's design 50 rules.
  */
 export function useCommunication(session: string | null) {
   const api = useApi()
@@ -24,7 +27,10 @@ export function useCommunication(session: string | null) {
     queryFn: () => api.a2a_status(),
     enabled: session !== null,
   })
-  const exports = session ? (a2a?.exports.filter((e) => e.session === session) ?? NONE) : NONE
+  const contacts = useContacts(session !== null).data
+  const exports = session
+    ? (a2a?.exports.filter((e) => e.session === session && !contacts?.some((c) => c.name === e.peer)) ?? NONE)
+    : NONE
   return { state, exports }
 }
 

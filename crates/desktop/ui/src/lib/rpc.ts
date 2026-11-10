@@ -13,9 +13,9 @@ import { applySandboxEvent } from '@/store/sandboxes'
 import { endlessFixture } from '@/dev/endless-fixture'
 import { localFixture } from '@/dev/local-fixture'
 
-/** Records `c` in the `meshPair` map under its id: a second ceremony never replaces an open one's. */
-export const putPair = (qc: QueryClient, c: PairCeremony) =>
-  qc.setQueryData<Record<string, PairCeremony>>(queryKeys.meshPair, (m) => ({ ...m, [c.id]: c }))
+/** Records `c` in the `meshPair` map (or a contact's in `contactPair`) under its id: a second ceremony never replaces an open one's. */
+export const putPair = (qc: QueryClient, c: PairCeremony, key: readonly string[] = queryKeys.meshPair) =>
+  qc.setQueryData<Record<string, PairCeremony>>(key, (m) => ({ ...m, [c.id]: c }))
 
 /** The connected `Api`. Routes render only once connected, so a missing client is a bug. In dev the 137 and 177 fixtures may answer the endless and local-server methods (`dev/endless-fixture.ts`, `dev/local-fixture.ts`). */
 export function useApi(): Api {
@@ -52,6 +52,8 @@ export const queryKeys = {
   models: ['models'] as const,
   mcp: (s: string | null) => ['mcp', s] as const,
   skills: ['skills'] as const,
+  /** 183 Z4: `a2a_grantable_tools()`: the Add tool menu of an export's contact allowlist. */
+  grantable: ['a2a', 'grantable'] as const,
   skill: (name: string) => ['skill', name] as const,
   logins: ['logins'] as const,
   providers: ['providers'] as const,
@@ -115,6 +117,14 @@ export const queryKeys = {
     ['peer-messages', session, pendingOnly, mode] as const,
   peerMessage: (session: string, id: string) => ['peer-message', session, id] as const,
   a2a: ['a2a'] as const,
+  /** 183 §12.7: `contact_list()`, under `a2a` so `A2aChanged` refetches it. */
+  contacts: ['a2a', 'contacts'] as const,
+  /** 183 §7.6: `a2a_exports()`, under `a2a`. */
+  exports: ['a2a', 'exports'] as const,
+  /** 183 §7.1: `contact_nearby()`, patched in place by `ContactEvent` `contact_nearby`. */
+  contactNearby: ['a2a', 'nearby'] as const,
+  /** 183 §7.4: every contact `PairCeremony` by id, from `contact_pair` and each `contact_pair` event (no fetch of its own). */
+  contactPair: ['contact-pair'] as const,
   // 53 (03 §3): `meetings` is the prefix of the list and every `meeting(id)`; status/topics are the current recording.
   meetings: ['meetings'] as const,
   meeting: (id: string) => ['meetings', id] as const,
@@ -348,6 +358,12 @@ export function useInvalidateOn(): void {
         if (e.data.state === 'paired') void qc.invalidateQueries({ queryKey: ['mesh'] })
       }),
       on('SecretsRotation', ({ type: _, ...state }) => qc.setQueryData(queryKeys.vaultRotation, state)),
+      // 183 §7.4 / §7.1: Add contact's Nearby agents and the ceremony carry the whole state.
+      on('contact_nearby', (e) => qc.setQueryData(queryKeys.contactNearby, e.data)),
+      on('contact_pair', (e) => {
+        putPair(qc, e.data, queryKeys.contactPair)
+        if (e.data.state === 'paired') void qc.invalidateQueries({ queryKey: queryKeys.contacts })
+      }),
       on('EndlessProgress', (e) => applyEndlessProgress(qc, e)),
     ]
     return () => {

@@ -108,6 +108,27 @@ export function Empty({ children }: { children: ReactNode }) {
   return <p className="py-4 text-sm text-fg-tertiary">{children}</p>
 }
 
+/** Inline rename: Enter or blur saves a changed name, Escape keeps the old one. */
+export function RenameInput({ value, label, onSave, onDone }: { value: string; label: string; onSave: (name: string) => void; onDone: () => void }) {
+  return (
+    <Input
+      autoFocus
+      defaultValue={value}
+      aria-label={label}
+      className="h-7 w-48"
+      onBlur={(e) => {
+        const v = e.currentTarget.value.trim()
+        if (v && v !== value) onSave(v)
+        onDone()
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') e.currentTarget.value = value
+        if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur()
+      }}
+    />
+  )
+}
+
 /**
  * A whole-number `Info` field edited on blur/Enter (Agent loop, Advisor); values outside `[min, max]` are ignored.
  * `placeholder`: a key the engine may not send (an optional one); the field stays editable and shows the engine default.

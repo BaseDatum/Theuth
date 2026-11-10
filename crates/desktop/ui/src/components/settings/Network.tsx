@@ -8,9 +8,10 @@ import { CLASS } from '@/components/chat/NewChatPane'
 import { Dot as PresenceDot, meshChip, useMembersLine } from '@/components/link/EngineSwitcher'
 import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
 import { Editable } from '@/components/settings/Link'
+import { Contacts } from '@/components/settings/Contacts'
 import { VaultWarning, usePairFlow } from '@/components/settings/PairDialog'
 import { SandboxVms } from '@/components/settings/SandboxVms'
-import { Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
+import { Dot, Empty, RenameInput, Row, Section, useAction } from '@/components/settings/shared'
 import { RotationBanner, UnpairDialog, nameOfIn } from '@/components/settings/UnpairDialog'
 import { ago } from '@/components/sidebar/AgentTree'
 import { age } from '@/components/tasks/helpers'
@@ -103,22 +104,7 @@ function ThisNetwork() {
       <ThisMachine s={s} managing={active !== LOCAL ? (info?.name ?? s.self_name) : null} />
       <NearbyList on={s.nearby} onPair={pairing.start} />
       <Machines s={s} onUnpair={setUnpair} />
-      <div className="opacity-70">
-        <Section
-          title="Contacts"
-          actions={
-            <>
-              <span className="rounded-full bg-layer-3 px-1.5 text-xs text-fg-tertiary">Phase 3</span>
-              <Button variant="outline" size="sm" disabled>
-                Add contact…
-              </Button>
-            </>
-          }
-        >
-          <p className="text-[13px] text-fg-secondary">Other people's machines — limited trust: no vault, no sessions, only the agents you share</p>
-          <Empty>No contacts yet.</Empty>
-        </Section>
-      </div>
+      <Contacts />
       <MessagingStatus />
       <Advanced s={s} />
       <SandboxVms />
@@ -240,27 +226,6 @@ function NearbyList({ on, onPair }: { on: boolean; onPair: (n: NearbyEngine) => 
   )
 }
 
-/** Inline rename: Enter or blur saves a changed name, Escape keeps the old one. */
-function RenameInput({ value, onSave, onDone }: { value: string; onSave: (name: string) => void; onDone: () => void }) {
-  return (
-    <Input
-      autoFocus
-      defaultValue={value}
-      aria-label="Machine name"
-      className="h-7 w-48"
-      onBlur={(e) => {
-        const v = e.currentTarget.value.trim()
-        if (v && v !== value) onSave(v)
-        onDone()
-      }}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') e.currentTarget.value = value
-        if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur()
-      }}
-    />
-  )
-}
-
 /**
  * 183 §6.7: this machine first (no switch), then each peer with its path chip, the hub badge, "Agents can message"
  * (`mesh_set_messaging`, this engine's deny list) and ⋯ Rename · Unpair.
@@ -297,7 +262,7 @@ function Machines({ s, onUnpair }: { s: MeshStatus; onUnpair: (p: Peer) => void 
             <OsGlyph os={s.stats.find((x) => x.id === p.id)?.os} />
             <div className="min-w-0 flex-1 basis-48">
               <div className="flex items-center gap-1.5 text-sm font-medium">
-                {renaming === p.id ? <RenameInput value={p.name} onSave={(name) => rename.mutate({ id: p.id, name })} onDone={() => setRenaming(null)} /> : p.name}
+                {renaming === p.id ? <RenameInput value={p.name} label="Machine name" onSave={(name) => rename.mutate({ id: p.id, name })} onDone={() => setRenaming(null)} /> : p.name}
                 {s.lease.holder === p.id && HUB}
               </div>
               {detail && <div className="text-[13px] text-fg-secondary">{detail}</div>}

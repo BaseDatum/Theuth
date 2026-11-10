@@ -40,6 +40,9 @@ import { usePanes } from '@/lib/panes'
 import { canPopout, openPopout } from '@/lib/popout'
 import { engineLabel, ownerUnreachable, parkIfOffline, routed, useOwnerOffline } from '@/lib/owner'
 import { RpcError } from '@/rpc/client'
+import { chatName } from '@/lib/attach'
+import { hasLocal } from '@/link/engines'
+import { ShareDialog, SharingItems } from '@/components/settings/Contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
@@ -327,6 +330,8 @@ export function SessionMenu({ session }: { session: string }) {
   const targets = moveTargets(mesh.data, here ? (jobs.data ?? []).filter((j) => j.state === 'running').length : 0).filter((t) => here || t.id !== row?.owner)
   const blocked = moveBlocked(row, sessions.data ?? [], agents.data ?? [])
   const queryClient = useQueryClient()
+  // 183 §12.10: Share with contact… opens outside the menu, which unmounts its items when it closes.
+  const [share, setShare] = useState(false)
   const move = async (t: MoveTarget) => {
     try {
       await api.session_move(session, t.id)
@@ -555,9 +560,12 @@ export function SessionMenu({ session }: { session: string }) {
           <DropdownMenuItem onSelect={() => void settings(navigate, 'communication', session)}>
             Communication &amp; peers…
           </DropdownMenuItem>
+          {/* 183 §12.10: contacts live on this machine; a phone or iPad never shares (§12.8). */}
+          {hasLocal() && <SharingItems session={session} onShare={() => setShare(true)} />}
         </DropdownMenuContent>
       </DropdownMenu>
       <RenameDialog session={session} open={rename} onOpenChange={setRename} />
+      {share && <ShareDialog session={session} title={row ? chatName(row) : 'this chat'} onClose={() => setShare(false)} />}
       <PromptSheet
         session={session}
         open={sheet === 'prompt'}

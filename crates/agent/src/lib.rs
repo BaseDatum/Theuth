@@ -160,11 +160,11 @@ pub use activity::{
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
     AnswerPeerRequest, ChannelChat, ChannelOrigin, ChannelVia, CommunicationChanged,
-    CommunicationState, GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers, MeshRefusal,
-    PeerConsumed, PeerDeliver, PeerDeliverError, PeerDelivered, PeerEnvelope, PeerInfo,
-    PeerIntakeFailed, PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage,
-    PeerReceipt, PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication,
-    SetPeerScope,
+    CommunicationState, ContactDeliver, ContactEnvelope, ContactOrigin, ContactRefusal,
+    GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers, MeshRefusal, PeerConsumed,
+    PeerDeliver, PeerDeliverError, PeerDelivered, PeerEnvelope, PeerInfo, PeerIntakeFailed,
+    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
+    PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication, SetPeerScope,
 };
 pub use compact::CompactStyle;
 pub use context::{
@@ -197,12 +197,12 @@ pub use lifecycle::{
     SessionOpen,
 };
 pub use models::LimitSource;
-#[cfg(feature = "test-support")]
-pub use supervisor::spawn_test_agents;
 pub use supervisor::{
-    ActivityOf, Agents, Broadcast, Identity, IdentitySource, InstallIdentitySource, ListActivity,
-    RegisterNode, UnregisterNode,
+    ActivityOf, Agents, Broadcast, Identity, IdentitySource, InboxPersona, InstallIdentitySource,
+    ListActivity, RegisterNode, UnregisterNode,
 };
+#[cfg(feature = "test-support")]
+pub use supervisor::{spawn_engine_agents, spawn_test_agents};
 pub use tools::Retention;
 pub use user::{
     Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,

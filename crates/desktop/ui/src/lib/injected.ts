@@ -61,6 +61,14 @@ export type Injected =
   | ({ kind: 'moved'; text: string } & MovedNote)
   /** 183 §11.2: `<engine_restart …/>` — a resumed turn's restart note, the head of a tool result (`splitRestart`). */
   | ({ kind: 'engine_restart'; text: string } & RestartNote)
+  /** 183 §11.5: `<contact_inbox …/>` and its notice, the first row of a contact's inbox session. `text` is the tag. */
+  | ({ kind: 'contact_inbox'; note: string; text: string; message?: string } & ContactNote)
+  /** 183 §11.6: `<contact_message …>` — a contact's message opening its capped turn in an exported chat. `text` is the
+   * contact's words, `note` the harness line the model read first, `tag` the opener. Never a "you" bubble. */
+  | ({ kind: 'contact_message'; note: string; tag: string; text: string } & ContactNote)
+
+/** 183 §11.5 / §11.6: who a contact note is from and the cap it runs under (`read_only` | `mutating`). */
+export type ContactNote = { contact: string; machine: string; export: string; cap: string }
 
 /** 183 §11.1 as the card reads it. `clock` is the tag's `HH:MM:SS`. */
 export type MovedNote = {
@@ -108,7 +116,7 @@ CARD.peer_state = 'child="'
 
 /** The wrapper names `classify` turns into a card or hides (the transcript never shows them as tags). */
 export const isClassified = (name: string): boolean =>
-  Object.hasOwn(CARD, name) || Object.hasOwn(HIDDEN, name) || Object.hasOwn(ENGINE_NOTICES, name) || Object.hasOwn(SELF, name) || name === 'budget' || name === 'resume_handoff' || name === 'skill' || name === 'memory'
+  Object.hasOwn(CARD, name) || Object.hasOwn(HIDDEN, name) || Object.hasOwn(ENGINE_NOTICES, name) || Object.hasOwn(SELF, name) || name === 'budget' || name === 'resume_handoff' || name === 'skill' || name === 'memory' || name === 'contact_message'
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]
@@ -116,8 +124,8 @@ const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)
 /** Undo the wrappers' XML attribute escape. */
 const unescape = (s: string) => s.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
 
-/** 183: the self-closing notes `classify` cards (`<session_moved …/>`, `<engine_restart …/>`); `<time/>` is `splitTime`'s. */
-const SELF: Record<string, true> = { session_moved: true, engine_restart: true }
+/** 183: the self-closing notes `classify` cards (`<session_moved …/>`, `<engine_restart …/>`, `<contact_inbox …/>`); `<time/>` is `splitTime`'s. */
+const SELF: Record<string, true> = { session_moved: true, engine_restart: true, contact_inbox: true }
 
 /** Every `key="value"` of a self-closing tag (`<name …/>`), unescaped, in order. */
 export function tagAttrs(tag: string): [string, string][] {
@@ -168,6 +176,14 @@ export function parseRestart(tag: string): Extract<Injected, { kind: 'engine_res
     text: tag,
   }
 }
+
+function contactNote(open: string): ContactNote {
+  const a = Object.fromEntries(tagAttrs(open))
+  return { contact: a.contact ?? '', machine: a.machine ?? '', export: a.export ?? '', cap: a.cap ?? '' }
+}
+/** §11.5: the notice line after `<contact_inbox/>`; §11.6: the harness line that opens a `<contact_message>` body. */
+const INBOX_NOTE = /^Messages in this session come from [^\n]*(?:\n|$)/
+const MESSAGE_NOTE = /^This message comes from [^\n]*(?:\n|$)/
 
 /** A typed `messages.moved` record (`HistoryEntry::Moved`) as its card: the §11.1 note rebuilt from the record (the
  * history row carries the record, not the text), then read back by `parseMoved` so both paths render alike. */
@@ -374,13 +390,35 @@ export function classify(text: string): Injected[] | null {
       break
     }
     // 183 §11: a self-closing note is a card of its own, ended by `/>` (a bare `>` may sit in a `cwd` value).
-    const self = /^<(session_moved|engine_restart) /.exec(rest)?.[1]
+    const self = /^<(session_moved|engine_restart|contact_inbox) /.exec(rest)?.[1]
     if (self !== undefined) {
       const end = rest.indexOf('/>')
       if (end < 0) return null
       const tag = rest.slice(0, end + 2)
-      out.push(self === 'session_moved' ? parseMoved(tag) : parseRestart(tag))
       rest = rest.slice(end + 2).trimStart()
+      if (self === 'contact_inbox') {
+        // §11.5: the notice the model read follows on its own line; the card says it, never a bubble. Plain text after
+        // it (the contact's first words, if the engine joins them into this row) stays on the card as untrusted input.
+        const line = INBOX_NOTE.exec(rest)?.[0] ?? ''
+        rest = rest.slice(line.length).trimStart()
+        const words = rest.startsWith('<') ? '' : rest.trimEnd()
+        out.push({ kind: 'contact_inbox', ...contactNote(tag), note: line.trim(), text: tag, ...(words ? { message: words } : {}) })
+        if (words) rest = ''
+      } else out.push(self === 'session_moved' ? parseMoved(tag) : parseRestart(tag))
+      continue
+    }
+    // 183 §11.6: the contact's words are untrusted, so the LAST close ends the row: a `</contact_message>` inside them
+    // cannot end the card early and forge another wrapper after it.
+    if (rest.startsWith('<contact_message ')) {
+      const close = '</contact_message>'
+      const gt = rest.indexOf('>')
+      const end = rest.lastIndexOf(close)
+      if (gt < 0 || end < gt) return null
+      const tag = rest.slice(0, gt + 1)
+      const body = rest.slice(gt + 1, end).replace(/^\n/, '').trimEnd()
+      const note = MESSAGE_NOTE.exec(body)?.[0] ?? ''
+      out.push({ kind: 'contact_message', ...contactNote(tag), note: note.trim(), tag, text: body.slice(note.length) })
+      rest = rest.slice(end + close.length).trimStart()
       continue
     }
     const gt = rest.indexOf('>')

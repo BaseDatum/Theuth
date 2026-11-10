@@ -1,0 +1,916 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
+import { Bot, CircleCheck, Copy, MessageSquare, MoreHorizontal, Plus, ShieldAlert, X } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
+import { type ReactNode, type Ref, useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
+import { type PairView, pairView, spaced } from '@/components/settings/PairDialog'
+import { Empty, RenameInput, Section, errorText, useAction } from '@/components/settings/shared'
+import { useAgents, useMesh } from '@/components/tasks/queries'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { chatName } from '@/lib/attach'
+import { CAP, LIMITED, exportName, fingerprint, names, useContacts, useExports, useSharing } from '@/lib/contacts'
+import { engineLabel } from '@/lib/owner'
+import { putPair, queryKeys, useApi } from '@/lib/rpc'
+import { cn } from '@/lib/utils'
+import type { Contact } from '@/rpc/bindings/Contact'
+import type { ContactPatch } from '@/rpc/bindings/ContactPatch'
+import type { ContactTarget } from '@/rpc/bindings/ContactTarget'
+import type { ContactWindow } from '@/rpc/bindings/ContactWindow'
+import type { Export } from '@/rpc/bindings/Export'
+import type { ExportTarget } from '@/rpc/bindings/ExportTarget'
+import type { FirstContact } from '@/rpc/bindings/FirstContact'
+import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
+import type { PeerPath } from '@/rpc/bindings/PeerPath'
+import type { Risk } from '@/rpc/bindings/Risk'
+
+const NO_PATCH: ContactPatch = { name: null, cap: null, exports: null, blocked: null }
+const PATH: Record<PeerPath, [string, string]> = { lan: ['LAN', 'bg-success'], relay: ['Relay', 'bg-warning'], offline: ['offline', 'ring-1 ring-fg-tertiary ring-inset'] }
+const CHIP = 'inline-flex items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-fg-secondary'
+const FIRST: [FirstContact, string][] = [
+  ['ask', 'Ask first'],
+  ['allow', 'Always allow'],
+  ['block', 'Block'],
+]
+const CAPS: [Risk, string][] = [
+  ['read_only', 'Read only'],
+  ['mutating', 'Can change things'],
+]
+const toCommunication = { to: '/settings/$tab', params: { tab: 'communication' }, search: {} } as const
+const toNetwork = { to: '/settings/$tab', params: { tab: 'network' }, search: {} } as const
+
+function PathChip({ path }: { path: PeerPath }) {
+  const [text, dot] = PATH[path]
+  return (
+    <span className={CHIP}>
+      <span className={cn('size-1.5 rounded-full', dot)} aria-hidden="true" />
+      {text}
+    </span>
+  )
+}
+
+/** One export as a chip: an agent or a chat, and why it is paused (W-41, §12.10). */
+export function ExportChip({ name, exp }: { name: string; exp: Export | undefined }) {
+  const Icon = exp?.target.kind === 'agent' ? Bot : MessageSquare
+  return (
+    <span className={cn(CHIP, 'max-w-full', exp?.paused && 'text-fg-tertiary')}>
+      <Icon className="size-3 shrink-0" aria-hidden="true" />
+      <span className="truncate">
+        {exp?.description || name}
+        {exp?.paused && ` · Paused (${exp.paused})`}
+      </span>
+    </span>
+  )
+}
+
+/**
+ * 183 §12.7: Settings › Network › Contacts — each contact with its machine (from its card), path, fingerprint and the
+ * exports it may reach; ⋯ Rename · Choose what it may reach · Block · Remove. Add contact… opens the window.
+ */
+export function Contacts({ adding: initial = false }: { adding?: boolean }) {
+  const api = useApi()
+  const navigate = useNavigate()
+  const contacts = useContacts()
+  const exports = useExports()
+  const [adding, setAdding] = useState(initial)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<{ c: Contact; block: boolean } | null>(null)
+  const keys = [queryKeys.contacts]
+  const update = useAction((v: { name: string; patch: Partial<ContactPatch> }) => api.contact_update(v.name, { ...NO_PATCH, ...v.patch }), { keys })
+  const remove = useAction((v: { name: string; block: boolean }) => api.contact_remove(v.name, v.block), { keys })
+  return (
+    <Section
+      title="Contacts"
+      actions={
+        <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
+          <Plus /> Add contact…
+        </Button>
+      }
+    >
+      <p className="text-[13px] text-fg-secondary">Other people's machines. {LIMITED}</p>
+      {contacts.isPending && <Empty>Loading…</Empty>}
+      {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
+      {contacts.data?.length === 0 && <Empty>No contacts yet.</Empty>}
+      {contacts.data?.map((c) => (
+        <div key={c.name} className={cn('flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-border-subtle py-3 last:border-0', c.blocked && 'text-fg-secondary')}>
+          <div className="min-w-0 flex-1 basis-56">
+            <div className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
+              {renaming === c.name ? <RenameInput value={c.name} label="Contact name" onSave={(name) => update.mutate({ name: c.name, patch: { name } })} onDone={() => setRenaming(null)} /> : c.name}
+              {c.blocked && <span className="rounded-full bg-danger/10 px-1.5 text-xs text-danger">blocked</span>}
+            </div>
+            <div className="text-[13px] text-fg-secondary">
+              {[c.machine, CAP[c.cap]].filter(Boolean).join(' · ')}
+              <span className="ml-2 font-mono text-xs text-fg-tertiary" title={c.endpoint}>
+                {c.fingerprint || fingerprint(c.endpoint)}
+              </span>
+            </div>
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {c.exports.length === 0 ? (
+                <span className="text-[13px] text-fg-tertiary">Nothing shared yet</span>
+              ) : (
+                c.exports.map((n) => <ExportChip key={n} name={n} exp={exports.data?.find((x) => x.name === n)} />)
+              )}
+            </div>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <PathChip path={c.path} />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon-sm" aria-label={`${c.name}: Rename · Block · Remove`}>
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setRenaming(c.name)}>Rename</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void navigate(toCommunication)}>Choose what {c.name} may reach…</DropdownMenuItem>
+                {c.blocked ? (
+                  <DropdownMenuItem onSelect={() => update.mutate({ name: c.name, patch: { blocked: false } })}>Unblock</DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem onSelect={() => setConfirm({ c, block: true })}>Block…</DropdownMenuItem>
+                )}
+                <DropdownMenuItem variant="destructive" onSelect={() => setConfirm({ c, block: false })}>
+                  Remove…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      ))}
+      {adding && <AddContact onClose={() => setAdding(false)} onAccess={() => void navigate(toCommunication)} />}
+      <AlertDialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirm?.block ? 'Block' : 'Remove'} {confirm?.c.name}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirm?.block
+                ? `${confirm.c.name} is refused from now on and its open tasks close. Unblock it later from this list.`
+                : `${confirm?.c.name} is forgotten and its open tasks close. Adding it again needs a new code check.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirm) remove.mutate({ name: confirm.c.name, block: confirm.block })
+                setConfirm(null)
+              }}
+            >
+              {confirm?.block ? 'Block' : 'Remove'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Section>
+  )
+}
+
+/** What the ceremony shows: the pair dialog's views, plus `mismatch` when this side pressed "The codes differ". */
+export type CeremonyView = PairView | 'mismatch'
+
+const LIMITED_ID = 'contact-limited-trust'
+
+function Limited({ id }: { id?: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-border-subtle bg-layer-2 px-3 py-2 text-[13px] text-fg-secondary">
+      <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <p id={id}>{LIMITED}</p>
+    </div>
+  )
+}
+
+/** 183 §7.4, §12.7: one contact ceremony — the code, who it is (machine and fingerprint), Accept / Cancel / The codes differ, and how it ended. */
+export function CeremonyBody({
+  name,
+  detail,
+  ceremony,
+  view,
+  error,
+  onAccept,
+  onCancel,
+  onMismatch,
+  onBack,
+  onDone,
+  onAccess,
+  cancelRef,
+}: {
+  name: string
+  detail: string
+  ceremony: PairCeremony | undefined
+  view: CeremonyView
+  error: string | null
+  onAccept: () => void
+  onCancel: () => void
+  onMismatch: () => void
+  onBack: () => void
+  onDone: () => void
+  onAccess: () => void
+  /** Cancel (or Done / Back) takes the initial focus, never Accept. */
+  cancelRef?: Ref<HTMLButtonElement>
+}) {
+  const back = (
+    <Button ref={cancelRef} variant="outline" onClick={onBack}>
+      Back
+    </Button>
+  )
+  const end: Partial<Record<CeremonyView, [ReactNode, ReactNode]>> = {
+    starting: [
+      <p className="text-sm text-fg-secondary">Connecting to {name}…</p>,
+      <Button ref={cancelRef} variant="outline" onClick={onCancel}>
+        Cancel
+      </Button>,
+    ],
+    failed: [<p className="text-sm text-danger">{error}</p>, back],
+    paired: [
+      <p className="flex items-start gap-2 text-sm">
+        <CircleCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden="true" />
+        {name} is now a contact. It reaches nothing until you share an agent or a chat with it.
+      </p>,
+      <>
+        <Button variant="outline" onClick={onAccess}>
+          Choose what {name} may reach
+        </Button>
+        <Button ref={cancelRef} onClick={onDone}>
+          Done
+        </Button>
+      </>,
+    ],
+    rejected: [<p className="text-sm text-danger">Not added: {name} pressed Cancel, or saw a different code.</p>, back],
+    mismatch: [<p className="text-sm text-danger">Not added: the codes did not match. Someone else may be answering as {name}; nothing was stored.</p>, back],
+    expired: [<p className="text-sm text-fg-secondary">The check timed out before both sides pressed Accept. Nothing was stored.</p>, back],
+  }
+  const ended = end[view]
+  return (
+    <div className="flex flex-col gap-5">
+      <div>
+        <DialogTitle className="text-lg font-semibold">Add {name} as a contact</DialogTitle>
+        {detail && <p className="font-mono text-[13px] text-fg-tertiary">{detail}</p>}
+      </div>
+      {ended ? (
+        <>
+          {ended[0]}
+          <div className="flex flex-wrap justify-end gap-2">{ended[1]}</div>
+        </>
+      ) : (
+        <>
+          <div className="rounded-xl bg-layer-2 px-4 py-6 text-center">
+            <div className="font-mono text-5xl font-semibold tracking-[0.15em] tabular-nums" role="group" aria-label="Contact code">
+              {spaced(ceremony?.code ?? '')}
+            </div>
+            <p className="mt-3 text-sm text-fg-secondary">Check that {name} shows the same code</p>
+          </div>
+          <Limited id={LIMITED_ID} />
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {view === 'waiting' ? (
+              <span className="mr-auto text-[13px] text-fg-secondary">Waiting for {name} to press Accept…</span>
+            ) : (
+              <Button variant="link" className="mr-auto px-0 text-[13px] text-fg-secondary" onClick={onMismatch}>
+                The codes differ
+              </Button>
+            )}
+            <Button onClick={onAccept} disabled={view === 'waiting'}>
+              Accept
+            </Button>
+            <Button ref={cancelRef} variant="outline" onClick={onCancel}>
+              Cancel
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+type Cer = { id: string | null; name: string; detail: string; answered: boolean; error: string | null; mismatch: boolean }
+/** §12.7: the other side's machine (`addr` carries it for a contact ceremony), OS and fingerprint. */
+const detailOf = (c: Pick<PairCeremony, 'addr' | 'os_name' | 'peer'>) => [c.addr, c.os_name, fingerprint(c.peer)].filter(Boolean).join(' · ')
+/** §7.1: the engine's refusal of a Nearby card whose JWS does not verify against its endpoint id. */
+const UNVERIFIED = /unverified card|does not match the advert/
+/** `contact_window` calls in call order. The engine serves concurrent requests in any order, so a remounted dialog's
+ * close (the previous mount's cleanup) could land after its reopen and leave no window. */
+let windowCalls: Promise<unknown> = Promise.resolve()
+function windowCall<T>(call: () => Promise<T>): Promise<T> {
+  const next = windowCalls.then(call, call)
+  windowCalls = next.catch(() => undefined)
+  return next
+}
+
+/**
+ * 183 §7.4, §12.7: Add contact… — opens the contact window (`contact_window(true)`, closed on unmount) and its two tabs:
+ * Nearby agents (`contact_nearby`, patched by `contact_nearby` events) and Invite (this window's ticket as text and QR,
+ * or paste theirs). A ceremony this side starts, or a stranger's that arrives while the window is open, replaces the
+ * tabs with the code until it ends.
+ */
+export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { onClose: () => void; onAccess: () => void; tab?: 'nearby' | 'invite' }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const [tab, setTab] = useState(initialTab)
+  const [win, setWin] = useState<ContactWindow | null>(null)
+  const [winError, setWinError] = useState<string | null>(null)
+  const [paste, setPaste] = useState('')
+  const [cer, setCer] = useState<Cer | null>(null)
+  const [seen, setSeen] = useState<readonly string[]>([])
+  // §7.1: Nearby hints whose card failed verification on click: shown "unverified", Add refused.
+  const [unverified, setUnverified] = useState<readonly string[]>([])
+  const dial = useRef(0)
+  const dialing = useRef(0)
+  const cancelRef = useRef<HTMLButtonElement | null>(null)
+  // As in the pair dialog (U2-MUST-1): Cancel / Done / Back takes the focus whenever it mounts, unless the user already
+  // focused another button in this dialog.
+  const cancelMount = useCallback((b: HTMLButtonElement | null) => {
+    cancelRef.current = b
+    const f = document.activeElement
+    if (b && !(f instanceof HTMLButtonElement && b.closest('[role=dialog]')?.contains(f))) b.focus()
+  }, [])
+  const ceremonies = useQuery<Record<string, PairCeremony>>({ queryKey: queryKeys.contactPair, queryFn: () => ({}), enabled: false, staleTime: Infinity }).data
+  const nearby = useQuery({ queryKey: queryKeys.contactNearby, queryFn: () => api.contact_nearby(), staleTime: 0, enabled: win !== null })
+
+  const open = useCallback(
+    () =>
+      windowCall(() => api.contact_window(true)).then(
+        (w) => {
+          setWin(w)
+          setWinError(null)
+        },
+        (e: unknown) => setWinError(errorText(e)),
+      ),
+    [api],
+  )
+  useEffect(() => {
+    void open()
+    return () => void windowCall(() => api.contact_window(false)).catch(() => undefined)
+  }, [api, open])
+
+  useEffect(() => {
+    const c = dialing.current ? undefined : Object.values(ceremonies ?? {}).find((c) => c.state === 'waiting' && c.expires_ms > Date.now() && !seen.includes(c.id))
+    if (!cer && c) setCer({ id: c.id, name: c.name, detail: detailOf(c), answered: false, error: null, mismatch: false })
+  }, [cer, ceremonies, seen])
+
+  const start = (target: ContactTarget, name: string, detail: string) => {
+    const token = ++dial.current
+    dialing.current++
+    setCer({ id: null, name, detail, answered: false, error: null, mismatch: false })
+    api.contact_pair(target).then(
+      (c) => {
+        dialing.current--
+        putPair(qc, c, queryKeys.contactPair)
+        if (token !== dial.current) {
+          setSeen((s) => [...s, c.id])
+          void api.contact_answer(c.id, false).catch(() => undefined)
+        } else setCer((f) => f && { ...f, id: c.id, name: c.name || f.name, detail: detailOf(c) || f.detail })
+      },
+      (e: unknown) => {
+        dialing.current--
+        const why = errorText(e)
+        if (target.kind === 'nearby' && UNVERIFIED.test(why)) setUnverified((u) => [...u, target.eid])
+        if (token === dial.current) setCer((f) => f && { ...f, error: why })
+      },
+    )
+  }
+
+  const ceremony = cer?.id ? ceremonies?.[cer.id] : undefined
+  const view: CeremonyView | null = cer && (cer.mismatch ? 'mismatch' : pairView(ceremony, cer.error, cer.answered))
+  const live = view === 'starting' || view === 'code' || view === 'waiting'
+  /** Leave the ceremony: refuse it while it is open, never reopen it. */
+  const leave = () => {
+    if (!cer) return
+    if (cer.id === null) dial.current++
+    else {
+      if (live) void api.contact_answer(cer.id, false).catch(() => undefined)
+      setSeen((s) => [...s, cer.id as string])
+    }
+    setCer(null)
+  }
+  const accept = () => {
+    if (!cer?.id) return
+    setCer({ ...cer, answered: true })
+    api.contact_answer(cer.id, true).catch((e: unknown) => setCer((f) => f && { ...f, error: errorText(e) }))
+  }
+  const mismatch = () => {
+    if (!cer?.id) return
+    void api.contact_answer(cer.id, false).catch(() => undefined)
+    setSeen((s) => [...s, cer.id as string])
+    setCer({ ...cer, mismatch: true })
+  }
+  const close = () => {
+    leave()
+    onClose()
+  }
+  const connect = () => {
+    const v = paste.trim()
+    if (!v) return
+    start(v.startsWith('theuth-contact:') ? { kind: 'ticket', ticket: v } : { kind: 'card_url', url: v }, v.startsWith('theuth-contact:') ? 'the invite' : v, '')
+  }
+  // Theuth agents first (verified cards before the rest), then other vendors (§12.7).
+  const agents = [...(nearby.data ?? [])].sort((a, b) => Number(!a.eid) - Number(!b.eid) || Number(!a.verified) - Number(!b.verified))
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && close()}>
+      <DialogContent
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg"
+        aria-describedby={view === 'code' || view === 'waiting' ? LIMITED_ID : undefined}
+        onOpenAutoFocus={(e) => {
+          if (!cer) return
+          e.preventDefault()
+          cancelRef.current?.focus()
+        }}
+      >
+        {cer && view ? (
+          <CeremonyBody
+            name={cer.name}
+            detail={cer.detail}
+            ceremony={ceremony}
+            view={view}
+            error={cer.error}
+            onAccept={accept}
+            onCancel={leave}
+            onMismatch={mismatch}
+            onBack={leave}
+            onDone={close}
+            onAccess={() => {
+              close()
+              onAccess()
+            }}
+            cancelRef={cancelMount}
+          />
+        ) : (
+          <div className="flex min-w-0 flex-col gap-4">
+            <div>
+              <DialogTitle className="text-lg font-semibold">Add contact</DialogTitle>
+              <p className="text-[13px] text-fg-secondary">Someone else's theuth, or another A2A agent. Both sides check the same 6-digit code.</p>
+            </div>
+            {winError ? (
+              <>
+                <p className="text-sm text-fg-secondary">{winError}</p>
+                <div className="flex justify-end">
+                  <Button variant="outline" onClick={close}>
+                    Close
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+                <TabsList className="w-full">
+                  <TabsTrigger value="nearby">Nearby agents</TabsTrigger>
+                  <TabsTrigger value="invite">Invite</TabsTrigger>
+                </TabsList>
+                <TabsContent value="nearby" className="flex flex-col pt-2">
+                  {agents.length === 0 && <Empty>{win ? 'No A2A agent found on this network yet.' : 'Opening the window…'}</Empty>}
+                  {agents.map((n) => {
+                    const foreign = !n.eid
+                    const bad = !!n.eid && unverified.includes(n.eid)
+                    const target: ContactTarget | null = bad ? null : n.eid ? { kind: 'nearby', eid: n.eid } : n.card ? { kind: 'card_url', url: n.card } : null
+                    return (
+                      <div key={`${n.service}|${n.name}|${n.addr}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-subtle py-2.5 last:border-0">
+                        <div className="min-w-0 flex-1 basis-48">
+                          <div className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
+                            {n.name}
+                            {foreign ? (
+                              <span className={CHIP}>A2A · HTTPS</span>
+                            ) : bad ? (
+                              <span className={cn(CHIP, 'text-danger')} title="Its card's signature does not match its key: it cannot be added">
+                                unverified
+                              </span>
+                            ) : (
+                              n.verified && <span className={cn(CHIP, 'text-success')}>verified</span>
+                            )}
+                          </div>
+                          <div className="text-[13px] text-fg-tertiary">{[foreign ? `other vendor · ${n.service}` : 'theuth', n.addr].join(' · ')}</div>
+                        </div>
+                        <Button size="sm" variant="outline" aria-label={`Add ${n.name}`} disabled={!target} onClick={() => target && start(target, n.name, n.addr)}>
+                          Add…
+                        </Button>
+                      </div>
+                    )
+                  })}
+                  <p className="pt-2 text-[13px] text-fg-tertiary">This machine is visible on the network only while this window is open.</p>
+                </TabsContent>
+                <TabsContent value="invite" className="flex flex-col gap-4 pt-2">
+                  {win ? (
+                    <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
+                      <div className="shrink-0 rounded-lg bg-white p-2">
+                        <QRCodeSVG value={win.ticket} size={148} />
+                      </div>
+                      <div className="flex min-w-0 flex-1 flex-col gap-2">
+                        <p className="text-[13px] text-fg-secondary">Send this invite to the other person. It works once, until {new Date(win.expires_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, and grants nothing until you both accept the same code.</p>
+                        <code className="max-h-20 overflow-y-auto rounded-md bg-layer-2 px-2 py-1.5 font-mono text-xs break-all" aria-label="Invite ticket">
+                          {win.ticket}
+                        </code>
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline" onClick={() => void navigator.clipboard.writeText(win.ticket).then(() => toast.message('Copied'))}>
+                            <Copy /> Copy invite
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => void open()}>
+                            New invite
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <Empty>Creating an invite…</Empty>
+                  )}
+                  <form
+                    className="flex flex-col gap-2 border-t border-border-subtle pt-3"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      connect()
+                    }}
+                  >
+                    <label className="text-[13px] font-medium" htmlFor="contact-paste">
+                      Or paste theirs
+                    </label>
+                    <div className="flex gap-2">
+                      <Input id="contact-paste" value={paste} onChange={(e) => setPaste(e.target.value)} placeholder="theuth-contact:1.… or a card URL" className="min-w-0 flex-1 font-mono text-base md:text-xs" />
+                      <Button type="submit" disabled={!paste.trim()}>
+                        Connect
+                      </Button>
+                    </div>
+                  </form>
+                </TabsContent>
+              </Tabs>
+            )}
+            <Limited />
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Grant `target` to `contact`: its export when one exists, else a new one named from `title` (`a2a_export_put`), then `contact_update(exports)`. */
+export function useGrant() {
+  const api = useApi()
+  return useAction(
+    ({ contact, target, title }: { contact: Contact; target: ExportTarget; title: string }) =>
+      (async () => {
+        const all = await api.a2a_exports()
+        let exp = all.find((x) => (x.target.kind === 'agent' ? target.kind === 'agent' && x.target.agent === target.agent : target.kind === 'chat' && x.target.session === target.session))
+        if (!exp) {
+          exp = { name: exportName(title, all.map((x) => x.name)), target, description: title, paused: null }
+          await api.a2a_export_put(exp)
+        }
+        if (!contact.exports.includes(exp.name)) await api.contact_update(contact.name, { ...NO_PATCH, exports: [...contact.exports, exp.name] })
+      })(),
+    { keys: [queryKeys.contacts, queryKeys.exports] },
+  )
+}
+
+/** Take `exp` back from `contact`; the export goes too (`a2a_export_remove`) once no other contact holds it. */
+export function useUngrant() {
+  const api = useApi()
+  return useAction(
+    ({ contact, exp, contacts }: { contact: Contact; exp: string; contacts: readonly Contact[] }) =>
+      (async () => {
+        await api.contact_update(contact.name, { ...NO_PATCH, exports: contact.exports.filter((n) => n !== exp) })
+        if (!contacts.some((c) => c.name !== contact.name && c.exports.includes(exp))) await api.a2a_export_remove(exp)
+      })(),
+    { keys: [queryKeys.contacts, queryKeys.exports] },
+  )
+}
+
+type Pick_ = { key: string; target: ExportTarget; title: string; group: 'Agents' | 'Chats'; detail: string }
+
+/** §7.6, §12.10: what can be shared — this machine's desk roots and `theuth`, then chats (not archived) with their machine. */
+function useShareable(enabled: boolean): Pick_[] {
+  const api = useApi()
+  const agents = useAgents()
+  const mesh = useMesh()
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled })
+  const self = mesh.data?.self_name ?? ''
+  const agent = (a: string): Pick_ => ({ key: `agent|${a}`, target: { kind: 'agent', agent: a }, title: a, group: 'Agents', detail: 'agent' })
+  return [
+    agent('theuth'),
+    ...(agents.data ?? []).filter((a) => a.desk !== null && self).map((a) => agent(`${a.file.name}@${self}`)),
+    ...(sessions.data ?? [])
+      .filter((s) => s.parent === null && !s.archived)
+      .map((s): Pick_ => ({ key: `chat|${s.id}`, target: { kind: 'chat', session: s.id }, title: chatName(s), group: 'Chats', detail: s.here ? 'this machine' : engineLabel(s.owner, mesh.data?.peers) })),
+  ]
+}
+
+/**
+ * 183 §7.6, §12.10 (D9): Settings › Communication › Contacts' access — per contact its cap (`Read only` / `Can change
+ * things`), what it may reach (agents and chats, each with its first-contact answer and Paused state), and Share… to
+ * pick another agent or chat.
+ */
+export function ContactAccess() {
+  const navigate = useNavigate()
+  const contacts = useContacts()
+  const exports = useExports()
+  return (
+    <Section
+      title="Contacts' access"
+      actions={
+        <Button variant="outline" size="sm" onClick={() => void navigate(toNetwork)}>
+          Contacts…
+        </Button>
+      }
+    >
+      <p className="text-[13px] text-fg-secondary">{LIMITED} Each one opens a fresh capped session per agent, or one capped turn per message in a shared chat.</p>
+      <p className="text-[13px] text-fg-secondary">{toolsLine(exports.data ?? [])}</p>
+      {contacts.isPending && <Empty>Loading…</Empty>}
+      {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
+      {contacts.data?.length === 0 && <Empty>No contacts yet. Add one in Settings › Network › Contacts.</Empty>}
+      {contacts.data?.map((c) => <Access key={c.name} c={c} all={contacts.data} exports={exports.data ?? []} />)}
+    </Section>
+  )
+}
+
+function Access({ c, all, exports }: { c: Contact; all: readonly Contact[]; exports: readonly Export[] }) {
+  const api = useApi()
+  const [picking, setPicking] = useState(false)
+  const [q, setQ] = useState('')
+  const grant = useGrant()
+  const ungrant = useUngrant()
+  const shareable = useShareable(picking)
+  const keys = [queryKeys.contacts]
+  const cap = useAction((v: Risk) => api.contact_update(c.name, { ...NO_PATCH, cap: v }), { keys })
+  const first = useAction((v: { exp: string; answer: FirstContact }) => api.contact_first_answer(c.name, v.exp, v.answer), { keys })
+  const granted = new Set(c.exports.flatMap((n) => exports.find((x) => x.name === n) ?? []).map((x) => `${x.target.kind}|${x.target.kind === 'agent' ? x.target.agent : x.target.session}`))
+  const options = shareable.filter((p) => !granted.has(p.key) && `${p.title} ${p.detail}`.toLowerCase().includes(q.trim().toLowerCase()))
+  const busy = grant.isPending || ungrant.isPending
+  return (
+    <div className="border-b border-border-subtle py-3 last:border-0">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="min-w-0 flex-1 basis-40">
+          <div className="text-sm font-medium">
+            {c.name}
+            {c.blocked && <span className="ml-1.5 rounded-full bg-danger/10 px-1.5 text-xs text-danger">blocked</span>}
+          </div>
+          <div className="text-[13px] text-fg-secondary">{c.machine}</div>
+        </div>
+        <Select value={cap.isPending ? cap.variables : c.cap} disabled={cap.isPending} onValueChange={(v) => cap.mutate(v as Risk)}>
+          <SelectTrigger className="w-44" aria-label={`Cap of ${c.name}`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CAPS.map(([v, label]) => (
+              <SelectItem key={v} value={v}>
+                {label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="mt-2 flex flex-col gap-1.5">
+        {c.exports.length === 0 && <p className="text-[13px] text-fg-tertiary">{c.name} reaches nothing yet.</p>}
+        {c.exports.map((n) => {
+          const x = exports.find((e) => e.name === n)
+          return (
+            <div key={n} className="flex flex-col gap-1.5 rounded-lg bg-layer-2 px-2.5 py-1.5">
+              <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-1">
+                  <ExportChip name={n} exp={x} />
+                </div>
+                <Select value={c.first_contact[n] ?? 'ask'} disabled={first.isPending} onValueChange={(v) => first.mutate({ exp: n, answer: v as FirstContact })}>
+                  <SelectTrigger size="sm" className="w-36 shrink-0" aria-label={`First contact from ${c.name} to ${n}`}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FIRST.map(([v, label]) => (
+                      <SelectItem key={v} value={v}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button variant="ghost" size="icon-sm" aria-label={`Stop sharing ${x?.description || n} with ${c.name}`} disabled={busy} onClick={() => ungrant.mutate({ contact: c, exp: n, contacts: all })}>
+                  <X />
+                </Button>
+              </div>
+              {x && <ExportTools exp={x} />}
+            </div>
+          )
+        })}
+        {picking ? (
+          <div className="flex flex-col gap-1.5 rounded-lg border border-border-subtle p-2">
+            <div className="flex gap-2">
+              <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents and chats" aria-label={`Share with ${c.name}`} className="h-8 min-w-0 flex-1 text-base md:text-sm" />
+              <Button variant="ghost" size="sm" onClick={() => setPicking(false)}>
+                Done
+              </Button>
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {(['Agents', 'Chats'] as const).map((g) => {
+                const rows = options.filter((p) => p.group === g)
+                return rows.length === 0 ? null : (
+                  <div key={g} role="group" aria-label={g}>
+                    <p className="px-1 pt-1.5 text-xs font-medium text-fg-tertiary">{g}</p>
+                    {rows.map((p) => (
+                      <button
+                        key={p.key}
+                        type="button"
+                        disabled={busy}
+                        className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm hover:bg-layer-2 disabled:opacity-50 pointer-coarse:min-h-11"
+                        onClick={() => grant.mutate({ contact: c, target: p.target, title: p.title })}
+                      >
+                        {g === 'Agents' ? <Bot className="size-3.5 shrink-0" aria-hidden="true" /> : <MessageSquare className="size-3.5 shrink-0" aria-hidden="true" />}
+                        <span className="min-w-0 flex-1 truncate">{p.title}</span>
+                        <span className="shrink-0 rounded-[4px] bg-layer-3 px-1 text-[10px] leading-4 text-fg-tertiary">{p.detail}</span>
+                      </button>
+                    ))}
+                  </div>
+                )
+              })}
+              {options.length === 0 && <p className="px-1 py-2 text-[13px] text-fg-tertiary">Nothing else to share.</p>}
+            </div>
+          </div>
+        ) : (
+          <div>
+            <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
+              <Plus /> Share with {c.name}…
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** The engine's allowlist when an export names none: the public web only. */
+const DEFAULT_TOOLS = ['search_web', 'read_url']
+/** 183 Z4-R1: what each opt-in reader reads — ALL of its kind on this machine, not only what an export shares. */
+const READS: Record<string, string> = {
+  knowledge_search: 'knowledge',
+  knowledge_get: 'knowledge',
+  knowledge_list: 'knowledge',
+  doc_read: 'notes and documents',
+  nb_search: 'notebooks',
+  artifact_read: 'artifacts',
+}
+
+/** 183 Z4-R1: the warning under a tool in Add tool, if any (a reader's reach, an MCP tool's self-declared risk). */
+export function toolNote(tool: string): string | null {
+  if (READS[tool]) return `Sees ALL your ${READS[tool]}, not just what you share here`
+  if (tool.startsWith('mcp:')) return 'Read-only as the server declares it; for a server you don’t control, pin its risk in mcp/config.yaml'
+  return null
+}
+
+/** 183 Z3-R2, Z4-R1: what the tool allowlist means, once above the export rows — naming what granted readers can read. */
+export function toolsLine(exports: readonly Export[]): string {
+  const kinds = [...new Set(exports.flatMap((e) => e.tools ?? DEFAULT_TOOLS).flatMap((t) => READS[t] ?? []))]
+  const hidden = kinds.includes('knowledge') ? 'files, sessions and vault' : 'files, sessions, knowledge and vault'
+  const list = kinds.length < 2 ? kinds.join('') : `${kinds.slice(0, -1).join(', ')} and ${kinds.at(-1)}`
+  const reads = kinds.length ? ` The readers granted below let them read ALL your ${list}, not just what you share.` : ''
+  return `Contacts can use only these tools. Everything else, including your ${hidden}, is hidden from them.${reads} Only the public web, read-only readers and read-only MCP tools can be added.`
+}
+
+/** 183 Z3-R2: an export's tool allowlist as chips — × takes one away, Add tool offers the rest of what the engine lets an
+ * export grant (Z4: `a2a_grantable_tools`); saved with `a2a_export_put`. Every contact the export is shared with gets the
+ * same list. */
+function ExportTools({ exp }: { exp: Export }) {
+  const api = useApi()
+  const all = useQuery({ queryKey: queryKeys.grantable, queryFn: () => api.a2a_grantable_tools() })
+  const save = useAction(
+    (tools: string[]) => {
+      const next: Export = { ...exp, tools }
+      return api.a2a_export_put(next)
+    },
+    { keys: [queryKeys.exports] },
+  )
+  const tools = save.isPending && save.variables ? save.variables : (exp.tools ?? DEFAULT_TOOLS)
+  const label = exp.description || exp.name
+  const rest = (all.data ?? [])
+    .map((t) => t.name)
+    .filter((t) => !tools.includes(t))
+    .sort()
+  return (
+    <div role="group" aria-label={`Tools ${label} offers contacts`} className="flex flex-wrap items-center gap-1">
+      {tools.length === 0 && <span className="text-[13px] text-fg-tertiary">No tools: answers only</span>}
+      {tools.map((t) => (
+        <span key={t} className={cn(CHIP, 'font-mono')}>
+          {t}
+          <button
+            type="button"
+            aria-label={`Remove ${t} from ${label}`}
+            disabled={save.isPending}
+            className="rounded-full text-fg-tertiary hover:text-fg-primary disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+            onClick={() => save.mutate(tools.filter((x) => x !== t))}
+          >
+            <X className="size-3" aria-hidden="true" />
+          </button>
+        </span>
+      ))}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="xs" disabled={save.isPending || rest.length === 0} aria-label={`Add a tool to ${label}`}>
+            <Plus /> Add tool
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="max-h-64 overflow-y-auto">
+          {rest.map((t) => {
+            const note = toolNote(t)
+            return (
+              <DropdownMenuItem key={t} className="flex-col items-start gap-0" onSelect={() => save.mutate([...tools, t])}>
+                <span className="font-mono">{t}</span>
+                {note && <span className="text-xs text-warning">{note}</span>}
+              </DropdownMenuItem>
+            )
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  )
+}
+
+/** 183 §12.10: the chat ⋯ menu's Share with contact… (`onShare` opens `ShareDialog` outside the menu) and, when contacts can
+ * message the chat, Stop sharing with <them> (`a2a_export_remove`: the export and every grant go). */
+export function SharingItems({ session, onShare }: { session: string; onShare: () => void }) {
+  const api = useApi()
+  const sharing = useSharing(session)
+  const stop = useAction((name: string) => api.a2a_export_remove(name), { keys: [queryKeys.contacts, queryKeys.exports] })
+  return (
+    <>
+      <DropdownMenuItem onSelect={onShare}>Share with contact…</DropdownMenuItem>
+      {sharing && sharing.contacts.length > 0 && (
+        <DropdownMenuItem variant="destructive" disabled={stop.isPending} onSelect={() => stop.mutate(sharing.exp.name)}>
+          Stop sharing with {names(sharing.contacts)}
+        </DropdownMenuItem>
+      )}
+    </>
+  )
+}
+
+/**
+ * 183 §12.10: ⋯ Share with contact… — the open chat shared with (or taken back from) each contact. Sharing creates the
+ * chat's export on first use; the contact's agents can then send into it and see only the answers to their own messages.
+ */
+export function ShareDialog({ session, title, onClose }: { session: string; title: string; onClose: () => void }) {
+  const navigate = useNavigate()
+  const contacts = useContacts()
+  const exports = useExports()
+  const grant = useGrant()
+  const ungrant = useUngrant()
+  const exp = exports.data?.find((x) => x.target.kind === 'chat' && x.target.session === session)
+  const busy = grant.isPending || ungrant.isPending
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <div className="flex flex-col gap-4">
+          <div>
+            <DialogTitle className="text-lg font-semibold">Share this chat with a contact</DialogTitle>
+            <p className="text-[13px] text-fg-secondary">Their agents can send messages into “{title}”. They see only the answers to their own messages: no transcript, no live view, no typing.</p>
+          </div>
+          {exp?.paused && <p className="text-[13px] text-warning">Paused ({exp.paused})</p>}
+          <div className="flex flex-col">
+            {contacts.isPending && <Empty>Loading…</Empty>}
+            {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
+            {contacts.data?.length === 0 && <Empty>No contacts yet.</Empty>}
+            {contacts.data
+              ?.filter((c) => !c.blocked)
+              .map((c) => {
+                const on = !!exp && c.exports.includes(exp.name)
+                return (
+                  <div key={c.name} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-subtle py-2.5 last:border-0">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium">{c.name}</div>
+                      <div className="text-[13px] text-fg-secondary">{[c.machine, CAP[c.cap]].filter(Boolean).join(' · ')}</div>
+                    </div>
+                    {on && exp ? (
+                      <Button size="sm" variant="outline" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name, contacts: contacts.data })}>
+                        Shared · Stop
+                      </Button>
+                    ) : (
+                      <Button size="sm" disabled={busy} aria-label={`Share with ${c.name}`} onClick={() => grant.mutate({ contact: c, target: { kind: 'chat', session }, title })}>
+                        Share
+                      </Button>
+                    )}
+                  </div>
+                )
+              })}
+          </div>
+          <Limited />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => {
+                onClose()
+                void navigate(toNetwork)
+              }}
+            >
+              Contacts…
+            </Button>
+            <Button variant="outline" onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}

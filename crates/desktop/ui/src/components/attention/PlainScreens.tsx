@@ -9,6 +9,7 @@ import { age } from '@/components/tasks/helpers'
 import { useAgents, useMesh, useTask } from '@/components/tasks/queries'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
+import { FIRST_ANSWERS, LIMITED, contactFirstOf } from '@/lib/contacts'
 import { useSecretRequests } from '@/store/approvals'
 import { useAnswered } from '@/store/double'
 import { Body, SectionTitle, useResolved } from './shared'
@@ -145,6 +146,24 @@ export function NodeScreen({ item }: { item: AttentionItem }) {
 /** 182: tasks waiting on an engine that stayed offline: the engine's hint (or which tasks cannot move here); Move them here · Keep waiting. */
 export function HomeScreen({ item }: { item: AttentionItem }) {
   return <Plain item={item}>{item.detail && <p className="text-sm text-fg-secondary">{item.detail}</p>}</Plain>
+}
+
+/** 183 §7.6 (W-27): a contact's first task to one export waits for an answer — who, what it wants to reach, the limited-trust line; Allow once · Always · Block in the bar. */
+export function ContactFirstScreen({ item }: { item: AttentionItem }) {
+  const first = contactFirstOf(item.id)
+  return (
+    <Plain item={item}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {first && <Fact label="Contact">{first.contact}</Fact>}
+        {first && <Fact label="Wants to reach">{first.exp}</Fact>}
+        {item.detail && <Fact label="Detail">{item.detail}</Fact>}
+        <Fact label="Waiting">{age(item.waiting_since_ms ?? item.at_ms)}</Fact>
+      </div>
+      <p className="text-sm text-fg-secondary">
+        {LIMITED} Until you answer, the sender sees "waiting for {first?.contact ?? 'you'} to allow". {FIRST_ANSWERS}
+      </p>
+    </Plain>
+  )
 }
 
 /** Blocked: the task's blockers as chips; Unblock. */

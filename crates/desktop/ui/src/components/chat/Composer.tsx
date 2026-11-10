@@ -62,9 +62,11 @@ import { MIN_NOTE_MS } from '@/lib/hold'
 import { stripRows } from '@/lib/session-tree'
 import { type Act as StopAct, IDLE as STOP_IDLE, type Stop as StopState, progress as stopProgress, step as stepStop } from '@/lib/stop-gesture'
 import type { CancelScope } from '@/rpc/bindings/CancelScope'
+import type { Risk } from '@/rpc/bindings/Risk'
+import { CAP } from '@/lib/contacts'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
-import { useSessionField, useSessions } from '@/store/sessions'
+import { contactTurn, useSessionField, useSessions } from '@/store/sessions'
 import { createNote } from '@/components/notes/create'
 import { useNotes } from '@/components/notes/useNotes'
 import { AttachPicker } from './AttachPicker'
@@ -334,6 +336,7 @@ export function Composer({
   // must queue (steer, shown as a chip), and only the explicit stop/interject may cancel it.
   const running = turnRunning || activity === 'compacting'
   const queued = useSessionField(session ?? '', 'queued')
+  const contact = useSessions((s) => contactTurn(s.sessions[session ?? '']))
   const keys = useShortcuts((s) => s.chords)
   const model = useSessionField(session ?? '', 'model')
   const parent = useSessionField(session ?? '', 'parent')
@@ -1229,6 +1232,14 @@ export function Composer({
         </div>
       )}
       {session && <QueuedChips session={session} onEdit={editQueued} />}
+      {contact && (
+        // 183 §12.10: a contact's capped turn runs in this exported chat.
+        <div className="flex justify-end pb-2">
+          <span role="status" className="rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">
+            {CAP[contact.cap as Risk] ?? contact.cap.replaceAll('_', ' ')} · {contact.contact || 'a contact'}&apos;s turn
+          </span>
+        </div>
+      )}
       {skill && (
         <div className="flex justify-end pb-2">
           <span className="flex items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">

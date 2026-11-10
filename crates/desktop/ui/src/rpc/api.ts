@@ -257,6 +257,15 @@ import type { NearbyEngine } from '@/rpc/bindings/NearbyEngine'
 import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import type { UnpairPreview } from '@/rpc/bindings/UnpairPreview'
 import type { RotationState } from '@/rpc/bindings/RotationState'
+import type { Contact } from '@/rpc/bindings/Contact'
+import type { ContactPatch } from '@/rpc/bindings/ContactPatch'
+import type { ContactTarget } from '@/rpc/bindings/ContactTarget'
+import type { ContactWindow } from '@/rpc/bindings/ContactWindow'
+import type { NearbyAgent } from '@/rpc/bindings/NearbyAgent'
+import type { Export } from '@/rpc/bindings/Export'
+import type { GrantableTool } from '@/rpc/bindings/GrantableTool'
+import type { FirstContact } from '@/rpc/bindings/FirstContact'
+import type { ContactEnvelope } from '@/rpc/bindings/ContactEnvelope'
 import type { DesktopAccess } from '@/rpc/bindings/DesktopAccess'
 import type { Handoff } from '@/rpc/bindings/Handoff'
 import type { LogLine } from '@/rpc/bindings/LogLine'
@@ -746,6 +755,31 @@ export interface Api {
   vault_rotation(): Promise<RotationState | null>
   /** 183 §6.9.12: rotate the vault key without an unpair, or retry a failed rotation. */
   vault_rotate(): Promise<RotationState>
+  // 183 P3: UI — Settings › Network › Contacts, exports, first contact (§7, §10.1, §12.7, §12.10).
+  /** 183 §7.4: open (`true`, the Add contact sheet; returns the invite ticket) or close the Add contact window. */
+  contact_window(open: boolean): Promise<ContactWindow | null>
+  /** 183 §7.1: A2A agents the browse sees while the window is open, newest first, ≤ 32. */
+  contact_nearby(): Promise<NearbyAgent[]>
+  /** 183 §7.4: start the ceremony with a Nearby agent, a ticket or a card URL; `ContactEvent` `contact_pair` follows it. */
+  contact_pair(target: ContactTarget): Promise<PairCeremony>
+  /** 183 §7.4: this side's Accept (`accept`) or Reject. */
+  contact_answer(ceremony: string, accept: boolean): Promise<null>
+  /** 183 §12.7: this machine's contacts. */
+  contact_list(): Promise<Contact[]>
+  /** 183 §12.7: rename, cap, grant exports, block or unblock a contact. */
+  contact_update(name: string, patch: ContactPatch): Promise<Contact>
+  /** 183 §8.4: Remove (`block: false`) or Block a contact. */
+  contact_remove(name: string, block: boolean): Promise<null>
+  /** 183 §7.6, D9: this machine's exports (agents and chats), with `paused`. */
+  a2a_exports(): Promise<Export[]>
+  /** 183 §7.6: create or replace an export by name. */
+  a2a_export_put(exp: Export): Promise<null>
+  /** 183 §12.10: remove an export and its grants (Stop sharing). */
+  a2a_export_remove(name: string): Promise<null>
+  /** 183 Z4: the tools an export may allow a contact; the allowlist editor offers only these. */
+  a2a_grantable_tools(): Promise<GrantableTool[]>
+  /** 183 §7.6: the `contact_first` Attention item's Allow once (`ask`) · Always (`allow`) · Block (`block`). */
+  contact_first_answer(contact: string, exp: string, answer: FirstContact): Promise<null>
   // 79 §4.5 / contract §2.4: sandbox VMs. Every record the sandbox actor holds (`backend` docker|ssh|vm).
   sandboxes_list(): Promise<SandboxInfo[]>
   /** Host readiness (79 §5.1): `blockers` empty ⇒ a VM can be created now; the card renders each one as a sentence. */
@@ -1030,6 +1064,8 @@ export interface Api {
   path_complete(session: SessionId | null, input: string, cursor: number, engine?: string | null): Promise<PathCompletion>
   /** Mesh-internal (62 §0.1): a peer's envelope delivered to `session`; anything but a mesh peer is `UNAUTHORIZED`. */
   peer_deliver(session: SessionId, envelope: PeerEnvelope): Promise<PeerReceipt>
+  /** Mesh-internal (183 W-40): a contact's message for an exported chat owned here; anything but a mesh peer is `UNAUTHORIZED`. */
+  contact_deliver(envelope: ContactEnvelope): Promise<PeerReceipt>
   /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
   peer_message(session: SessionId, id: string): Promise<PeerRecord>
   /** Write base64 `bytes` to `<data_dir>/attachments/<sha256[..16]>.<ext>`; returns the path for `send_input.files`. */
@@ -1362,6 +1398,10 @@ export interface Api {
 
 /** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
 export const METHODS = [
+  'a2a_export_put',
+  'a2a_export_remove',
+  'a2a_exports',
+  'a2a_grantable_tools',
   'a2a_status',
   'activity_list',
   'add_acp',
@@ -1467,6 +1507,15 @@ export const METHODS = [
   'compact',
   'compact_style',
   'computer_permissions',
+  'contact_answer',
+  'contact_deliver',
+  'contact_first_answer',
+  'contact_list',
+  'contact_nearby',
+  'contact_pair',
+  'contact_remove',
+  'contact_update',
+  'contact_window',
   'context_items',
   'cost_calls',
   'cost_cube',

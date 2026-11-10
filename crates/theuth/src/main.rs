@@ -1257,10 +1257,14 @@ agent:
 #   notify: { new_best: false }   # channel pings during a study (R1-D6: off)
 
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
-#   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
+#   enabled: false           # false: no HTTP listener, HTTP peers dormant (no card fetch or credential load). Contacts
+#                            # (Settings › Network › Contacts, over the mesh endpoint) work either way; all need agent.communication.
 #   listen: 127.0.0.1:7780   # SDK HTTP listener; loopback only, restart to change
 #   public_url: null         # HTTPS base an existing reverse proxy publishes for exports. WARNING: without it the
 #                            # listener is plain HTTP for loopback development only; never forward that port to a network.
+#   mdns_types: [_a2a._tcp, _agent._tcp, _lad-a2a._tcp]   # browsed while an Add contact window is open; the first is advertised
+#   contact_window_secs: 600 # how long an Add contact window (and its invite ticket) stays open
+#   contact_cap: read_only   # a new contact's risk cap: read_only | mutating
 
 tools:
   policy:
@@ -2009,9 +2013,10 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(roster::RosterPlugin),
         Box::new(tasks::TasksPlugin),
         Box::new(sandbox::SandboxPlugin),
-        // Off unless `a2a.enabled: true`: then it registers its actor and
-        // finishes in the background once `agent` and `secrets` answer, so
-        // its place in this list carries no ordering promise (50 §11 row 3).
+        // Always registers its actor (183 W-26: contacts need it; `a2a.enabled`
+        // gates the HTTP listener) and finishes in the background once `agent`
+        // and `secrets` answer, so its place in this list carries no ordering
+        // promise (50 §11 row 3).
         Box::new(a2a::A2aPlugin),
         Box::new(update::UpdatePlugin),
         Box::new(voice::VoicePlugin),

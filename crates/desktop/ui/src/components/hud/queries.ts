@@ -12,6 +12,7 @@ import type { Answer } from '@/rpc/bindings/Answer'
 import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
 import type { AskId } from '@/rpc/bindings/AskId'
 import type { Priority } from '@/rpc/bindings/Priority'
+import type { FirstContact } from '@/rpc/bindings/FirstContact'
 import type { WireEvent } from '@/rpc/events'
 import { on } from '@/store/sessions'
 import { HANDOFFS_KEY } from '@/store/sandboxes'
@@ -237,5 +238,9 @@ export function useAttentionActions() {
     unpause: useAction((name: string) => api.agent_pause(name, false), { keys }),
     /** 79 §6.6: Done / Cancel on a hand-off card; the pop-out's banner and the row's chip read the same list. */
     handoff: useAction(({ id, outcome }: { id: string; outcome: 'done' | 'cancelled' }) => api.handoff_resolve(id, outcome), { keys: [ATTENTION_KEY, HANDOFFS_KEY] }),
+    /** 183 §7.6: a `contact_first` item's Allow once (`ask`) · Always (`allow`) · Block (`block`). */
+    contactFirst: useAction(({ contact, exp, answer }: { contact: string; exp: string; answer: FirstContact }) => api.contact_first_answer(contact, exp, answer), {
+      keys: [ATTENTION_KEY, queryKeys.contacts],
+    }),
   }
 }

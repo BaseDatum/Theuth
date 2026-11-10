@@ -39,6 +39,36 @@ use secrets::Vault;
 /// Stream ALPN: mesh control — pairing handshake, presence, peer-set exchange.
 /// Not in the contract's five: gossip owns `ALPN_GOSSIP` end to end.
 pub const ALPN_MESH: &str = "theuth/mesh/1";
+/// 183 §7.2 (W-21): A2A between contacts (separate meshes). Not a stream ALPN: its own
+/// handler ([`A2aGate`]) refuses family peers, then asks the installed [`ContactAlpn`] (the
+/// a2a plugin) whether the remote is a live contact or a stranger inside an open window.
+pub const ALPN_A2A: &str = "theuth/a2a/1";
+/// Live inbound `theuth/a2a/1` connections of one remote id.
+const A2A_CONNS_MAX: usize = 4;
+/// Concurrent `theuth/a2a/1` streams of one remote id (all its connections together).
+const A2A_STREAMS_MAX: usize = 16;
+/// Direct addresses remembered for one contact.
+const A2A_ADDRS_MAX: usize = 8;
+
+/// 183 §7.2: what the a2a plugin plugs into `theuth/a2a/1`. Without one every connection
+/// is refused.
+pub trait ContactAlpn: Send + Sync + 'static {
+    /// Admit a connection (and, again, each stream) from `remote` (endpoint id text): a
+    /// live contact, or a stranger while an Add contact window is open.
+    fn admit(&self, remote: &str) -> bool;
+    /// Serve one bidirectional stream of an admitted `remote`.
+    fn stream(
+        &self,
+        remote: String,
+        stream: Box<dyn ByteStream>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+    /// 183 §7.2: the contact's last known direct addresses (from its last live connection,
+    /// kept in `peers.yaml`), dialled beside any hints the caller has: a LAN-only pair is
+    /// reachable after a restart without discovery or a relay.
+    fn hints(&self, _remote: &str) -> Vec<std::net::SocketAddr> {
+        Vec::new()
+    }
+}
 
 /// `mesh.relay` value meaning n0's public relays.
 pub const RELAY_PUBLIC: &str = "public";
@@ -446,6 +476,13 @@ pub struct Net {
     pub(crate) keyring: crate::keys::State,
     /// 183 §6.8: the Nearby window, its sightings and the pairing ceremonies.
     pub(crate) nearby: crate::nearby::State,
+    /// 183 §7.2: the a2a plugin's `theuth/a2a/1` handler, once installed.
+    contacts: std::sync::OnceLock<Arc<dyn ContactAlpn>>,
+    /// 183 §7.2: `theuth/a2a/1` connections by contact, both directions (dialed ones are
+    /// reused; Remove or Block closes them all).
+    a2a_conns: Mutex<HashMap<EndpointId, Vec<Connection>>>,
+    /// 183 §7.2: each remote's shared `theuth/a2a/1` stream budget.
+    a2a_stream_budgets: Mutex<HashMap<EndpointId, Arc<tokio::sync::Semaphore>>>,
     /// 184 §8.1: the docs gate's frames and what this engine advertises.
     pub(crate) docs: DocsLive,
     /// Dev only (debug builds on a loopback bind; `None` in release): the file
@@ -500,6 +537,9 @@ impl Net {
         let mut alpns: Vec<Vec<u8>> = STREAM_ALPNS.iter().map(|a| a.as_bytes().to_vec()).collect();
         alpns.push(ALPN_MESH.as_bytes().to_vec());
         alpns.push(replica::ALPN_GOSSIP.as_bytes().to_vec());
+        // 183 §7.2: always registered; [`A2aGate`] refuses everyone until the a2a plugin
+        // installs its handler, and then everyone but contacts and an open window's strangers.
+        alpns.push(ALPN_A2A.as_bytes().to_vec());
         let builder = Endpoint::builder(presets::Minimal)
             .secret_key(opts.secret)
             .alpns(alpns)
@@ -533,6 +573,7 @@ impl Net {
         let net = Arc::new_cyclic(|weak: &std::sync::Weak<Net>| {
             let mut rb = Router::builder(endpoint.clone())
                 .accept(ALPN_MESH, Control(weak.clone()))
+                .accept(ALPN_A2A, A2aGate { net: weak.clone() })
                 .accept(
                     replica::ALPN_GOSSIP,
                     Gated {
@@ -576,6 +617,9 @@ impl Net {
                 vault: std::sync::OnceLock::new(),
                 keyring: crate::keys::State::default(),
                 nearby: crate::nearby::State::new(opts.mdns),
+                contacts: std::sync::OnceLock::new(),
+                a2a_conns: Mutex::new(HashMap::new()),
+                a2a_stream_budgets: Mutex::new(HashMap::new()),
                 docs: DocsLive::default(),
                 dev_drop: dev_drop_file(opts.bind_addr),
             }
@@ -583,6 +627,8 @@ impl Net {
         if let Some(v) = opts.vault {
             net.set_vault(v);
         }
+        // 183 §7.2: an engine with contacts but no peers joins once the a2a plugin asks
+        // ([`Net::join_network`] is idempotent).
         if !net.paired_ids().is_empty() {
             net.join_network().await;
         }
@@ -774,6 +820,154 @@ impl Net {
             .collect()
     }
 
+    /// 183 §7.2: install the a2a plugin's `theuth/a2a/1` handler (the first call wins).
+    pub fn set_contacts(&self, handler: Arc<dyn ContactAlpn>) {
+        let _ = self.contacts.set(handler);
+    }
+
+    /// 183 §7.2: one bidirectional `theuth/a2a/1` stream to `eid` (a contact, or the inviter
+    /// of a ceremony), over a cached connection when one is open; `addrs` and `relay` are
+    /// dial hints (a ticket's, a sighting's). A machine of this mesh is refused: family
+    /// talks over `theuth/rpc/1`.
+    pub async fn a2a_stream(
+        &self,
+        eid: &str,
+        addrs: &[std::net::SocketAddr],
+        relay: Option<&str>,
+    ) -> anyhow::Result<Box<dyn ByteStream>> {
+        let id = EndpointId::from_str(eid).with_context(|| format!("endpoint id {eid}"))?;
+        if self.is_paired(&id) {
+            anyhow::bail!(
+                "{} is a machine of this mesh, not a contact",
+                id.fmt_short()
+            );
+        }
+        let cached = Self::lock(&self.a2a_conns)
+            .get(&id)
+            .and_then(|l| l.iter().find(|c| c.close_reason().is_none()).cloned());
+        if let Some(conn) = cached
+            && let Ok((send, recv)) = conn.open_bi().await
+        {
+            return Ok(Box::new(tokio::io::join(recv, send)));
+        }
+        let stored = self
+            .contacts
+            .get()
+            .map(|h| h.hints(eid))
+            .unwrap_or_default();
+        let mut set: std::collections::BTreeSet<TransportAddr> = addrs
+            .iter()
+            .chain(&stored)
+            .map(|a| TransportAddr::Ip(*a))
+            .collect();
+        if let Some(url) = relay.and_then(|r| RelayUrl::from_str(r).ok()) {
+            set.insert(TransportAddr::Relay(url));
+        }
+        let addr = EndpointAddr { id, addrs: set };
+        let conn = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            self.endpoint.connect(addr, ALPN_A2A.as_bytes()),
+        )
+        .await
+        .context("dial timed out")?
+        .with_context(|| format!("dial {} on {ALPN_A2A}", id.fmt_short()))?;
+        // A dialed connection is ours: it is tracked (for reuse and Remove) whatever the cap.
+        let _ = self.track_a2a(id, &conn);
+        if let Some(handler) = self.contacts.get().cloned() {
+            tokio::spawn(serve_a2a(
+                self.paired.clone(),
+                self.a2a_streams(id),
+                handler,
+                conn.clone(),
+            ));
+        }
+        let (send, recv) = conn.open_bi().await.context("open stream")?;
+        Ok(Box::new(tokio::io::join(recv, send)))
+    }
+
+    /// 183 §7.3: how the contact `eid` is reached right now (its live `theuth/a2a/1`
+    /// connections, either direction).
+    pub fn a2a_path(&self, eid: &str) -> crate::PeerPath {
+        let Ok(id) = EndpointId::from_str(eid) else {
+            return crate::PeerPath::Offline;
+        };
+        Self::lock(&self.a2a_conns)
+            .get(&id)
+            .and_then(|l| l.iter().find(|c| c.close_reason().is_none()))
+            .map_or(crate::PeerPath::Offline, |c| path_of(c).0)
+    }
+
+    /// 183 §7.2: the direct addresses `eid` answers on over its live `theuth/a2a/1`
+    /// connections (either direction; relay paths left out), to remember for the next dial.
+    pub fn a2a_direct_addrs(&self, eid: &str) -> Vec<std::net::SocketAddr> {
+        let Ok(id) = EndpointId::from_str(eid) else {
+            return Vec::new();
+        };
+        let mut out = std::collections::BTreeSet::new();
+        for c in Self::lock(&self.a2a_conns).get(&id).into_iter().flatten() {
+            if c.close_reason().is_some() {
+                continue;
+            }
+            for p in c.paths().iter() {
+                if let TransportAddr::Ip(s) = p.remote_addr() {
+                    out.insert(*s);
+                }
+            }
+        }
+        out.into_iter().take(A2A_ADDRS_MAX).collect()
+    }
+
+    /// 183 §7.4 Revocation: close every `theuth/a2a/1` connection of `eid` (Remove, Block).
+    pub fn close_a2a(&self, eid: &str) {
+        let Ok(id) = EndpointId::from_str(eid) else {
+            return;
+        };
+        for c in Self::lock(&self.a2a_conns).remove(&id).unwrap_or_default() {
+            c.close(0u32.into(), b"not a contact");
+        }
+    }
+
+    /// This engine's direct addresses and home relay, for an invite ticket.
+    pub fn a2a_reach(&self) -> (Vec<String>, Option<String>) {
+        let mut addrs = Vec::new();
+        let mut relay = None;
+        for a in self.endpoint.addr().addrs {
+            match a {
+                TransportAddr::Ip(s) => addrs.push(s.to_string()),
+                TransportAddr::Relay(u) => relay = Some(u.to_string()),
+                _ => {}
+            }
+        }
+        (addrs, relay)
+    }
+
+    /// 183 §7.0 (W-22): sign `msg` with this engine's key (the contact card's JWS).
+    pub fn sign(&self, msg: &[u8]) -> Vec<u8> {
+        self.endpoint.secret_key().sign(msg).to_bytes().to_vec()
+    }
+
+    /// Track an inbound connection; `false` when `peer` already has [`A2A_CONNS_MAX`] live
+    /// ones (a flood from one id).
+    fn track_a2a(&self, peer: EndpointId, conn: &Connection) -> bool {
+        let mut m = Self::lock(&self.a2a_conns);
+        let list = m.entry(peer).or_default();
+        list.retain(|c| c.close_reason().is_none());
+        if list.len() >= A2A_CONNS_MAX {
+            return false;
+        }
+        list.push(conn.clone());
+        true
+    }
+
+    /// `peer`'s shared `theuth/a2a/1` stream budget ([`A2A_STREAMS_MAX`]); spent budgets of
+    /// remotes no stream holds any more are dropped here.
+    fn a2a_streams(&self, peer: EndpointId) -> Arc<tokio::sync::Semaphore> {
+        let mut m = Self::lock(&self.a2a_stream_budgets);
+        m.retain(|_, s| Arc::strong_count(s) > 1);
+        m.entry(peer)
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(A2A_STREAMS_MAX)))
+            .clone()
+    }
     /// Connected right now?
     pub fn is_connected(&self, id: &EndpointId) -> bool {
         Self::lock(&self.presence)
@@ -1810,6 +2004,81 @@ impl ProtocolHandler for Control {
             return Ok(());
         };
         net.accept_control(connection).await
+    }
+}
+
+/// 183 §7.2: `theuth/a2a/1`. A family peer is refused (it uses `peer_deliver`); anyone else
+/// passes only when the a2a plugin's [`ContactAlpn::admit`] says so, rechecked per stream
+/// so a removed or blocked contact's open connection stops at its next request.
+#[derive(Debug, Clone)]
+struct A2aGate {
+    net: std::sync::Weak<Net>,
+}
+
+impl ProtocolHandler for A2aGate {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let Some(net) = self.net.upgrade() else {
+            return Ok(());
+        };
+        let peer = connection.remote_id();
+        if net.is_paired(&peer) {
+            connection.close(0u32.into(), b"family uses peer_deliver");
+            return Ok(());
+        }
+        let Some(handler) = net.contacts.get().cloned() else {
+            connection.close(0u32.into(), b"not a contact");
+            return Ok(());
+        };
+        let remote = peer.to_string();
+        if !handler.admit(&remote) {
+            connection.close(0u32.into(), b"not a contact");
+            return Ok(());
+        }
+        if !net.track_a2a(peer, &connection) {
+            connection.close(0u32.into(), b"too many connections");
+            return Ok(());
+        }
+        serve_a2a(
+            net.paired.clone(),
+            net.a2a_streams(peer),
+            handler,
+            connection,
+        )
+        .await;
+        Ok(())
+    }
+}
+
+/// 183 §7.2: serve a contact's requests on `connection`, whichever side dialed it: each
+/// stream is re-admitted, so a removed or blocked contact stops at its next request. The
+/// dialer serves too, because either side reuses a live connection (`Net::a2a_stream`).
+/// At most [`A2A_STREAMS_MAX`] streams of one remote run at once (`streams` is shared by
+/// all its connections); a stream beyond that is dropped unanswered.
+async fn serve_a2a(
+    paired: Arc<RwLock<HashSet<EndpointId>>>,
+    streams: Arc<tokio::sync::Semaphore>,
+    handler: Arc<dyn ContactAlpn>,
+    connection: Connection,
+) {
+    let peer = connection.remote_id();
+    let remote = peer.to_string();
+    while let Ok((send, recv)) = connection.accept_bi().await {
+        let family = paired
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&peer);
+        if family || !handler.admit(&remote) {
+            connection.close(0u32.into(), b"not a contact");
+            break;
+        }
+        let Ok(permit) = streams.clone().try_acquire_owned() else {
+            continue;
+        };
+        let run = handler.stream(remote.clone(), Box::new(tokio::io::join(recv, send)));
+        tokio::spawn(async move {
+            run.await;
+            drop(permit);
+        });
     }
 }
 

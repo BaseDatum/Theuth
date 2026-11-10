@@ -273,7 +273,7 @@ pub struct Agents {
     child_errors: HashMap<(SessionId, TurnId), String>,
     /// Children spawned with a `tools` ceiling ([`SpawnChild::cap`]), for
     /// the board row; the registry enforces it ([`SetCap`]).
-    caps: HashMap<SessionId, Risk>,
+    pub(crate) caps: HashMap<SessionId, Risk>,
     /// Roots a theuth on another engine opened over the node conn (67 §8):
     /// the parent's session id and engine id from `session/new` `_meta`.
     /// `parent` for such a root is that session, reached by [`PeerUplink`].
@@ -342,7 +342,7 @@ pub struct Agents {
     /// Who a session speaks as when it is not theuth (70 DESK-PROTOCOL): the
     /// roster installs it with [`InstallIdentitySource`]. `None`: every
     /// session is theuth's.
-    identity: Option<Arc<dyn IdentitySource>>,
+    pub(crate) identity: Option<Arc<dyn IdentitySource>>,
     /// 125 §4.2: ids of advisor sessions seen by this process — never a
     /// peer, told nothing about peers, speaking as the advisor.
     pub(crate) advisors: HashSet<SessionId>,
@@ -732,6 +732,25 @@ pub struct PeerContext {
 pub trait IdentitySource: Send + Sync {
     /// The block for the session `lineage[0]`, or `None` when it is theuth's.
     async fn identity(&self, lineage: &[SessionId]) -> Option<String>;
+
+    /// 183 §7.6, W-25: the exported agent `agent` (its bare roster name) as a contact's
+    /// inbox runs it. `None`: no such agent (the inbox keeps theuth's persona).
+    async fn inbox(&self, _agent: &str) -> Option<InboxPersona> {
+        None
+    }
+}
+
+/// 183 §7.6: what a contact's inbox takes from the exported agent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InboxPersona {
+    /// The identity block (persona and charter; never the desk's journal or manual).
+    /// `None`: theuth's own persona.
+    pub identity: Option<String>,
+    /// The agent's configured model; `None` = the default.
+    pub model: Option<String>,
+    /// The agent file's `tools:` ceiling; the inbox runs under the stricter of it and
+    /// the contact's cap.
+    pub tools: Option<Risk>,
 }
 
 /// `ask` → `()`: install the [`IdentitySource`]; installing again replaces it.
@@ -762,15 +781,39 @@ impl Message<Identity> for Agents {
 }
 
 impl Agents {
+    /// 183 Z3-R3: `session`, or an ancestor, is a contact's inbox.
+    pub(crate) fn under_inbox(&self, session: SessionId) -> bool {
+        let mut cur = session;
+        for _ in 0..64 {
+            if self.network.is_inbox(cur) {
+                return true;
+            }
+            match self.sessions.get(&cur).and_then(|l| l.parent.as_ref()) {
+                Some((parent, _)) => cur = *parent,
+                None => return false,
+            }
+        }
+        false
+    }
+
     /// [`IdentitySource::identity`] over `session`'s lineage; `None` without a
     /// source or for a session of theuth's. 125 §5.1: an advisor session
     /// speaks as the advisor, whatever the roster says.
-    async fn identity_of(&self, session: SessionId) -> Option<String> {
+    pub(crate) async fn identity_of(&self, session: SessionId) -> Option<String> {
         if self.advisors.contains(&session) {
             return Some(crate::advisor::identity::identity(
                 &self.rt.data_dir,
                 self.advisor_cfg.max_notes_per_update,
             ));
+        }
+        // 183 §7.6: a contact's inbox speaks as the exported agent — also after a restart,
+        // before the contact writes again and before the roster's source joins (Z3-R3: the
+        // persona of its last admission is kept with the inbox).
+        if let Some(persona) = self.network.inbox_persona(session) {
+            return persona.identity.clone();
+        }
+        if let Ok(Some(identity)) = self.store.a2a_inbox_identity(session).await {
+            return identity;
         }
         let source = self.identity.as_ref()?;
         let mut lineage = vec![session];
@@ -877,7 +920,7 @@ impl Agents {
     /// harness (design doc 06 §3.2, 75 §4); a row whose `agent` column is set resumes on one.
     /// `pick` = `(model, effort)` chosen by the spawning parent for a new child
     /// (01 §2.4); `None` entries fall back to the subagent config.
-    async fn session(
+    pub(crate) async fn session(
         &mut self,
         id: Option<SessionId>,
         parent: Option<(SessionId, &str)>,
@@ -1052,6 +1095,12 @@ impl Agents {
         if let Err(e) = self.endless.attach(id, attached).await {
             tracing::warn!(session = %id, "endless attach: {e:#}");
         }
+        // 183 §7.6, Z3-R2: a contact's inbox is capped and default-deny before its actor
+        // exists (after a restart, or a child result waking it), failing closed: limits not
+        // installed, no actor.
+        self.reinstall_contact_limits(id)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
         // Unbounded (R2.6): `route` awaits `tell_input` inside a supervisor
         // handler; a full bounded mailbox here would stall the engine.
         let session = Session::new(
@@ -1110,7 +1159,7 @@ impl Agents {
     /// checks use stored topology, so a lazily resumed or freshly created
     /// row never routes with a dangling link). Idempotent; a row that cannot
     /// be read stays unknown and every route for it fails closed.
-    async fn mirror(&mut self, id: SessionId) {
+    pub(crate) async fn mirror(&mut self, id: SessionId) {
         let root = self.communication.0.read().root_of(id);
         match root {
             Err(_) => {
@@ -2204,6 +2253,7 @@ impl Agents {
             self.ledger.release(to, ticket);
             return Err("canceled: the request scope is closed".into());
         }
+        let contact = self.network_contact_frame(&record);
         let input = PeerInput {
             record,
             generation,
@@ -2211,6 +2261,7 @@ impl Agents {
             request_scope: scope,
             isolated,
             reply_expected,
+            contact,
         };
         // The recipient's brief waits for a permit (01 §2.6): held, so the
         // brief stays its first input and no bounded turn races the permit.
@@ -4960,6 +5011,22 @@ impl Message<SpawnChild> for Agents {
     type Reply = Result<(String, SessionId, Option<String>), String>;
 
     async fn handle(&mut self, m: SpawnChild, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // 183 Z3-R4: a contact session spawns nothing, native or external, whatever its
+        // allowlist says: a child is not a contact session itself (a turn's allowlist is the
+        // turn's own session's), so it would carry the owner's tools back to the contact. The
+        // supervisor's own record answers for inboxes (a registry that cannot answer does not
+        // open the door); the registry for a contact turn in the spawner's session.
+        let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR).unwrap_or_default();
+        let turn_contact = match &registry {
+            Some(reg) => reg
+                .ask(::tools::ContactScoped(m.parent))
+                .await
+                .unwrap_or(false),
+            None => false,
+        };
+        if turn_contact || self.under_inbox(m.parent) {
+            return Err("subagents are not available to a contact".into());
+        }
         let sub = &self.cfg.subagents;
         // 51 §4.1: nothing of a private tree leaves the process.
         if m.agent.is_some() && self.private_member.contains_key(&m.parent) {
@@ -4992,6 +5059,20 @@ impl Message<SpawnChild> for Agents {
         };
         let node = m.agent.is_some() && self.nodes.read().is_ok_and(|n| n.contains_key(engine));
         let external = harness.is_some() || (m.agent.is_some() && !node);
+        // 183 Z3-R2 (M4): the spawner's ceiling right now — its own, an ancestor's — becomes a
+        // native child's own cap (it never outlives it uncapped).
+        let ceiling = match &registry {
+            Some(reg) => reg
+                .ask(::tools::EffectiveCap(m.parent))
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        let m = SpawnChild {
+            cap: child_cap(m.cap, ceiling, external),
+            ..m
+        };
         if let Some(model) = &m.model
             && m.agent.is_none()
         {
@@ -5707,6 +5788,7 @@ impl Message<ForwardOutcome> for Agents {
     }
 }
 
+// 183 P3: E — `ContactDeliver` (W-39/W-40) queues like this intake, then opens a `SetTurnCap` turn.
 impl Message<PeerDeliver> for Agents {
     type Reply = Result<PeerReceipt, PeerDeliverError>;
 
@@ -5814,14 +5896,14 @@ impl Agents {
 
     /// `(owner engine id)` when `session`'s replicated row is owned by
     /// another engine (69 P); `None` for ours, unowned or unknown — today's
-    /// local path.
-    async fn remote_owner(&self, session: SessionId) -> Option<String> {
+    /// local path. 183 W-40: also where a contact's message for an exported chat goes.
+    pub(crate) async fn remote_owner(&self, session: SessionId) -> Option<String> {
         let row = self.store.session(session).await.ok().flatten()?;
         (!row.here && !row.owner.is_empty()).then_some(row.owner)
     }
 
     /// The mesh transport, fetched once from the replica actor (tests inject it).
-    async fn transport(&mut self) -> Option<Arc<dyn replica::Transport>> {
+    pub(crate) async fn transport(&mut self) -> Option<Arc<dyn replica::Transport>> {
         if self.transport.is_none() {
             self.transport = match replica::actor() {
                 Some(r) => r.ask(replica::GetTransport).await.ok().flatten(),
@@ -5985,11 +6067,9 @@ impl Agents {
         let to = match self.resolve(m.from, &m.to).await? {
             Target::Uplink => return self.uplink(&m, body).await.map(Step::Done),
             Target::Remote(alias) => {
+                let contact = self.network.is_contact(&alias);
                 let generation = self
-                    .communication
-                    .0
-                    .write()
-                    .remote(m.from)
+                    .remote_generation(m.from, contact)
                     .map_err(|e| e.to_string())?;
                 if m.admitted.is_cancelled() {
                     return Err(revoked());
@@ -6263,22 +6343,26 @@ impl Message<mesh::MeshEvent> for Agents {
 impl Agents {
     /// 183 §6.1 (D3, D6): with `agent.communication` absent (source `default` or `mesh`) the
     /// ceiling is on exactly while this engine has a paired machine (`paired`, `None` = no
-    /// mesh yet). An explicit value (`config`, `env`, `command`) is never touched.
+    /// mesh yet) or, Z3-R2, a contact (a lone engine with contacts can message them). An
+    /// explicit value (`config`, `env`, `command`) is never touched.
     pub(crate) async fn mesh_default(&mut self, paired: Option<usize>) {
+        let paired = paired.or(self.network.last_paired());
         let Some(n) = paired else { return };
+        self.network.set_last_paired(n);
         let Ok(s) = self.communication.0.read().state(None) else {
             return;
         };
-        let on = n > 0;
+        let contacts = self.network.contact_count();
+        let on = n > 0 || contacts > 0;
         if !matches!(s.source.as_str(), "default" | "mesh") || s.global == on {
             return;
         }
         tracing::info!(
-            "agent.communication unset: {} ({n} paired machine(s))",
+            "agent.communication unset: {} ({n} paired machine(s), {contacts} contact(s))",
             if on {
                 "on in this mesh"
             } else {
-                "off, no paired machine"
+                "off, no paired machine or contact"
             }
         );
         self.revoking(|p| p.set_global(on, if on { "mesh" } else { "default" }))
@@ -6383,6 +6467,7 @@ impl Message<SetPeerScope> for Agents {
     }
 }
 
+// 183 P3: E — contacts list as `peer:` rows, their exports as tags (§7.7).
 impl Message<ListPeers> for Agents {
     type Reply = kameo::reply::DelegatedReply<Result<PeerPage, String>>;
 
@@ -7006,7 +7091,7 @@ impl Message<NewRootSession> for Agents {
 impl Agents {
     /// A durable root: created, `cwd` recorded, scope declared (50 §2.1).
     /// `model`/`effort` are the root's own (`CreateSessionOptions`); `None` = the default.
-    async fn new_root(
+    pub(crate) async fn new_root(
         &mut self,
         cwd: Option<&Path>,
         scope: PeerScope,
@@ -7077,7 +7162,7 @@ impl Agents {
     /// Remember `cap` for the board row and put it on the registry before the
     /// session's first `ListTools`; `cap_for` takes the minimum down the tree,
     /// so a capped session cannot spawn a looser one.
-    async fn install_cap(&mut self, id: SessionId, cap: Risk) {
+    pub(crate) async fn install_cap(&mut self, id: SessionId, cap: Risk) {
         self.caps.insert(id, cap);
         if let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
             let _ = reg
@@ -7087,6 +7172,33 @@ impl Agents {
                 })
                 .await;
         }
+    }
+
+    /// A title set by the harness (a contact's inbox, 183 §7.6) stands: the session's first
+    /// turn does not seed one from its input, as after a rename.
+    pub(crate) async fn mark_titled(&self, id: SessionId) {
+        if let Some(Live {
+            actor: LiveActor::Native(a),
+            ..
+        }) = self.sessions.get(&id)
+        {
+            let _ = a.tell(crate::loop_::Titled).await;
+        }
+    }
+}
+
+/// 183 Z3-R2 (M4): the cap a child spawned now gets as its own: for a native child the
+/// stricter of what the spawner asked for and the spawner's ceiling at that moment (its own,
+/// an ancestor's), so it never outlives it uncapped. An external harness keeps the cap it
+/// was asked with (an owner desk's ceiling rides in its brief; a contact session spawns
+/// nothing at all, Z3-R4).
+fn child_cap(requested: Option<Risk>, ceiling: Option<Risk>, external: bool) -> Option<Risk> {
+    if external {
+        return requested;
+    }
+    match (requested, ceiling) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
     }
 }
 
@@ -12320,6 +12432,16 @@ pub async fn spawn_test_agents(
     Ok(agents)
 }
 
+/// 183 (`test-support`): one engine's live [`Agents`] with agent communication on and no
+/// keyed provider, spawned but not registered, so a test can run two engines in one process
+/// (the a2a contact tests).
+#[cfg(feature = "test-support")]
+pub async fn spawn_engine_agents(rt: Runtime) -> ActorRef<Agents> {
+    let mut a = bare_agents(rt, None, true).await;
+    a.configured = Arc::new(|_| false);
+    Agents::spawn(a)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -13208,6 +13330,30 @@ pub(crate) mod tests {
         });
         std::fs::write(dir.join("models.json"), user.to_string()).unwrap();
         Catalog::load(dir)
+    }
+
+    /// 183 Z3-R2 (M4): a native child gets the stricter of its requested cap and the
+    /// spawner's ceiling as its own. Z3-R3: an owner desk with a `read_only` ceiling still
+    /// spawns an external worker with the cap it asked for (a contact session spawns nothing:
+    /// `a_contact_session_spawns_nothing`).
+    #[test]
+    fn a_native_child_takes_the_spawners_ceiling_an_external_one_its_request() {
+        use Risk::{Destructive, Mutating, ReadOnly};
+        assert_eq!(child_cap(None, Some(ReadOnly), false), Some(ReadOnly));
+        assert_eq!(
+            child_cap(Some(Destructive), Some(ReadOnly), false),
+            Some(ReadOnly)
+        );
+        assert_eq!(
+            child_cap(Some(ReadOnly), Some(Mutating), false),
+            Some(ReadOnly)
+        );
+        assert_eq!(child_cap(None, Some(ReadOnly), true), None);
+        assert_eq!(
+            child_cap(Some(Mutating), Some(ReadOnly), true),
+            Some(Mutating)
+        );
+        assert_eq!(child_cap(None, None, true), None);
     }
 
     /// 52 §3.1: the fallback must be an exact, image-capable catalog entry —
@@ -15956,6 +16102,287 @@ pub(crate) mod tests {
         });
     }
 
+    /// 183 W-40: the `theuth/rpc/1` side of `contact_deliver` for one engine, as
+    /// `api::contact_deliver` serves it: the dialer is the forwarder; a moved chat is
+    /// `-32013`.
+    fn serve_contact_deliver(
+        t: Arc<peer_mesh::loopback::Loop>,
+        agents: Arc<tokio::sync::Mutex<Agents>>,
+    ) {
+        use replica::Transport;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        tokio::spawn(async move {
+            while let Ok((peer, stream)) = t.accept(replica::ALPN_RPC).await {
+                let agents = agents.clone();
+                tokio::spawn(async move {
+                    let (read, mut write) = tokio::io::split(stream);
+                    let mut line = String::new();
+                    BufReader::new(read).read_line(&mut line).await.unwrap();
+                    let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(req["method"], peer_mesh::CONTACT_METHOD);
+                    let envelope: crate::communication::ContactEnvelope =
+                        serde_json::from_value(req["params"][0].clone()).unwrap();
+                    let rp = match agents
+                        .lock()
+                        .await
+                        .contact_deliver(envelope, Some(peer.0))
+                        .await
+                    {
+                        Ok(r) => serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": r}),
+                        Err(e) => {
+                            let code = if e.starts_with(network::CONTACT_NOT_OWNER) {
+                                peer_mesh::NOT_OWNER
+                            } else {
+                                -32000
+                            };
+                            serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": code, "message": e}})
+                        }
+                    };
+                    write.write_all(format!("{rp}\n").as_bytes()).await.unwrap();
+                    write.flush().await.unwrap();
+                });
+            }
+        });
+    }
+
+    /// 183 W-39/W-40, §13 rows 49–54: bob's message for an exported chat that engine `b`
+    /// owns is admitted on `a` (which holds bob and the A2A task), forwarded to `b` as
+    /// `contact_deliver`, queued there for its own turn at bob's cap (clamped to
+    /// `mutating`); that turn's answer, and only it, goes back and completes bob's task.
+    /// An archived chat is paused, a moved one is not-the-owner, a deleted one is unknown,
+    /// and only the holder may forward for its contact.
+    #[tokio::test]
+    async fn an_exported_chat_elsewhere_runs_one_capped_turn_and_answers_only_it() {
+        use crate::store::communication::{A2aScope, A2aTaskStatus};
+        let TwoEngines {
+            _scratch,
+            a,
+            b,
+            b_root: chat,
+            net,
+            ..
+        } = two_engines().await;
+        let (a, b) = (
+            Arc::new(tokio::sync::Mutex::new(a)),
+            Arc::new(tokio::sync::Mutex::new(b)),
+        );
+        serve_contact_deliver(net[0].clone(), a.clone());
+        serve_contact_deliver(net[1].clone(), b.clone());
+        let binding = a
+            .lock()
+            .await
+            .store
+            .bind_peer("bob", "iroh:bob-endpoint")
+            .await
+            .unwrap();
+        let origin = crate::communication::ContactOrigin {
+            contact: "bob".into(),
+            machine: "Bob's MacBook".into(),
+            export: "ops-chat".into(),
+            cap: Risk::Destructive,
+            holder: "a".into(),
+            tools: Vec::new(),
+        };
+        let p = network::A2aPrincipal {
+            binding: binding.id,
+            export: "ops-chat".into(),
+            session: chat,
+            route: CancellationToken::new(),
+            contact: Some(origin.clone()),
+            ask_first: false,
+        };
+        let mut m = a2a_types::Message::new(
+            a2a_types::Role::User,
+            vec![a2a_types::Part::text("did the build pass?")],
+        );
+        m.message_id = "m-1".into();
+        let req = a2a_types::SendMessageRequest {
+            message: m,
+            configuration: None,
+            metadata: None,
+            tenant: None,
+        };
+        let task = a.lock().await.admit_send(&p, &req).await.unwrap().task;
+        assert_eq!(task.status, A2aTaskStatus::Working);
+
+        // On b: queued for its own turn, capped at `mutating` at most.
+        let env = {
+            let mut found = None;
+            for _ in 0..100 {
+                if let Some(e) = b.lock().await.network.contact_replies_for_test(chat) {
+                    found = Some(e);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            found.expect("b queued bob's message")
+        };
+        assert_eq!(
+            env.origin.cap,
+            Risk::Mutating,
+            "the owner never raises a cap"
+        );
+        assert_eq!(env.text, "did the build pass?");
+        let record = b
+            .lock()
+            .await
+            .store
+            .peer_record(chat, env.id)
+            .await
+            .unwrap()
+            .unwrap();
+        match b.lock().await.network_contact_frame(&record) {
+            Some(crate::loop_::ContactFrame::Chat { origin, scope }) => {
+                assert_eq!(origin.cap, Risk::Mutating);
+                assert_eq!(scope, Some(env.id), "its own turn, never shared");
+            }
+            other => panic!("a chat frame, got {other:?}"),
+        }
+
+        // b's turn ends: its text, and nothing else, completes bob's task on a.
+        b.lock()
+            .await
+            .network_turn_finished(&PeerTurnFinished {
+                session: chat,
+                turn: TurnId::new(),
+                scope: Some(env.id),
+                text: "yes, green".into(),
+                stop_reason: "end_turn".into(),
+            })
+            .await;
+        let scope = A2aScope {
+            principal: &task.principal,
+            export: "ops-chat",
+        };
+        let done = {
+            let mut done = None;
+            for _ in 0..100 {
+                let t = a
+                    .lock()
+                    .await
+                    .store
+                    .a2a_task(scope, &task.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if t.status.is_terminal() {
+                    done = Some(t);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            done.expect("bob's task settled")
+        };
+        assert_eq!(done.status, A2aTaskStatus::Completed);
+        let snap: a2a_types::Task = serde_json::from_value(done.snapshot).unwrap();
+        let texts: Vec<&str> = snap
+            .artifacts
+            .iter()
+            .flatten()
+            .flat_map(|a| a.parts.iter().filter_map(a2a_types::Part::as_text))
+            .collect();
+        assert_eq!(texts, ["yes, green"]);
+
+        // Z3-R3: b restarts mid-turn (its envelope is gone); the resumed turn still answers.
+        let mut m = a2a_types::Message::new(
+            a2a_types::Role::User,
+            vec![a2a_types::Part::text("and now?")],
+        );
+        m.message_id = "m-2".into();
+        let req = a2a_types::SendMessageRequest {
+            message: m,
+            configuration: None,
+            metadata: None,
+            tenant: None,
+        };
+        let task = a.lock().await.admit_send(&p, &req).await.unwrap().task;
+        let env = {
+            let mut found = None;
+            for _ in 0..100 {
+                if let Some(e) = b.lock().await.network.contact_replies_for_test(chat) {
+                    found = Some(e);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            found.expect("b queued bob's second message")
+        };
+        b.lock().await.network.forget_contact_replies_for_test();
+        b.lock()
+            .await
+            .network_turn_finished(&PeerTurnFinished {
+                session: chat,
+                turn: TurnId::new(),
+                scope: Some(env.id),
+                text: "still green".into(),
+                stop_reason: "end_turn".into(),
+            })
+            .await;
+        let done = {
+            let mut done = None;
+            for _ in 0..100 {
+                let t = a
+                    .lock()
+                    .await
+                    .store
+                    .a2a_task(scope, &task.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if t.status.is_terminal() {
+                    done = Some(t);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            done.expect("bob's second task settled")
+        };
+        assert_eq!(done.status, A2aTaskStatus::Completed);
+        assert!(done.snapshot.to_string().contains("still green"));
+
+        // Only the holder forwards for its contact.
+        let again = |id: &str| crate::communication::ContactEnvelope {
+            id: Uuid::now_v7(),
+            to: chat,
+            text: "again".into(),
+            origin: origin.clone(),
+            reply_to: None,
+            request_id: Some(id.into()),
+        };
+        let e = b
+            .lock()
+            .await
+            .contact_deliver(again("r-1"), Some("c".into()))
+            .await
+            .unwrap_err();
+        assert!(e.contains("does not hold this contact"), "{e}");
+        // a does not own the chat: a forward that lands there is not-the-owner (moved).
+        let e = a
+            .lock()
+            .await
+            .contact_deliver(again("r-2"), Some("a".into()))
+            .await
+            .unwrap_err();
+        assert!(e.starts_with(network::CONTACT_NOT_OWNER), "{e}");
+        // Archived: paused.
+        b.lock().await.store.set_archived(chat, true).await.unwrap();
+        let e = b
+            .lock()
+            .await
+            .contact_deliver(again("r-3"), Some("a".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(e, "export paused: chat archived");
+        // Deleted: unknown (the a2a plugin drops the export on it).
+        let gone = b
+            .lock()
+            .await
+            .chat_paused(SessionId::new())
+            .await
+            .unwrap_err();
+        assert!(gone.starts_with(network::UNKNOWN_SESSION), "{gone}");
+    }
+
     fn deliver(
         from: SessionId,
         to: SessionId,
@@ -16224,6 +16651,24 @@ pub(crate) mod tests {
             a.mesh_default(Some(2)).await;
             assert_eq!(state(&a), (false, source.into()), "explicit false wins");
         }
+    }
+
+    /// 183 Z3-R2: with `agent.communication` absent, a lone engine (no paired machine) with
+    /// a contact has messaging on; it goes off with its last contact.
+    #[tokio::test]
+    async fn absent_communication_counts_contacts_on_a_lone_engine() {
+        let scratch = crate::TestDir::new("183mdc");
+        let mut a = agents_on(scratch.0.clone(), None, false).await;
+        a.communication.0.write().set_global(false, "default");
+        let on = |a: &Agents| a.communication.0.read().state(None).unwrap().global;
+        a.mesh_default(Some(0)).await;
+        assert!(!on(&a), "no machine, no contact: off");
+        a.network.insert_contact_for_test("bob");
+        a.mesh_default(None).await;
+        assert!(on(&a), "a contact turns the default on");
+        a.network.clear_peers_for_test();
+        a.mesh_default(None).await;
+        assert!(!on(&a), "the last contact went: off");
     }
 
     /// 183 §6.2 (W-14), §11.4: `mesh.messaging_off` refuses both ways, naming the machines:

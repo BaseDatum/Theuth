@@ -402,7 +402,7 @@ impl Tool for SendMessageTool {
     fn description(&self) -> String {
         format!(
             "Send one message to one or more peers. `to`: one canonical address from `discover_peers()` (python; `session:<uuid>`, \
-             `peer:<name>`), `parent` if you are a subagent, or one of your subagents by name — or a list of up to \
+             `peer:<name>`; a contact's `peer:<name>/<export>` reaches that one of its exports), `parent` if you are a subagent, or one of your subagents by name — or a list of up to \
              {SEND_MAX_RECIPIENTS} such addresses (every address must resolve or nothing is sent). Returns one receipt \
              per recipient (`structured.receipts`, always a list): `accepted` means committed to their intake, not read. \
              With await_reply=true you block until each answers with reply_to set to its message's id (or one shared \

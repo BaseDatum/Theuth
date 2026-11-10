@@ -4,6 +4,8 @@ import { Copy, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { Peers } from '@/components/chat/Peers'
 import { Dot, Empty, Row, Section, errorText, refreshInfo, useAction } from '@/components/settings/shared'
+import { ContactAccess } from '@/components/settings/Contacts'
+import { CAP, fingerprint, useContacts } from '@/lib/contacts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -21,6 +23,7 @@ import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { PeerScope } from '@/rpc/bindings/PeerScope'
 import { useSessions } from '@/store/sessions'
+import { hasLocal } from '@/link/engines'
 
 const SCOPES: readonly [PeerScope, string][] = [
   ['isolated', 'Isolated — reachable only inside its own tree'],
@@ -244,13 +247,16 @@ export function Communication({ session, focus }: { session: string | null; focu
 
       <Network state={s} />
 
+      {hasLocal() && <ContactAccess />}
+
       {session && <Peers session={session} focus={focus} />}
     </>
   )
 }
 
-/** 50 §6.1/§10: `a2a_status` with peers, exports, the error and `reload_a2a`. */
-function Network({ state }: { state: CommunicationState | undefined }) {
+/** 50 §6.1/§10: `a2a_status` with peers, exports, the error and `reload_a2a`. 183 §7: contacts (`contact_list`) are
+ * shown as built — theuth/a2a/1 over iroh, pinned, one cap per contact — never as HTTP peers with roots. */
+export function Network({ state }: { state: CommunicationState | undefined }) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -263,6 +269,8 @@ function Network({ state }: { state: CommunicationState | undefined }) {
     },
   })
   const a = status.data
+  const contacts = useContacts(hasLocal()).data ?? []
+  const contactNames = new Set(contacts.map((c) => c.name))
   return (
     <Section
       title="Network (A2A)"
@@ -301,7 +309,7 @@ function Network({ state }: { state: CommunicationState | undefined }) {
             }
             description={
               !a.enabled
-                ? 'a2a.enabled is false in config.yaml: no listener, client or credential is loaded. Enabling it needs a restart.'
+                ? 'a2a.enabled is false in config.yaml: no HTTP listener, client or credential is loaded (enabling it needs a restart). Contacts do not need it: they reach this machine over theuth/a2a/1.'
                 : a.listening
                   ? `Bound to ${a.address ?? 'the configured address'}${a.public_url ? `, published at ${a.public_url}` : ''}.`
                   : state && !state.global
@@ -313,29 +321,56 @@ function Network({ state }: { state: CommunicationState | undefined }) {
             <Row label="Problem" description={<span className="text-destructive">{a.error}</span>} />
           )}
           {a.enabled && a.peers.length === 0 && a.exports.length === 0 && (
-            <Empty>No peers or exports in a2a/peers.yaml. Edit the file, then reload.</Empty>
+            <Row label="No peers or exports yet" description="Contacts and what they may reach are managed in Settings › Network › Contacts.">
+              <Button variant="outline" size="sm" className={TOUCH} onClick={() => void navigate({ to: '/settings/$tab', params: { tab: 'network' }, search: {} })}>
+                Contacts…
+              </Button>
+            </Row>
           )}
-          {a.peers.map((p) => (
+          {contacts.map((c) => (
             <Row
-              key={p.name}
+              key={`contact:${c.name}`}
               label={
                 <span className="flex flex-wrap items-center gap-2">
-                  <Dot on={p.binding !== null} />
-                  {p.name}
-                  {p.card && <span className="text-fg-secondary">({p.card})</span>}
-                  {p.outbound && <Badge variant="outline">outbound</Badge>}
-                  {p.inbound && <Badge variant="outline">inbound</Badge>}
+                  <Dot on={c.path !== 'offline' && !c.blocked} />
+                  {c.name}
+                  <Badge variant="outline">contact</Badge>
+                  {c.blocked && <Badge variant="outline">blocked</Badge>}
                 </span>
               }
-              description={
-                <>
-                  {p.sessions.length} local root{p.sessions.length === 1 ? '' : 's'} may send
-                  {p.exports.length > 0 && ` · may call ${p.exports.join(', ')}`}
-                  {p.error && <span className="block text-destructive">{p.error}</span>}
-                </>
-              }
+              description={[
+                c.machine,
+                `theuth/a2a/1 over iroh · pinned ${c.fingerprint || fingerprint(c.endpoint)}`,
+                CAP[c.cap],
+                c.exports.length > 0 ? `may reach ${c.exports.join(', ')}` : 'reaches nothing yet',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             />
           ))}
+          {a.peers
+            .filter((p) => !contactNames.has(p.name))
+            .map((p) => (
+              <Row
+                key={p.name}
+                label={
+                  <span className="flex flex-wrap items-center gap-2">
+                    <Dot on={p.binding !== null} />
+                    {p.name}
+                    {p.card && <span className="text-fg-secondary">({p.card})</span>}
+                    {p.outbound && <Badge variant="outline">outbound</Badge>}
+                    {p.inbound && <Badge variant="outline">inbound</Badge>}
+                  </span>
+                }
+                description={
+                  <>
+                    {p.sessions.length} local root{p.sessions.length === 1 ? '' : 's'} may send
+                    {p.exports.length > 0 && ` · may call ${p.exports.join(', ')}`}
+                    {p.error && <span className="block text-destructive">{p.error}</span>}
+                  </>
+                }
+              />
+            ))}
           {a.exports.map((x) => (
             <Row
               key={x.name}
@@ -347,7 +382,13 @@ function Network({ state }: { state: CommunicationState | undefined }) {
                   <span className="text-fg-secondary">{x.peer ? `granted to ${x.peer}` : 'no peer'}</span>
                 </span>
               }
-              description={<span className="break-all font-mono text-xs">{x.url}</span>}
+              description={
+                x.peer !== null && contactNames.has(x.peer) ? (
+                  'reached by the contact over theuth/a2a/1, one capped turn per message'
+                ) : (
+                  <span className="break-all font-mono text-xs">{x.url}</span>
+                )
+              }
             >
               <Button
                 variant="outline"
@@ -357,14 +398,16 @@ function Network({ state }: { state: CommunicationState | undefined }) {
               >
                 Open session
               </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Copy URL of ${x.name}`}
-                onClick={() => navigator.clipboard.writeText(x.url).then(() => toast.message('Copied'), (e: unknown) => toast.error(errorText(e)))}
-              >
-                <Copy />
-              </Button>
+              {!(x.peer !== null && contactNames.has(x.peer)) && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Copy URL of ${x.name}`}
+                  onClick={() => navigator.clipboard.writeText(x.url).then(() => toast.message('Copied'), (e: unknown) => toast.error(errorText(e)))}
+                >
+                  <Copy />
+                </Button>
+              )}
             </Row>
           ))}
         </>

@@ -10,7 +10,7 @@ import type { Entry } from '@/store/sessions'
 import { AdvisorNoteCard } from './AdvisorNoteCard'
 import { ApprovalCard } from './ApprovalCard'
 import { AskCard } from './AskCard'
-import { AutoresearchCard, BroadcastCard, ChildLostCard, ChildStateCard, DeskCard, EngineRestartCard, MovedCard, ParentViewCard, ResumeCard, WakeCard, childLine } from './HarnessCards'
+import { AutoresearchCard, BroadcastCard, ChildLostCard, ChildStateCard, ContactInboxCard, ContactMessageCard, DeskCard, EngineRestartCard, MovedCard, ParentViewCard, ResumeCard, WakeCard, childLine } from './HarnessCards'
 import { MessageAssistant, RemoveButton } from './MessageAssistant'
 import { MessageCompacted } from './MessageCompacted'
 import { MessageError, MessageInfo, MessageInterrupted } from './MessageInfo'
@@ -73,6 +73,10 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MovedCard {...entry} />
     case 'engine_restart':
       return <EngineRestartCard {...entry} />
+    case 'contact_inbox':
+      return <ContactInboxCard {...entry} />
+    case 'contact_message':
+      return <ContactMessageCard {...entry} />
     case 'cell_result': // 171:U1-ADD
       return <ResultCard run={entry.run} name={entry.name} label={entry.label} cell={entry.cell} exit={entry.exit} secs={entry.secs} />
     case 'parentView':

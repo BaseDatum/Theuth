@@ -1,5 +1,298 @@
 # 183 — build notes
 
+## Phase 3 closer 2, round R1 (Z4-R1)
+
+- **MUST (UI copy): the readers see everything of their kind.** `knowledge_search`, `knowledge_get` (including `id@commit` history), `knowledge_list`, `doc_read`, `nb_search` and `artifact_read` are not scoped to the export. Add tool now shows under each "Sees ALL your <knowledge | notes and documents | notebooks | artifacts>, not just what you share here", and under an `mcp:` tool "Read-only as the server declares it; for a server you don't control, pin its risk in mcp/config.yaml". The line above the export rows (`toolsLine`) names what granted readers let contacts read ("… let them read ALL your knowledge, notebooks and notes and documents, not just what you share.") and drops knowledge from the hidden list when a knowledge reader is granted. vitest: the `183 Z3-R2 tools` test (both notes) and `183 Z4-R1 tools line`.
+- **SHOULD: web tools are bounded per call for contacts**, in the registry's `Invoke` when the session is a contact session (`contact_scoped`, where the contact limits live): `crawl` limit ≤ 20 and `max_depth` ≤ 2, `map_site` limit ≤ 200, `search_web` limit ≤ 8 and `read` ≤ 5 (its defaults). Set where absent, since the owner's `scrape.*` defaults may be larger; a non-integer value takes the bound. Test `a_contact_crawl_is_bounded_per_call` (the owner's own call passes as sent).
+- Gates: clippy on the P3 set 0; tsc 0; vitest 322 files / 2170 tests, 0 failed (an earlier run under the clippy load failed `link/pairing.test.ts` once, 7/7 alone and in the clean rerun); Rust suites with a fresh `t`: tools 222, the rest green but agent's `capping_binds_out_name` (failing before Z3) and `monty_budgets_and_allowlist` (load), and web's `connect_timeout_fires` (a 1 ns loopback connect race, web untouched: 2 of 3 direct reruns pass).
+
+## Phase 3 closer 2 (Z4): the grantable allowlist
+
+Security re-check of e815e520 (`/tmp/rs183/p3/final/review-security-r4.md`, CHANGES): the spawn refusal holds, but the deny-list (`escalates`) let an owner grant tools that reach past the contact's capped session and that the read_only cap does not stop (`knowledge_put`, `remind_me_in`, `routine_draft`, `brief_put`, `computer_*`, `browser_*`, …).
+
+- **The rule is now an engine-owned allowlist.** `tools::CONTACT_GRANTABLE` (in `tools`, where the registry lives; `a2a` and the RPC use it): `search_web`, `read_url`, `scrape_url`, `crawl`, `map_site`, `knowledge_search`, `knowledge_get`, `knowledge_list`, `doc_read`, `nb_search`, `artifact_read`. An MCP tool is grantable as `mcp:<server>/<tool>` (the server's own tool name) only while its effective risk (`spec().risk`: gates, else annotations) is `read_only`; its bare name never admits it, so an MCP server cannot register a grantable native name to slip in. Nothing else, ever: `escalates` and the UI copy of it are gone. The loop's own tools (`python`, `todo`, …) are not grantable either.
+- **Enforced in three places.** At load (`config::contact_tools` in `stage`: strip, one warn per tool per load); at `a2a_export_put` (refused, `tools: a contact may not be granted knowledge_put, computer_screenshot`; the export is left as it was); and in the registry for every `SetAllowOnly` — the one path both `set_turn_limits` and `install_contact_limits` take, so a paired engine's `origin.tools` is intersected there: non-grantable names are dropped at install (warned) and `allowlist_admits` admits a tool under any allowlist only by its `grant_key` (fail closed; an MCP tool that turns mutating later drops out at once).
+- Choice: the put checks the key's shape only for `mcp:` names (the a2a actor has no registry at hand in its tests and an MCP server may be offline); a mutating or unknown MCP key is accepted into the file and never admitted. The editor offers only what the registry reports.
+- **The editor's choices come from the engine.** RPC `a2a_grantable_tools() -> [GrantableTool {name, risk, mcp_server?}]` (registry `ContactGrantable`: registered grantable natives and read-only MCP tools by key, sorted); `ExportTools` lists only those (query key `grantable`, replacing `list_tools`).
+- **Tests.** a2a `a_put_without_tools_keeps_the_exports_allowlist` (a put with `knowledge_put`, `computer_screenshot`, `remind_me_in`, `shell` is refused naming the four; an MCP key and a reader are accepted), `ungrantable_tools_are_stripped_when_the_file_loads`; tools `an_allowlist_from_a_peer_holds_only_grantable_tools` (`browser_open` intersected away at install, inbox and turn; MCP by key only, read-only only; `ContactGrantable`), `contact_sessions_see_only_their_allowlist` (reworked: a listed `send_message` or mutating tool stays hidden); agent `a_contact_turn_in_a_chat_spawns_nothing_at_the_registry` (the live registry: a turn-scoped `SetAllowOnly` on a chat, then `SpawnChild{parent: chat}` is refused; cleared, it spawns); vitest `183 Z3-R2 tools` (Add tool = `a2a_grantable_tools` less the list).
+- **Merge.** `origin/main` (ba6be48c, 747abd99: UI only) merged with no conflicts; bindings regenerated.
+- Gates: check and clippy (`--tests --no-deps -- -D warnings`) on the P3 set plus `web`, `document`, `cells`, `link` 0/0; those suites twice with a fresh `t` (agent `--lib` included): a2a 45, tools 221, agent 825/2 failed then 826/1 (`capping_binds_out_name` both, failing before Z3; `monty_budgets_and_allowlist` run 1, load), the rest green; bindings regenerated (`GrantableTool`, `a2a_grantable_tools`), tsc 0, vitest 322 files / 2169 tests, 0 failed.
+- Live (`evidence.txt`, "Z4 live"): P3-1, P3-7, P3-4 and P3-9 PASS.
+
+## Phase 3 closer round R4 (Z3-R4)
+
+- **A fresh grant is admitted at once.** Root cause: not the grant, the reload or the address debounce — the grant, the put, the cap and the allowlist already reload synchronously inside `Ctx::edit` (the 2 s hot reload and the 1-minute address write only serve hand edits and address hints). The 404 came from `Live::open`, which asks the communication policy whether the exported chat is enabled, and A's policy did not know B's freshly made chat: a replicated row is mirrored into the policy only when something touches it, which `a2a_exports` (`ChatPaused` → `mirror`) did — hence "works a minute later" after the next `a2a_exports`. Fix: `ValidateExport` (run for every chat export on each reload, so on every put and grant) mirrors the session (`Agents::validate_export`). Test `an_exported_chat_from_another_engine_is_open_as_soon_as_it_is_exported` (a replicated row unknown to the policy is enabled after the validation). Live (`evidence.txt`, "Z3-R4"): C's send 90 ms after the grant returned was admitted and answered.
+- **main's `tasks/home.test.ts` "offline home" is no longer date-bound**: the test pins the clock (`vi.useFakeTimers({ toFake: ['Date'] })`, `vi.setSystemTime` to the same day as its "last seen") and restores it on finish; the component is unchanged.
+- **MUST (security re-check): a contact session spawns nothing.** With the turn's allowlist on the turn's own session only (R3 d), a child spawned in a contact turn was no contact session: it kept every tool up to the inherited cap and could spawn `agent:` uncapped — reachable once an owner put `spawn_subagent` in an export's tools. Both fixes: `SpawnChild` refuses every spawn, native or external, when the spawner is in a contact session (`under_inbox`, or `tools::ContactScoped` for a contact turn), `subagents are not available to a contact`; and an allowlist never holds a tool that escalates (`a2a::config::escalates`: `spawn_subagent`, `send_message`, `discover_peers`, `wait_peer`, `schedule`, `task_*`, `agent_*`, `secret_*`), stripped at staging and at `a2a_export_put` with a warning per tool, never offered by the editor (`Contacts.tsx` `escalates`; its line says so). `child_cap` is back to (requested, ceiling, external). Tests `a_contact_session_spawns_nothing` (an inbox whose allowlist names `spawn_subagent`, and a session under it, are refused; an owner root spawns), the put leg of `a_put_without_tools_keeps_the_exports_allowlist` (`send_message`, `spawn_subagent`, `task_create`, `secret_list`, `schedule` stripped), the registry's `ContactScoped` on a contact turn (`contact_sessions_see…`, `bg` leg), vitest "Z3-R2 tools" (the escalating tools are not offered).
+- **Engine nit: a retry leaves no context.** `admit_send` mints a context before `accept_a2a_request` dedups, so each retry of one messageId left an orphan row. When the acceptance answers from an earlier task, the minted context is dropped (`Store::drop_unused_a2a_context`, only if no task names it). Test `retries_of_one_message_leave_one_context` (5 sends of one messageId: 1 task, 1 new context).
+- Gates: check and clippy on the R3b set 0/0; with a fresh `t`: a2a 44, tools 220, agent 824/2 failed (`capping_binds_out_name`, failing before Z3; `monty_budgets_and_allowlist`, load); tsc 0; vitest 322 files / 2163 tests, 0 failed (no UI change after that run).
+
+## Phase 3 closer round R3b (Z3-R3b): merge with design 184
+
+- **Merge.** `origin/main` at 2add9997 (design 184) merged at 71f9d0ba. One conflict, `crates/mesh/src/net.rs` `Net`'s fields and their initialisers: both kept (P3's `contacts`, `a2a_conns`, `a2a_stream_budgets`; 184's `docs`, `dev_drop`). `net::Msg` gained only 184's `DocsSchema` (P3 adds no `Msg` variant), so the tag order is main's. No migration number clash (agent 0054 is P3's only one). Bindings regenerated, tsc 0.
+- Gates: check and clippy on the P3 set plus `web`, `document`, `cells`, `link` 0/0; those suites once with a fresh `t` (agent `--lib` included): all green but agent's `capping_binds_out_name` (failing before Z3) and `monty_budgets_and_allowlist` (load). vitest 322 files / 2163 tests: 2162 passed, 1 failed — main's `tasks/home.test.ts` "offline home …" (design 182) hardcodes 2026-11-08 21:40 as "last seen" and expects `since 21:40`; on 2026-11-09 the line reads `since Nov 8, 21:40`. The test is date-bound, outside P3 (not run on main itself), left as is.
+- Live (`evidence.txt`, "Z3-R3b live"): P3-1 (Nearby pairing, capped inbox), P3-7 (every probe "not available"), P3-4 (B's chat exported on A: contact turn with no tools and no owner details, only its answer back, owner rows unseen, stop sharing refuses) PASS. Seen again: a send within seconds of a fresh grant is refused "grants no export" until the next reload reaches the gate.
+
+## Phase 3 closer round R3 (Z3-R3)
+
+- **Merge.** `feat/183-p3-ui2` (U3b, 0b75827b) merged with no conflicts; the allowlist editor now uses the real `Export` binding (`tools?: string[]`), its local type and the `// 183 Z3-R2: tools` marker are gone.
+- **A put keeps the allowlist** (R2 residual 3). `contacts::Export.tools` is `Option<Vec<String>>`: `a2a_exports` always fills it; `a2a_export_put` without it keeps the export's list (a new export: `search_web`, `read_url`), so a re-grant or an older client never resets it. The UI sends `tools` only from the editor. Test `a_put_without_tools_keeps_the_exports_allowlist`. Stop sharing with the last contact still removes the export (U3's rule), so sharing it again later starts on the default.
+- **A resumed contact turn still answers** (R2 residual 1). A resumed exported-chat contact turn takes its opener's exchange id as its scope (`consumed_exchanges` at the opener's seq); at its end the owner rebuilds the envelope from that exchange (`contact:<holder>:<contact>`) when a restart lost it, and the answer goes back as before (the holder only needs the message id it waits on). Test: the restart leg of `an_exported_chat_elsewhere_runs_one_capped_turn_and_answers_only_it` (envelope forgotten, the turn's text still completes bob's task). A holder restart fails the contact's task at boot as before (`fail_interrupted`), a clear outcome.
+- **A resumed inbox speaks as the exported agent** (R2 residual 2). `a2a_contexts.inbox_identity` (added to the unreleased migration 0054) keeps the agent's persona of the last admission; `identity_of` falls back to it when nothing is cached. Found live: the roster's identity source joins after the boot resume, so asking the source again at the actor start was not enough. Test `a_restarted_inbox_runs_the_exported_agents_persona_again` (no source after the restart).
+
+Security re-check of 2d49e40a (CHANGES), in the same round:
+
+- **MUST: a resumed contact turn is known from its journal.** `open_contact_turn` (the last user row) is gone: the loop writes user rows inside a turn (harness notes, budget notes, the notebook message, surface and cell correction rounds, the compaction head), so a provoked correction made a restart resume uncapped. The opener's consumption now journals `input_accepted` with source `contact` (and the exchange id), and `Resume` reads it (`Store::contact_turn_input`); a turn whose journal has no `input_accepted`, or a failed read, counts as a contact's (fail closed). The scope is the journaled exchange id, so the answer still goes back (item 3). Test `a_contact_turn_is_known_from_its_journal_whatever_rows_follow` (a note, a budget note, a correction and a compaction head after the opener: still a contact turn, bounded; an owner turn is not; no `input_accepted` is). Not tested end to end through a live `Resume` actor: the install on resume is the same `set_turn_limits` as at turn start.
+- **a)** `set_turn_limits` and `install_contact_limits` return their errors: a failed `SetAllowOnly`/`SetTurnCap`/`SetCap` ask or registry lookup stops the contact turn (its token is cancelled before it runs; the contact reads the turn was stopped), refuses the inbox admission (`internal error`), or refuses the inbox's actor start; a failed clear at the turn's end leaves the limits on. A process with no registry registered (unit tests) runs no tool at all, so that is not an error.
+- **b)** Migration 0054 backfills `inbox = 1` for contexts whose session carries the E3 `<contact_inbox …/>` first row.
+- **c)** A contact session (inbox, or a chat while a contact's turn runs in it: `tools::ContactScoped`) gets `frame::contact_baseline`: the exported agent's persona and charter, the contact rule and the date; no machine, working directory, standing instructions (`prompt.md`), skills index or bodies, peer line or plugin blocks. The chat's own history stays (the owner shared it). Test `a_contact_prompt_carries_nothing_of_the_owners_machine`.
+- **d)** A contact turn's allowlist (and `ContactScoped`) apply to the turn's own session only; the chat's existing subagents keep the owner's tools (an inbox's allowlist still covers its subagents). Registry test, `bg` leg.
+- **e)** `web::fetch::ssrf::is_blocked_ipv6` blocks 6to4 (2002::/16) and Teredo (2001::/32). Test in `fetch_ssrf.rs`.
+- **f)** After a fail-closed resume the contact's task ends: an exported chat owned elsewhere answers through the journaled exchange (item 3); an inbox's or a holder-owned chat's A2A task is failed `interrupted_by_restart` at boot (`fail_interrupted`); an opener the journal does not name leaves the holder's task to its request deadline.
+
+Engine re-check of 2d49e40a (M1, M2 closed), in the same round:
+
+- **MUST (engine M3): no context bound.** `CONTACT_CONTEXTS` and `a2a_context_count` are gone: they counted every context ever made for (contact, export), and our own sender never reuses one (`network_send` passes no `context_id`), so the 65th message was refused for good. The waiting bound (`CONTACT_QUEUED` = 8) limits a contact's pending work. Test `a_contact_never_runs_out_of_contexts` (70 sequential messages, each a fresh context, all admitted).
+- **MUST (regression): an external harness is refused for a contact only.** `child_cap(requested, ceiling, external, contact)`: in a contact session (the supervisor's own record of the spawner or an ancestor being an inbox, `Agents::under_inbox`, or `tools::ContactScoped`: a contact's turn in the spawner's own session, which also hides `spawn_subagent`) an `agent:` spawn is refused; under an owner desk's or a capped subagent's ceiling it spawns as before with the cap it asked for (the ceiling rides in its brief). Native children get min(requested, ceiling) everywhere. Test `a_child_takes_the_spawners_ceiling_and_external_harnesses_are_refused_for_contacts` (a contact session refused; an owner desk at `read_only` allowed). Found by the suite: refusing whenever the registry could not answer refused the ACP tests' owner spawns, so an unanswered registry no longer counts as a contact (the inbox check does not depend on it).
+- **The owner's running children keep their tools during a contact turn.** Neither the turn's allowlist nor its cap (`SetTurnCap`, now applied by `cap_for` to the turn's own session only) reaches the chat's existing subagents: they list and run the owner's tools. Registry test, `bg` leg (allowlist, `EffectiveCap` none, full `ListTools`).
+
+- Gates (R3, final): check and clippy (`--tests --no-deps -- -D warnings`) on the set plus `web` 0/0; `mbx test -p a2a -p agent -p tools -p mesh -p roster -p rpc -p theuth -p web --no-fail-fast` twice with a fresh `t`: a2a 44, agent 821/2 failed then 822/1 (`capping_binds_out_name` both, failing before Z3; `monty_budgets_and_allowlist` run 1, load), tools 220, mesh 62, roster 100, rpc 83, theuth 12, web green; bindings regenerated, tsc 0, vitest 317 files / 2110 tests (no TS or UI change after that run).
+- Live (`evidence.txt`, "Z3-R3 live" and "Z3-R3 security items"): the allowlist editor round-trips (add `crawl`, remove `read_url`, an RPC put without tools, a reload and a UI re-grant all keep `[search_web, crawl]`; shots `r3-c-allowlist-*.webp`); P3-7 on the merged build and again on the final one: the inbox is offered only its allowlist, every other probe (shell, read_file on a decoy, search, session_read, spawn_subagent, python, todo, send_message) is "not available in this session"; the inbox's system prompt carries no machine or working directory; a kill -9 mid inbox turn resumes as Research with no tools and the contact reads `interrupted_by_restart`.
+
+## Phase 3 closer round R2 (Z3-R2): the cap and security round
+
+Reviews: `/tmp/rs183/p3/final/review-engine.md`, `review-security.md` (both CHANGES at 284b4bb1).
+
+### The trust rule: contact sessions are default-deny
+
+A **contact session** is (a) a contact's inbox (an `a2a_contexts` session marked `inbox`, migration `0054_contact_inbox.sql`, local table, `SESSIONS_WIRE_SCHEMA` unchanged) or (b) a contact's turn in an exported chat, from its `<contact_message>` turn start to its end. In a contact session only these exist:
+- the A2A reply itself (the turn's final text; it needs no tool);
+- the export's allowlist `ExportEntry.tools` (engine-local in `peers.yaml`, serde default `["search_web", "read_url"]`; `read_url` already refuses private, loopback and link-local targets, `web::fetch::ssrf`). It rides to the agent as `ContactOrigin.tools` (absent from an older holder = nothing).
+
+Everything else is **hidden** (absent from `ListTools`, `unknown tool` on a call), for the session and its subagents: `send_message`, `spawn_subagent`, `discover_peers`, `session_read`, `search`, `knowledge_*`, `doc_*`, `artifact_read`, `nb_*`, `task_*`, `mesh_*`, `secret_*`, `read_file`/`grep`/`list_dir`/`write`/`edit`/`shell`, every MCP tool not listed. The risk cap still applies on top (a `read_only` cap drops a mutating allowlisted tool), and `CAP_EXEMPT` (`send_message`) never applies in a contact session.
+
+The loop's own tools (`python`, `todo`, `zoom`/`recall`/`date`, `consult`, `advise`) obey the same allowlist: `rebase` asks `tools::Allowlisted` and drops each one not listed; without `python` the runtime index, the bridge and the `runtime_only` floor are off, so admitted tools are offered direct (found live: the inbox was still offered `python` and `todo`).
+
+Built as an allowlist, not `SetHidden` (a denylist cannot hide tools registered later): `tools::SetAllowOnly{session, tools, turn}` — the session's own entry for an inbox (`install_contact_limits`, on every admission, every actor start and every reload), the turn-scoped entry beside `SetTurnCap` for a chat's contact turn (`set_turn_limits` in `start_turn`, cleared on every exit of the turn: finish, cancel, fail, and the Take/Move suspend). The UI worker adds the allowlist editor (`Export.tools`, TS).
+
+Residuals (not fixed in R2; the resumed answer, the resumed persona and the re-put are fixed in Z3-R3 above): after a restart the resumed contact turn of an exported chat finishes capped but its answer does not go back (the holder's wait died; the contact's message stays accepted), and a resumed inbox turn runs with the engine's persona (the agent persona came with the admission). Contact framing text still reads "Tools above read_only are refused" (true, but not the whole rule). `a2a_export_put` without `tools` (today's UI) writes the default allowlist, so a hand-edited list is reset by a UI re-put until the UI worker's editor sends it.
+
+### MUST (fail-before tests)
+
+| Item | Fix | Test |
+|---|---|---|
+| M1 caps survive a restart (engine M1, sec M5) | Every actor start of an inbox (`Agents::session` → `reinstall_contact_limits`) re-installs its last admission's cap and allowlist, else fails closed (`read_only`, nothing but the reply; a store error counts as an inbox). A resumed contact turn in an exported chat is recognised from its opener row (`open_contact_turn`) and **resumes capped, fail-closed** (`read_only`, empty allowlist) — chosen over closing it as interrupted because the turn's work survives and the contact still gets an answer, while its origin (cap, allowlist) died with the process. A Take/Move suspend clears the turn limits on the old owner; the new owner resumes it fail-closed the same way. A child result waking an inbox goes through the same actor start. | `an_inbox_is_capped_and_default_deny_at_every_actor_start`, `a_resumed_contact_turn_is_recognised_from_its_opener` |
+| M2 no relay (engine M2, sec M4) | No `CAP_EXEMPT` in a contact session; an inbox lists no contact in `discover_peers` and may not send to one (`granted = (contact && !inbox) \|\| …`) | `contact_sessions_see_only_their_allowlist_and_send_message_has_no_cap_exemption` (a chat contact turn's `send_message` refused), `an_inbox_neither_sees_nor_reaches_another_contact` |
+| M3 first contact cannot be skipped (sec M1) | A message naming an `AUTH_REQUIRED` task is refused (`waiting: the owner has not allowed this task yet`) until the owner releases it | `first_contact_holds_until_the_owner_answers` (the `m-skip` leg) |
+| M4 spawn_subagent (sec M3) | Hidden in contact sessions (the rule). Any native child gets min(requested, the spawner's ceiling now — `tools::EffectiveCap`, turn cap included) as its own cap; an external harness is refused under any ceiling (`child_cap`) | `a_child_takes_the_spawners_ceiling_and_external_harnesses_are_refused_under_one`; `EffectiveCap` in the registry test |
+
+### SHOULD
+
+- **Pairing**: one inviter slot taken atomically at `admit_request`; failures per remote id (3 refuse that id, 10 close the window); a ticketless request only from an id seen in this window's sightings. Test `one_handshake_at_a_time_failures_count_per_endpoint_and_ticketless_needs_a_sighting`.
+- **Deadlines/bounds**: `serve_http` has a `TokioTimer`, a 30 s header read and a 60 s whole-request deadline (streaming is not carried over `theuth/a2a/1` yet, so nothing long-lived is cut); at most 4 inbound connections and 16 concurrent streams per contact. Per contact and export at most 8 waiting tasks (`CONTACT_QUEUED`); the 64-context bound of R2 is gone (Z3-R3). No tests for the caps/deadlines (timing).
+- **SSRF**: a Nearby card URL is always built from the sighting's own address (an absolute TXT URL keeps only its path); card fetches resolve once, refuse private/link-local/loopback unless the address came from a sighting in this window, and pin the connection; a ticket's private `addrs` and a private IP-literal `relay` are dropped unless sighted. Residual: a relay *hostname* resolving to a private address is not resolved. Test `private_card_urls_and_ticket_addresses_are_refused_without_a_sighting`.
+- **Discovery**: the card listener binds only the advert's LAN IPs (no 0.0.0.0; nothing advertised if none bind), at most 8 connections with deadlines; TXT is `card`, `proto`, `v`, `eid`, `pair` and `port` (the iroh UDP port, needed because the sighting's port is the card listener's); no `iroh` IPs, no login name (instance = mesh name).
+- **Card strings**: name and machine cut to 64 chars wherever stored or framed; a new key under an existing contact's name pins as `bob-new-key` and the ceremony reads `bob (new key — not your existing bob)`. Tests `card_names_and_machines_are_cut_to_64_characters`, `a_same_name_new_key_is_flagged_in_the_ceremony_and_the_alias`.
+- **Wrappers and owner input**: the inbox frame neutralises `<contact_…` in the body; owner input typed during a contact turn waits for the owner's next turn (it no longer joins; supersedes §13 row 50 and E3 call 10). Test `a_contact_turn_is_the_contacts_alone`.
+- **Address churn**: `a2a_direct_addrs` ≤ 8; at most one write a minute per contact, only on a change; a failing write warns once per distinct error. In-entry comments still do not survive a write (serde_yaml has no comment model; the leading-block rule stands).
+- **reload() coupling**: stamp taken before the read; unchanged HTTP peers whose last probe succeeded are not re-probed (the rest run concurrently); a failing HTTP peer no longer rolls back a contact edit (`reload_as(keep_http)` retries with the last good HTTP peers, the error stays in the status). Test `a_broken_http_peer_does_not_block_a_contact_edit`.
+- **Defaults**: with `agent.communication` unset, contacts count beside paired machines (re-evaluated when contacts change). Test `absent_communication_counts_contacts_on_a_lone_engine`.
+- **Small**: contact refusal texts name no mesh machine (`the chat's machine is offline`, `… needs an update`, an owner refusal reads `the chat is not taking messages right now`; the log keeps the detail). A cap or allowlist change reaches live inboxes at once (`ContactLimits` pushed after every reload; test `a_cap_or_allowlist_change_reaches_a_live_inbox_at_once`); a running exported-chat contact turn keeps its start limits until it ends. `peers.yaml` mode is checked on read (warn once if not 0600, unix).
+
+- Gates (R2): `check --tests` and `clippy --tests --no-deps -- -D warnings` on `-p a2a -p agent -p tools -p rpc -p mesh -p roster -p secrets -p theuth` 0/0; `mbx test -p a2a -p agent -p tools -p mesh -p roster -p rpc -p theuth --no-fail-fast` twice with a fresh `t` as both workers, `/opt/homebrew/bin` off PATH: a2a 43, agent 818/2 failed and 819/1 failed (`repl::tests::capping_binds_out_name` both, failing before Z3; `sensor::tests::monty_budgets_and_allowlist` run 1 only, load), tools 220, mesh 62, roster 100, rpc 83, theuth 12, rest green. Bindings regenerated (`Export.tools?`, `ContactOrigin.tools`), tsc 0, vitest 317 files / 2107 tests.
+- Live (`evidence.txt`, "Z3-R2 live"): P3-1 Nearby pair + capped inbox PASS; P3-7 shell, read_file (decoy path), search, session_read, spawn_subagent, python, todo each "not available in this session" PASS; P3-5 inbox `send_message` not available PASS; P3-4 exported chat contact turn with no tools, only the answer back, stop sharing refuses PASS; P3-8 a kill -9 mid contact turn (B's chat, C's inbox) resumes with no tools PASS (residuals above).
+
+## Phase 3 closer round R1 (Z3-R1)
+
+- **Merge.** `origin/main` with design 185 (eb2a2b3a) merged with no conflicts; bindings regenerated (1021 files), `tsc` 0.
+- **Communication shows contacts as built** (HANDOFF 3). Settings › Communication › Network (A2A) lists each contact from `contact_list` as `bob [contact]` with `<machine> · theuth/a2a/1 over iroh · pinned <fingerprint> · <cap> · may reach …`, and leaves it out of the HTTP peers (no "local roots may send"); a chat export granted to a contact reads "reached by the contact over theuth/a2a/1, one capped turn per message" without its HTTP URL or Copy URL; the disabled line says contacts do not need `a2a.enabled`. The chat's design 50 "Exported: … approvals still ask you" banner now names HTTP-peer exports only (`useCommunication` drops exports granted to a contact; the header's `Shared with bob · read only` chip covers those). vitest: "Settings › Communication shows a contact as built …", "the chat banner names HTTP-peer exports only …".
+- **Contacts keep their last direct addresses** (HANDOFF 2). `PeerEntry.addrs` (engine-local, skipped when empty): every hot-reload tick (2 s) `Ctx::remember_addrs` writes a contact's direct addresses from its live `theuth/a2a/1` connection (`Net::a2a_direct_addrs`: the selected and other non-relay paths, either direction) when they differ; a reload stages them (`ContactFacts.addrs`) and `Net::a2a_stream` dials them beside the caller's hints (`ContactAlpn::hints`). No live connection writes nothing, so a stale address is only replaced, never cleared. Test `a_contacts_last_direct_addresses_are_kept_and_offered_to_the_dial`; live (`evidence.txt`, Z3-R1): after a ticket pairing both files held the other's `127.0.0.1:<mesh port>`, both engines restarted with relay none and discovery off, and A's next `peer:` send reached C.
+- **P3-2 stays NOT-RUN** (no new relay dependency); reason in the Z3 table and HANDOFF 1.
+- Gates (R1): `check --tests` and `clippy --tests --no-deps -- -D warnings` on the set 0/0; tsc 0; vitest full 317 files, 2107 tests passed; `mbx test -p a2a -p agent -p mesh -p roster -p rpc -p theuth` once with a fresh `t` as worker (agent `--lib` included): a2a 38/38, agent 812 passed, 2 failed (`capping_binds_out_name`, failing before Z3; `sensor::tests::monty_budgets_and_allowlist`, its 5 s bound under load, passed alone), mesh 62, roster 100, rpc 83 + 4, theuth 12.
+
+## Phase 3 as built + live proof (Z3)
+
+Merge: `feat/183-p3-ui` (875dd184) at 41557f9e, `origin/main` (06ccf506, docs only) at 4f83b2df; no conflicts. Bindings regenerated (`export_bindings` 8 passed, 1021 files) and copied into the UI; `tsc -b --noEmit` 0. E3 gaps and reconcile fixes in 114ef04a, live-proof fixes in ac28eff5, these notes at the closing commit. Evidence `/tmp/rs183/p3/evidence.txt`, screenshots `/tmp/rs183/p3/shots/`, rig `/tmp/rs183/rig/{setup3,start3,stop3}.sh`, `fake3.py`, `ev2.ts`, `r3`.
+
+### Reconcile: U3's assumptions against E3 and the doc
+
+| U3 assumed | Doc / engine | Settled |
+|---|---|---|
+| Cap per contact, not per export | §9.4 `PeerEntry.cap`, §14.4 `Export` has no cap, §7.6 "contact.cap" | Kept per contact; no shape change |
+| `contact_first_answer` with nothing waiting just saves the default | E3 answered `ask` with no write and `block` blocked the whole contact | Engine: with no task waiting for (contact, export) the answer is that export's standing default (§9.4): `ask` drops the entry, `allow` and `block` write it. With a task waiting, the Attention semantics stand (Allow once releases, Always writes `allow`, Block blocks the contact, §7.6) |
+| Sharing reuses or creates the export (`a2a_export_put`), the last ungrant removes it | `ExportPut`, `ContactUpdate.exports`, `ExportRemove` as built | Unchanged; proven live (P3-4) |
+| Agent exports are `<agent>@<this machine>` | §7.6 | The inbox strips `@<engine>` to find the roster agent (below) |
+| Nearby: the engine fetches and verifies the card on Add | §7.1 "shown unverified and cannot start the ceremony" | UI: a Nearby row whose Add came back `unverified card` / `the card does not match the advert` is marked **unverified** and its Add is disabled for the window |
+| "The codes differ" = Reject; subtitle `os · fingerprint` | §12.7 "name, machine and fingerprint"; `PairCeremony` has no machine | `contact_answer(false)` sends `Reject` (the other side reads rejected). A contact ceremony's `PairCeremony.addr` now carries the contact's machine (from its card; `""` before): the subtitle reads `c · macOS · 5NCW RWFL 7CFI 5MIW PL2R`. The UI's `fingerprint()` encodes a 64-hex endpoint id as base32 like the engine's `Contact.fingerprint` (it showed hex) |
+| Composer chip not built | §12.10 | Built: `read only · bob's turn` above the composer while a turn opened by a `<contact_message>` runs (`SessionSlice.contactNote` from `TurnStarted`, cleared at `TurnFinished`; after a reload mid-turn, the last opener in the transcript) |
+
+### E3 gaps (114ef04a)
+
+1. **Exported agent's persona (W-25, MUST).** `IdentitySource::inbox(agent) → InboxPersona{identity, model, tools}` (roster implements it: `desk::inbox_identity` = who it is, its charter and capabilities, never its journal or desk manual; theuth keeps the default persona). A new inbox starts on the agent's `model:` (the default if that fails), its system prompt leads with that identity (recorded per inbox on every resolve, so after a restart too), and it runs under the stricter of the contact's cap and the agent's `tools:`. Test `an_agent_export_inbox_runs_the_exported_agents_persona_model_and_ceiling`.
+2. **Addressing.** §7.7/§11 name no per-export form, so `peer:<contact>` keeps reaching the first export granted (name order) and `peer:<contact>/<export>` reaches that export: the contact's route, with the export riding on the request (`OutboundPeerMessage.export` → `IrohTransport.export` → `POST /agents/<export>/rpc`; the follower polls the same export). Only a contact takes it; the export must be `[a-z0-9_-]`. The `send_message` description names the form. Tests `a_contact_export_address_names_the_contacts_route` (agent), the `zeta` leg of the a2a e2e first-contact test.
+3. **`A2aChanged` on archive and unarchive.** `archive_session` (local or forwarded to the owner) asks the a2a actor `ChatArchived{session}`, which publishes `A2aChanged` when that chat is exported here. Test `archiving_an_exported_chat_fires_a2a_changed`. Not covered: an archive made on the owning machine's own UI for an export held elsewhere (the holder refetches on its next `a2a_exports`).
+4. **`peers.yaml` comments.** §7.8 says only that the RPCs write the file atomically; it is silent on comments. E3's rule (the leading comment block survives, comments inside entries do not) stands.
+
+### Defects found live and fixed (ac28eff5)
+
+| Defect | Fix |
+|---|---|
+| A contact could not reach the side that dialed: either side reuses a live `theuth/a2a/1` connection, but the dialer never accepted streams on its own connection (C→A timed out "no answer from the contact in time") | `mesh::net::serve_a2a` serves every contact connection, dialed or accepted, with the per-stream admit. Test `the_side_that_dialed_is_reached_on_its_own_connection` |
+| A remounted Add contact dialog (React StrictMode, or a fast close/reopen) left no window: the engine served `contact_window` calls concurrently and a close overtook the still-opening window, dropping its advert | Engine: `ContactWindowOpen` runs in the a2a mailbox (call order). UI: `contact_window` calls go through one promise queue |
+| A contact inbox was retitled from its first row (`<contact_inbox …`) | `handle_inbox` marks the session titled after setting "bob · research" (as a rename does) |
+| No way to prove Nearby agents without mDNS on en0 (swarm-discovery always multicasts on the default interface; `with_multicast_interfaces_v4` only adds interfaces) | Debug builds with `THEUTH_DEV_CONTACTS_DIR`: adverts as files, the signed card served on `127.0.0.1` only (`discovery::dev::DirLan`, as the mesh's `THEUTH_DEV_NEARBY_DIR`) |
+
+### Calls made (Z3)
+
+1. Settings' first-contact select vs the Attention item share `contact_first_answer`; "is a task waiting for (contact, export)" (`ContactsHeld`) decides which meaning applies.
+2. `PairCeremony.addr` carries the contact's machine for contact ceremonies (doc comment updated; no new field).
+3. The inbox applies the agent's `tools:` ceiling too (an exported read-only agent stays read-only under a `mutating` contact).
+4. E3's e2e first-contact test now presses the Attention Block on a task that waits (a fresh export, `zulu`): a first-contact task queued behind the inbox's running turn is not an Attention item yet, so Block there is the Settings default for that export.
+
+### Gates (Z3)
+
+- `check --tests` and `clippy --tests --no-deps -- -D warnings` on `-p a2a -p agent -p tools -p rpc -p mesh -p roster -p secrets -p theuth`: 0 errors, 0 warnings (after the last test change too).
+- `mbx test -p a2a -p agent -p mesh -p roster -p rpc -p theuth --no-fail-fast` twice, fresh `target/debug/t` as `THEUTH_MONTY_WORKER`/`THEUTH_WORKER`, `/opt/homebrew/bin` off PATH (the full agent `--lib` included): a2a 37/37, agent 813 passed, 1 failed (`repl::tests::capping_binds_out_name`, failing before Z3 as in E3's runs), 4 ignored, mesh 62, roster 100, rpc 81 + 4, theuth 12, notebooks 2 + 7; identical both runs.
+- Bindings: `export_bindings` 8 passed, 1021 files copied; `tsc -b --noEmit` 0 errors; vitest full: 317 files, 2104 tests passed.
+
+### Live proof (two meshes: A+B, C alone; loopback, fake model on 18750)
+
+| Proof | Result |
+|---|---|
+| P3-1 contacts over LAN | PASS (Nearby via the dev directory, codes matched, pinned, `peer:bob/research` → capped inbox on C running Research's persona and model, shell refused with approvals off) |
+| P3-2 contacts over the relay | NOT-RUN (relay leg): `crates/relay` is the phone-link WebSocket relay (design 31), not an iroh relay; with it as `mesh.relay` both engines report `connected: false`, and an iroh relay (`iroh-relay` `server`) would be a new dependency. The invite-ticket ceremony and messaging PASS over the ticket's direct address (path `lan`) |
+| P3-3 first contact | PASS (waits with an Attention item on the receiver; Allow once; Always; Block writes `blocked` and closes the contact's connections — the gate's own refusal text was not observable live, see HANDOFF 2) |
+| P3-4 exported chat | PASS (B-owned chat exported on A, `contact_deliver` to B, ContactMessageCard, capped turn, C got only that turn's answer, owner's next turn invisible, Stop sharing ends it) |
+| P3-5 isolation | PASS (inbox `send_message(session:<owner chat>)` → `unknown peer`) |
+| P3-6 single engine | PASS |
+
+### HANDOFF
+
+1. **An iroh relay for P3-2 (NOT-RUN).** Proving contacts over a relay needs a loopback iroh relay (`iroh-relay` with its `server` feature, not in `Cargo.lock`) or a test-utils relay in a test; `theuth-relay` cannot serve `mesh.relay`. Left NOT-RUN by ruling: no new relay dependency.
+2. ~~Contacts keep no address hints~~ — done in Z3-R1 (below).
+3. ~~Settings › Communication shows contacts as HTTP peers; stale exported-chat banner~~ — done in Z3-R1 (below).
+4. **Streaming over `theuth/a2a/1`** (E3 call 5) is still polled.
+
+## Phase 3 engine E3 (contacts over A2A, exported chats)
+
+On `feat/183-p3` from edc227d6. Every `// 183 P3: E` marker is built and gone; the `// 183 P3: UI` ones are U3's.
+
+### Phase 3 contract changes after C3
+
+No generated TypeScript changes: every shape U3 imports (`Contact`, `ContactPatch`, `ContactTarget`, `ContactWindow`, `NearbyAgent`, `Export`, `ExportTarget`, `FirstContact`, `ContactEvent`, `ContactEnvelope`, `ContactOrigin`, `AttentionKind`, `PairCeremony`) is as C3 left it, and the 12 methods keep their names and params. What changed:
+
+1. **The RPCs answer for real** (§10.1): `contact_window(true)` opens a window and returns its ticket (`contact_window(false)` closes it, `null`); `contact_pair` returns the ceremony at its code (`state: "waiting"`), then `ContactEvent::Pair` events carry `accepted` and the end (`paired` · `rejected` · `expired`); `contact_answer`, `contact_list`, `contact_update`, `contact_remove`, `a2a_exports` (agent and chat exports, `paused` set), `a2a_export_put`, `a2a_export_remove`, `contact_first_answer` act; `contact_deliver` serves W-40. The `off` answers (only a process without the a2a plugin) say `contacts are unavailable: the a2a plugin is not running` (`a2a::contacts::OFF` replaces `NOT_BUILT`).
+2. **The A2A actor always runs** (W-26): `a2a_status` now comes from it with `enabled: false` (and `listening: false`) when `a2a.enabled` is off; HTTP peers stay dormant then, contacts work.
+3. **`PeerEntry.machine: Option<String>`** (skipped when unset): the contact's machine from its card, so `Contact.machine` survives a restart. Not a TS type.
+4. **`PairCeremony.addr`** is `""` for contact ceremonies.
+5. Engine-internal: `A2aPrincipal.ask_first`; agent messages `ContactInbox`, `ContactRelease`, `ContactsHeld` (`HeldContact`), `ChatPaused`; constants `UNKNOWN_SESSION`, `PAUSED_ARCHIVED`, `PAUSED_MESSAGING`, `CONTACT_NOT_OWNER`; `loop_::ContactFrame`, `PeerInput.contact`, `PeerMeta.cap`; `IrohSender` removed (a contact's route is the a2a `PeerClient` over an iroh link); `mesh::net::ContactAlpn`, `Net::{set_contacts, a2a_stream, a2a_path, close_a2a, a2a_reach, sign}`, `mesh::net()`; `config::stage(…, contact_cap)`, `Staged.{agents, contacts}`, `Peer.eid`; `communication::mesh::{contact_forward, ContactFailure}`; `agent::spawn_engine_agents` (test-support).
+
+### Calls made (E3)
+
+1. **The ALPN is always registered**; the gate refuses everyone while the engine has no contact and no open window, which is what "the listener exists only then" (§7.2) observably means. Family peers are refused in `mesh::net` before the a2a gate runs.
+2. **One inbox per (contact, agent export), reused** (§7.6 "later contexts … reuse it" over W-25's "fresh"), found through `a2a_contexts`. Its cap is installed on every resolve (after a restart too; a lowered cap applies at once).
+3. **The inbox runs the default persona**: the exported agent's name titles the inbox and the log, but its roster persona is not loaded (that needs the roster's desk-opening block). Deviation; the cap, the scope and the wrapper hold.
+4. **`peer:<contact>` addresses the contact, not one export**: it posts to `/rpc`, which the gate maps to the first export granted to that contact (name order). Contacts reach every local root (no `sessions` grant) and list in `discover_peers` tagged `contact`; the contact's own exports are not known here, so they are not tags.
+5. **Streaming is not carried over `theuth/a2a/1` yet**: the iroh transport refuses `SendStreamingMessage`/`SubscribeToTask`, and the follower polls `GetTask` (2–30 s backoff). §7.2 "Streaming" is the follow-up.
+6. **Comments**: a rewrite keeps the file's leading comment block; a comment inside an entry does not survive a UI write (serde has no comment model). Hot reload polls the file's mtime and size every 2 s.
+7. **First contact**: the waiting text names this engine's mesh name; `contact_first` items come from a roster attention `Source` the plugin registers, and the plugin nudges a re-derive (the inbox's `AlertDue`) when a hold starts or ends. Allow once moves the task back to `submitted`.
+8. **One principal per exported chat** still (HTTP peer or contact): a chat export is granted to one contact.
+9. **W-40 answer path**: the owner sends the contact turn's final text back as a `contact_deliver` with `reply_to` = the message id the holder waits on (the C3 RPC reused, no new method); the holder completes the A2A task with it. A stopped or failed turn answers a one-line reason. A moved chat (`-32013`) is retried once on the new owner; an offline or old owner fails the task with the §11.4 texts.
+10. **The turn cap is set and cleared by the session** around a contact's turn (before its first tool call, at its end, cancel included), not by the supervisor: race-free with the same `SetTurnCap`. The owner's own input steers into a contact's turn under its cap (§13 row 50); another contact's message never joins it.
+11. **A deleted exported chat is dropped** from `peers.yaml` at reload and when `a2a_exports` runs, for HTTP session exports as well (they were a config error before).
+12. **The card**: name = the login user (fallback the mesh name), machine = the mesh name, `os_name` from `platform::process::machine()`. The real mDNS advert serves the signed card on a LAN port only while a window is open; its TXT carries the theuth hint `iroh` (direct addresses) beside `eid` and `pair=1`.
+13. **Revoke** on Remove is best effort; a received `Revoke` is logged, the entry is kept (the owner removes it).
+
+### Tests (E3)
+
+`a2a`: `contacts::store::tests::rewrite_keeps_the_header_and_the_entries`; `contacts::tests::{jcs_sorts_by_utf16_and_escapes_as_ecmascript, card_jws_vector_verifies_and_refuses_tampering}`; `config::tests::contacts_and_agent_exports_stage`; `server::tests::the_contact_gate_admits_a_pinned_contact_and_refuses_strangers_and_blocked_ones` (three real loopback endpoints); `contacts::e2e_tests::{the_advert_and_the_browse_live_only_while_a_window_is_open, a_ticket_ceremony_pins_both_sides_after_both_accept, reject_reuse_and_expiry_are_refused_and_three_failures_close_the_window, a_broken_commitment_or_a_forged_card_is_rejected, a_contact_reaches_its_export_first_contact_waits_and_block_refuses_at_the_gate}` (two engines with live agents, fake LAN). `tools`: `registry::tests::turn_cap_refuses_above_it_and_never_replaces_the_session_cap`. `agent`: `communication::network::tests::{first_contact_holds_until_the_owner_answers, a_contact_inbox_is_one_capped_root_reused_per_contact_and_export}`, `supervisor::tests::an_exported_chat_elsewhere_runs_one_capped_turn_and_answers_only_it`, `loop_::tests::{a_contact_turn_is_its_own_and_only_the_owner_joins_it, contact_message_wraps_and_neutralises_the_body}`.
+
+### Gates (E3)
+
+- `check` and `clippy --tests --no-deps -- -D warnings` on `-p a2a -p agent -p mesh -p rpc -p roster -p secrets -p theuth -p tools`: 0 errors, 0 warnings.
+- The whole set twice (`mbx test` on that set, fresh `target/debug/t` as `THEUTH_MONTY_WORKER`/`THEUTH_WORKER`): a2a 35/35 both runs; agent 810 passed, 2 failed, 4 ignored each run (`capping_binds_out_name`, plus `sensor::tests::monty_budgets_and_allowlist` in run 1 and `supervisor::tests::human_input_releases_parked_items_as_steers` in run 2, both passing alone); mesh 62, roster 100, rpc 81 + 4, secrets 40, theuth 12 + 9 all pass; tools 217 and 216 of 219 + 1 (load-sensitive `jobs::tests::{cancel_kills_group, close_sessions_kills_reaps_and_removes_logs}` in run 1, three `shell::tests` probe tests in run 2, all passing alone).
+- Bindings: `export_bindings` 8 passed, 1021 files (unchanged set) copied; `tsc -b --noEmit` 0 errors.
+
+## Phase 3 contract (C3)
+
+Skeleton only, on `feat/183-p3` from b48578c2: every shape of §14.4 and §14.6, the invite ticket, the ceremony, the signed card and the Phase 3 RPCs of §10.1 compile; old wire and today's `peers.yaml` decode; behaviour is unchanged. Each place behaviour goes carries a one-line marker: `// 183 P3: E` (engine) or `// 183 P3: UI`. `rg -n "183 P3"` lists them.
+
+### Migrations
+
+None. §9 names no Phase 3 table or column: contact state lives in `<data_dir>/a2a/peers.yaml` (W-24, §9.4), and the existing local tables carry the rest: `peer_bindings` (`endpoint` = `iroh:<endpoint id>`, `revoked_at` for Remove/Block) and `a2a_contexts` (the inbox per (principal, export)) from `crates/agent/migrations/0011_communication.sql:47-64`. The next free numbers stay agent `0054`, mesh `0008`, secrets `0004`; `SESSIONS_WIRE_SCHEMA` is unchanged.
+
+### Shapes (file:line at this commit)
+
+| Area | Shape | Where |
+|---|---|---|
+| Config §9.3 | `A2aConfig.mdns_types: Vec<String>` (`MDNS_TYPES` = `_a2a._tcp`, `_agent._tcp`, `_lad-a2a._tcp`), `.contact_window_secs: u64` (600), `.contact_cap: tools::Risk` (`read_only`): read, not acted on | `crates/a2a/src/config.rs:28`, `:38`, `:46` |
+| peers.yaml §9.4 | `FirstContact{Ask, Allow, Block}` (lowercase, default `ask`) | `crates/a2a/src/config.rs:124` |
+| | `PeerEntry` + `endpoint`, `name`, `cap: Option<Risk>`, `first_contact: BTreeMap<String, FirstContact>`, `blocked`, `paired_ms` (serde default, skipped when unset); `PeerEntry::is_contact`; `PeersFile`/`PeerEntry`/`ExportEntry` gain `Serialize` for the atomic rewrite (§7.8) | `crates/a2a/src/config.rs:138`, `:173` |
+| | `ExportEntry.session: Option<SessionId>`, `.agent: Option<String>` (exactly one) | `crates/a2a/src/config.rs:187` |
+| Contacts §14.4 | `ALPN_A2A` (= `mesh::net::ALPN_A2A`, `crates/mesh/src/net.rs:45`), `BINDING_IROH`, `IROH_URL_PREFIX`, `TICKET_PREFIX`, `CODE_DOMAIN`, `CEREMONY_SECS`, `FAILED_MAX`, `NEARBY_MAX`, LAD limits, `JWS_ALG`/`JWS_TYP`, `EXT_MACHINE`, `NOT_BUILT` | `crates/a2a/src/contacts.rs:23-52` |
+| | `Contact`, `ContactPatch`, `ContactTarget` (tag `kind`: `nearby` · `ticket` · `card_url`), `ContactWindow`, `NearbyAgent` | `crates/a2a/src/contacts.rs:61`, `:89`, `:104`, `:125`, `:136` |
+| | `ExportTarget` (tag `kind`: `agent{agent}` · `chat{session}`), `Export{name, target, description, paused}` | `crates/a2a/src/contacts.rs:155`, `:171` |
+| Events §10.4 | `ContactEvent::Pair(mesh::PairCeremony)` / `Nearby(Vec<NearbyAgent>)`, wire `{"type": "contact_pair" \| "contact_nearby", "data": …}`; forwarded by the bridge (`crates/rpc/src/bridge.rs:173`); nothing publishes it. `A2aChanged` unchanged | `crates/a2a/src/contacts.rs:188` |
+| Ticket §7.4 | `InviteTicket{eid, name, relay, addrs, nonce, exp}` | `crates/a2a/src/contacts.rs:204` |
+| Ceremony §7.4 | `PairLine{pair}` (first line `{"pair": …}`), `PairFrame::{Request{name, machine, commit, ticket}, Challenge{nonce, card}, Reveal{nonce, card}, Accept{exports}, Reject{reason}, Revoke{}}` | `crates/a2a/src/contacts.rs:224`, `:234` |
+| | `Role{Inviter, Invitee}`, `CodeInputs{id_a, id_b, nonce_a, nonce_b}` (a = inviter on both engines), `Ceremony{id, role, peer, name, machine, nonce, commit, their_nonce, card, accepted, their_accept, expires_ms}` | `crates/a2a/src/contacts.rs:280`, `:291`, `:304` |
+| Card §7.0, §7.3 | `CardFacts{name, description, machine, os_name, endpoint, public_url, skills}`, `JwsProtected{alg, kid, typ}` (envelope = SDK `AgentCardSignature`), `signed_card(facts, sign)`, `verify_card(card, eid)` | `crates/a2a/src/contacts.rs:342`, `:363`, `:374`, `:384` |
+| Actor | `ContactWindowOpen(bool)`, `ContactsNearby`, `ContactPair(ContactTarget)`, `ContactAnswer{ceremony, accept}`, `ContactsList`, `ContactUpdate{name, patch}`, `ContactRemove{name, block}`, `ExportsList`, `ExportPut(Export)`, `ExportRemove{name}`, `ContactFirstAnswer{contact, export, answer}` and their `A2aActor` handlers | `crates/a2a/src/contacts.rs:395-461`, `:463-600` |
+| ALPN §7.2 | `IrohGate::{Contact{binding, alias}, Pair, Refuse}`, `iroh_gate(live, remote, window_open)` (always `Refuse`) | `crates/a2a/src/server.rs:708`, `:726` |
+| §14.6 | `ContactOrigin{contact, machine, export, cap, holder}`, `ContactEnvelope{id, to, text, origin, reply_to, request_id}` (TS) | `crates/agent/src/communication.rs:625`, `:642` |
+| | `ContactDeliver{envelope, forwarder}` (`ask` → `Result<PeerReceipt, String>`), handler stub | `crates/agent/src/communication.rs:663`, `crates/agent/src/communication/network.rs:2316` |
+| Refusals §11.4, §7.10 | `ContactRefusal::{NotAllowed{contact, export}, NotAContact{contact}, Paused{reason}, NoAgentMessages, OwnerOffline{machine}, OwnerOld{machine}}`, texts as `Display` (after `waiting: ` / `failed: `) | `crates/agent/src/communication.rs:970` |
+| Addressing | `A2aPrincipal.contact: Option<ContactOrigin>` (`None` = HTTP peer), `IROH_PREFIX`, `contact_endpoint(eid)`, `contact_eid(endpoint)`, `IrohSender{eid}` (`PeerSender`, refuses; never registered) | `crates/agent/src/communication/network.rs:89`, `:213-241` |
+| Turn cap §14.6 | `tools::SetTurnCap{session, cap: Option<Risk>}`, no-op handler | `crates/tools/src/registry.rs:530`, `:537` |
+| Attention §10.4 | `AttentionKind::ContactFirst` (`contact_first`), alert class needs-you | `crates/roster/src/attention.rs:82`, `crates/roster/src/alert.rs:60` |
+| RPC §10.1 | `contact_deliver(envelope) → PeerReceipt` (`Forwarded` only) | `crates/rpc/src/api.rs:251` (impl `:4077`) |
+| | `contact_window(open)`, `contact_nearby()`, `contact_pair(target)`, `contact_answer(ceremony, accept)`, `contact_list()`, `contact_update(name, patch)`, `contact_remove(name, block)`, `a2a_exports()`, `a2a_export_put(export)`, `a2a_export_remove(name)`, `contact_first_answer(contact, export, answer)` | `crates/rpc/src/api.rs:2615-2656` (helper `contacts` `:3779`, impls `:9018-9088`) |
+
+What the stubs answer today, with or without the A2A actor: `contact_list`, `contact_nearby` `[]`; `contact_window(false)` `null`; `a2a_exports` the configured session exports as `{target: {kind: "chat"}}` (`[]` without the actor); every other contact RPC `-32000 contacts are not built yet (183 phase 3)`. `contact_deliver` is `-32002` without `Forwarded`, else `-32000 contact_deliver: exported chats are not built yet (183 phase 3)`. No ALPN is registered, no frame is sent, no window or advert opens, `SetTurnCap` changes nothing, and no `contact_first` item is derived.
+
+### Module split (E3)
+
+| Module | Holds | Called from (markers) |
+|---|---|---|
+| `crates/a2a/src/contacts.rs` | store helpers over `peers.yaml`, the window and ticket, the ceremony, the card, the actor handlers | `crates/rpc/src/api.rs` `contacts`; `crates/a2a/src/lib.rs` plugin start (W-26) |
+| `crates/a2a/src/config.rs` | staging of contacts and agent exports (both refused now) | `stage` |
+| `crates/a2a/src/server.rs` | `iroh_gate`, the iroh stream into `app` with the gate's binding | `dispatch` (bearer step), `Handler::admit` (`contact`) |
+| `crates/agent/src/communication/network.rs` | addressing (`contact_endpoint`/`contact_eid`), `IrohSender`, contact admission (first contact, pause, inbox), `ContactDeliver` | `admit_principal`, the queued-task re-admission |
+| `crates/agent/src/communication.rs` | `Policy::remote` without `a2a.enabled` for contacts (W-26) | `remote` |
+| `crates/agent/src/supervisor.rs` | chat delivery (W-39/W-40), `discover_peers` rows | `PeerDeliver`, `remote_owner`, `ListPeers` |
+| `crates/tools/src/registry.rs` | `SetTurnCap` storage and `cap_for` | `SetTurnCap` handler |
+| `crates/mesh/src/net.rs` | the `theuth/a2a/1` handler, the network join with contacts | `bind` (ALPN list, join) |
+| `crates/roster/src/attention.rs` | `contact_first` items | `AttentionKind::ContactFirst` |
+
+UI (U3) markers: `components/settings/Network.tsx` (the Contacts placeholder), `Communication.tsx` (the "Edit the file" line), `components/chat/Header.tsx` (shared-chat chip), `SessionMenu.tsx` (Stop sharing), `HarnessCards.tsx` (the two cards), `lib/injected.ts` (kinds), `components/attention/Screen.tsx` and `components/hud/Hud.tsx` (`contact_first`), `rpc/events.ts` (`ContactEvent`), `rpc/api.ts` (the 12 methods).
+
+### Deviations from §14, and calls made
+
+1. **No migration** (above).
+2. **Commit and reveal in the ceremony.** §7.4 has `PairRequest{name, nonce_b, ticket}` then `PairChallenge{name, nonce_a, card}`: the inviter sees `nonce_b` before it picks `nonce_a` and could grind the code. The frames follow the mesh's Nearby fix instead (`Request.commit` = base32 `SHA256(nonce_b)`, `Reveal{nonce, card}`); both cards travel, so each side verifies the other's JWS. `Reject{reason}` is added (§7.4 names a Reject, §10.2 lists four frames).
+3. **`contact_pair` returns `mesh::PairCeremony`** (reused, §14.5 lists no contact ceremony type): `peer` is the contact's endpoint id, `os_name` comes from its card.
+4. **`ContactEvent` wire types are `contact_pair` / `contact_nearby`**: the UI dispatches every event on `type`, and `MeshEvent` owns `pair` and `nearby`.
+5. **`ContactTarget` and `ExportTarget` are tagged `kind`** (snake_case: `card_url`); §14.4 gives `ExportTarget`'s tag only.
+6. **`Export.name` is the `peers.yaml` key.** §14.4's `Export` has no card title; E3 writes `ExportEntry.name` from it on put.
+7. **`contact_first` items carry contact and export in the id** `contact_first:<contact>:<export>` (both `[a-z0-9_-]`): no new `AttentionItem` field. Allow once answers `ask` (let this task through, keep asking), Always `allow`, Block `block`.
+8. **Additions not in §14**: `A2aPrincipal.contact` (the inbox cap and the turn cap need the origin at admission), `ContactDeliver`, `ContactRefusal` (§11.4 plus the §7.10/§13 texts), `CardFacts`/`JwsProtected`/`signed_card`/`verify_card`, `IrohGate`/`iroh_gate`, `IrohSender`, `contact_endpoint`/`contact_eid`, `PeerEntry::is_contact`, `MDNS_TYPES`, the ceremony constants.
+9. **The machine in the card** is the extension `EXT_MACHINE` with `params{machine, os_name}`: an A2A card has no machine field.
+10. **`ALPN_A2A` is defined in `mesh::net`** and re-exported by `a2a::contacts`: mesh cannot depend on a2a and the handler lives in `net.rs`. `a2a` gains direct `tools` and `mesh` dependencies (already in its graph through `agent`).
+11. **Staging refuses Phase 3 entries until E3**: a contact entry is `peer <n>: contacts are not built yet`, an agent export `export <n>: agent exports are not built yet`, both or neither `set exactly one of session and agent`. Today's build failed the same files on unknown fields, so A2A stays off with a config error either way (§13 row 23). Test `config::tests::phase_3_fields_decode_and_are_refused_until_built`.
+12. **No pause or turn-cap RPC**: `Export.paused` is derived (W-41), and the turn cap is the `SetTurnCap` tools message.
+13. **`A2aChanged` is unchanged** (no payload); §10.4 only widens when it fires.
+14. **The config template** (`crates/theuth/src/main.rs`) does not list the three keys yet; E3 documents them with the behaviour.
+
+### Bindings the UI worker imports
+
+New: `Contact.ts`, `ContactPatch.ts`, `ContactTarget.ts`, `ContactWindow.ts`, `NearbyAgent.ts`, `Export.ts`, `ExportTarget.ts`, `FirstContact.ts`, `ContactEvent.ts`, `ContactEnvelope.ts`, `ContactOrigin.ts` (1010 → 1021 files). Changed: `AttentionKind.ts` (`contact_first`), `methods.json` (+12). Reused: `PairCeremony.ts`, `PeerPath.ts`, `Risk.ts`. Hand-kept `rpc/api.ts`: the 12 methods and `METHODS`. UI edits forced by the types (each `// 183 P3: UI`): `attention/Screen.tsx` maps `contact_first` to the plain screen, `hud/Hud.tsx` labels it `contact`; `rpc/events.ts` adds `ContactEvent` to the union.
+
+### Gates
+
+- `check` and `clippy --tests --no-deps -- -D warnings` on `-p a2a -p agent -p tools -p rpc -p mesh -p roster -p theuth`: 0 errors, 0 warnings (`Finished`, no diagnostic lines).
+- `mbx test -p a2a -p agent -p rpc -p tools -p roster --no-fail-fast` (full suites, once): a2a 26 (with `contacts::tests::contact_shapes_keep_their_wire_names`, `config::tests::phase_3_fields_decode_and_are_refused_until_built`), roster 100, rpc 81 + 4 integration, tools 218 + 1, agent 803 passed, 4 failed: `sensor::tests::{fs_exists_through_monty, monty_budgets_and_allowlist, pr_watch_type_checks}` and `loop_::runtime_bridge_tests::guessed_direct_calls_are_bridged_or_refused`, all "monty worker crashed: unsupported protocol version 6" (the same environment failure C2 recorded; none in code C3 touched).
+- Bindings: `export_bindings` 8 passed, 1021 files copied to the UI; `tsc -b --noEmit` 0 errors; vitest `src/rpc src/components/{hud,attention,settings,chat} src/lib/injected`: 93 files, 828 tests passed.
+
 ## Phase 2 follow-ups P2-F1 (final engine review should-fixes)
 
 1. **Dial lock.** `close_conns` closes the control and inbound connections first, then waits for `outbound` (held across a dial, up to 30 s) and re-checks `is_paired`: an engine re-paired meanwhile keeps its fresh dials. Test `closing_never_waits_for_a_dial_and_spares_a_re_pair`.

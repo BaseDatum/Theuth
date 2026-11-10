@@ -91,6 +91,16 @@ async fn internal_suffixes_nat64_and_reserved_v4_are_refused() {
         !is_blocked_ip("64:ff9b::808:808".parse().unwrap()),
         "8.8.8.8"
     );
+    // 183 Z3-R3: 6to4 and Teredo tunnel to an IPv4 address: refused; other 2001:: stays open.
+    assert!(
+        is_blocked_ip("2002:7f00:1::1".parse().unwrap()),
+        "6to4 of 127.0.0.1"
+    );
+    assert!(
+        is_blocked_ip("2001:0:4136:e378::1".parse().unwrap()),
+        "Teredo"
+    );
+    assert!(!is_blocked_ip("2001:4860:4860::8888".parse().unwrap()));
     // 240.0.0.0/4 reserved.
     assert!(is_blocked_ip("240.0.0.1".parse().unwrap()));
     assert!(is_blocked_ip("250.1.2.3".parse().unwrap()));

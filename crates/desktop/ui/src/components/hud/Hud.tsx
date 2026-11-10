@@ -20,6 +20,7 @@ import { canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { useSecretRequests } from '@/store/approvals'
+import { FIRST_ANSWERS, contactFirstOf } from '@/lib/contacts'
 import { snoozeUntil } from './model'
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useSessionContexts, useSecretRequestRows, useSessionList, useSpendReport } from './queries'
 import { sceneFixture } from './scene/fixtures'
@@ -175,6 +176,7 @@ export const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   resume: 'resume',
   double: 'double',
   finished: 'Finished',
+  contact_first: 'contact',
 }
 
 /** The chip of one item: a `misplaced:<task>` item (182: the task's agent lives on another machine) is kind `home` but nothing is offline. */
@@ -236,6 +238,7 @@ function AttentionCard({ item }: { item: AttentionItem }) {
           <span className="ml-auto shrink-0 text-xs text-fg-tertiary tabular-nums">{age(item.at_ms)}</span>
         </div>
         {item.detail && <p className="truncate text-fg-secondary">{item.detail}</p>}
+        {item.kind === 'contact_first' && <p className="text-xs text-fg-tertiary">{FIRST_ANSWERS}</p>}
       </div>
       <KindActions item={item} />
     </li>
@@ -284,6 +287,7 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
   const vm = item.kind === 'handoff' ? sandboxes.data?.find((s) => s.name === item.detail || (s.engine !== null && s.engine === item.detail)) : undefined
   const handoffId = item.kind === 'handoff' ? item.id.replace(/^handoff:/, '') : null
   const rows = useSecretRequestRows(item.kind === 'secret')
+  const first = item.kind === 'contact_first' ? contactFirstOf(item.id) : null
   // `useAction` already toasts the failure; the swallowed rejection only keeps the screen where it is.
   const then = (p: Promise<unknown>) => void p.then(() => onResolved?.(), () => undefined)
   return (
@@ -381,6 +385,20 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
         <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.unpause.mutateAsync(item.agent as string))}>
           Un-pause
         </Button>
+      )}
+      {first && (
+        // 183 W-27, C3 call 7: Allow once lets this task through and keeps asking; Always and Block are remembered.
+        <>
+          <Button size={size} disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'ask' }))}>
+            Allow once
+          </Button>
+          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'allow' }))}>
+            Always
+          </Button>
+          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'block' }))}>
+            Block
+          </Button>
+        </>
       )}
       {item.kind !== 'home' && (
         <Button size={size} variant="ghost" disabled={busy} title="Snooze until 09:00 tomorrow" onClick={() => then(act.snooze.mutateAsync({ id: item.id, until: snoozeUntil('tomorrow') }))}>

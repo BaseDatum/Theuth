@@ -7,6 +7,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use a2a::A2aChanged;
+use a2a::contacts::ContactEvent;
 use agent::ask::NotebookAsk;
 use agent::{
     AgentEvent, CommunicationChanged, CostCubeChanged, EndlessProgress, LoginFinished,
@@ -169,6 +170,7 @@ forward!(
     PeerMessageChanged,
     PeerDelivered,
     A2aChanged,
+    ContactEvent,
     ApprovalRequested,
     ApprovalResolved,
     AskRequested,
@@ -242,6 +244,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, PeerMessageChanged>(&actor).await;
     rt.subscribe::<Bridge, PeerDelivered>(&actor).await;
     rt.subscribe::<Bridge, A2aChanged>(&actor).await;
+    rt.subscribe::<Bridge, ContactEvent>(&actor).await; // 183 §10.4: nothing publishes it yet
     rt.subscribe::<Bridge, ApprovalRequested>(&actor).await;
     rt.subscribe::<Bridge, ApprovalResolved>(&actor).await;
     rt.subscribe::<Bridge, AskRequested>(&actor).await;

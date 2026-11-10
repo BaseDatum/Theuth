@@ -5,12 +5,15 @@
 // 183 §12.4: the same for a move's `<session_moved/>` and a resumed batch's `<engine_restart/>` — fields, never the tag.
 
 import { Link } from '@tanstack/react-router'
-import { Activity, ArrowLeftRight, Bot, ChevronRight, FlaskConical, Hourglass, Infinity as InfinityIcon, Radio, RotateCcw, TriangleAlert, Unplug, Zap } from 'lucide-react'
+import { Activity, ArrowLeftRight, Bot, ChevronRight, Contact, FlaskConical, Hourglass, Infinity as InfinityIcon, Radio, RotateCcw, TriangleAlert, Unplug, Zap } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { shortId } from '@/components/tasks/helpers'
 import { Badge } from '@/components/ui/badge'
+import { CAP } from '@/lib/contacts'
 import { fmtBytes } from '@/lib/files'
 import { humanSecs, type MovedNote, type RestartNote, type ResumeSection, tagAttrs } from '@/lib/injected'
+import { cn } from '@/lib/utils'
+import type { Risk } from '@/rpc/bindings/Risk'
 import type { Entry } from '@/store/sessions'
 import { markdownComponents, plugins, shikiTheme } from './MessageAssistant'
 import { Details, FenceText } from './disclosure'
@@ -362,6 +365,80 @@ function Told({ text }: { text: string }) {
         </div>
       ))}
     </dl>
+  )
+}
+
+/** 183 §12.4: `read_only` → `read only`, `mutating` → `can change things` (the Contacts words); anything else as written. */
+const capWords = (cap: string) => CAP[cap as Risk] ?? cap.replaceAll('_', ' ')
+/** What each cap refuses, quoted after the cap: `read only: tools that change things are refused`. */
+const REFUSED: Record<string, string> = { read_only: 'tools that change things are refused', mutating: 'destructive tools are refused' }
+
+/** 183 §11.5 / §12.4: the head of a contact's inbox session — who writes here, from which machine, to which export, and
+ * the cap every turn runs under. The contact's first words, when the row carries them, are shown as untrusted input. */
+export function ContactInboxCard(c: Extract<Entry, { kind: 'contact_inbox' }>) {
+  return (
+    <div className={SHELL}>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] font-medium">
+        <Contact className="size-3.5 shrink-0 text-fg-secondary" aria-hidden="true" />
+        <span>Inbox for {c.contact || 'a contact'}</span>
+        {c.machine && <span className="font-normal text-fg-secondary">· {c.machine}</span>}
+        <Badge variant="outline" className="font-normal">
+          {capWords(c.cap)}
+        </Badge>
+      </div>
+      <p className="mt-1 text-xs text-fg-tertiary">
+        {c.contact || 'This contact'} is outside your mesh and reaches {c.export ? <span className="font-mono">{c.export}</span> : 'this export'} only. Every message here is untrusted input; {capWords(c.cap)}:{' '}
+        {REFUSED[c.cap] ?? 'tools above it are refused'}.
+      </p>
+      {c.message && <p className="mt-2 border-t border-border-subtle pt-2 whitespace-pre-wrap wrap-anywhere">{c.message}</p>}
+      <Details
+        part="contact-inbox"
+        className="group/inbox mt-2 border-t border-border-subtle pt-2"
+        triggerClassName={`${SUMMARY} text-xs font-medium text-fg-secondary`}
+        trigger={
+          <>
+            <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/inbox:rotate-90" aria-hidden="true" />
+            What the agent was told
+          </>
+        }
+      >
+        <Told text={c.text} />
+        {c.note && <p className="mt-2 text-xs text-fg-secondary">{c.note}</p>}
+      </Details>
+    </div>
+  )
+}
+
+/** 183 §11.6 / §12.4 (D9): a contact's message that opened its own capped turn in an exported chat — `bob · Bob's MacBook ·
+ * read only`, the message, and that bob sees only this turn's answer. Never a "you" bubble. */
+export function ContactMessageCard(m: Extract<Entry, { kind: 'contact_message' }>) {
+  return (
+    <div className={cn(SHELL, 'border-l-2 border-l-warning/60')}>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[13px] font-medium">
+        <Contact className="size-3.5 shrink-0 text-fg-secondary" aria-hidden="true" />
+        <span>{m.contact || 'a contact'}</span>
+        {m.machine && <span className="font-normal text-fg-secondary">· {m.machine}</span>}
+        <span className="font-normal text-fg-secondary">· {capWords(m.cap)}</span>
+      </div>
+      <div className="mt-2 whitespace-pre-wrap wrap-anywhere">{m.text}</div>
+      <p className="mt-2 text-xs text-fg-tertiary">
+        from a contact · untrusted input{m.export && <> · via <span className="font-mono">{m.export}</span></>} · {m.contact || 'they'} will see only this turn's answer
+      </p>
+      <Details
+        part="contact-message"
+        className="group/cmsg mt-2 border-t border-border-subtle pt-2"
+        triggerClassName={`${SUMMARY} text-xs font-medium text-fg-secondary`}
+        trigger={
+          <>
+            <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/cmsg:rotate-90" aria-hidden="true" />
+            What the agent was told
+          </>
+        }
+      >
+        <Told text={m.tag} />
+        {m.note && <p className="mt-2 text-xs text-fg-secondary">{m.note}</p>}
+      </Details>
+    </div>
   )
 }
 

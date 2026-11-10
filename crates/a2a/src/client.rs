@@ -308,13 +308,27 @@ struct Exchange {
     id: Uuid,
 }
 
+/// How a [`PeerClient`] reaches its peer.
+enum Link {
+    /// Design 50: an HTTPS card origin and the bearer we present (the only copy of it).
+    Http {
+        base: Url,
+        token: Token,
+        allow_private: bool,
+    },
+    /// 183 §7.2: a contact over `theuth/a2a/1`, authenticated by its pinned endpoint id.
+    Iroh {
+        net: Arc<mesh::net::Net>,
+        eid: String,
+        display: String,
+    },
+}
+
 /// One configured outbound peer (§6.1). Holds the only copy of its bearer.
 pub struct PeerClient {
     /// Owner alias.
     pub name: String,
-    base: Url,
-    token: Token,
-    allow_private: bool,
+    link: Link,
     agents: ActorRef<Agents>,
     vault: Option<Arc<Vault>>,
     /// Cancelled on reload/removal/disable: in-flight sends and followers stop.
@@ -339,26 +353,79 @@ impl PeerClient {
         let (Some(base), Some(token)) = (peer.card.clone(), peer.outbound.clone()) else {
             return Err(format!("peer {} is inbound-only", peer.name));
         };
-        Ok(Self {
+        Ok(Self::with(
+            peer,
+            Link::Http {
+                base,
+                token,
+                allow_private: peer.allow_private,
+            },
+            agents,
+            vault,
+            generation,
+        ))
+    }
+
+    /// 183 §7.7: the client of a contact (`peer.eid` set), over `net`.
+    pub fn contact(
+        peer: &Peer,
+        display: &str,
+        net: Arc<mesh::net::Net>,
+        agents: ActorRef<Agents>,
+        vault: Option<Arc<Vault>>,
+        generation: CancellationToken,
+    ) -> Result<Self, String> {
+        let eid = peer
+            .eid
+            .clone()
+            .ok_or_else(|| format!("peer {} is not a contact", peer.name))?;
+        Ok(Self::with(
+            peer,
+            Link::Iroh {
+                net,
+                eid,
+                display: display.to_owned(),
+            },
+            agents,
+            vault,
+            generation,
+        ))
+    }
+
+    fn with(
+        peer: &Peer,
+        link: Link,
+        agents: ActorRef<Agents>,
+        vault: Option<Arc<Vault>>,
+        generation: CancellationToken,
+    ) -> Self {
+        Self {
             name: peer.name.clone(),
-            base,
-            token,
-            allow_private: peer.allow_private,
+            link,
             agents,
             vault,
             generation,
             connected: Mutex::new(None),
             following: parking_lot::Mutex::new(HashSet::new()),
             probed_name: parking_lot::Mutex::new(None),
-        })
+        }
     }
 
     /// Same identity, origin, credential and egress policy: a reload keeps
     /// this client (and its followers) instead of revoking it.
     pub fn matches(&self, peer: &Peer) -> bool {
-        peer.card.as_ref() == Some(&self.base)
-            && peer.outbound.as_ref() == Some(&self.token)
-            && peer.allow_private == self.allow_private
+        match &self.link {
+            Link::Http {
+                base,
+                token,
+                allow_private,
+            } => {
+                peer.card.as_ref() == Some(base)
+                    && peer.outbound.as_ref() == Some(token)
+                    && peer.allow_private == *allow_private
+            }
+            Link::Iroh { eid, .. } => peer.eid.as_ref() == Some(eid),
+        }
     }
 
     /// The route's revocation token (handed to `RegisterPeerSender`).
@@ -386,10 +453,11 @@ impl PeerClient {
             Some(v) => v.redact(text),
             None => std::borrow::Cow::Borrowed(text),
         };
-        if text.contains(self.token.as_str()) {
-            text.replace(self.token.as_str(), "[redacted outbound secret]")
-        } else {
-            text.into_owned()
+        match &self.link {
+            Link::Http { token, .. } if text.contains(token.as_str()) => {
+                text.replace(token.as_str(), "[redacted outbound secret]")
+            }
+            _ => text.into_owned(),
         }
     }
 
@@ -423,24 +491,43 @@ impl PeerClient {
         }
     }
 
-    /// Resolve the card and negotiate the client once per generation (§4).
-    pub async fn connect(&self) -> Result<Arc<Connected>, ConnectError> {
+    /// Resolve the card and negotiate the client once per generation (§4). 183 §7.7: a
+    /// contact's client is built per send (each call opens its own stream, nothing to
+    /// negotiate), aimed at `export` (`peer:<contact>/<export>`) or the contact's first.
+    pub async fn connect(&self, export: Option<&str>) -> Result<Arc<Connected>, ConnectError> {
+        let (base, token, allow_private) = match &self.link {
+            Link::Http {
+                base,
+                token,
+                allow_private,
+            } => (base, token, *allow_private),
+            // The card was verified at the ceremony; the channel is the pin.
+            Link::Iroh { net, eid, display } => {
+                let transport: Box<dyn Transport> =
+                    Box::new(crate::contacts::reach::IrohTransport {
+                        net: net.clone(),
+                        eid: eid.clone(),
+                        hints: Default::default(),
+                        export: export.map(str::to_owned),
+                    });
+                return Ok(Arc::new(Connected {
+                    client: a2a_client::A2AClient::new(transport),
+                    card_name: self.remote_text(display),
+                }));
+            }
+        };
         let mut slot = self.connected.lock().await;
         if let Some(c) = &*slot {
             return Ok(c.clone());
         }
-        let (host, addrs) = pinned_addrs(&self.base, self.allow_private).await?;
-        let card = fetch_card(
-            &http(&self.base, &host, &addrs, Some(&self.token))?,
-            &self.base,
-        )
-        .await?;
-        let wanted = compatible_interface(&self.base, &card)?;
-        let transport = JsonRpcTransportFactory::new(Some(http(&self.base, &host, &addrs, None)?));
+        let (host, addrs) = pinned_addrs(base, allow_private).await?;
+        let card = fetch_card(&http(base, &host, &addrs, Some(token))?, base).await?;
+        let wanted = compatible_interface(base, &card)?;
+        let transport = JsonRpcTransportFactory::new(Some(http(base, &host, &addrs, None)?));
         let factory = A2AClientFactory::builder()
             .no_defaults()
             .register(Arc::new(transport))
-            .with_interceptor(Arc::new(Bearer(self.token.clone())))
+            .with_interceptor(Arc::new(Bearer(token.clone())))
             .build();
         let (client, selected) = factory
             .create_from_card_with_interface(&card)
@@ -649,13 +736,16 @@ impl PeerClient {
                 "communication route revoked".into(),
             ));
         }
-        let connected = self.connect().await.map_err(|e| {
-            RemoteSendError::Refused(format!(
-                "peer {}: {}",
-                self.name,
-                self.remote_text(&e.to_string())
-            ))
-        })?;
+        let connected = self
+            .connect(outbound.export.as_deref())
+            .await
+            .map_err(|e| {
+                RemoteSendError::Refused(format!(
+                    "peer {}: {}",
+                    self.name,
+                    self.remote_text(&e.to_string())
+                ))
+            })?;
         let mut message = Message::new(
             Role::User,
             vec![Part::text(self.redact(&outbound.record.text))],

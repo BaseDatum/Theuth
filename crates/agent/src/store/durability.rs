@@ -940,7 +940,10 @@ impl Store {
             .iter()
             .find(|s| s.kind == StepKind::InputAccepted.as_str())
             .is_some_and(|s| {
-                matches!(json(&s.payload)["source"].as_str(), Some("peer" | "scoped"))
+                matches!(
+                    json(&s.payload)["source"].as_str(),
+                    Some("peer" | "scoped" | "contact")
+                )
             });
         let mut kind = ResumeKind::Interrupted;
         let mut suspended_reason = None;
@@ -1077,6 +1080,33 @@ impl Store {
             &serde_json::json!({ "input_id": input_id, "source": source }),
         )
         .await
+    }
+
+    /// 183 Z3-R3: `turn` of `session` is a contact's turn in an exported chat: its journal's
+    /// `input_accepted` source is `contact` (written with the opener's consumption, so harness
+    /// rows later in the turn cannot hide it). `Some(the opener's exchange id)`. A turn
+    /// whose journal has no `input_accepted` at all (its step failed) is not known to be
+    /// the owner's, so it counts as one too (fail closed, `Some(None)`).
+    pub async fn contact_turn_input(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+    ) -> anyhow::Result<Option<Option<String>>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT payload FROM turn_steps \
+             WHERE session_id = ? AND turn_id = ? AND kind = 'input_accepted' ORDER BY n",
+        )
+        .bind(session.to_string())
+        .bind(turn.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        if rows.is_empty() {
+            return Ok(Some(None));
+        }
+        Ok(rows.iter().map(|(p,)| json(p)).find_map(|p| {
+            (p["source"].as_str() == Some("contact"))
+                .then(|| p["input_id"].as_str().map(str::to_owned))
+        }))
     }
 
     /// §3.3 step 2: `reserve_call` plus `turn_steps(model_call)` with the
@@ -1922,6 +1952,51 @@ mod tests {
         .unwrap();
         tx.commit().await.unwrap();
         t
+    }
+
+    /// 183 Z3-R3: a contact's turn is known from its journal, not from its last user row, so
+    /// a harness row the turn writes after the opener (a note, a budget note, a surface or
+    /// cell correction, the compaction head) never makes its resume uncapped. A turn whose
+    /// opener left no `input_accepted` counts as a contact's (fail closed); an owner's does not.
+    #[tokio::test]
+    async fn a_contact_turn_is_known_from_its_journal_whatever_rows_follow() {
+        let (store, s, _dir) = fresh().await;
+        for harness in [
+            "<harness_note>the build tool timed out</harness_note>",
+            "Budget: 80% of this turn's tokens are spent.",
+            "Your json-render fence did not parse: fix it and send the block again.",
+            "<compaction_head>Earlier in this conversation …</compaction_head>",
+        ] {
+            let t = TurnId::new();
+            store
+                .append(s, &ChatMessage::user("<contact_message contact=\"bob\">hi"))
+                .await
+                .unwrap();
+            store
+                .input_accepted(s, t, Some("ex-1"), "contact")
+                .await
+                .unwrap();
+            store.append(s, &ChatMessage::user(harness)).await.unwrap();
+            assert_eq!(
+                store.contact_turn_input(s, t).await.unwrap(),
+                Some(Some("ex-1".to_owned())),
+                "{harness}"
+            );
+            assert!(store.resume_plan(s, t).await.unwrap().bounded);
+            store.finish_turn(s, t, "stop").await.unwrap();
+        }
+        let owner = TurnId::new();
+        store.input_accepted(s, owner, None, "user").await.unwrap();
+        assert_eq!(store.contact_turn_input(s, owner).await.unwrap(), None);
+        let unknown = TurnId::new();
+        store
+            .step(s, unknown, StepKind::ModelCall, Some("mc"), &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.contact_turn_input(s, unknown).await.unwrap(),
+            Some(None)
+        );
     }
 
     #[tokio::test]

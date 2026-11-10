@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
 import type * as Rpc from '@/lib/rpc'
+import { useToolRuns, disclosureKey } from '@/lib/tool-runs'
+import { DisclosureScope } from './disclosure'
 import { MessagePeer } from './MessagePeer'
 import { Peers } from './Peers'
 
@@ -66,4 +68,27 @@ test.each(['chat first', 'settings first'])('peer request cache survives navigat
     page.awaiting_answer = [origin.id]
     qc.clear()
   }
+})
+
+test('183: a contact\'s later inbox message renders as plain text: no image loads, no live link, no Markdown', () => {
+  const text = 'Look ![x](http://attacker/x.png)\nand [click](http://attacker/go) **now**'
+  const html = (from: string) => {
+    useToolRuns.setState({ disclosed: { [disclosureKey('e1', 'peer')]: true } })
+    const qc = new QueryClient()
+    const card = createElement(MessagePeer, { session: 'inbox', origin: { ...origin, from }, from, text })
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(DisclosureScope, { value: 'e1', children: card }) }))
+  }
+  for (const from of ['peer:b1', 'contact:studio:bob']) {
+    const out = html(from)
+    expect(out).not.toContain('<img')
+    expect(out).not.toContain('attacker/x.png"')
+    expect(out).not.toContain('data-streamdown')
+    expect(out).toContain('![x](http://attacker/x.png)')
+    expect(out).toContain('[click](http://attacker/go) **now**')
+  }
+  // A mesh session's message is still Markdown (the image even preloads: why outsiders never get it).
+  const mesh = html('session:sender')
+  expect(mesh).toContain('data-streamdown="link"')
+  expect(mesh).toContain('href="http://attacker/x.png"')
+  useToolRuns.setState({ disclosed: {} })
 })

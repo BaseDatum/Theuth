@@ -173,7 +173,8 @@ pub struct PairCeremony {
     /// Its display OS.
     pub os_name: String,
     /// Where the other engine is: the advert's address (dialer) or the connection's remote
-    /// address (acceptor); `""` when unknown.
+    /// address (acceptor); `""` when unknown. A contact ceremony (§7.4): the contact's
+    /// machine, from its card.
     #[serde(default)]
     pub addr: String,
     /// The 6-digit check code, shown `482 913`.

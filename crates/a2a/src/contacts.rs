@@ -1,0 +1,2201 @@
+//! 183 Phase 3 (§7, §14.4): contacts — separate harnesses reached over A2A on
+//! `theuth/a2a/1`. The contact store is `peers.yaml` ([`crate::config::PeersFile`], W-24,
+//! [`store`]); this module holds what the contact RPCs return, the invite ticket, the
+//! ceremony's state and frames ([`ceremony`]), the Agent Card theuth signs, the Add contact
+//! window and its LAN discovery ([`discovery`]), the `theuth/a2a/1` reach ([`reach`]) and the
+//! actor messages behind `contact_*` / `a2a_export*`.
+
+use std::collections::BTreeMap;
+
+use a2a_types::AgentCard;
+use agent::communication::network::{ChatPaused, UNKNOWN_SESSION};
+use kameo::message::{Context, Message};
+use kameo::reply::DelegatedReply;
+use runtime::SessionId;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::A2aActor;
+use crate::config::{ExportEntry, FirstContact, PeerEntry, PeersFile};
+
+pub mod ceremony;
+pub mod discovery;
+#[cfg(test)]
+pub(crate) mod e2e_tests;
+pub mod reach;
+pub mod store;
+
+/// 183 §7.2 (W-21): the contact ALPN, one HTTP/1.1 request (or one ceremony) per bi stream.
+pub const ALPN_A2A: &str = mesh::net::ALPN_A2A;
+/// 183 §7.3: the card's custom `protocolBinding` for the iroh interface.
+pub const BINDING_IROH: &str = "https://theuth.io/a2a/bindings/iroh/v1";
+/// 183 §7.3: `supportedInterfaces[0].url` = this prefix + the endpoint id; also the
+/// `peer_bindings.endpoint` of a contact.
+pub const IROH_URL_PREFIX: &str = agent::communication::network::IROH_PREFIX;
+/// 183 §7.4: invite tickets read `theuth-contact:1.<base32 json InviteTicket>`.
+pub const TICKET_PREFIX: &str = "theuth-contact:1.";
+/// 183 §7.4: the domain string hashed first into the 6-digit code.
+pub const CODE_DOMAIN: &str = "theuth-contact-v1";
+/// 183 §7.4: a ceremony waits this long for both Accepts.
+pub const CEREMONY_SECS: u64 = 120;
+/// 183 §7.4: failed ceremonies from one endpoint id that refuse it for the window.
+pub const FAILED_MAX: u32 = 3;
+/// 183 §7.4: failed ceremonies, whoever from, that close the window.
+pub const FAILED_GLOBAL_MAX: u32 = 10;
+/// 183 Z3-R2: longest card name or machine text kept or shown.
+pub const CARD_TEXT_MAX: usize = 64;
+/// 183 §8.2: Nearby agents listed at most.
+pub const NEARBY_MAX: usize = 32;
+/// 183 §7.1 (LAD §4.6): card fetches per window.
+pub const CARD_FETCHES_MAX: u32 = 8;
+/// 183 §7.1 (LAD §4.6): largest card body.
+pub const CARD_BYTES_MAX: usize = 256 * 1024;
+/// 183 §7.1 (LAD §4.6): one card fetch's deadline.
+pub const CARD_FETCH_SECS: u64 = 30;
+/// 183 §7.0 (W-22): the card's JWS protected-header `alg`.
+pub const JWS_ALG: &str = "EdDSA";
+/// 183 §7.0 (W-22): the card's JWS protected-header `typ` (A2A §8.4 SHOULD).
+pub const JWS_TYP: &str = "JOSE";
+/// 183 §7.3: the card extension whose `params` carry `machine` and `os_name`.
+pub const EXT_MACHINE: &str = "https://theuth.io/a2a/ext/machine/v1";
+/// What the contact RPCs answer when this process runs no a2a plugin.
+pub const OFF: &str = "contacts are unavailable: the a2a plugin is not running";
+
+// ---------------------------------------------------------------------------
+// What the RPCs return (§14.4, TS)
+// ---------------------------------------------------------------------------
+
+/// One contact as Settings › Network › Contacts shows it (`contact_list`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Contact {
+    /// Owner alias: the `peer:<name>` address and the `peers.yaml` key.
+    pub name: String,
+    /// The contact's machine, from its card.
+    pub machine: String,
+    /// Pinned iroh endpoint id.
+    pub endpoint: String,
+    /// §7.3: the endpoint id in groups of 4 base32 characters, first 20 characters.
+    pub fingerprint: String,
+    /// How it is reached right now.
+    pub path: mesh::PeerPath,
+    /// Its risk cap (`read_only` | `mutating`).
+    pub cap: tools::Risk,
+    /// Export names granted to it.
+    pub exports: Vec<String>,
+    /// Export → first-contact answer; a missing export is `ask`.
+    pub first_contact: BTreeMap<String, FirstContact>,
+    /// Refused at the gate.
+    pub blocked: bool,
+    /// When the ceremony finished (ms since epoch).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub paired_ms: u64,
+}
+
+/// `contact_update`: each `Some` field replaces the contact's value.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(default)]
+pub struct ContactPatch {
+    /// Rename (the alias).
+    pub name: Option<String>,
+    /// New cap; lowering it applies to live inbox sessions at once (§7.6).
+    pub cap: Option<tools::Risk>,
+    /// The granted export names, whole.
+    pub exports: Option<Vec<String>>,
+    /// Block or unblock.
+    pub blocked: Option<bool>,
+}
+
+/// `contact_pair`: whom to start the ceremony with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContactTarget {
+    /// A theuth agent in the Nearby list, by its endpoint id.
+    Nearby {
+        /// Endpoint id (from its verified card, not the TXT hint).
+        eid: String,
+    },
+    /// A pasted or scanned invite ticket (`theuth-contact:1.…`).
+    Ticket {
+        /// The ticket string.
+        ticket: String,
+    },
+    /// A foreign agent's card URL: the HTTP A2A form (§7.1).
+    CardUrl {
+        /// Card URL or its base.
+        url: String,
+    },
+}
+
+/// `contact_window(true)`: the open Add contact window's invite ticket.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ContactWindow {
+    /// `theuth-contact:1.…`, for the QR and the copy button.
+    pub ticket: String,
+    /// When the window and the ticket expire (ms since epoch).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub expires_ms: u64,
+}
+
+/// `contact_nearby`: one A2A agent the browse saw (a hint, never stored, §7.1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct NearbyAgent {
+    /// DNS-SD instance name (the card `name`).
+    pub name: String,
+    /// The service type it was seen under (`_a2a._tcp`, …).
+    pub service: String,
+    /// The address it was seen at.
+    pub addr: String,
+    /// TXT `eid` (a theuth agent), a 16-char hint.
+    pub eid: Option<String>,
+    /// Card URL (TXT `card` / `cardUrl` / `path` against `addr`).
+    pub card: Option<String>,
+    /// The fetched card's JWS verified against the endpoint id in its iroh interface.
+    pub verified: bool,
+}
+
+/// 183 D9: what an export publishes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ExportTarget {
+    /// One of this machine's agents: a fresh capped inbox per (contact, export) (W-25).
+    Agent {
+        /// `<agent>@<engine>` desk root, or `theuth`.
+        agent: String,
+    },
+    /// One chat of any machine in the mesh: one capped turn per message (§7.10).
+    Chat {
+        /// The exported session.
+        session: SessionId,
+    },
+}
+
+/// One export (`a2a_exports`, `a2a_export_put`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Export {
+    /// Export name: the `peers.yaml` key, `[a-z0-9_-]`.
+    pub name: String,
+    /// What it publishes.
+    pub target: ExportTarget,
+    /// Card description.
+    pub description: String,
+    /// W-41: why the export answers nothing now: `chat archived` | `agent messaging off`.
+    #[serde(default)]
+    pub paused: Option<String>,
+    /// 183 Z3-R2: the tools a contact session of this export may use besides the reply.
+    /// `a2a_exports` always fills it; a `put` without it keeps the export's list (a new
+    /// export: `search_web`, `read_url`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tools: Option<Vec<String>>,
+}
+
+/// 183 §10.4: contact bus events. Wire `type` names are prefixed: `MeshEvent` already owns
+/// `pair` and `nearby`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type", content = "data")]
+pub enum ContactEvent {
+    /// A ceremony started, its code, or its outcome (`PairCeremony.peer` = endpoint id).
+    #[serde(rename = "contact_pair")]
+    Pair(mesh::PairCeremony),
+    /// The Nearby agents list changed.
+    #[serde(rename = "contact_nearby")]
+    Nearby(Vec<NearbyAgent>),
+}
+
+// ---------------------------------------------------------------------------
+// Invite ticket and ceremony (§7.4; engine-internal, no TS)
+// ---------------------------------------------------------------------------
+
+/// The JSON inside `theuth-contact:1.<base32>`: how to reach the inviter. Single use,
+/// expires with the window; it grants nothing by itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InviteTicket {
+    /// The inviter's endpoint id.
+    pub eid: String,
+    /// The inviter's card name.
+    pub name: String,
+    /// Its home relay URL, when it has one.
+    #[serde(default)]
+    pub relay: Option<String>,
+    /// Its direct addresses (`ip:port`).
+    #[serde(default)]
+    pub addrs: Vec<String>,
+    /// The window's nonce: the invitee echoes it in `PairFrame::Request.ticket`.
+    pub nonce: String,
+    /// Expiry (ms since epoch).
+    pub exp: u64,
+}
+
+/// The first line of a `theuth/a2a/1` stream that carries a ceremony instead of an HTTP
+/// request: `{"pair": …}` (§7.4, §10.2), then one JSON line per frame.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PairLine {
+    /// The frame.
+    pub pair: PairFrame,
+}
+
+/// Ceremony frames. B (invitee, the dialer) commits to its nonce before it sees A's, as the
+/// mesh's Nearby ceremony does (`mesh::net::Msg::PairRequest.commit`), so neither side can
+/// steer the code.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PairFrame {
+    /// B → A: start. `commit` = base32 `SHA256(nonce_b)`.
+    Request {
+        /// B's card name.
+        name: String,
+        /// B's machine.
+        machine: String,
+        /// B's nonce, committed.
+        commit: String,
+        /// The invite ticket's `nonce`; `None` for a Nearby dial into an open window.
+        #[serde(default)]
+        ticket: Option<String>,
+    },
+    /// A → B: A's nonce and A's signed card (B verifies its JWS against A's id).
+    Challenge {
+        /// A's nonce.
+        nonce: String,
+        /// A's signed public card.
+        card: Box<AgentCard>,
+    },
+    /// B → A: B opens its commitment and sends its signed card; both sides now show the code.
+    Reveal {
+        /// B's nonce.
+        nonce: String,
+        /// B's signed public card.
+        card: Box<AgentCard>,
+    },
+    /// Either side, after its human pressed Accept: the exports it grants the other.
+    Accept {
+        /// Export names.
+        #[serde(default)]
+        exports: Vec<String>,
+    },
+    /// Either side: Reject, a mismatch or a timeout; the ceremony ends.
+    Reject {
+        /// Why, for the other side's log.
+        #[serde(default)]
+        reason: String,
+    },
+    /// Best effort after Remove or Block (§7.4 Revocation).
+    Revoke {},
+}
+
+/// Which side of a ceremony this engine is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// A: opened the window (Nearby advert or invite ticket).
+    Inviter,
+    /// B: dialed in.
+    Invitee,
+}
+
+/// The four inputs of the 6-digit code (§7.4): `u32(sha256(CODE_DOMAIN ‖ min(id_a,id_b) ‖
+/// max(id_a,id_b) ‖ nonce_a ‖ nonce_b)[0..4]) mod 10^6`, shown `482 913`. `a` is always the
+/// inviter, `b` the invitee, on both engines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeInputs {
+    /// Inviter's endpoint id.
+    pub id_a: String,
+    /// Invitee's endpoint id.
+    pub id_b: String,
+    /// Inviter's nonce.
+    pub nonce_a: String,
+    /// Invitee's nonce.
+    pub nonce_b: String,
+}
+
+/// One ceremony in progress on this engine (one at a time per window).
+#[derive(Clone, Debug)]
+pub struct Ceremony {
+    /// `contact_answer(ceremony, …)`.
+    pub id: Uuid,
+    /// This engine's side.
+    pub role: Role,
+    /// The other engine's endpoint id (from QUIC, never from a frame).
+    pub peer: String,
+    /// Its card name.
+    pub name: String,
+    /// Its machine.
+    pub machine: String,
+    /// Our nonce.
+    pub nonce: String,
+    /// The invitee's commitment (inviter side).
+    pub commit: Option<String>,
+    /// Their nonce, once sent (`Challenge` or `Reveal`).
+    pub their_nonce: Option<String>,
+    /// Their signed card, once verified.
+    pub card: Option<Box<AgentCard>>,
+    /// Our human pressed Accept.
+    pub accepted: bool,
+    /// Their `Accept` arrived (with the exports they grant us).
+    pub their_accept: Option<Vec<String>>,
+    /// `CEREMONY_SECS` after the request (ms since epoch).
+    pub expires_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// The Agent Card theuth signs (§7.0 W-22, §7.3)
+// ---------------------------------------------------------------------------
+
+/// What theuth puts in its public card: `name`, `description`, `version`,
+/// `supportedInterfaces` = `[{url: "iroh:<endpoint>", protocolBinding: BINDING_IROH,
+/// protocolVersion: "1.0"}]` plus the HTTPS one when `public_url` is set,
+/// `capabilities{streaming: true, pushNotifications: false, extensions: [{uri:
+/// EXT_MACHINE, params: {machine, os_name}}]}`, and one skill per export granted to the
+/// card's reader (none in the public card).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardFacts {
+    /// Card name: this engine's contact name.
+    pub name: String,
+    /// Card description.
+    pub description: String,
+    /// Mesh name of this machine.
+    pub machine: String,
+    /// `platform::process::machine().os_name`.
+    pub os_name: String,
+    /// This engine's endpoint id.
+    pub endpoint: String,
+    /// `a2a.public_url`, for the second interface.
+    pub public_url: Option<String>,
+    /// (export name, description) pairs listed as skills.
+    pub skills: Vec<(String, String)>,
+}
+
+/// The JWS protected header (RFC 7515) over the JCS-canonical card without `signatures`
+/// (RFC 8785, A2A §8.4): `{"alg": "EdDSA", "kid": "<endpoint id>", "typ": "JOSE"}`. The
+/// envelope is the SDK's `a2a_types::AgentCardSignature{protected, signature}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JwsProtected {
+    /// [`JWS_ALG`].
+    pub alg: String,
+    /// The signer's endpoint id.
+    pub kid: String,
+    /// [`JWS_TYP`].
+    pub typ: String,
+}
+
+/// RFC 8785 (JCS) for the JSON an Agent Card holds: object members sorted by their names'
+/// UTF-16 code units, no insignificant whitespace, strings escaped as ECMAScript's
+/// `JSON.stringify` does (serde_json's escaping is the same: `"`, `\`, the C0 controls,
+/// short forms for `\b \f \n \r \t`, lowercase `\u00xx` otherwise). Integers print as is.
+/// ponytail: a float is printed by serde_json's shortest form, which equals ECMAScript's
+/// for every value a card carries; a generic JCS crate if cards ever carry exponents.
+pub fn jcs(v: &serde_json::Value) -> String {
+    use serde_json::Value;
+    fn put(v: &Value, out: &mut String) {
+        match v {
+            Value::Object(m) => {
+                let mut keys: Vec<&String> = m.keys().collect();
+                keys.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+                out.push('{');
+                for (i, k) in keys.into_iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&Value::String(k.clone()).to_string());
+                    out.push(':');
+                    put(&m[k], out);
+                }
+                out.push('}');
+            }
+            Value::Array(a) => {
+                out.push('[');
+                for (i, x) in a.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    put(x, out);
+                }
+                out.push(']');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+    let mut out = String::new();
+    put(v, &mut out);
+    out
+}
+
+/// The JWS signing input of `card` (its `signatures` left out) under `protected`:
+/// `BASE64URL(protected) . BASE64URL(JCS(card))`.
+fn signing_input(card: &AgentCard, protected_b64: &str) -> Result<String, String> {
+    let mut bare = card.clone();
+    bare.signatures = None;
+    let v = serde_json::to_value(&bare).map_err(|e| e.to_string())?;
+    let payload = data_encoding::BASE64URL_NOPAD.encode(jcs(&v).as_bytes());
+    Ok(format!("{protected_b64}.{payload}"))
+}
+
+/// The theuth public card for `facts` (unsigned).
+pub fn card(facts: &CardFacts) -> AgentCard {
+    use a2a_types::{AgentCapabilities, AgentExtension, AgentInterface, AgentSkill};
+    let mut interfaces = vec![AgentInterface::new(
+        agent::communication::network::contact_endpoint(&facts.endpoint),
+        BINDING_IROH,
+    )];
+    if let Some(url) = &facts.public_url {
+        interfaces.push(AgentInterface::new(
+            url.clone(),
+            a2a_types::TRANSPORT_PROTOCOL_JSONRPC,
+        ));
+    }
+    let params = std::collections::HashMap::from([
+        ("machine".to_owned(), facts.machine.clone().into()),
+        ("os_name".to_owned(), facts.os_name.clone().into()),
+    ]);
+    AgentCard {
+        name: facts.name.clone(),
+        description: facts.description.clone(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        supported_interfaces: interfaces,
+        capabilities: AgentCapabilities {
+            streaming: Some(true),
+            push_notifications: Some(false),
+            extensions: Some(vec![AgentExtension {
+                uri: EXT_MACHINE.to_owned(),
+                description: None,
+                required: Some(false),
+                params: Some(params),
+            }]),
+            extended_agent_card: Some(false),
+        },
+        default_input_modes: vec!["text/plain".into()],
+        default_output_modes: vec!["text/plain".into()],
+        skills: facts
+            .skills
+            .iter()
+            .map(|(name, description)| AgentSkill {
+                id: name.clone(),
+                name: name.clone(),
+                description: description.clone(),
+                tags: vec!["text".into()],
+                examples: None,
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
+            })
+            .collect(),
+        provider: None,
+        documentation_url: None,
+        icon_url: None,
+        security_schemes: None,
+        security_requirements: None,
+        signatures: None,
+    }
+}
+
+/// Build the card for `facts` and sign it with the engine key (`sign` = Ed25519 over the
+/// JWS signing input).
+pub fn signed_card(
+    facts: &CardFacts,
+    sign: &dyn Fn(&[u8]) -> Vec<u8>,
+) -> Result<AgentCard, String> {
+    sign_card(card(facts), &facts.endpoint, sign)
+}
+
+/// Sign `card` as `kid` (A2A §8.4): one JWS in `signatures`, replacing any.
+pub fn sign_card(
+    mut card: AgentCard,
+    kid: &str,
+    sign: &dyn Fn(&[u8]) -> Vec<u8>,
+) -> Result<AgentCard, String> {
+    let protected = serde_json::to_string(&JwsProtected {
+        alg: JWS_ALG.to_owned(),
+        kid: kid.to_owned(),
+        typ: JWS_TYP.to_owned(),
+    })
+    .map_err(|e| e.to_string())?;
+    let protected = data_encoding::BASE64URL_NOPAD.encode(protected.as_bytes());
+    let input = signing_input(&card, &protected)?;
+    let signature = data_encoding::BASE64URL_NOPAD.encode(&sign(input.as_bytes()));
+    card.signatures = Some(vec![a2a_types::AgentCardSignature {
+        protected,
+        signature,
+        header: None,
+    }]);
+    Ok(card)
+}
+
+/// Verify `card.signatures[0]` against `eid` (the pinned or dialed endpoint id) and that
+/// its iroh interface names the same id.
+pub fn verify_card(card: &AgentCard, eid: &str) -> Result<(), String> {
+    let key: iroh::EndpointId = eid
+        .parse()
+        .map_err(|_| format!("{eid:?} is not an endpoint id"))?;
+    let iface = agent::communication::network::contact_endpoint(eid);
+    if !card
+        .supported_interfaces
+        .iter()
+        .any(|i| i.protocol_binding == BINDING_IROH && i.url == iface)
+    {
+        return Err("the card's iroh interface names another endpoint".into());
+    }
+    let sig = card
+        .signatures
+        .as_ref()
+        .and_then(|s| s.first())
+        .ok_or("the card is not signed")?;
+    let b64 = |s: &str| {
+        data_encoding::BASE64URL_NOPAD
+            .decode(s.as_bytes())
+            .map_err(|_| "the card signature is not base64url".to_owned())
+    };
+    let protected: JwsProtected = serde_json::from_slice(&b64(&sig.protected)?)
+        .map_err(|_| "the card signature header is not JSON".to_owned())?;
+    if protected.alg != JWS_ALG || protected.kid != eid {
+        return Err(format!(
+            "the card is signed {} by {}, not {JWS_ALG} by its endpoint",
+            protected.alg, protected.kid
+        ));
+    }
+    let bytes: [u8; 64] = b64(&sig.signature)?
+        .try_into()
+        .map_err(|_| "the card signature is not 64 bytes".to_owned())?;
+    let input = signing_input(card, &sig.protected)?;
+    key.verify(input.as_bytes(), &iroh::Signature::from_bytes(&bytes))
+        .map_err(|_| "the card signature does not verify against its endpoint".to_owned())
+}
+
+/// The card's display name, cut to [`CARD_TEXT_MAX`] characters.
+pub fn card_name(card: &AgentCard) -> String {
+    clip(&card.name)
+}
+
+/// The `machine` and `os_name` of a card's [`EXT_MACHINE`] extension (empty when absent),
+/// each cut to [`CARD_TEXT_MAX`] characters.
+pub fn card_machine(card: &AgentCard) -> (String, String) {
+    let params = card
+        .capabilities
+        .extensions
+        .iter()
+        .flatten()
+        .find(|e| e.uri == EXT_MACHINE)
+        .and_then(|e| e.params.as_ref());
+    let get = |k: &str| {
+        clip(
+            params
+                .and_then(|p| p.get(k))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+        )
+    };
+    (get("machine"), get("os_name"))
+}
+
+// ---------------------------------------------------------------------------
+// Actor messages behind the RPCs (§10.1)
+// ---------------------------------------------------------------------------
+
+/// `ask` → `Result<Option<ContactWindow>, String>`: `contact_window(open)`.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactWindowOpen(pub bool);
+
+/// `ask` → `Vec<NearbyAgent>`: `contact_nearby`.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactsNearby;
+
+/// `ask` → `Result<mesh::PairCeremony, String>`: `contact_pair(target)`.
+#[derive(Clone, Debug)]
+pub struct ContactPair(pub ContactTarget);
+
+/// `ask` → `Result<(), String>`: `contact_answer(ceremony, accept)`.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactAnswer {
+    /// The ceremony.
+    pub ceremony: Uuid,
+    /// Accept (`true`) or Reject.
+    pub accept: bool,
+}
+
+/// `ask` → `Vec<Contact>`: `contact_list`.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactsList;
+
+/// `ask` → `Result<Contact, String>`: `contact_update(name, patch)`.
+#[derive(Clone, Debug)]
+pub struct ContactUpdate {
+    /// The contact.
+    pub name: String,
+    /// What changes.
+    pub patch: ContactPatch,
+}
+
+/// `ask` → `Result<(), String>`: `contact_remove(name, block)`.
+#[derive(Clone, Debug)]
+pub struct ContactRemove {
+    /// The contact.
+    pub name: String,
+    /// Keep the entry as `blocked: true` instead of deleting it.
+    pub block: bool,
+}
+
+/// `ask` → `Vec<Export>`: `a2a_exports`.
+#[derive(Clone, Copy, Debug)]
+pub struct ExportsList;
+
+/// `ask` → `Result<(), String>`: `a2a_export_put(export)` (create or replace by name).
+#[derive(Clone, Debug)]
+pub struct ExportPut(pub Export);
+
+/// `ask` → `Result<(), String>`: `a2a_export_remove(name)` (also Stop sharing, §12.10).
+#[derive(Clone, Debug)]
+pub struct ExportRemove {
+    /// Export name.
+    pub name: String,
+}
+
+/// `ask` → `bool` (183 W-41, §12.10): chat `session` was archived or unarchived. When it
+/// is exported here its export row's pause changed, so `A2aChanged` fires (answers `true`).
+#[derive(Clone, Copy, Debug)]
+pub struct ChatArchived {
+    /// The chat.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<(), String>`: `contact_first_answer(contact, export, answer)` from the
+/// `contact_first` Attention item (id `contact_first:<contact>:<export>`).
+#[derive(Clone, Debug)]
+pub struct ContactFirstAnswer {
+    /// The contact.
+    pub contact: String,
+    /// The export it asked for.
+    pub export: String,
+    /// Allow once (`ask` stays) · Always (`allow`) · Block (`block`).
+    pub answer: FirstContact,
+}
+
+// ---------------------------------------------------------------------------
+// The Add contact window and the ceremonies (§7.1, §7.4)
+// ---------------------------------------------------------------------------
+
+/// The A2A actor's contact state: at most one window, the ceremonies running.
+#[derive(Default)]
+pub(crate) struct Contacts {
+    window: Option<Window>,
+    ceremonies: std::collections::HashMap<Uuid, Running>,
+    /// Bumped per window, so a stale expiry timer closes nothing.
+    seq: u64,
+    /// Tests shorten [`CEREMONY_SECS`].
+    pub(crate) ceremony_secs: Option<u64>,
+    /// The one inviter ceremony slot, taken at `admit_request` (before any ceremony shows
+    /// in `ceremonies`) and freed when that ceremony fails or ends.
+    busy: bool,
+    /// Private, link-local and loopback targets are dialed and fetched without a LAN
+    /// sighting (the dev rig and the tests, whose "LAN" is loopback).
+    pub(crate) private_ok: bool,
+}
+
+impl Contacts {
+    pub(crate) fn new(private_ok: bool) -> Self {
+        Self {
+            private_ok,
+            ..Self::default()
+        }
+    }
+}
+
+struct Window {
+    seq: u64,
+    nonce: String,
+    ticket: String,
+    expires_ms: u64,
+    /// The ticket was used (single use).
+    used: bool,
+    /// Failed ceremonies this window (§7.4 Attempts).
+    failed: u32,
+    /// Failed ceremonies per remote endpoint id: [`FAILED_MAX`] refuse that id.
+    failed_by: std::collections::HashMap<String, u32>,
+    /// The advert + browse; dropping it stops both.
+    _mdns: Option<Box<dyn Send>>,
+    /// Sightings, newest first (§8.2: at most [`NEARBY_MAX`]).
+    nearby: Vec<discovery::Sighting>,
+    /// Endpoint ids whose fetched card verified (`NearbyAgent.verified`).
+    verified: std::collections::HashSet<String>,
+    /// Card fetches this window (LAD §4.6).
+    fetches: u32,
+}
+
+pub(crate) struct Running {
+    view: mesh::PairCeremony,
+    role: Role,
+    answers: tokio::sync::mpsc::UnboundedSender<bool>,
+}
+
+impl crate::Ctx {
+    /// This engine's mesh endpoint, once bound.
+    pub(crate) fn net(&self) -> Option<std::sync::Arc<mesh::net::Net>> {
+        self.net.get().cloned()
+    }
+
+    /// This engine's endpoint id.
+    pub(crate) fn me(&self) -> Result<String, String> {
+        self.net()
+            .map(|n| n.id.0.clone())
+            .ok_or_else(|| "this engine has no mesh endpoint".to_owned())
+    }
+
+    /// (card name, machine) of this engine: the user's login name, and the mesh name.
+    pub(crate) fn my_names(&self) -> (String, String) {
+        let machine = mesh::self_name();
+        let name = std::env::var("USER")
+            .ok()
+            .filter(|u| !u.trim().is_empty())
+            .unwrap_or_else(|| machine.clone());
+        (name, machine)
+    }
+
+    /// This engine's signed public card (§7.3).
+    pub(crate) fn my_card(&self) -> Result<AgentCard, String> {
+        let net = self.net().ok_or("this engine has no mesh endpoint")?;
+        let (name, machine) = self.my_names();
+        let facts = CardFacts {
+            description: format!("theuth on {machine}"),
+            name,
+            machine,
+            os_name: platform::process::machine().os_name.clone(),
+            endpoint: net.id.0.clone(),
+            public_url: self.public_url.clone(),
+            skills: Vec::new(),
+        };
+        signed_card(&facts, &|m: &[u8]| net.sign(m))
+    }
+
+    /// A fresh nonce and this engine's signed card, for a ceremony.
+    pub(crate) fn my_nonce_and_card(&self) -> Result<(String, AgentCard), String> {
+        Ok((ceremony::nonce(), self.my_card()?))
+    }
+
+    /// How long a ceremony waits for both Accepts ([`CEREMONY_SECS`]; tests shorten it).
+    pub(crate) fn ceremony_secs(&self) -> u64 {
+        self.contacts.lock().ceremony_secs.unwrap_or(CEREMONY_SECS)
+    }
+
+    /// An Add contact window is open now.
+    pub(crate) fn window_open(&self) -> bool {
+        let now = mesh::identity::now_ms();
+        self.contacts
+            .lock()
+            .window
+            .as_ref()
+            .is_some_and(|w| w.expires_ms > now)
+    }
+
+    /// §7.2: what `theuth/a2a/1` lets `remote` do.
+    pub(crate) fn gate(&self, remote: &str) -> crate::server::IrohGate {
+        let open = self.window_open();
+        crate::server::iroh_gate(&self.shared.read(), remote, open)
+    }
+
+    /// §7.4: may `remote` start a ceremony now? One at a time (the slot is taken here, and
+    /// freed when the ceremony fails or ends), inside an open window, not an endpoint that
+    /// failed [`FAILED_MAX`] times, a ticket's nonce only once, and without a ticket only
+    /// from an endpoint a LAN sighting of this window shows (its `eid` hint).
+    pub(crate) fn admit_request(&self, remote: &str, ticket: Option<&str>) -> Result<(), String> {
+        let now = mesh::identity::now_ms();
+        let mut guard = self.contacts.lock();
+        let s = &mut *guard;
+        if s.busy || !s.ceremonies.is_empty() {
+            return Err("another contact ceremony is running".into());
+        }
+        let w = s
+            .window
+            .as_mut()
+            .filter(|w| w.expires_ms > now)
+            .ok_or("no Add contact window is open")?;
+        if w.failed_by.get(remote).is_some_and(|n| *n >= FAILED_MAX) {
+            return Err("too many failed ceremonies from this endpoint".into());
+        }
+        match ticket {
+            Some(t) => {
+                if w.used || t != w.nonce {
+                    return Err("the invite ticket was used or is not this window's".into());
+                }
+                w.used = true;
+            }
+            None => {
+                let seen = w.nearby.iter().any(|x| {
+                    x.txt
+                        .get("eid")
+                        .is_some_and(|h| !h.is_empty() && remote.starts_with(h.as_str()))
+                });
+                if !seen {
+                    return Err("a request without a ticket must come from a Nearby agent".into());
+                }
+            }
+        }
+        s.busy = true;
+        tracing::info!(%remote, ticket = ticket.is_some(), "a2a: contact ceremony requested");
+        Ok(())
+    }
+
+    /// A ceremony reached its code: register it, publish it, and hand back its answers.
+    pub(crate) fn ceremony_started(
+        self: &std::sync::Arc<Self>,
+        role: Role,
+        peer: &str,
+        name: &str,
+        machine: &str,
+        card: &AgentCard,
+        code: String,
+    ) -> (Uuid, tokio::sync::mpsc::UnboundedReceiver<bool>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let id = Uuid::now_v7();
+        let shown = card_name(card);
+        let shown = if shown.is_empty() { clip(name) } else { shown };
+        // 183 Z3-R2: the same name under another key is shown as such, before the owner
+        // compares codes.
+        let lookalike = self
+            .shared
+            .read()
+            .staged
+            .contacts
+            .values()
+            .any(|c| c.display == shown && c.eid != peer);
+        if lookalike {
+            tracing::warn!(%shown, %peer, "a2a: ceremony peer has the name of an existing contact but another key");
+        }
+        let view = mesh::PairCeremony {
+            id,
+            peer: mesh::EngineId(peer.to_owned()),
+            name: if lookalike {
+                format!("{shown} (new key — not your existing {shown})")
+            } else {
+                shown
+            },
+            os_name: card_machine(card).1,
+            // 183 §12.7: the ceremony shows the other side's machine. The pin is the endpoint
+            // id; where it answered from is not tracked, so `addr` carries the machine.
+            addr: Some(card_machine(card).0)
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| clip(machine)),
+            code,
+            state: "waiting".into(),
+            expires_ms: mesh::identity::now_ms() + self.ceremony_secs() * 1000,
+        };
+        tracing::info!(ceremony = %id, %peer, %machine, ?role, "a2a: contact ceremony shows its code");
+        self.contacts.lock().ceremonies.insert(
+            id,
+            Running {
+                view: view.clone(),
+                role,
+                answers: tx,
+            },
+        );
+        let c = self.clone();
+        tokio::spawn(async move { ceremony::publish(&c, view).await });
+        (id, rx)
+    }
+
+    /// The ceremony as `contact_pair` answers it.
+    pub(crate) fn ceremony_view(&self, id: Uuid) -> Option<mesh::PairCeremony> {
+        self.contacts
+            .lock()
+            .ceremonies
+            .get(&id)
+            .map(|r| r.view.clone())
+    }
+
+    /// A ceremony's state changed (this side accepted).
+    pub(crate) async fn ceremony_state(&self, id: Uuid, state: &str) {
+        let view = {
+            let mut s = self.contacts.lock();
+            let Some(r) = s.ceremonies.get_mut(&id) else {
+                return;
+            };
+            r.view.state = state.to_owned();
+            r.view.clone()
+        };
+        ceremony::publish(self, view).await;
+    }
+
+    /// §7.4 Attempts: a failed ceremony counts against `remote` ([`FAILED_MAX`] refuse that
+    /// endpoint for the window) and the window ([`FAILED_GLOBAL_MAX`] close it). A failed
+    /// inviter ceremony frees the one ceremony slot.
+    pub(crate) fn ceremony_failed(&self, remote: &str, role: Role) {
+        let close = {
+            let mut s = self.contacts.lock();
+            if role == Role::Inviter {
+                s.busy = false;
+            }
+            match s.window.as_mut() {
+                Some(w) => {
+                    w.failed += 1;
+                    *w.failed_by.entry(remote.to_owned()).or_default() += 1;
+                    w.failed >= FAILED_GLOBAL_MAX
+                }
+                None => false,
+            }
+        };
+        if close {
+            tracing::info!("a2a: {FAILED_GLOBAL_MAX} failed contact ceremonies close the window");
+            self.close_window();
+        }
+    }
+
+    /// The ceremony ended (`paired`, `rejected`, `expired`).
+    pub(crate) async fn ceremony_ended(&self, id: Uuid, state: &str) {
+        let mut r = {
+            let mut s = self.contacts.lock();
+            let Some(r) = s.ceremonies.remove(&id) else {
+                return;
+            };
+            if r.role == Role::Inviter {
+                s.busy = false;
+            }
+            r
+        };
+        r.view.state = state.to_owned();
+        tracing::info!(ceremony = %id, %state, "a2a: contact ceremony ended");
+        ceremony::publish(self, r.view).await;
+    }
+
+    /// Both accepted: pin the other side's endpoint id (TOFU) in `peers.yaml`; the
+    /// inviter's window closes. A known endpoint keeps its alias and settings.
+    pub(crate) async fn pin(&self, id: Uuid, card: &AgentCard) -> Result<(), String> {
+        let (eid, role) = {
+            let s = self.contacts.lock();
+            let r = s.ceremonies.get(&id).ok_or("the ceremony ended")?;
+            (r.view.peer.0.clone(), r.role)
+        };
+        let machine = card_machine(card).0;
+        let display = card_name(card);
+        let now = mesh::identity::now_ms();
+        self.edit(|file| {
+            let known = file
+                .peers
+                .iter()
+                .find(|(_, p)| p.endpoint.as_deref() == Some(eid.as_str()))
+                .map(|(k, _)| k.clone());
+            let alias = known.unwrap_or_else(|| {
+                // 183 Z3-R2: a card named like an existing contact but with another key is
+                // not silently "bob-2": its alias says so, as does the ceremony it came from.
+                let lookalike = file.peers.values().any(|p| {
+                    p.is_contact()
+                        && p.name.as_deref() == Some(display.as_str())
+                        && p.endpoint.as_deref() != Some(eid.as_str())
+                });
+                let mut base = crate::config::alias_of(&display);
+                if lookalike {
+                    let shown = display.as_str();
+                    tracing::warn!(name = %shown, %eid, "a2a: new contact has the name of an existing one but another key");
+                    base = format!("{base}-new-key");
+                }
+                let mut alias = base.clone();
+                let mut n = 2;
+                while file.peers.contains_key(&alias) {
+                    alias = format!("{base}-{n}");
+                    n += 1;
+                }
+                alias
+            });
+            let e = file.peers.entry(alias).or_default();
+            e.endpoint = Some(eid.clone());
+            e.name = Some(display.clone());
+            e.machine = Some(machine.clone()).filter(|m| !m.is_empty());
+            e.blocked = false;
+            e.paired_ms = Some(now);
+            Ok(())
+        })
+        .await?;
+        if role == Role::Inviter {
+            self.close_window();
+        }
+        if let Some(net) = self.net() {
+            net.join_network().await;
+        }
+        Ok(())
+    }
+
+    /// `contact_window(true)`: open (or return the open) Add contact window: its ticket,
+    /// the advert and the browse; it closes itself after `a2a.contact_window_secs`.
+    pub(crate) async fn open_window(self: &std::sync::Arc<Self>) -> Result<ContactWindow, String> {
+        let now = mesh::identity::now_ms();
+        if let Some(w) = self
+            .contacts
+            .lock()
+            .window
+            .as_ref()
+            .filter(|w| w.expires_ms > now)
+        {
+            return Ok(ContactWindow {
+                ticket: w.ticket.clone(),
+                expires_ms: w.expires_ms,
+            });
+        }
+        let net = self.net().ok_or("this engine has no mesh endpoint")?;
+        net.join_network().await;
+        let (addrs, relay) = net.a2a_reach();
+        let (name, machine) = self.my_names();
+        let card = serde_json::to_string(&self.my_card()?).map_err(|e| e.to_string())?;
+        let nonce = ceremony::nonce();
+        let expires_ms = now + self.cfg.contact_window_secs.max(1) * 1000;
+        let ticket = ceremony::encode_ticket(&InviteTicket {
+            eid: net.id.0.clone(),
+            name: name.clone(),
+            relay,
+            addrs: addrs.clone(),
+            nonce: nonce.clone(),
+            exp: expires_ms,
+        });
+        let seq = {
+            let mut s = self.contacts.lock();
+            s.seq += 1;
+            s.seq
+        };
+        self.contacts.lock().window = Some(Window {
+            seq,
+            nonce,
+            ticket: ticket.clone(),
+            expires_ms,
+            used: false,
+            failed: 0,
+            failed_by: Default::default(),
+            _mdns: None,
+            nearby: Vec::new(),
+            verified: Default::default(),
+            fetches: 0,
+        });
+        // §7.1: advertise the first type, browse them all, only while this window lives
+        // (installed first: the browse may report at once).
+        if let Some(service) = self.cfg.mdns_types.first() {
+            let weak = std::sync::Arc::downgrade(self);
+            let seen: discovery::Seen = Box::new(move |s| {
+                if let Some(c) = weak.upgrade() {
+                    c.sighted(seq, s);
+                }
+            });
+            let advert = discovery::advert(service, &machine, &net.id.0, &addrs, card);
+            match self.mdns.start(advert, self.cfg.mdns_types.clone(), seen) {
+                Ok(guard) => {
+                    if let Some(w) = self
+                        .contacts
+                        .lock()
+                        .window
+                        .as_mut()
+                        .filter(|w| w.seq == seq)
+                    {
+                        w._mdns = Some(guard);
+                    }
+                }
+                Err(e) => tracing::warn!("a2a: contact advert: {e}"),
+            }
+        }
+        let weak = std::sync::Arc::downgrade(self);
+        let after = std::time::Duration::from_millis(expires_ms.saturating_sub(now));
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            let Some(c) = weak.upgrade() else { return };
+            let current = c
+                .contacts
+                .lock()
+                .window
+                .as_ref()
+                .is_some_and(|w| w.seq == seq);
+            if current {
+                c.close_window();
+            }
+        });
+        tracing::info!(expires_ms, "a2a: Add contact window open");
+        Ok(ContactWindow { ticket, expires_ms })
+    }
+
+    /// Close the window (Cancel, success, expiry, too many failures): the advert and the
+    /// browse stop, the sightings go, an inviter ceremony still waiting is rejected.
+    pub(crate) fn close_window(&self) {
+        let (window, waiting) = {
+            let mut s = self.contacts.lock();
+            let waiting: Vec<_> = s
+                .ceremonies
+                .values()
+                .filter(|r| r.role == Role::Inviter)
+                .map(|r| r.answers.clone())
+                .collect();
+            (s.window.take(), waiting)
+        };
+        for tx in waiting {
+            let _ = tx.send(false);
+        }
+        if window.is_some() {
+            tracing::info!("a2a: Add contact window closed");
+            let rt = self.rt.clone();
+            tokio::spawn(async move { rt.publish(ContactEvent::Nearby(Vec::new())).await });
+        }
+    }
+
+    /// A browse result of window `seq`: kept newest first, at most [`NEARBY_MAX`].
+    fn sighted(self: &std::sync::Arc<Self>, seq: u64, s: discovery::Sighting) {
+        let list = {
+            let mut st = self.contacts.lock();
+            let Some(w) = st.window.as_mut().filter(|w| w.seq == seq) else {
+                return;
+            };
+            w.nearby
+                .retain(|x| !(x.service == s.service && x.instance == s.instance));
+            if !s.gone {
+                w.nearby.insert(0, s);
+                w.nearby.truncate(NEARBY_MAX);
+            }
+            nearby_list(w)
+        };
+        let rt = self.rt.clone();
+        tokio::spawn(async move { rt.publish(ContactEvent::Nearby(list)).await });
+    }
+
+    /// `contact_nearby`.
+    pub(crate) fn nearby(&self) -> Vec<NearbyAgent> {
+        let now = mesh::identity::now_ms();
+        self.contacts
+            .lock()
+            .window
+            .as_ref()
+            .filter(|w| w.expires_ms > now)
+            .map(nearby_list)
+            .unwrap_or_default()
+    }
+
+    /// `contact_pair(target)`.
+    pub(crate) async fn pair(
+        self: &std::sync::Arc<Self>,
+        target: ContactTarget,
+    ) -> Result<mesh::PairCeremony, String> {
+        let me = self.me()?;
+        let (lan, private_ok) = self.dial_policy();
+        let (eid, hints, ticket) = match target {
+            ContactTarget::Ticket { ticket } => {
+                let t = ceremony::decode_ticket(&ticket)?;
+                let hints = ceremony::ticket_target(&t, &lan, private_ok)?;
+                (t.eid, hints, Some(t.nonce))
+            }
+            ContactTarget::Nearby { eid } => {
+                let (full, hints) = self.nearby_target(&eid).await?;
+                (full, hints, None)
+            }
+            ContactTarget::CardUrl { url } => {
+                let card = fetch_card(&url, &lan, private_ok).await?;
+                let eid = card
+                    .supported_interfaces
+                    .iter()
+                    .find(|i| i.protocol_binding == BINDING_IROH)
+                    .and_then(|i| i.url.strip_prefix(IROH_URL_PREFIX))
+                    .map(str::to_owned)
+                    .ok_or("not a theuth agent: add it as an HTTP A2A peer")?;
+                verify_card(&card, &eid).map_err(|e| format!("unverified card: {e}"))?;
+                (eid, reach::Hints::default(), None)
+            }
+        };
+        if eid == me {
+            return Err("that is this engine".into());
+        }
+        if self.contacts.lock().ceremonies.values().next().is_some() {
+            return Err("another contact ceremony is running".into());
+        }
+        ceremony::start(self.clone(), eid, hints, ticket).await
+    }
+
+    /// 183 Z3-R2 (SSRF): the IPs of this window's LAN sightings, and whether private
+    /// targets are allowed regardless (the dev rig and tests).
+    fn dial_policy(&self) -> (Vec<std::net::IpAddr>, bool) {
+        let s = self.contacts.lock();
+        let lan = s
+            .window
+            .as_ref()
+            .map(|w| {
+                w.nearby
+                    .iter()
+                    .flat_map(|x| x.addrs.iter().map(|a| a.ip()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        (lan, s.private_ok)
+    }
+
+    /// A Nearby sighting by its full endpoint id, or by its TXT hint after fetching and
+    /// verifying its card (§7.1: on click, at most [`CARD_FETCHES_MAX`] per window).
+    async fn nearby_target(&self, eid: &str) -> Result<(String, reach::Hints), String> {
+        let sighting = {
+            let s = self.contacts.lock();
+            let w = s.window.as_ref().ok_or("open Add contact first")?;
+            w.nearby
+                .iter()
+                .find(|x| {
+                    x.txt
+                        .get("eid")
+                        .is_some_and(|h| !h.is_empty() && eid.starts_with(h.as_str()))
+                })
+                .cloned()
+        };
+        let hints = |s: &Option<discovery::Sighting>| reach::Hints {
+            addrs: s.as_ref().map(discovery::iroh_addrs).unwrap_or_default(),
+            relay: None,
+        };
+        if eid.parse::<iroh::EndpointId>().is_ok() {
+            return Ok((eid.to_owned(), hints(&sighting)));
+        }
+        let s = sighting.ok_or("that agent is no longer nearby")?;
+        let url = discovery::nearby(&s)
+            .card
+            .ok_or("that agent advertises no card")?;
+        {
+            let mut st = self.contacts.lock();
+            let w = st.window.as_mut().ok_or("open Add contact first")?;
+            if w.fetches >= CARD_FETCHES_MAX {
+                return Err("too many cards fetched in this window".into());
+            }
+            w.fetches += 1;
+        }
+        let (lan, private_ok) = self.dial_policy();
+        let card = fetch_card(&url, &lan, private_ok).await?;
+        let full = card
+            .supported_interfaces
+            .iter()
+            .find(|i| i.protocol_binding == BINDING_IROH)
+            .and_then(|i| i.url.strip_prefix(IROH_URL_PREFIX))
+            .filter(|full| full.starts_with(eid))
+            .map(str::to_owned)
+            .ok_or("the card does not match the advert")?;
+        verify_card(&card, &full).map_err(|e| format!("unverified card: {e}"))?;
+        if let Some(w) = self.contacts.lock().window.as_mut() {
+            w.verified.insert(full.clone());
+        }
+        Ok((full, hints(&Some(s))))
+    }
+
+    /// `contact_answer(ceremony, accept)`.
+    pub(crate) fn answer(&self, ceremony: Uuid, accept: bool) -> Result<(), String> {
+        let s = self.contacts.lock();
+        let r = s
+            .ceremonies
+            .get(&ceremony)
+            .ok_or("no such contact ceremony (it may have ended)")?;
+        r.answers
+            .send(accept)
+            .map_err(|_| "the ceremony already ended".to_owned())
+    }
+}
+
+fn nearby_list(w: &Window) -> Vec<NearbyAgent> {
+    w.nearby
+        .iter()
+        .map(|s| {
+            let mut n = discovery::nearby(s);
+            n.verified = n
+                .eid
+                .as_deref()
+                .is_some_and(|h| w.verified.iter().any(|v| v.starts_with(h)));
+            n
+        })
+        .collect()
+}
+
+/// 183 Z3-R2 (SSRF): an address that is not on the public internet.
+pub(crate) fn is_local(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(a) => {
+            a.is_loopback()
+                || a.is_private()
+                || a.is_link_local()
+                || a.is_unspecified()
+                || a.is_broadcast()
+                // 100.64.0.0/10 (carrier-grade NAT)
+                || (a.octets()[0] == 100 && a.octets()[1] & 0xc0 == 64)
+        }
+        IpAddr::V6(a) => {
+            a.is_loopback()
+                || a.is_unspecified()
+                // fc00::/7 unique local, fe80::/10 link-local
+                || a.segments()[0] & 0xfe00 == 0xfc00
+                || a.segments()[0] & 0xffc0 == 0xfe80
+                || a.to_ipv4_mapped().is_some_and(|v| is_local(IpAddr::V4(v)))
+        }
+    }
+}
+
+/// 183 Z3-R2: may this engine fetch from or dial `ip`? Public addresses always; private,
+/// link-local and loopback ones only when a LAN sighting of this window carried them
+/// (`lan`), or in the dev rig / tests (`private_ok`).
+pub(crate) fn dial_ok(ip: std::net::IpAddr, lan: &[std::net::IpAddr], private_ok: bool) -> bool {
+    private_ok || !is_local(ip) || lan.contains(&ip)
+}
+
+/// Cut a card's text to [`CARD_TEXT_MAX`] characters (at a character boundary).
+pub(crate) fn clip(s: &str) -> String {
+    s.chars().take(CARD_TEXT_MAX).collect()
+}
+
+/// Fetch a card (§7.1, LAD §4.6): at most [`CARD_BYTES_MAX`], [`CARD_FETCH_SECS`], no
+/// redirects, and only from an address [`dial_ok`] allows (the host is resolved once here
+/// and the connection pinned to what was checked).
+async fn fetch_card(
+    url: &str,
+    lan: &[std::net::IpAddr],
+    private_ok: bool,
+) -> Result<AgentCard, String> {
+    let url = if url.ends_with(crate::config::CARD_SUFFIX) {
+        url.to_owned()
+    } else {
+        format!(
+            "{}{}",
+            url.trim_end_matches('/'),
+            crate::config::CARD_SUFFIX
+        )
+    };
+    let parsed = url::Url::parse(&url).map_err(|e| format!("card URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("a card URL is http or https".into());
+    }
+    let host = match parsed.host().ok_or("the card URL has no host")? {
+        url::Host::Domain(d) => d.to_owned(),
+        url::Host::Ipv4(i) => i.to_string(),
+        url::Host::Ipv6(i) => i.to_string(),
+    };
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|e| format!("card host: {e}"))?
+        .collect();
+    if addrs.is_empty() {
+        return Err("the card host did not resolve".into());
+    }
+    if let Some(a) = addrs.iter().find(|a| !dial_ok(a.ip(), lan, private_ok)) {
+        return Err(format!(
+            "the card URL points at a private address ({}) that no LAN sighting carried",
+            a.ip()
+        ));
+    }
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(&host, &addrs)
+        .timeout(std::time::Duration::from_secs(CARD_FETCH_SECS))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut resp = http
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("card fetch: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("card fetch: HTTP {}", resp.status()));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("card body: {e}"))? {
+        if body.len() + chunk.len() > CARD_BYTES_MAX {
+            return Err("card larger than 256 KiB".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|e| format!("not an Agent Card: {e}"))
+}
+
+impl Message<ContactWindowOpen> for A2aActor {
+    type Reply = Result<Option<ContactWindow>, String>;
+
+    /// In the mailbox, so opens and closes apply in call order: a close that overtook a
+    /// still-opening window (a remounted dialog) left no window and a dropped advert.
+    async fn handle(
+        &mut self,
+        m: ContactWindowOpen,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if m.0 {
+            self.ctx.open_window().await.map(Some)
+        } else {
+            self.ctx.close_window();
+            Ok(None)
+        }
+    }
+}
+
+impl Message<ContactsNearby> for A2aActor {
+    type Reply = Vec<NearbyAgent>;
+
+    async fn handle(
+        &mut self,
+        _: ContactsNearby,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.ctx.nearby()
+    }
+}
+
+impl Message<ContactPair> for A2aActor {
+    type Reply = DelegatedReply<Result<mesh::PairCeremony, String>>;
+
+    async fn handle(
+        &mut self,
+        m: ContactPair,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let c = self.ctx.clone();
+        off_mailbox(ctx, async move { c.pair(m.0).await })
+    }
+}
+
+impl Message<ContactAnswer> for A2aActor {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: ContactAnswer,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.ctx.answer(m.ceremony, m.accept)
+    }
+}
+
+/// Run `fut` off the mailbox (it rewrites `peers.yaml` and reloads, which asks the agent)
+/// and answer the caller with its result.
+fn off_mailbox<R, F>(ctx: &mut Context<A2aActor, DelegatedReply<R>>, fut: F) -> DelegatedReply<R>
+where
+    R: kameo::Reply<Value = R> + Send + 'static,
+    F: Future<Output = R> + Send + 'static,
+{
+    let (reply, tx) = ctx.reply_sender();
+    if let Some(tx) = tx {
+        tokio::spawn(async move { tx.send(fut.await) });
+    }
+    reply
+}
+
+/// §7.3: the endpoint id in base32, first 20 characters, in groups of 4.
+pub fn fingerprint(eid: &str) -> String {
+    let Ok(id) = eid.parse::<iroh::EndpointId>() else {
+        return String::new();
+    };
+    let b32 = data_encoding::BASE32_NOPAD.encode(id.as_bytes());
+    b32.as_bytes()[..20]
+        .chunks(4)
+        .map(|c| std::str::from_utf8(c).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One staged contact as `contact_list` shows it.
+fn contact_view(
+    staged: &crate::config::Staged,
+    alias: &str,
+    net: Option<&mesh::net::Net>,
+) -> Option<Contact> {
+    let c = staged.contacts.get(alias)?;
+    Some(Contact {
+        name: alias.to_owned(),
+        machine: clip(&c.machine),
+        endpoint: c.eid.clone(),
+        fingerprint: fingerprint(&c.eid),
+        path: reach::path(net, &c.eid),
+        cap: c.cap,
+        exports: staged
+            .peers
+            .get(alias)
+            .map(|p| p.exports.clone())
+            .unwrap_or_default(),
+        first_contact: c.first_contact.clone(),
+        blocked: c.blocked,
+        paired_ms: c.paired_ms,
+    })
+}
+
+/// Drop export `name` and every grant and first-contact answer naming it.
+pub(crate) fn drop_export(file: &mut PeersFile, name: &str) {
+    file.exports.remove(name);
+    for p in file.peers.values_mut() {
+        p.exports.retain(|e| e != name);
+        p.first_contact.remove(name);
+    }
+}
+
+/// The contact entry `name` of `file`, or why not.
+fn entry<'a>(file: &'a mut PeersFile, name: &str) -> Result<&'a mut PeerEntry, String> {
+    file.peers
+        .get_mut(name)
+        .filter(|p| p.is_contact())
+        .ok_or_else(|| format!("no contact named {name}"))
+}
+
+impl Message<ContactsList> for A2aActor {
+    type Reply = Vec<Contact>;
+
+    async fn handle(&mut self, _: ContactsList, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let live = self.ctx.shared.read().clone();
+        let net = self.ctx.net();
+        live.staged
+            .contacts
+            .keys()
+            .filter_map(|alias| contact_view(&live.staged, alias, net.as_deref()))
+            .collect()
+    }
+}
+
+impl Message<ContactUpdate> for A2aActor {
+    type Reply = DelegatedReply<Result<Contact, String>>;
+
+    async fn handle(
+        &mut self,
+        m: ContactUpdate,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let c = self.ctx.clone();
+        off_mailbox(ctx, async move {
+            let ContactUpdate { name, patch } = m;
+            let alias = c
+                .edit(|file| {
+                    let mut e = entry(file, &name)?.clone();
+                    if let Some(cap) = patch.cap {
+                        if cap > tools::Risk::Mutating {
+                            return Err("a contact's cap is read_only or mutating".into());
+                        }
+                        e.cap = Some(cap);
+                    }
+                    if let Some(exports) = patch.exports {
+                        e.exports = exports;
+                    }
+                    if let Some(blocked) = patch.blocked {
+                        e.blocked = blocked;
+                    }
+                    let alias = match patch.name {
+                        Some(new) if new != name => {
+                            crate::config::check_alias(&new)?;
+                            if file.peers.contains_key(&new) {
+                                return Err(format!("a peer named {new} already exists"));
+                            }
+                            file.peers.remove(&name);
+                            new
+                        }
+                        _ => name.clone(),
+                    };
+                    file.peers.insert(alias.clone(), e);
+                    Ok(alias)
+                })
+                .await?;
+            let live = c.shared.read().clone();
+            if live.staged.contacts.get(&alias).is_some_and(|f| f.blocked) {
+                c.contact_gone(&alias, &live.staged.contacts[&alias].eid.clone(), false)
+                    .await;
+            }
+            contact_view(&live.staged, &alias, c.net().as_deref())
+                .ok_or_else(|| format!("contact {alias} vanished"))
+        })
+    }
+}
+
+impl Message<ContactRemove> for A2aActor {
+    type Reply = DelegatedReply<Result<(), String>>;
+
+    async fn handle(
+        &mut self,
+        m: ContactRemove,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let c = self.ctx.clone();
+        off_mailbox(ctx, async move {
+            let eid = c
+                .edit(|file| {
+                    let e = entry(file, &m.name)?;
+                    let eid = e.endpoint.clone();
+                    if m.block {
+                        e.blocked = true;
+                    } else {
+                        file.peers.remove(&m.name);
+                    }
+                    Ok(eid)
+                })
+                .await?;
+            // The reload revoked the binding and retired its grant epoch (its tasks end); the
+            // other side hears it best effort.
+            if let Some(eid) = eid {
+                c.contact_gone(&m.name, &eid, true).await;
+            }
+            Ok(())
+        })
+    }
+}
+
+impl Message<ExportsList> for A2aActor {
+    type Reply = DelegatedReply<Vec<Export>>;
+
+    async fn handle(
+        &mut self,
+        _: ExportsList,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let c = self.ctx.clone();
+        off_mailbox(ctx, async move { c.exports().await })
+    }
+}
+
+impl crate::Ctx {
+    /// `a2a_exports`: agent and chat exports; a chat's pause is read now (W-41), and a chat
+    /// deleted since is dropped from `peers.yaml` (opening the export picker cleans up).
+    pub(crate) async fn exports(&self) -> Vec<Export> {
+        let live = self.shared.read().clone();
+        let agents = self.agents().ok();
+        let mut out = Vec::new();
+        let mut gone = Vec::new();
+        for e in live.staged.exports.values() {
+            let paused = match &agents {
+                Some(a) => match self.ask(a, ChatPaused { session: e.session }).await {
+                    Ok(p) => p,
+                    Err(err) if err.starts_with(UNKNOWN_SESSION) => {
+                        gone.push(e.name.clone());
+                        continue;
+                    }
+                    Err(_) => None,
+                },
+                None => None,
+            };
+            out.push(Export {
+                name: e.name.clone(),
+                target: ExportTarget::Chat { session: e.session },
+                description: e.description.clone(),
+                paused,
+                tools: Some(e.tools.clone()),
+            });
+        }
+        out.extend(live.staged.agents.values().map(|a| Export {
+            name: a.name.clone(),
+            target: ExportTarget::Agent {
+                agent: a.agent.clone(),
+            },
+            description: a.description.clone(),
+            paused: None,
+            tools: Some(a.tools.clone()),
+        }));
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        if !gone.is_empty()
+            && let Err(e) = self
+                .edit(|file| {
+                    for name in &gone {
+                        drop_export(file, name);
+                    }
+                    Ok(())
+                })
+                .await
+        {
+            tracing::warn!("a2a: drop deleted chat exports: {e}");
+        }
+        out
+    }
+}
+
+impl Message<ExportPut> for A2aActor {
+    type Reply = DelegatedReply<Result<(), String>>;
+
+    async fn handle(&mut self, m: ExportPut, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let c = self.ctx.clone();
+        off_mailbox(ctx, async move { c.put_export(m.0).await })
+    }
+}
+
+impl crate::Ctx {
+    /// [`ExportPut`].
+    pub(crate) async fn put_export(&self, exp: Export) -> Result<(), String> {
+        let Export {
+            name,
+            target,
+            description,
+            tools,
+            ..
+        } = exp;
+        crate::config::check_alias(&name)?;
+        if let Some(tools) = &tools {
+            if tools.len() > 32 {
+                return Err("tools: at most 32 names".into());
+            }
+            // 183 Z4: only what a contact may ever be granted (`a2a_grantable_tools`).
+            let refused: Vec<&str> = tools
+                .iter()
+                .map(String::as_str)
+                .filter(|t| !tools::contact_grantable(t))
+                .collect();
+            if !refused.is_empty() {
+                return Err(format!(
+                    "tools: a contact may not be granted {}",
+                    refused.join(", ")
+                ));
+            }
+        }
+        let (session, agent) = match target {
+            ExportTarget::Chat { session } => (Some(session), None),
+            ExportTarget::Agent { agent } => (None, Some(agent)),
+        };
+        self.edit(|file| {
+            // Absent: the export keeps its list (a re-put from an older client never
+            // resets it); a new export starts on the default.
+            let tools = tools
+                .or_else(|| file.exports.get(&name).map(|e| e.tools.clone()))
+                .unwrap_or_else(crate::config::default_contact_tools);
+            file.exports.insert(
+                name.clone(),
+                ExportEntry {
+                    session,
+                    agent,
+                    name: name.clone(),
+                    description,
+                    tools,
+                },
+            );
+            Ok(())
+        })
+        .await
+    }
+}
+
+impl Message<ExportRemove> for A2aActor {
+    type Reply = DelegatedReply<Result<(), String>>;
+
+    async fn handle(
+        &mut self,
+        m: ExportRemove,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let c = self.ctx.clone();
+        off_mailbox(ctx, async move {
+            c.edit(|file| {
+                if !file.exports.contains_key(&m.name) {
+                    return Err(format!("no export named {}", m.name));
+                }
+                drop_export(file, &m.name);
+                Ok(())
+            })
+            .await
+        })
+    }
+}
+
+impl Message<ChatArchived> for A2aActor {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: ChatArchived, _: &mut Context<Self, Self::Reply>) -> bool {
+        self.ctx.chat_archived(m.session).await
+    }
+}
+
+impl crate::Ctx {
+    /// [`ChatArchived`].
+    pub(crate) async fn chat_archived(&self, session: SessionId) -> bool {
+        let exported = self
+            .shared
+            .read()
+            .staged
+            .exports
+            .values()
+            .any(|e| e.session == session);
+        if exported {
+            self.rt.publish(crate::A2aChanged {}).await;
+        }
+        exported
+    }
+}
+
+impl Message<ContactFirstAnswer> for A2aActor {
+    type Reply = DelegatedReply<Result<(), String>>;
+
+    async fn handle(
+        &mut self,
+        m: ContactFirstAnswer,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let c = self.ctx.clone();
+        off_mailbox(ctx, async move { c.first_answer(m).await })
+    }
+}
+
+impl crate::Ctx {
+    /// W-27: the owner answered a `contact_first` item. Allow once lets the waiting tasks
+    /// through and keeps asking; Always writes `first_contact: allow` first; Block writes
+    /// `blocked: true` (the gate refuses the contact from now on, its waiting tasks fail).
+    /// With no task waiting for (contact, export) — the select in Settings — the answer is
+    /// only that export's standing default (§9.4): `ask` (the entry goes), `allow`, `block`.
+    async fn first_answer(&self, m: ContactFirstAnswer) -> Result<(), String> {
+        let ContactFirstAnswer {
+            contact,
+            export,
+            answer,
+        } = m;
+        let waiting = match self.agents() {
+            Ok(agents) => agents
+                .ask(agent::communication::network::ContactsHeld)
+                .await
+                .map_err(|e| format!("agent unavailable: {e}"))?
+                .iter()
+                .any(|h| h.contact == contact && h.export == export),
+            Err(_) => false,
+        };
+        if !waiting {
+            return self
+                .edit(|file| {
+                    let e = entry(file, &contact)?;
+                    match answer {
+                        FirstContact::Ask => e.first_contact.remove(&export),
+                        a => e.first_contact.insert(export.clone(), a),
+                    };
+                    Ok(())
+                })
+                .await;
+        }
+        match answer {
+            FirstContact::Ask => {}
+            FirstContact::Allow => {
+                self.edit(|file| {
+                    entry(file, &contact)?
+                        .first_contact
+                        .insert(export.clone(), FirstContact::Allow);
+                    Ok(())
+                })
+                .await?;
+            }
+            FirstContact::Block => {
+                let eid = self
+                    .edit(|file| {
+                        let e = entry(file, &contact)?;
+                        e.blocked = true;
+                        Ok(e.endpoint.clone())
+                    })
+                    .await?;
+                if let Some(eid) = eid {
+                    self.contact_gone(&contact, &eid, false).await;
+                }
+                return Ok(());
+            }
+        }
+        let agents = self.agents()?;
+        let released = self
+            .ask(
+                &agents,
+                agent::communication::network::ContactRelease {
+                    contact,
+                    export: Some(export),
+                    allow: true,
+                },
+            )
+            .await;
+        nudge_attention();
+        released.map(|_| ())
+    }
+
+    /// 183 §7.2: write each contact's direct addresses from its live `theuth/a2a/1`
+    /// connection into `peers.yaml` when they differ from the stored ones, so a LAN-only
+    /// pair dials them after a restart. Nothing is written without a live connection.
+    pub(crate) async fn remember_addrs(&self) {
+        /// 183 Z3-R2: at most one rewrite a minute per contact (path churn must not turn
+        /// into disk churn; also bounds a broken hand edit's retries).
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+        let Some(net) = self.net() else { return };
+        let live = self.shared.read().clone();
+        let now_at = std::time::Instant::now();
+        let changed: Vec<(String, Vec<String>)> = {
+            let s = self.state.lock();
+            live.staged
+                .contacts
+                .iter()
+                .filter(|(_, f)| !f.blocked)
+                .filter(|(alias, _)| {
+                    s.addr_written
+                        .get(*alias)
+                        .is_none_or(|t| now_at.duration_since(*t) >= EVERY)
+                })
+                .filter_map(|(alias, f)| {
+                    let now = net.a2a_direct_addrs(&f.eid);
+                    (!now.is_empty() && now != f.addrs)
+                        .then(|| (alias.clone(), now.iter().map(|a| a.to_string()).collect()))
+                })
+                .collect()
+        };
+        {
+            let mut s = self.state.lock();
+            for (alias, _) in &changed {
+                s.addr_written.insert(alias.clone(), now_at);
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        let result = self
+            .edit(|file| {
+                for (alias, addrs) in changed {
+                    if let Some(p) = file.peers.get_mut(&alias) {
+                        p.addrs = addrs;
+                    }
+                }
+                Ok(())
+            })
+            .await;
+        let mut s = self.state.lock();
+        match result {
+            Ok(()) => s.addr_error = None,
+            Err(e) if s.addr_error.as_ref() != Some(&e) => {
+                tracing::warn!("a2a: remember contact addresses: {e}");
+                s.addr_error = Some(e);
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// A contact was removed or blocked: its held first-contact tasks fail, its
+    /// connections close, and (for a removal) the other side hears a best-effort `Revoke`.
+    pub(crate) async fn contact_gone(&self, alias: &str, eid: &str, revoke: bool) {
+        if let Ok(agents) = self.agents()
+            && let Err(e) = self
+                .ask(
+                    &agents,
+                    agent::communication::network::ContactRelease {
+                        contact: alias.to_owned(),
+                        export: None,
+                        allow: false,
+                    },
+                )
+                .await
+        {
+            tracing::warn!(%alias, "a2a: release held tasks: {e}");
+        }
+        nudge_attention();
+        if let Some(net) = self.net() {
+            if revoke {
+                tokio::spawn(ceremony::revoke(net, eid.to_owned()));
+            } else {
+                net.close_a2a(eid);
+            }
+        }
+    }
+}
+
+/// 183 W-27: a first-contact hold began or ended: the inbox derives again now (its alert
+/// recheck), so the `contact_first` item shows or goes without waiting for another event.
+pub(crate) fn nudge_attention() {
+    tokio::spawn(async {
+        if let Ok(Some(inbox)) = kameo::actor::ActorRef::<roster::attention::Attention>::lookup(
+            roster::attention::ATTENTION_ACTOR,
+        ) {
+            let _ = inbox.tell(roster::attention::AlertDue).await;
+        }
+    });
+}
+
+/// 183 W-27: the `contact_first` Attention items, one per (contact, export) with a task
+/// waiting, from the agent's holds and the contacts' facts.
+pub(crate) struct FirstContactItems(pub std::sync::Weak<crate::Ctx>);
+
+#[async_trait::async_trait]
+impl roster::attention::Source for FirstContactItems {
+    async fn items(&self) -> Vec<roster::attention::AttentionItem> {
+        let Some(c) = self.0.upgrade() else {
+            return Vec::new();
+        };
+        let Ok(agents) = c.agents() else {
+            return Vec::new();
+        };
+        let held = match agents
+            .ask(agent::communication::network::ContactsHeld)
+            .await
+        {
+            Ok(h) => h,
+            Err(_) => return Vec::new(),
+        };
+        let live = c.shared.read().clone();
+        held.into_iter()
+            .map(|h| {
+                let machine = live
+                    .staged
+                    .contacts
+                    .get(&h.contact)
+                    .map(|f| f.machine.clone())
+                    .filter(|m| !m.is_empty());
+                let who = match &machine {
+                    Some(m) => format!("{} ({m})", h.contact),
+                    None => h.contact.clone(),
+                };
+                roster::attention::AttentionItem {
+                    id: format!("contact_first:{}:{}", h.contact, h.export),
+                    kind: roster::attention::AttentionKind::ContactFirst,
+                    title: format!(
+                        "{who} wants to reach {} — Allow once · Always · Block",
+                        h.export
+                    ),
+                    detail: Some(format!(
+                        "{} waiting · a contact outside your mesh",
+                        h.waiting
+                    )),
+                    at_ms: h.since_ms,
+                    task: None,
+                    agent: None,
+                    session: Some(h.session.to_string()),
+                    approval: None,
+                    decision: None,
+                    packet: None,
+                    ask: None,
+                    turn: None,
+                    waiting_since_ms: Some(h.since_ms),
+                    summary: None,
+                    next_steps: Vec::new(),
+                    context: None,
+                    priority: None,
+                    rank: 5,
+                    alert: None,
+                }
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wire shapes the UI and an older peers.yaml depend on.
+    #[test]
+    fn contact_shapes_keep_their_wire_names() {
+        let chat = Export {
+            name: "ops-chat".into(),
+            target: ExportTarget::Chat {
+                session: SessionId::new(),
+            },
+            description: String::new(),
+            paused: Some("chat archived".into()),
+            tools: Some(crate::config::default_contact_tools()),
+        };
+        let v = serde_json::to_value(&chat).unwrap();
+        assert_eq!(v["target"]["kind"], "chat");
+        assert_eq!(serde_json::from_value::<Export>(v).unwrap(), chat);
+        let old: Export = serde_json::from_value(serde_json::json!({
+            "name": "research", "target": {"kind": "agent", "agent": "research@xeus"}, "description": ""
+        }))
+        .unwrap();
+        assert_eq!(old.paused, None);
+
+        let t = serde_json::to_value(ContactTarget::CardUrl {
+            url: "https://x".into(),
+        })
+        .unwrap();
+        assert_eq!(t["kind"], "card_url");
+        let ev = serde_json::to_value(ContactEvent::Nearby(Vec::new())).unwrap();
+        assert_eq!(ev["type"], "contact_nearby");
+
+        let line = serde_json::to_string(&PairLine {
+            pair: PairFrame::Accept {
+                exports: vec!["research".into()],
+            },
+        })
+        .unwrap();
+        assert_eq!(line, r#"{"pair":{"accept":{"exports":["research"]}}}"#);
+        assert!(matches!(
+            serde_json::from_str::<PairLine>(r#"{"pair":{"revoke":{}}}"#)
+                .unwrap()
+                .pair,
+            PairFrame::Revoke {}
+        ));
+    }
+
+    /// RFC 8785 §3.2.3's sorting example: names ordered by UTF-16 code units (the emoji's
+    /// surrogate pair sorts before U+FB33), control characters escaped, the rest raw.
+    #[test]
+    fn jcs_sorts_by_utf16_and_escapes_as_ecmascript() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"\u20ac":"Euro Sign","\r":"Carriage Return","\ufb33":"Hebrew Letter Dalet With Dagesh","1":"One","\ud83d\ude00":"Emoji: Grinning Face","\u0080":"Control","\u00f6":"Latin Small Letter O With Diaeresis","n":[1,true,null,{"b":2,"a":"x\ty"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            jcs(&v),
+            "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"n\":[1,true,null,{\"a\":\"x\\ty\",\"b\":2}],\"\u{80}\":\"Control\",\"\u{f6}\":\"Latin Small Letter O With Diaeresis\",\"\u{20ac}\":\"Euro Sign\",\"\u{1f600}\":\"Emoji: Grinning Face\",\"\u{fb33}\":\"Hebrew Letter Dalet With Dagesh\"}"
+        );
+    }
+
+    /// RFC 8032 test key 1 signs a fixed card: the JWS is a vector (Ed25519 is
+    /// deterministic), it verifies against that key's endpoint id only, and any edit to the
+    /// signed card, its interface or its header is refused.
+    #[test]
+    fn card_jws_vector_verifies_and_refuses_tampering() {
+        let secret = iroh::SecretKey::from_bytes(&[
+            0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec,
+            0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03,
+            0x1c, 0xae, 0x7f, 0x60,
+        ]);
+        let eid = secret.public().to_string();
+        let facts = CardFacts {
+            name: "Sky".into(),
+            description: "Sky's harness".into(),
+            machine: "xeus".into(),
+            os_name: "Arch Linux".into(),
+            endpoint: eid.clone(),
+            public_url: None,
+            skills: vec![],
+        };
+        let mut unsigned = card(&facts);
+        unsigned.version = "1.0.0".into();
+        let sign = |m: &[u8]| secret.sign(m).to_bytes().to_vec();
+        let signed = sign_card(unsigned, &eid, &sign).unwrap();
+        let sig = &signed.signatures.as_ref().unwrap()[0];
+        assert_eq!(
+            String::from_utf8(
+                data_encoding::BASE64URL_NOPAD
+                    .decode(sig.protected.as_bytes())
+                    .unwrap()
+            )
+            .unwrap(),
+            format!(r#"{{"alg":"EdDSA","kid":"{eid}","typ":"JOSE"}}"#)
+        );
+        assert_eq!(
+            sig.signature,
+            "vPiiKhUVfrwQ4TTwaeUDt7-XqrOyBwJ2OJqmsUAhtqWWEjo4eN5Z5BRroXFx5C-T5zvHjdhCk9N8s7FJ0nPYDw"
+        );
+        verify_card(&signed, &eid).unwrap();
+        assert_eq!(card_machine(&signed), ("xeus".into(), "Arch Linux".into()));
+
+        // Over the wire and back: the same bytes verify.
+        let back: AgentCard =
+            serde_json::from_str(&serde_json::to_string(&signed).unwrap()).unwrap();
+        verify_card(&back, &eid).unwrap();
+
+        let other = iroh::SecretKey::from_bytes(&[3; 32]).public().to_string();
+        assert!(
+            verify_card(&signed, &other)
+                .unwrap_err()
+                .contains("another endpoint")
+        );
+        let mut renamed = signed.clone();
+        renamed.name = "Mallory".into();
+        assert!(
+            verify_card(&renamed, &eid)
+                .unwrap_err()
+                .contains("does not verify")
+        );
+        let mut moved = signed.clone();
+        moved.supported_interfaces[0].url = format!("iroh:{other}");
+        assert!(
+            verify_card(&moved, &other)
+                .unwrap_err()
+                .contains("by its endpoint")
+        );
+        let mut unsigned = signed.clone();
+        unsigned.signatures = None;
+        assert!(
+            verify_card(&unsigned, &eid)
+                .unwrap_err()
+                .contains("not signed")
+        );
+        // A card another key signed for this endpoint is refused too.
+        let forged = sign_card(signed, &eid, &|m: &[u8]| {
+            iroh::SecretKey::from_bytes(&[3; 32])
+                .sign(m)
+                .to_bytes()
+                .to_vec()
+        })
+        .unwrap();
+        assert!(
+            verify_card(&forged, &eid)
+                .unwrap_err()
+                .contains("does not verify")
+        );
+    }
+}

@@ -36,6 +36,8 @@ export type HeaderId =
   | 'memory'
   | 'parent'
   | 'owner'
+  /** 183 §12.10: `Shared with bob · read only` — a contact's agents can message this exported chat. */
+  | 'shared'
   /** 79 §6.5: the owner engine is a sandbox VM — its desktop in a pop-out. */
   | 'desktop'
   | 'context'
@@ -82,6 +84,7 @@ export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'termin
     // 141 R3 T11: a watch-only child keeps its `Watching` chip inline at every tier; the crumb joins it in the full bar.
     { id: 'parent', slot: watching ? 'both' : 'menu' },
     { id: 'owner', slot: 'menu' },
+    { id: 'shared', slot: 'menu' },
     { id: 'desktop', slot: 'menu' },
     { id: 'context', slot: 'both', shed: true },
     { id: 'cost', slot: 'menu' },

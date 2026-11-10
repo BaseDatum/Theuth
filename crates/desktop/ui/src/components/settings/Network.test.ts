@@ -114,13 +114,15 @@ const api = {
   mesh_unpair_preview: vi.fn(async () => PREVIEW),
   vault_rotation: vi.fn(async (): Promise<RotationState | null> => null),
   vault_rotate: vi.fn(async () => {
-    throw new Error('vault-key rotation is not built yet (183 phase 2)')
+    throw new Error('disk full')
   }),
   get_communication: vi.fn(async () => ({ global: true, source: 'mesh' })),
   sessions_status: vi.fn(async () => ({ here: 3, elsewhere: 5, log_seq: 9, last_snapshot: null })),
   list_nodes: vi.fn(async () => []),
   mesh_pair_nearby: vi.fn(async (_id: string) => CEREMONY),
   mesh_pair_answer: vi.fn(async (_id: string, _accept: boolean) => null),
+  contact_list: vi.fn(async () => []),
+  a2a_exports: vi.fn(async () => []),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
@@ -139,7 +141,7 @@ async function render(el: ReactNode, qc = new QueryClient({ defaultOptions: { qu
   return { html: paint(), qc, paint }
 }
 
-test('§6.7 sections in order: This machine, Nearby, Machines in this mesh, Contacts (Phase 3), Agent messaging, Advanced', async () => {
+test('§6.7 sections in order: This machine, Nearby, Machines in this mesh, Contacts, Agent messaging, Advanced', async () => {
   const { html } = await render(createElement(Network))
   const at = (s: string) => html.indexOf(s)
   const order = ['This machine', 'Nearby', 'Machines in this mesh', 'Contacts', 'Agent messaging', 'Advanced']
@@ -162,9 +164,10 @@ test('§6.7 sections in order: This machine, Nearby, Machines in this mesh, Cont
   expect(html).toMatch(/aria-checked="false" aria-label="Agents can message cloud-1"/)
   expect(html).toMatch(/aria-checked="true" aria-label="Agents can message xeus"/)
   expect(html).toContain('agent messaging between Sky&#x27;s MacBook and cloud-1 is off on Sky&#x27;s MacBook')
-  // Contacts placeholder and the messaging line.
-  expect(html).toContain('limited trust: no vault, no sessions, only the agents you share')
-  expect(html).toMatch(/Phase 3<\/span><button disabled="">Add contact…<\/button>/)
+  // Contacts (183 §12.7) and the messaging line.
+  expect(html).toContain('Contacts are limited trust: no vault, no sessions, only the agents and chats you share.')
+  expect(html).toContain('No contacts yet.')
+  expect(html).toMatch(/<button>[^<]*<svg[^>]*>.*?<\/svg> Add contact…<\/button>/)
   expect(html).toContain('on by default because this machine has paired machines')
 })
 
@@ -370,7 +373,7 @@ const ROT: RotationState = {
 const progress = (state: RotationState | null, error: string | null = null, onRetry = vi.fn()) =>
   renderToStaticMarkup(createElement(RotationProgress, { state, nameOf: (id: string) => ({ cloud: 'cloud-1', studio: 'studio', old: 'pi' })[id] ?? id.slice(0, 8), error, retrying: false, onRetry, now: NOW }))
 
-test('rotation progress: phases, machines done and pending, stuck rows, error and Retry, and the not-built-yet path', () => {
+test('rotation progress: phases, machines done and pending, stuck rows, error and Retry', () => {
   const sweeping = progress(ROT)
   expect(sweeping).toContain('Rotating vault key · 34 of 40 secrets re-encrypted · 1 of 3 machines has the new key')
   expect(sweeping).toContain('aria-valuenow="85"')
@@ -410,9 +413,9 @@ test('rotation progress: phases, machines done and pending, stuck rows, error an
 
   expect(progress(null)).toContain('No vault-key rotation reported yet.')
   expect(progress(null)).toContain('Rotate now')
-  const notBuilt = progress(null, 'vault-key rotation is not built yet (183 phase 2)')
-  expect(notBuilt).toContain('Vault-key rotation is not built into this engine yet')
-  expect(notBuilt).toContain('Retry')
+  const refused = progress(null, 'disk full')
+  expect(refused).toContain('Vault key rotation stopped: disk full')
+  expect(refused).toContain('Retry')
 })
 
 test('the old Settings › Mesh module is gone and nothing imports it', () => {
@@ -611,5 +614,5 @@ test('useRotation: retry calls vault_rotate', async () => {
   await run(async () => void rot.rotate.mutate())
   await settle()
   expect(api.vault_rotate).toHaveBeenCalledOnce()
-  expect(rot.rotate.error?.message).toContain('not built yet')
+  expect(rot.rotate.error?.message).toBe('disk full')
 })

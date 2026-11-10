@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { expect, onTestFinished, test, vi } from 'vitest'
 import type { AgentFile } from '@/rpc/bindings/AgentFile'
 import type { EngineAgent } from '@/rpc/bindings/EngineAgent'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
@@ -80,6 +80,12 @@ test('Move to ▸: "Its session moves too" only for a live, owned-here checkout 
 })
 
 test('offline home: Home line, `<name> is offline (since HH:MM)`, callout names the machine; online home has none', () => {
+  // The same day as "last seen", so the line reads a bare HH:MM whatever today is.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date(2026, 10, 8, 22, 0))
+  onTestFinished(() => {
+    vi.useRealTimers()
+  })
   const seen = new Date(2026, 10, 8, 21, 40).getTime()
   const m = { ...mesh, peers: [peer('M', 'mini', false, seen), peer('X', 'xeus', true, now)] }
   const off = homeLine(task({ owner: agentOwner('hans'), home: 'M' }), m)

@@ -198,4 +198,8 @@ fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
         || ip.is_unique_local()
         || ip.is_unicast_link_local()
         || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation 2001:db8::/32
+        // 183 Z3-R3: transition tunnels that reach an IPv4 address the checks above
+        // never see: 6to4 2002::/16 and Teredo 2001::/32.
+        || seg[0] == 0x2002
+        || (seg[0] == 0x2001 && seg[1] == 0)
 }

@@ -248,7 +248,10 @@ impl Agents {
         }
         let generation = match PeerAddress::local(&receipt.to) {
             Some(to) => self.communication.0.write().route(session, to),
-            None => self.communication.0.write().remote(session),
+            None => {
+                let contact = self.network.is_contact(&receipt.to);
+                self.remote_generation(session, contact)
+            }
         };
         let generation = match generation {
             Ok(g) => g,

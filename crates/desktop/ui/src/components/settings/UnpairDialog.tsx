@@ -191,9 +191,6 @@ export function rotationHeadline(s: RotationState, nameOf: NameOf, now = Date.no
   }
 }
 
-/** The engine's "… is not built yet (183 phase 2)": this engine predates vault-key rotation. */
-const notBuilt = (e: string) => /not built yet/i.test(e)
-
 /**
  * 183 §12.9: rotation progress — the phases, the bar, the machines done and pending (older builds and offline ones
  * named), stuck rows, and the error with Retry. `state` `null`: no rotation reported (an engine without it, or
@@ -227,12 +224,11 @@ export function RotationProgress({
       <div className="flex flex-col gap-2 rounded-xl border border-danger-border/40 bg-danger-bg px-4 py-3 text-sm">
         <div className="flex items-start gap-3">
           <p role="status" className="min-w-0 flex-1 text-danger">
-            {notBuilt(failed) ? 'Vault-key rotation is not built into this engine yet (183 phase 2).' : `Vault key rotation stopped: ${failed}`}
+            Vault key rotation stopped: {failed}
           </p>
           {retry}
         </div>
         <p className="text-[13px] text-fg-secondary">The old key stays in use and nothing is lost.</p>
-        {notBuilt(failed) && <p className="font-mono text-xs text-fg-tertiary">{failed}</p>}
       </div>
     )
   }

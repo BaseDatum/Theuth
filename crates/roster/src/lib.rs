@@ -3231,6 +3231,19 @@ impl agent::IdentitySource for Identities {
         };
         Some(desk::child_identity(&f, task.as_ref()))
     }
+
+    async fn inbox(&self, agent: &str) -> Option<agent::InboxPersona> {
+        let f = self.shared.file(agent)?;
+        Some(agent::InboxPersona {
+            // theuth's inbox keeps theuth's default persona.
+            identity: (!f.name.is_default()).then(|| desk::inbox_identity(&f)),
+            model: f.model.clone(),
+            tools: f
+                .tools
+                .as_deref()
+                .and_then(|t| t.parse::<::tools::Risk>().ok()),
+        })
+    }
 }
 
 /// 67 §9: a session of agent X reads and writes knowledge as `agent:X`, with
