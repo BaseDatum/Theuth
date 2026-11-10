@@ -1653,6 +1653,30 @@ test('183 §5.1 (Z live proof): a replica\'s settled page waits while the owner\
   expect(st.loadHistory(R, done, 'settled', freshness(useSessions.getState().sessions[R] ?? empty(R)))).toBe(true)
 })
 
+test('183 §5.6: after TurnFinished, a lagging replica\'s settled page never blanks the reply the follow stream drew in full', () => {
+  const R = 'replica-lag'
+  const st = useSessions.getState()
+  const page = { ...loaded(), history: [{ role: 'user' as const, text: 'hi', turn: 1 }], first_seq: 1, more: false }
+  st.loadHistory(R, page, 'replace')
+  st.applyEvents([
+    { type: 'FollowState', session: R, live: true },
+    { type: 'TurnStarted', session: R, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'TextDelta', session: R, turn: T, text: 'slow0 slow1 slow2' },
+    { type: 'TurnFinished', session: R, turn: T, stop_reason: 'stop', usage, context: 15 },
+  ])
+  const reply = { kind: 'assistant', text: 'slow0 slow1 slow2' }
+  // The replica holds none of the reply yet, then part of it: neither replaces what was streamed.
+  for (const partial of [[], [{ role: 'assistant' as const, text: 'slow0 sl', turn: 1 }]]) {
+    const s = useSessions.getState().sessions[R] ?? empty(R)
+    expect(st.loadHistory(R, { ...page, history: [...page.history, ...partial] }, 'settled', freshness(s))).toBe(false)
+    expect(useSessions.getState().sessions[R]?.entries.at(-1)).toMatchObject(reply)
+  }
+  // Caught up: the rows are the truth again.
+  const done = { ...page, history: [...page.history, { role: 'assistant' as const, text: 'slow0 slow1 slow2', turn: 1 }] }
+  expect(st.loadHistory(R, done, 'settled', freshness(useSessions.getState().sessions[R] ?? empty(R)))).toBe(true)
+  expect(useSessions.getState().sessions[R]?.entries.at(-1)).toMatchObject(reply)
+})
+
 test('183 R1: a relayed ToolCallFinished for a call this replica never saw start adds no stray "✓" line; a local one still does', () => {
   const finished = (call: string): WireEvent => ({ type: 'ToolCallFinished', session: S, turn: T, call_id: call, output: 'done\n', is_error: false, files: [] })
   const open = { turn: T, kind: 'interrupted' as const, interrupted_at: '2026-11-08T16:38:17Z', resumed: false, owner: 'b', here: false, cause: 'crash' as const }

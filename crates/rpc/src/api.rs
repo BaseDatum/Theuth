@@ -3218,6 +3218,36 @@ impl Server {
         Ok(())
     }
 
+    /// [`Self::authorize`] for a handler that forwards (`forward::route`,
+    /// `forward::to_creator`): 183 §5.6, a chat another engine just created
+    /// for us whose row is not here yet is admitted (durable chats only, see
+    /// `create_session`), since the call goes to that engine, which admits
+    /// it. Every other handler keeps the strict check and fails closed.
+    pub(crate) async fn authorize_fwd(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<()> {
+        peer(ext)?;
+        if let Some(forward::Expected { here: false, .. }) = forward::expected(ext, session).await?
+        {
+            return Ok(());
+        }
+        self.authorize(ext, session).await.map(drop)
+    }
+
+    /// [`Self::authorize_fwd`] when a session is named.
+    pub(crate) async fn authorize_opt_fwd(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+    ) -> RpcResult<()> {
+        if let Some(s) = session {
+            self.authorize_fwd(ext, s).await?;
+        }
+        Ok(())
+    }
+
     /// Record a freshly opened private tree as `peer`'s: every known member
     /// of its root moves to `peer` (a resume rebinds the whole tree), and
     /// the opened session and root join.
@@ -3235,27 +3265,30 @@ impl Server {
         map.insert(open.session, (open.root, peer));
     }
 
-    /// 183 §5.6: wait, at most `sessions.release_wait_secs`, for a session
-    /// another engine just created to replicate here (§13 row 11: on timeout
-    /// the caller answers anyway).
-    async fn wait_for_row(&self, session: SessionId) {
-        let secs = self
-            .rt
-            .section::<sessionsync::SessionsConfig>("sessions")
-            .unwrap_or_default()
-            .release_wait_secs;
+    /// 183 §5.6: wait, at most [`CREATED_ROW_WAIT`], for a session `engine`
+    /// just created to replicate here (§13 row 11: on timeout the caller
+    /// answers anyway; calls for it are forwarded by id meanwhile).
+    async fn wait_for_row(&self, session: SessionId, engine: &str) {
         let Ok(store) = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await else {
             return;
         };
-        let deadline = Instant::now() + std::time::Duration::from_secs(secs);
+        let deadline = Instant::now() + CREATED_ROW_WAIT;
         while Instant::now() < deadline {
             if store.session(session).await.ok().flatten().is_some() {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        tracing::warn!(
+            "sessions: new row {session} from {engine} not here after {}s; forwarding by id",
+            CREATED_ROW_WAIT.as_secs()
+        );
     }
 }
+
+/// 183 §5.6: how long `create_session{engine}` waits for the new row before it
+/// answers (the chat works by id meanwhile; the wait only spares a lookup).
+const CREATED_ROW_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(crate) fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
     match ActorRef::<A>::lookup(name) {
@@ -4225,7 +4258,7 @@ impl ApiServer for Server {
         delivery: Option<Delivery>,
         id: Option<InputId>,
     ) -> RpcResult<SessionId> {
-        self.authorize_opt(ext, session).await?;
+        self.authorize_opt_fwd(ext, session).await?;
         let session = match session {
             Some(s) => s,
             None => owner_root().await?,
@@ -4265,7 +4298,7 @@ impl ApiServer for Server {
         files: Vec<PathBuf>,
         delivery: Option<Delivery>,
     ) -> RpcResult<InputId> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         let id = id.unwrap_or_default();
         if let Some(r) = forward::route(
             ext,
@@ -4429,7 +4462,7 @@ impl ApiServer for Server {
         session: SessionId,
         id: InputId,
     ) -> RpcResult<String> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "withdraw", (session, id)).await? {
             return Ok(r);
         }
@@ -4451,7 +4484,7 @@ impl ApiServer for Server {
         session: SessionId,
         scope: Option<CancelScope>,
     ) -> RpcResult<()> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "cancel", (session, &scope)).await? {
             return Ok(r);
         }
@@ -4677,7 +4710,7 @@ impl ApiServer for Server {
         session: SessionId,
         style: Option<CompactStyle>,
     ) -> RpcResult<u32> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "compact", (session, &style)).await? {
             return Ok(r);
         }
@@ -4693,7 +4726,7 @@ impl ApiServer for Server {
     }
 
     async fn undo(&self, ext: &Extensions, session: SessionId) -> RpcResult<String> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "undo", (session,)).await? {
             return Ok(r);
         }
@@ -4701,7 +4734,7 @@ impl ApiServer for Server {
     }
 
     async fn redo(&self, ext: &Extensions, session: SessionId) -> RpcResult<String> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "redo", (session,)).await? {
             return Ok(r);
         }
@@ -4733,7 +4766,7 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: SessionId,
     ) -> RpcResult<SessionMemory> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "session_memory", (session,)).await? {
             return Ok(r);
         }
@@ -4745,7 +4778,7 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: SessionId,
     ) -> RpcResult<SessionMemory> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "endless_retry", (session,)).await? {
             return Ok(r);
         }
@@ -4753,7 +4786,7 @@ impl ApiServer for Server {
     }
 
     async fn endless_fold(&self, ext: &Extensions, session: SessionId) -> RpcResult<SessionMemory> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "endless_fold", (session,)).await? {
             return Ok(r);
         }
@@ -4766,7 +4799,7 @@ impl ApiServer for Server {
         session: SessionId,
         paused: bool,
     ) -> RpcResult<SessionMemory> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "endless_pause", (session, paused)).await? {
             return Ok(r);
         }
@@ -4779,7 +4812,7 @@ impl ApiServer for Server {
         session: SessionId,
         model: Option<String>,
     ) -> RpcResult<SessionMemory> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(
             ext,
             session,
@@ -4804,7 +4837,7 @@ impl ApiServer for Server {
         id: u64,
         n: u64,
     ) -> RpcResult<Vec<ViewLine>> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "endless_zoom", (session, id, n)).await? {
             return Ok(r);
         }
@@ -4818,7 +4851,7 @@ impl ApiServer for Server {
         query: String,
         limit: Option<u8>,
     ) -> RpcResult<Vec<ViewLine>> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) =
             forward::route(ext, session, "endless_recall", (session, &query, limit)).await?
         {
@@ -4841,7 +4874,7 @@ impl ApiServer for Server {
         session: SessionId,
         mode: MemoryMode,
     ) -> RpcResult<SessionMemory> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "set_session_memory", (session, mode)).await?
         {
             return Ok(r);
@@ -4864,7 +4897,7 @@ impl ApiServer for Server {
         session: SessionId,
         bytes: u32,
     ) -> RpcResult<SessionMemory> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) =
             forward::route(ext, session, "set_session_view_bytes", (session, bytes)).await?
         {
@@ -4884,7 +4917,7 @@ impl ApiServer for Server {
         expected_revision: String,
         targets: Vec<ContextTarget>,
     ) -> RpcResult<ContextRemoval> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(
             ext,
             session,
@@ -4907,7 +4940,7 @@ impl ApiServer for Server {
     }
 
     async fn regenerate(&self, ext: &Extensions, session: SessionId, turn: i64) -> RpcResult<()> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "regenerate", (session, turn)).await? {
             return Ok(r);
         }
@@ -4922,7 +4955,7 @@ impl ApiServer for Server {
         text: String,
         files: Vec<PathBuf>,
     ) -> RpcResult<()> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(
             ext,
             session,
@@ -5057,7 +5090,10 @@ impl ApiServer for Server {
     }
 
     async fn list_agents(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<AgentInfo>> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) = forward::to_creator(ext, session, "list_agents", (session,)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, ListAgents { session }).await
     }
 
@@ -5069,7 +5105,17 @@ impl ApiServer for Server {
         limit: Option<u32>,
         settled_only: Option<bool>,
     ) -> RpcResult<Loaded> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) = forward::to_creator(
+            ext,
+            session,
+            "load_session",
+            (session, before, limit, settled_only),
+        )
+        .await?
+        {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             LoadSession {
@@ -5083,7 +5129,10 @@ impl ApiServer for Server {
     }
 
     async fn get_todos(&self, ext: &Extensions, session: SessionId) -> RpcResult<TodoSnapshot> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) = forward::to_creator(ext, session, "get_todos", (session,)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, GetTodos { session }).await
     }
 
@@ -5347,7 +5396,7 @@ impl ApiServer for Server {
         session: SessionId,
         title: String,
     ) -> RpcResult<()> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "rename_session", (session, &title)).await? {
             return Ok(r);
         }
@@ -5360,7 +5409,7 @@ impl ApiServer for Server {
         session: SessionId,
         pinned: bool,
     ) -> RpcResult<()> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "pin_session", (session, pinned)).await? {
             return Ok(r);
         }
@@ -5373,7 +5422,7 @@ impl ApiServer for Server {
         session: SessionId,
         archived: bool,
     ) -> RpcResult<()> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         match forward::route(ext, session, "archive_session", (session, archived)).await? {
             Some(r) => r,
             None => {
@@ -5389,7 +5438,7 @@ impl ApiServer for Server {
     }
 
     async fn delete_session(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "delete_session", (session,)).await? {
             return Ok(r);
         }
@@ -5403,16 +5452,27 @@ impl ApiServer for Server {
     ) -> RpcResult<SessionOpen> {
         let peer = peer(ext)?;
         // 183 §5.6 (W-10): New chat on another machine: that engine creates and
-        // owns the row from epoch 1; wait (bounded) for it to replicate here
-        // so the first `send_input` forwards instead of failing as unknown.
+        // owns the row from epoch 1. Until the row replicates here, calls for it
+        // are forwarded there by id (and its reads while it is in use). A
+        // private tree belongs to this window's connection and never
+        // replicates: it cannot start elsewhere.
         if let Some(engine) = options.engine.clone() {
+            if options.retention == Retention::Private && !engine.is_empty() {
+                let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+                if engine != store.engine() {
+                    return Err(failed(
+                        "a private chat runs on this machine; it cannot start on another",
+                    ));
+                }
+            }
             let mut there = options.clone();
             there.engine = None;
             if let Some(open) =
                 forward::to_engine::<SessionOpen>(ext, Some(&engine), "create_session", (there,))
                     .await?
             {
-                self.wait_for_row(open.session).await;
+                sessionsync::owner::expect(open.session, replica::PeerId(engine.clone()));
+                self.wait_for_row(open.session, &engine).await;
                 return Ok(open);
             }
         }
@@ -5484,7 +5544,7 @@ impl ApiServer for Server {
         session: SessionId,
         project: Option<String>,
     ) -> RpcResult<()> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) =
             forward::route(ext, session, "set_session_project", (session, &project)).await?
         {
@@ -5647,7 +5707,7 @@ impl ApiServer for Server {
         model: String,
         manual: Option<bool>,
     ) -> RpcResult<ModelInfo> {
-        self.authorize_opt(ext, session).await?;
+        self.authorize_opt_fwd(ext, session).await?;
         let manual = manual.unwrap_or(true);
         if let Some(s) = session
             && let Some(r) = forward::route(ext, s, "set_model", (session, &model, manual)).await?
@@ -5676,7 +5736,7 @@ impl ApiServer for Server {
         effort: Option<String>,
         manual: Option<bool>,
     ) -> RpcResult<()> {
-        self.authorize_opt(ext, session).await?;
+        self.authorize_opt_fwd(ext, session).await?;
         let manual = manual.unwrap_or(true);
         if let Some(s) = session
             && let Some(r) =
@@ -5786,7 +5846,7 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: SessionId,
     ) -> RpcResult<Vec<acp::ConfigOption>> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "harness_options", (session,)).await? {
             return Ok(r);
         }
@@ -5800,7 +5860,7 @@ impl ApiServer for Server {
         config_id: String,
         value: String,
     ) -> RpcResult<acp::SetOptionResult> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(
             ext,
             session,
@@ -5823,7 +5883,7 @@ impl ApiServer for Server {
     }
 
     async fn resume_child(&self, ext: &Extensions, session: SessionId) -> RpcResult<ChildResumed> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "resume_child", (session,)).await? {
             return Ok(r);
         }
@@ -5859,7 +5919,7 @@ impl ApiServer for Server {
         tools: Vec<String>,
         hidden: bool,
     ) -> RpcResult<()> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) =
             forward::route(ext, session, "set_mcp_hidden", (session, &tools, hidden)).await?
         {
@@ -5883,7 +5943,7 @@ impl ApiServer for Server {
         enabled: bool,
         clear: Option<bool>,
     ) -> RpcResult<ApprovalsState> {
-        self.authorize_opt(ext, session).await?;
+        self.authorize_opt_fwd(ext, session).await?;
         // 183 §4.5: run on the owner, which persists the pin on the row. `clear`
         // travels only when set, so a pre-183 owner still answers the plain call.
         if let Some(s) = session {
@@ -5911,7 +5971,7 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: Option<SessionId>,
     ) -> RpcResult<ApprovalsState> {
-        self.authorize_opt(ext, session).await?;
+        self.authorize_opt_fwd(ext, session).await?;
         // 183 W-5: the effective value mixes the row's pin with the owner's
         // `tools.approvals`; owner offline → `-32010` (183-notes deviation 7).
         if let Some(s) = session
@@ -5941,7 +6001,7 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: Option<SessionId>,
     ) -> RpcResult<CommunicationState> {
-        self.authorize_opt(ext, session).await?;
+        self.authorize_opt_fwd(ext, session).await?;
         // 183 W-5: the owner's `agent.communication` decides.
         if let Some(s) = session
             && let Some(r) = forward::route(ext, s, "get_communication", (session,)).await?
@@ -5957,7 +6017,7 @@ impl ApiServer for Server {
         session: Option<SessionId>,
         enabled: bool,
     ) -> RpcResult<CommunicationState> {
-        self.authorize_opt(ext, session).await?;
+        self.authorize_opt_fwd(ext, session).await?;
         if let Some(s) = session
             && let Some(r) = forward::route(ext, s, "set_communication", (session, enabled)).await?
         {
@@ -5973,7 +6033,7 @@ impl ApiServer for Server {
         scope: PeerScope,
         alias: Option<String>,
     ) -> RpcResult<CommunicationState> {
-        self.authorize(ext, root).await?;
+        self.authorize_fwd(ext, root).await?;
         if let Some(r) = forward::route(ext, root, "set_peer_scope", (root, &scope, &alias)).await?
         {
             return Ok(r);
@@ -6042,7 +6102,7 @@ impl ApiServer for Server {
         reply_to: Uuid,
         text: String,
     ) -> RpcResult<PeerReceipt> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(
             ext,
             session,
@@ -6108,7 +6168,7 @@ impl ApiServer for Server {
         name: String,
         args: String,
     ) -> RpcResult<SessionId> {
-        self.authorize_opt(ext, session).await?;
+        self.authorize_opt_fwd(ext, session).await?;
         let session = match session {
             Some(s) => s,
             None => owner_root().await?,
@@ -7230,7 +7290,7 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: SessionId,
     ) -> RpcResult<HarvestResult> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "knowledge_harvest", (session,)).await? {
             return Ok(r);
         }
@@ -9795,7 +9855,7 @@ impl ApiServer for Server {
     }
 
     async fn resume_turn(&self, ext: &Extensions, session: SessionId) -> RpcResult<bool> {
-        self.authorize(ext, session).await?;
+        self.authorize_fwd(ext, session).await?;
         // 139 §9.2 (D18): an action, so it runs on the owner (I1). 183 §4.1:
         // every session's press forwards to a connected owner (`-32010` when
         // it is not); here it resumes this engine's own open turn. Idempotent

@@ -26,6 +26,52 @@ use crate::{SessionSync, SessionsConfig, TakeReason};
 /// How often a taker re-reads its cursor while waiting for the owner's tail.
 const CURSOR_POLL: Duration = Duration::from_millis(100);
 
+/// 183 §5.6: how long a session another engine created at this engine's
+/// request stays routed to that engine by id after its last use (a call for
+/// it, a relayed event of it): the chat keeps reading from its creator while
+/// in use, so a lagging replica never answers for it.
+pub const EXPECT_FOR: Duration = Duration::from_secs(120);
+
+/// Most chats remembered at once; the least recently used goes first.
+const EXPECT_MAX: usize = 256;
+
+/// Session → (the engine that created it at our request, last use).
+static EXPECTED: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<SessionId, (PeerId, Instant)>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// 183 §5.6: `engine` just created `session` for a caller of this engine.
+/// While [`expected`] names it, the RPC front door forwards calls for
+/// `session` there and the event relay follows it before the row lands.
+/// Entries unused for [`EXPECT_FOR`] are dropped; at most [`EXPECT_MAX`].
+pub fn expect(session: SessionId, engine: PeerId) {
+    let mut map = EXPECTED.lock();
+    map.retain(|_, (_, at)| at.elapsed() < EXPECT_FOR);
+    if map.len() >= EXPECT_MAX
+        && let Some(oldest) = map.iter().min_by_key(|(_, (_, at))| *at).map(|(s, _)| *s)
+    {
+        map.remove(&oldest);
+    }
+    map.insert(session, (engine, Instant::now()));
+}
+
+/// The engine [`expect`]ed to hold `session`, renewing the entry; `None`
+/// when there is none or it expired.
+pub fn expected(session: SessionId) -> Option<PeerId> {
+    let mut map = EXPECTED.lock();
+    match map.get_mut(&session) {
+        Some((engine, at)) if at.elapsed() < EXPECT_FOR => {
+            *at = Instant::now();
+            Some(engine.clone())
+        }
+        Some(_) => {
+            map.remove(&session);
+            None
+        }
+        None => None,
+    }
+}
+
 /// `tell` (from the apply path): an applied row raised the epoch of a
 /// session this engine owned — `by` took it. 68 §4.3.
 #[derive(Clone, Debug)]

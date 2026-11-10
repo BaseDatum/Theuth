@@ -4,7 +4,7 @@ import { RpcError } from '@/rpc/client'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { scope } from '@/store/engine-scope'
 import { notOwner, runsElsewhere } from './front-door'
-import { engineLabel, lastSeenText, onPeerChange, ownerMidTurnText, ownerOfflineText, ownedElsewhere, ownerUnreachable, remoteAmong, sessionDraining, useOwnerOffline, withdrawRelayed } from './owner'
+import { engineLabel, lastSeenText, onOwnerChanged, onPeerChange, ownerMidTurnText, ownerOfflineText, ownedElsewhere, ownerUnreachable, remoteAmong, sessionDraining, useOwnerOffline, withdrawRelayed } from './owner'
 
 const KEY = 'abcdef0123456789'.repeat(4)
 
@@ -82,6 +82,18 @@ test('183 R1: withdrawRelayed drops a session\'s approvals and asks and leaves t
   // Not remembered as resolved: the owner's next Watch may send the card again.
   st.approvals.getState().add(ap('a1', 'r'))
   expect(st.approvals.getState().pending.map((p) => p.id)).toEqual(['a2', 'a1'])
+})
+
+test('183 §5.6: the first landing of a chat created elsewhere (epoch 1) keeps its relayed cards; a move (epoch > 1) withdraws them', () => {
+  const st = scope('test-landing')
+  st.approvals.getState().replace([ap('a1', 'r')])
+  st.asks.getState().replace([ask('k1', 'r')])
+  onOwnerChanged(st, { session: 'r', epoch: 1 })
+  expect(st.approvals.getState().pending.map((p) => p.id)).toEqual(['a1'])
+  expect(st.asks.getState().pending.map((p) => p.id)).toEqual(['k1'])
+  onOwnerChanged(st, { session: 'r', epoch: 2 })
+  expect(st.approvals.getState().pending).toEqual([])
+  expect(st.asks.getState().pending).toEqual([])
 })
 
 // The node environment has no `window`: the settle request goes out on a stand-in.

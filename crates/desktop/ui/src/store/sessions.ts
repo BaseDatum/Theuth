@@ -3,6 +3,7 @@ import { subscribeWithSelector } from "zustand/middleware";
 import type { CellResultInput, ContactNote, Injected, ParentViewLine, RestartNote } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
+import { useRemoteStart } from '@/lib/remote-start';
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
 import type { ChannelOrigin } from "@/rpc/bindings/ChannelOrigin";
@@ -40,6 +41,7 @@ import {
   resumeFromLoaded,
   route,
   settleCompacting,
+  shorterTail,
 } from "./reduce";
 import type { SecretRequested } from "./approvals";
 import { type Stores, active, scoped } from "./engine-scope";
@@ -469,6 +471,7 @@ export const createSessions = (): SessionsApi =>
         // The plan rides on every page and reconciles by version (47 §5.4): a refused or older page never rolls
         // it back, and only a read issued after the last invalidation clears a stale mark.
         const cur = reconcileTodos(before, loaded.todos, !moved);
+        const raw = foldCells(loaded.history.flatMap(fromHistory));
         const refused =
           (mode === "prepend" && moved) ||
           // A newer snapshot already landed (or a reconnect will bring one): a superseded full page has nothing to add.
@@ -485,13 +488,14 @@ export const createSessions = (): SessionsApi =>
               // 183 §5.1: a replica answers `settled` while its owner's turn is open (`resume.here: false`); the
               // followed stream is drawing a reply that page does not hold yet, so it waits for `TurnFinished`.
               // R2: only while the follow stream is up; once it dropped, nothing will close the tail.
-              (loaded.resume?.here === false && cur.following === true && openTail(cur))));
+              (loaded.resume?.here === false && cur.following === true && openTail(cur)) ||
+              // 183 §5.6: nor does a lagging replica's page replace a reply the stream drew in full with less of it.
+              (cur.following === true && shorterTail(cur.entries, raw))));
         if (refused) {
           if (cur !== before)
             set((st) => ({ sessions: { ...st.sessions, [id]: cur } }));
           return false;
         }
-        const raw = foldCells(loaded.history.flatMap(fromHistory));
         // 146 D7: an ACP child that is not running cannot still be inside its last tool call.
         const entries = loaded.agent && !loaded.running ? interruptDangling(raw) : raw;
         const browser =
@@ -902,6 +906,11 @@ export function dispatch(events: WireEvent[], st: Stores = active()): void {
       const conn = st.connection.getState();
       if (conn.info) conn.setInfo({ ...conn.info, favorite_models: e.models });
     }
+    // 183 §5.6: a chat just created on another machine: its follow stream is up (the first send may go), or it is heard
+    // from (nothing is starting any more: the composer is free, an unreachable card goes).
+    if (live && e.type === "FollowState") {
+      if (e.live) useRemoteStart.getState().live(e.session);
+    } else if (live && "session" in e && typeof e.session === "string") useRemoteStart.getState().forget(e.session);
     if (live) listeners.get(e.type)?.forEach((cb) => cb(e));
   }
 }

@@ -17,7 +17,7 @@ import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
-import { draftProject, usePanes } from '@/lib/panes'
+import { draftProject, newDraft, usePanes } from '@/lib/panes'
 import { useCompactorLabel } from '@/lib/endless'
 import { usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -27,8 +27,12 @@ import type { EngineClass } from '@/rpc/bindings/EngineClass'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import { tilde } from './HarnessCards'
 
-/** 183 §12.5 / mock panel 5: one machine a new chat can start on; `id` `null` is this machine (the default). */
-export type MachineRow = { id: string | null; name: string; detail: string; status: string; online: boolean; repos: string[] }
+/** 183 §12.5 / mock panel 5: one machine a new chat can start on; `id` `null` is this machine (the default). `older`: a
+ * pre-183 engine (its stats carry no `os_name`), which cannot take a chat started from here. */
+export type MachineRow = { id: string | null; name: string; detail: string; status: string; online: boolean; older: boolean; repos: string[] }
+
+/** U3: why an `older` machine cannot be picked. */
+export const olderText = (name: string): string => `${name} runs an older theuth; update it to start chats there`
 
 /** Machine class words (`EngineStats.class`) for `os_name · class` lines here and in Settings › Network. */
 export const CLASS: Record<EngineClass, string> = { laptop: 'laptop', desktop: 'desktop', server: 'server', container: 'container', vm: 'VM' }
@@ -39,10 +43,10 @@ export function machineRows(mesh: Pick<MeshStatus, 'self_id' | 'self_name' | 'pe
   if (!mesh?.peers.some((p) => p.id !== mesh.self_id)) return []
   const facts = (id: string) => {
     const s = mesh.stats.find((x) => x.id === id)
-    return { detail: s ? [s.os_name, CLASS[s.class]].filter(Boolean).join(' · ') : '', repos: s?.repos ?? [] }
+    return { detail: s ? [s.os_name, CLASS[s.class]].filter(Boolean).join(' · ') : '', older: s?.os_name === '', repos: s?.repos ?? [] }
   }
   return [
-    { id: null, name: mesh.self_name || 'This machine', status: 'this machine', online: true, ...facts(mesh.self_id) },
+    { id: null, name: mesh.self_name || 'This machine', status: 'this machine', online: true, ...facts(mesh.self_id), older: false },
     ...mesh.peers
       .filter((p) => p.id !== mesh.self_id)
       .map((p) => ({
@@ -156,11 +160,12 @@ export function MachineBar({ priv }: { priv: boolean }) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-[min(21rem,calc(100vw-2rem))]">
           {rows.map((r) => (
-            <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online} onSelect={() => pickMachine(r.id)} className="items-start gap-2.5">
+            <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online || r.older} onSelect={() => pickMachine(r.id)} className="items-start gap-2.5">
               <span className={cn('mt-1.5 size-1.5 shrink-0 rounded-full', r.online ? 'bg-success' : 'ring-1 ring-fg-tertiary ring-inset')} aria-hidden="true" />
               <span className="min-w-0 flex-1">
                 <span className="block font-medium">{r.name}</span>
                 {r.detail && <span className="block text-xs text-fg-secondary">{r.detail}</span>}
+                {r.older && <span className="block text-xs text-warning">{olderText(r.name)}</span>}
               </span>
               <span className={cn('flex shrink-0 items-center gap-1 text-xs text-fg-tertiary', r.status === 'via relay' && 'rounded-full border border-border px-2')}>
                 {r.status}
@@ -198,6 +203,7 @@ export function MachineBar({ priv }: { priv: boolean }) {
         </DropdownMenuContent>
       </DropdownMenu>
       {browse && <BrowseDialog machine={chosen} open onOpenChange={setBrowse} onPick={(c) => set({ cwd: c })} />}
+      {chosen.older && <span role="alert" className="w-full text-xs text-warning">{olderText(chosen.name)}</span>}
     </div>
   )
 }
@@ -212,6 +218,7 @@ export function NewChat({
   first = true,
   onClose,
   onCreated,
+  onUncreated,
 }: {
   /** `?project=<label>` from the sidebar's "New chat in <project>" (51 §3); followed when it changes. */
   preset?: string
@@ -219,6 +226,8 @@ export function NewChat({
   first?: boolean
   onClose?(): void
   onCreated?(session: string): void
+  /** 183 §5.6: a chat just created on another machine did not take its first message: back to this draft. */
+  onUncreated?(session: string): void
 }) {
   const [priv, setPriv] = useState(false)
   const [project, setProject] = useState<string | null>(preset ?? null)
@@ -237,7 +246,7 @@ export function NewChat({
       <MachineBar priv={priv} />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
-        <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} />
+        <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />
         <CreateOptions
           priv={priv}
           onPriv={(v) => {
@@ -289,9 +298,9 @@ export function NewChatOnMenu() {
       <DropdownMenuContent side="right" align="start" className="w-[min(18rem,calc(100vw-2rem))]">
         <DropdownMenuLabel>New chat on</DropdownMenuLabel>
         {rows.map((r) => (
-          <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online} onSelect={() => openNewChatOn(navigate, r.id)}>
+          <DropdownMenuItem key={r.id ?? 'self'} disabled={!r.online || r.older} title={r.older ? olderText(r.name) : undefined} onSelect={() => openNewChatOn(navigate, r.id)}>
             <span className="min-w-0 flex-1 truncate">{r.name}</span>
-            <span className="text-xs text-fg-tertiary">{r.status}</span>
+            <span className="text-xs text-fg-tertiary">{r.older ? 'needs update' : r.status}</span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -321,7 +330,10 @@ export function NewChatPane({ id, first }: { id: string; first: boolean }) {
     usePanes.getState().place(id, session, 'center')
     void navigate({ to: '/c/$session', params: { session } })
   }
-  return <NewChat preset={draftProject(id)} pane={id} first={first} onClose={close} onCreated={created} />
+  // 183 §5.6: the chat (opened at once) did not take its first message: its leaf becomes a draft again; the draft's
+  // text was never acked, so it is still there.
+  const uncreated = (session: string) => usePanes.getState().place(session, newDraft(draftProject(id)), 'center')
+  return <NewChat preset={draftProject(id)} pane={id} first={first} onClose={close} onCreated={created} onUncreated={uncreated} />
 }
 
 /**

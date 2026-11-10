@@ -91,7 +91,7 @@ async fn route_scope<T: DeserializeOwned>(
 ) -> RpcResult<Option<T>> {
     match scope {
         Scope::Session(s) => {
-            server.authorize(ext, *s).await?;
+            server.authorize_fwd(ext, *s).await?;
             crate::forward::route(ext, *s, method, params).await
         }
         Scope::Doc(_) => Ok(None),

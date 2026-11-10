@@ -3,6 +3,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { AdvisorPill } from '@/components/chat/AdvisorPill'
 import { useAdvisor } from '@/components/chat/advisor'
 import { CodeMapPane } from '@/components/codemap/CodeMapHost'
@@ -23,7 +24,7 @@ import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { chatName } from '@/lib/attach'
 import { isDraft, usePanes } from '@/lib/panes'
-import { isNoSuchSession } from '@/lib/no-such-session'
+import { reportLoadError, useRemoteStart } from '@/lib/remote-start'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { ownedElsewhere } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -130,6 +131,8 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
     if (import.meta.env.DEV && import.meta.env.VITE_CODEMAP_MOCK === '1') void import('@/dev/codemap-fixture').then((m) => m.play(session))
   }, [session])
   useSessionLoad(session)
+  // 183 §5.6: a chat just created on another machine that still cannot be read after the route's retries.
+  const lost = useRemoteStart((s) => (s.by[session]?.unreachable ? s.by[session].machine : null))
   // 125 §8.2: the pill joins the strip's row only while an advisor exists, so the row stays absent when all is quiet.
   const advisorState = useAdvisor(session)?.state
   const advised = advisorState !== undefined && advisorState !== 'off'
@@ -174,6 +177,7 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
         </div>
       )}
       <Transcript key={`t:${session}`} session={session} />
+      {lost && <UnreachableCard session={session} machine={lost} />}
       <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <TodoCard key={`d:${session}`} session={session} />
       {aboveComposer}
@@ -202,20 +206,28 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
  * Every RPC is bound to the effect that issued it (`signal`): one settling after the effect was cleaned up — the
  * route unmounted, the session or the engine changed — is dropped, no toast and no store write. "no such session"
  * for this session (a deleted chat, a stale deep link, a notification for another engine's session) replaces the
- * route with `/` silently; every other failure toasts.
+ * route with `/` silently; every other failure toasts. 183 §5.6: a chat this window just created on another
+ * machine is never sent home: its reads are retried with backoff for `YOUNG_MS`, then it shows the unreachable card.
  */
 export function useSessionLoad(session: string): void {
   const api = useApi()
   const navigate = useNavigate()
   // The engine this route mounted under: an RPC landing after a switch writes to its own stores, never the new engine's (48 §5).
   const { sessions: store } = useScope()
+  const tries = useRef(0)
   const report = useCallback(
     (e: unknown, signal: AbortSignal) => {
       if (signal.aborted) return
-      if (isNoSuchSession(e)) void navigate({ to: '/', replace: true })
-      else toast.error(e instanceof Error ? e.message : String(e))
+      reportLoadError(e, session, tries, {
+        home: () => void navigate({ to: '/', replace: true }),
+        toast: (message) => toast.error(message),
+        retry: (ms) =>
+          setTimeout(() => {
+            if (!signal.aborted) window.dispatchEvent(new CustomEvent<ReloadDetail>('theuth:reload-session', { detail: { session } }))
+          }, ms),
+      })
     },
-    [navigate],
+    [navigate, session],
   )
 
   // The plan (47 §5.4): one `get_todos` when the page carried none (an older engine, a refused read) or a gap
@@ -369,6 +381,28 @@ function PrivateStrip({ session }: { session: string }) {
           {disconnectText(remaining(lost, now))}
         </span>
       )}
+    </div>
+  )
+}
+
+/** 183 §5.6: a chat just created on `machine` whose reads still fail after `YOUNG_MS` is said in place, never a silent
+ * trip home. Try again restarts the route's retries. */
+function UnreachableCard({ session, machine }: { session: string; machine: string }) {
+  return (
+    <div className="mx-auto w-full shrink-0 px-4 md:max-w-[768px]">
+      <div role="alert" className="mb-2 flex items-center gap-2 rounded-xl border border-warning-border/30 bg-warning-bg/40 px-3 py-2 text-sm">
+        <span className="min-w-0 flex-1 text-fg-secondary">This chat isn&apos;t reachable: {machine} has not answered for it.</span>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            useRemoteStart.getState().begin(session, machine)
+            window.dispatchEvent(new CustomEvent<ReloadDetail>('theuth:reload-session', { detail: { session } }))
+          }}
+        >
+          Try again
+        </Button>
+      </div>
     </div>
   )
 }

@@ -9,6 +9,12 @@
 //! connected, or gives no answer, is [`OWNER_UNREACHABLE`] at once with an
 //! [`OwnerUnreachable`] payload; the desktop renders the "continue here?" card.
 //!
+//! 183 §5.6: a chat created on another engine (`create_session{engine}`) is
+//! routed to that engine by id while it is in use ([`expected`]): before its
+//! row replicates, the mutating calls through [`classify`]; the reads the chat
+//! route makes through [`to_creator`] until it goes unused, so a lagging
+//! replica never answers for it.
+//!
 //! The owner side ([`serve`]) dispatches each forwarded request into its own
 //! [`crate::api::Server`] as the internal peer, with a [`Forwarded`] marker in
 //! the extensions so the request is never forwarded a second hop. A forwarded
@@ -199,24 +205,87 @@ pub async fn owner_peer(session: SessionId) -> Option<PeerId> {
 /// Classify `session` from its row (183 §4.1): `Here` when unknown, unowned
 /// or ours; otherwise `Forward(owner)` when the owner is in `connected` (the
 /// transport's peers at call time, W-3), else `Offline(owner)`. User sessions
-/// and desks follow the same rule.
+/// and desks follow the same rule. 183 §5.6: an unknown row another engine
+/// just created for us ([`sessionsync::owner::expected`]) is that engine's.
 pub async fn classify(
     store: &Store,
     session: SessionId,
     connected: &[PeerId],
 ) -> anyhow::Result<Route> {
-    let Some(row) = store.session(session).await? else {
-        return Ok(Route::Here);
+    let owner = match store.session(session).await? {
+        None => match sessionsync::owner::expected(session) {
+            Some(engine) => engine,
+            None => return Ok(Route::Here),
+        },
+        Some(row) if row.owner.is_empty() || row.owner == store.engine() => {
+            return Ok(Route::Here);
+        }
+        Some(row) => PeerId(row.owner),
     };
-    if row.owner.is_empty() || row.owner == store.engine() {
-        return Ok(Route::Here);
-    }
-    let owner = PeerId(row.owner);
     Ok(if connected.contains(&owner) {
         Route::Forward(owner)
     } else {
         Route::Offline(owner)
     })
+}
+
+/// 183 §5.6: a chat another engine created at this engine's request and still
+/// in use ([`sessionsync::owner::expected`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Expected {
+    /// The engine that created it.
+    pub engine: PeerId,
+    /// Its row has replicated here (owned by `engine`).
+    pub here: bool,
+}
+
+/// [`Expected`] for `session`: `None` on a forwarded call, without the
+/// sessions plugin, when nothing was created elsewhere for it (or that went
+/// unused for [`sessionsync::owner::EXPECT_FOR`]), or when its row here names
+/// another owner (it moved: normal routing applies).
+pub async fn expected(ext: &Extensions, session: SessionId) -> RpcResult<Option<Expected>> {
+    if ext.get::<Forwarded>().is_some() || sessionsync::actor().is_none() {
+        return Ok(None);
+    }
+    let Some(engine) = sessionsync::owner::expected(session) else {
+        return Ok(None);
+    };
+    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+    match store
+        .owner(session)
+        .await
+        .map_err(|e| internal(format!("{e:#}")))?
+    {
+        None => Ok(Some(Expected {
+            engine,
+            here: false,
+        })),
+        Some((owner, _)) if owner == engine.0 => Ok(Some(Expected { engine, here: true })),
+        Some(_) => Ok(None),
+    }
+}
+
+/// A read the front door answers from its replica, for a chat created
+/// elsewhere and in use ([`expected`]): forwarded to its creator, so a
+/// replica that has not caught up (or has no row yet) never answers for it.
+/// `Ok(None)`: answer here — nothing expected, or the creator cannot be
+/// reached and the row is here.
+pub async fn to_creator<T: DeserializeOwned>(
+    ext: &Extensions,
+    session: SessionId,
+    method: &str,
+    params: impl Serialize,
+) -> RpcResult<Option<T>> {
+    let Some(Expected { engine, here }) = expected(ext, session).await? else {
+        return Ok(None);
+    };
+    match to_peer(ext, &engine, method, params).await {
+        Ok(Some(v)) => Ok(Some(v)),
+        Ok(None) if here => Ok(None),
+        Err(e) if here && e.code() == OWNER_UNREACHABLE => Ok(None),
+        Ok(None) => Err(unreachable(engine.0, "not connected").await),
+        Err(e) => Err(e),
+    }
 }
 
 /// 183 §4.8.2: the owner side of a forwarded call. A row this engine does not
@@ -827,6 +896,20 @@ mod tests {
                 "owner not connected: offline at once"
             );
         }
+        // 183 §5.6: a chat "them" just created for us, its row not here yet,
+        // is theirs; once a row is here (ours in this store), the row decides.
+        let created = SessionId::new();
+        sessionsync::owner::expect(created, them.clone());
+        assert_eq!(
+            classify(&store, created, &up).await.unwrap(),
+            Route::Forward(them.clone())
+        );
+        assert_eq!(
+            classify(&store, created, &[]).await.unwrap(),
+            Route::Offline(them.clone())
+        );
+        sessionsync::owner::expect(mine, them.clone());
+        assert_eq!(classify(&store, mine, &up).await.unwrap(), Route::Here);
         // Classifying never moved anything.
         assert_eq!(store.owner(user).await.unwrap().unwrap().0, "them");
         store.close().await;
