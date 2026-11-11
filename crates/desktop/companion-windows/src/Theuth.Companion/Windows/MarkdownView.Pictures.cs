@@ -121,7 +121,8 @@ internal sealed partial class MarkdownView
         {
             Text = PictureFence.FallbackCaption,
             FontSize = size - 1.5,
-            Foreground = Theme.Brush(NativeLook.AccentText, theme()),
+            Foreground = Theme.Brush(NativeLook.TextSecondary, theme()),
+            TextDecorations = global::Windows.UI.Text.TextDecorations.Underline, // it is a click target: open theuth
             TextWrapping = TextWrapping.Wrap,
         };
         AutomationProperties.SetAutomationId(caption, "reply-picture-caption");

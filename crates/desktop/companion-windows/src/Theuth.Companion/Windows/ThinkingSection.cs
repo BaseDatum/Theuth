@@ -67,7 +67,9 @@ internal sealed class ThinkingSection : StackPanel
         };
         body.SizeChanged += (_, _) =>
         {
-            if (active && followTail) bodyScroll.ChangeView(null, bodyScroll.ExtentHeight, null, disableAnimation: true);
+            if (!active || !followTail) return;
+            bodyScroll.UpdateLayout(); // the extent is measured after SizeChanged: scroll to where it ends now, not where it ended before this chunk
+            bodyScroll.ChangeView(null, bodyScroll.ScrollableHeight, null, disableAnimation: true);
         };
         bodyScroll.ViewChanged += (_, e) =>
         {

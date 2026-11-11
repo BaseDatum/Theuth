@@ -225,7 +225,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         replyStack.SizeChanged += (_, _) =>
         {
             Fit(); // 192w: a picture that arrives (or the thinking section opening) changes the height the bar needs
-            if (followTail) replyScroll.ChangeView(null, replyScroll.ExtentHeight, null, disableAnimation: true);
+            FollowReplyTail();
         };
         replyScroll.ViewChanged += (_, e) =>
         {
@@ -586,6 +586,17 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         replyScroll.Visibility = Visibility.Collapsed;
         replyView.Reset();
         thinking.Reset();
+    }
+
+    /// <summary>
+    /// The reply region shows the newest part of the reply until the user scrolls up. The layout is brought up to date first: a SizeChanged
+    /// arrives before the scroll viewer has measured its new extent, and a picture adds a couple of hundred pixels at once.
+    /// </summary>
+    private void FollowReplyTail()
+    {
+        if (!followTail || replyScroll.Visibility != Visibility.Visible) return;
+        replyScroll.UpdateLayout();
+        replyScroll.ChangeView(null, replyScroll.ScrollableHeight, null, disableAnimation: true);
     }
 
     /// <summary>192w P2: a picture was clicked — the reply opens in theuth, as Ctrl+O does.</summary>
