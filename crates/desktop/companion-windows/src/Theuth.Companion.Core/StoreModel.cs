@@ -39,8 +39,12 @@ public partial class StoreModel : INotifyPropertyChanged
 
         public sealed record Failed(string Error) : ReceiptRow;
 
-        /// <summary>W3/W4: the desk's streamed answer ("theuth · handed to w3 — …" · Open).</summary>
-        public sealed record Reply(string Who, string Text, string? Session) : ReceiptRow;
+        /// <summary>
+        /// W3/W4: the desk's streamed answer ("theuth · handed to w3 — …" · Open). <paramref name="Text"/> is the receipt line (the first two
+        /// lines, marks stripped). 189w D4: <paramref name="Markdown"/> is the whole reply so far — what the Ask bar renders as markdown while
+        /// it arrives; empty while waiting and for a failed or empty turn — and <paramref name="Streaming"/> says the turn is still going.
+        /// </summary>
+        public sealed record Reply(string Who, string Text, string? Session, string Markdown = "", bool Streaming = false) : ReceiptRow;
     }
 
     public static readonly TimeSpan RefetchDebounce = TimeSpan.FromMilliseconds(250);
@@ -57,6 +61,15 @@ public partial class StoreModel : INotifyPropertyChanged
     private bool fetching;
     private bool fetchAgain;
     private bool activityLogged;
+
+    // 189w: the one writer of the connection's event focus, the Ask's catch-up from the transcript, its watchdog.
+    private readonly EventFocus focus;
+    private readonly AskWatchdog watchdog = new();
+    private IDisposable? watchdogTimer;
+    private IDisposable? settleTimer;
+    private bool catchUpRunning;
+    private (string Trigger, bool Settled)? catchUpAgain;
+    private int opens;
 
     private ValueList<AttentionItem> items = new();
     private ValueList<AgentSummary> agents = new();
@@ -77,7 +90,20 @@ public partial class StoreModel : INotifyPropertyChanged
         this.log = log ?? (_ => { });
         now = this.clock();
         undo = new UndoQueue<Held>(UndoDelay);
+        focus = new EventFocus(sessions => engine.SetEventFocusAsync(sessions), this.log);
     }
+
+    /// <summary>
+    /// 189w D1: the connection's event focus — the union of every claim (the Ask's desk, the voice key's desk). Nothing else may call
+    /// <c>set_event_focus</c>: a second writer replaces the set and the first one's deltas vanish.
+    /// </summary>
+    public EventFocus Focus => focus;
+
+    /// <summary>
+    /// 189w D1: the voice key's / command mode's claim on <paramref name="session"/> (its own <c>desk_open</c>, before its
+    /// <c>send_input</c>), merged into the union and sent. Never throws: a refused focus is logged and the send goes on.
+    /// </summary>
+    public Task ClaimDeltasAsync(string owner, string session, string reason) => focus.ClaimAsync(owner, new[] { session }, reason);
 
     // MARK: published state (PropertyChanged on the owner thread)
 
@@ -155,7 +181,17 @@ public partial class StoreModel : INotifyPropertyChanged
 
     // MARK: connection and events
 
-    public void HandleState(RpcClient.State state) => Connection = state;
+    public void HandleState(RpcClient.State state)
+    {
+        Connection = state;
+        if (state != RpcClient.State.Open) return;
+        opens++;
+        if (opens == 1) return; // the first dial is not a reconnect
+        // 189w D1/D2: a new connection has no focus set, and everything between the loss and now was missed.
+        LogLine($"connection: re-opened (#{opens})");
+        if (focus.Union.Count > 0) _ = focus.SendAsync("reconnect");
+        RequestCatchUp(CatchUpTrigger.Reconnect);
+    }
 
     public void HandleEvent(byte[] data)
     {
@@ -164,6 +200,8 @@ public partial class StoreModel : INotifyPropertyChanged
         catch (Exception)
         {
             // 149 WW1: a typed kind that failed to decode still reaches the raw hook (WW3 decodes meeting events itself).
+            // 189w: and the Ask's reader — a TurnFinished that does not decode as the typed shape must still end a waiting receipt.
+            AskObserve(data);
             if (WireEvent.TypeOf(data) is { } t) EventReceived?.Invoke(t, data);
             return;
         }
@@ -191,6 +229,7 @@ public partial class StoreModel : INotifyPropertyChanged
                 break;
             case Lagged:
                 ScheduleRefetch(immediate: true);
+                RequestCatchUp(CatchUpTrigger.Lagged); // 189w D2: the engine dropped events — a delta of the reply may be among them
                 break;
             default:
                 if (WireEvent.AttentionTriggers.Contains(e.Type) || e.Type == "TurnStarted" || e.Type == "SubagentSpawned") ScheduleRefetch();
@@ -614,15 +653,22 @@ public partial class StoreModel : INotifyPropertyChanged
         Hold(new Held("", "theuth", t, new CardAction.AskTheuth(t)));
     }
 
-    /// <summary>After the hold: resolve theuth's desk once, <c>send_input(desk, text, [], null, null)</c>, then collect the reply.</summary>
+    /// <summary>
+    /// After the hold: resolve theuth's desk, claim its deltas, <c>send_input(desk, text, [], null, null)</c>, then collect the reply.
+    /// 189w D1: the claim goes out on EVERY ask (the desk may have moved; the connection may be a new one) and is answered before the
+    /// input leaves, so no delta of this reply can meet a stale focus set; the desk's first resolve already sent one, which counts.
+    /// </summary>
     private async Task CommitAsk(string text)
     {
+        long mark = focus.Requested;
         try
         {
             var session = await ResolveDesk();
+            focus.Claim("ask", new[] { session });
+            await focus.EnsureSinceAsync(mark, "ask");
             await engine.SendInputAsync(session, text);
             var id = $"ask:{Guid.NewGuid().ToString().ToUpperInvariant()}";
-            Ask.Router.Sent(session);
+            AskSent(session, text);
             Ask.Current = id;
             Ask.Receipts.Add(new Core.Receipt { Id = id, Kind = ReceiptKind.Ask, At = clock(), Who = "theuth", Text = text, Session = session }, clock());
             OnPropertyChanged(nameof(Ask));
@@ -638,6 +684,21 @@ public partial class StoreModel : INotifyPropertyChanged
             ExpireReceipt(6);
             log($"ask failed: {Describe(e)}");
         }
+    }
+
+    /// <summary>
+    /// <c>send_input</c> went out: collect the desk's reply from now until its turn finishes, and watch the stream for silence
+    /// (<see cref="AskWatchdog"/>). Also the start of a <c>--ask-replay</c>.
+    /// </summary>
+    protected void AskSent(string session, string text)
+    {
+        Ask.Router.Sent(session, text);
+        if (Ask.Router.Reply is { } r) r.SentAt = clock();
+        catchUpAgain = null;
+        settleTimer?.Dispose();
+        settleTimer = null;
+        watchdog.Arm(clock());
+        ArmWatchdog(AskWatchdog.Interval);
     }
 
     /// <summary><c>mesh_status</c> → on the hub <c>desk_open("theuth")</c>; off it, a replicated desk id or a refusal. Cached.
@@ -671,32 +732,26 @@ public partial class StoreModel : INotifyPropertyChanged
         finally
         {
             OnPropertyChanged(nameof(Ask));
-            FocusDeltas();
+            FocusDeltas("resolve");
         }
     }
 
-    /// <summary>129 §3.2: this connection wants the desk's deltas only; re-applied on every <c>PendingPrompts</c>; pre-129 engines refuse, fine.</summary>
-    private void FocusDeltas()
+    /// <summary>
+    /// 129 §3.2 / 189w D1: this connection wants the desk's deltas (the Ask's claim, sent through <see cref="Focus"/>, the only writer);
+    /// re-applied on the desk's first resolve, on every <c>PendingPrompts</c>, on every ask and on every reconnect; pre-129 engines refuse, fine.
+    /// </summary>
+    private void FocusDeltas(string reason)
     {
         if (Ask.Router.DeskSession is not { } s) return;
-        _ = FocusDeltasAsync(s);
+        focus.Claim("ask", new[] { s });
+        _ = focus.SendAsync(reason);
     }
 
-    private async Task FocusDeltasAsync(string session)
-    {
-        try
-        {
-            await engine.SetEventFocusAsync(new[] { session });
-            if (AskProbe) log($"set_event_focus([{(session.Length > 8 ? session[..8] : session)}…]) ok");
-        }
-        catch (Exception e)
-        {
-            log($"set_event_focus failed: {Describe(e)}");
-        }
-    }
-
-    /// <summary>Every event, raw: <c>TextDelta</c>/<c>TurnFinished</c>/<c>Error</c> on the desk feed the reply (a failed turn ends the
-    /// receipt with "theuth couldn't reply — …", W6 item 7); <c>Dictation*</c> the live dictation.</summary>
+    /// <summary>
+    /// Every event, raw: <c>TextDelta</c>/<c>TurnFinished</c>/<c>Error</c> on the desk feed the reply (a failed turn ends the
+    /// receipt with "theuth couldn't reply — …", W6 item 7); <c>Dictation*</c> the live dictation. 189w D2: any event for the desk
+    /// restarts the watchdog's silence; a normal <c>TurnFinished</c> is settled by the transcript (<see cref="RequestCatchUp"/>), not by the stream.
+    /// </summary>
     private void AskObserve(byte[] data)
     {
         StreamDelta d;
@@ -704,7 +759,7 @@ public partial class StoreModel : INotifyPropertyChanged
         catch (Exception) { return; }
         if (d.Type == "PendingPrompts")
         {
-            FocusDeltas();
+            FocusDeltas("pending-prompts");
             return;
         }
         if (d.Type.StartsWith("Dictation", StringComparison.Ordinal))
@@ -712,25 +767,189 @@ public partial class StoreModel : INotifyPropertyChanged
             DictationObserve(data);
             return;
         }
-        if (Ask.Router.Reply is not { Finished: false } || d.Session is not { } session) return;
-        ReplyEvent e;
+        if (Ask.Router.Reply is not { Finished: false } reply || d.Session != reply.Session) return;
+        watchdog.Touch(clock());
         switch (d.Type)
         {
-            case "TextDelta": e = new ReplyEvent.TextDelta(session, d.Text ?? ""); break;
-            case "TurnFinished": e = new ReplyEvent.TurnFinished(session, d.StopReason); break;
-            case "Error": e = new ReplyEvent.Error(session, d.Message ?? ""); break;
-            default: return;
+            case "TurnStarted":
+                if (d.TurnSeq is { } seq && reply.Turn is null && !reply.SawFinish)
+                {
+                    reply.Turn = seq;
+                    log($"ask: the desk started turn_seq={seq}");
+                }
+                return;
+            case "TextDelta":
+            {
+                var piece = d.Text ?? "";
+                if (!Ask.Router.Observe(new ReplyEvent.TextDelta(reply.Session, piece))) return;
+                if (reply.StreamedChars == 0) log($"ask: first TextDelta ({piece.Length} chars) {Since(reply)} after send");
+                reply.StreamedChars += piece.Length;
+                ShowReply(reply);
+                return;
+            }
+            case "Error":
+                if (Ask.Router.Observe(new ReplyEvent.Error(reply.Session, d.Message ?? ""))) FinishAsk(reply, "Error event", $"ask failed on the desk: {d.Message}");
+                return;
+            case "TurnFinished":
+                if (AskRouter.IsFailure(d.StopReason))
+                {
+                    if (Ask.Router.Observe(new ReplyEvent.TurnFinished(reply.Session, d.StopReason)))
+                        FinishAsk(reply, $"TurnFinished {d.StopReason}", $"ask failed on the desk: stop_reason={d.StopReason}");
+                    return;
+                }
+                reply.SawFinish = true;
+                log($"ask: TurnFinished ({d.StopReason ?? "?"}) for the desk after {reply.StreamedChars} streamed chars — catching up from the transcript");
+                RequestCatchUp(CatchUpTrigger.TurnFinished);
+                return;
+            default:
+                return;
         }
-        if (!Ask.Router.Observe(e) || Ask.Router.Reply is not { } reply) return;
+    }
+
+    /// <summary>"1234 ms" since the ask's send_input returned.</summary>
+    private string Since(AskReply reply) => reply.SentAt is { } at ? $"{(clock() - at).TotalMilliseconds:0} ms" : "? ms";
+
+    /// <summary>The receipt row and the Done zone follow the reply: the first two lines, and (189w D4) the whole markdown while it streams.</summary>
+    private void ShowReply(AskReply reply)
+    {
         var text = reply.FirstTwoLines;
         if (Ask.Current is { } id) Ask.Receipts.Update(id, text);
         OnPropertyChanged(nameof(Ask));
-        SetReceipt(new ReceiptRow.Reply("theuth", text.Length == 0 ? "…" : text, reply.Session));
-        if (reply.Failed) log($"ask failed on the desk: {(d.Type == "Error" ? d.Message : $"stop_reason={d.StopReason}")}");
-        if (reply.Finished) ExpireReceipt(12);
-        // Spoken replies (2026-10-09): the whole reply, once final and successful — never a partial, never a failed turn.
-        if (reply.Finished && !reply.Failed && reply.Text.Trim().Length > 0) AskReplyFinished?.Invoke(reply.Session, reply.Text);
+        string markdown = reply.Failed || reply.NoReply ? "" : reply.Text;
+        SetReceipt(new ReceiptRow.Reply("theuth", text.Length == 0 ? "…" : text, reply.Session, markdown, Streaming: !reply.Finished));
     }
+
+    /// <summary>
+    /// The ask is over (a reply, a failure, or "finished without a reply"): stop watching, show it, let the row linger, speak it.
+    /// 189w D6 logs the finish — how it ended, how many characters, how many of them streamed.
+    /// </summary>
+    private void FinishAsk(AskReply reply, string how, string? failedLog)
+    {
+        watchdog.Disarm();
+        watchdogTimer?.Dispose();
+        watchdogTimer = null;
+        settleTimer?.Dispose();
+        settleTimer = null;
+        catchUpAgain = null;
+        ShowReply(reply);
+        if (failedLog is not null) log(failedLog);
+        log($"ask finished ({how}): {reply.Text.Length} chars, {reply.StreamedChars} streamed, {(reply.Failed ? "failed" : reply.NoReply ? "no reply" : "ok")}");
+        ExpireReceipt(reply.Failed || reply.NoReply ? 12 : AskCatchUp.LingerSeconds(reply.Text));
+        // Spoken replies (2026-10-09): the whole reply, once final and successful — never a partial, never a failed turn.
+        if (!reply.Failed && !reply.NoReply && reply.Text.Trim().Length > 0) AskReplyFinished?.Invoke(reply.Session, reply.Text);
+    }
+
+    // MARK: 189w D2 — the Ask catches up from the transcript
+
+    private void ArmWatchdog(TimeSpan after)
+    {
+        watchdogTimer?.Dispose();
+        watchdogTimer = scheduler.After(after, OnWatchdog);
+    }
+
+    /// <summary>The watchdog's timer fired: catch up when the desk has been silent for the whole interval, else wait out the rest of it.</summary>
+    private void OnWatchdog()
+    {
+        watchdogTimer = null;
+        if (Ask.Router.Reply is not { Finished: false })
+        {
+            watchdog.Disarm();
+            return;
+        }
+        var verdict = watchdog.Decide(clock());
+        if (!verdict.Armed) return;
+        if (verdict.CatchUp)
+        {
+            log($"ask watchdog: no event for the desk in {AskWatchdog.Interval.TotalSeconds:0} s — catching up from the transcript");
+            watchdog.CaughtUp(clock());
+            RequestCatchUp(CatchUpTrigger.Watchdog);
+            ArmWatchdog(AskWatchdog.Interval);
+        }
+        else
+        {
+            ArmWatchdog(verdict.Wait);
+        }
+    }
+
+    /// <summary>
+    /// Read the desk's transcript for the ask that is collecting (D2): after a <c>TurnFinished</c>, a <c>Lagged</c>, a reconnect and the
+    /// watchdog. One read at a time; a trigger that arrives meanwhile runs once after it (a finish outranks the others). Nothing when no ask collects.
+    /// </summary>
+    private void RequestCatchUp(string trigger, bool settled = false)
+    {
+        if (Ask.Router.Reply is not { Finished: false } reply) return;
+        if (catchUpRunning)
+        {
+            if (catchUpAgain is null || trigger == CatchUpTrigger.TurnFinished) catchUpAgain = (trigger, settled);
+            return;
+        }
+        _ = CatchUpAsync(reply, trigger, settled);
+    }
+
+    private async Task CatchUpAsync(AskReply reply, string trigger, bool settled)
+    {
+        catchUpRunning = true;
+        try
+        {
+            SessionTail? tail = null;
+            string? unread = null;
+            try { tail = await LoadTailWithin(reply.Session, AskCatchUp.Deadline); }
+            catch (Exception e) { unread = Describe(e); }
+            if (!ReferenceEquals(Ask.Router.Reply, reply) || reply.Finished)
+            {
+                log($"ask catch-up ({trigger}) dropped: the ask moved on while load_session was out");
+                return;
+            }
+            watchdog.CaughtUp(clock());
+            var decision = AskCatchUp.Decide(trigger, tail, reply.AskText, reply.Turn, reply.Text, settled);
+            log($"ask catch-up ({trigger}{(settled ? ", re-check" : "")}): {(tail is null ? $"transcript unread ({unread})" : $"{tail.History.Count} entries")}, "
+                + $"{(decision.Text ?? "").Length} chars from the transcript ({reply.StreamedChars} streamed), running={(tail is { Running: true } ? "true" : "false")}, via={decision.Via} → {decision.Action}");
+            if (decision.Turn is { } turn && reply.Turn is null) reply.Turn = turn;
+            switch (decision.Action)
+            {
+                case CatchUpAction.Finish:
+                    reply.Complete(decision.Text ?? reply.Text); // the transcript's text replaces what streamed
+                    FinishAsk(reply, $"{trigger} · {decision.Via}", null);
+                    break;
+                case CatchUpAction.Fail:
+                    if (decision.NoReply) reply.FinishWithoutReply();
+                    else reply.Fail(decision.Error ?? "the turn failed");
+                    FinishAsk(reply, $"{trigger} · {decision.Via}", reply.Failed ? $"ask failed on the desk: {reply.Error}" : null);
+                    break;
+                case CatchUpAction.Settle:
+                    settleTimer?.Dispose();
+                    settleTimer = scheduler.After(AskCatchUp.SettleDelay, () =>
+                    {
+                        settleTimer = null;
+                        RequestCatchUp(trigger, settled: true);
+                    });
+                    break;
+            }
+        }
+        finally
+        {
+            catchUpRunning = false;
+            if (catchUpAgain is { } again)
+            {
+                catchUpAgain = null;
+                RequestCatchUp(again.Trigger, again.Settled);
+            }
+        }
+    }
+
+    /// <summary><c>load_session</c> with a deadline: an engine that never answers must not leave the ask waiting (it counts as unreadable).</summary>
+    private async Task<SessionTail> LoadTailWithin(string session, TimeSpan deadline)
+    {
+        var load = LoadTailAsync(session, AskCatchUp.Limit);
+        var late = new TaskCompletionSource<SessionTail>();
+        using var timer = scheduler.After(deadline, () => late.TrySetException(new TimeoutException($"load_session did not answer within {deadline.TotalSeconds:0} s")));
+        _ = load.ContinueWith(static t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted); // observed even when the deadline won
+        var first = await Task.WhenAny(load, late.Task);
+        return await first;
+    }
+
+    /// <summary>The transcript read (<c>load_session</c>); a seam for the app's <c>--ask-replay</c>, whose desk exists nowhere.</summary>
+    protected virtual Task<SessionTail> LoadTailAsync(string session, uint limit) => engine.LoadSessionAsync(session, limit);
 
     /// <summary>An Ask theuth reply (typed or dictated) is final: (session, the full text). The app speaks it when Settings › Ask bar says so.</summary>
     public event Action<string, string>? AskReplyFinished;
