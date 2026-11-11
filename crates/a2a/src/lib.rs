@@ -42,7 +42,7 @@ pub mod contacts;
 pub mod server;
 
 use client::{ConnectError, PeerClient, Sender};
-use config::{A2aConfig, Listener, PEERS_FILE, PeersFile, ShareMode, Staged};
+use config::{A2aConfig, Listener, PEERS_FILE, PeersFile, Staged};
 use server::{Live, Shared};
 
 /// Registry name of the [`A2aActor`].
@@ -123,8 +123,6 @@ pub struct A2aExportStatus {
     pub url: String,
     /// The one peer granted this export.
     pub peer: Option<String>,
-    /// 186: the granted peer's share mode (contacts only).
-    pub mode: Option<ShareMode>,
 }
 
 /// `ask` → [`A2aStatus`].
@@ -259,18 +257,6 @@ impl Ctx {
                 session: e.session,
                 url: format!("{}/agents/{}/rpc", base.as_deref().unwrap_or(""), e.name),
                 peer: e.peer.clone(),
-                mode: e
-                    .peer
-                    .as_ref()
-                    .and_then(|p| live.staged.peers.get(p))
-                    .filter(|p| p.eid.is_some())
-                    .map(|p| {
-                        if p.full.contains(&e.name) {
-                            ShareMode::Full
-                        } else {
-                            ShareMode::Cautious
-                        }
-                    }),
             })
             .collect();
         A2aStatus {
@@ -504,7 +490,12 @@ impl Ctx {
                     roots: p.sessions.clone(),
                     generation: epochs[&p.name].clone(),
                     sender,
-                    full: p.full.iter().cloned().collect(),
+                    // 190: a contact's exports, every one shared in full.
+                    full: if p.eid.is_some() {
+                        p.exports.clone()
+                    } else {
+                        Vec::new()
+                    },
                 }
             })
             .collect();
@@ -562,38 +553,21 @@ impl Ctx {
             self.subscribers.clone(),
             policy,
         ));
-        // 183 Z3-R2: a contact's cap or an agent export's allowlist reaches its live inboxes
-        // at once (a running turn included), not at the contact's next request.
+        // 186 review 2: the agent exports each contact holds now; every other inbox of the
+        // contact stops running uncapped at once (a running turn included).
         let limits: Vec<agent::communication::network::ContactLimits> = live
             .staged
             .contacts
             .iter()
             .filter(|(_, f)| !f.blocked)
-            .map(|(alias, f)| agent::communication::network::ContactLimits {
+            .map(|(alias, _)| agent::communication::network::ContactLimits {
                 contact: alias.clone(),
-                cap: f.cap,
-                // 186 (D6): an agent shared in full runs under its own policy.
-                exports: live
-                    .staged
-                    .peers
-                    .get(alias)
-                    .map(|p| {
-                        p.exports
-                            .iter()
-                            .filter(|e| !p.full.contains(*e))
-                            .filter_map(|e| live.staged.agents.get(e))
-                            .map(|a| (a.name.clone(), a.tools.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                // 186 review 2: and which agent exports it holds in full (every other inbox
-                // of the contact stops running in full).
                 full: live
                     .staged
                     .peers
                     .get(alias)
                     .map(|p| {
-                        p.full
+                        p.exports
                             .iter()
                             .filter(|e| live.staged.agents.contains_key(*e))
                             .cloned()
@@ -627,6 +601,21 @@ impl Ctx {
         for (alias, old) in &old_clients {
             if !clients.get(alias).is_some_and(|c| Arc::ptr_eq(c, old)) {
                 old.generation().cancel();
+            }
+        }
+        // 190 (D10): once, at the first good load after the upgrade, every grant says it is
+        // full now; the marker sits beside `peers.yaml`, never in it.
+        let marker = self.rt.data_dir.join(config::FULL_NOTICE);
+        if !marker.exists() {
+            for line in config::full_notice(&file) {
+                tracing::info!("{line}");
+            }
+            let wrote = marker
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&marker, b""));
+            if let Err(e) = wrote {
+                tracing::warn!("a2a: {}: {e}", marker.display());
             }
         }
         {
@@ -1138,7 +1127,6 @@ mod tests {
                     inbound: Some(config::Token::for_test(token)),
                     sessions: vec![],
                     exports: vec![],
-                    full: Default::default(),
                     allow_private: false,
                     eid: None,
                 },

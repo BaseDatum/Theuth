@@ -16,11 +16,6 @@ use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 use zeroize::Zeroizing;
 
-/// 186 (D2): `modes` is written only when it holds a `full` grant.
-fn no_full(m: &BTreeMap<String, ShareMode>) -> bool {
-    !m.values().any(|v| *v == ShareMode::Full)
-}
-
 /// Owner-managed peer/export file, relative to the data dir.
 pub const PEERS_FILE: &str = "a2a/peers.yaml";
 /// Default loopback listener.
@@ -163,15 +158,16 @@ pub struct PeerEntry {
     /// 183 (after C3): the contact's machine, from its card's `EXT_MACHINE` extension.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
-    /// 183 §7.6: the contact's risk cap; `None` = `a2a.contact_cap`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// 183 §7.6: the contact's risk cap; `None` = `a2a.contact_cap`. 190 (D9): read, never
+    /// written; it binds only a W-40 turn.
+    #[serde(default, skip_serializing)]
     pub cap: Option<tools::Risk>,
     /// 183 §7.6 (W-27): export → first-contact answer; a missing export is `ask`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub first_contact: BTreeMap<String, FirstContact>,
-    /// 186 (D1, D2): export → share mode; a granted export missing here is `cautious`. Written
-    /// only when it holds a `full` grant (an older build refuses unknown keys).
-    #[serde(skip_serializing_if = "no_full")]
+    /// 186 (D1, D2): export → share mode. 190 (D9): read and dropped, never written (every
+    /// share is full; a 186 build refuses unknown keys, so the field stays readable).
+    #[serde(default, skip_serializing)]
     pub modes: BTreeMap<String, ShareMode>,
     /// 183 §9.4: refused at the `theuth/a2a/1` gate.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -193,7 +189,6 @@ impl PeerEntry {
             || self.machine.is_some()
             || self.cap.is_some()
             || !self.first_contact.is_empty()
-            || !self.modes.is_empty()
             || self.blocked
             || self.paired_ms.is_some()
     }
@@ -215,39 +210,16 @@ pub struct ExportEntry {
     /// Card description; owner-written functional capability, no tool inventory.
     #[serde(default)]
     pub description: String,
-    /// 183 Z3-R2: what a contact session of this export (its inbox, or a contact's turn in
-    /// the chat) may use besides the reply; everything else is hidden. Engine-local. Z4: only
-    /// [`tools::CONTACT_GRANTABLE`] names and read-only MCP keys (`mcp:<server>/<tool>`).
-    #[serde(
-        default = "default_contact_tools",
-        skip_serializing_if = "is_default_contact_tools"
-    )]
+    /// 183 Z3-R2: the export's allowlist for a contact's capped turn. 190 (D9): read and
+    /// dropped, never written.
+    #[serde(default, skip_serializing)]
     pub tools: Vec<String>,
 }
 
-/// 183 Z3-R2: an export's allowlist when `tools` is unset: the public web only.
+/// 183 Z3-R2: what a contact's capped turn may use besides the reply: the public web only.
+// W-40 only; removed by design 191 (contacts are mesh-wide)
 pub fn default_contact_tools() -> Vec<String> {
     vec!["search_web".into(), "read_url".into()]
-}
-
-/// `tools` without the ones a contact may never be granted ([`tools::contact_grantable`]),
-/// each dropped one logged (`export`'s name).
-pub fn contact_tools(export: &str, tools: &[String]) -> Vec<String> {
-    tools
-        .iter()
-        .filter(|t| {
-            let keep = tools::contact_grantable(t);
-            if !keep {
-                tracing::warn!(%export, tool = %t, "a2a: a contact may not be granted this tool; dropped from the export's tools");
-            }
-            keep
-        })
-        .cloned()
-        .collect()
-}
-
-fn is_default_contact_tools(t: &[String]) -> bool {
-    t == default_contact_tools().as_slice()
 }
 
 /// A resolved credential: zeroized on drop, never printed.
@@ -289,9 +261,6 @@ pub struct Peer {
     pub sessions: Vec<SessionId>,
     /// Granted exports.
     pub exports: Vec<String>,
-    /// 186 (D1): the granted exports shared in `full`; the rest are `cautious`. A change is a
-    /// new grant epoch (D2, D12).
-    pub full: std::collections::BTreeSet<String>,
     /// Private/loopback card origin permitted.
     pub allow_private: bool,
     /// 183 §7.3: a contact's pinned endpoint id (its identity: a re-pin is a new grant).
@@ -335,7 +304,7 @@ pub struct ContactFacts {
 }
 
 /// 183 §7.6: a validated agent export (contacts only): each (contact, export) gets its own
-/// capped inbox session running `agent`.
+/// inbox session running `agent`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentExport {
     /// Path segment (`/agents/<name>`).
@@ -346,8 +315,6 @@ pub struct AgentExport {
     pub title: String,
     /// Card description.
     pub description: String,
-    /// 183 Z3-R2: the contact session's allowlist ([`ExportEntry::tools`]).
-    pub tools: Vec<String>,
 }
 
 /// A validated export.
@@ -363,8 +330,6 @@ pub struct Export {
     pub description: String,
     /// The single peer granted this export, if any (§6.3: one principal per exported session).
     pub peer: Option<String>,
-    /// 183 Z3-R2: a contact turn's allowlist ([`ExportEntry::tools`]).
-    pub tools: Vec<String>,
 }
 
 /// Everything validation produced; installed atomically or not at all.
@@ -397,9 +362,9 @@ impl Staged {
     }
 
     /// 183 F4: the exports `alias` holds in both sets with the same authority — the same
-    /// session (chat) or agent, the same tools — under the same contact cap: a first message
-    /// held for one of them may wait on into the next epoch; any other was admitted under
-    /// authority that is gone. A title or description edit changes no authority.
+    /// session (chat) or agent — under the same contact cap: a first message held for one of
+    /// them may wait on into the next epoch; any other was admitted under authority that is
+    /// gone. A title or description edit changes no authority.
     pub fn unchanged_exports(&self, next: &Staged, alias: &str) -> Vec<String> {
         let (Some(a), Some(b)) = (self.peers.get(alias), next.peers.get(alias)) else {
             return Vec::new();
@@ -412,15 +377,14 @@ impl Staged {
             .iter()
             .filter(|e| {
                 let chat = match (self.exports.get(*e), next.exports.get(*e)) {
-                    (Some(x), Some(y)) => x.session == y.session && x.tools == y.tools,
+                    (Some(x), Some(y)) => x.session == y.session,
                     (x, y) => x.is_none() && y.is_none(),
                 };
                 let agent = match (self.agents.get(*e), next.agents.get(*e)) {
-                    (Some(x), Some(y)) => x.agent == y.agent && x.tools == y.tools,
+                    (Some(x), Some(y)) => x.agent == y.agent,
                     (x, y) => x.is_none() && y.is_none(),
                 };
-                // 186 (D2): a mode change is a grant change.
-                a.exports.contains(e) && a.full.contains(*e) == b.full.contains(*e) && chat && agent
+                a.exports.contains(e) && chat && agent
             })
             .cloned()
             .collect()
@@ -635,12 +599,6 @@ fn stage_contact<'a>(
                 inbound: None,
                 sessions: Vec::new(),
                 exports: p.exports.clone(),
-                full: p
-                    .exports
-                    .iter()
-                    .filter(|e| p.modes.get(*e) == Some(&ShareMode::Full))
-                    .cloned()
-                    .collect(),
                 allow_private: false,
                 eid: Some(eid.to_owned()),
             },
@@ -692,7 +650,6 @@ pub fn stage(
                         agent: agent.trim().to_owned(),
                         title: e.name.trim().to_owned(),
                         description: e.description.trim().to_owned(),
-                        tools: contact_tools(name, &e.tools),
                     },
                 );
                 continue;
@@ -717,7 +674,6 @@ pub fn stage(
                 title: e.name.trim().to_owned(),
                 description: e.description.trim().to_owned(),
                 peer: None,
-                tools: contact_tools(name, &e.tools),
             },
         );
     }
@@ -829,7 +785,6 @@ pub fn stage(
                 inbound,
                 sessions: p.sessions.clone(),
                 exports: p.exports.clone(),
-                full: std::collections::BTreeSet::new(),
                 allow_private: p.allow_private,
                 eid: None,
             },
@@ -851,6 +806,24 @@ pub fn stage(
     } else {
         Err(errors)
     }
+}
+
+/// 190 (D10): beside `peers.yaml`, the marker that the one-time "every share is full" notice
+/// ran (never a `peers.yaml` key: a 186 build refuses unknown keys).
+pub const FULL_NOTICE: &str = "a2a/.190-full-notice";
+
+/// 190 (D10): the notice's lines, one per grant (contact × export) of `file`, blocked
+/// contacts left out: every share is full now, whatever `modes` said.
+pub fn full_notice(file: &PeersFile) -> Vec<String> {
+    file.peers
+        .iter()
+        .filter(|(_, p)| p.is_contact() && !p.blocked)
+        .flat_map(|(alias, p)| {
+            p.exports
+                .iter()
+                .map(move |e| format!("a2a: share {e} to {alias} is full (cautious mode removed)"))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1063,43 +1036,72 @@ exports:
         }
     }
 
-    /// 186 (D2): a grant with no mode is cautious; `modes` is written only when a full grant
-    /// exists (an older build refuses the unknown key); a mode change is a new grant epoch
-    /// and keeps no held message of that export.
+    /// 190 (D9, D10): a 186-written grant loads full whatever its `modes` said (none,
+    /// `full`, `cautious`) and each is in the one-time notice; a file 190 writes has no
+    /// `modes`, `cap` or `tools` key and no key a 186 build would refuse.
     #[test]
-    fn modes_default_to_cautious_and_are_written_only_for_a_full_grant() {
+    fn a_186_grant_loads_full_in_every_variant_and_190_writes_no_new_key() {
         let bob = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
         let yaml = |modes: &str| {
             format!(
-                "peers:\n  bob:\n    endpoint: {bob}\n    exports: [research]\n{modes}exports:\n  research: {{ agent: research@xeus, name: Research }}\n"
+                "peers:\n  bob:\n    endpoint: {bob}\n    cap: mutating\n    exports: [research, ops]\n{modes}exports:\n  research: {{ agent: research@xeus, name: Research, tools: [search_web] }}\n  ops: {{ session: \"00000000-0000-0000-0000-000000000003\", name: Ops }}\n"
             )
         };
-        let old = file(&yaml(""));
-        let cautious = stage(&old, &resolver(S), None).unwrap();
-        assert!(cautious.peers["bob"].full.is_empty(), "no mode is cautious");
-        let mut entry = old.peers["bob"].clone();
-        entry.modes.insert("research".into(), ShareMode::Cautious);
-        let written = serde_yaml::to_string(&entry).unwrap();
-        assert!(!written.contains("modes"), "{written}");
-        entry.modes.insert("research".into(), ShareMode::Full);
-        let written = serde_yaml::to_string(&entry).unwrap();
-        assert!(written.contains("research: full"), "{written}");
+        let mut grants = Vec::new();
+        for modes in [
+            "",
+            "    modes: { research: full }\n",
+            "    modes: { research: cautious, ops: cautious }\n",
+        ] {
+            let f = file(&yaml(modes));
+            let s = stage(&f, &resolver(S), None).unwrap();
+            assert_eq!(s.peers["bob"].exports, ["research", "ops"], "{modes}");
+            assert_eq!(
+                full_notice(&f),
+                [
+                    "a2a: share research to bob is full (cautious mode removed)",
+                    "a2a: share ops to bob is full (cautious mode removed)",
+                ],
+                "{modes}"
+            );
+            grants.push(s);
+        }
+        assert!(
+            grants[0].same_grant(&grants[1], "bob") && grants[1].same_grant(&grants[2], "bob"),
+            "a mode is no grant term any more"
+        );
 
-        let full = stage(
-            &file(&yaml("    modes: { research: full }\n")),
-            &resolver(S),
-            None,
-        )
-        .unwrap();
-        assert!(full.peers["bob"].full.contains("research"));
-        assert!(!cautious.same_grant(&full, "bob"), "a new grant epoch");
-        assert!(cautious.unchanged_exports(&full, "bob").is_empty());
+        let f = file(&yaml("    modes: { research: cautious }\n"));
+        let written = serde_yaml::to_string(&f).unwrap();
+        for key in ["modes", "cap", "tools"] {
+            assert!(!written.contains(key), "{key} written: {written}");
+        }
+        let v: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+        let known = [
+            "card_url",
+            "outbound_secret",
+            "inbound_secret",
+            "sessions",
+            "exports",
+            "allow_private",
+            "endpoint",
+            "name",
+            "machine",
+            "first_contact",
+            "blocked",
+            "paired_ms",
+            "addrs",
+        ];
+        for k in v["peers"]["bob"].as_mapping().unwrap().keys() {
+            assert!(known.contains(&k.as_str().unwrap()), "a new key: {k:?}");
+        }
+        assert!(stage(&file(&written), &resolver(S), None).is_ok());
     }
 
     /// 183 F4 (review 1, 2): a held first message may outlive a grant change only for an
-    /// export whose authority is unchanged: a chat re-pointed to another session, changed
-    /// tools, a removed grant or a changed contact cap each drop it; a new title or
-    /// description keeps it.
+    /// export whose authority is unchanged: a chat re-pointed to another session, a removed
+    /// grant or a changed contact cap each drop it; a new title or description keeps it, and
+    /// so does a hand-edited `tools` list (190 D9: read and dropped).
     #[test]
     fn only_unchanged_exports_keep_held_messages_across_a_grant_change() {
         let bob = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
@@ -1161,8 +1163,8 @@ exports:
                 "chat, agent, other",
                 ""
             )),
-            ["chat", "other"],
-            "the agent's tools changed"
+            ["chat", "agent", "other"],
+            "an export's tools are no authority any more"
         );
         assert!(
             same(&staged(
@@ -1332,27 +1334,5 @@ exports:
     fn empty_file_is_valid() {
         let s = stage(&PeersFile::default(), &resolver(S), None).unwrap();
         assert!(s.peers.is_empty() && s.exports.is_empty());
-    }
-
-    /// 183 Z4: a hand-written allowlist loads with every tool a contact may never be
-    /// granted stripped (each logged), for chat and agent exports alike.
-    #[test]
-    fn ungrantable_tools_are_stripped_when_the_file_loads() {
-        let f = file(
-            r#"
-exports:
-  chat:
-    session: "00000000-0000-0000-0000-000000000002"
-    name: Chat
-    tools: [read_url, knowledge_put, computer_screenshot, remind_me_in, shell, "mcp:files/search"]
-  research:
-    agent: research@xeus
-    name: Research
-    tools: [browser_open, knowledge_search, spawn_subagent]
-"#,
-        );
-        let s = stage(&f, &resolver(S), None).unwrap();
-        assert_eq!(s.exports["chat"].tools, ["read_url", "mcp:files/search"]);
-        assert_eq!(s.agents["research"].tools, ["knowledge_search"]);
     }
 }

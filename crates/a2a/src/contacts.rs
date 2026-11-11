@@ -96,8 +96,6 @@ pub struct Contact {
     /// 183 F1: what the contact shares with us (its exports granted to this engine), from
     /// the card it last served us.
     pub shared: Vec<agent::communication::network::ContactOffer>,
-    /// 186 (D1): export → share mode; a granted export missing here is `cautious`.
-    pub modes: BTreeMap<String, ShareMode>,
     /// 186 (D10): its card advertises [`EXT_FULL`]: a share with it may be `full`.
     pub full_capable: bool,
 }
@@ -122,8 +120,6 @@ pub struct FirstWaiting {
     pub waiting: u32,
     /// The first line of the oldest one.
     pub preview: String,
-    /// 186: the share's mode.
-    pub mode: ShareMode,
     /// 186 review 1: not a first-contact hold but a message admitted and waiting behind the
     /// chat's running turn (it starts when that turn ends); only `contact_first_waiting` lists
     /// these, never the Attention item.
@@ -145,6 +141,7 @@ pub struct ContactPatch {
     /// Rename (the alias).
     pub name: Option<String>,
     /// New cap; lowering it applies to live inbox sessions at once (§7.6).
+    // 190: inert (every share is full): accepted and ignored.
     pub cap: Option<tools::Risk>,
     /// The granted export names, whole.
     pub exports: Option<Vec<String>>,
@@ -152,6 +149,8 @@ pub struct ContactPatch {
     pub blocked: Option<bool>,
     /// 186 (D1, D3): export → share mode, merged per entry into the contact's modes; a newly
     /// granted export must have one.
+    // 190 (D2): deprecated for one release: `full` is accepted and ignored, `cautious` is
+    // refused (every share is full).
     pub modes: Option<BTreeMap<String, ShareMode>>,
 }
 
@@ -212,11 +211,13 @@ pub struct NearbyAgent {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ExportTarget {
     /// One of this machine's agents: a fresh capped inbox per (contact, export) (W-25).
+    // 190: a full share; the inbox runs under the agent's own `tools:` ceiling.
     Agent {
         /// `<agent>@<engine>` desk root, or `theuth`.
         agent: String,
     },
     /// One chat of any machine in the mesh: one capped turn per message (§7.10).
+    // 190: a full share; the contact's messages arrive as a mesh peer's.
     Chat {
         /// The exported session.
         session: SessionId,
@@ -236,12 +237,6 @@ pub struct Export {
     /// W-41: why the export answers nothing now: `chat archived` | `agent messaging off`.
     #[serde(default)]
     pub paused: Option<String>,
-    /// 183 Z3-R2: the tools a contact session of this export may use besides the reply.
-    /// `a2a_exports` always fills it; a `put` without it keeps the export's list (a new
-    /// export: `search_web`, `read_url`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub tools: Option<Vec<String>>,
 }
 
 /// 183 §10.4: contact bus events. Wire `type` names are prefixed: `MeshEvent` already owns
