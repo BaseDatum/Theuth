@@ -150,11 +150,14 @@ extension Store {
         case "TurnStarted": event = .turnStarted(session: session, turnSeq: d.turnSeq, text: d.text ?? "")
         case "TurnFinished": event = .turnFinished(session: session, stopReason: d.stopReason ?? "")
         case "Error": event = .error(session: session, message: d.message ?? "")
+        case "ReasoningDelta": event = .reasoningDelta(session: session, text: d.text ?? "") // 192 P3
+        case "ReasoningDone": event = .reasoningDone(session: session, ms: ReasoningDoneWire.ms(data))
         default: event = .activity(session: session)
         }
         let changed = ask.router.observe(event)
         armAskWatchdog()
         if d.type == "TextDelta", ask.router.reply?.deltas == 1 { AskLog.write("ask: first TextDelta from \(session.prefix(8))") }
+        if d.type == "ReasoningDelta", ask.router.reply?.reasoningDeltas == 1 { AskLog.write("ask: first ReasoningDelta from \(session.prefix(8))") }
         if d.type == "TurnFinished" { askCatchUp(.turnFinished) }
         if changed { renderAsk() }
     }
@@ -182,6 +185,7 @@ extension Store {
         // 153 §3.3: the same stream drives the answer card (`AnswerCardState` is C1's model; the view is theirs too).
         askCard.phase = reply.failure == nil ? (reply.finished || !reply.text.isEmpty ? .answer : .thinking) : .failed
         askCard.text = reply.text
+        askCard.thinking = reply.thinking // 192 P3
         askCard.status = reply.failureLine ?? (reply.text.isEmpty && !reply.finished ? "thinking" : "")
         askCard.turnFinished = reply.finished
         showAnswerCard(askCard)

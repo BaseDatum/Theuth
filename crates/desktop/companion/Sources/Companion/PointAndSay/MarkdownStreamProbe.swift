@@ -36,13 +36,7 @@ enum MarkdownStreamProbe {
     /// `expanded` false: the card as the user collapsed it (an Ask opens expanded, 189 F5).
     private static func pass(expanded: Bool) {
         let name = expanded ? "expanded" : "collapsed"
-        let card = AnswerCard()
-        // Off every screen by default; `--on-screen` keeps the real island-area placement (a window off every screen may
-        // get no display-link callbacks, and the library's per-word fade runs on one: `ParagraphNSView.setUpDisplayLink`).
-        if !Flags.args.contains("--on-screen") {
-            let left = NSScreen.screens.map(\.frame.minX).min() ?? 0
-            card.fixedOrigin = NSPoint(x: left - AnswerCard.width - 400, y: 200)
-        }
+        let card = Self.card()
 
         var s = AnswerCardState()
         s.begin(question: "this is a test", kind: .ask)
@@ -74,13 +68,26 @@ enum MarkdownStreamProbe {
         spin(0.3)
     }
 
-    private static func snapshot(_ card: AnswerCard, label: String, png: URL?) {
+    /// An `AnswerCard` off every screen (default) or in the island area with `--on-screen` (a window off every screen may
+    /// get no display-link callbacks, and the library's per-word fade runs on one: `ParagraphNSView.setUpDisplayLink`).
+    static func card() -> AnswerCard {
+        let card = AnswerCard()
+        if !Flags.args.contains("--on-screen") {
+            let left = NSScreen.screens.map(\.frame.minX).min() ?? 0
+            card.fixedOrigin = NSPoint(x: left - AnswerCard.width - 400, y: 200)
+        }
+        return card
+    }
+
+    /// One frame: heights, text views, the PNG (192's probes share it with their own `prefix`).
+    static func snapshot(_ card: AnswerCard, label: String, png: URL?, prefix: String = "probe-markdown-stream") {
+        func log(_ s: String) { Log.write("\(prefix): \(s)") }
         let content = card.contentHeight
         let panel = card.panel
         guard let root = panel.contentView else { return log("\(label): no content view") }
         let hosting = root.subviews.first { $0 is NSHostingView<AnswerCardView> }
         let onScreen = panel.screen != nil, visible = panel.occlusionState.contains(.visible)
-        log("\(label): panel h \(Int(panel.frame.height)) · fitting h \(hosting.map { "\(Int($0.fittingSize.height))" } ?? "?") · markdown h \(content.map { "\(Int($0))" } ?? "n/a") · on screen \(onScreen) visible \(visible)")
+        log("\(label): panel h \(Int(panel.frame.height)) · fitting h \(hosting.map { "\(Int($0.fittingSize.height))" } ?? "?") · body h \(content.map { "\(Int($0))" } ?? "n/a") · on screen \(onScreen) visible \(visible)")
         for tv in textViews(in: root) {
             var minAlpha: CGFloat = 1
             if let ts = tv.textStorage, ts.length > 0 {
@@ -109,9 +116,9 @@ enum MarkdownStreamProbe {
         view.subviews.flatMap { v -> [NSTextView] in (v as? NSTextView).map { [$0] } ?? textViews(in: v) }
     }
 
-    private static func spin(_ seconds: Double) { spin(until: Date().addingTimeInterval(seconds)) }
+    static func spin(_ seconds: Double) { spin(until: Date().addingTimeInterval(seconds)) }
 
-    private static func spin(until deadline: Date) {
+    static func spin(until deadline: Date) {
         while Date() < deadline { RunLoop.main.run(until: min(deadline, Date().addingTimeInterval(0.02))) }
     }
 

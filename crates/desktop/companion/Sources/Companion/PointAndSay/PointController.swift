@@ -699,8 +699,10 @@ final class PointController {
             // §7.3: "send it" settled and the engine ended the dictation under the held key — the gesture ends now.
             if mode == .dictate, dictation.send, isLive { let g = gesture; Task { await self.dictateStop(gesture: g, reason: "send it") } }
         case "SpeechStarted", "SpeechAudio", "SpeechFinished": break // 149s: the Store's SpeechPlayer takes them
-        case "TextDelta", "TurnStarted", "TurnFinished", "Error", "ToolCallPending", "ToolCallStarted", "ToolCallFinished":
+        case "TextDelta", "TurnStarted", "TurnFinished", "Error", "ToolCallPending", "ToolCallStarted", "ToolCallFinished", "ReasoningDelta":
             replyEvent(w)
+        case "ReasoningDone":
+            replyEvent(w, ms: ReasoningDoneWire.ms(data))
         case "Lagged":
             catchUp(.lagged)
         case "ApprovalRequested", "ApprovalResolved":
@@ -714,13 +716,18 @@ final class PointController {
     /// Command mode (§10.3): the same events feed the `CommandCard` reducer — rows from `ToolCallStarted` with `purpose`,
     /// colours from `ToolCallFinished`, the ✓/✗ line when the reply finishes, the cap at 12. 189 D2: a finished turn reads
     /// the transcript before the reply ends (`catchUp`).
-    private func replyEvent(_ w: Wire) {
+    private func replyEvent(_ w: Wire, ms: UInt64 = 0) {
         guard let r = router.reply, !r.finished, let session = w.session, session == r.session else { return }
         defer { armWatchdog() }
         switch w.type {
         case "TextDelta":
             if router.observe(.textDelta(session: session, text: w.text ?? "")) { card.state.command?.observe(.textDelta(w.text ?? "")) }
             if router.reply?.deltas == 1 { PointLog.write("point: first TextDelta from \(session.prefix(8))") }
+        case "ReasoningDelta": // 192 P3: the card shows the thinking instead of the bare spinner
+            router.observe(.reasoningDelta(session: session, text: w.text ?? ""))
+            if router.reply?.reasoningDeltas == 1 { PointLog.write("point: first ReasoningDelta from \(session.prefix(8))") }
+        case "ReasoningDone":
+            router.observe(.reasoningDone(session: session, ms: ms))
         case "TurnStarted":
             router.observe(.turnStarted(session: session, turnSeq: w.turnSeq, text: w.text ?? ""))
         case "TurnFinished":
@@ -755,6 +762,7 @@ final class PointController {
         guard let reply = router.reply else { return }
         if reply.finished { card.state.command?.finish(text: reply.text, failure: reply.failure) }
         card.state.text = reply.text
+        card.state.thinking = reply.thinking
         if let c = card.state.command, c.finished {
             card.state.status = c.verdict.map { v -> String in
                 switch v { case .ok: return "done"; case .failed: return "failed"; case .replied: return "replied" }

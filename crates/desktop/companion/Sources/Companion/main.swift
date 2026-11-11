@@ -10,6 +10,11 @@ if Flags.probeMarkdownStream {
     NSApplication.shared.setActivationPolicy(.accessory)
     MainActor.assumeIsolated { MarkdownStreamProbe.run() }
 }
+// 192 P6: `--probe-pictures` (a stub `fence_snapshot`) and `--probe-thinking`, the same way.
+if Flags.probePictures || Flags.probeThinking {
+    NSApplication.shared.setActivationPolicy(.accessory)
+    MainActor.assumeIsolated { Flags.probePictures ? PicturesProbe.runPictures() : PicturesProbe.runThinking() }
+}
 
 // Revision 1: a second instance (an `open` while the login item runs) exits 0 at once. 149 W1: a probe (`--probe-*`) is a
 // deliberate second instance for N seconds — it quits itself, takes no key, acts on nothing, and skips `Hotkeys.start`.
