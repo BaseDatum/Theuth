@@ -11,6 +11,7 @@
   engine-errors   the newest engine log's last ERROR/WARN/panic lines and engine-run.ps1 (why the engine restarts in a loop)
   live-engine-start  the 2.12.0 scratch binary on a private fresh data dir (C:\Users\user\tools\w189-data) as a one-shot interactive task, wait for its token and :7777
   live-run [S] [text_with_underscores|-]  ask.ps1 run -AskProbe S -CatchUp [-Send text] on that engine (THEUTH_DATA_DIR set; '-' = no send)
+  live-clean         live-engine-stop plus removal of the private data dir
   live-engine-stop   end the task, stop that one engine pid, show the engine's desk/turn/focus lines
   tail PATH [N]   the last N lines of any text file (diagnostics)
   companion-log N [regex]  today's companion log lines about the Ask (focus, first TextDelta, catch-up, watchdog, finish), last N (default 60)
@@ -129,6 +130,11 @@ $p.WaitForExit()
         if ($text -ne '-') { $ap.Send = $text }
         & (Join-Path $PSScriptRoot 'ask.ps1') 'run' @ap *>&1 | ForEach-Object { Write-Output "$_" }
     }
+    'live-clean' {
+        LiveStop
+        if (Test-Path $liveDir) { Remove-Item $liveDir -Recurse -Force -ErrorAction SilentlyContinue }
+        Say "private data dir $liveDir exists=$(Test-Path $liveDir); task w189-engine-once exists=$([bool] (Get-ScheduledTask -TaskName 'w189-engine-once' -ErrorAction SilentlyContinue))"
+    }
     'live-engine-stop' {
         LiveStop
         foreach ($f in 'engine-stdout.log', 'engine-stderr.log') {
@@ -148,5 +154,5 @@ $p.WaitForExit()
         $pat = if ($Rest.Count -ge 2) { $Rest[1] } else { 'ask|set_event_focus|catch-up|watchdog|TextDelta|desk' }
         Get-Content $file.FullName | Where-Object { $_ -match $pat } | Select-Object -Last $n | ForEach-Object { Say $_ }
     }
-    default { Say 'usage: engine | engine-start | engine-errors | live-engine-start | live-run [S] [text] | live-engine-stop | tail PATH [N] | companion-log [N]' }
+    default { Say 'usage: engine | engine-start | engine-errors | live-engine-start | live-run [S] [text] | live-engine-stop | live-clean | tail PATH [N] | companion-log [N]' }
 }
