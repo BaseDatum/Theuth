@@ -42,6 +42,9 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     /// <summary>189w D4: the markdown reply grows to this height (epx), then scrolls inside the bar.</summary>
     public const double ReplyMaxHeight = 320;
 
+    /// <summary>192w P2: the reply's content width in epx — the bar minus the receipt's 12 + 12 padding and the scroll viewer's 10 for its bar: what a picture is drawn at.</summary>
+    private const double ReplyContentWidth = Width - 34;
+
     private readonly Store store;
     private readonly DispatcherQueue dispatcher;
     private readonly VoiceRecorder recorder;
@@ -59,6 +62,8 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private readonly TextBlock receiptText;
     private readonly TextBlock receiptTrailing;
     private readonly MarkdownView replyView; // 189w D4: the desk's reply as markdown, updated in place as text arrives
+    private readonly ThinkingSection thinking; // 192w P3: the model's reasoning above the reply — live "Thinking", then "Thought for N s"
+    private readonly StackPanel replyStack;
     private readonly ScrollViewer replyScroll;
     private bool followTail = true;
     private readonly Button speakingGlyph; // spoken replies: Segoe Fluent Volume (E767) while the reply is read aloud; click stops
@@ -195,19 +200,31 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         receiptGrid.Children.Add(receiptText);
         receiptGrid.Children.Add(receiptTrailing);
         // 189w D4: row 1 of the receipt is the reply itself, rendered as markdown (≤ ReplyMaxHeight epx, then it scrolls and follows the tail).
-        replyView = new MarkdownView(() => root.ActualTheme, 13);
+        replyView = new MarkdownView(() => root.ActualTheme, 13)
+        {
+            Pictures = store.Pictures,
+            PictureWidth = () => ReplyContentWidth,
+            Scale = () => root.XamlRoot?.RasterizationScale ?? 1,
+        };
+        replyView.OpenRequested += OpenReply; // 192w P2: a picture (or its "open theuth" caption) opens the reply in theuth, like Ctrl+O
         AutomationProperties.SetAutomationId(replyView, "ask-reply");
+        thinking = new ThinkingSection(() => root.ActualTheme);
+        thinking.Toggled += _ => Fit();
+        replyStack = new StackPanel { Spacing = 6 };
+        replyStack.Children.Add(thinking);
+        replyStack.Children.Add(replyView);
         replyScroll = new ScrollViewer
         {
-            Content = replyView, MaxHeight = ReplyMaxHeight, Visibility = Visibility.Collapsed, Padding = new Thickness(0, 6, 10, 0),
+            Content = replyStack, MaxHeight = ReplyMaxHeight, Visibility = Visibility.Collapsed, Padding = new Thickness(0, 6, 10, 0),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
         AutomationProperties.SetAutomationId(replyScroll, "ask-reply-scroll");
         Grid.SetRow(replyScroll, 1);
         Grid.SetColumnSpan(replyScroll, 3);
         receiptGrid.Children.Add(replyScroll);
-        replyView.SizeChanged += (_, _) =>
+        replyStack.SizeChanged += (_, _) =>
         {
+            Fit(); // 192w: a picture that arrives (or the thinking section opening) changes the height the bar needs
             if (followTail) replyScroll.ChangeView(null, replyScroll.ExtentHeight, null, disableAnimation: true);
         };
         replyScroll.ViewChanged += (_, e) =>
@@ -435,6 +452,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         receiptText.Foreground = ink;
         receiptTrailing.Foreground = ink2;
         replyView.Retheme();
+        thinking.Retheme();
         holdBar.Fill = accent;
         if (holdKey is not null) holdKey.Foreground = ink2;
         if (escWords is not null) escWords.Foreground = sand;
@@ -517,7 +535,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
             return;
         }
         // 189w D4: a desk reply with text is drawn as markdown under a one-line header; every other receipt keeps its one-line row.
-        if (AskBarModel.ReplyMarkdown(store.Receipt) is { } reply && store.Receipt is StoreModel.ReceiptRow.Reply replyRow)
+        if (AskBarModel.ReplyView(store.Receipt) is { } reply && store.Receipt is StoreModel.ReceiptRow.Reply replyRow)
         {
             receiptText.Text = AskBarModel.ReplyHeader(replyRow);
             if (replyScroll.Visibility != Visibility.Visible)
@@ -525,8 +543,11 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
                 followTail = true;
                 replyScroll.Visibility = Visibility.Visible;
             }
+            thinking.Set(reply.Thinking); // 192w P3: live "Thinking" (≈ 6 lines, following the tail) → "Thought for N s ›"
+            replyView.Visibility = reply.Markdown.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             var diff = replyView.Set(reply.Markdown, reply.Streaming);
-            ReplyRendered?.Invoke($"{reply.Markdown.Length} chars → {replyView.Children.Count} blocks: kept {diff.Kept}, updated {diff.Updated}, built {diff.Built}");
+            ReplyRendered?.Invoke($"{reply.Markdown.Length} chars → {replyView.Children.Count} blocks: kept {diff.Kept}, updated {diff.Updated}, built {diff.Built}"
+                + (reply.Thinking is { } th ? $" · {th.Header.ToLowerInvariant()} ({th.Text.Length} chars)" : ""));
         }
         else
         {
@@ -564,6 +585,14 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         if (replyScroll.Visibility != Visibility.Visible) return;
         replyScroll.Visibility = Visibility.Collapsed;
         replyView.Reset();
+        thinking.Reset();
+    }
+
+    /// <summary>192w P2: a picture was clicked — the reply opens in theuth, as Ctrl+O does.</summary>
+    private void OpenReply()
+    {
+        if (store.Receipt is StoreModel.ReceiptRow.Reply { Session: { } s }) OpenUrl(DeepLink.Session(s));
+        else if (store.Ask.Router.DeskSession is { } d) OpenUrl(DeepLink.Session(d));
     }
 
     // MARK: placement (top-centre of the display under the mouse, ≈ 20 % down, like the Attention panel's `.mouse`)

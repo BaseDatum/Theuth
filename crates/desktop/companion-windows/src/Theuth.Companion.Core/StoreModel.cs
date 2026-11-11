@@ -43,8 +43,9 @@ public partial class StoreModel : INotifyPropertyChanged
         /// W3/W4: the desk's streamed answer ("theuth · handed to w3 — …" · Open). <paramref name="Text"/> is the receipt line (the first two
         /// lines, marks stripped). 189w D4: <paramref name="Markdown"/> is the whole reply so far — what the Ask bar renders as markdown while
         /// it arrives; empty while waiting and for a failed or empty turn — and <paramref name="Streaming"/> says the turn is still going.
+        /// 192w P3: <paramref name="Thinking"/> is the model's reasoning so far (null when none came: today's plain waiting row).
         /// </summary>
-        public sealed record Reply(string Who, string Text, string? Session, string Markdown = "", bool Streaming = false) : ReceiptRow;
+        public sealed record Reply(string Who, string Text, string? Session, string Markdown = "", bool Streaming = false, ThinkingView? Thinking = null) : ReceiptRow;
     }
 
     public static readonly TimeSpan RefetchDebounce = TimeSpan.FromMilliseconds(250);
@@ -91,7 +92,20 @@ public partial class StoreModel : INotifyPropertyChanged
         now = this.clock();
         undo = new UndoQueue<Held>(UndoDelay);
         focus = new EventFocus(sessions => engine.SetEventFocusAsync(sessions), this.log);
+        Pictures = new PictureCache(key => FetchPictureAsync(key), scheduler, this.clock, this.log);
     }
+
+    /// <summary>
+    /// 192w P2: the pictures of the replies on screen — <c>fence_snapshot</c> results by (lang, source, width, appearance, scale), two draws
+    /// at a time. The Ask bar and the answer card ask it for every closed picture fence; it is reset when the connection re-opens.
+    /// </summary>
+    public PictureCache Pictures { get; }
+
+    /// <summary>The draw behind <see cref="Pictures"/>; a seam for the app's <c>--ask-replay</c>, whose renderer is a stub.</summary>
+    protected virtual Task<FenceSnapshot> FetchPictureAsync(PictureKey key) =>
+        engine.FenceSnapshotAsync(key.Lang, key.Source, key.Width, key.Appearance, key.Scale);
+
+    private long NowMs() => clock().ToUnixTimeMilliseconds();
 
     /// <summary>
     /// 189w D1: the connection's event focus — the union of every claim (the Ask's desk, the voice key's desk). Nothing else may call
@@ -189,6 +203,7 @@ public partial class StoreModel : INotifyPropertyChanged
         if (opens == 1) return; // the first dial is not a reconnect
         // 189w D1/D2: a new connection has no focus set, and everything between the loss and now was missed.
         LogLine($"connection: re-opened (#{opens})");
+        Pictures.Reset(); // 192w: maybe a newer engine, maybe a renderer now — pictures that did not come are asked for again
         if (focus.Union.Count > 0) _ = focus.SendAsync("reconnect");
         RequestCatchUp(CatchUpTrigger.Reconnect);
     }
@@ -784,9 +799,21 @@ public partial class StoreModel : INotifyPropertyChanged
                 if (!Ask.Router.Observe(new ReplyEvent.TextDelta(reply.Session, piece))) return;
                 if (reply.StreamedChars == 0) log($"ask: first TextDelta ({piece.Length} chars) {Since(reply)} after send");
                 reply.StreamedChars += piece.Length;
+                reply.Thinking.Collapse(NowMs()); // 192w P3: the first answer text folds the thinking into "Thought for N s"
                 ShowReply(reply);
                 return;
             }
+            case "ReasoningDelta":
+            {
+                var piece = d.Text ?? "";
+                if (reply.Thinking.Delta(piece, NowMs())) log($"ask: first ReasoningDelta ({piece.Length} chars) {Since(reply)} after send");
+                ShowReply(reply);
+                return;
+            }
+            case "ReasoningDone":
+                reply.Thinking.Done(d.Ms ?? 0);
+                ShowReply(reply);
+                return;
             case "Error":
                 if (Ask.Router.Observe(new ReplyEvent.Error(reply.Session, d.Message ?? ""))) FinishAsk(reply, "Error event", $"ask failed on the desk: {d.Message}");
                 return;
@@ -813,10 +840,12 @@ public partial class StoreModel : INotifyPropertyChanged
     private void ShowReply(AskReply reply)
     {
         var text = reply.FirstTwoLines;
-        if (Ask.Current is { } id) Ask.Receipts.Update(id, text);
+        if (Ask.Current is { } id && text.Length > 0) Ask.Receipts.Update(id, text);
         OnPropertyChanged(nameof(Ask));
         string markdown = reply.Failed || reply.NoReply ? "" : reply.Text;
-        SetReceipt(new ReceiptRow.Reply("theuth", text.Length == 0 ? "…" : text, reply.Session, markdown, Streaming: !reply.Finished));
+        // 192w P3: the reasoning rides on the row while it exists; a failed turn or "no reply" keeps its one line.
+        var thinking = reply.Failed || reply.NoReply || !reply.Thinking.Started ? null : reply.Thinking.View(NowMs());
+        SetReceipt(new ReceiptRow.Reply("theuth", text.Length == 0 ? "…" : text, reply.Session, markdown, Streaming: !reply.Finished, Thinking: thinking));
     }
 
     /// <summary>
@@ -825,6 +854,7 @@ public partial class StoreModel : INotifyPropertyChanged
     /// </summary>
     private void FinishAsk(AskReply reply, string how, string? failedLog)
     {
+        reply.Thinking.Collapse(NowMs()); // 192w P3: a finish folds the thinking even when no answer text came
         watchdog.Disarm();
         watchdogTimer?.Dispose();
         watchdogTimer = null;
@@ -836,7 +866,8 @@ public partial class StoreModel : INotifyPropertyChanged
         log($"ask finished ({how}): {reply.Text.Length} chars, {reply.StreamedChars} streamed, {(reply.Failed ? "failed" : reply.NoReply ? "no reply" : "ok")}");
         ExpireReceipt(reply.Failed || reply.NoReply ? 12 : AskCatchUp.LingerSeconds(reply.Text));
         // Spoken replies (2026-10-09): the whole reply, once final and successful — never a partial, never a failed turn.
-        if (!reply.Failed && !reply.NoReply && reply.Text.Trim().Length > 0) AskReplyFinished?.Invoke(reply.Session, reply.Text);
+        var spoken = PictureFence.StripForVoice(reply.Text); // 192w: a diagram is not read aloud
+        if (!reply.Failed && !reply.NoReply && spoken.Length > 0) AskReplyFinished?.Invoke(reply.Session, spoken);
     }
 
     // MARK: 189w D2 — the Ask catches up from the transcript

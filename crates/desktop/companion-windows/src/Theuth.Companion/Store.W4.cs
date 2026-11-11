@@ -47,6 +47,17 @@ public sealed partial class Store
         replayTail = tail;
     }
 
+    private Func<PictureKey, Task<FenceSnapshot>>? replayPictures;
+
+    /// <summary>
+    /// 192w: the stub renderer <c>--ask-replay --ask-pictures</c> draws with — the real cache, the real outcome mapping and the real views,
+    /// with no engine behind them (the scratch engine has no <c>fence_snapshot</c>, and no renderer client is connected on build-B).
+    /// </summary>
+    public void ReplayPictures(Func<PictureKey, Task<FenceSnapshot>> stub) => replayPictures = stub;
+
+    protected override Task<FenceSnapshot> FetchPictureAsync(PictureKey key) =>
+        replayPictures is { } stub ? stub(key) : base.FetchPictureAsync(key);
+
     protected override Task<SessionTail> LoadTailAsync(string session, uint limit) =>
         replayTail is { } tail && session == replaySession ? Task.FromResult(tail) : base.LoadTailAsync(session, limit);
 }

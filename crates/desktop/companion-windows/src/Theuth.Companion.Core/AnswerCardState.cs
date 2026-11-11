@@ -27,7 +27,7 @@ public enum CardSource
 public sealed record ToolChip(string CallId, string Name, bool Running, bool Failed = false);
 
 /// <summary>One request of the card's thread and its streamed answer (the header dots are the thread positions).</summary>
-public sealed record CardExchange(string Request, string Answer, IReadOnlyList<ToolChip> Tools, string? Error = null, bool Stopped = false, bool Finished = false)
+public sealed record CardExchange(string Request, string Answer, IReadOnlyList<ToolChip> Tools, string? Error = null, bool Stopped = false, bool Finished = false, ThinkingState? Thinking = null)
 {
     public static CardExchange Empty { get; } = new("", "", Array.Empty<ToolChip>());
 }
@@ -164,13 +164,35 @@ public sealed class AnswerCardState
     public void TextDelta(string text, ulong nowMs)
     {
         if (Latest.Stopped || Phase == CardPhase.Failed) return;
+        Latest.Thinking?.Collapse((long)nowMs); // 192w P3: the first answer text folds the thinking into "Thought for N s"
         SetLatest(Latest with { Answer = Latest.Answer + text });
         if (Phase is CardPhase.Thinking or CardPhase.Finishing or CardPhase.Listening) Enter(CardPhase.Answer, nowMs);
     }
 
+    /// <summary>
+    /// 192w P3: a streamed piece of the model's reasoning (<c>ReasoningDelta</c>): the card shows it as a "Thinking" section instead of
+    /// the bare spinner until the first answer text. True for the exchange's very first piece (the log line).
+    /// </summary>
+    public bool ReasoningDelta(string text, ulong nowMs)
+    {
+        if (text.Length == 0 || Latest.Stopped || Phase == CardPhase.Failed) return false;
+        var x = Latest;
+        var thinking = x.Thinking ?? new ThinkingState();
+        bool first = thinking.Delta(text, (long)nowMs);
+        if (!ReferenceEquals(thinking, x.Thinking)) SetLatest(x with { Thinking = thinking });
+        return first;
+    }
+
+    /// <summary><c>ReasoningDone.ms</c>: the engine's own measure of how long the model thought (it ends up in "Thought for N s").</summary>
+    public void ReasoningDone(ulong ms) => Latest.Thinking?.Done((long)ms);
+
+    /// <summary>The thinking of the shown exchange, null when no <c>ReasoningDelta</c> ever arrived (today's spinner).</summary>
+    public ThinkingView? Thinking(ulong nowMs) => Current.Thinking is { Started: true } thinking ? thinking.View((long)nowMs) : null;
+
     /// <summary><c>TurnFinished</c>: answer (or failed for <c>error</c>/<c>cancelled</c>, unless the user's Esc stopped it — that stays the frozen answer).</summary>
     public void TurnFinished(string? stopReason, ulong nowMs)
     {
+        Latest.Thinking?.Collapse((long)nowMs);
         var latest = Latest with { Finished = true };
         if (latest.Stopped)
         {
@@ -190,6 +212,7 @@ public sealed class AnswerCardState
     /// <summary>The desk's <c>Error</c> event or a failed send: failed, which never auto-hides (⎋ only).</summary>
     public void Failed(string why, ulong nowMs)
     {
+        Latest.Thinking?.Collapse((long)nowMs);
         SetLatest(Latest with { Error = why, Finished = true });
         Speaking = false;
         Enter(CardPhase.Failed, nowMs);
@@ -202,6 +225,7 @@ public sealed class AnswerCardState
     public bool Stop(ulong nowMs)
     {
         if (Phase is not (CardPhase.Thinking or CardPhase.Answer) || Finished) return false;
+        Latest.Thinking?.Collapse((long)nowMs);
         SetLatest(Latest with { Stopped = true, Finished = true, Tools = Latest.Tools.Select(t => t with { Running = false }).ToList() });
         Enter(CardPhase.Answer, nowMs);
         return true;
@@ -391,6 +415,14 @@ public abstract record MdBlock
     public sealed record Bullet(IReadOnlyList<MdInline> Inlines, bool Numbered, int Number, int Indent = 0) : MdBlock;
 
     public sealed record Code(string Language, string Text) : MdBlock;
+
+    /// <summary>
+    /// 192w P1: a picture fence (<c>json-render</c>, <c>mermaid</c>, <c>openui</c> — <see cref="PictureFence"/>). <paramref name="Lang"/> is the
+    /// engine's name for it; <paramref name="Closed"/> is false while the fence is still arriving (the view shows a "drawing…" line, never
+    /// the source) and true once its closing fence came. Whether it is drawn, being drawn or fell back is the view's business
+    /// (<see cref="PictureCache"/>), not the parse's.
+    /// </summary>
+    public sealed record Picture(string Lang, string Source, bool Closed) : MdBlock;
 }
 
 /// <summary>Inline marks: text, **bold**, *italic*, `code`, [text](url).</summary>
@@ -426,9 +458,10 @@ public static class AnswerMarkdown
         Paragraph,
         Bullet,
         Code,
+        Picture,
     }
 
-    private sealed record Raw(RawKind Kind, string Src, int Level = 0, bool Numbered = false, int Number = 0, int Indent = 0, string Language = "");
+    private sealed record Raw(RawKind Kind, string Src, int Level = 0, bool Numbered = false, int Number = 0, int Indent = 0, string Language = "", bool Closed = false);
 
     public static IReadOnlyList<MdBlock> Parse(string? markdown) => Parse(markdown, streaming: false);
 
@@ -451,6 +484,7 @@ public static class AnswerMarkdown
             if (t.StartsWith("```", StringComparison.Ordinal))
             {
                 Flush();
+                if (streaming && i == lastLine && PictureFence.IsOpeningStub(t)) continue; // 192w: "```" or "```mer" — it may become a picture fence; nothing to show yet
                 var lang = t[3..].Trim();
                 var code = new StringBuilder();
                 i++;
@@ -460,7 +494,13 @@ public static class AnswerMarkdown
                     if (code.Length > 0) code.Append('\n');
                     code.Append(lines[i]);
                 }
-                raws.Add(new Raw(RawKind.Code, code.ToString(), Language: lang));
+                bool closed = i < lines.Length && lines[i].TrimStart().StartsWith("```", StringComparison.Ordinal);
+                // 192w P1: a picture fence is a picture block once closed, a "drawing…" line while it still arrives; a reply that ended with
+                // the fence open has no picture to wait for, so it stays code.
+                if (PictureFence.Lang(lang) is { } picture && (closed || streaming))
+                    raws.Add(new Raw(RawKind.Picture, code.ToString(), Language: picture, Closed: closed));
+                else
+                    raws.Add(new Raw(RawKind.Code, code.ToString(), Language: lang));
                 continue;
             }
             if (t.Length == 0) { Flush(); continue; }
@@ -514,6 +554,7 @@ public static class AnswerMarkdown
                 RawKind.Heading => new MdBlock.Heading(r.Level, Inline(r.Src, open)),
                 RawKind.Paragraph => new MdBlock.Paragraph(Inline(r.Src, open)),
                 RawKind.Bullet => new MdBlock.Bullet(Inline(r.Src, open), r.Numbered, r.Number, r.Indent),
+                RawKind.Picture => new MdBlock.Picture(r.Language, r.Src, r.Closed),
                 _ => new MdBlock.Code(r.Language, r.Src),
             });
         }
@@ -672,13 +713,14 @@ public static class AnswerMarkdown
 /// </summary>
 public static class MdDiff
 {
-    /// <summary>One letter per element type a view builds: <c>H</c> heading · <c>P</c> paragraph · <c>B</c> bullet · <c>C</c> code.</summary>
+    /// <summary>One letter per element type a view builds: <c>H</c> heading · <c>P</c> paragraph · <c>B</c> bullet · <c>C</c> code · <c>G</c> picture (graphic).</summary>
     public static char Kind(MdBlock b) => b switch
     {
         MdBlock.Heading => 'H',
         MdBlock.Paragraph => 'P',
         MdBlock.Bullet => 'B',
         MdBlock.Code => 'C',
+        MdBlock.Picture => 'G',
         _ => '?',
     };
 
@@ -702,6 +744,9 @@ public static class MdDiff
                 break;
             case MdBlock.Code c:
                 sb.Append(c.Language.Length).Append(':').Append(c.Language).Append(c.Text);
+                break;
+            case MdBlock.Picture g:
+                sb.Append(g.Lang.Length).Append(':').Append(g.Lang).Append(g.Closed ? '1' : '0').Append(g.Source);
                 break;
         }
         return sb.ToString();

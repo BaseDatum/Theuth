@@ -216,6 +216,9 @@ public sealed class AskReply(string session)
     /// <summary>189w D2: a <c>TurnFinished</c> (normal) was seen and a catch-up decides it; no second one is started for the same finish.</summary>
     public bool SawFinish { get; set; }
 
+    /// <summary>192w P3: the model's reasoning for this ask (<c>ReasoningDelta</c>) — the "Thinking" section until the first answer text, then "Thought for N s".</summary>
+    public ThinkingState Thinking { get; } = new();
+
     /// <summary>Records the transcript's text as THE reply (it replaces whatever streamed) and ends the ask.</summary>
     public void Complete(string text)
     {
@@ -253,7 +256,8 @@ public sealed class AskReply(string session)
                 return FailedPrefix + (first.Length > FailedClip ? first[..(FailedClip - 1)].TrimEnd() + "…" : first);
             }
             if (NoReply) return AskCatchUp.NoReplyText;
-            var lines = Text.Split(NewLines, StringSplitOptions.RemoveEmptyEntries)
+            // 192w: a picture fence is "(diagram)" here, closed or still arriving — the line never carries its source.
+            var lines = PictureFence.Flatten(Text).Split(NewLines, StringSplitOptions.RemoveEmptyEntries)
                 .Select(l => TrimSpaces(AnswerMarkdown.Plain(StripMarker(TrimSpaces(l)), open: !Finished)))
                 .Where(l => l.Length > 0)
                 .Take(2);

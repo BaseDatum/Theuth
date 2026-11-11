@@ -12,7 +12,7 @@ namespace Theuth.Companion.AskBar;
 /// through <c>dictation_start/audio/stop</c> and logs every <c>Dictation*</c> event; the field fills with the transcript.
 /// Unlike the Swift probe the bar is activated (the <c>windows-build-b</c> harness types into it) and a typed Enter sends.
 /// </summary>
-internal static class AskProbe
+internal static partial class AskProbe
 {
     // 189w D4: the reply is markdown, cut where a stream cuts it — mid-mark ("**w3" … "**"), mid-line, between fence lines — so the replay
     // shows the unclosed marks closed while they stream, the held-back marker lines, and the blocks that stay put while one is written.
@@ -150,6 +150,11 @@ internal static class AskProbe
 
     private static async Task Replay(Store store, AskBarInstall install)
     {
+        if (AskFlags.Pictures is { } picturesMode)
+        {
+            await ReplayPictures(store, install, picturesMode); // 192w P6: thinking, picture fences and a stub fence_snapshot
+            return;
+        }
         AskLog.Write($"ask-replay start: {RecordedReply.Length} recorded lines for session replay-desk, 450 ms apart (markdown reply, cut mid-mark; the transcript carries one more line)");
         install.Bar.ReplyRendered += line => AskLog.Write($"ask-replay markdown: {line}");
         store.ReplayTranscript("replay-desk", RecordedTranscript);
