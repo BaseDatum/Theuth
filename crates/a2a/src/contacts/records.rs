@@ -116,17 +116,25 @@ impl Group<'_> {
 pub struct Analysis<'a> {
     /// Live groups, by their root's key.
     pub groups: Vec<Group<'a>>,
-    /// Tombstoned records (and live ones merged into one).
-    pub removed: Vec<&'a ContactRow>,
-    /// Records whose chain is broken, with why.
-    pub broken: Vec<(&'a ContactRow, String)>,
+    /// Tombstoned records, and live ones merged into one, with the removal time that applies
+    /// (their own, else their root's).
+    pub removed: Vec<(&'a ContactRow, i64)>,
+    /// Records whose chain is broken, with why; `true` when it is replication lag (a pointer
+    /// into a record this machine lacks yet), which never revokes the binding.
+    pub broken: Vec<(&'a ContactRow, String, bool)>,
+}
+
+/// Why [`root_of`] found no root; `lag` for a pointer into a record this machine lacks.
+struct Broken {
+    why: String,
+    lag: bool,
 }
 
 /// The root id of `c`, following `merged_into`.
 fn root_of<'a>(
     by_id: &HashMap<&'a str, &'a ContactRow>,
     c: &'a ContactRow,
-) -> Result<&'a ContactRow, String> {
+) -> Result<&'a ContactRow, Broken> {
     let mut at = c;
     let mut seen = BTreeSet::from([c.id.as_str()]);
     for _ in 0..=CHAIN_MAX {
@@ -134,16 +142,23 @@ fn root_of<'a>(
             return Ok(at);
         };
         let Some(n) = by_id.get(next) else {
-            return Err(format!(
-                "it was merged into a contact this machine lacks ({next})"
-            ));
+            return Err(Broken {
+                why: format!("it was merged into a contact this machine lacks ({next})"),
+                lag: true,
+            });
         };
         if !seen.insert(n.id.as_str()) {
-            return Err("its merge chain loops".into());
+            return Err(Broken {
+                why: "its merge chain loops".into(),
+                lag: false,
+            });
         }
         at = n;
     }
-    Err(format!("its merge chain is longer than {CHAIN_MAX}"))
+    Err(Broken {
+        why: format!("its merge chain is longer than {CHAIN_MAX}"),
+        lag: false,
+    })
 }
 
 /// Split `r.contacts` into groups, removed and broken records.
@@ -151,17 +166,19 @@ pub fn analyze(r: &Records) -> Analysis<'_> {
     let by_id: HashMap<&str, &ContactRow> = r.contacts.iter().map(|c| (c.id.as_str(), c)).collect();
     let mut out = Analysis::default();
     let mut groups: BTreeMap<&str, Vec<&ContactRow>> = BTreeMap::new();
-    let mut broken_roots: BTreeMap<&str, String> = BTreeMap::new();
+    let mut broken_roots: BTreeMap<&str, (String, bool)> = BTreeMap::new();
     for c in &r.contacts {
-        if c.removed_ms.is_some() {
-            out.removed.push(c);
+        if let Some(at) = c.removed_ms {
+            out.removed.push((c, at));
             continue;
         }
         match root_of(&by_id, c) {
-            Ok(root) if root.removed_ms.is_some() => out.removed.push(c),
+            Ok(root) if root.removed_ms.is_some() => {
+                out.removed.push((c, root.removed_ms.unwrap_or_default()))
+            }
             Ok(root) => groups.entry(root.id.as_str()).or_default().push(c),
-            Err(e) => {
-                out.broken.push((c, e.clone()));
+            Err(Broken { why, lag }) => {
+                out.broken.push((c, why.clone(), lag));
                 // The whole group goes: the root the chain does reach, past the bound, too.
                 let mut at = c;
                 let mut seen = BTreeSet::new();
@@ -172,15 +189,15 @@ pub fn analyze(r: &Records) -> Analysis<'_> {
                     at = n;
                 }
                 if at.merged_into.is_none() {
-                    broken_roots.insert(at.id.as_str(), e);
+                    broken_roots.insert(at.id.as_str(), (why, lag));
                 }
             }
         }
     }
     for (root, mut members) in groups {
-        if let Some(e) = broken_roots.get(root) {
+        if let Some((e, lag)) = broken_roots.get(root) {
             out.broken
-                .extend(members.into_iter().map(|m| (m, e.clone())));
+                .extend(members.into_iter().map(|m| (m, e.clone(), *lag)));
             continue;
         }
         members.sort_by(|a, b| (a.id != root, key(a)).cmp(&(b.id != root, key(b))));
@@ -401,26 +418,67 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
     let export_rows: BTreeSet<&str> = r.exports.iter().map(|e| e.id.as_str()).collect();
 
     let a = analyze(r);
-    let quarantine = |c: &ContactRow, eids: Vec<String>, problem: String, s: &mut Staged| {
-        s.deny.extend(eids.iter().cloned());
-        s.quarantined.push(Quarantined {
-            id: c.id.clone(),
-            alias: c.alias.clone().unwrap_or_default(),
-            eid: eids.first().cloned().unwrap_or_default(),
-            machine: c.machine.clone().unwrap_or_default(),
-            paired_ms: c.paired_ms.unwrap_or_default().max(0) as u64,
-            problem,
-        });
-    };
-    for (c, why) in &a.broken {
+    // How a quarantine treats its endpoints and binding.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Kind {
+        /// Unsound: endpoints denied, the binding falls out of the routes (revoked).
+        Hard,
+        /// Replication lag or a convergence in flight: endpoints denied, the binding kept
+        /// (its inboxes capped) so the record comes back whole once the rows arrive.
+        Lag,
+        /// Removed on another machine: never admitted, its endpoints may pair again.
+        Removed,
+    }
+    let quarantine =
+        |c: &ContactRow, eids: Vec<String>, problem: String, kind: Kind, s: &mut Staged| {
+            if kind == Kind::Removed {
+                s.removed.extend(eids.iter().cloned());
+            } else {
+                s.deny.extend(eids.iter().cloned());
+            }
+            s.quarantined.push(Quarantined {
+                id: c.id.clone(),
+                alias: c.alias.clone().unwrap_or_default(),
+                eid: eids.first().cloned().unwrap_or_default(),
+                machine: c.machine.clone().unwrap_or_default(),
+                paired_ms: c.paired_ms.unwrap_or_default().max(0) as u64,
+                problem,
+                hold: (kind == Kind::Lag)
+                    .then(|| c.binding.as_deref().and_then(binding_id))
+                    .flatten()
+                    .filter(|b| !r.revoked.contains(&b.to_string())),
+            });
+        };
+    for (c, why, lag) in &a.broken {
         let eids = r
             .endpoints
             .iter()
             .filter(|e| e.contact.as_deref() == Some(c.id.as_str()))
             .filter_map(|e| e.eid.clone())
             .collect();
-        quarantine(c, eids, why.clone(), &mut staged);
+        let kind = if *lag { Kind::Lag } else { Kind::Hard };
+        quarantine(c, eids, why.clone(), kind, &mut staged);
     }
+    // When each endpoint was last removed with a record (the latest removal wins).
+    let mut removed_at: BTreeMap<&str, i64> = BTreeMap::new();
+    for (c, at) in &a.removed {
+        for e in r
+            .endpoints
+            .iter()
+            .filter(|e| e.contact.as_deref() == Some(c.id.as_str()))
+        {
+            if let Some(eid) = e.eid.as_deref() {
+                let t = removed_at.entry(eid).or_insert(*at);
+                *t = (*t).max(*at);
+            }
+        }
+    }
+    let stale = |e: &EndpointRow| {
+        e.eid
+            .as_deref()
+            .and_then(|eid| removed_at.get(eid))
+            .is_some_and(|at| e.paired_ms.unwrap_or(0) <= *at)
+    };
     // An endpoint anchored in two groups that have not merged yet is denied in both.
     let anchors: Vec<Vec<&EndpointRow>> = a.groups.iter().map(|g| g.anchors(r)).collect();
     let mut owners: BTreeMap<&str, usize> = BTreeMap::new();
@@ -435,38 +493,43 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
     for (g, set) in a.groups.iter().zip(&anchors) {
         let c = g.root;
         let eids: Vec<String> = set.iter().filter_map(|e| e.eid.clone()).collect();
-        let grants = g.grants(r);
+        // A grant naming an export row this machine lacks (yet) is skipped, never a reason
+        // to drop the contact.
+        let mut grants = g.grants(r);
+        grants.retain(|x, _| export_rows.contains(x));
         let binding = c.binding.as_deref().and_then(binding_id);
         let problem = if c.alias.as_deref().is_none_or(|a| check_alias(a).is_err()) {
-            Some("its name is malformed".to_owned())
+            Some(("its name is malformed", Kind::Hard))
         } else if binding.is_none() {
-            Some("its binding is malformed".to_owned())
+            Some(("its binding is malformed", Kind::Hard))
         } else if binding.is_some_and(|b| r.revoked.contains(&b.to_string())) {
-            Some("its binding was revoked on this machine".to_owned())
+            Some(("its binding was revoked on this machine", Kind::Hard))
         } else if eids.is_empty() {
-            Some("it has no endpoint".to_owned())
+            Some(("it has no endpoint", Kind::Hard))
         } else if eids.iter().any(|e| e.parse::<iroh::EndpointId>().is_err()) {
-            Some("an endpoint is malformed".to_owned())
+            Some(("an endpoint is malformed", Kind::Hard))
         } else if eids.iter().any(|e| family.contains(e)) {
-            Some("now one of your machines".to_owned())
-        } else if grants.keys().any(|x| !export_rows.contains(x)) {
-            Some("a grant names a missing export".to_owned())
+            Some(("now one of your machines", Kind::Hard))
+        } else if set.iter().all(|e| stale(e)) {
+            // A duplicate made before a removal synced (or re-paired under clock skew): every
+            // anchor was removed with another record no newer ceremony followed.
+            Some(("removed on another machine", Kind::Removed))
         } else if eids
             .iter()
             .any(|e| owners.get(e.as_str()).copied().unwrap_or(0) > 1)
         {
-            Some("an endpoint is in another contact too (merging)".to_owned())
+            Some(("an endpoint is in another contact too (merging)", Kind::Lag))
         } else if c
             .alias
             .as_deref()
             .is_some_and(|a| staged.contacts.contains_key(a))
         {
-            Some("its name is taken by another contact (renaming)".to_owned())
+            Some(("its name is taken by another contact (renaming)", Kind::Lag))
         } else {
             None
         };
-        if let Some(p) = problem {
-            quarantine(c, eids, p, &mut staged);
+        if let Some((p, kind)) = problem {
+            quarantine(c, eids, p.to_owned(), kind, &mut staged);
             continue;
         }
         let (Some(alias), Some(binding)) = (c.alias.clone(), binding) else {
@@ -538,27 +601,17 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             },
         );
     }
-    // A removed record's endpoints stay denied until a newer ceremony pins them in a live
+    // A removed record's endpoints stay refused until a newer ceremony pins them in a live
     // record (an anchor paired after the removal): a re-pair works, a stale copy never.
-    for c in &a.removed {
-        let removed = c.removed_ms.unwrap_or(i64::MAX);
-        for e in r
-            .endpoints
-            .iter()
-            .filter(|e| e.contact.as_deref() == Some(c.id.as_str()))
-        {
-            let Some(eid) = e.eid.as_deref() else {
-                continue;
-            };
-            let repaired = r.endpoints.iter().any(|p| {
-                p.eid.as_deref() == Some(eid)
-                    && p.barred_ms.is_none()
-                    && p.paired_ms.unwrap_or(0) > removed
-                    && p.contact.as_deref().is_some_and(|m| admitted.contains(m))
-            });
-            if !repaired {
-                staged.removed.insert(eid.to_owned());
-            }
+    for (eid, removed) in &removed_at {
+        let repaired = r.endpoints.iter().any(|p| {
+            p.eid.as_deref() == Some(*eid)
+                && p.barred_ms.is_none()
+                && p.paired_ms.unwrap_or(0) > *removed
+                && p.contact.as_deref().is_some_and(|m| admitted.contains(m))
+        });
+        if !repaired {
+            staged.removed.insert((*eid).to_owned());
         }
     }
     staged
@@ -664,14 +717,29 @@ pub fn import(file: &PeersFile, staged: &Staged, r: &Records) -> Import {
                 out.skipped.push(alias.clone());
                 continue;
             }
-            Some(c) => (c.id.clone(), false),
+            Some(c) => {
+                // Only a 0→1 change is safe to carry: the file's block applies, its absence
+                // never unblocks.
+                if facts.blocked && c.blocked.is_none_or(|b| b == 0) {
+                    out.writes.push(RecordWrite::new(
+                        RecordTable::Contacts,
+                        c.id.clone(),
+                        vec![("blocked", Cell::Int(1))],
+                    ));
+                }
+                (c.id.clone(), false)
+            }
             None => (Uuid::now_v7().to_string(), true),
         };
         if fresh {
+            // This machine's live binding for the alias keeps its history, but only when it
+            // is still this endpoint's (as `bind_peer_in` minted a new one for a re-pin).
+            let pinned = agent::communication::network::contact_endpoint(&facts.eid);
             let binding = r
                 .live_bindings
                 .get(alias)
-                .map_or_else(fresh_binding, |id| format!("peer:{id}"));
+                .filter(|(_, endpoint)| *endpoint == pinned)
+                .map_or_else(fresh_binding, |(id, _)| format!("peer:{id}"));
             let paired = if facts.paired_ms > 0 {
                 facts.paired_ms as i64
             } else {
@@ -1081,15 +1149,18 @@ mod tests {
     }
 
     /// 191 (D2 import, S2): an entry whose endpoint a removed record anchors is skipped (never
-    /// revived); one a live record anchors adds only the grants that record lacks and never
-    /// writes `blocked`, `removed_ms` or `binding`; a new one keeps this machine's binding.
+    /// revived); one a live record anchors adds only the grants that record lacks, never
+    /// writes `removed_ms` or `binding`, and carries a block (0→1) but never an unblock; a
+    /// new one keeps this machine's binding only while it is still that endpoint's.
     #[test]
     fn the_import_never_revives_and_never_writes_blocked_on_reuse() {
         let file: PeersFile = serde_yaml::from_str(&format!(
-            "peers:\n  gone:\n    endpoint: {}\n  bob:\n    endpoint: {}\n    blocked: true\n    exports: [proj, ops]\n  new:\n    endpoint: {}\n    exports: [proj]\n    first_contact: {{ ops: block }}\nexports:\n  proj: {{ session: \"00000000-0000-0000-0000-000000000003\", name: Proj }}\n  ops: {{ agent: theuth, name: Ops }}\n",
+            "peers:\n  gone:\n    endpoint: {}\n  bob:\n    endpoint: {}\n    blocked: true\n    exports: [proj, ops]\n  new:\n    endpoint: {}\n    exports: [proj]\n    first_contact: {{ ops: block }}\n  carol:\n    endpoint: {}\n  moved:\n    endpoint: {}\nexports:\n  proj: {{ session: \"00000000-0000-0000-0000-000000000003\", name: Proj }}\n  ops: {{ agent: theuth, name: Ops }}\n",
             eid(1),
             eid(2),
-            eid(3)
+            eid(3),
+            eid(4),
+            eid(5)
         ))
         .unwrap();
         let staged = crate::config::stage(&file, &|_| None, None, tools::Risk::ReadOnly).unwrap();
@@ -1098,6 +1169,7 @@ mod tests {
             "proj",
             "00000000-0000-0000-0000-000000000003".parse().unwrap(),
         );
+        let iroh = |n: u8| agent::communication::network::contact_endpoint(&eid(n));
         let r = Records {
             me: "me".into(),
             contacts: vec![
@@ -1106,14 +1178,28 @@ mod tests {
                     ..contact("gone-rec", "gone", 1)
                 },
                 contact("bob-rec", "bob", 2),
+                ContactRow {
+                    blocked: Some(1),
+                    ..contact("carol-rec", "carol", 3)
+                },
             ],
-            endpoints: vec![anchor("gone-rec", 1, 1), anchor("bob-rec", 2, 2)],
+            endpoints: vec![
+                anchor("gone-rec", 1, 1),
+                anchor("bob-rec", 2, 2),
+                anchor("carol-rec", 4, 3),
+            ],
             grants: vec![grant("bob-rec", "xp", Some(0), None)],
             exports: vec![proj],
-            live_bindings: BTreeMap::from([(
-                "new".to_owned(),
-                "00000000-0000-0000-0000-0000000000aa".to_owned(),
-            )]),
+            live_bindings: BTreeMap::from([
+                (
+                    "new".to_owned(),
+                    ("00000000-0000-0000-0000-0000000000aa".to_owned(), iroh(3)),
+                ),
+                (
+                    "moved".to_owned(),
+                    ("00000000-0000-0000-0000-0000000000bb".to_owned(), iroh(6)),
+                ),
+            ]),
             ..Records::default()
         };
         let imp = import(&file, &staged, &r);
@@ -1135,12 +1221,39 @@ mod tests {
             .iter()
             .filter(|w| w.id == "bob-rec" || w.id.starts_with("bob-rec|"))
             .collect();
-        assert_eq!(bob.len(), 1, "only the grant bob's record lacks: {bob:?}");
-        assert_eq!(bob[0].id, format!("bob-rec|{ops}"));
+        assert_eq!(
+            bob.len(),
+            2,
+            "the block and the grant bob's record lacks: {bob:?}"
+        );
+        assert_eq!(
+            *bob[0],
+            RecordWrite::new(
+                RecordTable::Contacts,
+                "bob-rec",
+                vec![("blocked", Cell::Int(1))]
+            ),
+            "the file's block is carried"
+        );
+        assert_eq!(bob[1].id, format!("bob-rec|{ops}"));
         assert!(
-            !imp.writes
-                .iter()
-                .any(|w| w.table == RecordTable::Contacts && w.id == "bob-rec")
+            !imp.writes.iter().any(|w| w.id == "carol-rec"),
+            "an unblocked entry never unblocks a blocked record"
+        );
+        let moved = imp
+            .writes
+            .iter()
+            .find(|w| {
+                w.table == RecordTable::Contacts
+                    && w.set.contains(&("alias", Cell::Text("moved".into())))
+            })
+            .expect("a record for moved");
+        assert!(
+            !moved.set.contains(&(
+                "binding",
+                Cell::Text("peer:00000000-0000-0000-0000-0000000000bb".into())
+            )),
+            "another endpoint's binding is not inherited"
         );
         let new = imp
             .writes
@@ -1168,6 +1281,101 @@ mod tests {
             answer
                 .set
                 .contains(&("first_contact", Cell::Text("block".into())))
+        );
+    }
+
+    /// 191 (D2): a live duplicate of a removed record (made before the removal synced, or a
+    /// re-pair under clock skew) whose anchors were all removed is never admitted: no route,
+    /// listed with its problem, its endpoint free to pair again; a newer ceremony admits it. A
+    /// member removed through its root takes the root's removal time, so a re-pair works.
+    #[test]
+    fn a_live_duplicate_of_a_removed_record_is_not_admitted() {
+        let mut r = Records {
+            contacts: vec![
+                ContactRow {
+                    removed_ms: Some(10),
+                    ..contact("old", "bob", 1)
+                },
+                contact("dup", "bob", 5),
+            ],
+            endpoints: vec![anchor("old", 1, 1), anchor("dup", 1, 5)],
+            ..Records::default()
+        };
+        let s = stage(&r);
+        assert!(!s.peers.contains_key("bob") && !s.contacts.contains_key("bob"));
+        assert!(
+            s.quarantined
+                .iter()
+                .any(|q| q.id == "dup" && q.problem.contains("removed"))
+        );
+        assert!(s.removed.contains(&eid(1)) && !s.deny.contains(&eid(1)));
+        assert!(
+            s.quarantined.iter().all(|q| q.hold.is_none()),
+            "its binding goes"
+        );
+        r.endpoints[1].paired_ms = Some(20);
+        assert!(
+            stage(&r).peers.contains_key("bob"),
+            "a newer ceremony admits it"
+        );
+
+        let r = Records {
+            contacts: vec![
+                ContactRow {
+                    removed_ms: Some(10),
+                    ..contact("root", "carol", 1)
+                },
+                ContactRow {
+                    merged_into: Some("root".into()),
+                    ..contact("member", "carol", 2)
+                },
+                contact("again", "carol", 20),
+            ],
+            endpoints: vec![anchor("member", 2, 2), anchor("again", 2, 20)],
+            ..Records::default()
+        };
+        let s = stage(&r);
+        assert!(s.peers.contains_key("carol") && !s.removed.contains(&eid(2)));
+    }
+
+    /// 191 (D2): a quarantine of lag or of a convergence in flight keeps the binding (never
+    /// revoked for good); a grant naming an export this machine lacks is skipped, the contact
+    /// stays.
+    #[test]
+    fn lag_keeps_the_binding_and_a_missing_export_skips_only_its_grant() {
+        let r = Records {
+            contacts: vec![
+                contact("a", "bob", 1),
+                contact("b", "bob", 2),
+                ContactRow {
+                    merged_into: Some("not-here".into()),
+                    ..contact("c", "carol", 3)
+                },
+                contact("d", "dave", 4),
+            ],
+            endpoints: vec![
+                anchor("a", 1, 1),
+                anchor("b", 2, 2),
+                anchor("c", 3, 3),
+                anchor("d", 4, 4),
+            ],
+            grants: vec![grant("d", "x-missing", Some(1), None)],
+            ..Records::default()
+        };
+        let s = stage(&r);
+        let held: BTreeMap<&str, bool> = s
+            .quarantined
+            .iter()
+            .map(|q| (q.id.as_str(), q.hold.is_some()))
+            .collect();
+        assert_eq!(
+            held,
+            BTreeMap::from([("b", true), ("c", true)]),
+            "renaming and lag"
+        );
+        assert!(
+            s.peers["dave"].exports.is_empty(),
+            "the unresolvable grant is skipped"
         );
     }
 }

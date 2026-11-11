@@ -12543,13 +12543,9 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         transport: None,
         inbound_chain: None,
         identity: None,
-        // A unit test of this crate is past the latch unless it says otherwise (its own flag);
-        // the a2a tests' engines share the process flag, which their reconcile sets.
-        contacts_ready: if cfg!(test) {
-            Arc::new(std::sync::atomic::AtomicBool::new(true))
-        } else {
-            crate::communication::network::CONTACTS_READY.clone()
-        },
+        // A test rig is past the latch unless it says otherwise (its own flag, never the
+        // process-wide one).
+        contacts_ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         advisors: HashSet::new(),
         advisor_cfg: AdvisorConfig::default(),
         activity: crate::activity::Monitor::default(),
@@ -12574,11 +12570,16 @@ pub async fn spawn_test_agents(
 
 /// 183 (`test-support`): one engine's live [`Agents`] with agent communication on and no
 /// keyed provider, spawned but not registered, so a test can run two engines in one process
-/// (the a2a contact tests).
+/// (the a2a contact tests). 191: `ready` is that engine's own `contacts_ready` (its a2a
+/// context holds the same one), never the process-wide flag another engine sets.
 #[cfg(feature = "test-support")]
-pub async fn spawn_engine_agents(rt: Runtime) -> ActorRef<Agents> {
+pub async fn spawn_engine_agents(
+    rt: Runtime,
+    ready: Arc<std::sync::atomic::AtomicBool>,
+) -> ActorRef<Agents> {
     let mut a = bare_agents(rt, None, true).await;
     a.configured = Arc::new(|_| false);
+    a.contacts_ready = ready;
     Agents::spawn(a)
 }
 

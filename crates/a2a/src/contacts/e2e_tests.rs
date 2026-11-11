@@ -61,17 +61,29 @@ pub(crate) async fn node(name: &str, dir: &std::path::Path) -> Arc<mesh::net::Ne
     .unwrap()
 }
 
-/// One engine; `live` gives it an agent (then `peers.yaml` reloads, ceremonies pin).
+/// One engine; `live` gives it an agent (then `peers.yaml` reloads, ceremonies pin). 191: its
+/// own `contacts_ready`, shared by its agent; a live engine's first reload sets it, one with
+/// no agent is taken as past its first pass. The mesh latch is done.
 async fn engine(name: &str, lan: &Lan, live: bool, cfg: A2aConfig) -> Engine {
     let dir = tempfile::tempdir().unwrap();
     let net = node(name, dir.path()).await;
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(!live));
     let agents = if live {
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-        Some(agent::spawn_engine_agents(rt).await)
+        Some(agent::spawn_engine_agents(rt, ready.clone()).await)
     } else {
         None
     };
-    let ctx = crate::test_ctx(dir.path(), net.clone(), Arc::new(lan.clone()), cfg, agents).await;
+    let ctx = crate::test_ctx(
+        dir.path(),
+        net.clone(),
+        Arc::new(lan.clone()),
+        cfg,
+        agents,
+        ready,
+        Arc::new(|| true),
+    )
+    .await;
     if live {
         ctx.reload().await.unwrap();
     }
@@ -1915,7 +1927,10 @@ async fn a_contact_paired_on_one_machine_is_listed_and_admitted_on_another() {
         binding(&n1),
         "one binding id on every machine"
     );
+    // The commit's own binding changes allow one more idempotent pass; then it settles.
+    let _ = n2.ctx.tick().await;
     assert!(!n2.ctx.tick().await, "nothing changed since");
+    assert_eq!(binding(&n2), binding(&n1));
 }
 
 /// 191 (D2, M1): a block another machine wrote arrives as one column of an existing row (no
@@ -1957,13 +1972,13 @@ async fn contacts_are_refused_until_the_latch_and_the_first_reconcile() {
     let dir = tempfile::tempdir().unwrap();
     let net = node("n2", dir.path()).await;
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-    let agents = agent::spawn_engine_agents(rt).await;
     let (ready, latch) = (
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
     );
+    let agents = agent::spawn_engine_agents(rt, ready.clone()).await;
     let l = latch.clone();
-    let ctx = crate::test_ctx_gated(
+    let ctx = crate::test_ctx(
         dir.path(),
         net.clone(),
         Arc::new(lan.clone()),
@@ -1989,7 +2004,15 @@ async fn contacts_are_refused_until_the_latch_and_the_first_reconcile() {
     replicate(&n1, &n2).await;
     n2.ctx.reload().await.unwrap();
     assert!(!ready.load(Ordering::SeqCst), "not before the latch");
-    assert!(n2.ctx.contact_list().is_empty(), "nothing staged");
+    assert_eq!(
+        n2.ctx.contact_list().len(),
+        1,
+        "listed from the local rows, never admitted"
+    );
+    assert!(
+        n2.ctx.shared.read().bindings.is_empty(),
+        "no route committed"
+    );
     assert_eq!(n2.ctx.gate(&c.eid()), IrohGate::Refuse);
 
     latch.store(true, Ordering::SeqCst);
@@ -2043,4 +2066,86 @@ async fn grant_ask(e: &Engine, alias: &str, names: &[&str]) {
         })
         .collect();
     e.ctx.commit_records(w).await.unwrap();
+}
+
+/// 191 (D2): a block that lands while a pass runs (after it staged its snapshot) is not in
+/// the hash the pass keeps, so the next tick reconciles it and the gate refuses the contact.
+#[tokio::test]
+async fn a_block_landing_mid_pass_is_reconciled_at_the_next_tick() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let lan = Lan::default();
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let c = engine("c", &lan, true, cfg(600)).await;
+    paired(&n1, &c).await;
+    let id = n1.ctx.contact_list()[0].id.clone();
+    let agents = n1.ctx.agents().unwrap();
+    *n1.ctx.mid_pass.lock() = Some(Box::new(move || {
+        Box::pin(async move {
+            agents
+                .ask(agent::communication::network::WriteContactRecords(vec![
+                    RecordWrite::new(RecordTable::Contacts, id, vec![("blocked", Cell::Int(1))]),
+                ]))
+                .await
+                .unwrap();
+        })
+    }));
+    n1.ctx.reload().await.unwrap();
+    assert!(
+        matches!(n1.ctx.gate(&c.eid()), IrohGate::Contact { .. }),
+        "the pass installed its snapshot, from before the block"
+    );
+    assert!(
+        n1.ctx.tick().await,
+        "the block is not in the hash the pass kept"
+    );
+    assert_eq!(n1.ctx.gate(&c.eid()), IrohGate::Refuse);
+}
+
+/// 191 (D2): a `peers.yaml` that no longer parses never stops the records: a block written
+/// elsewhere applies at the next tick, the file's problem is in status, and a contact RPC
+/// still applies and answers.
+#[tokio::test]
+async fn a_broken_peers_yaml_never_stops_a_block() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let lan = Lan::default();
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let c = engine("c", &lan, true, cfg(600)).await;
+    let (alias, _) = paired(&n1, &c).await;
+    let path = n1._dir.path().join(crate::config::PEERS_FILE);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "peers: [not, a, map\n").unwrap();
+    let id = n1.ctx.contact_list()[0].id.clone();
+    n1.ctx
+        .agents()
+        .unwrap()
+        .ask(agent::communication::network::WriteContactRecords(vec![
+            RecordWrite::new(RecordTable::Contacts, id, vec![("blocked", Cell::Int(1))]),
+        ]))
+        .await
+        .unwrap();
+    assert!(n1.ctx.tick().await);
+    assert_eq!(n1.ctx.gate(&c.eid()), IrohGate::Refuse, "the block applied");
+    assert!(
+        n1.ctx
+            .state
+            .lock()
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("peers.yaml")),
+        "the file's problem is reported"
+    );
+    // One more idempotent pass may follow the commit's own binding changes; then it settles.
+    let _ = n1.ctx.tick().await;
+    assert!(
+        !n1.ctx.tick().await,
+        "an unchanged broken file does not run every tick"
+    );
+    n1.ctx
+        .remove_contact(ContactRemove {
+            name: alias,
+            block: false,
+        })
+        .await
+        .unwrap();
+    assert!(n1.ctx.contact_list().is_empty(), "the RPC applied");
 }

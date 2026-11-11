@@ -74,7 +74,7 @@ pub const OFF: &str = "contacts are unavailable: the a2a plugin is not running";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Contact {
-    /// Owner alias: the `peer:<name>` address and the `peers.yaml` key.
+    /// Owner alias: the `peer:<name>` address; 191: the record's alias, unique in the mesh.
     pub name: String,
     /// The contact's machine, from its card.
     pub machine: String,
@@ -1088,8 +1088,15 @@ impl crate::Ctx {
                 if !machine.is_empty() {
                     set.push(("machine", Cell::Text(machine.clone())));
                 }
-                // Unblock writes a fresh binding: the blocked one stays revoked everywhere.
-                if blocked {
+                // Unblock writes a fresh binding: the blocked one stays revoked everywhere;
+                // so does a re-pair into a record whose binding this machine revoked (a
+                // removed duplicate's), which a replica never un-revokes.
+                let revoked = root
+                    .binding
+                    .as_deref()
+                    .and_then(records::binding_id)
+                    .is_none_or(|b| r.revoked.contains(&b.to_string()));
+                if blocked || revoked {
                     set.push(("binding", Cell::Text(records::fresh_binding())));
                 }
                 w.push(RecordWrite::new(
@@ -1739,8 +1746,7 @@ impl crate::Ctx {
             )
             .await?;
         }
-        self.reconcile_now().await;
-        Ok(())
+        self.reconcile_now().await
     }
 
     /// The live group a contact RPC names (its alias), or its quarantined records (alias or
@@ -1857,12 +1863,19 @@ impl crate::Ctx {
         let live = self.shared.read().clone();
         let mut w = Vec::new();
         if let Some(list) = &patch.exports {
-            let held: Vec<String> = live
-                .staged
-                .peers
-                .get(&name)
-                .map(|p| p.exports.clone())
-                .unwrap_or_default();
+            // What the group holds now, from its rows (never this machine's routes, which
+            // leave out an export whose chat is not here).
+            let held: std::collections::BTreeSet<&str> = r
+                .grants
+                .iter()
+                .filter(|g| g.granted == Some(1))
+                .filter(|g| {
+                    members
+                        .iter()
+                        .any(|m| g.contact.as_deref() == Some(m.id.as_str()))
+                })
+                .filter_map(|g| g.export.as_deref())
+                .collect();
             let mut ids = BTreeMap::new();
             for x in list {
                 let id = live
@@ -1896,7 +1909,7 @@ impl crate::Ctx {
                 let want = ids.contains_key(&xid);
                 // 183 F2: sharing counts as allowing: a newly granted export starts on "Always
                 // allow"; a stored answer (Ask first included) is kept.
-                let fresh = want && ids.get(&xid).is_some_and(|n| !held.contains(n));
+                let fresh = want && !held.contains(xid.as_str());
                 w.extend(grant_writes(&r, &members, &xid, Some(want), |old| {
                     (fresh && old.is_none()).then_some(FirstContact::Allow)
                 }));
@@ -2378,7 +2391,7 @@ impl crate::Ctx {
                 result = Err(e);
             }
         }
-        self.reconcile_now().await;
+        let _ = self.reconcile_now().await;
         let mut s = self.state.lock();
         match result {
             Ok(()) => s.addr_error = None,

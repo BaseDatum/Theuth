@@ -329,6 +329,9 @@ pub struct Quarantined {
     pub paired_ms: u64,
     /// Why it is quarantined.
     pub problem: String,
+    /// A quarantine of replication lag or of a convergence in flight (a merge, a rename):
+    /// the binding to keep live (unrouted, its inboxes capped) so it is not revoked for good.
+    pub hold: Option<uuid::Uuid>,
 }
 
 /// 183 §7.6: a validated agent export (contacts only): each (contact, export) gets its own

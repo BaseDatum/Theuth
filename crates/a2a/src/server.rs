@@ -144,6 +144,17 @@ struct ContactGrant {
 }
 
 impl Live {
+    /// 191 (D2): `staged` listed (`contact_list`) but nothing installed: no binding, no
+    /// route, no principal; the gate admits no contact.
+    pub fn display(staged: Staged) -> Self {
+        Self {
+            staged,
+            ..Self::empty()
+        }
+    }
+}
+
+impl Live {
     /// Nothing installed: every request is 404/401.
     pub fn empty() -> Self {
         Self {
@@ -935,7 +946,8 @@ pub enum IrohGate {
 /// a window; a stranger passes only for the ceremony while a window is open. 191 (D2): an
 /// endpoint in the deny set (a quarantined or blocked record's) is refused before anything
 /// else; a removed record's endpoint is never admitted as a contact (it may pair again in a
-/// window), and no contact is admitted before `contacts_ready`.
+/// window), and nothing is admitted before `contacts_ready`, a ceremony included (the deny
+/// set is whole only after the first pass).
 pub fn iroh_gate(live: &Live, remote: &str, window_open: bool, ready: bool) -> IrohGate {
     if live.staged.deny.contains(remote) {
         return IrohGate::Refuse;
@@ -952,7 +964,7 @@ pub fn iroh_gate(live: &Live, remote: &str, window_open: bool, ready: bool) -> I
             },
             _ => IrohGate::Refuse,
         },
-        None if window_open => IrohGate::Pair,
+        None if window_open && ready => IrohGate::Pair,
         None => IrohGate::Refuse,
     }
 }
@@ -1516,5 +1528,48 @@ mod tests {
             rpc_over_iroh(&b, &blocked).await.is_err(),
             "a blocked contact is refused, window or not"
         );
+    }
+
+    /// 191 (D2, D7): before `contacts_ready` a staged contact with a live binding is refused,
+    /// and so is a ceremony (the deny set is whole only after the first pass); after it the
+    /// contact is admitted and a stranger in a window may pair; a denied endpoint is refused
+    /// even for a ceremony, a removed one only as a contact.
+    #[test]
+    fn the_gate_refuses_everyone_before_contacts_ready_and_denied_endpoints_first() {
+        let mut staged = Staged::default();
+        staged.contacts.insert(
+            "bob".into(),
+            crate::config::ContactFacts {
+                id: "r1".into(),
+                eid: "bob-eid".into(),
+                eids: vec!["bob-eid".into()],
+                display: "bob".into(),
+                machine: String::new(),
+                cap: tools::Risk::ReadOnly,
+                first_contact: BTreeMap::new(),
+                blocked: false,
+                paired_ms: 1,
+                addrs: Vec::new(),
+            },
+        );
+        let mut live = Live::display(staged);
+        live.bindings.insert("bob".into(), Uuid::from_u128(7));
+        assert_eq!(iroh_gate(&live, "bob-eid", true, false), IrohGate::Refuse);
+        assert_eq!(iroh_gate(&live, "stranger", true, false), IrohGate::Refuse);
+        assert!(matches!(
+            iroh_gate(&live, "bob-eid", false, true),
+            IrohGate::Contact { alias, .. } if alias == "bob"
+        ));
+        assert_eq!(iroh_gate(&live, "stranger", true, true), IrohGate::Pair);
+        live.staged.deny.insert("stranger".into());
+        assert_eq!(iroh_gate(&live, "stranger", true, true), IrohGate::Refuse);
+        live.staged.removed.insert("gone".into());
+        assert_eq!(
+            iroh_gate(&live, "gone", true, true),
+            IrohGate::Pair,
+            "it may pair again"
+        );
+        live.staged.removed.insert("bob-eid".into());
+        assert_eq!(iroh_gate(&live, "bob-eid", true, true), IrohGate::Refuse);
     }
 }

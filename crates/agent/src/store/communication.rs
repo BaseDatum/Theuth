@@ -1174,6 +1174,25 @@ impl Store {
         Ok(out)
     }
 
+    /// 191 (D2): the live rows of `ids` step out of their aliases (`~<id>`), so another
+    /// binding taking the alias never revokes them; a later bind under the id renames it back.
+    pub async fn hold_peer_bindings(&self, ids: &[Uuid]) -> anyhow::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.begin_write().await?;
+        for id in ids {
+            sqlx::query(
+                "UPDATE peer_bindings SET alias = '~' || id WHERE id = ? AND revoked_at IS NULL",
+            )
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Revoke the live binding of `alias`; `Ok(false)` when none is live.
     pub async fn revoke_peer_binding(&self, alias: &str) -> anyhow::Result<bool> {
         let mut tx = self.begin_write().await?;
@@ -1645,16 +1664,15 @@ impl Store {
     }
 
     /// 186 review 1: forget conversations quiet since before `stale_before_ms` (their return
-    /// grant has lapsed) and those of revoked bindings (unpaired, re-pinned).
+    /// grant has lapsed). 191: by staleness only: `contact_threads` replicates, so a delete is
+    /// mesh-wide, and a binding revoked here may be live elsewhere; a revoked binding's
+    /// thread is unusable (no route) and lapses with the rest.
     pub async fn gc_contact_threads(&self, stale_before_ms: i64) -> anyhow::Result<u64> {
-        Ok(sqlx::query(
-            "DELETE FROM contact_threads WHERE last_ms < ? \
-             OR binding IN (SELECT id FROM peer_bindings WHERE revoked_at IS NOT NULL)",
-        )
-        .bind(stale_before_ms)
-        .execute(&self.write)
-        .await?
-        .rows_affected())
+        Ok(sqlx::query("DELETE FROM contact_threads WHERE last_ms < ?")
+            .bind(stale_before_ms)
+            .execute(&self.write)
+            .await?
+            .rows_affected())
     }
 
     /// 186 (D5): open (or touch) the conversation `context` with the contact `binding`:

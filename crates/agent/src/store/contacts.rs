@@ -102,8 +102,8 @@ pub struct Records {
     pub addrs: BTreeMap<String, Vec<String>>,
     /// Binding ids (bare uuids) revoked on this machine.
     pub revoked: BTreeSet<String>,
-    /// Alias → live binding id here (what an import keeps).
-    pub live_bindings: BTreeMap<String, String>,
+    /// Alias → (live binding id, its endpoint) here (what an import keeps).
+    pub live_bindings: BTreeMap<String, (String, String)>,
     /// A chat export's session → whether it is native (`sessions.agent IS NULL`); absent
     /// when this machine has no such session (yet).
     pub sessions: BTreeMap<String, bool>,
@@ -236,10 +236,11 @@ impl Store {
             sqlx::query_as("SELECT id FROM peer_bindings WHERE revoked_at IS NOT NULL")
                 .fetch_all(&mut *tx)
                 .await?;
-        let live: Vec<(String, String)> =
-            sqlx::query_as("SELECT alias, id FROM peer_bindings WHERE revoked_at IS NULL")
-                .fetch_all(&mut *tx)
-                .await?;
+        let live: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT alias, id, endpoint FROM peer_bindings WHERE revoked_at IS NULL",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
         let sessions: Vec<(String, bool)> = sqlx::query_as(
             "SELECT id, agent IS NULL FROM sessions WHERE id IN \
              (SELECT session FROM a2a_exports WHERE session IS NOT NULL)",
@@ -266,7 +267,10 @@ impl Store {
                 })
                 .collect(),
             revoked: revoked.into_iter().map(|(id,)| id).collect(),
-            live_bindings: live.into_iter().collect(),
+            live_bindings: live
+                .into_iter()
+                .map(|(alias, id, endpoint)| (alias, (id, endpoint)))
+                .collect(),
             sessions: sessions.into_iter().collect(),
         })
     }
@@ -354,9 +358,10 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// 191 (D2 import): every local inbox (`a2a_contexts.inbox = 1`) of a session this machine
+    /// 191 (D2, D4): every local inbox (`a2a_contexts.inbox = 1`) of a session this machine
     /// owns and without a marker gets `<principal>|<export id>`, its export's name mapped
-    /// through `exports` (name → id). Returns how many were marked.
+    /// through `exports` (name → id); an export no longer known by name keeps its name there
+    /// (the marker's presence is what caps a moved inbox). Returns how many were marked.
     pub async fn backfill_contact_inboxes(
         &self,
         exports: &BTreeMap<String, String>,
@@ -371,9 +376,7 @@ impl Store {
         .await?;
         let mut n = 0;
         for (session, principal, export) in rows {
-            let Some(id) = exports.get(&export) else {
-                continue;
-            };
+            let id = exports.get(&export).unwrap_or(&export);
             let Ok(session) = session.parse() else {
                 continue;
             };
@@ -458,19 +461,22 @@ mod tests {
         );
     }
 
-    /// 191 (D4): the import marks every local inbox of a session this machine owns with
-    /// `<principal>|<export id>` (its export's name mapped to its id); a session another
-    /// machine owns is left alone (one writer per session row), and the marker is a session
-    /// log write, so it travels with the session row.
+    /// 191 (D4): every local inbox of a session this machine owns gets
+    /// `<principal>|<export id>` (its export's name mapped to its id; an export no longer
+    /// known by name keeps its name); a session another machine owns is left alone (one
+    /// writer per session row), and the marker is a session log write, so it travels with
+    /// the session row.
     #[tokio::test]
     async fn the_import_backfills_inbox_markers_on_owned_sessions_only() {
         let (store, mine, _dir) = fresh().await;
-        let theirs = SessionId::new();
-        store
-            .create_session(theirs, "m", None, None, None)
-            .await
-            .unwrap();
-        for (s, export) in [(mine, "research"), (theirs, "research")] {
+        let (theirs, unknown) = (SessionId::new(), SessionId::new());
+        for s in [theirs, unknown] {
+            store
+                .create_session(s, "m", None, None, None)
+                .await
+                .unwrap();
+        }
+        for (s, export) in [(mine, "research"), (theirs, "research"), (unknown, "gone")] {
             let scope = A2aScope {
                 principal: "peer:b1",
                 export,
@@ -497,7 +503,12 @@ mod tests {
             .last()
             .map_or(0, |r| r.seq);
         let ids = BTreeMap::from([("research".to_owned(), "x1".to_owned())]);
-        assert_eq!(store.backfill_contact_inboxes(&ids).await.unwrap(), 1);
+        assert_eq!(store.backfill_contact_inboxes(&ids).await.unwrap(), 2);
+        assert_eq!(
+            store.contact_inbox(unknown).await.unwrap().as_deref(),
+            Some("peer:b1|gone"),
+            "marked whatever the file knew"
+        );
         assert_eq!(
             store.contact_inbox(mine).await.unwrap().as_deref(),
             Some("peer:b1|x1")

@@ -464,6 +464,9 @@ pub struct CommitPeerConfig {
     pub routes: Vec<PeerRoute>,
     /// Aliases removed from configuration.
     pub revoke: Vec<String>,
+    /// 191 (D2): bindings of contact records quarantined for replication lag or a convergence
+    /// in flight: no route, their inboxes capped, but never revoked (revocation is for good).
+    pub hold: Vec<Uuid>,
 }
 
 /// 183 W-41: how [`ValidateExport`] starts its answer for a session that no longer exists (a
@@ -2892,6 +2895,12 @@ impl Message<CommitPeerConfig> for Agents {
             .map(|r| (r.alias.as_str(), r.endpoint.as_str(), r.binding))
             .collect();
         let revoke: Vec<&str> = m.revoke.iter().map(String::as_str).collect();
+        // 191: a held binding steps out of its alias first, so the record that keeps the
+        // alias (a rename, a merge in flight) never revokes it.
+        self.store
+            .hold_peer_bindings(&m.hold)
+            .await
+            .map_err(|e| e.to_string())?;
         let bindings = self
             .store
             .commit_peer_bindings(&bind, &revoke)
@@ -2918,7 +2927,13 @@ impl Message<CommitPeerConfig> for Agents {
                 }
             }
         }
-        self.drop_unrouted(&keep).await;
+        // 191: a held binding stays live, unrouted, its inboxes capped.
+        let mut keep_live = keep.clone();
+        keep_live.extend(m.hold.iter().copied());
+        self.drop_unrouted(&keep_live).await;
+        for id in &m.hold {
+            self.cap_inboxes_of(*id).await;
+        }
         for (route, binding) in m.routes.into_iter().zip(&bindings) {
             // Inbound-only peers register too: their token ends open inbound
             // streams when the binding falls out of a later reload.
