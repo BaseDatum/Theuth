@@ -444,6 +444,18 @@ impl Store {
         Ok(())
     }
 
+    /// Tests: `session` is owned by `owner`, as the session log applies another machine's
+    /// take (off the capture connection).
+    #[cfg(test)]
+    pub(crate) async fn owned_elsewhere(&self, session: SessionId, owner: &str) {
+        sqlx::query("UPDATE sessions SET owner = ? WHERE id = ?")
+            .bind(owner)
+            .bind(session.to_string())
+            .execute(&self.read)
+            .await
+            .unwrap();
+    }
+
     /// `contact_addrs` (local): the direct addresses last seen for `eid`.
     pub async fn set_contact_addrs(&self, eid: &str, addrs: &[String]) -> anyhow::Result<()> {
         sqlx::query(

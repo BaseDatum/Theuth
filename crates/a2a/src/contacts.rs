@@ -2372,30 +2372,38 @@ impl crate::Ctx {
     /// stored ones, so a LAN-only pair dials them after a restart. Nothing is written without
     /// a live connection.
     pub(crate) async fn remember_addrs(&self) {
-        /// 183 Z3-R2: at most one write a minute per endpoint (path churn must not turn
+        /// 183 Z3-R2: at most one write a minute per contact (path churn must not turn
         /// into disk churn).
         const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
         let Some(net) = self.net() else { return };
         let live = self.shared.read().clone();
         let now_at = std::time::Instant::now();
         // 191 (D3): every machine of a contact, each with its own addresses.
-        let changed: Vec<(String, Vec<String>)> = {
+        let changed: Vec<(String, Vec<(String, Vec<String>)>)> = {
             let s = self.state.lock();
             live.staged
                 .contacts
-                .values()
-                .filter(|f| !f.blocked)
-                .flat_map(|f| f.eids.iter())
-                .filter(|eid| {
+                .iter()
+                .filter(|(_, f)| !f.blocked)
+                .filter(|(alias, _)| {
                     s.addr_written
-                        .get(*eid)
+                        .get(*alias)
                         .is_none_or(|t| now_at.duration_since(*t) >= EVERY)
                 })
-                .filter_map(|eid| {
-                    let now = net.a2a_direct_addrs(eid);
-                    (!now.is_empty() && live.staged.addrs.get(eid) != Some(&now))
-                        .then(|| (eid.clone(), now.iter().map(ToString::to_string).collect()))
+                .map(|(alias, f)| {
+                    let eids = f
+                        .eids
+                        .iter()
+                        .filter_map(|eid| {
+                            let now = net.a2a_direct_addrs(eid);
+                            (!now.is_empty() && live.staged.addrs.get(eid) != Some(&now)).then(
+                                || (eid.clone(), now.iter().map(ToString::to_string).collect()),
+                            )
+                        })
+                        .collect();
+                    (alias.clone(), eids)
                 })
+                .filter(|(_, eids): &(String, Vec<_>)| !eids.is_empty())
                 .collect()
         };
         if changed.is_empty() {
@@ -2403,16 +2411,18 @@ impl crate::Ctx {
         }
         let Ok(agents) = self.agents() else { return };
         let mut result = Ok(());
-        for (eid, addrs) in changed {
-            self.state.lock().addr_written.insert(eid.clone(), now_at);
-            if let Err(e) = self
-                .ask(
-                    &agents,
-                    agent::communication::network::SetContactAddrs { eid, addrs },
-                )
-                .await
-            {
-                result = Err(e);
+        for (alias, eids) in changed {
+            self.state.lock().addr_written.insert(alias, now_at);
+            for (eid, addrs) in eids {
+                if let Err(e) = self
+                    .ask(
+                        &agents,
+                        agent::communication::network::SetContactAddrs { eid, addrs },
+                    )
+                    .await
+                {
+                    result = Err(e);
+                }
             }
         }
         let _ = self.reconcile_now().await;

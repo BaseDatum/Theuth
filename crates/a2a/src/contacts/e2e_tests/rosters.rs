@@ -23,6 +23,11 @@ macro_rules! until_true {
     }};
 }
 
+/// The record replica between two machines of one mesh, the heads rows included.
+async fn replicate(from: &Engine, to: &Engine) {
+    replicate_rows(from, to, true).await;
+}
+
 fn entry(id: &str) -> mesh::pairing::PeerEntry {
     mesh::pairing::PeerEntry {
         id: mesh::EngineId(id.to_owned()),

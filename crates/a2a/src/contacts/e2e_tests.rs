@@ -1836,8 +1836,13 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
 }
 
 /// 191: what the record replica does between two machines of one mesh: every contact row
-/// of `from`, applied on `to` column by column.
+/// of `from`, applied on `to` column by column (the heads rows too with [`replicate_rows`]).
 async fn replicate(from: &Engine, to: &Engine) {
+    replicate_rows(from, to, false).await;
+}
+
+/// [`replicate`], `heads` with the `contact_roster_heads` rows (P2).
+async fn replicate_rows(from: &Engine, to: &Engine, heads: bool) {
     use agent::store::contacts::{Cell, RecordTable, RecordWrite};
     let r = from.ctx.records().await.unwrap();
     let t = |v: &Option<String>| v.clone().map_or(Cell::Null, Cell::Text);
@@ -1920,7 +1925,7 @@ async fn replicate(from: &Engine, to: &Engine) {
     for h in r
         .heads
         .iter()
-        .filter(|h| h.machine.as_deref() != Some(dest.as_str()))
+        .filter(|h| heads && h.machine.as_deref() != Some(dest.as_str()))
     {
         w.push(RecordWrite::new(
             RecordTable::Heads,

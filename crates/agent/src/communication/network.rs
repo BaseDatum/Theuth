@@ -6997,8 +6997,7 @@ mod tests {
             .open_contact_thread(binding.id, "ctx-1", session, "proj", true)
             .await
             .unwrap();
-        a.store.set_owner(session, "other-engine", 9).await.unwrap();
-        let before = a.store.peer_records(session, None, 50).await.unwrap().len();
+        a.store.owned_elsewhere(session, "other-engine").await;
         let r = a
             .full_return(A2aReturn {
                 binding: binding.id,
@@ -7010,9 +7009,10 @@ mod tests {
             r.err().map(|e| e.code),
             Some(crate::communication::mesh::NOT_OWNER)
         );
+        let peer = format!("peer:{}", binding.id);
         assert_eq!(
-            a.store.peer_records(session, None, 50).await.unwrap().len(),
-            before,
+            a.store.exchange_by_request_id(&peer, "r-1").await.unwrap(),
+            None,
             "nothing accepted here"
         );
     }
