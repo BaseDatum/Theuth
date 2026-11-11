@@ -49,6 +49,22 @@ Shared facts:
 | Closed (red button / ⌘W, lib.rs:476) | `CloseRequested` → `prevent_close()` + `hide()` for main and island (lib.rs:321-326); design 166 keeps the app in the Dock | alive, not reloaded | same |
 | ⌘H (lib.rs:434) | NSApp hide; no handler | alive, not visible [INFERENCE] | same; App Nap may add to it [INFERENCE] |
 
-Minimal fix (not applied this round; design 190 owns the desktop UI/config files): add `"backgroundThrottling": "disabled"` to `app.windows[0]` (`main`) in **crates/desktop/tauri.macos.conf.json**, after `"dragDropEnabled": false` at :17. Tauri merges the platform config with RFC 7396 merge-patch, which replaces arrays whole (tauri-utils-2.10.2 src/config/parse.rs:185), and the macOS file redeclares the whole `windows` array. A key added only to tauri.conf.json would therefore be lost on macOS. Adding it at tauri.conf.json:25 as well keeps the two arrays in step and does nothing on Windows and Linux. The locked crates already support the option (tauri-utils 2.10.2 config.rs:1858, :2254; tauri-runtime-wry 2.12.3 lib.rs:4761; wry 0.57.1), so no version bump is needed. It needs macOS 14+, which `minimumSystemVersion` "15.0" (tauri.macos.conf.json:41) already guarantees. `"throttle"` would use less battery but does not guarantee the 3 s `started`.
+The fix, applied in a follow-up commit, is in the next section.
 
-Check after the fix: build the app; for each state, leave it there more than 5 minutes, then send a Signal/Telegram reply with a mermaid fence. Expect a PNG and no `NoRenderer` in the engine log.
+## Hidden-window renderer
+
+**Verdict:** before this change the main webview could be suspended whenever it was hidden, minimised, closed or ⌘H'd. A suspended webview answers nothing, so fence requests got `no_renderer` plus a 60 s back-off. Details are in the investigation above.
+
+**Change:** `"backgroundThrottling": "disabled"` on the `main` window entry, right after `"dragDropEnabled": false`:
+- crates/desktop/tauri.macos.conf.json:18. This is the line that takes effect on macOS, because this file redeclares the whole `windows` array and Tauri's merge-patch replaces arrays wholesale (tauri-utils-2.10.2 src/config/parse.rs:185).
+- crates/desktop/tauri.conf.json:26. Kept in step with the macOS file; does nothing on Windows and Linux.
+
+wry maps the setting to WKWebView `inactiveSchedulingPolicy = .none` on macOS 14+ (wry-0.57.1 src/wkwebview/mod.rs:515-538). The bundle's `minimumSystemVersion` is 15.0.
+
+**Schema check:** the repo ships no config schema. Both files point `$schema` at `https://schema.tauri.app/config/2`, which could not be fetched for validation here (no PyPI access for a validator). So the check was made against the locked tauri-utils 2.10.2 source. `WindowConfig` is `rename_all = "camelCase", deny_unknown_fields` (config.rs:1951) and has `background_throttling: Option<BackgroundThrottlingPolicy>` (:2254). The enum is camelCase with `disabled | suspend | throttle` (:1855-1866). A script checked that every key of both `main` entries is a `WindowConfig` field and that the value is a valid variant. No desktop build was run: mbx can't run the desktop crate's tauri build script.
+
+**Battery trade-off:** the hidden main webview keeps running instead of being suspended. Its JS, the WebSocket and the 164 renderer stay live while the window is out of sight, which costs idle CPU and energy that WebKit would otherwise reclaim. DOM timers in a hidden page are still aligned and throttled; the renderer's short timers tolerate that. `"throttle"` would save more battery but does not guarantee the `started` answer within 3 s.
+
+**Live checks still owed** (on a desktop build with this config). For each state (main window hidden, minimised, closed, ⌘H'd), leave it there for over 5 minutes, then:
+- send a mermaid fence through the native companion: it should show a picture, and `fence_snapshot` should return `done`;
+- send a mermaid fence in a Telegram reply: it should arrive as a PNG, not the D7 text, with no `NoRenderer` in the engine log.
