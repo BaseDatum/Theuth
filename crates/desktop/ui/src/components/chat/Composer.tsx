@@ -64,11 +64,9 @@ import { MIN_NOTE_MS } from '@/lib/hold'
 import { stripRows } from '@/lib/session-tree'
 import { type Act as StopAct, IDLE as STOP_IDLE, type Stop as StopState, progress as stopProgress, step as stepStop } from '@/lib/stop-gesture'
 import type { CancelScope } from '@/rpc/bindings/CancelScope'
-import type { Risk } from '@/rpc/bindings/Risk'
-import { CAP } from '@/lib/contacts'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
-import { contactTurn, useSessionField, useSessions } from '@/store/sessions'
+import { useSessionField, useSessions } from '@/store/sessions'
 import { createNote } from '@/components/notes/create'
 import { useNotes } from '@/components/notes/useNotes'
 import { AttachPicker } from './AttachPicker'
@@ -342,8 +340,6 @@ export function Composer({
   // must queue (steer, shown as a chip), and only the explicit stop/interject may cancel it.
   const running = turnRunning || activity === 'compacting'
   const queued = useSessionField(session ?? '', 'queued')
-  const contact = useSessions((s) => contactTurn(s.sessions[session ?? '']))
-  const contactName = contact?.contact || 'a contact'
   const keys = useShortcuts((s) => s.chords)
   const model = useSessionField(session ?? '', 'model')
   const parent = useSessionField(session ?? '', 'parent')
@@ -863,7 +859,7 @@ export function Composer({
         reset()
         setSkill(null)
         mode(session)
-        if (running && interject) await api.cancel(session, null, 'input')
+        if (running && interject) await api.cancel(session, null)
         await api.use_skill(session, skill, expand(line, pastes).text)
         return
       }
@@ -883,9 +879,8 @@ export function Composer({
         // 171F4 N7: the chip and then the `you` row show the attached files at once (the engine's echo has none).
         applyEvents([{ type: 'InputQueued', session, id: clientId, text: body, defer: false, files }])
         mode(session)
-        // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue). 186 D8: `input`, so
-        // the engine refuses it under a contact's turn this composer has not seen yet.
-        if (interject) await api.cancel(session, null, 'input')
+        // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
+        if (interject) await api.cancel(session, null)
         await deadline(api.steer(session, body, clientId, files))
       } else if (session) {
         markSent(session, body, files)
@@ -995,7 +990,7 @@ export function Composer({
       // `withdraw` answers the text only: the files come from our queue (empty after a reload).
       const inputs: { body: string; files: string[] }[] = []
       for (const q of queued) inputs.push({ body: await api.withdraw(session, q.id), files: q.files ?? [] })
-      await api.cancel(session, null, 'input')
+      await api.cancel(session, null)
       const { applyEvents } = useSessions.getState()
       for (const { body, files } of inputs) {
         const id = crypto.randomUUID()
@@ -1014,7 +1009,7 @@ export function Composer({
   const filled = Boolean(text.trim() || skill || held)
   const at = phase(Boolean(session && running), queued?.length ?? 0)
   const gesture = (g: 'press' | 'interrupt') => {
-    const a = g === 'press' ? press(at, filled) : interrupt(at, filled, !!contact)
+    const a = g === 'press' ? press(at, filled) : interrupt(at, filled)
     if (a === 'flush') void flush()
     else if (a) void submit(undefined, a === 'interject')
   }
@@ -1286,17 +1281,6 @@ export function Composer({
         </div>
       )}
       {session && <QueuedChips session={session} onEdit={editQueued} />}
-      {contact && (
-        // 183 §12.10: a contact's capped turn runs in this exported chat; 186 D8: the owner's messages queue behind it.
-        <div className="flex flex-wrap items-center justify-end gap-2 pb-2">
-          <span role="status" className="rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary" title={`${CAP[contact.cap as Risk] ?? contact.cap.replaceAll('_', ' ')} · ${contactName}'s turn`}>
-            Runs after {contactName}&apos;s turn
-          </span>
-          <Button variant="ghost" size="sm" className="text-fg-secondary pointer-coarse:min-h-11" onClick={() => stop('root')}>
-            Stop {contactName}&apos;s turn
-          </Button>
-        </div>
-      )}
       {skill && (
         <div className="flex justify-end pb-2">
           <span className="flex items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">
@@ -1555,15 +1539,11 @@ export function Composer({
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      {contact
-                        ? `Runs after ${contactName}'s turn`
-                        : touch()
-                          ? 'Steer · hold to interrupt'
-                          : `Steer (${chordLabel(keys.send)}) · hold or ${chordLabel(keys.interject)} to interrupt`}
+                      {touch() ? 'Steer · hold to interrupt' : `Steer (${chordLabel(keys.send)}) · hold or ${chordLabel(keys.interject)} to interrupt`}
                     </TooltipContent>
                   </Tooltip>
                 )}
-                <StopButton count={descendants} ring={ring} onStop={stop} label={contact ? `Stop ${contactName}'s turn` : undefined} />
+                <StopButton count={descendants} ring={ring} onStop={stop} />
               </>
             ) : (
               <Button

@@ -52,8 +52,6 @@ export const queryKeys = {
   models: ['models'] as const,
   mcp: (s: string | null) => ['mcp', s] as const,
   skills: ['skills'] as const,
-  /** 183 Z4: `a2a_grantable_tools()`: the Add tool menu of an export's contact allowlist. */
-  grantable: ['a2a', 'grantable'] as const,
   skill: (name: string) => ['skill', name] as const,
   logins: ['logins'] as const,
   providers: ['providers'] as const,

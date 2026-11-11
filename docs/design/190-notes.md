@@ -1,0 +1,13 @@
+# 190 UI notes (feat/190-ui)
+
+Decisions the UI brief left open, each the simpler option that keeps 190-drop-cautious D1–D10.
+
+1. **"Messaging… sheet" = the chat's share dialog.** The Messaging… sheet (`MessagingSheet.tsx`) carries no share or mode UI since 188; the chat's Full/Cautious picker lived in `ShareDialog` (chat ⋯ › Share with contact…). That dialog is what changed: one **Share** per contact, **Shared · Stop** once shared.
+2. **Sharing is one action.** In Network › Contacts › Access, picking an agent or chat in the Share… list grants it at once (the old second step existed only to choose a mode). A contact without `full_capable` gets Share… off with `update <machine> to share` (D9: the engine refuses that grant anyway). The share dialog does the same per row.
+3. **`modes` on a grant.** `useGrant` sends `modes: { <new export>: 'full' }` only when the export is new to that contact; ungrant, rename, block and first-contact answers send `modes: null` (D2).
+4. **Interject and flush send `cancel(session, null)` with no reason.** `'input'` existed only for the D8 guard; a 186 engine in the mesh still refuses `'input'` under a contact's turn, so a reason-less cancel is the only way the interject chord behaves the same on both engines (D5). Stop keeps `'stop'`. `api.cancel` keeps its `reason` parameter (the RPC signature stays).
+5. **Composer state.** `contactTurn()` and the `SessionSlice.contactNote` field it alone read are deleted; `interrupt()` loses its `contact` parameter; `StopButton` loses its `label` prop. `turnBy` (the "asked during" tag) is unchanged.
+6. **Queued rows.** `useFirstWaiting()` always drops `queued === true` rows, so no surface (strip, Contacts, Messaging, Attention, HUD) ever shows one; the strip lost `QueuedRow`.
+7. **Peer cards.** A contact message (`contact_mode: 'full'`) keeps the mesh-peer card; its `Contact · full` tag is gone (the sender line already says "Contact · on <machine> · via <export>"). An old `contact_mode: 'cautious'` row, and an old `<contact_message>` / `<contact_inbox/>` row, keep today's rendering: the words in the plain outside card with the wrapper's facts in Details, never a raw tag. Old wrapper cards keep their cap words (history).
+8. **Communication › A2A exports** lost the mode badge; a contact's export reads one line ("its agent and this chat's agent talk freely, like mesh peers").
+9. **Bindings** (gitignored): generated from this branch, then hand-edited to the 190 contract (`GrantableTool.ts` gone; `Contact.modes`, `FirstWaiting.mode`, `A2aExportStatus.mode`, `Export.tools` gone; `a2a_grantable_tools` out of `methods.json`; `ContactPatch.modes` kept). The orchestrator regenerates them from the engine branch.

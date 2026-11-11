@@ -210,7 +210,7 @@ export function Header({
   const parked = useOwnerOffline((s) => !!session && s.by[session] !== undefined)
   const followed = useSessionField(session ?? '', 'following') === true
   const chip = row && !row.here ? ownerState(row.owner, mesh.data?.peers, parked, followed) : undefined
-  // 183 §12.10: a chat exported to contacts says who can message it, and under which cap.
+  // 183 §12.10: a chat exported to contacts says who can message it.
   const shared = sharedLabel(useSharing(session))
   const [sheet, setSheet] = useState(false)
   const [cost, setCost] = useState(false)
