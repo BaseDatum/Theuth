@@ -82,35 +82,51 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
   - Take the **lowest** carried version `w > v` that has a copy with the record's `chain`, signed by a member of `R`, with a valid `sig`.
   - At `w`, take the highest content hash among such copies. Carried copies and proof paths include every content signed at a version, so concurrent honest signings on our side resolve the same way on every machine of C.
   - Accept it: `R` and `v` become that roster and `w`. The next step must then be signed by a member of the new `R`.
-  - **Gaps are allowed.** C may jump straight to the first version it can verify, so a contact that missed any number of versions catches up, provided one member it trusts still signs. Versions never go down, and anything at or below `v` is ignored. That is the whole replay protection: no timestamps, no skew rule.
+  - **Gaps are allowed.** C may jump straight to the first version it can verify, so a contact that missed any number of versions catches up, provided one member it trusts still signs. Versions never go down, and anything below `v` is ignored. That is the whole replay protection: no timestamps, no skew rule.
+  - **Equal version, higher hash.** A machine replaces its head at the **same** version with content of a higher hash, if that content is signed by a member of the roster that came **before** the head (its history holds that roster). An honest same-version fork on our side therefore converges on every C machine.
+  - **Our side converges too.** A machine of ours signs against the latest roster: the highest version, then the highest hash. So once a same-version fork is visible, the signer that lost (lower hash) co-signs the winner's content when its membership matches it. If its own change is still missing, it signs v + 1 on top of the winner.
   - **The real limit** is that every member C trusts has been removed. The remedy is to remove the contact and pair fresh (below).
 - **C-side roster state is per machine and never replicated.**
   - The contact **record** still replicates in C's mesh (alias, grants, pins; P1). Its **roster trust state** does not.
   - Each C machine keeps its own state in a local table, `contact_roster_local`, which is not attached: the current accepted version and roster, plus its accepted history as `(version, hash, roster)` entries, the last 64 kept.
   - That state is learned only from **our** signed copies, delivered to that machine by a card fetch, a push or a proof path. A C machine never adopts another C machine's roster.
 - **Bootstrap from the pin: the proof path.** This covers a C machine with no state: a new machine, a wiped table, or the P2 upgrade.
-  - It starts from the record's pin, which replicates with the record: the endpoint of ours that the ceremony pinned.
-  - It asks any of our machines it can reach for a **proof path** on the contact-only route `GET ROSTER_PATH?chain=<id>&pin=<eid>`. The route is served like the card, under the contact's bounds (A/contacts/reach.rs:211-246).
-  - The path runs from the first version the pin signed (a copy listing the pin) up to the latest. Each hop is signed by a member of the previous hop. We hop greedily, to the highest version that hop can verify, and we include every content signed at each hop version.
-  - C verifies the path itself, from the pin, trusting nothing else. The same request also serves a machine whose state is older than the 8 carried versions and that cannot verify any of them.
-  - We keep every version of each live chain, so the path still exists after the pinned machine is retired.
+  - **The trust root is always the record's pin**, the endpoint of ours that the ceremony pinned. It replicates with the record.
+  - **Dial hints are untrusted.** Each `contact_roster_heads` row also carries the member endpoint ids of that machine's head. A fresh machine uses them, together with the pin, only to choose whom to dial. They never count toward verification.
+  - It asks our machines for a **proof path** on the contact-only route `GET ROSTER_PATH?chain=<id>&pin=<eid>&from=<version>`.
+    - It asks **at least two** of our machines when two are reachable, and takes the highest path it can verify.
+    - The route runs under the contact's bounds (A/contacts/reach.rs:211-246).
+    - It serves only the chains of the **caller's own** records, and only if `pin` is one of that record's pins: a machine of ours that ran a ceremony into it.
+    - One answer holds at most 64 hops and 256 KiB; `from` continues a longer path.
+  - **The path.** It runs from the first version the pin signed (a copy listing the pin) up to the latest. Each hop is signed by a member of the previous hop. We hop greedily, to the highest version that hop can verify, and include every content signed at each hop version.
+  - **Verification.** C verifies the path itself, from the pin. The same request serves a machine that cannot verify any of the 8 carried versions, and a merely stale machine that is still behind after 3 refreshes.
+  - **What our side keeps.** For each pin of a live record, the minimal **hop chain**: versions chosen greedily from the pin's first signed version, each signed by a member of the previous one, with its qualifying copies. Plus the last 8 versions. Everything else is pruned. So a path survives the pinned machine's retirement.
+  - **A fresh machine that cannot bootstrap denies the record.** This applies to a record that any C machine has already based, where no proof path can be verified (the pin is retired and no other machine of ours is reachable, or every path fails). The machine denies the record and shows `Contact.problem` "cannot verify this contact's machines". It **never** falls back to admitting the pin alone. This changes the earlier text: "admits exactly its pins" now applies only to a record that no C machine has based yet (no `contact_roster_heads` row).
 - **Divergence detection, not adoption.**
-  - Each C machine writes one replicated row per record, which no other machine writes: `contact_roster_heads(record|machine) = {version, hash, history (the last 64 (version, hash) pairs), conflict}`.
+  - Each C machine writes one replicated row per record, which no other machine writes: `contact_roster_heads(record|machine) = {version, hash, history (the last 64 (version, hash) pairs), members (untrusted dial hints), conflict}`.
   - **Comparison.** A C machine compares its own state with every peer row of the same record:
     - **The same head:** they agree.
     - **Different heads, and the lower head appears in the higher one's history:** the lower machine is merely stale. It catches up by jump and replay. There is no conflict.
-    - **Otherwise** (different hashes at one version, or a lower head missing from the higher one's history): the machine with the lower head (both machines, when the versions are equal) fetches a proof path from every one of our machines it can reach, up to the other head's version, and retries at the next refresh (60 s at most).
-  - **Conflict.** If the machines still disagree after that retry, the record is in conflict. The machine sets `conflict = 1` in its row. Every C machine that sees a set flag, or that finds the conflict itself, **denies the record** and shows `Contact.problem`: "this contact's machines disagree about yours; remove and pair again".
-  - **A poisoned machine** is a C machine that accepted a rogue roster while it was stale. It does not stay silently poisoned and it does not convert the others. It is detected, and every machine of C denies that contact. Only removing the contact and pairing fresh clears the conflict.
-  - **Fail closed on comparison.** A machine that cannot compare yet (no peer rows, or none of our machines reachable) uses its own verified state and flags nothing.
+    - **Otherwise** (different hashes at one version, or a lower head missing from the higher one's history): the machine with the lower head (both machines, when the versions are equal) fetches a proof path from at least two of our machines up to the other head's version, then applies the equal-version rule.
+  - **Conflict.** A machine sets `conflict = 1` **only when a path it verified reaches the other head's version, and the heads still differ there.**
+    - A path that stops short, for example one served by a machine of ours that is lagging, is never a conflict.
+    - Every machine recomputes `conflict` at every refresh and clears it once the heads agree.
+    - While any row has the flag set, every C machine **denies the record** and shows `Contact.problem`: "this contact's machines disagree about yours; remove and pair again".
+  - **A poisoned machine** is a C machine that accepted a rogue roster while it was stale.
+    - It does not convert the others.
+    - Its head becomes a conflict once our chain reaches the rogue head's version with different content, and every machine of C then denies the contact.
+    - Until our chain reaches that version (a rogue that inflated its counter), the poisoned machine alone follows the rogue roster: the stated limit.
+    - Removing the contact and pairing fresh clears it.
+  - **A rogue can force a deny.** A modified member can keep C in conflict on purpose. That is denial of service, not access (D7).
+  - **No peer to compare.** A machine with no peer rows yet, or with none of our machines reachable, uses its own verified state and flags nothing.
 - **Where a chain starts (the base).**
   - **At a ceremony.** It is the human step on both sides, as today. The pairing machine must be `contacts_ready` (D2): the Add contact window refuses with "waiting for your other machines" until it is, so version 1 never comes from a stale view.
     - On a new record, the pairing machine signs version 1, and every member co-signs.
     - A ceremony with an endpoint that already belongs to a live record only adds a pin to it (`pin()` keeps the alias of a known endpoint, A/contacts.rs:1052-1056). The chain is unchanged: **Pair again is not a reset.**
-  - **The contact's base.** The base is the first copy **signed by one of the record's pinned endpoints that lists that endpoint**. The pin was a human ceremony. A machine with no state reaches the base through the proof path, so it does not need the pinned machine to still be running.
+  - **The contact's base.** The base is the first copy **signed by one of the record's pinned endpoints that lists that endpoint**. The pin was a human ceremony. A machine with no state reaches the base through the proof path, so it does not need the pinned machine to still be running. It does need one of our machines to be reachable.
     - If copies of several **live** chains qualify (our side has duplicate live records), C takes the lowest `chain`, and its machines converge on it. A removed record's chain is never carried, so it is never a candidate.
     - Records from before any roster (P1 records and imports, with pins only in `contact_endpoints`) use the same rule. Because every member co-signs, the pinned machine's copy arrives as soon as that machine runs.
-    - Until a base exists, the record admits exactly its pins, as today (D7).
+    - Until any C machine has a base, the record admits exactly its pins, as today (D7). After that, a machine without a base denies the record (above).
     - Residual: if the pinned machine was lost before it ever signed, remove the contact and pair fresh.
 - **A removed record is inert.** Once a record has `removed_ms`, on either side:
   - it never merges;
@@ -137,8 +153,8 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
 | An existing (pin-only) contact | Our machines sign version 1 and co-sign it. C adopts the copy its pin signed. |
 | A machine that is dead but not removed | It stays in the roster. The user removes it in Settings › Network › Machines (Unpair, `mesh_remove`); the next version drops it. |
 | A member running **modified (malicious) code**, or an **unmodified machine operated by a thief** (who can `mesh_remove` the honest machines from its UI) | **This is the limit.** Such a member can sign a roster that excludes the honest machines, and C follows it. **Remedy, manual, and needing both sides:** (1) remove the machine from our mesh; (2) **both sides remove the contact**, which tombstones every record of the merged group and makes the group inert (above); (3) pair fresh as a **new** contact, with a new record and a new chain at version 1. Until C's own user removes the contact, C keeps admitting the rogue machine: our removal cannot reach C's records. D8 prompts our user to ask the contact to do so. A removed record is never revived, and its deny entries lift as D2 says. The user must review the grants and exports the rogue machine wrote. Sky's answer 1 is automatic for lost, retired or honest-code machines. |
-| C's machines hold different rosters (one took a rogue roster while it was stale) | It is not adopted. It is detected through `contact_roster_heads`: after a proof-path fetch and one retry, every machine of C denies the record and shows "this contact's machines disagree about yours; remove and pair again". A merely stale machine, whose head is in the other machine's history, is not a conflict. |
-| A C machine with no state (new, wiped, or upgraded) | It bootstraps from the record's pin through the proof path from any of our machines, including after the pinned machine was retired. |
+| C's machines hold different rosters (one took a rogue roster while it was stale) | The rogue roster is not adopted, and the difference is detected through `contact_roster_heads`. Once a path verified from our side reaches the other head's version and the heads still differ there, every machine of C denies the record and shows "this contact's machines disagree about yours; remove and pair again". A merely stale machine is not a conflict, and neither is an honest same-version fork: it converges to the higher hash. |
+| A C machine with no state (new, wiped, or upgraded) | It bootstraps from the record's pin, through a proof path from at least two of our machines, dialed by untrusted hints. If it cannot verify a path, it denies the record; it never admits the pin alone. |
 | Every member C trusts was removed while C was offline | C cannot verify any newer version. Remedy: remove the contact and pair fresh. |
 - **The window.** Until a contact accepts the new version, a removed machine can still pass as us to that contact.
   - While the contact is online, that lasts seconds: one push.
@@ -163,8 +179,8 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
 | `contacts` | `id`: UUIDv7 minted at pairing | `alias`, `name`, `machine`, `binding` (the `peer:<uuid>` id), `paired_ms`, `paired_on` (the engine id of our machine that ran the ceremony), `blocked` (0/1), `removed_ms` (tombstone, never cleared), `merged_into` (record id, or NULL) | pairing, every contact RPC, import, merge |
 | `contact_endpoints` | `<contact>\|<eid>` | `contact`, `eid`, `paired_ms`, `barred_ms` (unused since D1's roster) | the ceremony only: the pinned endpoints, which D1 uses until a roster exists |
 | `contact_votes` | — | — | superseded by D1's roster. P1 may leave it out. If 0059 already created it, P2's 0060 drops it. |
-| `contact_rosters` (P2, 0060) | `<contact>\|<chain>\|<version>\|<signer>` | `contact`, `chain`, `version`, `signer`, `hash` (of the content), `roster` (the signed copy, JSON) | **Ours only**: any of our machines, when it signs or co-signs. Every version of a live chain is kept (for proof paths), with at most 16 copies per version, oldest members first. Nothing is written for a removed record. Rows are immutable. |
-| `contact_roster_heads` (P2, 0060) | `<record>\|<machine eid>` | `version`, `hash`, `history` (the last 64 `(version, hash)` pairs, JSON), `conflict` (0/1) | the C-side machine named in the key, and only it. It publishes its own head, so that divergence can be **detected**. It is never adopted (D1). |
+| `contact_rosters` (P2, 0060) | `<contact>\|<chain>\|<version>\|<signer>` | `contact`, `chain`, `version`, `signer`, `hash` (of the content), `roster` (the signed copy, JSON) | **Ours only.** Written by any of our machines when it signs or co-signs. Kept per chain: the hop chain from each pin's first signed version, plus the last 8 versions, with at most 16 copies per version, oldest members first. Everything else is pruned. Nothing is written for a removed record. Rows are immutable. |
+| `contact_roster_heads` (P2, 0060) | `<record>\|<machine eid>` | `version`, `hash`, `history` (the last 64 `(version, hash)` pairs, JSON), `members` (our endpoint ids at that head: **untrusted dial hints**), `conflict` (0/1) | the C-side machine named in the key, and only it. It publishes its own head so that divergence can be **detected**, and so that a fresh machine knows whom to dial. It is never adopted, and the hints never count toward verification (D1). |
 | `contact_grants` | `<contact>\|<export id>` | `contact`, `export`, `granted` (0/1), `first_contact` (`ask`/`allow`/`block`; NULL = ask) | contact_update, contact_first_answer |
 | `a2a_exports` | `id`: UUIDv7 minted when the export is made | `name` (the card skill and the `/agents/<name>` path; made unique by the reconcile), `session`, `agent`, `title`, `description`, `home` (engine id), `removed_ms` | a2a_export_put and a2a_export_remove, import |
 | `contact_threads` (rebuilt) | `<binding>\|<context_id>` | the 0056 columns: `binding`, `context_id`, `session`, `export`, `outbound`, `last_ms` | as today (S:1591-1676) |
@@ -193,9 +209,9 @@ Local and not attached (P2, 0060): `contact_roster_local(record PK, version, has
     - An id already revoked here **stays revoked**, and its record is quarantined on this machine. A replica never un-revokes.
   - Unblock and re-pair write a fresh `binding`.
 - **Reconcile: one pass.**
-  - **Trigger.** On the existing 2 s a2a tick (A/lib.rs:712), hash the full content of every row of the staged tables: `contacts`, `contact_endpoints`, `contact_grants` and `a2a_exports`; `contact_rosters` and `contact_roster_heads` from P2; `contact_holds` from P3. `contact_threads` is read per request and never staged. The tables are bounded:
+  - **Trigger.** On the existing 2 s a2a tick (A/lib.rs:712), hash the full content of every row of the mutable staged tables: `contacts`, `contact_endpoints`, `contact_grants`, `a2a_exports`, `contact_roster_heads` (P2) and `contact_holds` (P3). `contact_rosters` rows are immutable, so `(count, max hlc)` is enough for them. `contact_threads` is read per request and never staged. The tables are bounded:
     - one row per contact record, per pin, per grant, per export;
-    - `contact_rosters`: every version of each live chain × at most 16 copies, on our side only;
+    - `contact_rosters`: per live chain, the hop chain plus the last 8 versions, × at most 16 copies; our side only;
     - `contact_roster_heads`: one row per C-side machine per record;
     - in `contact_holds`, one row per waiting hold.
     - A row's `hlc` is not enough. It is the max over its columns (R/apply.rs:582-604). A remote column write wins per column (R/apply.rs:558-562), so the row can change without its `hlc` changing.
@@ -399,14 +415,17 @@ The new paths:
 | A removed member | Dropped by the next version any remaining member signs. C accepts the lowest newer version of the record's `chain` that carries a valid copy signed by a member of its current roster (D1). |
 | A replayed or forged roster | Refused if it has an equal or older version, another record's `chain`, a signer outside the current roster, a bad signature (domain-separated: `theuth/a2a/roster/v1`), or more than 256 members (D1). |
 | A mesh removal made while one of our machines was down | That machine signs nothing before `contacts_ready`. If every other machine was off and it signed from a stale view, the next version a synced member signs supersedes it once they meet, within the accepted latch cost (D2). |
-| A pin-only legacy record (before any base) | It admits exactly its pins, as today. It adopts a base only from a copy signed by one of its pins that lists that pin. If the pin was lost before it ever signed, the contact must be removed and paired fresh (D1). |
+| A pin-only legacy record that no C machine has based yet | It admits exactly its pins, as today. It adopts a base only from a copy signed by one of its pins that lists that pin. If the pin was lost before it ever signed, the contact must be removed and paired fresh (D1). |
 | A contact offline across any number of changes | It jumps to the lowest carried version signed by a member it trusts and replays forward from there. If every member it trusts was removed, the user removes the contact and pairs fresh (D1). |
 | A ceremony run from a stale machine | Refused until that machine is `contacts_ready` (D1). |
 | A member running modified code, or an unmodified machine operated by a thief | This is the stated limit (D1): such a machine can sign a roster that excludes the honest machines. **Remedy, which needs both sides:** remove it from our mesh, remove the contact on both sides, then pair fresh as a new contact. Until C's own user removes the contact, C keeps admitting the rogue machine. The user reviews the grants and exports the rogue machine wrote. |
 | A deny entry left by a removed record | It lifts only through a newer ceremony (`paired_ms > removed_ms`) that pins an endpoint the removed record pinned or listed, and only for the endpoints the new record's own roster lists. A late duplicate pinned to the rogue machine, an import, or another contact's roster listing that machine never lifts it (D2). |
-| A C-side machine with no roster state (new, wiped, or upgraded to P2) | It bootstraps from the record's pin through a proof path, verified by itself. It never adopts another C machine's state (D1). |
-| C-side machines that hold different rosters | Detected through `contact_roster_heads`. After a proof-path fetch and one retry, every C machine denies the record and shows "this contact's machines disagree about yours; remove and pair again". A merely stale machine is not a conflict (D1). |
-| A poisoned C-side machine (it accepted a rogue roster while stale) | It does not convert the others, and it does not stay silently poisoned. The divergence is detected, and every machine of C denies the contact until it is removed and paired fresh (D1). |
+| A C-side machine with no roster state (new, wiped, or upgraded to P2) | It bootstraps from the record's pin through a proof path, verified by itself. It asks at least two of our machines when two are reachable, and dials them using the untrusted hints in `contact_roster_heads`. It never adopts another C machine's state (D1). |
+| A fresh C-side machine that cannot bootstrap | On a record that any C machine has already based, it **denies** and shows "cannot verify this contact's machines". It never falls back to admitting the retired pin alone (D1). This changes the earlier text. |
+| C-side machines that hold different rosters | Detected through `contact_roster_heads`. A conflict is set only when a verified path reaches the other head's version and the heads still differ there; a path that stops short (a lagging machine of ours) never sets one. `conflict` is recomputed at every refresh and cleared once the heads agree (D1). |
+| An honest same-version fork on our side | C machines move to the higher hash at the same version (signed by a member of the roster before the head), and our losing signer co-signs the winner. Everything converges, with no deny (D1). |
+| A rogue that forces a conflict on purpose | Denial of service, not access. The remedy is to remove the contact and pair fresh (D1). |
+| A poisoned C-side machine (it accepted a rogue roster while stale) | It does not convert the others. Its head is flagged as a conflict once our chain reaches the rogue head's version with different content, and every machine of C then denies the contact until it is removed and paired fresh. Until then, it alone follows the rogue roster: the stated limit (D1). |
 | A removed record | Inert: it never merges, never leads a group, its chain is never carried, signed, pushed or chosen as a base, and its rows are ignored. A fresh pairing with the same machines makes a new record with a fresh binding and no grants (D1). |
 | Pushes | Sent only to live contacts, backing off exponentially from 2 s to a 10-minute cap per contact. The notice body is capped at 192 KiB; larger bodies get 413 (D1). |
 | An endpoint listed by two unmerged records | Admitted only for the record that pinned it or holds a copy it signed. It is never denied there because of the overlap, and a planted listing neither merges records nor evicts the machine (D1). |
@@ -449,7 +468,7 @@ The new paths:
 | RPC `a2a_forward` (mesh-internal; `Forwarded` only) | `{ caller: eid, method: "GET"\|"POST", path, body } → { status, body }`; the owner re-checks the caller at its own gate |
 | RPCs `contact_list`, `contact_update`, `contact_remove`, `a2a_exports`, `a2a_export_put`, `a2a_export_remove`, `contact_first_answer`, `contact_first_waiting` (`crates/rpc/src/api.rs:2648-2696`; impls :9547-9625) | same names; they read and write the tables, so they answer for the whole mesh. A write to a merged contact writes every record of the group. Export RPCs take the export id. |
 | Card | + extension `https://theuth.io/a2a/ext/members/v1` `{chains: [{chain, versions: [{version, members, sigs: [{signer, sig}]}]}]}`: for each record that lists the caller, the last 8 versions, each with up to 16 signatures (members of the previous version first, oldest first, then pinned signers). Omitted while no chain exists. The same payload is the body of a `NOTICE_PATH` push, which is now read up to 192 KiB (today the body is ignored and the route answers 204, `A/contacts/reach.rs:241-243`). |
-| Contact-only route `GET ROSTER_PATH?chain=<id>&pin=<eid>` | The proof path: the signed copies from the pin's first signed version to the latest, greedy hops, every content at each hop version. It runs under the contact's rate and concurrency bounds (D1). |
+| Contact-only route `GET ROSTER_PATH?chain=<id>&pin=<eid>&from=<version>` | The proof path: the signed copies from the pin's first signed version to the latest, in greedy hops, with every content at each hop version. At most 64 hops and 256 KiB per answer; `from` continues. It serves only the caller's own records, and `pin` must be one of that record's pins. It runs under the contact's rate and concurrency bounds (D1). |
 | A2A task id | `<16 hex engine prefix>-<uuidv7>` |
 | Migration | **`0059_mesh_contacts.sql`** (P1): `contacts`, `contact_endpoints`, `contact_grants`, `a2a_exports`, `contact_addrs`, `sessions.contact_inbox`, and `contact_threads` rebuilt (new table, copy with the new `id`, drop, rename; index kept). **`0060_contact_rosters.sql`** (P2): `contact_rosters`, `contact_roster_heads`, and `contact_roster_local` (local); it drops `contact_votes` if 0059 created it. **`0061`** (P3): `contact_holds`. 0058 is skipped: another branch holds it for `image_refusals`. The highest today is `0057_inbox_ceiling.sql`. |
 | Attach | `replicate_records` (`crates/agent/src/store.rs:913`) + `contacts`, `contact_endpoints`, `contact_grants`, `a2a_exports`, `contact_threads`; + `contact_rosters` and `contact_roster_heads` in P2; + `contact_holds` in P3. `contact_roster_local` is never attached. |
@@ -466,10 +485,10 @@ The new paths:
 | Phase | What | Prod | Tests | Proof |
 |---|---|---|---|---|
 | **P1 RECORDS** | 0059 and the attach; import and pointer merge; staging from the tables with per-row quarantine; reconcile on the content hash; `contacts_ready`, including the actor-start cap; the replicated binding id, never un-revoked; contact RPCs write the tables; export ids; `sessions.contact_inbox` | 1,200–1,500 | 1,000–1,200 | Rig cases 5 and 6; a contact paired on n1 is listed on n2 |
-| **P2 ROSTERS** | 0060. Per-record chains: signing and co-signing in the reconcile; `contact_rosters` with full history. Per-machine C-side state (`contact_roster_local`): the jump-and-replay accept rule, and bootstrap from the pin through the proof path (`ROSTER_PATH`). Divergence detection through `contact_roster_heads`. The card extension and the `NOTICE_PATH` push, with its body cap and backoff. Refresh from every trusted member. Gate and dialing over the group's union, with per-endpoint hints. Merge proof and attribution. The ceremony-only deny lift. The `contacts_ready` check before a ceremony. Owner refusal on contact paths. | 800–1,000 | 650–850 | Rig cases 2, 4a, 4b and 7–11 |
+| **P2 ROSTERS** | 0060. Per-record chains: signing and co-signing in the reconcile; `contact_rosters` keeping the hop chain plus the last 8 versions. Per-machine C-side state (`contact_roster_local`): the jump-and-replay accept rule with the equal-version switch; bootstrap from the pin through the proof path (`ROSTER_PATH`), using untrusted hints and at least two sources. Divergence detection through `contact_roster_heads`, recomputed at every refresh. The card extension and the `NOTICE_PATH` push, with its body cap and backoff. Refresh from every trusted member. Gate and dialing over the group's union, with per-endpoint hints. Merge proof and attribution. The ceremony-only deny lift. The `contacts_ready` check before a ceremony. Owner refusal on contact paths. | 850–1,050 | 700–900 | Rig cases 2, 4a, 4b and 7–12 |
 | **P3 ROUTING** | `a2a_forward`; owner resolution; offline refusal; forwarding of `~return` and task ids; inbox home; lifting the main-branch `INBOX_STAYS` refusal (4bc0dddd) together with forwarding (D4); `contact_holds` (0061) and Attention from every machine; completing tasks on drain; **W-40 deleted** | +900–1,100, −600–650 | +850–1,050, −360 | Rig cases 1 and 3 |
 | **P4 UI and docs** | D8; site docs; as-built | 400–600 | 400–500 | Vite fixture screenshots; the whole rig |
-| Total | | ≈ 3,300–4,200 gross; ≈ 2,700–3,550 net | ≈ 2,900–3,600 gross | |
+| Total | | ≈ 3,350–4,250 gross; ≈ 2,750–3,600 net | ≈ 2,950–3,650 gross | |
 
 ## Tests and proof
 **Rig.** Three scratch engines on loopback, discovery off, with a fake model server (the 186 rig `/tmp/d186/rig`, if present).
@@ -517,18 +536,24 @@ The cases:
    - Stop C. Make 10 membership changes: add a fifth scratch engine n5, remove it, and repeat five times. That is versions 2 to 11. Our machines carry only versions 4 to 11.
    - Start C, still at version 1. It jumps to version 4, signed by n2, a member of its version-1 roster, then replays to version 11. It ends with n1 and n2 admitted and n5 refused.
 9. **A new C machine after the pinned machine is retired.**
-   - C pinned n1. Remove n1 from our mesh, and let C apply the removal.
-   - Add a new machine, c2, to C's mesh. It receives the record, but no roster state.
-   - c2 asks n2 for a proof path from n1's first signed version. It verifies each hop itself and ends at our latest version: n2 admitted, n1 refused.
+   - C pinned n1. Remove n1 from our mesh, let C apply the removal, then **stop n1** (retired and offline).
+   - Add a new machine, c2, to C's mesh. It receives the record and c1's `contact_roster_heads` row, but no roster state.
+   - c2 dials n2, which it found only through the untrusted hints in c1's row, and asks for a proof path from n1's first signed version. It verifies each hop itself from the pin and ends at our latest version: n2 admitted, n1 refused.
+   - Stop n2 too, and add a third machine c3. c3 cannot bootstrap: it denies the record and shows "cannot verify this contact's machines". It never admits n1.
 10. **A divergence on C's side.** C's mesh has c1, c2 and c3.
     - Stop c3. Remove n1 from our mesh (`mesh_remove(n1)` on n2); c1 and c2 apply it.
-    - Make n1 modified, with data edits as in case 4b, so that it signs version 10 as {n1, Z1}.
+    - Make n1 modified, with data edits as in case 4b, so that it signs version 10 as {n1, Z1} while our chain is at version 9.
     - Start c3 while c1, c2 and n2 are unreachable from it, so that c3 accepts n1's version 10. Then reconnect everyone.
-    - Assert: c1 and c2 fetch a proof path, find no (10, hash) on our side, retry once, then set `conflict`. **All three** machines deny the record and show "this contact's machines disagree about yours; remove and pair again".
+    - Assert that no conflict is set yet: our chain is at 9, so the paths c1 and c2 fetch stop short of version 10, and c3 alone follows the rogue roster (the stated limit).
+    - Make one membership change on our side, so that we sign an honest version 10. Assert that c1 and c2 now verify a path to version 10, find a different hash there, and set `conflict`. **All three** machines deny the record and show "this contact's machines disagree about yours; remove and pair again".
 11. **Deny lifts.**
     - **A late duplicate pinned to the rogue machine.** After the remedy of case 4b, write an older-`paired_ms` record pinned to n1 into C's tables (a stale import). n1 stays denied.
     - **A listing by another contact.** Pair a second contact A whose roster lists n1. n1 stays denied, and is never admitted as A.
     - A fresh ceremony from n2 lifts only the endpoints that the new record's roster lists.
+12. **An honest same-version fork.**
+    - Partition n1 from n2. Pair a fifth scratch engine n5 through n1 and a sixth, n6, through n2, so that n1 and n2 each sign a different version 2.
+    - Let c1 fetch only from n1 and c2 only from n2. Heal the partition.
+    - Assert that c1 and c2 both end on the higher-hash version 2, that `conflict` is never set, and that our side signs version 3 with both n5 and n6. Neither contact machine denies the record.
 
 **Unit tests**, one for each plausible regression:
 - **P1**
@@ -552,10 +577,15 @@ The cases:
     - a roster over 256 members is refused (our side never sends one; it signs the first 256).
   - **Jump and replay:** a contact at v1 that is offered only v4 to v11, with v4 signed by an old member, ends at v11. Each step needs a signer from the roster current at that step. Offered only copies signed by machines it does not trust, it stays at v1.
   - **Co-signing:** every member co-signs the latest version once, and a machine whose view differs signs v + 1 instead. A legacy record adopts the copy signed by its pin, not one signed by another member.
-  - **Per-machine state:** a C machine moves forward only on our signed copies, verified against its own state. It never adopts a replicated row from another C machine. Our side keeps every version of a live chain, and signs nothing for a removed record.
-  - **Bootstrap:** a machine without state verifies a proof path from the pin, including when the pinned machine has been retired. A path with a hop not signed by a member of the previous hop is refused.
-  - **Divergence:** different hashes at one version, or a lower head that is missing from the other machine's history, persisting after a fetch and a retry, sets `conflict`, and every C machine denies. A lower head that appears in the other machine's history is merely stale, so no conflict. A machine with no peer rows flags nothing.
-  - **Honest tie:** two copies of one version, both signed honestly, resolve to the same (higher) hash on every C machine. That is not a conflict.
+  - **Per-machine state:** a C machine moves forward only on our signed copies, verified against its own state. It never adopts a replicated row from another C machine. Our side keeps the hop chain plus the last 8 versions, and signs nothing for a removed record.
+  - **Bootstrap:** a machine without state verifies a proof path from the pin, including when the pinned machine has been retired.
+    - A path with a hop not signed by a member of the previous hop is refused.
+    - Hints from `contact_roster_heads` are used only to dial; a forged hint list cannot change the result.
+    - With two of our machines reachable, it asks both and takes the highest verified path.
+    - With no verifiable path, it denies the record and never admits the pin alone.
+  - **Proof-path route:** it serves only the caller's own records; a `pin` that is not one of that record's pins is refused. An answer holds at most 64 hops and 256 KiB, and `from` continues it.
+  - **Divergence:** a conflict is set only when a verified path reaches the other head's version and the heads still differ there. A path that stops short sets nothing. `conflict` clears once the heads agree. A lower head that appears in the other machine's history is merely stale; still behind after 3 refreshes, it fetches a proof path. A machine with no peer rows flags nothing.
+  - **Honest tie:** at an equal version, a machine replaces its head with higher-hash content signed by a member of the roster before the head. The losing signer on our side co-signs the winner, and its next change signs v + 1 from the winner. No conflict.
   - **Removal:** removing the pairing machine leaves the others admitted.
   - **Remedy:** removing the contact tombstones every record of the merged group, and its roster rows are then ignored.
   - **Remove, then pair fresh with the same endpoints:** the new record does not merge into or join the tombstone. Its binding is fresh and it has no grants. C bases it on the new chain, not the removed one, which is never carried. A later removal reaches it.
