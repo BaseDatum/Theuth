@@ -1379,6 +1379,14 @@ impl Session {
             }
         }
         if !opened {
+            // A capped contact turn whose message was refused (comms off, consume refused) never
+            // ran: its limits go now, or the owner's chat stays default-deny and read-only.
+            if scope.cap.is_some()
+                && let Err(e) = set_turn_limits(self.shared.id, None, None).await
+            {
+                tracing::warn!(session = %self.shared.id, "contact turn limits not cleared: {e}");
+            }
+            self.scope = TurnScope::default();
             self.state = Some(task.state);
             self.inflight = None;
             self.entered = None;
@@ -10601,6 +10609,73 @@ mod tests {
         drop(store);
     }
 
+    /// A session `id` with one accepted exchange from a mesh peer, over a fresh store in `dir`,
+    /// for the contact-turn tests below; the registry is the caller's.
+    async fn peer_rig(
+        dir: &std::path::Path,
+    ) -> (
+        Store,
+        Session,
+        Uuid,
+        crate::communication::Policy,
+        Generation,
+    ) {
+        std::fs::create_dir_all(dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let (policy, sender, id, generation) = route();
+        for s in [id, sender] {
+            store
+                .create_session(s, "m", None, None, None)
+                .await
+                .unwrap();
+        }
+        let (from, to) = (format!("session:{sender}"), format!("session:{id}"));
+        let exchange = store
+            .accept_exchange(&crate::store::communication::AcceptExchange {
+                sender: &from,
+                recipient: &to,
+                sender_session: Some(sender),
+                recipient_session: Some(id),
+                request_id: None,
+                reply_to: None,
+                request_scope: None,
+                generation: i64::try_from(generation.revision()).unwrap(),
+                body: "what is on 192.168.8.1?",
+            })
+            .await
+            .unwrap();
+        let model = Resolved {
+            id: "m".into(),
+            genai: "m".into(),
+            provider: None,
+            model: None,
+        };
+        let session = Session::new(
+            id,
+            0,
+            (model, None),
+            None,
+            SessionState::resume(0, None, vec![]),
+            Arc::new(AgentConfig::default()),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            store.clone(),
+            Client::new().unwrap(),
+            Auth::stub(dir),
+            Runtime::new(figment::Figment::new(), dir.to_path_buf()),
+            Arc::new(models::Catalog::load(dir)),
+            None,
+            Arc::new(Semaphore::new(1)),
+            SessionResources::durable_arc(dir),
+        );
+        (store, session, exchange.id, policy, generation)
+    }
+
     /// 16 §5 (2026-11-11), Sky's ruling (20:28): a contact's message shared in full (190: no
     /// cap, no allowlist) runs with the chat's own tools, so its turn keeps the local-network
     /// grant like the owner's input in the same chat; only a restricted (capped) state takes it
@@ -10610,81 +10685,65 @@ mod tests {
         crate::with_test_registry(async {
             let scratch = crate::TestDir::new("peer-lan");
             let dir = scratch.0.clone();
-            tools::registry::start(&Runtime::new(figment::Figment::new(), dir.clone()))
+            let reg = tools::registry::start(&Runtime::new(figment::Figment::new(), dir.clone()))
                 .await
                 .unwrap();
-            let reg = kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
-                .unwrap()
-                .unwrap();
-            let store = Store::open(&dir.join("sessions.sqlite"), None)
-                .await
-                .unwrap();
-            let (_policy, sender, id, generation) = route();
-            for s in [id, sender] {
-                store
-                    .create_session(s, "m", None, None, None)
-                    .await
-                    .unwrap();
-            }
-            let (from, to) = (format!("session:{sender}"), format!("session:{id}"));
-            let exchange = store
-                .accept_exchange(&crate::store::communication::AcceptExchange {
-                    sender: &from,
-                    recipient: &to,
-                    sender_session: Some(sender),
-                    recipient_session: Some(id),
-                    request_id: None,
-                    reply_to: None,
-                    request_scope: None,
-                    generation: i64::try_from(generation.revision()).unwrap(),
-                    body: "what is on 192.168.8.1?",
-                })
-                .await
-                .unwrap();
-            let model = Resolved {
-                id: "m".into(),
-                genai: "m".into(),
-                provider: None,
-                model: None,
-            };
-            let mut session = Session::new(
-                id,
-                0,
-                (model, None),
-                None,
-                SessionState::resume(0, None, vec![]),
-                Arc::new(AgentConfig::default()),
-                Arc::default(),
-                Arc::default(),
-                Arc::default(),
-                Arc::default(),
-                Arc::default(),
-                store.clone(),
-                Client::new().unwrap(),
-                Auth::stub(&dir),
-                Runtime::new(figment::Figment::new(), dir.clone()),
-                Arc::new(models::Catalog::load(&dir)),
-                None,
-                Arc::new(Semaphore::new(1)),
-                SessionResources::durable_arc(&dir),
-            );
-            let turn_id = TurnId::new();
+            let (store, mut session, exchange, _policy, generation) = peer_rig(&dir).await;
+            let id = session.shared.id;
             let mut turn = Turn::new(
                 session.shared.clone(),
-                Some(turn_id),
+                Some(TurnId::new()),
                 CancellationToken::new(),
                 session.state.take().unwrap(),
             );
             let restricted = || reg.ask(tools::ContactScoped(id));
             assert!(turn.take_input(harness_input(None)).await);
             assert!(!restricted().await.unwrap(), "the owner's input");
-            let mut full = peer_input(exchange.id, &generation, None, false);
+            let mut full = peer_input(exchange, &generation, None, false);
             if let Some(p) = full.peer.as_mut() {
                 p.contact = Some("contact_full");
             }
             assert!(turn.take_input(full).await);
             assert!(!restricted().await.unwrap(), "a full contact's message");
             drop(turn);
+            drop(store);
+        });
+    }
+
+    /// A capped contact message refused before its turn opens (communication turned off, so the
+    /// admitted generation is dead) runs nothing, and its turn limits, installed ahead of the
+    /// intake, go with it: the owner's chat is neither default-deny nor read-only afterwards.
+    #[test]
+    fn a_refused_capped_message_leaves_no_turn_limits() {
+        crate::with_test_registry(async {
+            use kameo::actor::Spawn as _;
+            let scratch = crate::TestDir::new("peer-refused");
+            let dir = scratch.0.clone();
+            let reg = tools::registry::start(&Runtime::new(figment::Figment::new(), dir.clone()))
+                .await
+                .unwrap();
+            let (store, mut session, exchange, mut policy, generation) = peer_rig(&dir).await;
+            let id = session.shared.id;
+            // Only for its `ActorRef`: a turn that never opens schedules nothing on it.
+            let (_store2, other, ..) = peer_rig(&dir.join("other")).await;
+            let me = Session::spawn(other);
+            let mut capped = peer_input(exchange, &generation, None, true);
+            if let Some(p) = capped.peer.as_mut() {
+                p.cap = Some(tools::Risk::ReadOnly);
+                p.tools = Some(vec!["search_web".into()]);
+            }
+            policy.set_global(false, "config");
+            assert!(!session.start_turn(vec![(None, capped)], &me).await);
+            assert!(
+                !reg.ask(tools::ContactScoped(id)).await.unwrap(),
+                "no allowlist left"
+            );
+            assert_eq!(
+                reg.ask(tools::EffectiveCap(id)).await.unwrap(),
+                None,
+                "no cap left"
+            );
+            assert!(session.scope.cap.is_none());
             drop(store);
         });
     }

@@ -1355,8 +1355,8 @@ impl Store {
         Ok(())
     }
 
-    /// 16 §5 (2026-11-11): the local-network grant `id`'s ingest runs under: the adder's (and on a
-    /// refresh, the stricter of that and the refresher's). Engine-local.
+    /// 16 §5 (2026-11-11): the local-network grant of the caller who added `id` (written once,
+    /// when the source is first added). Engine-local.
     pub async fn set_source_lan(&self, id: &DocId, lan: bool) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO source_lan (id, lan) VALUES (?, ?) \
@@ -1369,13 +1369,13 @@ impl Store {
         Ok(())
     }
 
-    /// [`Self::set_source_lan`]'s grant; `false` when none was written (fail closed).
-    pub async fn source_lan(&self, id: &DocId) -> anyhow::Result<bool> {
+    /// [`Self::set_source_lan`]'s grant; `None` for a source added before grants were kept.
+    pub async fn source_lan(&self, id: &DocId) -> anyhow::Result<Option<bool>> {
         let row: Option<(bool,)> = sqlx::query_as("SELECT lan FROM source_lan WHERE id = ?")
             .bind(id.as_str())
             .fetch_optional(&self.db)
             .await?;
-        Ok(row.is_some_and(|(lan,)| lan))
+        Ok(row.map(|(lan,)| lan))
     }
 
     /// The `sources` row, when there is one.

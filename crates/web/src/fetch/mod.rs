@@ -162,11 +162,21 @@ pub enum FetchError {
     Failed(String),
 }
 
+/// Start of the [`FetchError::Rejected`] text for a redirect chain past `max_redirects`.
+const TOO_MANY_REDIRECTS: &str = "too many redirects";
+
 impl FetchError {
     /// Map a transport error, surfacing a guard refusal from the DNS
     /// resolver as [`FetchError::Rejected`].
     fn from_reqwest(e: &reqwest::Error) -> Self {
         ClientError::from_reqwest(e).into()
+    }
+
+    /// The refusal is the redirect limit, not the guard (scheme, credentials, an address): a
+    /// browser may still try such a page (16 §5, 2026-11-11); a guard refusal never.
+    #[must_use]
+    pub fn is_redirect_limit(&self) -> bool {
+        matches!(self, Self::Rejected(m) if m.starts_with(TOO_MANY_REDIRECTS))
     }
 }
 
@@ -699,7 +709,7 @@ impl Fetcher {
             if Self::is_redirect(status) {
                 if redirects >= self.max_redirects {
                     return Attempt::Fatal(FetchError::Rejected(format!(
-                        "too many redirects (max {})",
+                        "{TOO_MANY_REDIRECTS} (max {})",
                         self.max_redirects
                     )));
                 }
@@ -814,7 +824,7 @@ impl Fetcher {
             if Self::is_redirect(status) {
                 if redirects >= self.max_redirects {
                     return Err(FetchError::Rejected(format!(
-                        "too many redirects (max {})",
+                        "{TOO_MANY_REDIRECTS} (max {})",
                         self.max_redirects
                     )));
                 }

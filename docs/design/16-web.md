@@ -544,8 +544,10 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   (Sky, 20:28: a per-tool rule there protects nothing). Work that leaves
   the tool's task carries the grant explicitly: the `WebActor`'s `Read` /
   `Render` messages (`lan`), a search's read tasks, a notebook source's
-  ingest jobs (stored per source; `Refresh` pre-checks again under the
-  stricter of the stored and the refresher's grant). Without the grant
+  ingest jobs (the first adder's grant is kept per source; a refresh runs
+  under the refresher's unless that stored grant is `false`, pre-checking a
+  URL again; a card from before grants were kept follows its refresher).
+  Without the grant
   there is no browser rung at all: `Render` and a non-`scrape` `Read` are
   refused ("rendered pages aren't available to a restricted contact"), the
   scrape engine never renders, and every `browser_*` tool refuses, since

@@ -240,7 +240,8 @@ impl Scrape {
     /// thin body — the data island, then obscura when `force_render`, the
     /// issue's `next` says `rendered`, or the page is thin. 16 §5 (2026-11-11): a guard
     /// refusal never falls back to obscura (it resolves and redirects on its own), nor does
-    /// anything outside the local-network grant ([`web::actor::CONTACT_NO_RENDER`]).
+    /// anything outside the local-network grant ([`web::actor::CONTACT_NO_RENDER`]); a granted
+    /// call's redirect loop (the redirect limit, not the guard) still may.
     pub async fn fetch_page(
         &self,
         url: &Url,
@@ -253,12 +254,11 @@ impl Scrape {
         let page = match self.fetch_http(url, only_main_content).await {
             Ok(page) => page,
             Err(e) => {
-                let rejected = matches!(
+                let guard = matches!(
                     e.downcast_ref::<web::fetch::FetchError>(),
-                    Some(web::fetch::FetchError::Rejected(_))
+                    Some(f @ web::fetch::FetchError::Rejected(_)) if !f.is_redirect_limit()
                 );
-                let Some(actor) = browser_actor().filter(|_| !rejected && tools::egress::lan())
-                else {
+                let Some(actor) = browser_actor().filter(|_| !guard && tools::egress::lan()) else {
                     return Err(e);
                 };
                 tracing::debug!(url = %url, error = %e, "fetch failed; trying obscura");

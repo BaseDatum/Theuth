@@ -94,24 +94,35 @@ fn assert_ip_allowed(
     )))
 }
 
-/// Resolve `host` and require **every** returned address to pass [`is_blocked_ip`].
+/// Resolve `host` and keep only the addresses [`is_blocked_ip`] clears ([`vet`]).
 async fn resolve_checked(host: &str, private: bool) -> Result<Vec<SocketAddr>, FetchError> {
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
         .await
         .map_err(|e| FetchError::Rejected(format!("DNS resolve failed for `{host}`: {e}")))?
         .collect();
-    if addrs.is_empty() {
+    vet(host, addrs, private)
+}
+
+/// The answers for `host` that pass [`is_blocked_ip`] under `private`, in order; refused only
+/// when none does. A dual-stack `.local` name whose A record is link-local (always blocked)
+/// still connects over its `fe80::` answer; the connector only ever gets vetted addresses.
+fn vet(host: &str, addrs: Vec<SocketAddr>, private: bool) -> Result<Vec<SocketAddr>, FetchError> {
+    let Some(first) = addrs.first().copied() else {
         return Err(FetchError::Rejected(format!(
             "DNS returned no addresses for `{host}`"
         )));
-    }
-    if let Some(bad) = addrs.iter().find(|a| is_blocked_ip(a.ip(), private)) {
+    };
+    let ok: Vec<SocketAddr> = addrs
+        .into_iter()
+        .filter(|a| !is_blocked_ip(a.ip(), private))
+        .collect();
+    if ok.is_empty() {
         return Err(FetchError::Rejected(format!(
             "hostname `{host}` resolves to blocked address `{}`",
-            bad.ip()
+            first.ip()
         )));
     }
-    Ok(addrs)
+    Ok(ok)
 }
 
 /// `reqwest` DNS resolver that refuses what [`is_blocked_ip`] refuses under
@@ -233,4 +244,36 @@ fn is_blocked_ipv6(ip: Ipv6Addr, private: bool) -> bool {
         || seg[0] == 0x2002
         || (seg[0] == 0x2001 && seg[1] == 0)
         || (local && !private)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addrs(list: &[&str]) -> Vec<SocketAddr> {
+        list.iter()
+            .map(|a| SocketAddr::new(a.parse().unwrap(), 0))
+            .collect()
+    }
+
+    /// Blocked answers are dropped, the vetted rest kept in order; only a name with no
+    /// passing answer is refused (with the first blocked one named).
+    #[test]
+    fn only_vetted_answers_reach_the_connector() {
+        let both = addrs(&["169.254.7.7", "fe80::1"]);
+        assert_eq!(
+            vet("nas.local", both.clone(), true).unwrap(),
+            addrs(&["fe80::1"])
+        );
+        let err = vet("nas.local", both, false).unwrap_err().to_string();
+        assert!(err.contains("blocked address `169.254.7.7`"), "{err}");
+        let mixed = addrs(&["10.0.0.1", "93.184.216.34", "::1"]);
+        assert_eq!(
+            vet("rebind.example", mixed.clone(), false).unwrap(),
+            addrs(&["93.184.216.34"])
+        );
+        assert_eq!(vet("rebind.example", mixed.clone(), true).unwrap(), mixed);
+        assert!(vet("metadata.example", addrs(&["169.254.169.254"]), true).is_err());
+        assert!(vet("none.example", Vec::new(), true).is_err());
+    }
 }

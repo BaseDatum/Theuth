@@ -69,4 +69,25 @@ async fn the_browser_rung_follows_the_local_network_grant() {
     assert_eq!(page.tier, "render");
     assert!(page.markdown.contains("on the lan"), "{}", page.markdown);
     assert!(hits().await >= 1);
+
+    // A granted call's redirect loop is the redirect limit, not the guard: the browser still
+    // gets to try the page (it asks the server beyond the fetcher's 1 + 5 hops).
+    Mock::given(method("GET"))
+        .and(path("/loop"))
+        .respond_with(ResponseTemplate::new(302).insert_header("Location", "/loop"))
+        .mount(&server)
+        .await;
+    let looping = Url::parse(&format!("{}/loop", server.uri())).unwrap();
+    let before = hits().await;
+    let r = tools::egress::scope(true, scrape(true).fetch_page(&looping, false, false)).await;
+    if let Err(e) = &r {
+        assert!(
+            e.to_string().contains("render:"),
+            "the browser was tried: {e}"
+        );
+    }
+    assert!(
+        hits().await - before > 6,
+        "obscura asked after the fetcher gave up"
+    );
 }
