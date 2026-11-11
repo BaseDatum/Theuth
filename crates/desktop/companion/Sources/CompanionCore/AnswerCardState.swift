@@ -86,16 +86,25 @@ public struct AnswerCardState: Equatable, Sendable {
         }
     }
 
-    /// A new gesture: everything resets, the generation moves on.
+    /// A new gesture: everything resets, the generation moves on. 189 F5: an Ask opens expanded, so its answer streams as
+    /// markdown from the first delta (an expanded card never auto-hides: `armsDone`); voice and command cards collapsed.
     public mutating func begin(question: String, kind: Kind = .voiceNote) {
         var fresh = Self()
         fresh.generation = generation + 1
         fresh.kind = kind
         fresh.turns = [Turn(question: question, command: kind == .command ? CommandCard(request: question) : nil)]
         fresh.visible = true
+        fresh.expanded = kind == .ask
         fresh.phase = .thinking
         fresh.thinkingSince = Date()
         self = fresh
+    }
+
+    /// 189 F7: what the markdown body renders for turn `i` — the last turn's text with `MarkdownLines.holdBack` while it
+    /// is unfinished, every finished turn whole.
+    public func markdownText(turn i: Int) -> String {
+        guard turns.indices.contains(i) else { return "" }
+        return i == turns.count - 1 && !turnFinished ? MarkdownLines.holdBack(turns[i].text) : turns[i].text
     }
 
     /// §10.5 / §12.2: a follow-up in the same thread — a new block under the previous answer, the dots advance.

@@ -5,6 +5,11 @@ if Flags.probeMarkdown {
     NSApplication.shared.setActivationPolicy(.prohibited)
     MainActor.assumeIsolated { MarkdownProbe.run() }
 }
+// 189: `--probe-markdown-stream` replays the live ask through the real answer card (ordered front, off every screen) and exits.
+if Flags.probeMarkdownStream {
+    NSApplication.shared.setActivationPolicy(.accessory)
+    MainActor.assumeIsolated { MarkdownStreamProbe.run() }
+}
 
 // Revision 1: a second instance (an `open` while the login item runs) exits 0 at once. 149 W1: a probe (`--probe-*`) is a
 // deliberate second instance for N seconds — it quits itself, takes no key, acts on nothing, and skips `Hotkeys.start`.

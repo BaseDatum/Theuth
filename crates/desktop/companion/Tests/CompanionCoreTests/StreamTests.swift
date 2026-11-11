@@ -245,3 +245,66 @@ struct WatchdogTests {
         #expect(idle.watchdogFired(now: t0) == false, "nothing sent: off")
     }
 }
+
+// 189 card render round: the streaming hold-back (F7), the collapsed preview (F5), Ask opens expanded (F5).
+
+struct MarkdownHoldBackTests {
+    @Test func aTrailingMarkerOnlyLineWaitsForItsText() {
+        let head = "Test received — I'm here and reading.\n\n"
+        for tail in ["#", "## ", "- ", "1.", "> ", "12) ", "* + -"] {
+            #expect(MarkdownLines.holdBack(head + tail) == head, "\(tail.debugDescription)")
+        }
+        #expect(MarkdownLines.holdBack("#") == "", "a reply that so far is only a marker")
+    }
+
+    @Test func everythingElseGoesThroughWhole() {
+        for text in ["", "first line\n## Next", "first line\n- item", "first line\n1", "first line\n\n", "a\n**bold", "a\n1.5 s"] {
+            #expect(MarkdownLines.holdBack(text) == text, "\(text.debugDescription)")
+        }
+    }
+
+    @Test func theCardHoldsBackOnlyTheUnfinishedLastTurn() {
+        var s = AnswerCardState()
+        s.begin(question: "q", kind: .ask)
+        s.text = "done\n#"
+        s.followUp(question: "q2")
+        s.text = "next\n- "
+        #expect(s.markdownText(turn: 0) == "done\n#", "a finished turn is shown whole")
+        #expect(s.markdownText(turn: 1) == "next\n")
+        s.turnFinished = true
+        #expect(s.markdownText(turn: 1) == "next\n- ", "at the finish the full text")
+        #expect(s.markdownText(turn: 5) == "")
+    }
+}
+
+struct CollapsedPreviewTests {
+    private func preview(_ text: String) -> String {
+        var r = AskReply(session: "desk")
+        r.text = text
+        return r.firstTwoLines
+    }
+
+    @Test func theLive333ReplyReadsAsItsTwoTextLines() {
+        let reply = "Test received — I'm here and reading.\n\n## Next\n- `Run the Hans supervision tick now`\n- `What's still owed to me?`"
+        #expect(preview(reply) == "Test received — I'm here and reading.\nRun the Hans supervision tick now",
+                "the heading dropped, the bullet and backticks gone, one line each")
+    }
+
+    @Test func markersGoTheTextStays() {
+        #expect(preview("> quoted **bold**\n1. first\n2) second") == "quoted bold\nfirst")
+        #expect(preview("# Title\n---\n```swift\nlet x = 1\n```") == "let x = 1", "headings, rules and fences are not lines to read")
+        #expect(preview("-rf is a flag\n*emphasis* here") == "-rf is a flag\nemphasis here", "no marker without its space")
+        #expect(preview("## only a heading") == "")
+    }
+
+    @Test func anAskOpensExpandedTheVoiceKeyCollapsed() {
+        var s = AnswerCardState()
+        for (kind, expanded) in [(AnswerCardState.Kind.ask, true), (.voiceNote, false), (.command, false)] {
+            s.begin(question: "q", kind: kind)
+            s.phase = .answer
+            s.turnFinished = true
+            #expect(s.expanded == expanded, "\(kind)")
+            #expect(s.armsDone == !expanded, "\(kind): a finished expanded card never auto-hides")
+        }
+    }
+}
