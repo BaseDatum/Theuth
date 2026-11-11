@@ -57,11 +57,27 @@ export function costLines(b: CostBucket): { primary: string; secondary?: string 
   return { primary, secondary: `Estimated ${b.estimated_for_unavailable.map((m) => `~${formatMoney(m)}`).join(' + ')}` }
 }
 
-/** One bucket for a pill or agent row: returned money, else the estimate as `~$0.123`, else `—`. */
+/** `costLines` as one tooltip: the returned line, then the estimate line. */
+export function costTitle(b: CostBucket): string {
+  const { primary, secondary } = costLines(b)
+  return secondary ? `${primary}\n${secondary}` : primary
+}
+
+/**
+ * The terms a one-line cost shows: returned money and the estimate side by side. A known-zero returned entry (an omp
+ * child's meter before it reports) is dropped when an estimate or unavailable calls exist, so it never hides them.
+ */
+export function costParts(b: CostBucket): { returned: Money[]; estimated: Money[] } {
+  const estimated = b.estimated_for_unavailable
+  const hideZero = estimated.length > 0 || b.unavailable > 0
+  return { returned: hideZero ? b.returned.filter((m) => BigInt(m.nanos) !== 0n) : b.returned, estimated }
+}
+
+/** One bucket for a pill or agent row: `$0.100 + ~$0.023` (returned, then the tilde-marked estimate), either alone, else `—`. */
 export function costShort(b: CostBucket): string {
-  if (b.returned.length) return b.returned.map(formatMoney).join(' + ')
-  if (b.estimated_for_unavailable.length) return b.estimated_for_unavailable.map((m) => `~${formatMoney(m)}`).join(' + ')
-  return '—'
+  const { returned, estimated } = costParts(b)
+  const terms = [...returned.map(formatMoney), ...estimated.map((m) => `~${formatMoney(m)}`)]
+  return terms.length ? terms.join(' + ') : '—'
 }
 
 /** 141 §7.6: a USD figure a harness reported as a float (omp `progress[].cost`), in `formatMoney`'s digits. */

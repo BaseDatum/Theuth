@@ -5,7 +5,7 @@ import { Fragment, type ReactNode, memo, useEffect, useMemo, useState } from 're
 import { counts } from '@/components/chat/broadcast'
 import { EyeMark, SourceTag, WatchCostCell, WatchDot } from '@/components/chat/ObservedBar'
 import { useSessionDrag } from '@/components/chat/Panes'
-import { costLines, costShort } from '@/lib/money'
+import { costShort, costTitle } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cappedTree, childrenOf, live, observedLabel, withAncestors } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
@@ -92,8 +92,8 @@ export const SubagentRow = memo(function SubagentRow({
         <WatchCostCell session={row.id} observed={observed} />
       ) : (
         cost &&
-        (cost.returned.length > 0 || cost.estimated_for_unavailable.length > 0) && (
-          <span className="tabular-nums text-fg-tertiary" title={costLines(cost).secondary ?? costLines(cost).primary}>
+        costShort(cost) !== '—' && (
+          <span className="whitespace-nowrap tabular-nums text-fg-tertiary" title={costTitle(cost)}>
             {costShort(cost)}
           </span>
         )
