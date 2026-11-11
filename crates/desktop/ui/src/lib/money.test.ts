@@ -53,9 +53,20 @@ test('costLines follows 51 §6.2 and never merges returned with estimate', () =>
   )
 })
 
-test('costShort prefers returned, then a tilde-marked estimate, then a dash', () => {
+test('costShort shows returned money and the tilde-marked estimate together; a zero meter never hides the estimate', () => {
   const est = [usd('23000000')]
-  expect(costShort(bucket({ dispatched: 2, returned: [usd('100000000')], estimated_for_unavailable: est }))).toBe('$0.100')
+  expect(costShort(bucket({ dispatched: 2, returned: [usd('100000000')], estimated_for_unavailable: est }))).toBe('$0.100 + ~$0.023')
   expect(costShort(bucket({ dispatched: 2, estimated_for_unavailable: est }))).toBe('~$0.023')
+  expect(costShort(bucket({ dispatched: 2, returned: [usd('100000000')] }))).toBe('$0.100')
+  // omp child connected (known-zero meter rolled up) over an estimate-only parent.
+  expect(costShort(bucket({ dispatched: 2, unavailable: 2, returned: [usd('0')], estimated_for_unavailable: est }))).toBe('~$0.023')
+  expect(costShort(bucket({ dispatched: 1, returned: [usd('0')] }))).toBe('$0.000')
+  expect(costShort(bucket({ dispatched: 2, unavailable: 2, returned: [usd('0')] }))).toBe('—')
   expect(costShort(bucket({ dispatched: 2, unavailable: 2 }))).toBe('—')
+  expect(costShort(bucket({}))).toBe('—')
+  const eur = (nanos: string) => ({ currency: 'EUR', nanos })
+  expect(
+    costShort(bucket({ dispatched: 4, unavailable: 1, returned: [eur('500000000'), usd('0')], estimated_for_unavailable: [eur('10000000'), usd('23000000')] })),
+  ).toBe('€0.500 + ~€0.010 + ~$0.023')
+  expect(costShort(bucket({ dispatched: 2, returned: [eur('500000000'), usd('1000000000')], estimated_for_unavailable: est }))).toBe('€0.500 + $1.000 + ~$0.023')
 })

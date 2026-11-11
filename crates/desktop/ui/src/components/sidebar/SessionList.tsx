@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, MoreHorizontal, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, MoreHorizontal, Plus, X } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -43,12 +43,13 @@ export const UNGROUPED = 'Ungrouped'
 export const newChatLabel = (project: string | null) => (project === null ? 'New chat (no project)' : `New chat in “${project}”`)
 
 /**
- * A collapsible project header (51 §3): the row toggles collapse; right-click or the hover `…` (always shown where
- * the pointer is a finger — phones and iPads — like `SessionItem`'s) opens a menu whose "New chat in <project>" opens a new chat with the picker preset
- * (`openNewChat`: the focused pane when split, else `/?project=`) and whose "Icon & colour…" opens the style dialog
- * (not for Ungrouped). The project's glyph sits left of the name.
+ * A collapsible project header (51 §3): the row toggles collapse; the hover `+` opens a new chat in the project, and
+ * right-click or the hover `…` (both always shown where the pointer is a finger — phones and iPads — like
+ * `SessionItem`'s) opens a menu whose "New chat in <project>" does the same (`openNewChat`: the focused pane when
+ * split, else `/?project=`) and whose "Icon & colour…" opens the style dialog (not for Ungrouped). The project's glyph
+ * sits left of the name.
  */
-function ProjectHeader({ project, collapsed, toggle }: { project: string | null; collapsed: boolean; toggle(): void }) {
+export function ProjectHeader({ project, collapsed, toggle }: { project: string | null; collapsed: boolean; toggle(): void }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [styling, setStyling] = useState(false)
@@ -56,7 +57,7 @@ function ProjectHeader({ project, collapsed, toggle }: { project: string | null;
     <div className="group/menu-item relative">
       <button
         type="button"
-        className="flex w-full items-center gap-1 px-2.5 pt-4 pb-1.5 text-xs font-semibold text-fg-secondary pointer-coarse:pr-8"
+        className="flex w-full items-center gap-1 px-2.5 pt-4 pb-1.5 text-xs font-semibold text-fg-secondary pointer-coarse:pr-16"
         aria-expanded={!collapsed}
         onClick={toggle}
         onContextMenu={(e) => {
@@ -68,6 +69,19 @@ function ProjectHeader({ project, collapsed, toggle }: { project: string | null;
         <ProjectIcon project={project} className="size-4" />
         <span className="truncate">{project ?? UNGROUPED}</span>
       </button>
+      <SidebarMenuAction
+        showOnHover
+        // A finger's hit area (`after:-inset-2`) is wider: keep the two targets from overlapping.
+        className="top-3.5 right-8 pointer-coarse:right-11"
+        aria-label={newChatLabel(project)}
+        title={newChatLabel(project)}
+        onClick={(e) => {
+          e.stopPropagation()
+          openNewChat(navigate, project)
+        }}
+      >
+        <Plus />
+      </SidebarMenuAction>
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
           <SidebarMenuAction showOnHover className="top-3.5 right-2" aria-label="Project options">

@@ -7,6 +7,7 @@ import { keys } from '@/components/tasks/queries'
 import { SidebarMenu, SidebarProvider } from '@/components/ui/sidebar'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
+import { usePanes } from '@/lib/panes'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo } from '@/rpc/extra'
 import { useSessions } from '@/store/sessions'
@@ -116,4 +117,32 @@ test('the tree opens with a line naming the open desk, linking to it, with its l
   expect(stas.host.querySelector('[data-tree]')!.getAttribute('data-tree')).toBe('d-stas')
   expect(stas.host.querySelector('[data-desk-header]')).toBeNull()
   await act(async () => stas.root.unmount())
+})
+
+/** A mouse press-and-move on `el`; returns the session the panes store is dragging mid-gesture, then drops. */
+const dragOf = async (el: HTMLElement) => {
+  el.setPointerCapture = () => undefined
+  el.hasPointerCapture = () => false
+  // jsdom has no `PointerEvent`: a `MouseEvent` carrying the pointer fields React reads.
+  const fire = (type: string, x: number) =>
+    el.dispatchEvent(Object.assign(new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 10 }), { pointerId: 1, pointerType: 'mouse' }))
+  await act(async () => {
+    fire('pointerdown', 10)
+    fire('pointermove', 60)
+  })
+  const dragging = usePanes.getState().drag?.session
+  await act(async () => fire('pointerup', 60))
+  return dragging
+}
+
+test('a desk with a session drags into a pane like any session row, tile and tree header alike; one without is click-to-open only', async () => {
+  useSessions.getState().setChildren('d-sergei', [info('sub-1', 'd-sergei', 'running')])
+  const { host, root, tile } = await mount('d-sergei')
+  // `draggable=false` keeps the browser's own link drag (the href ghost) off the tile.
+  expect(tile('sergei').getAttribute('draggable')).toBe('false')
+  expect(await dragOf(tile('sergei'))).toBe('d-sergei')
+  expect(await dragOf(host.querySelector<HTMLElement>('[data-desk-header]')!)).toBe('d-sergei')
+  expect(tile('maya').hasAttribute('data-drag-row')).toBe(false)
+  expect(await dragOf(tile('maya'))).toBeUndefined()
+  await act(async () => root.unmount())
 })

@@ -246,7 +246,8 @@ decide the next step, never a whole file or a whole result; the full value stays
 variable and survives compaction and restart. Use Python for loops, conditions and
 parsing; use `shell()` to run programs, not to write shell programs. Discover a tool's
 full parameters with `help(name)` - the index below is names and signatures only. The
-tools defined directly for you are awaitable here too, by the same name.
+tools defined directly for you are awaitable here too, by the same name, except `python`,
+`advise` and `consult`.
 
 Runtime functions (NOT direct tools — call each as `r = await name(...)` inside `python`; all `async`):
 async def github__search_repos(query: str, page: int | None = None) -> Any  # Search for GitHub repositories.

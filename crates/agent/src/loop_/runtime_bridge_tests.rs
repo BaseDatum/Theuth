@@ -8,8 +8,9 @@
 //! `PATH`) and skip without one; the refusal needs none.
 
 use serde_json::{Value, json};
+use wiremock::{Request, Respond, ResponseTemplate};
 
-use super::vision_fallback_tests::{Fake, Harness};
+use super::vision_fallback_tests::{Fake, Harness, body, sse, sse_tool_call, system};
 use super::*;
 
 /// A pool over a worker binary; `None`, with a note, when absent so the
@@ -184,5 +185,74 @@ async fn scenarios() {
     assert_eq!(started(&events).len(), 1, "no inner call ran: {events:?}");
 
     // read-file-images: a picture read inside a python cell takes the 52 path.
-    super::vision_fallback_tests::python_cell_image_takes_the_same_path(pool).await;
+    super::vision_fallback_tests::python_cell_image_takes_the_same_path(pool.clone()).await;
+    todo_from_a_cell_shares_the_list(pool).await;
+}
+
+/// The main model's script: a cell that awaits `todo(op="add")`, then a
+/// direct `todo(op="view")`, then a final reply. Other calls get plain text.
+struct TodoScript;
+
+impl Respond for TodoScript {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let b = body(req);
+        if !system(&b).contains("## Runtime") {
+            return sse("ok", "stop", (10, 5));
+        }
+        let results = b["messages"]
+            .as_array()
+            .map_or(0, |m| m.iter().filter(|m| m["role"] == "tool").count());
+        match results {
+            0 => sse_tool_call(
+                "call_py",
+                repl::NAME,
+                &json!({"code": "r = await todo(op=\"add\", items=[\"Map the harness\", \"Ship\"])\nprint(r)"})
+                    .to_string(),
+            ),
+            1 => sse_tool_call("call_view", todo::NAME, &json!({"op": "view"}).to_string()),
+            _ => sse("done", "stop", (10, 5)),
+        }
+    }
+}
+
+/// 08 §3.1: `todo` awaited in a cell works on the turn's one list: the cell
+/// gets the rendered list a direct call returns, a later direct `view` shows
+/// what the cell added, and the plan commits once, with the cell's batch.
+async fn todo_from_a_cell_shares_the_list(pool: Arc<Pool>) {
+    let mut h = Harness::new(TodoScript).await;
+    h.pool = Some(pool);
+    let events = run(&mut h).await;
+    let mut want = Vec::new();
+    todo::apply(
+        &mut want,
+        todo::TodoArgs {
+            op: todo::Op::Add,
+            items: vec!["Map the harness".into(), "Ship".into()],
+            task: None,
+            reason: None,
+        },
+    )
+    .unwrap();
+    let rendered = todo::render(&want);
+    let done = finished(&events);
+    let output = |id: &str| {
+        done.iter()
+            .find(|(i, _, _)| i == id)
+            .map(|(_, err, out)| (*err, out.clone()))
+            .unwrap_or_else(|| panic!("{id} did not finish: {done:?}"))
+    };
+    assert_eq!(
+        output("call_py.1"),
+        (false, rendered.clone()),
+        "the cell's todo()"
+    );
+    assert_eq!(output("call_view"), (false, rendered), "the direct view");
+    let changed: Vec<Vec<todo::Todo>> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::TodoChanged { snapshot, .. } => Some(snapshot.items.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed, vec![want]);
 }
