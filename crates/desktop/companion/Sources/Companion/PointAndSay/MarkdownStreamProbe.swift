@@ -10,8 +10,8 @@ extension Flags {
 /// 189: a deterministic replay of the live 333 ask (2026-11-11 15:33) through the real `AnswerCard` and `AnswerCardState`
 /// with the animated config. `main.swift` runs it before the app delegate: no engine connection, no hotkeys. The card is
 /// ordered front (never key) at an origin left of every screen, or in the real island area with `--on-screen`.
-/// Two passes: collapsed (what the live card was: it auto-hid 6 s after the finish, which only a collapsed card does) and
-/// expanded (the markdown body). Each: `begin` (thinking) → 0.5 s → a `TextDelta` of the reply's first 40 characters →
+/// Two passes: collapsed (the live card before 189 F5, now the card the user collapsed: the two-line preview) and expanded
+/// (an Ask's default since F5: the markdown body). Each: `begin` (thinking) → 0.5 s → a `TextDelta` of the first 40 characters →
 /// 1.5 s → the catch-up replaces it with the full 113-character reply and finishes (what `Store.renderAsk` writes) →
 /// frames at 0.3, 1, 2, 3.5 and 5 s. Per frame it logs the panel height, the hosting view's `fittingSize` height, the
 /// `AnswerMarkdown` height (`onGeometryChange`, "n/a" when collapsed), whether the window is on a screen and visible,
@@ -24,21 +24,17 @@ enum MarkdownStreamProbe {
     static let frames: [Double] = [0.3, 1.0, 2.0, 3.5, 5.0]
 
     static func run() -> Never {
-        var content: CGFloat?
-        AnswerMarkdown.contentHeight = { content = $0 }
         log("reply \(reply.count) chars; delta \(String(reply.prefix(40)).debugDescription)")
         var preview = AskReply(session: "")
         preview.text = reply
         log("collapsed preview (AskReply.firstTwoLines, lineLimit 2): \(preview.firstTwoLines.debugDescription)")
-        for expanded in [false, true] {
-            content = nil
-            pass(expanded: expanded) { content }
-        }
+        for expanded in [false, true] { pass(expanded: expanded) }
         log("done")
         exit(0)
     }
 
-    private static func pass(expanded: Bool, content: () -> CGFloat?) {
+    /// `expanded` false: the card as the user collapsed it (an Ask opens expanded, 189 F5).
+    private static func pass(expanded: Bool) {
         let name = expanded ? "expanded" : "collapsed"
         let card = AnswerCard()
         // Off every screen by default; `--on-screen` keeps the real island-area placement (a window off every screen may
@@ -59,8 +55,9 @@ enum MarkdownStreamProbe {
         s = card.state // the first TextDelta, as `renderAsk` maps it
         s.text = String(reply.prefix(40)); s.phase = .answer; s.status = ""
         card.state = s
+        log("\(name) delta: markdown gets \(card.state.markdownText(turn: 0).debugDescription)")
         spin(0.2)
-        snapshot(card, label: "\(name) delta+0.2", png: nil, content: content())
+        snapshot(card, label: "\(name) delta+0.2", png: nil)
         spin(1.3)
 
         s = card.state // the catch-up: the transcript's text replaces the stream and the reply finishes
@@ -71,13 +68,14 @@ enum MarkdownStreamProbe {
             spin(until: t0.addingTimeInterval(t))
             let tag = t == t.rounded() ? "\(Int(t))" : "\(t)"
             let png = URL(fileURLWithPath: "/tmp/189-stream-\(expanded ? "expanded-" : "")\(tag).png")
-            snapshot(card, label: "\(name) catch-up+\(tag)s", png: png, content: content())
+            snapshot(card, label: "\(name) catch-up+\(tag)s", png: png)
         }
         card.hide(returnKey: false)
         spin(0.3)
     }
 
-    private static func snapshot(_ card: AnswerCard, label: String, png: URL?, content: CGFloat?) {
+    private static func snapshot(_ card: AnswerCard, label: String, png: URL?) {
+        let content = card.contentHeight
         let panel = card.panel
         guard let root = panel.contentView else { return log("\(label): no content view") }
         let hosting = root.subviews.first { $0 is NSHostingView<AnswerCardView> }

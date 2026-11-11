@@ -18,6 +18,8 @@ final class AnswerCardModel: ObservableObject {
     var onFollowUp: ((String) -> Void)?
     var onApprove: ((Decision) -> Void)?
     var onExpandChanged: ((Bool) -> Void)?
+    /// 189 F6: the markdown body's rendered height changed (it lays out after its async parse, not with `s`).
+    var onContentHeight: ((CGFloat) -> Void)?
 
     /// Header label (§10.3 / §12.2).
     var who: String { s.kind == .command ? "Command · theuth desk" : "theuth desk" }
@@ -127,7 +129,9 @@ struct AnswerCardView: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let q = turn?.question, !q.isEmpty { Text("“\(q)”").font(.body).foregroundColor(.tertiary) }
                 if let c = turn?.command { commandBody(c, compact: false) }
-                else if let text = turn?.text, !text.isEmpty { AnswerMarkdown(text: text) }
+                else if let text = turn?.text, !text.isEmpty {
+                    AnswerMarkdown(text: s.markdownText(turn: s.current), onHeight: model.onContentHeight) // 189 F7: hold-back while streaming
+                }
                 else if s.phase == .thinking { ProgressView().controlSize(.small).padding(.vertical, 2) }
                 if let tools = turn?.tools, !tools.isEmpty, turn?.command == nil { chips(tools, running: s.phase == .thinking) }
             }
@@ -314,15 +318,15 @@ struct AnswerMarkdown: View {
     /// `--probe-markdown` passes `false`: an off-screen window drives no fade, so the text would stay transparent.
     var animate = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 189 F6: the rendered height, on every change — the card re-measures its panel with it.
+    var onHeight: ((CGFloat) -> Void)?
     @State private var document = RenderableDocument.empty
-    /// `--probe-markdown-stream` reads the rendered height (the library lays out after the async parse, not with the card).
-    static var contentHeight: ((CGFloat) -> Void)?
 
     var body: some View {
         let config = animate && !reduceMotion ? Self.animated : Self.still
         DocumentView(renderableDocument: document, config: config)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { Self.contentHeight?($0) })
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { h in onHeight?(h) })
             .task(id: text) {
                 let parsed = await Self.parse(text, config: config)
                 if !Task.isCancelled { document = parsed } // a newer snapshot's task replaced this one
@@ -346,7 +350,7 @@ struct AnswerMarkdown: View {
         return MarkdownRenderConfig(
             shouldAnimateText: animate,
             blockQuoteStyle: .init(textFonts: body, textColor: secondary),
-            headingStyle: .init(h1Font: fonts(.title3, weight: .semibold), h2Font: fonts(.headline), h3Font: fonts(.body, weight: .semibold),
+            headingStyle: .init(h1Font: fonts(.title3, weight: .semibold), h2Font: fonts(.headline, weight: .semibold), h3Font: fonts(.body, weight: .semibold),
                                 h4Font: fonts(.body, weight: .semibold), h5Font: fonts(.body, weight: .semibold),
                                 h6Font: fonts(.body, weight: .semibold), textColor: label),
             orderedListStyle: text,
@@ -416,8 +420,29 @@ final class AnswerCard {
         hosting.autoresizingMask = [.width, .height]
         container.addSubview(hosting)
         model.objectWillChange.receive(on: RunLoop.main)
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.relayout() } }
+            .sink { [weak self] _ in self?.scheduleRelayout() }
             .store(in: &subs)
+        // 189 F6: the markdown lays out after its async parse, after the model change that started it: re-measure then too.
+        model.onContentHeight = { [weak self] h in
+            self?.contentHeight = h
+            self?.scheduleRelayout()
+        }
+    }
+
+    /// The markdown body's last rendered height (`--probe-markdown-stream` logs it); `nil` before the first.
+    private(set) var contentHeight: CGFloat?
+    private var relayoutPending = false
+
+    /// One `place()` on the next run-loop turn however many changes land before it: `objectWillChange` fires before the
+    /// change, and a stream of height changes costs one measure per turn.
+    private func scheduleRelayout() {
+        guard !relayoutPending else { return }
+        relayoutPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.relayoutPending = false
+            self.relayout()
+        }
     }
 
     var isVisible: Bool { panel.isVisible }

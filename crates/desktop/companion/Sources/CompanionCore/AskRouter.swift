@@ -214,13 +214,17 @@ public struct AskReply: Equatable, Sendable {
     /// What the receipt row shows after "theuth · ": the answer's first two lines, or why there is none.
     public var receiptText: String { failureLine ?? firstTwoLines }
 
-    /// The first two non-empty lines, markdown bullets and heading marks stripped, joined with " — ".
+    /// 189 F5: the first two lines worth reading, one per line — heading lines, code fences and marker-only lines (rules)
+    /// dropped, quote and list markers stripped with the item text kept, inline marks rendered away (`**`, backticks, links).
     public var firstTwoLines: String {
-        let lines = text.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces).drop { "#-*>".contains($0) || $0 == " " } }
-            .map { String($0).trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        return lines.prefix(2).joined(separator: " — ")
+        var out: [String] = []
+        for raw in text.split(whereSeparator: \.isNewline) where !MarkdownLines.markersOnly(raw) {
+            guard let content = MarkdownLines.content(raw) else { continue }
+            let plain = MarkdownLines.plain(content)
+            if !plain.isEmpty { out.append(plain) }
+            if out.count == 2 { break }
+        }
+        return out.joined(separator: "\n")
     }
 
     /// The transcript's text replaces the streamed text (it is authoritative); no text anywhere is `noReply`.
@@ -248,6 +252,61 @@ public struct AskReply: Equatable, Sendable {
         let line = message.split(whereSeparator: \.isNewline).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
         guard !line.isEmpty else { return "the turn failed" }
         return line.count > 80 ? String(line.prefix(79)) + "…" : line
+    }
+}
+
+/// 189 F5/F7: line-level markdown for the plain-text preview and the streaming hold-back.
+public enum MarkdownLines {
+    /// 189 F7: `text` without a trailing line made only of markers and spaces (`#`, `## `, `- `, `1.`, `> `). The markdown
+    /// library lays such a line out as an empty block and keeps it 0 pt tall when its text arrives in place, so while a
+    /// reply streams the block first appears with real text. A finished reply is shown whole.
+    public static func holdBack(_ text: String) -> String {
+        let start = text.lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
+        return markersOnly(text[start...]) ? String(text[..<start]) : text
+    }
+
+    /// Only `#`, `-`, `*`, `+`, `>`, digits followed by `.` or `)`, and spaces; a blank line is not.
+    static func markersOnly(_ line: Substring) -> Bool {
+        let s = line.filter { $0 != " " && $0 != "\t" }
+        guard !s.isEmpty else { return false }
+        var i = s.startIndex
+        while i < s.endIndex {
+            if "#-*+>".contains(s[i]) { i = s.index(after: i); continue }
+            guard s[i].isASCII, s[i].isNumber else { return false }
+            let j = s[i...].firstIndex { !($0.isASCII && $0.isNumber) } ?? s.endIndex
+            guard j < s.endIndex, s[j] == "." || s[j] == ")" else { return false }
+            i = s.index(after: j)
+        }
+        return true
+    }
+
+    /// The line's text after its block markers (quote `>`s, then one list marker); `nil` for a heading or a code fence.
+    static func content(_ line: Substring) -> Substring? {
+        var s = line.drop { $0 == " " || $0 == "\t" }
+        if s.hasPrefix("#") || s.hasPrefix("```") || s.hasPrefix("~~~") { return nil }
+        while s.first == ">" { s = s.dropFirst().drop { $0 == " " } }
+        if let n = listMarker(s) { s = s.dropFirst(n).drop { $0 == " " } }
+        return s
+    }
+
+    /// The length of a list marker (`-`, `*`, `+`, `1.`, `1)`) at the start of `s`, followed by a space or the end.
+    static func listMarker(_ s: Substring) -> Int? {
+        var n: Int
+        if let c = s.first, "-*+".contains(c) {
+            n = 1
+        } else {
+            n = s.prefix { $0.isASCII && $0.isNumber }.count
+            guard n > 0, n < s.count, ".)".contains(s[s.index(s.startIndex, offsetBy: n)]) else { return nil }
+            n += 1
+        }
+        let rest = s.dropFirst(n)
+        return rest.isEmpty || rest.first == " " || rest.first == "\t" ? n : nil
+    }
+
+    /// Inline markdown rendered to its characters (Foundation's parser), trimmed.
+    static func plain(_ s: Substring) -> String {
+        let a = try? AttributedString(markdown: String(s), options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
+        return (a.map { String($0.characters) } ?? String(s)).trimmingCharacters(in: .whitespaces)
     }
 }
 
