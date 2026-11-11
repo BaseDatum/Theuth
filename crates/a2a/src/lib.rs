@@ -178,6 +178,11 @@ struct Ctx {
     contacts: Mutex<contacts::Contacts>,
     /// 183 F1: each contact's last fetched offers, by endpoint id.
     offers: Mutex<std::collections::HashMap<String, contacts::offers::Cached>>,
+    /// 191 (D2): `contacts_ready`, shared with the agent (which only reads it): set once the
+    /// mesh latch is done and the first contact reconcile finished.
+    ready: Arc<std::sync::atomic::AtomicBool>,
+    /// 191 (D2): the mesh's bounded first-sync latch (`mesh::synced`; a test's own).
+    latched: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -214,6 +219,8 @@ struct State {
     mode_warned: bool,
     /// 190 (D10): this process tried the one-time notice.
     notice_tried: bool,
+    /// 191 (D2): the content hash of the records the last reconcile installed.
+    records_hash: Option<u64>,
 }
 
 /// 190 (D10): unless the marker `a2a/.190-full-notice` exists beside `peers.yaml`, log one
@@ -316,16 +323,48 @@ impl Ctx {
         }
     }
 
-    /// Read, validate and atomically install `peers.yaml` (§6.1). On `Err`
-    /// the previous configuration stays live and the message lands in status.
+    /// 191 (D2): the reconcile pass. After the mesh latch: import what `peers.yaml` still
+    /// holds of contacts and exports, converge the records, stage them (a bad record is
+    /// quarantined, never the whole set) with the file's HTTP peers, and install it all
+    /// atomically (§6.1): routes, revokes, inbox caps, closes. The first pass to finish sets
+    /// `contacts_ready`. Before the latch nothing is staged: no route, the gate closed. On
+    /// `Err` the previous configuration stays live and the message lands in status.
     async fn reload(&self) -> Result<(), String> {
         self.reload_as(false).await
+    }
+
+    /// [`Self::reload`], falling back to the last good HTTP peers when the file's are
+    /// broken, so the contact records always reconcile (a block always applies); the error
+    /// stays in status and `A2aChanged` fires.
+    pub(crate) async fn reconcile_now(&self) {
+        let outcome = match self.reload().await {
+            Ok(()) => Ok(()),
+            Err(e) => match self.reload_as(true).await {
+                Ok(()) => {
+                    tracing::warn!("a2a: peers.yaml: its HTTP peers keep their old settings: {e}");
+                    // Let the hot reload retry the full file (and report it once).
+                    self.state.lock().stamp = None;
+                    Err(e)
+                }
+                Err(again) => Err(again),
+            },
+        };
+        if let Err(e) = &outcome {
+            tracing::warn!("a2a: reconcile: {e}");
+        }
+        self.state.lock().error = outcome.err();
+        self.rt.publish(A2aChanged {}).await;
     }
 
     /// [`Self::reload`]; `keep_http` puts the last good HTTP peers where the file's are.
     async fn reload_as(&self, keep_http: bool) -> Result<(), String> {
         let _serial = self.reload_lock.lock().await;
         let agents = self.agents()?;
+        // 191 (D2, D7): nothing before the mesh's bounded latch: a block or removal made on
+        // another machine may not have synced yet.
+        if !(self.latched)() {
+            return Ok(());
+        }
         let listener = self.listener.clone()?;
         let (vault, policy) = {
             let s = self.state.lock();
@@ -365,6 +404,27 @@ impl Ctx {
                 contacts::drop_export(&mut file, name);
             }
             tracing::info!(exports = ?gone, "a2a: exported chats deleted; exports removed");
+        }
+        let console = std::fs::read_to_string(self.rt.data_dir.join("token"))
+            .ok()
+            .map(|t| t.trim().to_owned());
+        let resolve = |name: &str| vault.as_ref().and_then(|v| v.get(name, 0));
+        // 191 (D2 import): contacts and exports an earlier build wrote become records, once;
+        // the file is rewritten with its HTTP peers only (a crash before the rewrite imports
+        // again onto the same rows).
+        let notice_file = file.clone();
+        let imported =
+            file.peers.values().any(config::PeerEntry::is_contact) || !file.exports.is_empty();
+        if imported {
+            let mut only = file.clone();
+            only.peers.retain(|_, p| p.is_contact());
+            let staged = config::stage(&only, &resolve, console.as_deref(), self.cfg.contact_cap)
+                .map_err(|e| format!("peers.yaml import: {}", e.join("; ")))?;
+            self.import(&only, &staged).await?;
+            file.peers.retain(|_, p| !p.is_contact());
+            file.exports.clear();
+        }
+        if imported || !gone.is_empty() {
             let text = contacts::store::render(&head, &file)?;
             contacts::store::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
             self.state.lock().stamp = contacts::store::stamp(&path);
@@ -372,32 +432,67 @@ impl Ctx {
         // 183 Z3-R2: after a failed full reload a contact edit retries with the last good
         // HTTP peers, so a broken HTTP entry never blocks it.
         if keep_http {
-            file.peers.retain(|_, p| p.is_contact());
-            for (k, p) in self.state.lock().http_good.clone() {
-                file.peers.entry(k).or_insert(p);
-            }
+            file.peers.clear();
+            file.peers.extend(self.state.lock().http_good.clone());
         }
-        // 183 W-26: without `a2a.enabled` only contacts are live; HTTP peers stay dormant.
+        // 183 W-26: without `a2a.enabled` HTTP peers stay dormant.
         if !self.enabled {
-            file.peers.retain(|_, p| p.is_contact());
+            file.peers.clear();
         }
-        let console = std::fs::read_to_string(self.rt.data_dir.join("token"))
-            .ok()
-            .map(|t| t.trim().to_owned());
-        let resolve = |name: &str| vault.as_ref().and_then(|v| v.get(name, 0));
-        let staged = config::stage(&file, &resolve, console.as_deref(), self.cfg.contact_cap)
-            .map_err(|e| e.join("; "))?;
+        // 191 (D2): converge, then stage the records row by row.
+        let mut records = self.records().await?;
+        let writes = contacts::records::reconcile_writes(&records);
+        if !writes.is_empty() {
+            self.ask(
+                &agents,
+                agent::communication::network::WriteContactRecords(writes),
+            )
+            .await?;
+            records = self.records().await?;
+        }
+        let family: std::collections::BTreeSet<String> = self
+            .net()
+            .map(|n| {
+                n.paired_ids()
+                    .iter()
+                    .map(ToString::to_string)
+                    .chain([n.id.0.clone()])
+                    .collect()
+            })
+            .unwrap_or_default();
+        let base = contacts::records::stage_records(&records, &family, self.cfg.contact_cap);
+        for q in &base.quarantined {
+            tracing::warn!(contact = %q.alias, id = %q.id, problem = %q.problem, "a2a: contact record quarantined");
+        }
+        let mut staged = config::stage_on(
+            base,
+            &file,
+            &resolve,
+            console.as_deref(),
+            self.cfg.contact_cap,
+        )
+        .map_err(|e| e.join("; "))?;
 
-        // Sessions are the agent's to validate (§6.3: native, existing).
-        let mut errors = Vec::new();
+        // Sessions are the agent's to validate (§6.3: native, existing). 191: a replicated
+        // export whose chat this machine cannot publish (not here yet, an external harness)
+        // is left out of this machine's routes, and so are its grants; nothing else is.
+        let mut unpublished = Vec::new();
         for e in staged.exports.values() {
             if let Err(err) = self
                 .ask(&agents, ValidateExport { session: e.session })
                 .await
             {
-                errors.push(format!("export {}: {err}", e.name));
+                tracing::debug!(export = %e.name, "a2a: export not published here: {err}");
+                unpublished.push(e.name.clone());
             }
         }
+        for name in &unpublished {
+            staged.exports.remove(name);
+            for p in staged.peers.values_mut() {
+                p.exports.retain(|x| x != name);
+            }
+        }
+        let mut errors = Vec::new();
         for p in staged.peers.values() {
             for s in &p.sessions {
                 if let Err(err) = self.ask(&agents, ValidateExport { session: *s }).await {
@@ -511,6 +606,7 @@ impl Ctx {
                 PeerRoute {
                     alias: p.name.clone(),
                     endpoint: p.endpoint(),
+                    binding: p.record.as_ref().map(|(_, b)| *b),
                     roots: p.sessions.clone(),
                     generation: epochs[&p.name].clone(),
                     sender,
@@ -523,11 +619,15 @@ impl Ctx {
                 }
             })
             .collect();
+        // 191: a renamed record keeps its binding (re-bound under the new alias), so its old
+        // alias is not revoked.
+        let rebound: std::collections::HashSet<Uuid> =
+            routes.iter().filter_map(|r| r.binding).collect();
         let revoke: Vec<String> = prev
             .bindings
-            .keys()
-            .filter(|a| !staged.peers.contains_key(*a))
-            .cloned()
+            .iter()
+            .filter(|(a, b)| !staged.peers.contains_key(*a) && !rebound.contains(*b))
+            .map(|(a, _)| a.clone())
             .collect();
         // 183 F4: a contact whose grant epoch rotates, or whose cap changes, keeps a held
         // first message only for an export whose definition is unchanged (it moves to the new
@@ -602,7 +702,60 @@ impl Ctx {
             .collect();
         // 183 F1: a contact whose grants here changed hears it and fetches our card again.
         let notice = contacts::offers::changed(&prev.staged, &live.staged);
+        // 191 (D2 steps 5, 6): a contact that is no longer admitted here (blocked, removed,
+        // merged away or quarantined, wherever that was decided) loses its held first
+        // messages and its open connections.
+        let ended: Vec<(String, Vec<String>)> = prev
+            .staged
+            .contacts
+            .iter()
+            .filter(|(alias, f)| !f.blocked && prev.bindings.contains_key(*alias))
+            .filter(|(alias, f)| {
+                live.staged
+                    .contacts
+                    .get(*alias)
+                    .is_none_or(|n| n.blocked || n.id != f.id)
+            })
+            .map(|(alias, f)| {
+                let gone = f
+                    .eids
+                    .iter()
+                    .filter(|e| {
+                        live.staged.deny.contains(*e)
+                            || live.staged.removed.contains(*e)
+                            || !live
+                                .staged
+                                .contacts
+                                .values()
+                                .any(|n| !n.blocked && n.eids.contains(e))
+                    })
+                    .cloned()
+                    .collect();
+                (alias.clone(), gone)
+            })
+            .collect();
+        let joined = !live.staged.contacts.is_empty();
         *self.shared.write() = live;
+        for (alias, eids) in ended {
+            if let Err(e) = agents
+                .ask(agent::communication::network::ContactRelease {
+                    contact: alias.clone(),
+                    export: None,
+                    allow: false,
+                })
+                .await
+            {
+                tracing::warn!(%alias, "a2a: release held tasks: {e}");
+            }
+            if let Some(net) = self.net() {
+                for eid in eids {
+                    net.close_a2a(&eid);
+                }
+            }
+        }
+        if joined && let Some(net) = self.net() {
+            net.join_network().await;
+        }
         // 183 review 2: the old Live admitted until this swap, so a first message it held
         // after the first ask is checked again (the same answer: kept or failed).
         for m in rebind {
@@ -630,8 +783,9 @@ impl Ctx {
         // 190 (D10): once, at the first good load after the upgrade, every grant says it is
         // full now (tried once per process, so an unwritable marker never repeats it).
         if !std::mem::replace(&mut self.state.lock().notice_tried, true) {
-            full_notice_once(&self.rt.data_dir, &file);
+            full_notice_once(&self.rt.data_dir, &notice_file);
         }
+        let hash = self.records().await.ok().map(|r| r.content_hash());
         {
             let mut s = self.state.lock();
             s.clients = clients;
@@ -642,66 +796,65 @@ impl Ctx {
                 .into_iter()
                 .filter(|(_, p)| !p.is_contact())
                 .collect();
+            s.records_hash = hash;
+        }
+        // 191 (D2): the first pass after the latch has revoked, capped and closed what the
+        // synced records say: contacts are admitted from now on, and the inbox caps still due
+        // are lifted (never before).
+        if !self.ready.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            tracing::info!("191: contacts ready (mesh latch and first contact reconcile done)");
+            let _ = agents
+                .tell(agent::communication::network::InboxPersonasChanged)
+                .await;
         }
         Ok(())
     }
 
-    /// 183 §7.8: change `peers.yaml` with `f`, rewrite it atomically and reload. A reload
-    /// that refuses the result puts the old text back (and reloads it), so the file on disk
-    /// is never one the engine refused; `A2aChanged` follows a change that took.
-    async fn edit<T>(
-        &self,
-        f: impl FnOnce(&mut PeersFile) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let _serial = self.edit_lock.lock().await;
-        let path = self.rt.data_dir.join(PEERS_FILE);
-        let before = match std::fs::read_to_string(&path) {
-            Ok(t) => Some(t),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("{}: {e}", path.display())),
-        };
-        let (head, mut file) = contacts::store::parse(before.as_deref().unwrap_or(""))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        let out = f(&mut file)?;
-        let text = contacts::store::render(&head, &file)?;
-        let io = |e: std::io::Error| format!("{}: {e}", path.display());
-        contacts::store::write(&path, &text).map_err(io)?;
-        if let Err(e) = self.reload().await {
-            // 183 Z3-R2: an HTTP peer's problem (a broken entry, an incompatible card) must
-            // not undo a contact edit: retry with the last good HTTP peers in its place. A
-            // contact's own problem fails that retry too, and the old text goes back.
-            if self.reload_as(true).await.is_ok() {
-                tracing::warn!(
-                    "a2a: peers.yaml applied; its HTTP peers keep their old settings: {e}"
-                );
-                {
-                    let mut s = self.state.lock();
-                    s.error = Some(e);
-                    // Let the hot reload retry the full file (and report it once).
-                    s.stamp = None;
-                }
-                self.rt.publish(A2aChanged {}).await;
-                return Ok(out);
-            }
-            match &before {
-                Some(old) => contacts::store::write(&path, old).map_err(io)?,
-                None => std::fs::remove_file(&path).map_err(io)?,
-            }
-            if let Err(again) = self.reload().await {
-                tracing::warn!("a2a: peers.yaml restore: {again}");
-            }
-            return Err(e);
+    /// 191 (D2 import): `only` (the file's contacts and exports, validated as `staged` as an
+    /// earlier build did) into records ([`contacts::records::import`]), and this machine's
+    /// inboxes marked in their session rows.
+    async fn import(&self, only: &PeersFile, staged: &config::Staged) -> Result<(), String> {
+        let agents = self.agents()?;
+        let records = self.records().await?;
+        let imp = contacts::records::import(only, staged, &records);
+        for alias in &imp.skipped {
+            tracing::info!(contact = %alias, "191: peers.yaml names a contact your mesh removed; not imported");
         }
-        self.state.lock().error = None;
-        self.rt.publish(A2aChanged {}).await;
-        Ok(out)
+        self.ask(
+            &agents,
+            agent::communication::network::WriteContactRecords(imp.writes),
+        )
+        .await?;
+        for (eid, addrs) in imp.addrs {
+            self.ask(
+                &agents,
+                agent::communication::network::SetContactAddrs { eid, addrs },
+            )
+            .await?;
+        }
+        let marked = self
+            .ask(
+                &agents,
+                agent::communication::network::BackfillContactInboxes(imp.exports),
+            )
+            .await?;
+        tracing::info!(
+            contacts = staged.contacts.len(),
+            exports = staged.exports.len() + staged.agents.len(),
+            inboxes = marked,
+            "191: peers.yaml contacts and exports imported into the mesh records"
+        );
+        Ok(())
     }
 
     /// 183 §7.8: hot reload: an owner's hand edit of `peers.yaml` is picked up within
-    /// [`HOT_RELOAD`] (the RPCs' own writes reload at once and move the stamp).
-    /// ponytail: mtime polling; a file watcher if two seconds is ever too slow.
+    /// [`HOT_RELOAD`] (the RPCs' own writes reload at once and move the stamp). 191 (D2): so
+    /// is every change to the contact records, by a hash over their content (never a row's
+    /// `hlc`: a remote column write older than the row's newest column leaves it unchanged,
+    /// and a parked batch applied late is never on the change feed), and the first pass
+    /// after the mesh latch.
+    /// ponytail: mtime and content polling; a file watcher if two seconds is ever too slow.
     async fn watch_file(self: Arc<Self>) {
-        let path = self.rt.data_dir.join(PEERS_FILE);
         let stop = self.rt.shutdown.clone();
         loop {
             tokio::select! {
@@ -710,20 +863,54 @@ impl Ctx {
             }
             // 183 §7.2: keep each contact's last live direct addresses for the next dial.
             self.remember_addrs().await;
-            let now = contacts::store::stamp(&path);
-            if now == self.state.lock().stamp {
-                continue;
+            let was = self.ready.load(std::sync::atomic::Ordering::SeqCst);
+            self.tick().await;
+            // 183 F1: what each contact shares with us is memory; fetch it once admitted.
+            if !was && self.ready.load(std::sync::atomic::Ordering::SeqCst) {
+                let eids: Vec<String> = self
+                    .shared
+                    .read()
+                    .staged
+                    .contacts
+                    .values()
+                    .filter(|f| !f.blocked)
+                    .map(|f| f.eid.clone())
+                    .collect();
+                for eid in eids {
+                    self.refresh_offers_soon(&eid);
+                }
             }
-            let _serial = self.edit_lock.lock().await;
-            let outcome = self.reload().await;
-            if let Err(e) = &outcome {
-                tracing::warn!("a2a peers.yaml: {e}");
-                // Do not retry an unchanged broken file every tick.
-                self.state.lock().stamp = now;
-            }
-            self.state.lock().error = outcome.err();
-            self.rt.publish(A2aChanged {}).await;
         }
+    }
+
+    /// One [`Self::watch_file`] pass: reconcile when the file, the records' content or the
+    /// first post-latch pass asks for it. Returns whether it ran.
+    async fn tick(&self) -> bool {
+        let path = self.rt.data_dir.join(PEERS_FILE);
+        let now = contacts::store::stamp(&path);
+        let file = now != self.state.lock().stamp;
+        let pending = !self.ready.load(std::sync::atomic::Ordering::SeqCst) && (self.latched)();
+        let records = match self.records().await {
+            Ok(r) => Some(r.content_hash()) != self.state.lock().records_hash,
+            Err(_) => false,
+        };
+        if !(file || pending || records) {
+            return false;
+        }
+        let _serial = self.edit_lock.lock().await;
+        let outcome = self.reload().await;
+        if let Err(e) = &outcome {
+            tracing::warn!("a2a peers.yaml: {e}");
+            // Do not retry an unchanged broken file every tick; the records still
+            // reconcile, with the last good HTTP peers.
+            self.state.lock().stamp = now;
+            if let Err(again) = self.reload_as(true).await {
+                tracing::warn!("a2a: reconcile: {again}");
+            }
+        }
+        self.state.lock().error = outcome.err();
+        self.rt.publish(A2aChanged {}).await;
+        true
     }
 
     /// Bind or stop the listener to match `a2a.enabled && global
@@ -1019,6 +1206,8 @@ impl runtime::Plugin for A2aPlugin {
                 cfg!(debug_assertions) && std::env::var_os("THEUTH_DEV_CONTACTS_DIR").is_some(),
             )),
             offers: Mutex::default(),
+            ready: agent::communication::network::CONTACTS_READY.clone(),
+            latched: Arc::new(mesh::synced),
         });
         let actor = A2aActor::spawn_with_mailbox(
             A2aActor { ctx: ctx.clone() },
@@ -1047,6 +1236,21 @@ async fn test_ctx(
     cfg: A2aConfig,
     agents: Option<ActorRef<Agents>>,
 ) -> Arc<Ctx> {
+    let ready = agent::communication::network::CONTACTS_READY.clone();
+    test_ctx_gated(dir, net, mdns, cfg, agents, ready, Arc::new(mesh::synced)).await
+}
+
+/// 191 tests: [`test_ctx`] with its own `contacts_ready` flag and mesh latch.
+#[cfg(test)]
+async fn test_ctx_gated(
+    dir: &std::path::Path,
+    net: Arc<mesh::net::Net>,
+    mdns: Arc<dyn contacts::discovery::Mdns>,
+    cfg: A2aConfig,
+    agents: Option<ActorRef<Agents>>,
+    ready: Arc<std::sync::atomic::AtomicBool>,
+    latched: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Arc<Ctx> {
     let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
     let listener = cfg.listener();
     let ctx = Arc::new(Ctx {
@@ -1065,6 +1269,8 @@ async fn test_ctx(
         mdns,
         contacts: Mutex::new(contacts::Contacts::new(true)),
         offers: Mutex::default(),
+        ready,
+        latched,
     });
     if let Some(agents) = agents {
         let policy = agents.ask(PeerPolicy).await.unwrap();
@@ -1189,6 +1395,7 @@ mod tests {
                     exports: vec![],
                     allow_private: false,
                     eid: None,
+                    record: None,
                 },
             );
         }

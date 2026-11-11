@@ -521,7 +521,13 @@ impl Agents {
     /// inbox at once; an agent gone caps it). One whose contact is in no route (before the
     /// first reload, or gone) is left to its actor start and the reload.
     pub(crate) async fn refresh_full_inboxes(&mut self) {
-        if self.identity.is_none() {
+        // 191 (D7): no cap is lifted before `contacts_ready` (the a2a plugin tells
+        // `InboxPersonasChanged` right after the flip).
+        if self.identity.is_none()
+            || !self
+                .contacts_ready
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
             return;
         }
         let rows = match self.store.full_a2a_inboxes().await {

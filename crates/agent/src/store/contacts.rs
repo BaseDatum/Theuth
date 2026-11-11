@@ -255,7 +255,15 @@ impl Store {
             exports,
             addrs: addrs
                 .into_iter()
-                .map(|(eid, a)| (eid, a.split(',').filter(|s| !s.is_empty()).map(str::to_owned).collect()))
+                .map(|(eid, a)| {
+                    (
+                        eid,
+                        a.split(',')
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .collect(),
+                    )
+                })
                 .collect(),
             revoked: revoked.into_iter().map(|(id,)| id).collect(),
             live_bindings: live.into_iter().collect(),
@@ -326,7 +334,11 @@ impl Store {
 
     /// 191 (D4): mark `session` as the inbox `marker` names. The session log has one writer,
     /// the owner: a session another machine owns is left as it is (`Ok(false)`).
-    pub async fn set_contact_inbox(&self, session: SessionId, marker: &str) -> anyhow::Result<bool> {
+    pub async fn set_contact_inbox(
+        &self,
+        session: SessionId,
+        marker: &str,
+    ) -> anyhow::Result<bool> {
         let mut tx = self.begin_write().await?;
         let n = sqlx::query(
             "UPDATE sessions SET contact_inbox = ?1 WHERE id = ?2 AND (owner = ?3 OR owner = '') \
@@ -373,5 +385,133 @@ impl Store {
             }
         }
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::communication::A2aScope;
+
+    async fn fresh() -> (Store, SessionId, crate::TestDir) {
+        let scratch = crate::TestDir::new("contacts");
+        let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        (store, id, scratch)
+    }
+
+    /// 191 (D2, M1): a row's `hlc` is the max over its columns, so a remote write of an
+    /// older column changes the row and leaves its `hlc` as it was; the content hash the
+    /// reconcile keys on still moves.
+    #[tokio::test]
+    async fn the_content_hash_moves_on_a_column_write_that_leaves_hlc_alone() {
+        let (store, _, _dir) = fresh().await;
+        store
+            .write_contact_records(&[RecordWrite::new(
+                RecordTable::Contacts,
+                "c1",
+                vec![
+                    ("alias", Cell::Text("bob".into())),
+                    ("blocked", Cell::Int(0)),
+                ],
+            )])
+            .await
+            .unwrap();
+        sqlx::query("UPDATE contacts SET hlc = '0000000000002-0000-x' WHERE id = 'c1'")
+            .execute(&store.write)
+            .await
+            .unwrap();
+        let before = store.contact_records().await.unwrap().content_hash();
+        // What the replica's apply does for a remote `blocked` older than the row's newest
+        // column: that column only.
+        sqlx::query("UPDATE contacts SET blocked = 1 WHERE id = 'c1'")
+            .execute(&store.write)
+            .await
+            .unwrap();
+        let hlc: String = sqlx::query_scalar("SELECT hlc FROM contacts WHERE id = 'c1'")
+            .fetch_one(&store.read)
+            .await
+            .unwrap();
+        assert_eq!(hlc, "0000000000002-0000-x", "the row's hlc did not move");
+        let after = store.contact_records().await.unwrap();
+        assert_ne!(after.content_hash(), before);
+        assert_eq!(after.contacts[0].blocked, Some(1));
+        // A write names only its columns: the others keep what another machine wrote.
+        store
+            .write_contact_records(&[RecordWrite::new(
+                RecordTable::Contacts,
+                "c1",
+                vec![("alias", Cell::Text("robert".into()))],
+            )])
+            .await
+            .unwrap();
+        let row = &store.contact_records().await.unwrap().contacts[0];
+        assert_eq!(
+            (row.alias.as_deref(), row.blocked),
+            (Some("robert"), Some(1))
+        );
+    }
+
+    /// 191 (D4): the import marks every local inbox of a session this machine owns with
+    /// `<principal>|<export id>` (its export's name mapped to its id); a session another
+    /// machine owns is left alone (one writer per session row), and the marker is a session
+    /// log write, so it travels with the session row.
+    #[tokio::test]
+    async fn the_import_backfills_inbox_markers_on_owned_sessions_only() {
+        let (store, mine, _dir) = fresh().await;
+        let theirs = SessionId::new();
+        store
+            .create_session(theirs, "m", None, None, None)
+            .await
+            .unwrap();
+        for (s, export) in [(mine, "research"), (theirs, "research")] {
+            let scope = A2aScope {
+                principal: "peer:b1",
+                export,
+            };
+            store
+                .create_a2a_context(scope, &format!("ctx-{s}"), s)
+                .await
+                .unwrap();
+            store
+                .mark_a2a_inbox(s, None, "research", true, None)
+                .await
+                .unwrap();
+        }
+        // As the session log would apply it: on a connection the capture session is not on.
+        sqlx::query("UPDATE sessions SET owner = 'other-engine' WHERE id = ?")
+            .bind(theirs.to_string())
+            .execute(&store.read)
+            .await
+            .unwrap();
+        let seq = store
+            .log_after(0)
+            .await
+            .unwrap()
+            .last()
+            .map_or(0, |r| r.seq);
+        let ids = BTreeMap::from([("research".to_owned(), "x1".to_owned())]);
+        assert_eq!(store.backfill_contact_inboxes(&ids).await.unwrap(), 1);
+        assert_eq!(
+            store.contact_inbox(mine).await.unwrap().as_deref(),
+            Some("peer:b1|x1")
+        );
+        assert_eq!(store.contact_inbox(theirs).await.unwrap(), None);
+        let logged = store.log_after(seq).await.unwrap();
+        assert!(
+            logged.iter().any(|r| r.session_id == mine.to_string()),
+            "the marker is in the session log"
+        );
+        assert_eq!(
+            store.backfill_contact_inboxes(&ids).await.unwrap(),
+            0,
+            "marked once"
+        );
     }
 }

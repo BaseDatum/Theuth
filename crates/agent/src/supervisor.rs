@@ -343,6 +343,10 @@ pub struct Agents {
     /// roster installs it with [`InstallIdentitySource`]. `None`: every
     /// session is theuth's.
     pub(crate) identity: Option<Arc<dyn IdentitySource>>,
+    /// 191 (D2): the flag the a2a plugin sets once the mesh latch and its first contact
+    /// reconcile are done ([`crate::communication::network::CONTACTS_READY`]; a test's own).
+    /// Read, never asked for: the agent never waits on the a2a actor.
+    pub(crate) contacts_ready: Arc<std::sync::atomic::AtomicBool>,
     /// 125 §4.2: ids of advisor sessions seen by this process — never a
     /// peer, told nothing about peers, speaking as the advisor.
     pub(crate) advisors: HashSet<SessionId>,
@@ -11431,6 +11435,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             transport: None,
             inbound_chain: None,
             identity: None,
+            contacts_ready: crate::communication::network::CONTACTS_READY.clone(),
             advisors: HashSet::new(),
             advisor_cfg: cfg.advisor.clone(),
             activity: crate::activity::Monitor::default(),
@@ -12538,6 +12543,13 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         transport: None,
         inbound_chain: None,
         identity: None,
+        // A unit test of this crate is past the latch unless it says otherwise (its own flag);
+        // the a2a tests' engines share the process flag, which their reconcile sets.
+        contacts_ready: if cfg!(test) {
+            Arc::new(std::sync::atomic::AtomicBool::new(true))
+        } else {
+            crate::communication::network::CONTACTS_READY.clone()
+        },
         advisors: HashSet::new(),
         advisor_cfg: AdvisorConfig::default(),
         activity: crate::activity::Monitor::default(),

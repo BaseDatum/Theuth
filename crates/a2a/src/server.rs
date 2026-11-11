@@ -184,10 +184,22 @@ impl Live {
             .values()
             .filter_map(|p| Some((p.inbound.clone()?, principal(p)?)))
             .collect();
+        // 191 (D2): every anchor of a contact's group is its principal; a denied or removed
+        // endpoint never is.
         let contacts: HashMap<String, Arc<Principal>> = staged
             .peers
             .values()
-            .filter_map(|p| Some((p.eid.clone()?, principal(p)?)))
+            .filter(|p| p.eid.is_some())
+            .filter_map(|p| {
+                let principal = principal(p)?;
+                let eids = staged
+                    .contacts
+                    .get(&p.name)
+                    .map_or_else(|| p.eid.iter().cloned().collect(), |f| f.eids.clone());
+                Some(eids.into_iter().map(move |e| (e, principal.clone())))
+            })
+            .flatten()
+            .filter(|(e, _)| !staged.deny.contains(e) && !staged.removed.contains(e))
             .collect();
         let epochs: Arc<HashMap<Uuid, CancellationToken>> = Arc::new(
             principals
@@ -229,6 +241,7 @@ impl Live {
             let prefix = format!("/agents/{name}");
             let handler = Arc::new(Handler {
                 export: name.clone(),
+                export_id: staged.export_ids.get(name).cloned(),
                 target,
                 agents: agents.clone(),
                 subscribers: subscribers.clone(),
@@ -251,6 +264,7 @@ impl Live {
         if !contacts.is_empty() {
             let handler = Arc::new(Handler {
                 export: RETURN_ROUTE.to_owned(),
+                export_id: None,
                 target: Target::Return,
                 agents: agents.clone(),
                 subscribers: subscribers.clone(),
@@ -561,6 +575,8 @@ enum Target {
 /// Application seam per export: typed requests → agent commands (§4).
 struct Handler {
     export: String,
+    /// 191 (D2): its replicated id (the inbox marker names it).
+    export_id: Option<String>,
     target: Target,
     agents: ActorRef<Agents>,
     subscribers: Arc<Semaphore>,
@@ -628,6 +644,7 @@ impl Handler {
                     binding,
                     agent: agent.clone(),
                     origin: origin.clone(),
+                    export_id: self.export_id.clone(),
                 })
                 .await?
             }
@@ -915,14 +932,21 @@ pub enum IrohGate {
 
 /// The gate for the remote endpoint id `remote` (family peers never get here: the mesh
 /// refuses them first). A live contact is its binding; a blocked one is refused even inside
-/// a window; a stranger passes only for the ceremony while a window is open.
-pub fn iroh_gate(live: &Live, remote: &str, window_open: bool) -> IrohGate {
+/// a window; a stranger passes only for the ceremony while a window is open. 191 (D2): an
+/// endpoint in the deny set (a quarantined or blocked record's) is refused before anything
+/// else; a removed record's endpoint is never admitted as a contact (it may pair again in a
+/// window), and no contact is admitted before `contacts_ready`.
+pub fn iroh_gate(live: &Live, remote: &str, window_open: bool, ready: bool) -> IrohGate {
+    if live.staged.deny.contains(remote) {
+        return IrohGate::Refuse;
+    }
     match live.staged.contact_by_eid(remote) {
         Some(alias) => match (
+            ready && !live.staged.removed.contains(remote),
             live.staged.contacts[alias].blocked,
             live.bindings.get(alias),
         ) {
-            (false, Some(binding)) => IrohGate::Contact {
+            (true, false, Some(binding)) => IrohGate::Contact {
                 binding: *binding,
                 alias: alias.to_owned(),
             },
@@ -1336,7 +1360,7 @@ mod tests {
 
     impl mesh::net::ContactAlpn for TestGate {
         fn admit(&self, remote: &str) -> bool {
-            iroh_gate(&self.0.read(), remote, self.1) != IrohGate::Refuse
+            iroh_gate(&self.0.read(), remote, self.1, true) != IrohGate::Refuse
         }
 
         fn stream(
@@ -1350,7 +1374,7 @@ mod tests {
                     return;
                 };
                 if matches!(
-                    iroh_gate(&shared.read(), &remote, false),
+                    iroh_gate(&shared.read(), &remote, false, true),
                     IrohGate::Contact { .. }
                 ) {
                     let io = crate::contacts::reach::Prefixed::new(line, stream);
@@ -1431,7 +1455,9 @@ mod tests {
             staged.contacts.insert(
                 "bob".into(),
                 crate::config::ContactFacts {
+                    id: String::new(),
                     eid: b.id.0.clone(),
+                    eids: vec![b.id.0.clone()],
                     display: "bob".into(),
                     machine: "Bob's MacBook".into(),
                     cap: tools::Risk::ReadOnly,

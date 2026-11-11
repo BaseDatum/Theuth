@@ -263,15 +263,21 @@ pub struct Peer {
     pub exports: Vec<String>,
     /// Private/loopback card origin permitted.
     pub allow_private: bool,
-    /// 183 §7.3: a contact's pinned endpoint id (its identity: a re-pin is a new grant).
+    /// 183 §7.3: a contact's pinned endpoint id (its identity: a re-pin is a new grant). 191:
+    /// a record's first anchor (the one dialled); every anchor is in [`ContactFacts::eids`].
     pub eid: Option<String>,
+    /// 191 (D2): a contact record's id and its replicated binding id.
+    pub record: Option<(String, uuid::Uuid)>,
 }
 
 impl Peer {
     /// Stable identity string for the store binding: the card origin+path, or
     /// `inbound` for a peer that never gets called (§5.1); 183 §7.3: `iroh:<eid>` for a
-    /// contact.
+    /// contact; 191: `contact:<record id>` for a contact record (constant for the record).
     pub fn endpoint(&self) -> String {
+        if let Some((id, _)) = &self.record {
+            return agent::communication::network::contact_record_endpoint(id);
+        }
         if let Some(eid) = &self.eid {
             return agent::communication::network::contact_endpoint(eid);
         }
@@ -285,8 +291,12 @@ impl Peer {
 /// a first-contact answer or a cap change is not a new grant epoch (open tasks survive it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContactFacts {
-    /// The pinned endpoint id.
+    /// 191 (D2): its record (a merge group's root); `""` for a `peers.yaml` entry (an import).
+    pub id: String,
+    /// The pinned endpoint id (191: the first anchor of the group).
     pub eid: String,
+    /// 191 (D2): every anchor of the group, `eid` first.
+    pub eids: Vec<String>,
     /// Display name from its card.
     pub display: String,
     /// Its machine, from its card.
@@ -301,6 +311,24 @@ pub struct ContactFacts {
     pub paired_ms: u64,
     /// Last known direct addresses (unparsable ones dropped).
     pub addrs: Vec<std::net::SocketAddr>,
+}
+
+/// 191 (D2): a contact record the reconcile quarantined: listed with its problem, never
+/// admitted, its endpoints denied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Quarantined {
+    /// The record id.
+    pub id: String,
+    /// Its alias as stored (may be the malformed value).
+    pub alias: String,
+    /// Its first endpoint (`""` when none).
+    pub eid: String,
+    /// Its machine.
+    pub machine: String,
+    /// When it was paired.
+    pub paired_ms: u64,
+    /// Why it is quarantined.
+    pub problem: String,
 }
 
 /// 183 §7.6: a validated agent export (contacts only): each (contact, export) gets its own
@@ -343,6 +371,16 @@ pub struct Staged {
     pub agents: BTreeMap<String, AgentExport>,
     /// 183 §9.4: every contact entry by alias, blocked ones included.
     pub contacts: BTreeMap<String, ContactFacts>,
+    /// 191 (D2): endpoints the gate refuses first, whatever else matches them: those of
+    /// quarantined and blocked records.
+    pub deny: std::collections::BTreeSet<String>,
+    /// 191 (D2): endpoints of removed records, never admitted as a contact until a newer
+    /// ceremony pins them in a live record (they may pair again).
+    pub removed: std::collections::BTreeSet<String>,
+    /// 191 (D2): records quarantined by the reconcile, listed with their problem.
+    pub quarantined: Vec<Quarantined>,
+    /// 191 (D2): export name → its replicated id (chat and agent exports).
+    pub export_ids: BTreeMap<String, String>,
 }
 
 impl Staged {
@@ -390,11 +428,12 @@ impl Staged {
             .collect()
     }
 
-    /// 183 §7.2: the alias of the contact (blocked or not) pinned to `eid`.
+    /// 183 §7.2: the alias of the contact (blocked or not) pinned to `eid`; 191: any anchor
+    /// of its group.
     pub fn contact_by_eid(&self, eid: &str) -> Option<&str> {
         self.contacts
             .iter()
-            .find(|(_, c)| c.eid == eid)
+            .find(|(_, c)| c.eid == eid || c.eids.iter().any(|e| e == eid))
             .map(|(alias, _)| alias.as_str())
     }
 }
@@ -601,13 +640,16 @@ fn stage_contact<'a>(
                 exports: p.exports.clone(),
                 allow_private: false,
                 eid: Some(eid.to_owned()),
+                record: None,
             },
         );
     }
     staged.contacts.insert(
         name.to_owned(),
         ContactFacts {
+            id: String::new(),
             eid: eid.to_owned(),
+            eids: vec![eid.to_owned()],
             display: p.name.clone().unwrap_or_else(|| name.to_owned()),
             machine: p.machine.clone().unwrap_or_default(),
             cap: cap.min(tools::Risk::Mutating),
@@ -628,12 +670,28 @@ pub fn stage(
     console: Option<&str>,
     contact_cap: tools::Risk,
 ) -> Result<Staged, Vec<String>> {
+    stage_on(Staged::default(), file, resolve, console, contact_cap)
+}
+
+/// 191 (D2): [`stage`] onto `base` (what the contact records staged: their exports, which
+/// the file's HTTP peers may be granted, and their contacts, whose aliases the file's peers
+/// may not take).
+pub fn stage_on(
+    base: Staged,
+    file: &PeersFile,
+    resolve: Resolve<'_>,
+    console: Option<&str>,
+    contact_cap: tools::Risk,
+) -> Result<Staged, Vec<String>> {
     let mut errors = Vec::new();
-    let mut staged = Staged::default();
+    let mut staged = base;
 
     let mut export_sessions: HashMap<SessionId, &str> = HashMap::new();
     for (name, e) in &file.exports {
         check_name("export", name, &mut errors);
+        if staged.exports.contains_key(name) || staged.agents.contains_key(name) {
+            errors.push(format!("export {name}: the name of an export of your mesh"));
+        }
         if e.name.trim().is_empty() {
             errors.push(format!("export {name}: empty name"));
         }
@@ -707,6 +765,10 @@ pub fn stage(
     let mut pins: HashMap<&str, &str> = HashMap::new();
     for (name, p) in &file.peers {
         check_name("peer", name, &mut errors);
+        if staged.contacts.contains_key(name) {
+            errors.push(format!("peer {name}: the name of a contact of your mesh"));
+            continue;
+        }
         if p.is_contact() {
             stage_contact(name, p, contact_cap, &mut pins, &mut staged, &mut errors);
             continue;
@@ -787,6 +849,7 @@ pub fn stage(
                 exports: p.exports.clone(),
                 allow_private: p.allow_private,
                 eid: None,
+                record: None,
             },
         );
     }

@@ -113,6 +113,8 @@ pub struct ContactInbox {
     pub agent: String,
     /// Who asks, the export and the cap.
     pub origin: super::ContactOrigin,
+    /// 191 (D4): the export's replicated id, for the session's `contact_inbox` marker.
+    pub export_id: Option<String>,
 }
 
 impl A2aPrincipal {
@@ -252,6 +254,30 @@ pub fn contact_endpoint(eid: &str) -> String {
 pub fn contact_eid(endpoint: &str) -> Option<&str> {
     endpoint.strip_prefix(IROH_PREFIX)
 }
+
+/// 191 (D2): a contact record's `peer_bindings.endpoint` is this prefix plus its record id,
+/// constant for the record, so an endpoint-set change never revokes its binding.
+pub const CONTACT_PREFIX: &str = "contact:";
+
+/// 191 (D2): the binding endpoint of the contact record `id`.
+pub fn contact_record_endpoint(id: &str) -> String {
+    format!("{CONTACT_PREFIX}{id}")
+}
+
+/// Whether a binding endpoint is a contact's (a 191 record, or a 183 pinned endpoint).
+pub fn is_contact_endpoint(endpoint: &str) -> bool {
+    endpoint.starts_with(CONTACT_PREFIX) || contact_eid(endpoint).is_some()
+}
+
+/// 191 (D2, Sky 17:59 option b): contacts are admitted only once the mesh's bounded latch is
+/// done and the a2a plugin's first contact reconcile has finished on the post-latch tables
+/// (revokes, inbox caps, closes). Starts false; the a2a plugin sets it. Until then every
+/// contact inbox starts capped and no capped inbox is lifted, whatever its local row says.
+pub static CONTACTS_READY: std::sync::LazyLock<Arc<std::sync::atomic::AtomicBool>> =
+    std::sync::LazyLock::new(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+
+/// 191: what a send to an unknown peer reads while [`CONTACTS_READY`] is false.
+pub const CONTACTS_WAITING: &str = "waiting for your other machines";
 
 /// 183 §7.7 (F1): what one export a contact offers us is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -411,6 +437,9 @@ pub struct PeerRoute {
     pub alias: String,
     /// Validated card/endpoint origin; a change mints a new binding.
     pub endpoint: String,
+    /// 191 (D2): a contact record's replicated binding id, taken instead of minted (a
+    /// revoked one fails the commit: the reconcile quarantines it first).
+    pub binding: Option<Uuid>,
     /// Granted local roots for outbound use.
     pub roots: Vec<SessionId>,
     /// The validated SDK client; `None` for an inbound-only peer.
@@ -2857,10 +2886,10 @@ impl Message<CommitPeerConfig> for Agents {
                 return Err(format!("peer `{}` is both bound and revoked", r.alias));
             }
         }
-        let bind: Vec<(&str, &str)> = m
+        let bind: Vec<(&str, &str, Option<Uuid>)> = m
             .routes
             .iter()
-            .map(|r| (r.alias.as_str(), r.endpoint.as_str()))
+            .map(|r| (r.alias.as_str(), r.endpoint.as_str(), r.binding))
             .collect();
         let revoke: Vec<&str> = m.revoke.iter().map(String::as_str).collect();
         let bindings = self
@@ -2899,7 +2928,7 @@ impl Message<CommitPeerConfig> for Agents {
                     name: route.alias,
                     roots: route.roots,
                     sender: route.sender,
-                    contact: contact_eid(&route.endpoint).is_some(),
+                    contact: is_contact_endpoint(&route.endpoint),
                     generation: route.generation,
                     full: route.full,
                 },
@@ -2956,6 +2985,89 @@ impl Message<RevokePeerBinding> for Agents {
             }
         }
         Ok(revoked)
+    }
+}
+
+/// `ask` → `Result<Records, String>` (191 D2): the replicated contact records, read in one
+/// snapshot, for the a2a reconcile.
+#[derive(Clone, Copy, Debug)]
+pub struct ContactRecords;
+
+impl Message<ContactRecords> for Agents {
+    type Reply = Result<crate::store::contacts::Records, String>;
+
+    async fn handle(
+        &mut self,
+        _: ContactRecords,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store
+            .contact_records()
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+/// `ask` → `Result<(), String>` (191 D2): write contact record columns in one transaction.
+#[derive(Clone, Debug)]
+pub struct WriteContactRecords(pub Vec<crate::store::contacts::RecordWrite>);
+
+impl Message<WriteContactRecords> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: WriteContactRecords,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store
+            .write_contact_records(&m.0)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+/// `ask` → `Result<u64, String>` (191 D2 import): mark this machine's local inboxes in their
+/// session rows; `exports` maps export names to their replicated ids.
+#[derive(Clone, Debug)]
+pub struct BackfillContactInboxes(pub BTreeMap<String, String>);
+
+impl Message<BackfillContactInboxes> for Agents {
+    type Reply = Result<u64, String>;
+
+    async fn handle(
+        &mut self,
+        m: BackfillContactInboxes,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store
+            .backfill_contact_inboxes(&m.0)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+/// `ask` → `Result<(), String>` (191 D2): this machine's last direct addresses of `eid`.
+#[derive(Clone, Debug)]
+pub struct SetContactAddrs {
+    /// The contact's endpoint id.
+    pub eid: String,
+    /// Socket addresses as text.
+    pub addrs: Vec<String>,
+}
+
+impl Message<SetContactAddrs> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetContactAddrs,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store
+            .set_contact_addrs(&m.eid, &m.addrs)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -3035,6 +3147,12 @@ impl Message<ContactInbox> for Agents {
 impl Agents {
     /// [`ContactInbox`].
     pub(crate) async fn handle_inbox(&mut self, m: ContactInbox) -> Result<SessionId, A2AError> {
+        // 191 (D7): never admitted before `contacts_ready` (the gate refuses first).
+        if !self.contacts_ready.load(Ordering::Relaxed) {
+            return Err(A2AError::unsupported_operation(format!(
+                "export unavailable: {CONTACTS_WAITING}"
+            )));
+        }
         let key = format!("peer:{}", m.binding);
         let scope = A2aScope {
             principal: &key,
@@ -3102,6 +3220,16 @@ impl Agents {
             }
         };
         self.network.inboxes.insert(id);
+        // 191 (D4): the marker travels with the session row (set on each admission, so an
+        // inbox opened before 191 is marked too; a no-op once set).
+        if let Some(export) = &m.export_id
+            && let Err(e) = self
+                .store
+                .set_contact_inbox(id, &format!("{key}|{export}"))
+                .await
+        {
+            tracing::warn!(session = %id, "a2a: inbox marker: {e:#}");
+        }
         // Z3-R2: every later actor start of this session re-installs its limits (an inbox
         // opened by an older build is marked on its first resolve); Z3-R3: and a resumed turn
         // speaks as the agent again, though the roster's source joins after the boot resume.
@@ -3192,8 +3320,33 @@ impl Agents {
     pub(crate) async fn reinstall_contact_limits(&mut self, id: SessionId) -> Result<(), String> {
         match self.store.a2a_inbox_identity(id).await {
             Ok(Some(_)) => {}
-            Ok(None) => return Ok(()),
+            // 191 (D4): an inbox marked in the session row but with no local context here (a
+            // Write take from an owner that could not release it) runs capped until the
+            // owner re-admits it.
+            Ok(None) => match self.store.contact_inbox(id).await {
+                Ok(None) => return Ok(()),
+                Ok(Some(_)) => {
+                    return self
+                        .install_contact_limits(id, INBOX_FAIL_CLOSED, Vec::new())
+                        .await;
+                }
+                Err(e) => {
+                    tracing::error!(session = %id, "a2a: inbox marker lookup failed, capping it: {e:#}");
+                    return self
+                        .install_contact_limits(id, INBOX_FAIL_CLOSED, Vec::new())
+                        .await;
+                }
+            },
             Err(e) => tracing::error!(session = %id, "a2a: inbox lookup failed, capping it: {e:#}"),
+        }
+        // 191 (D7): before `contacts_ready` a local live binding proves nothing (a removal made
+        // elsewhere may not have synced): every inbox starts capped, its row left marked full
+        // so `refresh_full_inboxes` lifts it after the flip if it is still due.
+        if !self.contacts_ready.load(Ordering::Relaxed) {
+            tracing::info!(session = %id, "191: contact inbox starts capped (contacts not ready)");
+            return self
+                .install_contact_limits(id, INBOX_FAIL_CLOSED, Vec::new())
+                .await;
         }
         // 186 (D6), review 2: an inbox shared in full keeps the agent's own policy: the
         // stricter of its row's ceiling and the roster's live one (the persona is not in memory
@@ -4028,11 +4181,16 @@ impl Agents {
         reply_to: Option<Uuid>,
         await_reply: bool,
     ) -> Result<PeerReceipt, String> {
+        let ready = self.contacts_ready.load(Ordering::Relaxed);
         let (binding, sender, route, contact) = {
-            let (binding, peer) = self
-                .network
-                .peer_by_name(alias)
-                .ok_or_else(|| format!("unknown peer `{alias}`"))?;
+            let (binding, peer) = self.network.peer_by_name(alias).ok_or_else(|| {
+                // 191: before the first contact reconcile no route is committed.
+                if ready {
+                    format!("unknown peer `{alias}`")
+                } else {
+                    format!("peer `{alias}`: {CONTACTS_WAITING}")
+                }
+            })?;
             (
                 binding,
                 peer.sender.clone(),
@@ -5682,6 +5840,7 @@ mod tests {
                 binding: Uuid::now_v7(),
                 agent: "theuth".into(),
                 origin,
+                export_id: None,
             })
             .await
             .unwrap();
@@ -5779,6 +5938,7 @@ mod tests {
                 binding: Uuid::now_v7(),
                 agent: "theuth".into(),
                 origin: bob("research", tools::Risk::ReadOnly),
+                export_id: None,
             })
             .await
             .unwrap();
@@ -6063,6 +6223,7 @@ mod tests {
                 binding: Uuid::now_v7(),
                 agent: "theuth".into(),
                 origin: bob("research", tools::Risk::Mutating),
+                export_id: None,
             })
             .await
             .unwrap();
@@ -6130,6 +6291,7 @@ mod tests {
                 binding: Uuid::now_v7(),
                 agent: "research@c".into(),
                 origin: bob("research", tools::Risk::Mutating),
+                export_id: None,
             })
             .await
             .unwrap();
@@ -6159,6 +6321,7 @@ mod tests {
             binding,
             agent: "theuth".into(),
             origin: bob(export, tools::Risk::ReadOnly),
+            export_id: None,
         };
         let first = a.handle_inbox(ask("research")).await.unwrap();
         let row = a.store.session(first).await.unwrap().unwrap();
@@ -6241,6 +6404,7 @@ mod tests {
                 binding,
                 agent: "research@sky-mac".into(),
                 origin: bob("research", tools::Risk::Mutating),
+                export_id: None,
             })
             .await
             .unwrap();
@@ -6261,6 +6425,7 @@ mod tests {
                 binding,
                 agent: "theuth".into(),
                 origin: bob("ops", tools::Risk::Mutating),
+                export_id: None,
             })
             .await
             .unwrap();
@@ -6824,6 +6989,7 @@ mod full_inbox_tests {
             binding,
             agent: "research@sky-mac".into(),
             origin: full_bob(),
+            export_id: None,
         })
         .await
     }
@@ -6876,6 +7042,7 @@ mod full_inbox_tests {
                     mode: crate::communication::ShareMode::Cautious,
                     ..full_bob()
                 },
+                export_id: None,
             })
             .await
             .unwrap();
@@ -7102,5 +7269,67 @@ mod full_inbox_tests {
         forget(&mut a, inbox);
         a.reinstall_contact_limits(inbox).await.unwrap();
         assert!(capped(&a, inbox), "and at the next actor start");
+    }
+
+    /// 191 (D7, M2): before `contacts_ready` a full inbox whose binding is live here starts
+    /// capped at an actor start (a removal made elsewhere may not have synced), is admitted
+    /// nothing and lifted by nothing; its row stays marked full, so the refresh right after
+    /// the flip lifts the cap that is still due.
+    #[tokio::test]
+    async fn an_inbox_starting_before_contacts_ready_runs_capped_until_the_flip() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let inbox = admit(&mut a, binding.id).await.unwrap();
+        // A restart, the latch not passed yet.
+        forget(&mut a, inbox);
+        a.contacts_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        a.reinstall_contact_limits(inbox).await.unwrap();
+        assert!(capped(&a, inbox), "capped at the actor start");
+        assert!(
+            a.store.a2a_inbox_full(inbox).await.unwrap().is_some(),
+            "the row stays marked full"
+        );
+        a.refresh_full_inboxes().await;
+        assert!(capped(&a, inbox), "nothing is lifted before the flip");
+        let refused = admit(&mut a, binding.id).await.unwrap_err();
+        assert!(refused.to_string().contains(CONTACTS_WAITING), "{refused}");
+        assert!(capped(&a, inbox));
+        a.contacts_ready.store(true, Ordering::SeqCst);
+        a.refresh_full_inboxes().await;
+        assert_eq!(
+            a.caps.get(&inbox),
+            Some(&tools::Risk::Mutating),
+            "lifted after the flip"
+        );
+    }
+
+    /// 191 (D4): an inbox taken by a Write (its session row marked, no local context here)
+    /// runs capped: read-only, nothing but the reply. An unmarked session gets no limits.
+    #[tokio::test]
+    async fn an_inbox_taken_by_a_write_runs_capped_from_its_marker() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let (taken, plain) = (SessionId::new(), SessionId::new());
+        for s in [taken, plain] {
+            a.store
+                .create_session(s, "m", None, None, None)
+                .await
+                .unwrap();
+        }
+        assert!(
+            a.store
+                .set_contact_inbox(taken, "peer:b1|x1")
+                .await
+                .unwrap()
+        );
+        a.reinstall_contact_limits(taken).await.unwrap();
+        assert!(capped(&a, taken));
+        a.reinstall_contact_limits(plain).await.unwrap();
+        assert!(!a.network.is_inbox(plain) && !a.caps.contains_key(&plain));
     }
 }
