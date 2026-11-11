@@ -185,7 +185,7 @@ internal sealed partial class MarkdownView : StackPanel
 
     // MARK: inlines
 
-    private static void Fill(TextBlock t, IReadOnlyList<MdInline> inlines)
+    private void Fill(TextBlock t, IReadOnlyList<MdInline> inlines)
     {
         foreach (var i in inlines)
         {
@@ -199,7 +199,8 @@ internal sealed partial class MarkdownView : StackPanel
                 {
                     if (Uri.TryCreate(x.Url, UriKind.Absolute, out var uri))
                     {
-                        var link = new Hyperlink();
+                        // The default hyperlink brush resolves against the app's theme, not this window's: dark blue on dark (seen on build-B).
+                        var link = new Hyperlink { Foreground = Theme.Brush(NativeLook.AccentText, theme()) };
                         link.Inlines.Add(new Run { Text = x.Value });
                         link.Click += (_, _) => _ = Links.Open(uri);
                         t.Inlines.Add(link);
@@ -212,7 +213,7 @@ internal sealed partial class MarkdownView : StackPanel
     }
 
     /// <summary>Same marks as before and only the last run's text grew: grow that run; otherwise the paragraph's runs are drawn again (still one block).</summary>
-    private static void Refill(TextBlock t, IReadOnlyList<MdInline> before, IReadOnlyList<MdInline> after)
+    private void Refill(TextBlock t, IReadOnlyList<MdInline> before, IReadOnlyList<MdInline> after)
     {
         if (!TryGrowLast(t, before, after))
         {
