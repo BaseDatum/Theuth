@@ -182,11 +182,12 @@ pub(crate) async fn serve_http(
         let (shared, remote, ctx) = (shared.clone(), remote.clone(), ctx.clone());
         async move {
             let mut req = req;
-            if let Some(c) = &ctx {
-                match contact_route(c, &remote, req).await {
-                    Ok(res) => return Ok::<_, std::convert::Infallible>(res),
-                    Err(back) => req = back,
-                }
+            if let Some(c) = &ctx
+                && let Some(route) = Route::of(&req)
+            {
+                return Ok::<_, std::convert::Infallible>(
+                    contact_route(c, &remote, route, req).await,
+                );
             }
             req.extensions_mut().insert(ContactCaller(remote));
             crate::server::app(shared)
@@ -207,35 +208,43 @@ pub(crate) async fn serve_http(
     Ok(())
 }
 
-/// 183 F1: the contact-only routes of [`serve_http`]; everything else is handed back. Each
-/// runs under the contact's rate and concurrency bounds (review 1). 191 (D1): `NOTICE_PATH`
-/// reads a members/v1 body of up to [`super::rosters::NOTICE_BYTES_MAX`] (413 above it), and
-/// `GET` [`super::rosters::ROSTER_PATH`] serves a proof path of the caller's own records.
+/// 183 F1: the contact-only routes of [`serve_http`].
+#[derive(Clone, Copy, PartialEq)]
+enum Route {
+    Card,
+    Notice,
+    Path,
+}
+
+impl Route {
+    fn of<B>(req: &hyper::Request<B>) -> Option<Self> {
+        match (req.method(), req.uri().path()) {
+            (&hyper::Method::GET, super::offers::CARD_PATH) => Some(Self::Card),
+            (&hyper::Method::POST, super::offers::NOTICE_PATH) => Some(Self::Notice),
+            (&hyper::Method::GET, super::rosters::ROSTER_PATH) => Some(Self::Path),
+            _ => None,
+        }
+    }
+}
+
+/// One contact-only request. Each runs under the contact's rate and concurrency bounds
+/// (review 1). 191 (D1): `NOTICE_PATH` reads a members/v1 body of up to
+/// [`super::rosters::NOTICE_BYTES_MAX`] (413 above it), and `GET`
+/// [`super::rosters::ROSTER_PATH`] serves a proof path of the caller's own records.
 async fn contact_route(
     c: &Arc<Ctx>,
     remote: &str,
+    route: Route,
     req: hyper::Request<hyper::body::Incoming>,
-) -> Result<axum::response::Response, hyper::Request<hyper::body::Incoming>> {
+) -> axum::response::Response {
     use axum::response::IntoResponse as _;
     use http_body_util::BodyExt as _;
-    #[derive(PartialEq)]
-    enum Route {
-        Card,
-        Notice,
-        Path,
-    }
-    let route = match (req.method(), req.uri().path()) {
-        (&hyper::Method::GET, super::offers::CARD_PATH) => Route::Card,
-        (&hyper::Method::POST, super::offers::NOTICE_PATH) => Route::Notice,
-        (&hyper::Method::GET, super::rosters::ROSTER_PATH) => Route::Path,
-        _ => return Err(req),
-    };
     let admitted = c.shared.read().admit_contact(remote);
     let _permit = match admitted {
         Ok(p) => p,
-        Err(status) => return Ok(status.into_response()),
+        Err(status) => return status.into_response(),
     };
-    Ok(match route {
+    match route {
         Route::Card => match c.contact_card(remote).await {
             Ok(card) => (
                 [(hyper::header::CACHE_CONTROL, "private, no-store")],
@@ -255,14 +264,14 @@ async fn contact_route(
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<usize>().ok());
             if declared.is_some_and(|n| n > max) {
-                return Ok(hyper::StatusCode::PAYLOAD_TOO_LARGE.into_response());
+                return hyper::StatusCode::PAYLOAD_TOO_LARGE.into_response();
             }
             let Ok(body) = http_body_util::Limited::new(req.into_body(), max)
                 .collect()
                 .await
                 .map(|b| b.to_bytes())
             else {
-                return Ok(hyper::StatusCode::PAYLOAD_TOO_LARGE.into_response());
+                return hyper::StatusCode::PAYLOAD_TOO_LARGE.into_response();
             };
             // Each copy is verified on its own: a body that does not parse, or copies that do
             // not verify, change nothing. The card is fetched again as before.
@@ -289,7 +298,7 @@ async fn contact_route(
             Ok(answer) => axum::Json(answer).into_response(),
             Err((status, why)) => (status, why).into_response(),
         },
-    })
+    }
 }
 
 /// Where to dial a contact: its pinned id and the latest hints for it.

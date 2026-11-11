@@ -2378,8 +2378,9 @@ impl crate::Ctx {
         let Some(net) = self.net() else { return };
         let live = self.shared.read().clone();
         let now_at = std::time::Instant::now();
-        // 191 (D3): every machine of a contact, each with its own addresses.
-        let changed: Vec<(String, Vec<(String, Vec<String>)>)> = {
+        // 191 (D3): every machine of a contact, each with its own addresses: (alias, eid,
+        // addresses).
+        let changed: Vec<(String, String, Vec<String>)> = {
             let s = self.state.lock();
             live.staged
                 .contacts
@@ -2390,20 +2391,14 @@ impl crate::Ctx {
                         .get(*alias)
                         .is_none_or(|t| now_at.duration_since(*t) >= EVERY)
                 })
-                .map(|(alias, f)| {
-                    let eids = f
-                        .eids
-                        .iter()
-                        .filter_map(|eid| {
-                            let now = net.a2a_direct_addrs(eid);
-                            (!now.is_empty() && live.staged.addrs.get(eid) != Some(&now)).then(
-                                || (eid.clone(), now.iter().map(ToString::to_string).collect()),
-                            )
-                        })
-                        .collect();
-                    (alias.clone(), eids)
+                .flat_map(|(alias, f)| f.eids.iter().map(move |eid| (alias, eid)))
+                .filter_map(|(alias, eid)| {
+                    let now = net.a2a_direct_addrs(eid);
+                    (!now.is_empty() && live.staged.addrs.get(eid) != Some(&now)).then(|| {
+                        let addrs = now.iter().map(ToString::to_string).collect();
+                        (alias.clone(), eid.clone(), addrs)
+                    })
                 })
-                .filter(|(_, eids): &(String, Vec<_>)| !eids.is_empty())
                 .collect()
         };
         if changed.is_empty() {
@@ -2411,18 +2406,16 @@ impl crate::Ctx {
         }
         let Ok(agents) = self.agents() else { return };
         let mut result = Ok(());
-        for (alias, eids) in changed {
+        for (alias, eid, addrs) in changed {
             self.state.lock().addr_written.insert(alias, now_at);
-            for (eid, addrs) in eids {
-                if let Err(e) = self
-                    .ask(
-                        &agents,
-                        agent::communication::network::SetContactAddrs { eid, addrs },
-                    )
-                    .await
-                {
-                    result = Err(e);
-                }
+            if let Err(e) = self
+                .ask(
+                    &agents,
+                    agent::communication::network::SetContactAddrs { eid, addrs },
+                )
+                .await
+            {
+                result = Err(e);
             }
         }
         let _ = self.reconcile_now().await;
