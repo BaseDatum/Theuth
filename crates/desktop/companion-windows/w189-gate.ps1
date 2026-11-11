@@ -8,6 +8,7 @@
   engine          the scratch engine's scheduled task (state, last result, action), its process, engine.json and the tail of
                   its newest log — why the Ask bar says "theuth engine unreachable"
   engine-start    start the task, wait 12 s, then the same report
+  engine-errors   the newest engine log's last ERROR/WARN/panic lines and engine-run.ps1 (why the engine restarts in a loop)
   companion-log N today's companion log lines about the Ask (focus, first TextDelta, catch-up, watchdog, finish), last N (default 60)
 #>
 param(
@@ -48,6 +49,15 @@ switch ($Action) {
         Start-Sleep 12
         EngineReport
     }
+    'engine-errors' {
+        $logs = Join-Path $dataDir 'logs'
+        $newest = Get-ChildItem $logs -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'theuth.log*' } | Sort-Object LastWriteTime | Select-Object -Last 1
+        if (-not $newest) { Say "no engine log under $logs"; break }
+        Say "engine log $($newest.FullName) ($($newest.LastWriteTime), $($newest.Length) bytes)"
+        Get-Content $newest.FullName -Tail 600 | Where-Object { $_ -match 'ERROR|WARN|panic|fatal|Error|failed|exit' } | Select-Object -Last 14 | ForEach-Object { Say "  $((($_ -replace '\x1b\[[0-9;]*m', ''))[0..300] -join '')" }
+        $run = 'C:\Users\user\tools\theuth-test\engine-run.ps1'
+        if (Test-Path $run) { Say "engine-run.ps1:"; Get-Content $run | ForEach-Object { Say "  $_" } }
+    }
     'companion-log' {
         $n = if ($Rest.Count -ge 1) { [int] $Rest[0] } else { 60 }
         $dir = Join-Path $env:LOCALAPPDATA 'theuth\companion\logs'
@@ -56,5 +66,5 @@ switch ($Action) {
         Say "log $($file.FullName)"
         Get-Content $file.FullName | Where-Object { $_ -match 'ask|set_event_focus|catch-up|watchdog|TextDelta|desk' } | Select-Object -Last $n | ForEach-Object { Say $_ }
     }
-    default { Say 'usage: engine | engine-start | companion-log [N]' }
+    default { Say 'usage: engine | engine-start | engine-errors | companion-log [N]' }
 }
