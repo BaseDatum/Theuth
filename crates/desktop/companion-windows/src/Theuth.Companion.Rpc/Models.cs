@@ -603,6 +603,9 @@ public sealed record StreamDelta
     [JsonPropertyName("stop_reason")] public string? StopReason { get; init; }
     public string? Message { get; init; }
 
+    /// <summary>189w: <c>TurnStarted.turn_seq</c> — the seq of the stored user row that opened the turn (the transcript's <c>turn</c>).</summary>
+    [JsonPropertyName("turn_seq")] public long? TurnSeq { get; init; }
+
     public static StreamDelta Decode(ReadOnlySpan<byte> utf8) => TheuthJson.Deserialize<StreamDelta>(utf8);
 }
 

@@ -95,6 +95,9 @@ internal sealed record AnswerCardContent
     /// <summary>The speaker glyph (149s): our answer is being read aloud; a click stops it.</summary>
     public bool Speaking { get; init; }
 
+    /// <summary>189w D4: <see cref="Body"/> is still arriving — the markdown renderer shows the last block's unclosed marks as closed.</summary>
+    public bool Streaming { get; init; }
+
     /// <summary>"O open": the desk session (<c>theuth://c/&lt;desk&gt;</c>).</summary>
     public string? OpenUrl { get; init; }
 
@@ -604,75 +607,17 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         return row;
     }
 
-    /// <summary>The markdown blocks as TextBlocks: headings, paragraphs with inline marks, bullets, fenced code (monospace, scrolls sideways).</summary>
+    /// <summary>
+    /// 189w D4: the markdown body through the shared <see cref="MarkdownView"/> (headings, nested bullets, fenced code, table rows, paragraphs
+    /// with inline marks) — the same renderer and parser as the Ask bar's reply. This window redraws its whole content on every
+    /// <see cref="Present"/>, so each chunk builds the view afresh; <see cref="AnswerCardContent.Streaming"/> closes the marks of the
+    /// last block that has not closed yet.
+    /// </summary>
     private FrameworkElement Markdown(string markdown, ElementTheme theme)
     {
-        var panel = new StackPanel { Spacing = 6 };
-        foreach (var block in AnswerMarkdown.Parse(markdown))
-        {
-            switch (block)
-            {
-                case MdBlock.Heading h:
-                    panel.Children.Add(Inlines(h.Inlines, h.Level <= 2 ? 15 : 14, FontWeights.SemiBold, theme));
-                    break;
-                case MdBlock.Paragraph p:
-                    panel.Children.Add(Inlines(p.Inlines, 13.5, FontWeights.Normal, theme));
-                    break;
-                case MdBlock.Bullet b:
-                {
-                    var g = new Grid { ColumnSpacing = 6, Margin = new Thickness(6, 0, 0, 0) };
-                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    g.Children.Add(Text(b.Numbered ? $"{b.Number}." : "•", 13.5, NativeLook.TextSecondary));
-                    var t = Inlines(b.Inlines, 13.5, FontWeights.Normal, theme);
-                    Grid.SetColumn(t, 1);
-                    g.Children.Add(t);
-                    panel.Children.Add(g);
-                    break;
-                }
-                case MdBlock.Code code:
-                {
-                    var t = new TextBlock { Text = code.Text, FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 12.5, IsTextSelectionEnabled = true, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) };
-                    panel.Children.Add(new Border
-                    {
-                        Background = Theme.Brush(NativeLook.ControlFill, theme),
-                        CornerRadius = CardChrome.ControlRadius,
-                        Padding = new Thickness(8, 6, 8, 6),
-                        Child = new ScrollViewer { Content = t, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Enabled },
-                    });
-                    break;
-                }
-            }
-        }
-        return panel;
-    }
-
-    private TextBlock Inlines(IReadOnlyList<MdInline> inlines, double size, global::Windows.UI.Text.FontWeight weight, ElementTheme theme)
-    {
-        var t = new TextBlock { FontSize = size, FontWeight = weight, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) };
-        foreach (var i in inlines)
-        {
-            switch (i)
-            {
-                case MdInline.Text x: t.Inlines.Add(new Run { Text = x.Value }); break;
-                case MdInline.Bold x: t.Inlines.Add(new Run { Text = x.Value, FontWeight = FontWeights.SemiBold }); break;
-                case MdInline.Italic x: t.Inlines.Add(new Run { Text = x.Value, FontStyle = global::Windows.UI.Text.FontStyle.Italic }); break;
-                case MdInline.Code x: t.Inlines.Add(new Run { Text = x.Value, FontFamily = new FontFamily("Cascadia Mono, Consolas") }); break;
-                case MdInline.Link x:
-                {
-                    if (Uri.TryCreate(x.Url, UriKind.Absolute, out var uri))
-                    {
-                        var link = new Hyperlink();
-                        link.Inlines.Add(new Run { Text = x.Value });
-                        link.Click += (_, _) => _ = Links.Open(uri);
-                        t.Inlines.Add(link);
-                    }
-                    else t.Inlines.Add(new Run { Text = x.Value });
-                    break;
-                }
-            }
-        }
-        return t;
+        var view = new MarkdownView(() => theme, 13.5);
+        view.Set(markdown, model.Streaming);
+        return view;
     }
 
     private static TextBlock Text(string s, double size, string key, global::Windows.UI.Text.FontWeight? weight = null)

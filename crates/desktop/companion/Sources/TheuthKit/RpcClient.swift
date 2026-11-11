@@ -244,9 +244,15 @@ public extension RpcClient {
     }
 
     /// `set_event_focus(sessions)` (129 §3.4; 155 §13.5): the sessions this connection has in view — the engine
-    /// blanks their alerts in `attention_list` and marks a focused finish seen; `[]` = none. Per connection.
+    /// blanks their alerts in `attention_list` and marks a focused finish seen; `[]` = none. Per connection, REPLACES the
+    /// set: the companion's one writer is `Store.claimFocus` (189 D1).
     func setEventFocus(sessions: [String]) async throws {
         let _: JSONValue = try await call("set_event_focus", [.init(sessions)])
+    }
+
+    /// `load_session(session, null, limit, null)` (api.rs:552-558): the last `limit` rendered rows and `running` (189 D2).
+    func loadSession(session: String, limit: UInt32) async throws -> Loaded {
+        try await call("load_session", [.init(session), .init(Int64?.none), .init(limit), .init(Bool?.none)])
     }
 
     func agentsList() async throws -> [AgentSummary] { try await call("agents_list") }

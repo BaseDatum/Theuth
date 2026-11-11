@@ -200,6 +200,17 @@ public sealed class AskBarModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// 189w D4: the desk's reply as the Ask bar draws it — the whole markdown so far under the field, instead of the receipt's two plain
+    /// lines — with whether the turn is still streaming; null for every other receipt (and for a reply with no text yet, a failed turn,
+    /// or "finished without a reply", which keep the one-line row).
+    /// </summary>
+    public static (string Markdown, bool Streaming)? ReplyMarkdown(StoreModel.ReceiptRow? receipt) =>
+        receipt is StoreModel.ReceiptRow.Reply { Markdown.Length: > 0 } r ? (r.Markdown, r.Streaming) : null;
+
+    /// <summary>The line above a markdown reply: who, and "replying…" while it still streams (the trailing hint stays "Open Ctrl+O").</summary>
+    public static string ReplyHeader(StoreModel.ReceiptRow.Reply reply) => reply.Streaming ? $"{reply.Who} · replying…" : reply.Who;
+
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return;

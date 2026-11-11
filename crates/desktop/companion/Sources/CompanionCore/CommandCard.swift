@@ -94,14 +94,17 @@ public struct CommandCard: Equatable, Sendable {
             guard frozen == nil else { return false }
             text += t
         case .turnFinished(let stopReason):
-            guard frozen == nil, verdict == nil else { return false }
-            switch stopReason {
-            case "error": frozen = "✗ couldn't finish — the turn failed"
-            case "cancelled": frozen = "✗ couldn't finish — the turn was cancelled"
-            default: verdict = Self.parseVerdict(text)
-            }
+            finish(text: text, failure: AskReply.terminalFailure(stopReason))
         }
         return false
+    }
+
+    /// The reply finished (189 D2/D3): `text` is the authoritative answer (the transcript's), a failure freezes the card
+    /// with its reason. A card already frozen or decided stays.
+    public mutating func finish(text: String, failure: String?) {
+        guard frozen == nil, verdict == nil else { return }
+        self.text = text
+        if let failure { frozen = "✗ couldn't finish — \(failure)" } else { verdict = Self.parseVerdict(text) }
     }
 
     /// `"✓ done"` → `.ok("done")`, `"✗ …"` → `.failed(…)`, else `.replied(text)`.

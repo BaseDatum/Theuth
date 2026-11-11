@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
+import { useSearch } from '@tanstack/react-router'
 import { ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Fragment, useState } from 'react'
 import { toast } from 'sonner'
 import { type HomeAction, homeActions, homeChip, stateText } from '@/components/library/mcp-home'
-import { Column, Page } from '@/components/library/Page'
 import { segments } from '@/components/library/names'
-import { type Action, Dot, Empty, toastSync, useAction } from '@/components/settings/shared'
+import { type Action, Dot, Empty, Section, toastSync, useAction } from '@/components/settings/shared'
 import { type Engine, engines } from '@/components/tasks/home'
 import { useMesh } from '@/components/tasks/queries'
 import {
@@ -142,8 +142,13 @@ function useMcpActions(session: string | null): Actions {
   }
 }
 
-/** `/tools`: the MCP servers (design doc 37 §4) — status, risk gates, login, home machine (187), per-tool overrides.
- * `session` (`?session=`) is the chat the page was opened from; the "off here" switches need one. */
+/** Settings › Tools › MCP: the MCP servers (design doc 37 §4) — status, risk gates, login, home machine (187), per-tool
+ * overrides. `?session=` is the chat the tab was opened from (`/mcp`, `/tools?session=`); the "off here" switches need one. */
+export function McpServersTab() {
+  const session = useSearch({ from: '/settings/$tab', select: (s) => s.session ?? null })
+  return <Tools session={session} />
+}
+
 export function Tools({ session }: { session: string | null }) {
   const api = useApi()
   const servers = useQuery({
@@ -157,7 +162,8 @@ export function Tools({ session }: { session: string | null }) {
   const machines = mesh.isPending ? null : engines(mesh.data)
   const act = useMcpActions(session)
   return (
-    <Page
+    <Section
+      title="Servers"
       actions={
         <>
           <Button
@@ -173,23 +179,21 @@ export function Tools({ session }: { session: string | null }) {
         </>
       }
     >
-      <Column>
-        {status.data?.homes_problem && (
-          <p className="py-2 text-[13px] break-words text-destructive">
-            {status.data.homes_problem} — homes stay as they were and nothing is written until it reads again.
-          </p>
-        )}
-        {servers.data?.length === 0 && (
-          <Empty>
-            No tool servers yet. An MCP server gives the harness tools (files, browsers, APIs…); add one with a git URL
-            or a JSON entry.
-          </Empty>
-        )}
-        {servers.data?.map((s) => (
-          <ServerRow key={s.name} server={s} session={session} machines={machines} act={act} />
-        ))}
-      </Column>
-    </Page>
+      {status.data?.homes_problem && (
+        <p className="py-2 text-[13px] break-words text-destructive">
+          {status.data.homes_problem} — homes stay as they were and nothing is written until it reads again.
+        </p>
+      )}
+      {servers.data?.length === 0 && (
+        <Empty>
+          No tool servers yet. An MCP server gives the harness tools (files, browsers, APIs…); add one with a git URL
+          or a JSON entry.
+        </Empty>
+      )}
+      {servers.data?.map((s) => (
+        <ServerRow key={s.name} server={s} session={session} machines={machines} act={act} />
+      ))}
+    </Section>
   )
 }
 

@@ -99,15 +99,20 @@ public sealed class AskRouter
     /// <summary>The desk closed or the connection was lost: resolve again on the next send.</summary>
     public void Forget() => Desk = AskDesk.Unknown.Instance;
 
-    /// <summary><c>send_input</c> went out: collect the desk's reply from now until its turn finishes.</summary>
-    public void Sent(string session) => Reply = new AskReply(session);
+    /// <summary>
+    /// <c>send_input</c> went out: collect the desk's reply from now until its turn finishes. <paramref name="askText"/> is what was
+    /// sent — the catch-up finds the ask's own user row in the transcript by it (189w D2).
+    /// </summary>
+    public void Sent(string session, string askText = "") => Reply = new AskReply(session) { AskText = askText };
 
     /// <summary>
     /// Feed <c>TextDelta</c> / <c>TurnFinished</c> / <c>Error</c> from the event stream; true when the receipt text changed.
     /// 134 W6 item 7: the desk's <c>Error</c> event (the engine's "non-fatal or fatal error text for the UI" — a model resolver
-    /// error, a refused tool) or a <c>TurnFinished</c> whose <c>stop_reason</c> is <c>error</c> / <c>cancelled</c> (also
-    /// <c>timed_out</c> / <c>interrupted</c>) ends the reply as <see cref="AskReply.Failed"/>, text or no text — otherwise the
-    /// receipt would say "sent — waiting for the desk" forever. A normal finish is unchanged.
+    /// error, a refused tool) or a <c>TurnFinished</c> whose <c>stop_reason</c> is terminal (<see cref="IsFailure"/>: <c>error</c> ·
+    /// <c>cancelled</c> · <c>suspended</c> · <c>timed_out</c> · <c>interrupted</c>, 189w D3) ends the reply as <see cref="AskReply.Failed"/>,
+    /// text or no text — otherwise the receipt would say "sent — waiting for the desk" forever. Any other stop reason is a normal finish.
+    /// 189w D2: the Store no longer ends an ask on a normal finish from here — it catches up from the transcript first
+    /// (<see cref="AskCatchUp"/>) — but the rule stays for a caller that feeds the stream alone.
     /// </summary>
     public bool Observe(ReplyEvent e)
     {
@@ -127,7 +132,7 @@ public sealed class AskRouter
                 if (f.Session != r.Session) return false;
                 if (IsFailure(f.StopReason))
                 {
-                    r.Error ??= f.StopReason == "error" ? "the desk's turn ended with an error" : $"the turn was {Reason(f.StopReason!)}";
+                    r.Error ??= FailureReason(f.StopReason!);
                     r.Finished = true;
                     break;
                 }
@@ -141,14 +146,21 @@ public sealed class AskRouter
         return true;
     }
 
-    /// <summary>The engine's non-provider stop reasons that mean "no reply is coming" (loop_.rs: cancelled · timed_out · interrupted · error).</summary>
-    public static bool IsFailure(string? stopReason) => stopReason is "error" or "cancelled" or "timed_out" or "interrupted";
+    /// <summary>
+    /// The engine's non-provider stop reasons that mean "no reply is coming" (loop_.rs: cancelled · timed_out · interrupted · error,
+    /// and <c>suspended</c> — a turn cut by the engine's drain, loop_.rs:522, 5956: it resumes on the next start, it does not answer now).
+    /// Anything else — <c>end_turn</c>, <c>stop</c>, a provider's own word — is a normal finish.
+    /// </summary>
+    public static bool IsFailure(string? stopReason) => stopReason is "error" or "cancelled" or "suspended" or "timed_out" or "interrupted";
 
-    private static string Reason(string stopReason) => stopReason switch
+    /// <summary>The readable reason a terminal <paramref name="stopReason"/> gives (the receipt shows it after "theuth couldn't reply — ").</summary>
+    public static string FailureReason(string stopReason) => stopReason switch
     {
-        "timed_out" => "timed out",
-        "interrupted" => "interrupted",
-        _ => "cancelled",
+        "error" => "the desk's turn ended with an error",
+        "timed_out" => "the turn was timed out",
+        "interrupted" => "the turn was interrupted",
+        "suspended" => "the turn was suspended — theuth is restarting",
+        _ => "the turn was cancelled",
     };
 }
 
@@ -183,6 +195,48 @@ public sealed class AskReply(string session)
 
     public bool Failed => Error is not null;
 
+    /// <summary>189w D2: what the ask sent — the catch-up finds the ask's own user row in the transcript by this text.</summary>
+    public string AskText { get; set; } = "";
+
+    /// <summary>
+    /// 189w D2: the ask's turn id — the seq of the user row that opened it (<c>TurnStarted.turn_seq</c>, or the row a catch-up
+    /// matched by text). Assistant rows of the transcript carry the same number.
+    /// </summary>
+    public long? Turn { get; set; }
+
+    /// <summary>189w D2: the turn finished and the transcript holds no assistant text for it; the receipt says <see cref="AskCatchUp.NoReplyText"/> and keeps Open.</summary>
+    public bool NoReply { get; set; }
+
+    /// <summary>189w D6: characters that arrived as <c>TextDelta</c>s (the log's "first TextDelta" line and the finish line).</summary>
+    public int StreamedChars { get; set; }
+
+    /// <summary>189w D6: when <c>send_input</c> returned — the first delta's latency is measured from here.</summary>
+    public DateTimeOffset? SentAt { get; set; }
+
+    /// <summary>189w D2: a <c>TurnFinished</c> (normal) was seen and a catch-up decides it; no second one is started for the same finish.</summary>
+    public bool SawFinish { get; set; }
+
+    /// <summary>Records the transcript's text as THE reply (it replaces whatever streamed) and ends the ask.</summary>
+    public void Complete(string text)
+    {
+        Text = text;
+        Finished = true;
+    }
+
+    /// <summary>Ends the ask as failed with <paramref name="why"/> (shown after <see cref="FailedPrefix"/>).</summary>
+    public void Fail(string why)
+    {
+        Error = why;
+        Finished = true;
+    }
+
+    /// <summary>Ends the ask: the turn finished and left nothing to show (<see cref="AskCatchUp.NoReplyText"/>).</summary>
+    public void FinishWithoutReply()
+    {
+        NoReply = true;
+        Finished = true;
+    }
+
     private static readonly char[] NewLines = { '\n', '\r', '\u000B', '\u000C', '\u0085', '\u2028', '\u2029' };
 
     /// <summary>
@@ -198,12 +252,32 @@ public sealed class AskReply(string session)
                 var first = error.Split(NewLines, StringSplitOptions.RemoveEmptyEntries).Select(TrimSpaces).FirstOrDefault(l => l.Length > 0) ?? "unknown error";
                 return FailedPrefix + (first.Length > FailedClip ? first[..(FailedClip - 1)].TrimEnd() + "…" : first);
             }
+            if (NoReply) return AskCatchUp.NoReplyText;
             var lines = Text.Split(NewLines, StringSplitOptions.RemoveEmptyEntries)
-                .Select(l => TrimSpaces(TrimSpaces(l).TrimStart('#', '-', '*', '>', ' ')))
+                .Select(l => TrimSpaces(AnswerMarkdown.Plain(StripMarker(TrimSpaces(l)), open: !Finished)))
                 .Where(l => l.Length > 0)
                 .Take(2);
             return string.Join(" — ", lines);
         }
+    }
+
+    /// <summary>
+    /// A line without its block marker — heading hashes, a bullet, a quote mark, each only as a MARKER (followed by a space), so the
+    /// opening <c>**</c> of a bold start is not eaten ("**Done** — x" stays a bold start; the old <c>TrimStart('*')</c> left "Done** — x").
+    /// A line of nothing but rule characters (<c>---</c>, <c>***</c>) is empty.
+    /// </summary>
+    private static string StripMarker(string line)
+    {
+        var l = line;
+        while (true)
+        {
+            int h = 0;
+            while (h < l.Length && h < 6 && l[h] == '#') h++;
+            if (h > 0 && h < l.Length && l[h] == ' ') { l = TrimSpaces(l[(h + 1)..]); continue; }
+            if (l.Length >= 2 && l[0] is '-' or '*' or '•' or '>' && l[1] == ' ') { l = TrimSpaces(l[2..]); continue; }
+            break;
+        }
+        return l.Length > 0 && l.All(c => c is '-' or '*' or '_' or '=' or '#' or '>' or ' ') ? "" : l;
     }
 
     /// <summary>Swift's <c>.whitespaces</c>: spaces and tabs (Unicode Zs + tab), not newlines.</summary>

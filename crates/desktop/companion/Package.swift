@@ -17,6 +17,11 @@ let package = Package(
         // 1.10.0 is the last tag without `#Preview` blocks: the Command Line Tools ship no PreviewsMacros
         // plugin, so every 2.x tag fails to compile outside Xcode. The API used (`Name`, `onKeyUp`) is identical.
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", exact: "1.10.0"),
+        // 189 D4: the answer card's markdown. Its `#Preview` blocks and asset catalogs need Xcode's toolchain
+        // (`scripts/bundle-companion.sh` refuses without it); the Companion executable only — TheuthKit and CompanionCore stay free of it.
+        // Tag v0.7.0, pinned by its commit: SwiftPM refuses `exact: "0.7.0"` because the package itself pins
+        // highlightswift and iosMath by revision ("depends on an unstable-version package").
+        .package(url: "https://github.com/microsoft/SwiftStreamingMarkdown", revision: "5f7c04e0558df6146f90d482edb62cb456986bda"),
     ],
     targets: [
         .target(name: "TheuthKit", swiftSettings: swift5),
@@ -27,6 +32,7 @@ let package = Package(
                 "TheuthKit",
                 "CompanionCore",
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
+                .product(name: "SwiftStreamingMarkdown", package: "SwiftStreamingMarkdown"),
             ],
             swiftSettings: swift5
         ),

@@ -1,5 +1,6 @@
 using System.Text;
 using Theuth.Companion.Core;
+using Theuth.Companion.Rpc;
 
 namespace Theuth.Companion;
 
@@ -23,7 +24,7 @@ public sealed partial class Store
     /// </summary>
     public void ReplayDeskReply(string session, string text, IEnumerable<string> jsonLines)
     {
-        Ask.Router.Sent(session);
+        AskSent(session, text);
         var id = $"ask:{Guid.NewGuid().ToString().ToUpperInvariant()}";
         Ask.Current = id;
         Ask.Receipts.Add(new Core.Receipt { Id = id, Kind = ReceiptKind.Ask, At = DateTimeOffset.Now, Who = "theuth", Text = text, Session = session }, DateTimeOffset.Now);
@@ -32,4 +33,20 @@ public sealed partial class Store
         SetReceipt(new ReceiptRow.Reply("theuth", "sent — waiting for the desk", session));
         foreach (var line in jsonLines) HandleEvent(Encoding.UTF8.GetBytes(line));
     }
+
+    private string? replaySession;
+    private SessionTail? replayTail;
+
+    /// <summary>
+    /// 189w: the transcript <c>--ask-replay</c>'s catch-up reads for <paramref name="session"/> — the recorded desk exists on no
+    /// engine, so <c>load_session</c> has nothing to answer; every other session still goes to the engine.
+    /// </summary>
+    public void ReplayTranscript(string session, SessionTail tail)
+    {
+        replaySession = session;
+        replayTail = tail;
+    }
+
+    protected override Task<SessionTail> LoadTailAsync(string session, uint limit) =>
+        replayTail is { } tail && session == replaySession ? Task.FromResult(tail) : base.LoadTailAsync(session, limit);
 }

@@ -1,5 +1,5 @@
-/** Settings tabs that became sidebar pages — Skills and Tools under Agents, Secrets under Library; `/settings/<tab>` redirects here. */
-export const MOVED_TABS = { skills: '/skills', tools: '/tools', secrets: '/secrets' } as const
+/** Settings tabs that became sidebar pages — Skills and Secrets under Library; `/settings/<tab>` redirects here. */
+export const MOVED_TABS = { skills: '/skills', secrets: '/secrets' } as const
 
 export type LibraryRoute = (typeof MOVED_TABS)[keyof typeof MOVED_TABS]
 

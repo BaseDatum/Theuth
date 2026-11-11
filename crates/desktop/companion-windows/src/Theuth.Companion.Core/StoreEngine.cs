@@ -60,6 +60,12 @@ public interface IStoreEngine
     Task<string> SpeakAsync(string session, string text) => Task.FromException<string>(new NotSupportedException("speak"));
     Task StopSpeakingAsync(string? id) => Task.FromException(new NotSupportedException("stop_speaking"));
     Task AgentPauseAsync(string name, bool paused) => Task.FromException(new NotSupportedException("agent_pause"));
+
+    /// <summary>
+    /// 189w: <c>load_session(session, null, limit)</c> — the last <paramref name="limit"/> transcript entries and whether a turn runs
+    /// (the Ask catch-up). A default member: engines written before 189w (the test fakes) answer "not supported" and the catch-up degrades.
+    /// </summary>
+    Task<SessionTail> LoadSessionAsync(string session, uint limit) => Task.FromException<SessionTail>(new NotSupportedException("load_session"));
 }
 
 /// <summary>Timers on the Store's owner thread (the app: <c>DispatcherQueueTimer</c>; tests: virtual time). Dispose cancels.</summary>
@@ -123,4 +129,7 @@ public sealed class RpcStoreEngine(RpcClient client) : IStoreEngine
     public Task<string> SpeakAsync(string session, string text) => Client.SpeakAsync(session, text);
     public Task StopSpeakingAsync(string? id) => Client.StopSpeakingAsync(id);
     public Task AgentPauseAsync(string name, bool paused) => Client.AgentPauseAsync(name, paused);
+
+    // 189w
+    public Task<SessionTail> LoadSessionAsync(string session, uint limit) => Client.LoadSessionAsync(session, limit);
 }

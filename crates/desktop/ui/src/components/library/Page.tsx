@@ -5,8 +5,8 @@ import { SectionRow } from '@/components/nav/SectionRow'
 import { groupOf } from '@/lib/nav'
 
 /**
- * The tabbed pages' frame (97b): the band of the group that owns the route (Agents for Skills/Tools, Library for
- * Secrets and the rest — the tab is the title), then the page's row — an optional phone-only back link and the
+ * The tabbed pages' frame (97b): the band of the group that owns the route (Library for Skills, Secrets and the
+ * rest — the tab is the title), then the page's row — an optional phone-only back link and the
  * right-aligned actions — over whatever `children` lay out.
  */
 export function Page({
@@ -31,7 +31,7 @@ export function Page({
   )
 }
 
-/** A scrolling, centred reading column for the single-list pages (Tools, Secrets). */
+/** A scrolling, centred reading column for the single-list pages (Secrets). */
 export function Column({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">

@@ -490,6 +490,22 @@ public struct Lagged: Codable, Equatable, Sendable {
     public var count: UInt64
 }
 
+/// `load_session` reply subset (`crates/agent/src/lib.rs` `Loaded`): the rendered rows and whether a turn runs (189 D2).
+public struct Loaded: Codable, Equatable, Sendable {
+    public var history: [HistoryEntry]
+    public var running: Bool
+    public init(history: [HistoryEntry], running: Bool) { self.history = history; self.running = running }
+}
+
+/// One `HistoryEntry` row, tagged by `role` (`user`, `assistant`, `reasoning`, `tool`, …); only what the catch-up reads.
+/// `turn`: a user row's own seq when it opens a turn (`nil` for a steer), an assistant row's opening user seq.
+public struct HistoryEntry: Codable, Equatable, Sendable {
+    public var role: String
+    public var text: String?
+    public var turn: Int64?
+    public init(role: String, text: String? = nil, turn: Int64? = nil) { self.role = role; self.text = text; self.turn = turn }
+}
+
 /// One `subscribe_events` item, keyed by `type`. Everything the companion does not read is `.other`.
 public enum WireEvent: Equatable, Sendable {
     case pendingPrompts(PendingPrompts)
