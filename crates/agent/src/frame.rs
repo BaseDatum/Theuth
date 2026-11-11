@@ -96,7 +96,10 @@ requirements into the current plan.\n\
 A job or subagent may continue after you end a turn; its result will wake you. Do not poll or send filler to \
 stay active. Before a final answer, reconcile your todos with actual results. If remaining work requires user \
 input or another external prerequisite, block those items with a reason; do not mark unfinished work done. Use \
-`ask_user` when a decision is needed.";
+`ask_user` when a decision is needed.\n\
+To look at an image (a screenshot, a chart, a photo, a PNG a worker made), `read_file(path)` or \
+`read_url(url)` puts the picture in your context; on a text-only model you get the vision fallback's \
+description or a note that nobody has looked at it instead.";
 
 /// The line an unattended session gets where the surface block would have been.
 pub const UNATTENDED_LINE: &str = "Nobody reads this session directly: write results as plain, terse text for the agent or channel that receives them; do not draw diagrams or cards.";

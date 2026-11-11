@@ -183,9 +183,10 @@ pub fn search_description(all: &[ProviderMeta]) -> String {
 #[must_use]
 pub fn fetch_description(metas: &[ProviderMeta]) -> String {
     let mut s = String::from(
-        "Fetch one http(s) page and return its readable content as markdown (default) or plain \
-         text, capped at max_chars; offset pages through a long page and a cut result names the \
-         omitted sections. A page behind a bot wall, login or consent screen starts with `ISSUE:` \
+        "Fetch one http(s) page as markdown or text, or an image URL as a picture you can see. \
+         Page content is markdown (default) or plain text, capped at max_chars; offset pages \
+         through a long page and a cut result names the omitted sections. A page behind a bot \
+         wall, login or consent screen starts with `ISSUE:` \
          and names the next rung (rendered: true, browser_import_cookies, desktop_handoff). Known \
          hosts (HN, Reddit, npm, PyPI, crates.io, arXiv, Wikipedia, Stack Overflow) are read from \
          their JSON API unless source: page. An image URL (Content-Type image/*, or image bytes) \

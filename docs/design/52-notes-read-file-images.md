@@ -82,7 +82,21 @@ answered. Reading the same file twice is a second occurrence and is consulted
 again: 52 §5.3 "reattaching an image creates a new occurrence and
 consultation", kept. No content-hash dedupe across occurrences was added.
 
-## 4. Merge note
+## 4. Prompting
+
+- The runtime index shows a tool's first sentence cut at 120 chars
+  (`repl::summary`). `read_file`'s first sentence (119 chars) and
+  `read_url`'s (85) both say they return images as pictures.
+- The standing guidance (`frame::GUIDANCE_TAIL`, part of every native
+  session's baseline, root and theuth subagent alike) says: to look at an
+  image, `read_file(path)` or `read_url(url)` puts the picture in context;
+  a text-only model gets the fallback's description or a note.
+- `browser_screenshot` and `artifact_read` name the same text-only
+  behaviour. `repl::tests::index_lines_and_guidance_name_images` checks the
+  index lines are uncut and mention images, and that the guidance has the
+  sentence.
+
+## 5. Merge note
 
 `0058_image_refusals.sql` is the next free migration on main as of
 2026-11-11; renumber it if another branch lands a `0058` first.

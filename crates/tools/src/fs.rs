@@ -113,7 +113,7 @@ pub fn outliner() -> Option<Arc<dyn Outliner>> {
     OUTLINER.get().cloned()
 }
 
-/// Read a text file, or a document rendered as Markdown.
+/// Read a text file, an image (as a picture), or a document rendered as Markdown.
 pub struct ReadFile;
 
 #[async_trait::async_trait]
@@ -123,7 +123,7 @@ impl Tool for ReadFile {
     type Args = ReadFileArgs;
 
     fn description(&self) -> String {
-        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown, or an image; paths are relative to the working directory, `~` is not expanded. An image (PNG, JPEG, GIF or WebP, detected from its bytes) comes back as a picture you can look at, with the one-line header `[read_file <path>: image/png W×H, N KB]` (`; scaled to W×H` when it was downscaled to fit); `offset`/`limit`/`tail`/`ranges`/`outline` are refused for an image. A text-only model gets a description from the vision fallback model instead, or a note that nobody has looked at it. For text, line 1 is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
+        "Read a text file, an image (returned as a picture you can see) or a document (PDF, Office, ODF, RTF, EPUB) as Markdown. Paths are relative to the working directory, `~` is not expanded. An image (PNG, JPEG, GIF or WebP, detected from its bytes) comes back as a picture you can look at, with the one-line header `[read_file <path>: image/png W×H, N KB]` (`; scaled to W×H` when it was downscaled to fit); `offset`/`limit`/`tail`/`ranges`/`outline` are refused for an image. A text-only model gets a description from the vision fallback model instead, or a note that nobody has looked at it. A document is rendered from PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB. For text, line 1 is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
     }
 
     async fn call(&self, a: ReadFileArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
