@@ -465,6 +465,9 @@ pub struct Add {
     pub args: SourceAddArgs,
     /// Who adds (the item row's `added_by`).
     pub by: Principal,
+    /// The adder's `tools::egress::lan()`, read in its own task: the URL pre-check may pass a
+    /// local address only with it (16 §5, amended 2026-11-11).
+    pub lan: bool,
 }
 
 impl Message<Add> for IngestActor {
@@ -483,7 +486,7 @@ impl Message<Add> for IngestActor {
             return Err(format!("no such notebook: {}", args.notebook));
         }
         // Pre-flight (§4.1 end): the origin and, when it cannot work, the permanent reason.
-        let (origin, refusal) = routes::preflight(&c, &args)
+        let (origin, refusal) = routes::preflight(&c, &args, m.lan)
             .await
             .map_err(|e| format!("{e:#}"))?;
         let key = origin.key();
@@ -697,13 +700,16 @@ fn ingest() -> anyhow::Result<ActorRef<IngestActor>> {
 // ---- The four entry points -----------------------------------------------------------------------
 
 /// Pre-flight the origin, write the `sources` row (`new`) and the `Source` document, file it in the
-/// notebook, queue the job; answers at once with the card. Hub only (`NotHub` off the hub).
+/// notebook, queue the job; answers at once with the card. Hub only (`NotHub` off the hub). A URL on
+/// the local network passes only inside the caller's `tools::egress` grant (an owner's tool call, the
+/// owner's RPC) and with `web.allow_private_network`; otherwise it is refused as private.
 pub async fn source_add(
     _actor: &ActorRef<DocumentActor>,
     args: SourceAddArgs,
     by: Principal,
 ) -> anyhow::Result<Source> {
-    flat(ingest()?.ask(Add { args, by }).await).map_err(|e| anyhow::anyhow!(e))
+    let lan = tools::egress::lan();
+    flat(ingest()?.ask(Add { args, by, lan }).await).map_err(|e| anyhow::anyhow!(e))
 }
 
 /// One source with its ingest state. Any engine.

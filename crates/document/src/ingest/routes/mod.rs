@@ -32,10 +32,12 @@ pub const TEXT_EXTS: &[&str] = &["txt", "md", "markdown", "text", "csv"];
 pub type Progress = std::sync::Arc<dyn Fn(u8) + Send + Sync>;
 
 /// Resolve the arguments to an origin; `Some(reason)` is a permanent refusal written on the card at
-/// once (`415 unsupported`, `too large`, `refused: private address`, `no transcript route`).
+/// once (`415 unsupported`, `too large`, `refused: private address`, `no transcript route`). `lan`
+/// is the adder's local-network grant ([`url::preflight`]).
 pub async fn preflight(
     ctx: &Ctx,
     a: &SourceAddArgs,
+    lan: bool,
 ) -> anyhow::Result<(SourceOrigin, Option<String>)> {
     let given = [
         a.path.is_some(),
@@ -58,7 +60,7 @@ pub async fn preflight(
     if let Some(u) = &a.url {
         return match youtube::video_id(u) {
             Some(video) => youtube::preflight(ctx, video, u).await,
-            None => url::preflight(u).await,
+            None => url::preflight(&ctx.rt, u, lan).await,
         };
     }
     if let Some(t) = &a.text {

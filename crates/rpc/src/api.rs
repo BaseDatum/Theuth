@@ -7052,11 +7052,15 @@ impl ApiServer for Server {
         args: document::ingest::SourceAddArgs,
     ) -> RpcResult<document::Source> {
         owner(ext)?;
+        // 16 §5 (2026-11-11): the authenticated owner may add a local-network URL.
         let r = nb_result(
-            document::ingest::source_add(
-                &documents()?,
-                args.clone(),
-                document::Principal::Owner { device: None },
+            tools::egress::scope(
+                true,
+                document::ingest::source_add(
+                    &documents()?,
+                    args.clone(),
+                    document::Principal::Owner { device: None },
+                ),
             )
             .await,
         );
