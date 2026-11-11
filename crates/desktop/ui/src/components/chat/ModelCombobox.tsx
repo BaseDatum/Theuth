@@ -1,6 +1,6 @@
 // 124 §5: the form field over the model catalog — an outline trigger plus the shared `ModelPicker`,
 // replacing the Radix `Select` of 388 rows. `none` is the "Engine default" / "Off" row; it reports `null`.
-// 148: `effort` passes through to the picker's effort levels; the trigger then reads `name · effort`.
+// 148: `effort` passes through to the picker's effort chips; the trigger then reads `name · effort`.
 // 148 R2: on touch the picker opens in `ModelDialog`'s top-of-band dialog (127 §6), not a trigger-anchored popover
 // the keyboard would cover (the search input focuses on open); desktop keeps the popover.
 // 2026-10-10: the desktop popover is `modal`; inside the Settings dialog, the dialog's scroll lock otherwise cancels wheel events over the portaled list.
@@ -14,7 +14,7 @@ import { touch } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import { dialogPlacement, useFavorites } from './ModelMenu'
-import { LocalTag, ModelPicker } from './ModelPicker'
+import { type Effort, LocalTag, ModelPicker } from './ModelPicker'
 
 const NONE = '__none__'
 
@@ -44,8 +44,8 @@ export function ModelCombobox({
   /** The id on file; one missing from `models` stays selectable under the picker's `other` provider. */
   value: string | null | undefined
   onChange(id: string | null): void
-  /** The current model's effort levels (`ModelPicker.effort`); `onSelect(null)` clears. */
-  effort?: { levels: string[]; current: string | null | undefined; onSelect(level: string | null): void }
+  /** The current model's effort levels (`ModelPicker.effort`, chips under its row); `onSelect(null)` is the Default chip. */
+  effort?: Effort
   none?: { label: string }
   disabled?: boolean
   id?: string
