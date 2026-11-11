@@ -142,8 +142,8 @@ impl mesh::net::ContactAlpn for Gate {
         live.staged
             .contacts
             .values()
-            .find(|f| f.eid == remote)
-            .map(|f| f.addrs.clone())
+            .find_map(|f| f.hints.get(remote).filter(|a| !a.is_empty()))
+            .cloned()
             .unwrap_or_default()
     }
 }
@@ -181,13 +181,15 @@ pub(crate) async fn serve_http(
     stream: Box<dyn ByteStream>,
     ctx: Option<Arc<Ctx>>,
 ) -> anyhow::Result<()> {
-    let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+    let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
         let (shared, remote, ctx) = (shared.clone(), remote.clone(), ctx.clone());
         async move {
-            if let Some(c) = &ctx
-                && let Some(res) = contact_route(c, &remote, &req).await
-            {
-                return Ok::<_, std::convert::Infallible>(res);
+            let mut req = req;
+            if let Some(c) = &ctx {
+                match contact_route(c, &remote, req).await {
+                    Ok(res) => return Ok::<_, std::convert::Infallible>(res),
+                    Err(back) => req = back,
+                }
             }
             req.extensions_mut().insert(ContactCaller(remote));
             crate::server::app(shared)
@@ -208,26 +210,36 @@ pub(crate) async fn serve_http(
     Ok(())
 }
 
-/// 183 F1: the contact-only routes of [`serve_http`]; `None` for everything else. Both run
-/// under the contact's rate and concurrency bounds (review 1).
-async fn contact_route<B>(
+/// 183 F1: the contact-only routes of [`serve_http`]; everything else is handed back. Each
+/// runs under the contact's rate and concurrency bounds (review 1). 191 (D1): `NOTICE_PATH`
+/// reads a members/v1 body of up to [`super::rosters::NOTICE_BYTES_MAX`] (413 above it), and
+/// `GET` [`super::rosters::ROSTER_PATH`] serves a proof path of the caller's own records.
+async fn contact_route(
     c: &Arc<Ctx>,
     remote: &str,
-    req: &hyper::Request<B>,
-) -> Option<axum::response::Response> {
+    req: hyper::Request<hyper::body::Incoming>,
+) -> Result<axum::response::Response, hyper::Request<hyper::body::Incoming>> {
     use axum::response::IntoResponse as _;
+    use http_body_util::BodyExt as _;
+    #[derive(PartialEq)]
+    enum Route {
+        Card,
+        Notice,
+        Path,
+    }
     let route = match (req.method(), req.uri().path()) {
-        (&hyper::Method::GET, super::offers::CARD_PATH) => true,
-        (&hyper::Method::POST, super::offers::NOTICE_PATH) => false,
-        _ => return None,
+        (&hyper::Method::GET, super::offers::CARD_PATH) => Route::Card,
+        (&hyper::Method::POST, super::offers::NOTICE_PATH) => Route::Notice,
+        (&hyper::Method::GET, super::rosters::ROSTER_PATH) => Route::Path,
+        _ => return Err(req),
     };
     let admitted = c.shared.read().admit_contact(remote);
     let _permit = match admitted {
         Ok(p) => p,
-        Err(status) => return Some(status.into_response()),
+        Err(status) => return Ok(status.into_response()),
     };
-    Some(if route {
-        match c.contact_card(remote).await {
+    Ok(match route {
+        Route::Card => match c.contact_card(remote).await {
             Ok(card) => (
                 [(hyper::header::CACHE_CONTROL, "private, no-store")],
                 axum::Json(card),
@@ -237,10 +249,49 @@ async fn contact_route<B>(
                 tracing::warn!(%remote, "a2a: contact card: {}", super::offers::clip(&e));
                 hyper::StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
+        },
+        Route::Notice => {
+            let max = super::rosters::NOTICE_BYTES_MAX;
+            let declared = req
+                .headers()
+                .get(hyper::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<usize>().ok());
+            if declared.is_some_and(|n| n > max) {
+                return Ok(hyper::StatusCode::PAYLOAD_TOO_LARGE.into_response());
+            }
+            let Ok(body) = http_body_util::Limited::new(req.into_body(), max)
+                .collect()
+                .await
+                .map(|b| b.to_bytes())
+            else {
+                return Ok(hyper::StatusCode::PAYLOAD_TOO_LARGE.into_response());
+            };
+            // Each copy is verified on its own: a body that does not parse, or copies that do
+            // not verify, change nothing. The card is fetched again as before.
+            let pushed = if body.is_empty() {
+                None
+            } else {
+                serde_json::from_slice::<super::rosters::Carried>(&body)
+                    .inspect_err(|e| tracing::debug!(%remote, "191: roster push not read: {e}"))
+                    .ok()
+            };
+            let (c, remote) = (c.clone(), remote.to_owned());
+            tokio::spawn(async move {
+                if let Some(m) = pushed {
+                    c.ingest(&m, &remote).await;
+                }
+                c.offers_noticed(&remote);
+            });
+            hyper::StatusCode::NO_CONTENT.into_response()
         }
-    } else {
-        c.offers_noticed(remote);
-        hyper::StatusCode::NO_CONTENT.into_response()
+        Route::Path => match c
+            .roster_path(remote, req.uri().query().unwrap_or_default())
+            .await
+        {
+            Ok(answer) => axum::Json(answer).into_response(),
+            Err((status, why)) => (status, why).into_response(),
+        },
     })
 }
 
@@ -257,57 +308,107 @@ pub struct Hints {
 pub struct IrohTransport {
     /// This engine's endpoint.
     pub net: Arc<mesh::net::Net>,
-    /// The contact's endpoint id.
+    /// The contact's endpoint id (dialled first).
     pub eid: String,
     /// Dial hints.
     pub hints: Hints,
     /// 183 §7.7: the export to reach (`/agents/<export>/rpc`); `None` posts to `/rpc`,
     /// which the contact's gate maps to the first export it granted.
     pub export: Option<String>,
+    /// 191 (D3): the contact's other admitted machines, tried in turn when one refuses
+    /// before admitting anything (unreachable, not a contact there, `NOT_OWNER`).
+    pub members: Vec<String>,
+    /// 191: the member that last answered (tried first: a follower's `GetTask` reaches the
+    /// machine holding its task); shared by the contact's sends.
+    pub answered: Arc<parking_lot::Mutex<Option<String>>>,
 }
 
 fn refused(e: impl std::fmt::Display) -> A2AError {
     A2AError::new(error_code::UNSUPPORTED_OPERATION, e.to_string())
 }
 
+/// A call's failure, and whether nothing was admitted by that member (another may be tried).
+type Failed = (bool, A2AError);
+
 impl IrohTransport {
-    /// One JSON-RPC call on a fresh stream. A refusal at the gate (not a contact, no export
-    /// granted) is `UNSUPPORTED_OPERATION`, so the sender records it as refused; anything
-    /// after the request left is `INTERNAL_ERROR` (the outcome is unknown).
+    /// Whom to try, in order: the member that last answered, then one with a live
+    /// connection, then the rest as given (the dialled one first).
+    fn order(&self) -> Vec<String> {
+        let mut all: Vec<String> = Vec::new();
+        for e in std::iter::once(&self.eid).chain(&self.members) {
+            if !all.contains(e) {
+                all.push(e.clone());
+            }
+        }
+        let last = self.answered.lock().clone();
+        all.sort_by_key(|e| {
+            (
+                last.as_deref() != Some(e.as_str()),
+                self.net.a2a_path(e) == mesh::PeerPath::Offline,
+            )
+        });
+        all
+    }
+
+    /// One JSON-RPC call on a fresh stream, to the first member that admits it. A refusal at
+    /// the gate (not a contact, no export granted) is `UNSUPPORTED_OPERATION`, so the sender
+    /// records it as refused; anything after the request left is `INTERNAL_ERROR` (the
+    /// outcome is unknown) and is never sent again elsewhere.
     async fn call(
         &self,
         params: &ServiceParams,
         method: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, A2AError> {
-        tokio::time::timeout(
-            CALL_TIMEOUT,
-            self.call_on(&self.net, params, method, payload),
-        )
-        .await
-        .map_err(|_| A2AError::internal("no answer from the contact in time"))?
+        let go = async {
+            let mut last = None;
+            for eid in self.order() {
+                match self.call_on(&eid, params, method, payload.clone()).await {
+                    Ok(v) => {
+                        *self.answered.lock() = Some(eid);
+                        return Ok(v);
+                    }
+                    Err((true, e)) => {
+                        tracing::debug!(%eid, "a2a: contact member refused ({}); trying the next", e.message);
+                        last = Some(e);
+                    }
+                    Err((false, e)) => return Err(e),
+                }
+            }
+            Err(last.unwrap_or_else(|| refused("contact unreachable")))
+        };
+        tokio::time::timeout(CALL_TIMEOUT, go)
+            .await
+            .map_err(|_| A2AError::internal("no answer from the contact in time"))?
     }
 
     async fn call_on(
         &self,
-        net: &mesh::net::Net,
+        eid: &str,
         params: &ServiceParams,
         method: &str,
         payload: serde_json::Value,
-    ) -> Result<serde_json::Value, A2AError> {
+    ) -> Result<serde_json::Value, Failed> {
+        let net = &self.net;
+        let hints = if eid == self.eid {
+            self.hints.addrs.clone()
+        } else {
+            Vec::new()
+        };
         let stream = net
-            .a2a_stream(&self.eid, &self.hints.addrs, self.hints.relay.as_deref())
+            .a2a_stream(eid, &hints, self.hints.relay.as_deref())
             .await
-            .map_err(|e| refused(format!("contact unreachable: {e:#}")))?;
+            .map_err(|e| (true, refused(format!("contact unreachable: {e:#}"))))?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
-            .map_err(refused)?;
+            .map_err(|e| (true, refused(e)))?;
         tokio::spawn(async move {
             let _ = conn.await;
         });
+        let after = |e: A2AError| (false, e);
         let id = JsonRpcId::String(uuid::Uuid::now_v7().to_string());
         let body = serde_json::to_vec(&JsonRpcRequest::new(id, method, Some(payload)))
-            .map_err(|e| A2AError::internal(e.to_string()))?;
+            .map_err(|e| after(A2AError::internal(e.to_string())))?;
         let path = self
             .export
             .as_ref()
@@ -322,31 +423,41 @@ impl IrohTransport {
         }
         let req = req
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
-            .map_err(|e| A2AError::internal(e.to_string()))?;
+            .map_err(|e| after(A2AError::internal(e.to_string())))?;
         let resp = sender
             .send_request(req)
             .await
-            .map_err(|e| A2AError::internal(format!("contact request: {e}")))?;
+            .map_err(|e| after(A2AError::internal(format!("contact request: {e}"))))?;
         match resp.status() {
             s if s.is_success() => {}
-            hyper::StatusCode::UNAUTHORIZED => return Err(refused("not a contact there")),
+            // Refused at that member's gate: nothing was admitted there.
+            hyper::StatusCode::UNAUTHORIZED => return Err((true, refused("not a contact there"))),
             hyper::StatusCode::NOT_FOUND => {
-                return Err(refused("the contact grants no export to this engine"));
+                return Err(after(refused(
+                    "the contact grants no export to this engine",
+                )));
             }
-            s => return Err(A2AError::internal(format!("contact answered HTTP {s}"))),
+            s => {
+                return Err(after(A2AError::internal(format!(
+                    "contact answered HTTP {s}"
+                ))));
+            }
         }
         let body = http_body_util::Limited::new(resp.into_body(), a2a_client::MAX_RESPONSE_BYTES)
             .collect()
             .await
-            .map_err(|e| A2AError::internal(format!("contact response: {e}")))?
+            .map_err(|e| after(A2AError::internal(format!("contact response: {e}"))))?
             .to_bytes();
         let rpc: JsonRpcResponse = serde_json::from_slice(&body)
-            .map_err(|e| A2AError::internal(format!("contact response: {e}")))?;
+            .map_err(|e| after(A2AError::internal(format!("contact response: {e}"))))?;
         if let Some(err) = rpc.error {
-            return Err(A2AError::new(err.code, err.message));
+            // 191 (D3, S4): the session is owned by another of the contact's machines; the
+            // next member is tried (P3 forwards instead).
+            let next = err.code == agent::communication::mesh::NOT_OWNER;
+            return Err((next, A2AError::new(err.code, err.message)));
         }
         rpc.result
-            .ok_or_else(|| A2AError::internal("JSON-RPC response missing result"))
+            .ok_or_else(|| after(A2AError::internal("JSON-RPC response missing result")))
     }
 
     async fn typed<Req, Resp>(

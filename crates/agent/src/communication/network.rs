@@ -1396,6 +1396,16 @@ impl Agents {
         req: &SendMessageRequest,
     ) -> Result<Admitted, A2AError> {
         let generation = self.admit_principal(p).await?;
+        // 191 (D3, S4): a contact's message into an inbox session another machine of this mesh
+        // now owns is `NOT_OWNER` before anything is accepted here: the contact's client tries
+        // its next member. (A chat export owned elsewhere still takes W-40 until P3.)
+        if p.contact.is_some() && self.network.inboxes.contains(&p.session) {
+            match self.session_owner(p.session).await {
+                Ok(None) => {}
+                Ok(Some(owner)) => return Err(full::not_owner(&owner)),
+                Err(e) => return Err(internal(e)),
+            }
+        }
         if req
             .configuration
             .as_ref()

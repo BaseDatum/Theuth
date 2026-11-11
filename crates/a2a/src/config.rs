@@ -293,10 +293,14 @@ impl Peer {
 pub struct ContactFacts {
     /// 191 (D2): its record (a merge group's root); `""` for a `peers.yaml` entry (an import).
     pub id: String,
-    /// The pinned endpoint id (191: the first anchor of the group).
+    /// The pinned endpoint id (191: the endpoint dialled first: a pin still admitted, else the
+    /// first machine of its roster).
     pub eid: String,
-    /// 191 (D2): every anchor of the group, `eid` first.
+    /// 191 (D1): every endpoint the group admits, `eid` first: its records' current rosters
+    /// (pins while none is based).
     pub eids: Vec<String>,
+    /// 191 (D3): the last direct addresses of each of `eids` (dial hints).
+    pub hints: BTreeMap<String, Vec<std::net::SocketAddr>>,
     /// Display name from its card.
     pub display: String,
     /// Its machine, from its card.
@@ -653,6 +657,7 @@ fn stage_contact<'a>(
             id: String::new(),
             eid: eid.to_owned(),
             eids: vec![eid.to_owned()],
+            hints: BTreeMap::new(),
             display: p.name.clone().unwrap_or_else(|| name.to_owned()),
             machine: p.machine.clone().unwrap_or_default(),
             cap: cap.min(tools::Risk::Mutating),

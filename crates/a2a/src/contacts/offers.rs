@@ -166,6 +166,19 @@ pub(crate) fn of_card(card: &AgentCard) -> Vec<ContactOffer> {
         .collect()
 }
 
+/// 191 (D1): the members/v1 payload of a verified card, if it carries one (unverified copies).
+pub(crate) fn card_members(card: &AgentCard) -> Option<super::rosters::Carried> {
+    let params = card
+        .capabilities
+        .extensions
+        .iter()
+        .flatten()
+        .find(|e| e.uri == super::rosters::EXT_MEMBERS)?
+        .params
+        .clone()?;
+    serde_json::from_value(serde_json::Value::Object(params.into_iter().collect())).ok()
+}
+
 /// One request to the contact `eid` on a fresh `theuth/a2a/1` stream: its status and body
 /// (at most [`super::CARD_BYTES_MAX`]).
 async fn call(
@@ -173,6 +186,17 @@ async fn call(
     eid: &str,
     method: hyper::Method,
     path: &str,
+) -> Result<(hyper::StatusCode, bytes::Bytes), String> {
+    call_with(net, eid, method, path, None).await
+}
+
+/// [`call`] with a JSON body (191: a roster push).
+pub(crate) async fn call_with(
+    net: &mesh::net::Net,
+    eid: &str,
+    method: hyper::Method,
+    path: &str,
+    body: Option<bytes::Bytes>,
 ) -> Result<(hyper::StatusCode, bytes::Bytes), String> {
     let go = async {
         let stream = net
@@ -185,11 +209,15 @@ async fn call(
         tokio::spawn(async move {
             let _ = conn.await;
         });
-        let req = hyper::Request::builder()
+        let mut req = hyper::Request::builder()
             .method(method)
             .uri(path)
-            .header(hyper::header::HOST, "theuth")
-            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .header(hyper::header::HOST, "theuth");
+        if body.is_some() {
+            req = req.header(hyper::header::CONTENT_TYPE, "application/json");
+        }
+        let req = req
+            .body(http_body_util::Full::new(body.unwrap_or_default()))
             .map_err(|e| e.to_string())?;
         let resp = sender.send_request(req).await.map_err(|e| e.to_string())?;
         let status = resp.status();
@@ -207,7 +235,9 @@ async fn call(
 
 impl Ctx {
     /// The card served to the contact pinned to `eid`: this engine's public card plus, as
-    /// skills, the exports granted to that contact (a paused chat reads `unavailable`).
+    /// skills, the exports granted to that contact (a paused chat reads `unavailable`). 191
+    /// (D1): plus the members/v1 extension with the caller's own chains, when one exists (the
+    /// card's JWS covers it).
     pub(crate) async fn contact_card(&self, eid: &str) -> Result<AgentCard, String> {
         let live = self.shared.read().clone();
         let alias = live
@@ -232,7 +262,24 @@ impl Ctx {
         let net = self.net().ok_or("this engine has no mesh endpoint")?;
         let mut facts = self.card_facts(&net);
         facts.skills = offers;
-        super::signed_card(&facts, &|m: &[u8]| net.sign(m))
+        let mut card = super::card(&facts);
+        let carried = self.carried_to(eid).await?;
+        if !carried.chains.is_empty() {
+            let params = match serde_json::to_value(&carried) {
+                Ok(serde_json::Value::Object(m)) => m.into_iter().collect(),
+                _ => return Err("members payload".into()),
+            };
+            card.capabilities
+                .extensions
+                .get_or_insert_with(Vec::new)
+                .push(a2a_types::AgentExtension {
+                    uri: super::rosters::EXT_MEMBERS.to_owned(),
+                    description: None,
+                    required: Some(false),
+                    params: Some(params),
+                });
+        }
+        super::sign_card(card, &facts.endpoint, &|m: &[u8]| net.sign(m))
     }
 
     /// A contact said what it shares with us changed (`NOTICE_PATH`): fetch its card again.
@@ -277,12 +324,14 @@ impl Ctx {
     /// failure keeps the last list and is logged once (cut to 200 characters). `true` when
     /// it took; the agent and `A2aChanged` hear of it only when the list changed.
     pub(crate) async fn refresh_offers(&self, eid: &str) -> bool {
+        let mut members = None;
         let outcome = match self.net() {
             Some(net) => match call(&net, eid, hyper::Method::GET, CARD_PATH).await {
                 Ok((s, body)) if s.is_success() => serde_json::from_slice::<AgentCard>(&body)
                     .map_err(|e| format!("card: {e}"))
                     .and_then(|card| {
                         super::verify_card(&card, eid)?;
+                        members = card_members(&card);
                         Ok((of_card(&card), super::card_full(&card)))
                     }),
                 Ok((s, _)) => Err(format!("card: HTTP {s}")),
@@ -290,6 +339,11 @@ impl Ctx {
             },
             None => Err("this engine has no mesh endpoint".to_owned()),
         };
+        // 191 (D1): the card carries the contact's chains; each copy is verified on its own
+        // (a card without the extension changes nothing).
+        if let Some(m) = &members {
+            self.ingest(m, eid).await;
+        }
         let took = outcome.is_ok();
         let changed = {
             let mut all = self.offers.lock();
@@ -339,8 +393,8 @@ impl Ctx {
         });
     }
 
-    /// `discover_peers` found the offers stale: refetch every contact's card older than
-    /// [`OFFERS_TTL`], together.
+    /// `discover_peers` found the offers stale: refetch, together, the card of every machine
+    /// of every contact (191: every member it admits, not one) older than [`OFFERS_TTL`].
     pub(crate) async fn refresh_stale_offers(&self) {
         let live = self.shared.read().clone();
         let stale: Vec<String> = {
@@ -349,15 +403,38 @@ impl Ctx {
                 .contacts
                 .values()
                 .filter(|f| !f.blocked)
-                .filter(|f| {
-                    all.get(&f.eid)
+                .flat_map(|f| f.eids.iter())
+                .filter(|eid| {
+                    all.get(*eid)
                         .and_then(|c| c.at)
                         .is_none_or(|at| at.elapsed() >= OFFERS_TTL)
                 })
-                .map(|f| f.eid.clone())
+                .cloned()
                 .collect()
         };
         futures::future::join_all(stale.iter().map(|eid| self.refresh_offers(eid))).await;
+    }
+
+    /// 191: the machine of the contact admitting `eid` whose last card counts: the most
+    /// recent one that took, else `eid`.
+    pub(crate) fn offers_eid(&self, eid: &str) -> String {
+        let live = self.shared.read().clone();
+        let Some(f) = live
+            .staged
+            .contact_by_eid(eid)
+            .and_then(|a| live.staged.contacts.get(a))
+        else {
+            return eid.to_owned();
+        };
+        let all = self.offers.lock();
+        f.eids
+            .iter()
+            .filter_map(|e| {
+                let c = all.get(e)?;
+                (c.error.is_none()).then_some((c.at?, e))
+            })
+            .max()
+            .map_or_else(|| eid.to_owned(), |(_, e)| e.clone())
     }
 
     /// The offers last fetched from the contact pinned to `eid`.
@@ -378,13 +455,17 @@ impl Ctx {
     pub(crate) async fn push_offers(&self) {
         let Ok(agents) = self.agents() else { return };
         let live = self.shared.read().clone();
+        let from: Vec<(String, String)> = live
+            .staged
+            .contacts
+            .iter()
+            .filter(|(_, f)| !f.blocked)
+            .map(|(alias, f)| (alias.clone(), self.offers_eid(&f.eid)))
+            .collect();
         let map: BTreeMap<String, Vec<ContactOffer>> = {
             let all = self.offers.lock();
-            live.staged
-                .contacts
-                .iter()
-                .filter(|(_, f)| !f.blocked)
-                .filter_map(|(alias, f)| Some((alias.clone(), all.get(&f.eid)?.offers.clone())))
+            from.into_iter()
+                .filter_map(|(alias, eid)| Some((alias, all.get(&eid)?.offers.clone())))
                 .collect()
         };
         let _ = agents.tell(ContactOffers(map)).await;

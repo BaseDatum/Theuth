@@ -191,6 +191,12 @@ struct Ctx {
     ready: Arc<std::sync::atomic::AtomicBool>,
     /// 191 (D2): the mesh's bounded first-sync latch (`mesh::synced`; a test's own).
     latched: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// 191 (D1, P2): the contact side's roster bookkeeping (rounds, flips, alerts).
+    rosters: Mutex<contacts::members::Mem>,
+    /// 191 (P2): one read-modify-write of this machine's roster states at a time.
+    roster_lock: tokio::sync::Mutex<()>,
+    /// 191 (P2): push generation per contact endpoint (a newer push supersedes a retry).
+    pushes: Arc<Mutex<std::collections::HashMap<String, u64>>>,
     /// Tests: awaited once by the next pass right after it staged its snapshot (a write
     /// landing mid-pass).
     #[cfg(test)]
@@ -235,6 +241,10 @@ struct State {
     records_hash: Option<u64>,
     /// 191: when a failed pass may run again unprompted.
     retry_at: Option<std::time::Instant>,
+    /// 191 (D1): the `peers_gen` the last reconcile saw (a mesh membership change signs).
+    peers_gen: Option<u64>,
+    /// 191 (D1): this process pushed its chains once (at boot, after the first pass).
+    pushed: bool,
 }
 
 /// 190 (D10): unless the marker `a2a/.190-full-notice` exists beside `peers.yaml`, log one
@@ -541,21 +551,14 @@ impl Ctx {
                 records = self.records().await?;
             }
         }
-        let family: std::collections::BTreeSet<String> = self
-            .net()
-            .map(|n| {
-                n.paired_ids()
-                    .iter()
-                    .map(ToString::to_string)
-                    .chain([n.id.0.clone()])
-                    .collect()
-            })
-            .unwrap_or_default();
+        // 191 (D1): a mesh membership change is a reason to sign; this pass covers it.
+        let peers_gen = self.net().map(|n| *n.peers_gen.borrow());
+        let family = contacts::members::family(self.net().as_deref());
         let base = contacts::records::stage_records(&records, &family, self.cfg.contact_cap);
         // The hash of what is staged, never a later read: a write landing during the rest
         // of this pass is not in it, so the next tick reconciles it.
         let staged_hash = records.content_hash();
-        drop(records);
+        self.state.lock().peers_gen = peers_gen;
         #[cfg(test)]
         {
             let hook = self.mid_pass.lock().take();
@@ -677,18 +680,22 @@ impl Ctx {
             clients.insert(p.name.clone(), c);
         }
         // 183 §7.7: a contact's route is `theuth/a2a/1` to its pinned endpoint, once this
-        // engine's endpoint is attached (until then the contact is inbound-only).
+        // engine's endpoint is attached (until then the contact is inbound-only). 191 (D3):
+        // then to the other machines it admits.
         if let Some(net) = self.net.get() {
             for p in staged.peers.values().filter(|p| p.eid.is_some()) {
-                let display = staged
-                    .contacts
-                    .get(&p.name)
-                    .map_or(p.name.as_str(), |c| c.display.as_str());
+                let facts = staged.contacts.get(&p.name);
+                let display = facts.map_or(p.name.as_str(), |c| c.display.as_str());
+                let members = facts.map(|f| f.eids.clone()).unwrap_or_default();
                 let c = match old_clients.get(&p.name).filter(|c| c.matches(p)) {
-                    Some(c) => c.clone(),
+                    Some(c) => {
+                        c.set_members(members);
+                        c.clone()
+                    }
                     None => Arc::new(PeerClient::contact(
                         p,
                         display,
+                        members,
                         net.clone(),
                         agents.clone(),
                         vault.clone(),
@@ -936,6 +943,20 @@ impl Ctx {
                 .tell(agent::communication::network::InboxPersonasChanged)
                 .await;
         }
+        // 191 (D1): our side signs, co-signs and prunes each live record's chain (never before
+        // `contacts_ready`, never for a removed record), then pushes after a signing, and
+        // once at boot. A failure here leaves the install standing; the next pass retries.
+        match self.sign_rosters(&records).await {
+            Ok(signed) => {
+                let first = !std::mem::replace(&mut self.state.lock().pushed, true);
+                if (signed || first)
+                    && let Ok(r) = self.records().await
+                {
+                    self.push_rosters(&r).await;
+                }
+            }
+            Err(e) => tracing::warn!("191: rosters not signed: {e}"),
+        }
         Ok(problem)
     }
 
@@ -994,7 +1015,8 @@ impl Ctx {
             self.remember_addrs().await;
             let was = self.ready.load(std::sync::atomic::Ordering::SeqCst);
             self.tick().await;
-            // 183 F1: what each contact shares with us is memory; fetch it once admitted.
+            // 183 F1: what each contact shares with us is memory; fetch it once admitted (191:
+            // from every machine of it that is admitted).
             if !was && self.ready.load(std::sync::atomic::Ordering::SeqCst) {
                 let eids: Vec<String> = self
                     .shared
@@ -1003,11 +1025,21 @@ impl Ctx {
                     .contacts
                     .values()
                     .filter(|f| !f.blocked)
-                    .map(|f| f.eid.clone())
+                    .flat_map(|f| f.eids.clone())
                     .collect();
                 for eid in eids {
                     self.refresh_offers_soon(&eid);
                 }
+            }
+            // 191 (D1): the contact side's roster round, once per `ROUND`.
+            let due = self
+                .rosters
+                .lock()
+                .last_round
+                .is_none_or(|t| t.elapsed() >= contacts::rosters::ROUND);
+            if due && self.ready.load(std::sync::atomic::Ordering::SeqCst) {
+                let c = self.clone();
+                tokio::spawn(async move { c.roster_round().await });
             }
         }
     }
@@ -1032,7 +1064,11 @@ impl Ctx {
             Ok(r) => Some(r.content_hash()) != self.state.lock().records_hash,
             Err(_) => false,
         };
-        if !(file || pending || records) {
+        // 191 (D1): a mesh membership change (`peers_gen`) re-signs every chain.
+        let members = self
+            .net()
+            .is_some_and(|n| Some(*n.peers_gen.borrow()) != self.state.lock().peers_gen);
+        if !(file || pending || records || members) {
             return false;
         }
         let _serial = self.edit_lock.lock().await;
@@ -1191,7 +1227,7 @@ impl Ctx {
             .contacts
             .values()
             .filter(|f| !f.blocked)
-            .map(|f| f.eid.clone())
+            .flat_map(|f| f.eids.clone())
             .collect();
         for eid in eids {
             self.refresh_offers_soon(&eid);
@@ -1337,6 +1373,9 @@ impl runtime::Plugin for A2aPlugin {
             offers: Mutex::default(),
             ready: agent::communication::network::CONTACTS_READY.clone(),
             latched: Arc::new(mesh::synced),
+            rosters: Mutex::default(),
+            roster_lock: tokio::sync::Mutex::new(()),
+            pushes: Arc::default(),
             #[cfg(test)]
             mid_pass: Mutex::default(),
         });
@@ -1390,6 +1429,9 @@ async fn test_ctx(
         offers: Mutex::default(),
         ready,
         latched,
+        rosters: Mutex::default(),
+        roster_lock: tokio::sync::Mutex::new(()),
+        pushes: Arc::default(),
         mid_pass: Mutex::default(),
     });
     if let Some(agents) = agents {

@@ -1,12 +1,13 @@
 //! 191 (D2): the mesh-wide contact records — `contacts`, `contact_endpoints`, `contact_grants`
-//! and `a2a_exports` (plus `contact_votes` from P2 and `contact_threads`) — ride the record
-//! replica beside `projects`. Only the a2a plugin interprets them (its reconcile stages them
-//! row by row and quarantines a bad one); this module reads them whole and writes single
-//! columns, so a write never rolls back a column another machine changed since the read.
-//! `contact_addrs` is local. `sessions.contact_inbox` (D4) is a session-log column.
+//! and `a2a_exports` (plus, from P2, `contact_rosters` and `contact_roster_heads`, and
+//! `contact_threads`) — ride the record replica beside `projects`. Only the a2a plugin
+//! interprets them (its reconcile stages them row by row and quarantines a bad one); this
+//! module reads them whole and writes single columns, so a write never rolls back a column
+//! another machine changed since the read. `contact_addrs` and `contact_roster_local` are
+//! local. `sessions.contact_inbox` (D4) is a session-log column.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher as _};
+use std::hash::{Hash, Hasher};
 
 use runtime::SessionId;
 use sqlx::FromRow;
@@ -14,13 +15,14 @@ use sqlx::FromRow;
 use super::Store;
 
 /// The replicated 191 tables, attached by [`Store::replicate_records`].
-pub const RECORD_TABLES: [&str; 6] = [
+pub const RECORD_TABLES: [&str; 7] = [
     "contacts",
     "contact_endpoints",
-    "contact_votes",
     "contact_grants",
     "a2a_exports",
     "contact_threads",
+    "contact_rosters",
+    "contact_roster_heads",
 ];
 
 /// One `contacts` row. Every column may be NULL: a replicated row can arrive a column at a
@@ -52,8 +54,10 @@ pub struct EndpointRow {
     pub contact: Option<String>,
     pub eid: Option<String>,
     pub paired_ms: Option<i64>,
-    /// NULL = an anchor; set when a later ceremony barred it (P2).
+    /// NULL = an anchor; set when a later ceremony barred it (unused since D1's roster).
     pub barred_ms: Option<i64>,
+    /// 191 (P2): the engine id of our machine whose ceremony wrote this pin (NULL before P2).
+    pub pinned_by: Option<String>,
 }
 
 /// One `contact_grants` row: `id` = `<contact>|<export id>`.
@@ -83,6 +87,70 @@ pub struct ExportRow {
     pub removed_ms: Option<i64>,
 }
 
+/// 191 (D1, P2): one `contact_rosters` row, a signed copy of ours: `id` =
+/// `<contact>|<chain>|<version>|<signer>`, immutable once written.
+#[allow(missing_docs)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, FromRow)]
+pub struct RosterRow {
+    pub id: String,
+    pub contact: Option<String>,
+    pub chain: Option<String>,
+    pub version: Option<i64>,
+    pub signer: Option<String>,
+    pub hash: Option<String>,
+    /// The signed copy, JSON.
+    pub roster: Option<String>,
+}
+
+/// The `contact_rosters` rows and what the reconcile keys on: the rows are immutable, so
+/// `(count, max hlc)` stands for their content (D2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Rosters {
+    /// By id.
+    pub rows: Vec<RosterRow>,
+    /// `(count, max hlc)`.
+    pub stamp: (i64, Option<String>),
+}
+
+impl Hash for Rosters {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.stamp.hash(state);
+    }
+}
+
+/// 191 (D1, P2): one `contact_roster_heads` row: `id` = `<record>|<machine eid>`, written
+/// only by that machine.
+#[allow(missing_docs)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, FromRow)]
+pub struct HeadRow {
+    pub id: String,
+    pub record: Option<String>,
+    pub machine: Option<String>,
+    pub chain: Option<String>,
+    pub version: Option<i64>,
+    pub hash: Option<String>,
+    /// The last 64 `[version, hash]` pairs, JSON.
+    pub history: Option<String>,
+    /// The head's members, JSON (untrusted dial hints).
+    pub members: Option<String>,
+    pub conflict: Option<i64>,
+    pub at_ms: Option<i64>,
+}
+
+/// 191 (D1, P2): this machine's `contact_roster_local` row (never replicated).
+#[allow(missing_docs)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, FromRow)]
+pub struct LocalRow {
+    pub record: String,
+    pub chain: String,
+    pub version: i64,
+    pub hash: String,
+    /// The head, JSON.
+    pub roster: String,
+    /// The last 64 `[version, hash, members]` entries, JSON.
+    pub history: String,
+}
+
 /// Everything the a2a reconcile stages, read in one snapshot. Its content (never a row's
 /// `hlc`, which is a max over columns and misses a remote column write older than the
 /// row's newest) is what [`Records::content_hash`] covers.
@@ -107,6 +175,12 @@ pub struct Records {
     /// A chat export's session → whether it is native (`sessions.agent IS NULL`); absent
     /// when this machine has no such session (yet).
     pub sessions: BTreeMap<String, bool>,
+    /// 191 (P2): `contact_rosters`, hashed by `(count, max hlc)` only.
+    pub rosters: Rosters,
+    /// 191 (P2): `contact_roster_heads`, by id.
+    pub heads: Vec<HeadRow>,
+    /// 191 (P2): `contact_roster_local`, by record.
+    pub local: Vec<LocalRow>,
 }
 
 impl Records {
@@ -140,6 +214,12 @@ pub enum RecordTable {
     Grants,
     /// `a2a_exports`.
     Exports,
+    /// `contact_rosters` (P2): immutable rows, inserted or pruned whole.
+    Rosters,
+    /// `contact_roster_heads` (P2): this machine's own rows only.
+    Heads,
+    /// `contact_roster_local` (P2, local): keyed by `record`.
+    Local,
 }
 
 impl RecordTable {
@@ -149,6 +229,16 @@ impl RecordTable {
             Self::Endpoints => "contact_endpoints",
             Self::Grants => "contact_grants",
             Self::Exports => "a2a_exports",
+            Self::Rosters => "contact_rosters",
+            Self::Heads => "contact_roster_heads",
+            Self::Local => "contact_roster_local",
+        }
+    }
+
+    fn pk(self) -> &'static str {
+        match self {
+            Self::Local => "record",
+            _ => "id",
         }
     }
 
@@ -165,7 +255,7 @@ impl RecordTable {
                 "removed_ms",
                 "merged_into",
             ],
-            Self::Endpoints => &["contact", "eid", "paired_ms", "barred_ms"],
+            Self::Endpoints => &["contact", "eid", "paired_ms", "barred_ms", "pinned_by"],
             Self::Grants => &["contact", "export", "granted", "first_contact"],
             Self::Exports => &[
                 "name",
@@ -176,19 +266,26 @@ impl RecordTable {
                 "home",
                 "removed_ms",
             ],
+            Self::Rosters => &["contact", "chain", "version", "signer", "hash", "roster"],
+            Self::Heads => &[
+                "record", "machine", "chain", "version", "hash", "history", "members", "conflict",
+                "at_ms",
+            ],
+            Self::Local => &["chain", "version", "hash", "roster", "history"],
         }
     }
 }
 
 /// Set `set`'s columns of row `id` (inserting it when missing). Only the named columns are
 /// written, so a column another machine changed since the caller's read keeps its value.
+/// An empty `set` deletes the row ([`RecordWrite::delete`]: P2 prunes roster rows).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordWrite {
     /// Which table.
     pub table: RecordTable,
     /// The row's key.
     pub id: String,
-    /// Column → value; never empty.
+    /// Column → value; empty = delete the row.
     pub set: Vec<(&'static str, Cell)>,
 }
 
@@ -200,6 +297,11 @@ impl RecordWrite {
             id: id.into(),
             set,
         }
+    }
+
+    /// Delete row `id` of `table`.
+    pub fn delete(table: RecordTable, id: impl Into<String>) -> Self {
+        Self::new(table, id, Vec::new())
     }
 }
 
@@ -214,7 +316,8 @@ impl Store {
         .fetch_all(&mut *tx)
         .await?;
         let endpoints = sqlx::query_as(
-            "SELECT id, contact, eid, paired_ms, barred_ms FROM contact_endpoints ORDER BY id",
+            "SELECT id, contact, eid, paired_ms, barred_ms, pinned_by FROM contact_endpoints \
+             ORDER BY id",
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -247,6 +350,28 @@ impl Store {
         )
         .fetch_all(&mut *tx)
         .await?;
+        let rows = sqlx::query_as(
+            "SELECT id, contact, chain, version, signer, hash, roster FROM contact_rosters \
+             ORDER BY id",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let stamp: (i64, Option<String>) =
+            sqlx::query_as("SELECT COUNT(*), MAX(hlc) FROM contact_rosters")
+                .fetch_one(&mut *tx)
+                .await?;
+        let heads = sqlx::query_as(
+            "SELECT id, record, machine, chain, version, hash, history, members, conflict, \
+             at_ms FROM contact_roster_heads ORDER BY id",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let local = sqlx::query_as(
+            "SELECT record, chain, version, hash, roster, history FROM contact_roster_local \
+             ORDER BY record",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(Records {
             me: self.me.to_string(),
@@ -272,25 +397,32 @@ impl Store {
                 .map(|(alias, id, endpoint)| (alias, (id, endpoint)))
                 .collect(),
             sessions: sessions.into_iter().collect(),
+            rosters: Rosters { rows, stamp },
+            heads,
+            local,
         })
     }
 
-    /// Apply `writes` in one transaction ([`RecordWrite`]).
+    /// Apply `writes` in one transaction ([`RecordWrite`]; an empty `set` deletes).
     pub async fn write_contact_records(&self, writes: &[RecordWrite]) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         for w in writes {
-            anyhow::ensure!(!w.set.is_empty(), "{}: empty write", w.table.name());
+            let (table, pk) = (w.table.name(), w.table.pk());
+            if w.set.is_empty() {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DELETE FROM {table} WHERE {pk} = ?"
+                )))
+                .bind(&w.id)
+                .execute(&mut *tx)
+                .await?;
+                continue;
+            }
             for (col, _) in &w.set {
-                anyhow::ensure!(
-                    w.table.columns().contains(col),
-                    "{}: no column {col}",
-                    w.table.name()
-                );
+                anyhow::ensure!(w.table.columns().contains(col), "{table}: no column {col}");
             }
             let cols: Vec<&str> = w.set.iter().map(|(c, _)| *c).collect();
             let sql = format!(
-                "INSERT INTO {} (id, {}) VALUES (?{}) ON CONFLICT (id) DO UPDATE SET {}",
-                w.table.name(),
+                "INSERT INTO {table} ({pk}, {}) VALUES (?{}) ON CONFLICT ({pk}) DO UPDATE SET {}",
                 cols.join(", "),
                 ", ?".repeat(cols.len()),
                 cols.iter()

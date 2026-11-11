@@ -148,6 +148,16 @@ impl Store {
             .collect())
     }
 
+    /// 191: this engine's `added_ms` as the rows other machines wrote about it say.
+    pub(crate) async fn self_added_ms(&self) -> anyhow::Result<Option<u64>> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT added_ms FROM peers WHERE id = ? AND removed_ms IS NULL")
+                .bind(&self.me.0)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(ms,)| ms.max(0) as u64))
+    }
+
     /// Live (not removed) peers.
     pub async fn peers(&self) -> anyhow::Result<Vec<PeerEntry>> {
         // 183 R4: a quarantined row stays live in the replicated table but is no peer here (paired set, status,

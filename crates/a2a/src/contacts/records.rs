@@ -15,6 +15,7 @@ use agent::store::contacts::{
 };
 use uuid::Uuid;
 
+use super::rosters::{self, Copy, Entry, Local, PeerHead};
 use crate::config::{
     AgentExport, ContactFacts, Export, FirstContact, Peer, PeersFile, Quarantined, Staged,
     check_alias,
@@ -244,6 +245,239 @@ pub fn record_with_eid<'a>(
         .max_by(|a, b| key(a).cmp(&key(b)))
 }
 
+// ---------------------------------------------------------------------------
+// 191 (D1, P2): rosters as the records hold them.
+// ---------------------------------------------------------------------------
+
+/// The pins of one record (the other side's endpoints its ceremonies pinned), not barred.
+pub fn pins_of(r: &Records, record: &str) -> BTreeSet<String> {
+    r.endpoints
+        .iter()
+        .filter(|e| e.contact.as_deref() == Some(record) && e.barred_ms.is_none())
+        .filter_map(|e| e.eid.clone())
+        .collect()
+}
+
+/// Our machines that ran a ceremony into `c`: the contact holds them as its pins (its proof
+/// paths start there), and they come first in a capped roster.
+pub fn our_pins(r: &Records, c: &ContactRow) -> BTreeSet<String> {
+    r.endpoints
+        .iter()
+        .filter(|e| e.contact.as_deref() == Some(c.id.as_str()))
+        .filter_map(|e| e.pinned_by.clone())
+        .chain(c.paired_on.clone())
+        .filter(|e| !e.is_empty())
+        .collect()
+}
+
+/// The `contact_rosters` id of a copy.
+pub fn roster_id(c: &Copy) -> String {
+    format!("{}|{}|{}|{}", c.chain, c.chain, c.version, c.signer)
+}
+
+/// The verified copies of our own `chain` in `contact_rosters`; a row whose id or columns
+/// disagree with its copy, or that does not verify, is left out.
+pub fn chain_copies(r: &Records, chain: &str) -> Vec<Copy> {
+    rosters::verified(
+        r.rosters
+            .rows
+            .iter()
+            .filter(|row| {
+                row.contact.as_deref() == Some(chain) && row.chain.as_deref() == Some(chain)
+            })
+            .filter_map(|row| {
+                let c: Copy = serde_json::from_str(row.roster.as_deref()?).ok()?;
+                (roster_id(&c) == row.id
+                    && row.version == i64::try_from(c.version).ok()
+                    && row.signer.as_deref() == Some(c.signer.as_str()))
+                .then_some(c)
+            }),
+    )
+}
+
+/// The `contact_rosters` row of a copy we signed.
+pub fn roster_row(c: &Copy) -> RecordWrite {
+    RecordWrite::new(
+        RecordTable::Rosters,
+        roster_id(c),
+        vec![
+            ("contact", Cell::Text(c.chain.clone())),
+            ("chain", Cell::Text(c.chain.clone())),
+            ("version", Cell::Int(c.version as i64)),
+            ("signer", Cell::Text(c.signer.clone())),
+            ("hash", Cell::Text(c.hash())),
+            (
+                "roster",
+                Cell::Text(serde_json::to_string(c).unwrap_or_default()),
+            ),
+        ],
+    )
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HeadJson {
+    members: Vec<String>,
+    signers: BTreeSet<String>,
+    base: String,
+}
+
+/// This machine's own state for `record` (`None` when it has none, or a row that does not
+/// read back whole: that machine then has no state, and bootstraps).
+pub fn local_of(r: &Records, record: &str) -> Option<Local> {
+    let row = r.local.iter().find(|l| l.record == record)?;
+    let head: HeadJson = serde_json::from_str(&row.roster).ok()?;
+    let history: Vec<Entry> = serde_json::from_str(&row.history).ok()?;
+    let last = history.last()?;
+    (i64::try_from(last.version).ok() == Some(row.version)
+        && last.hash == row.hash
+        && last.members == head.members
+        && history.len() <= rosters::HISTORY_MAX)
+        .then(|| Local {
+            chain: row.chain.clone(),
+            base: head.base,
+            signers: head.signers,
+            history,
+        })
+}
+
+/// The `contact_roster_local` row of `l`.
+pub fn local_row(record: &str, l: &Local) -> RecordWrite {
+    let h = l.head();
+    let head = HeadJson {
+        members: h.members.clone(),
+        signers: l.signers.clone(),
+        base: l.base.clone(),
+    };
+    RecordWrite::new(
+        RecordTable::Local,
+        record,
+        vec![
+            ("chain", Cell::Text(l.chain.clone())),
+            ("version", Cell::Int(h.version as i64)),
+            ("hash", Cell::Text(h.hash.clone())),
+            (
+                "roster",
+                Cell::Text(serde_json::to_string(&head).unwrap_or_default()),
+            ),
+            (
+                "history",
+                Cell::Text(serde_json::to_string(&l.history).unwrap_or_default()),
+            ),
+        ],
+    )
+}
+
+/// This machine's `contact_roster_heads` row for `record`: its head, history pairs, members
+/// (dial hints) and chain, `conflict`, written now.
+pub fn head_row(record: &str, me: &str, l: &Local, conflict: bool) -> RecordWrite {
+    let h = l.head();
+    RecordWrite::new(
+        RecordTable::Heads,
+        format!("{record}|{me}"),
+        vec![
+            ("record", Cell::Text(record.to_owned())),
+            ("machine", Cell::Text(me.to_owned())),
+            ("chain", Cell::Text(l.chain.clone())),
+            ("version", Cell::Int(h.version as i64)),
+            ("hash", Cell::Text(h.hash.clone())),
+            (
+                "history",
+                Cell::Text(serde_json::to_string(&l.pairs()).unwrap_or_default()),
+            ),
+            (
+                "members",
+                Cell::Text(serde_json::to_string(&h.members).unwrap_or_default()),
+            ),
+            ("conflict", Cell::Int(i64::from(conflict))),
+            ("at_ms", Cell::Int(now_ms())),
+        ],
+    )
+}
+
+/// Every machine's published head of `record` (rows whose id disagrees with their machine
+/// are left out); `live` keeps only machines of this mesh, `me` excluded unless `mine`.
+pub fn heads_of(
+    r: &Records,
+    record: &str,
+    me: &str,
+    live: &BTreeSet<String>,
+    mine: bool,
+) -> Vec<PeerHead> {
+    r.heads
+        .iter()
+        .filter(|h| h.record.as_deref() == Some(record))
+        .filter_map(|h| {
+            let machine = h.machine.clone()?;
+            if h.id != format!("{record}|{machine}") || !live.contains(&machine) {
+                return None;
+            }
+            if machine == me && !mine {
+                return None;
+            }
+            Some(PeerHead {
+                version: u64::try_from(h.version?).ok()?,
+                hash: h.hash.clone()?,
+                history: h
+                    .history
+                    .as_deref()
+                    .and_then(|x| serde_json::from_str(x).ok())
+                    .unwrap_or_default(),
+                conflict: h.conflict == Some(1),
+                at_ms: h.at_ms.unwrap_or(0),
+                members: h
+                    .members
+                    .as_deref()
+                    .and_then(|x| serde_json::from_str(x).ok())
+                    .unwrap_or_default(),
+                chain: h.chain.clone().unwrap_or_default(),
+                machine,
+            })
+        })
+        .collect()
+}
+
+/// A conflict flag counts while it was written within [`rosters::CONFLICT_REFRESHES`]
+/// refreshes.
+pub fn flag_live(h: &PeerHead, now: i64) -> bool {
+    h.conflict
+        && now - h.at_ms <= rosters::CONFLICT_REFRESHES as i64 * rosters::ROUND.as_millis() as i64
+}
+
+/// How one record admits the other side's machines on this machine (D1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Admit {
+    /// No machine here has based it yet (no state, no heads row): its pins.
+    Pins,
+    /// This machine's own verified roster.
+    Roster(Local),
+    /// Based on some machine of ours, but not here (yet): nothing ([`rosters::NOT_VERIFIED`]).
+    Unverified,
+    /// A live machine of ours flags a conflict: nothing ([`rosters::DISAGREE`]).
+    Disagree,
+}
+
+/// [`Admit`] for `record`; `family` is this mesh's live machines (this one included).
+pub fn admit_of(r: &Records, record: &str, family: &BTreeSet<String>, now: i64) -> Admit {
+    if heads_of(r, record, &r.me, family, true)
+        .iter()
+        .any(|h| flag_live(h, now))
+    {
+        return Admit::Disagree;
+    }
+    if let Some(l) = local_of(r, record) {
+        return Admit::Roster(l);
+    }
+    // Any heads row (a retired machine's included) or a local row that did not read back
+    // says a base exists: the pins alone are never admitted again.
+    let based = r.heads.iter().any(|h| h.record.as_deref() == Some(record))
+        || r.local.iter().any(|l| l.record == record);
+    if based {
+        Admit::Unverified
+    } else {
+        Admit::Pins
+    }
+}
+
 /// `base-n` that fits an alias, for the first `n` from 2 not in `taken`.
 fn suffixed(base: &str, taken: &BTreeSet<String>) -> String {
     for n in 2.. {
@@ -289,6 +523,36 @@ pub fn reconcile_writes(r: &Records) -> Vec<RecordWrite> {
                 None => {
                     by_eid.insert(eid, i);
                 }
+            }
+        }
+    }
+    // 191 (D1 merge proof): two groups also merge when each one's current roster (this
+    // machine's own state) lists the other's pin or base signer. Each roster is signed by its
+    // own mesh, so a contact cannot merge into another by listing one of its machines.
+    // ponytail: O(groups²); an index by listed endpoint if contacts ever number thousands.
+    let proof: Vec<(BTreeSet<String>, BTreeSet<String>)> = a
+        .groups
+        .iter()
+        .map(|g| {
+            let mut listed = BTreeSet::new();
+            let mut keys: BTreeSet<String> =
+                g.anchors(r).iter().filter_map(|e| e.eid.clone()).collect();
+            for m in &g.members {
+                if let Some(l) = local_of(r, &m.id) {
+                    listed.extend(l.head().members.iter().cloned());
+                    keys.insert(l.base.clone());
+                }
+            }
+            (listed, keys)
+        })
+        .collect();
+    for i in 0..proof.len() {
+        for j in i + 1..proof.len() {
+            let lists = |x: usize, y: usize| !proof[x].0.is_disjoint(&proof[y].1);
+            if lists(i, j) && lists(j, i) {
+                let (x, y) = (find(&mut parent, i), find(&mut parent, j));
+                let (lo, hi) = (x.min(y), x.max(y));
+                parent[hi] = lo;
             }
         }
     }
@@ -459,19 +723,25 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
         let kind = if *lag { Kind::Lag } else { Kind::Hard };
         quarantine(c, eids, why.clone(), kind, &mut staged);
     }
-    // When each endpoint was last removed with a record (the latest removal wins).
-    let mut removed_at: BTreeMap<&str, i64> = BTreeMap::new();
+    // When each endpoint was last removed with a record (the latest removal wins): the
+    // record's pins and, from this machine's own state, what its roster listed.
+    let mut removed_at: BTreeMap<String, i64> = BTreeMap::new();
+    let mut removed_sets: Vec<(i64, BTreeSet<String>)> = Vec::new();
     for (c, at) in &a.removed {
-        for e in r
+        let mut set: BTreeSet<String> = r
             .endpoints
             .iter()
             .filter(|e| e.contact.as_deref() == Some(c.id.as_str()))
-        {
-            if let Some(eid) = e.eid.as_deref() {
-                let t = removed_at.entry(eid).or_insert(*at);
-                *t = (*t).max(*at);
-            }
+            .filter_map(|e| e.eid.clone())
+            .collect();
+        if let Some(l) = local_of(r, &c.id) {
+            set.extend(l.head().members.iter().cloned());
         }
+        for eid in &set {
+            let t = removed_at.entry(eid.clone()).or_insert(*at);
+            *t = (*t).max(*at);
+        }
+        removed_sets.push((*at, set));
     }
     let stale = |e: &EndpointRow| {
         e.eid
@@ -489,8 +759,64 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
                 .or_default() += 1;
         }
     }
+    // 191 (D1, P2): what each live group admits of the other side: the union of its
+    // records' current rosters, this machine's own state (a record no machine here has based
+    // yet: its pins); none while a record is unverified here or disagreed about.
+    let now = now_ms();
+    let mut sets: Vec<Result<BTreeSet<String>, &'static str>> = Vec::new();
+    let mut signed: Vec<BTreeSet<String>> = Vec::new();
+    for g in &a.groups {
+        let (mut set, mut sig, mut bad) = (BTreeSet::new(), BTreeSet::new(), None);
+        for m in &g.members {
+            match admit_of(r, &m.id, family, now) {
+                Admit::Pins => set.extend(pins_of(r, &m.id)),
+                Admit::Roster(l) => {
+                    set.extend(
+                        l.head()
+                            .members
+                            .iter()
+                            .filter(|e| !family.contains(*e))
+                            .cloned(),
+                    );
+                    sig.extend(l.signers);
+                }
+                Admit::Unverified => bad = bad.or(Some(rosters::NOT_VERIFIED)),
+                Admit::Disagree => bad = Some(rosters::DISAGREE),
+            }
+        }
+        sets.push(bad.map_or(Ok(set), Err));
+        signed.push(sig);
+    }
+    // Attribution: an endpoint two groups admit stays only with the one that pinned it or
+    // holds a copy it signed; neither (or both), and it is admitted for none until it
+    // co-signs. The overlap never denies it, so a planted listing evicts nobody.
+    let mut listed: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, s) in sets.iter().enumerate() {
+        for e in s.iter().flatten() {
+            listed.entry(e.clone()).or_default().push(i);
+        }
+    }
+    for (e, gs) in listed.into_iter().filter(|(_, gs)| gs.len() > 1) {
+        let owns: Vec<usize> = gs
+            .iter()
+            .copied()
+            .filter(|i| {
+                anchors[*i]
+                    .iter()
+                    .any(|a| a.eid.as_deref() == Some(e.as_str()))
+                    || signed[*i].contains(&e)
+            })
+            .collect();
+        for i in gs {
+            if owns != [i]
+                && let Ok(s) = &mut sets[i]
+            {
+                s.remove(&e);
+            }
+        }
+    }
     let mut admitted: BTreeSet<String> = BTreeSet::new();
-    for (g, set) in a.groups.iter().zip(&anchors) {
+    for (i, (g, set)) in a.groups.iter().zip(&anchors).enumerate() {
         let c = g.root;
         let eids: Vec<String> = set.iter().filter_map(|e| e.eid.clone()).collect();
         // A grant naming an export row this machine lacks (yet) is skipped, never a reason
@@ -519,6 +845,11 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             .any(|e| owners.get(e.as_str()).copied().unwrap_or(0) > 1)
         {
             Some(("an endpoint is in another contact too (merging)", Kind::Lag))
+        } else if let Err(p) = &sets[i] {
+            // Never the pins alone once a base exists: denied, the binding kept.
+            Some((*p, Kind::Lag))
+        } else if sets[i].as_ref().is_ok_and(BTreeSet::is_empty) {
+            Some(("none of its machines can be admitted", Kind::Lag))
         } else if c
             .alias
             .as_deref()
@@ -560,9 +891,31 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             }
             exports.push(name.clone());
         }
-        let eid = eids[0].clone();
+        // Dialled first: a pin it still admits, else its first admitted machine.
+        let members = sets[i].clone().unwrap_or_default();
+        let mut order: Vec<String> = eids
+            .iter()
+            .filter(|e| members.contains(*e))
+            .cloned()
+            .collect();
+        let rest: Vec<String> = members
+            .iter()
+            .filter(|e| !order.contains(e))
+            .cloned()
+            .collect();
+        order.extend(rest);
+        let eid = order[0].clone();
+        let addrs_of = |e: &str| -> Vec<std::net::SocketAddr> {
+            r.addrs
+                .get(e)
+                .into_iter()
+                .flatten()
+                .filter_map(|a| a.parse().ok())
+                .collect()
+        };
         if blocked {
             staged.deny.extend(eids.iter().cloned());
+            staged.deny.extend(order.iter().cloned());
         } else {
             staged.peers.insert(
                 alias.clone(),
@@ -583,15 +936,10 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             alias.clone(),
             ContactFacts {
                 id: c.id.clone(),
-                addrs: r
-                    .addrs
-                    .get(&eid)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|a| a.parse().ok())
-                    .collect(),
+                addrs: addrs_of(&eid),
+                hints: order.iter().map(|e| (e.clone(), addrs_of(e))).collect(),
                 eid,
-                eids,
+                eids: order,
                 display: c.name.clone().unwrap_or_else(|| alias.clone()),
                 machine: c.machine.clone().unwrap_or_default(),
                 cap: contact_cap.min(tools::Risk::Mutating),
@@ -601,17 +949,37 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             },
         );
     }
-    // A removed record's endpoints stay refused until a newer ceremony pins them in a live
-    // record (an anchor paired after the removal): a re-pair works, a stale copy never.
-    for (eid, removed) in &removed_at {
-        let repaired = r.endpoints.iter().any(|p| {
-            p.eid.as_deref() == Some(*eid)
-                && p.barred_ms.is_none()
-                && p.paired_ms.unwrap_or(0) > *removed
-                && p.contact.as_deref().is_some_and(|m| admitted.contains(m))
-        });
-        if !repaired {
-            staged.removed.insert((*eid).to_owned());
+    // 191 (D2 deny lift): a removed record's endpoints stay refused until a ceremony newer
+    // than the removal pins one of them in a live record; then only those that record's own
+    // current roster lists are lifted (its newer pins while it has no roster). A roster
+    // alone, another contact's listing or an older pin never lifts one.
+    for (at, set) in &removed_sets {
+        let mut lifted: BTreeSet<&String> = BTreeSet::new();
+        for m in &admitted {
+            let newer: BTreeSet<&String> = r
+                .endpoints
+                .iter()
+                .filter(|p| {
+                    p.contact.as_deref() == Some(m.as_str())
+                        && p.barred_ms.is_none()
+                        && p.paired_ms.unwrap_or(0) > *at
+                })
+                .filter_map(|p| p.eid.as_ref())
+                .filter(|e| set.contains(*e))
+                .collect();
+            if newer.is_empty() {
+                continue;
+            }
+            match admit_of(r, m, family, now) {
+                Admit::Roster(l) => {
+                    lifted.extend(set.iter().filter(|e| l.head().members.contains(e)));
+                }
+                Admit::Pins => lifted.extend(newer),
+                Admit::Unverified | Admit::Disagree => {}
+            }
+        }
+        for e in set.iter().filter(|e| !lifted.contains(e)) {
+            staged.removed.insert(e.clone());
         }
     }
     staged
@@ -826,6 +1194,7 @@ mod tests {
             eid: Some(eid(n)),
             paired_ms: Some(paired),
             barred_ms: None,
+            pinned_by: None,
         }
     }
 

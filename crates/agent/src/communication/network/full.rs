@@ -120,6 +120,15 @@ fn gone() -> A2AError {
     A2AError::task_not_found("conversation")
 }
 
+/// 191 (D3, S4): the session is owned by another machine of this mesh: the contact's
+/// client tries its next member (P3 forwards instead). Never served here.
+pub(crate) fn not_owner(owner: &str) -> A2AError {
+    A2AError::new(
+        crate::communication::mesh::NOT_OWNER,
+        format!("NOT_OWNER: the session is on another machine ({owner})"),
+    )
+}
+
 impl Agents {
     /// 186 (D5): the open message `re` names, which `from` sent to `to`: the `reply_to` of an
     /// answer. `re` is that message's A2A `messageId` (its idempotency key). `None` when it
@@ -392,6 +401,13 @@ impl Agents {
                 return Ok(true);
             }
         }
+        // 191 (D3, S4): a contact's message never runs a session another machine owns; an
+        // owner that cannot be read refuses too.
+        match self.session_owner(record.session).await {
+            Ok(None) => {}
+            Ok(Some(owner)) => return Err(not_owner(&owner).message),
+            Err(e) => return Err(format!("the session's owner could not be read: {e:#}")),
+        }
         record.from = from;
         // Unscoped: it joins a running turn as a steer, or opens one, like a mesh peer's.
         record.request_scope = None;
@@ -649,6 +665,11 @@ impl Agents {
             .map_err(internal)?
             .filter(|t| t.outbound && now - t.last_ms <= THREAD_TTL.as_millis() as i64)
             .ok_or_else(gone)?;
+        // 191 (D3, S4): `~return` into a session another machine owns is `NOT_OWNER`; the
+        // contact tries the next member.
+        if let Some(owner) = self.session_owner(thread.session).await.map_err(internal)? {
+            return Err(not_owner(&owner));
+        }
         let full = self.network.offers.get(&alias).is_some_and(|o| {
             o.iter()
                 .any(|o| o.name == thread.export && o.mode == ShareMode::Full)

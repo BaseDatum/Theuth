@@ -820,6 +820,22 @@ impl Net {
             .collect()
     }
 
+    /// 191 (D1): this mesh's current membership as a contact roster lists it: the live peers
+    /// (neither removed nor quarantined, as [`Self::paired_ids`]) plus this engine, each with
+    /// its `added_ms` (this engine's from the row other machines wrote about it, else 0).
+    pub async fn members(&self) -> anyhow::Result<Vec<(String, u64)>> {
+        let me = self.store.self_added_ms().await?;
+        let mut out: Vec<(String, u64)> = self
+            .store
+            .peers()
+            .await?
+            .into_iter()
+            .map(|p| (p.id.0, p.added_ms))
+            .collect();
+        out.push((self.id.0.clone(), me.unwrap_or(0)));
+        Ok(out)
+    }
+
     /// 183 §7.2: install the a2a plugin's `theuth/a2a/1` handler (the first call wins).
     pub fn set_contacts(&self, handler: Arc<dyn ContactAlpn>) {
         let _ = self.contacts.set(handler);

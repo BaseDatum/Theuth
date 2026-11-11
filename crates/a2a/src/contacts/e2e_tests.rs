@@ -467,6 +467,8 @@ async fn a_contact_reaches_its_export_first_contact_waits_and_block_refuses_at_t
         a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
             net: b.net.clone(),
             eid: a.eid(),
+            members: Vec::new(),
+            answered: Default::default(),
             hints: reach::Hints {
                 addrs: a.addrs(),
                 relay: None,
@@ -718,6 +720,8 @@ async fn the_side_that_dialed_is_reached_on_its_own_connection() {
     let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
         net: a.net.clone(),
         eid: b.eid(),
+        members: Vec::new(),
+        answered: Default::default(),
         hints: reach::Hints::default(),
         export: None,
     }) as Box<dyn a2a_client::Transport>);
@@ -1248,6 +1252,8 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
         net: b.net.clone(),
         eid: a.eid(),
+        members: Vec::new(),
+        answered: Default::default(),
         hints: reach::Hints {
             addrs: a.addrs(),
             relay: None,
@@ -1722,6 +1728,8 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
             net: b.net.clone(),
             eid: a.eid(),
+            members: Vec::new(),
+            answered: Default::default(),
             hints: reach::Hints {
                 addrs: a.addrs(),
                 relay: None,
@@ -1771,6 +1779,8 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
     let ret = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
         net: a.net.clone(),
         eid: b.eid(),
+        members: Vec::new(),
+        answered: Default::default(),
         hints: reach::Hints {
             addrs: b.addrs(),
             relay: None,

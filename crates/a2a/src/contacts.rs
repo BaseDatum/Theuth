@@ -23,9 +23,11 @@ pub mod ceremony;
 pub mod discovery;
 #[cfg(test)]
 pub(crate) mod e2e_tests;
+pub mod members;
 pub mod offers;
 pub mod reach;
 pub mod records;
+pub mod rosters;
 pub mod store;
 
 /// 183 §7.2 (W-21): the contact ALPN, one HTTP/1.1 request (or one ceremony) per bi stream.
@@ -1157,6 +1159,8 @@ impl crate::Ctx {
                 ("eid", Cell::Text(eid.clone())),
                 ("paired_ms", Cell::Int(now)),
                 ("barred_ms", Cell::Null),
+                // 191 (D1): this machine is now a pin the contact holds of us.
+                ("pinned_by", Cell::Text(r.me.clone())),
             ],
         ));
         self.commit_records(w).await?;
@@ -1173,6 +1177,11 @@ impl crate::Ctx {
     /// `contact_window(true)`: open (or return the open) Add contact window: its ticket,
     /// the advert and the browse; it closes itself after `a2a.contact_window_secs`.
     pub(crate) async fn open_window(self: &std::sync::Arc<Self>) -> Result<ContactWindow, String> {
+        // 191 (D1): version 1 never comes from a stale view: no ceremony before the first
+        // reconcile after the mesh latch.
+        if !self.ready.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(agent::communication::network::CONTACTS_WAITING.into());
+        }
         let now = mesh::identity::now_ms();
         if let Some(w) = self
             .contacts
@@ -1322,6 +1331,9 @@ impl crate::Ctx {
         self: &std::sync::Arc<Self>,
         target: ContactTarget,
     ) -> Result<mesh::PairCeremony, String> {
+        if !self.ready.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(agent::communication::network::CONTACTS_WAITING.into());
+        }
         let me = self.me()?;
         let (lan, private_ok) = self.dial_policy();
         let (eid, hints, ticket) = match target {
@@ -1702,18 +1714,23 @@ impl Message<ContactsList> for A2aActor {
 
 impl crate::Ctx {
     /// [`ContactsList`]: every contact of the mesh (the replicated records), quarantined
-    /// ones with their problem.
+    /// ones with their problem. 191 (D1 note 2): an inflation alert on a record is its
+    /// problem too (alert only: the contact stays admitted).
     pub(crate) fn contact_list(&self) -> Vec<Contact> {
         let live = self.shared.read().clone();
         let net = self.net();
+        let alerts = self.rosters.lock().alerts.clone();
         let mut out: Vec<Contact> = live
             .staged
             .contacts
             .keys()
             .filter_map(|alias| {
-                contact_view(&live.staged, alias, net.as_deref(), |eid| {
-                    (self.offers_of(eid), self.full_of(eid))
-                })
+                let mut c = contact_view(&live.staged, alias, net.as_deref(), |eid| {
+                    let eid = self.offers_eid(eid);
+                    (self.offers_of(&eid), self.full_of(&eid))
+                })?;
+                c.problem = alerts.get(&c.id).map(|(_, text, _)| text.clone());
+                Some(c)
             })
             .collect();
         out.extend(
@@ -1725,11 +1742,17 @@ impl crate::Ctx {
         out
     }
 
-    /// 191 (D2): the replicated contact records, as the agent's store reads them now.
+    /// 191 (D2): the replicated contact records, as the agent's store reads them now. `me`
+    /// is this engine's mesh id (the store's own, unless a test's store has none).
     pub(crate) async fn records(&self) -> Result<agent::store::contacts::Records, String> {
         let agents = self.agents()?;
-        self.ask(&agents, agent::communication::network::ContactRecords)
-            .await
+        let mut r = self
+            .ask(&agents, agent::communication::network::ContactRecords)
+            .await?;
+        if let Some(net) = self.net() {
+            r.me.clone_from(&net.id.0);
+        }
+        Ok(r)
     }
 
     /// 191 (D2): write record columns, then run the reconcile at once (the RPC's answer
@@ -2349,27 +2372,29 @@ impl crate::Ctx {
     /// stored ones, so a LAN-only pair dials them after a restart. Nothing is written without
     /// a live connection.
     pub(crate) async fn remember_addrs(&self) {
-        /// 183 Z3-R2: at most one write a minute per contact (path churn must not turn
+        /// 183 Z3-R2: at most one write a minute per endpoint (path churn must not turn
         /// into disk churn).
         const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
         let Some(net) = self.net() else { return };
         let live = self.shared.read().clone();
         let now_at = std::time::Instant::now();
+        // 191 (D3): every machine of a contact, each with its own hints.
         let changed: Vec<(String, Vec<String>)> = {
             let s = self.state.lock();
             live.staged
                 .contacts
-                .iter()
-                .filter(|(_, f)| !f.blocked)
-                .filter(|(alias, _)| {
+                .values()
+                .filter(|f| !f.blocked)
+                .flat_map(|f| f.eids.iter().map(move |e| (f, e)))
+                .filter(|(_, eid)| {
                     s.addr_written
-                        .get(*alias)
+                        .get(*eid)
                         .is_none_or(|t| now_at.duration_since(*t) >= EVERY)
                 })
-                .filter_map(|(alias, f)| {
-                    let now = net.a2a_direct_addrs(&f.eid);
-                    (!now.is_empty() && now != f.addrs)
-                        .then(|| (alias.clone(), now.iter().map(ToString::to_string).collect()))
+                .filter_map(|(f, eid)| {
+                    let now = net.a2a_direct_addrs(eid);
+                    (!now.is_empty() && f.hints.get(eid) != Some(&now))
+                        .then(|| (eid.clone(), now.iter().map(ToString::to_string).collect()))
                 })
                 .collect()
         };
@@ -2378,9 +2403,8 @@ impl crate::Ctx {
         }
         let Ok(agents) = self.agents() else { return };
         let mut result = Ok(());
-        for (alias, addrs) in changed {
-            self.state.lock().addr_written.insert(alias.clone(), now_at);
-            let eid = live.staged.contacts[&alias].eid.clone();
+        for (eid, addrs) in changed {
+            self.state.lock().addr_written.insert(eid.clone(), now_at);
             if let Err(e) = self
                 .ask(
                     &agents,
@@ -2497,7 +2521,8 @@ impl Message<ContactsWaiting> for A2aActor {
 }
 
 /// 183 W-27: the `contact_first` Attention items, one per (contact, export) with a task
-/// waiting ([`crate::Ctx::first_waiting`]).
+/// waiting ([`crate::Ctx::first_waiting`]). 191 (D1 note 2): and one per raised inflation
+/// alert (`contact_roster:<record>`; an alert, nothing is denied).
 pub(crate) struct FirstContactItems(pub std::sync::Weak<crate::Ctx>);
 
 #[async_trait::async_trait]
@@ -2506,45 +2531,70 @@ impl roster::attention::Source for FirstContactItems {
         let Some(c) = self.0.upgrade() else {
             return Vec::new();
         };
-        c.first_waiting()
-            .await
+        let alerts = c.rosters.lock().alerts.clone();
+        let mut items: Vec<roster::attention::AttentionItem> = alerts
             .into_iter()
-            .map(|w| {
-                let who = if w.machine.is_empty() {
-                    w.contact.clone()
-                } else {
-                    format!("{} ({})", w.contact, w.machine)
-                };
-                roster::attention::AttentionItem {
-                    id: format!("contact_first:{}:{}", w.contact, w.export),
-                    kind: roster::attention::AttentionKind::ContactFirst,
-                    title: format!(
-                        "{who} wants to reach {} — Allow once · Always · Block",
-                        w.export
-                    ),
-                    detail: Some(format!(
-                        "{} waiting · a contact outside your mesh",
-                        w.waiting
-                    )),
-                    at_ms: w.since_ms,
-                    task: None,
-                    agent: None,
-                    session: Some(w.session.to_string()),
-                    approval: None,
-                    decision: None,
-                    packet: None,
-                    ask: None,
-                    turn: None,
-                    waiting_since_ms: Some(w.since_ms),
-                    summary: None,
-                    next_steps: Vec::new(),
-                    context: None,
-                    priority: None,
-                    rank: 5,
-                    alert: None,
-                }
+            .map(|(record, (alias, text, at))| roster::attention::AttentionItem {
+                id: format!("contact_roster:{record}"),
+                kind: roster::attention::AttentionKind::Node,
+                title: text,
+                detail: Some(format!(
+                    "remove that machine from your mesh, then ask {alias} to remove you and pair again"
+                )),
+                at_ms: at,
+                task: None,
+                agent: None,
+                session: None,
+                approval: None,
+                decision: None,
+                packet: None,
+                ask: None,
+                turn: None,
+                waiting_since_ms: None,
+                summary: None,
+                next_steps: Vec::new(),
+                context: None,
+                priority: None,
+                rank: 4,
+                alert: None,
             })
-            .collect()
+            .collect();
+        items.extend(c.first_waiting().await.into_iter().map(|w| {
+            let who = if w.machine.is_empty() {
+                w.contact.clone()
+            } else {
+                format!("{} ({})", w.contact, w.machine)
+            };
+            roster::attention::AttentionItem {
+                id: format!("contact_first:{}:{}", w.contact, w.export),
+                kind: roster::attention::AttentionKind::ContactFirst,
+                title: format!(
+                    "{who} wants to reach {} — Allow once · Always · Block",
+                    w.export
+                ),
+                detail: Some(format!(
+                    "{} waiting · a contact outside your mesh",
+                    w.waiting
+                )),
+                at_ms: w.since_ms,
+                task: None,
+                agent: None,
+                session: Some(w.session.to_string()),
+                approval: None,
+                decision: None,
+                packet: None,
+                ask: None,
+                turn: None,
+                waiting_since_ms: Some(w.since_ms),
+                summary: None,
+                next_steps: Vec::new(),
+                context: None,
+                priority: None,
+                rank: 5,
+                alert: None,
+            }
+        }));
+        items
     }
 }
 
