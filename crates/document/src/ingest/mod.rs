@@ -439,7 +439,12 @@ impl IngestActor {
         let (ctx, sem) = (self.ctx.clone(), self.sem.clone());
         tokio::spawn(async move {
             let _permit = sem.acquire_owned().await;
-            job::run(&ctx, &id, refresh).await;
+            // 16 §5 (2026-11-11): the job runs under the source's stored grant (unknown: none).
+            let lan = ctx.store.source_lan(&id).await.unwrap_or_else(|e| {
+                tracing::error!(source = %id, "source grant lookup failed, no LAN: {e:#}");
+                false
+            });
+            tools::egress::scope(lan, job::run(&ctx, &id, refresh)).await;
             let _ = me.tell(Done(id)).await;
         });
     }
@@ -577,6 +582,10 @@ impl Message<Add> for IngestActor {
             .await
             .map_err(|e| format!("{e:#}"))?;
         c.store
+            .set_source_lan(&id, m.lan)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        c.store
             .item_add(&NotebookItem {
                 notebook: args.notebook.clone(),
                 kind: ItemKind::Source,
@@ -612,6 +621,9 @@ impl Message<Add> for IngestActor {
 pub struct Refresh {
     /// The source.
     pub id: DocId,
+    /// The refresher's `tools::egress::lan()`; the job runs under the stricter of it and the
+    /// stored grant, and a URL source is pre-checked again under it (16 §5, 2026-11-11).
+    pub lan: bool,
 }
 
 impl Message<Refresh> for IngestActor {
@@ -629,6 +641,33 @@ impl Message<Refresh> for IngestActor {
             .await
             .map_err(|e| format!("{e:#}"))?
             .ok_or_else(|| format!("no such source: {}", m.id))?;
+        // 16 §5 (2026-11-11): the stricter of the stored grant and the refresher's, kept for the
+        // job; a URL source is pre-checked again under it (a refused card stays refused).
+        let store = &self.ctx.store;
+        let lan = m.lan && store.source_lan(&m.id).await.unwrap_or(false);
+        store
+            .set_source_lan(&m.id, lan)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if let SourceOrigin::Url { url, .. } = &row.origin {
+            let (_, refusal) = routes::url::preflight(&self.ctx.rt, url, lan)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            if let Some(why) = refusal {
+                store
+                    .source_set_status(&m.id, SourceStatus::Failed, Some(&why), row.attempts)
+                    .await
+                    .map_err(|e| format!("{e:#}"))?;
+                self.ctx
+                    .rt
+                    .publish(SourceEvent::Changed {
+                        source: m.id.clone(),
+                        status: SourceStatus::Failed,
+                    })
+                    .await;
+                return self.get(&m.id).await;
+            }
+        }
         self.ctx
             .store
             .source_set_status(&m.id, SourceStatus::Queued, None, row.attempts)
@@ -726,12 +765,15 @@ pub async fn source_list(
 }
 
 /// Re-run the job from the origin or the blob (§4.2); refused while `running | queued`. Hub only.
+/// It runs under the stricter of the source's stored grant and the caller's `tools::egress`
+/// grant, and a URL source is pre-checked again (16 §5, 2026-11-11).
 pub async fn source_refresh(
     _actor: &ActorRef<DocumentActor>,
     id: DocId,
     _by: Principal,
 ) -> anyhow::Result<Source> {
-    flat(ingest()?.ask(Refresh { id }).await).map_err(|e| anyhow::anyhow!(e))
+    let lan = tools::egress::lan();
+    flat(ingest()?.ask(Refresh { id, lan }).await).map_err(|e| anyhow::anyhow!(e))
 }
 
 #[cfg(test)]

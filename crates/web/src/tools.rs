@@ -265,7 +265,10 @@ async fn read_page(
         Ok(parsed) => match tokio::time::timeout(
             render_cap.min(budget),
             actor.ask(Tracked {
-                message: Read(parsed),
+                message: Read {
+                    url: parsed,
+                    lan: tools::egress::lan(),
+                },
                 activity,
             }),
         )
@@ -573,7 +576,11 @@ impl Tool for FetchTool {
                 Err(e) => return Ok(ToolOutput::err(e.to_string())),
             };
             let start = Instant::now();
-            let r = match self.actor.ask(Tracked::new(Render(url))).await {
+            let render = Render {
+                url,
+                lan: tools::egress::lan(),
+            };
+            let r = match self.actor.ask(Tracked::new(render)).await {
                 Ok(r) => r,
                 Err(kameo::error::SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
                 Err(e) => anyhow::bail!("web actor unavailable: {e}"),
@@ -941,15 +948,19 @@ mod tests {
         ));
         let fetcher = Arc::new(Fetcher::new("test", 1024, 1).unwrap());
         let start = Instant::now();
-        let page = read_page(
-            actor,
-            None,
-            fetcher,
-            "https://example.com/app".into(),
-            "query".into(),
-            2500,
-            Duration::from_millis(300),
-            Duration::from_secs(6),
+        // The owner's read (16 §5): without the grant only `scrape` would be asked.
+        let page = tools::egress::scope(
+            true,
+            read_page(
+                actor,
+                None,
+                fetcher,
+                "https://example.com/app".into(),
+                "query".into(),
+                2500,
+                Duration::from_millis(300),
+                Duration::from_secs(6),
+            ),
         )
         .await;
         assert!(

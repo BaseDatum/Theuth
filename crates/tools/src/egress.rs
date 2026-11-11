@@ -1,9 +1,11 @@
 //! Whether the running tool call may reach this machine's local network
 //! (16 §5 as amended 2026-11-11). The registry scopes every tool body with
-//! `!contact_scoped(session)` (183 Z3-R2): a contact's turn in an exported
-//! chat, a contact's inbox and everything under it get `false`. Outside any
-//! scope — a caller that bypassed the registry, a task spawned without
-//! re-entering it — the answer is `false`: unknown is treated as a contact.
+//! its `lan_allowed(session)`: `false` for a contact session (183 Z3-R2) and
+//! under a no-LAN marker ([`crate::SetNoLan`]: a contact's inbox, capped or
+//! full; the running turn of a chat that took a contact's message; a child
+//! such a turn spawned), on the session or an ancestor. Outside any scope — a
+//! caller that bypassed the registry, a task spawned without re-entering it —
+//! the answer is `false`: unknown is treated as a contact.
 //! `web.allow_private_network` is the fetcher's half; both must say yes.
 
 tokio::task_local! {

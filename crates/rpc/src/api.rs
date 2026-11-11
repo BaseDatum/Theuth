@@ -7103,11 +7103,15 @@ impl ApiServer for Server {
         id: document::DocId,
     ) -> RpcResult<document::Source> {
         owner(ext)?;
+        // 16 §5 (2026-11-11): the authenticated owner refreshes under the owner's grant.
         let r = nb_result(
-            document::ingest::source_refresh(
-                &documents()?,
-                id.clone(),
-                document::Principal::Owner { device: None },
+            tools::egress::scope(
+                true,
+                document::ingest::source_refresh(
+                    &documents()?,
+                    id.clone(),
+                    document::Principal::Owner { device: None },
+                ),
             )
             .await,
         );

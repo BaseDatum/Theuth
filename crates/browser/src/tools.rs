@@ -208,6 +208,11 @@ pub fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     Some((be(16), be(20)))
 }
 
+/// The refusal of every `browser_*` call outside the local-network grant (16 §5, amended
+/// 2026-11-11).
+pub const NO_BROWSER: &str =
+    "the browser isn't available in a contact's turn: it could reach this machine's network";
+
 /// One `browser_*` tool: a struct over [`Ctx`] plus its `Tool` impl.
 macro_rules! browser_tool {
     ($(#[$doc:meta])* $ty:ident, $name:literal, $args:ty, $desc:expr,
@@ -226,6 +231,12 @@ macro_rules! browser_tool {
             }
 
             async fn call(&self, $a: $args, $cx: ToolCx) -> anyhow::Result<ToolOutput> {
+                // 16 §5 (2026-11-11): obscura resolves, redirects and runs page scripts
+                // itself, so no per-URL check can keep it off this machine's network: a
+                // call without the local-network grant (a contact's turn) gets no browser.
+                if !tools::egress::lan() {
+                    return Ok(ToolOutput::err(NO_BROWSER));
+                }
                 let $ctx = &self.0;
                 $body
             }

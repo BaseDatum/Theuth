@@ -25,8 +25,19 @@ export function ConfigFlagRow({ flag, name, label, description }: { flag: Config
   const qc = useQueryClient()
   const keys: readonly ConfigFlagKey[] = typeof flag === 'string' ? [flag] : flag
   const states = useQueries({ queries: keys.map((key) => ({ queryKey: flagQuery(key), queryFn: () => api.config_flag_get(key), retry: false })) })
+  // Several keys act as one: a write that fails part way puts the keys already written back.
   const save = useAction(async (on: boolean) => {
-    for (const key of keys) qc.setQueryData(flagQuery(key), await api.config_flag_set(key, on))
+    const written: [ConfigFlagKey, boolean][] = []
+    try {
+      for (const [i, key] of keys.entries()) {
+        qc.setQueryData(flagQuery(key), await api.config_flag_set(key, on))
+        written.push([key, states[i]?.data?.enabled ?? !on])
+      }
+    } catch (e) {
+      for (const [key, was] of written) await api.config_flag_set(key, was).catch(() => undefined)
+      await Promise.all(keys.map((key) => qc.invalidateQueries({ queryKey: flagQuery(key) })))
+      throw e
+    }
   })
   const loaded = states.every((s) => s.data)
   const pending = states.some((s) => s.data?.restart_required)

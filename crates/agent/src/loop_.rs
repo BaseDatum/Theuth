@@ -1748,6 +1748,20 @@ impl Message<Resume> for Session {
             self.scope.scope = scope;
             task.scope.scope = scope;
         }
+        // 16 §5 (2026-11-11): a turn that took a contact's message, full or capped, resumes
+        // without the local network; unsure counts as one.
+        let took_contact = self
+            .shared
+            .store
+            .turn_took_contact(self.shared.id, turn)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(session = %self.shared.id, %turn, "resume: contact check failed, no LAN: {e:#}");
+                true
+            });
+        if took_contact {
+            task.deny_lan().await;
+        }
         // 178 W2: a bounded turn keeps its bound with the run time it has left.
         if m.plan.bounded {
             let cap = Duration::from_secs(self.shared.cfg.subagents.max_runtime_secs);
@@ -2947,6 +2961,9 @@ struct Turn {
     checkpoints: u64,
     /// Which queued inputs may join this turn (50 §6.3).
     scope: TurnScope,
+    /// 16 §5 (2026-11-11): this turn took a contact's message (full or capped): the
+    /// registry's turn marker keeps the local network out of its reach until it ends.
+    no_lan: bool,
     /// Set when a peer exchange opened the turn (50 §8): its deadline.
     peer_work: Option<PeerWork>,
     /// 178 W3: dropping it frees the boot scan's resume slot this turn holds.
@@ -3810,6 +3827,7 @@ impl Turn {
             control_epoch: None,
             checkpoints: 0,
             scope: TurnScope::default(),
+            no_lan: false,
             peer_work: None,
             resume_slot: None,
             first_seq: None,
@@ -5571,6 +5589,19 @@ impl Turn {
         true
     }
 
+    /// 16 §5 (2026-11-11): install this turn's no-LAN marker once; a failure stops the turn
+    /// (it does not run with the local network in reach).
+    async fn deny_lan(&mut self) {
+        if self.no_lan {
+            return;
+        }
+        self.no_lan = true;
+        if let Err(e) = set_turn_no_lan(self.shared.id, true).await {
+            tracing::error!(session = %self.shared.id, "contact turn no-LAN marker not installed, stopping the turn: {e}");
+            self.cancel.cancel();
+        }
+    }
+
     /// 50 §7 consumption transaction: the store appends `msg` and links the
     /// exchange to that row atomically, once. The admitted generation is
     /// rechecked first (§8 point 3) and again by the store against the row;
@@ -5585,6 +5616,11 @@ impl Turn {
         msg: ChatMessage,
     ) -> bool {
         let session = self.shared.id;
+        // 16 §5 (2026-11-11): a contact's message, full or capped, takes the local network
+        // away from the rest of this turn before it is in the frame.
+        if peer.contact.is_some() || peer.cap.is_some() {
+            self.deny_lan().await;
+        }
         let Some(turn) = self.turn else {
             // A mini-turn never consumes input; callers do not route peers here.
             return false;
@@ -5981,6 +6017,11 @@ impl Turn {
             && let Err(e) = set_turn_limits(self.shared.id, None, None).await
         {
             tracing::warn!(session = %self.shared.id, "contact turn limits not cleared: {e}");
+        }
+        if self.no_lan
+            && let Err(e) = set_turn_no_lan(self.shared.id, false).await
+        {
+            tracing::warn!(session = %self.shared.id, "contact turn no-LAN marker not cleared: {e}");
         }
         if suspended {
             tracing::info!(session = %self.shared.id, %turn, "109: turn suspended; resumes on the next start");
@@ -8712,6 +8753,23 @@ async fn set_turn_limits(
         .map_err(|e| format!("turn cap: {e}"))
 }
 
+/// 16 §5 (2026-11-11): set or lift the registry's no-LAN marker of `session`'s running turn;
+/// asked, so it holds before the turn's next tool call. No registry: no tool runs at all.
+async fn set_turn_no_lan(session: SessionId, on: bool) -> Result<(), String> {
+    let Some(reg) = kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
+        .map_err(|e| format!("tool registry: {e}"))?
+    else {
+        return Ok(());
+    };
+    reg.ask(tools::SetNoLan {
+        session,
+        turn: true,
+        on,
+    })
+    .await
+    .map_err(|e| format!("turn no-LAN marker: {e}"))
+}
+
 /// A body cannot end its own `<message>` wrapper or open a forged one: every
 /// tag start whose name begins with `message` (`<message`, `</message`,
 /// `<messages`), in any case and with any whitespace after `<` or `/`, loses
@@ -10215,6 +10273,100 @@ mod tests {
         assert_eq!(turn.result_text(), "");
         drop(turn);
         drop(store);
+    }
+
+    /// 16 §5 (2026-11-11): in a shared chat, the owner's input leaves the local network in
+    /// reach; a contact's message shared in full (190: no cap, no allowlist) takes it away
+    /// for the rest of that turn, before the message is in the frame; the turn's end gives it
+    /// back for the owner's next turn.
+    #[test]
+    fn a_full_contact_message_takes_the_lan_from_its_turn() {
+        crate::with_test_registry(async {
+            let scratch = crate::TestDir::new("peer-lan");
+            let dir = scratch.0.clone();
+            tools::registry::start(&Runtime::new(figment::Figment::new(), dir.clone()))
+                .await
+                .unwrap();
+            let reg = kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
+                .unwrap()
+                .unwrap();
+            let store = Store::open(&dir.join("sessions.sqlite"), None)
+                .await
+                .unwrap();
+            let (_policy, sender, id, generation) = route();
+            for s in [id, sender] {
+                store
+                    .create_session(s, "m", None, None, None)
+                    .await
+                    .unwrap();
+            }
+            let (from, to) = (format!("session:{sender}"), format!("session:{id}"));
+            let exchange = store
+                .accept_exchange(&crate::store::communication::AcceptExchange {
+                    sender: &from,
+                    recipient: &to,
+                    sender_session: Some(sender),
+                    recipient_session: Some(id),
+                    request_id: None,
+                    reply_to: None,
+                    request_scope: None,
+                    generation: i64::try_from(generation.revision()).unwrap(),
+                    body: "what is on 192.168.8.1?",
+                })
+                .await
+                .unwrap();
+            let model = Resolved {
+                id: "m".into(),
+                genai: "m".into(),
+                provider: None,
+                model: None,
+            };
+            let mut session = Session::new(
+                id,
+                0,
+                (model, None),
+                None,
+                SessionState::resume(0, None, vec![]),
+                Arc::new(AgentConfig::default()),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                store.clone(),
+                Client::new().unwrap(),
+                Auth::stub(&dir),
+                Runtime::new(figment::Figment::new(), dir.clone()),
+                Arc::new(models::Catalog::load(&dir)),
+                None,
+                Arc::new(Semaphore::new(1)),
+                SessionResources::durable_arc(&dir),
+            );
+            let turn_id = TurnId::new();
+            let mut turn = Turn::new(
+                session.shared.clone(),
+                Some(turn_id),
+                CancellationToken::new(),
+                session.state.take().unwrap(),
+            );
+            let no_lan = || reg.ask(tools::NoLan(id));
+            assert!(turn.take_input(harness_input(None)).await);
+            assert!(!no_lan().await.unwrap(), "the owner's input");
+            let mut full = peer_input(exchange.id, &generation, None, false);
+            if let Some(p) = full.peer.as_mut() {
+                p.contact = Some("contact_full");
+            }
+            assert!(turn.take_input(full).await);
+            assert!(no_lan().await.unwrap(), "a full contact's message");
+            assert!(
+                store.turn_took_contact(id, turn_id).await.unwrap(),
+                "a resume keeps it off"
+            );
+            // The turn ends (its model call fails here): the marker goes with it.
+            let _state = turn.drive(turn_id, None).await;
+            assert!(!no_lan().await.unwrap(), "the owner's next turn");
+            drop(store);
+        });
     }
 
     /// 52 §4.1/§5.1/§5.3: preparation is a no-op for a main model that sees

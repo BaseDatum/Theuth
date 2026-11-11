@@ -1109,6 +1109,32 @@ impl Store {
         }))
     }
 
+    /// 16 §5 (2026-11-11): `turn` of `session` took a contact's message, full or capped (an
+    /// `input_accepted` source `contact`, `contact_full` or `contact_inbox`), so it resumes
+    /// without the local network. No `input_accepted` at all counts as one (fail closed), as in
+    /// [`Self::contact_turn_input`].
+    pub async fn turn_took_contact(
+        &self,
+        session: SessionId,
+        turn: TurnId,
+    ) -> anyhow::Result<bool> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT payload FROM turn_steps \
+             WHERE session_id = ? AND turn_id = ? AND kind = 'input_accepted'",
+        )
+        .bind(session.to_string())
+        .bind(turn.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        Ok(rows.is_empty()
+            || rows.iter().any(|(p,)| {
+                matches!(
+                    json(p)["source"].as_str(),
+                    Some("contact" | "contact_full" | "contact_inbox")
+                )
+            }))
+    }
+
     /// §3.3 step 2: `reserve_call` plus `turn_steps(model_call)` with the
     /// attempt's `call_id`, one transaction.
     #[expect(clippy::too_many_arguments, reason = "one row, one call")]
@@ -1992,11 +2018,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.contact_turn_input(s, full).await.unwrap(), None);
+        assert!(
+            store.turn_took_contact(s, full).await.unwrap(),
+            "no LAN all the same"
+        );
         assert!(store.resume_plan(s, full).await.unwrap().bounded);
         store.finish_turn(s, full, "stop").await.unwrap();
         let owner = TurnId::new();
         store.input_accepted(s, owner, None, "user").await.unwrap();
         assert_eq!(store.contact_turn_input(s, owner).await.unwrap(), None);
+        assert!(!store.turn_took_contact(s, owner).await.unwrap());
         let unknown = TurnId::new();
         store
             .step(s, unknown, StepKind::ModelCall, Some("mc"), &json!({}))
@@ -2006,6 +2037,7 @@ mod tests {
             store.contact_turn_input(s, unknown).await.unwrap(),
             Some(None)
         );
+        assert!(store.turn_took_contact(s, unknown).await.unwrap());
     }
 
     #[tokio::test]

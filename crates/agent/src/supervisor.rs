@@ -1103,6 +1103,15 @@ impl Agents {
         self.reinstall_contact_limits(id)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
+        // 16 §5 (2026-11-11): a session a contact's turn spawned keeps no LAN across
+        // restarts; a store that cannot say counts as one (fail closed).
+        let no_lan = store.no_lan(id).await.unwrap_or_else(|e| {
+            tracing::error!(session = %id, "no-LAN lookup failed, no LAN: {e:#}");
+            true
+        });
+        if no_lan {
+            set_no_lan(id).await;
+        }
         // Unbounded (R2.6): `route` awaits `tell_input` inside a supervisor
         // handler; a full bounded mailbox here would stall the engine.
         let session = Session::new(
@@ -5170,6 +5179,16 @@ impl Message<SpawnChild> for Agents {
         if let Some(cap) = m.cap {
             self.install_cap(id, cap).await;
         }
+        // 16 §5 (2026-11-11): a child spawned while its parent may not reach the local network
+        // (a contact's turn ran there, full or capped) never may, also after a restart. A
+        // registry that cannot answer counts as one (fail closed).
+        let no_lan = match &registry {
+            Some(reg) => reg.ask(::tools::NoLan(m.parent)).await.unwrap_or(true),
+            None => false,
+        };
+        if no_lan {
+            self.install_no_lan(id).await;
+        }
         self.rt
             .publish(AgentEvent::SubagentSpawned {
                 parent: m.parent,
@@ -7300,6 +7319,15 @@ impl Agents {
         }
     }
 
+    /// 16 §5 (2026-11-11): `id` and its subagents never reach the local network: persisted
+    /// (every actor start re-installs it) and put on the registry before its first tool call.
+    pub(crate) async fn install_no_lan(&mut self, id: SessionId) {
+        if let Err(e) = self.store_for(id).mark_no_lan(id).await {
+            tracing::error!(session = %id, "no-LAN marker not persisted: {e:#}");
+        }
+        set_no_lan(id).await;
+    }
+
     /// A title set by the harness (a contact's inbox, 183 §7.6) stands: the session's first
     /// turn does not seed one from its input, as after a rename.
     pub(crate) async fn mark_titled(&self, id: SessionId) {
@@ -7310,6 +7338,22 @@ impl Agents {
         {
             let _ = a.tell(crate::loop_::Titled).await;
         }
+    }
+}
+
+/// 16 §5 (2026-11-11): the registry's no-LAN marker on `id` (its own, not a turn's), asked so
+/// it holds before the session's next tool call.
+pub(crate) async fn set_no_lan(id: SessionId) {
+    if let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+        && let Err(e) = reg
+            .ask(::tools::SetNoLan {
+                session: id,
+                turn: false,
+                on: true,
+            })
+            .await
+    {
+        tracing::error!(session = %id, "no-LAN marker not installed: {e}");
     }
 }
 

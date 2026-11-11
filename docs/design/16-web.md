@@ -521,23 +521,37 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   guard was "not configurable off" and refused every non-global address, so
   `http_request` to a LAN model server (`192.168.8.123:28499`) failed while
   the browser (23 §0.8) already reached it. `web.allow_private_network`
-  (default `true`) now admits loopback, RFC 1918, CGNAT `100.64/10`,
-  link-local, IPv6 ULA / link-local and the internal names (`localhost`,
-  `.local`, `.lan`, `.internal`, `.home.arpa`, `.intranet`, `.corp`), for IP
-  literals, DNS answers and every redirect hop; `false` is the old guard
-  exactly. Always refused: the metadata endpoints (`169.254.169.254`,
-  `169.254.170.2`, `100.100.100.200`, `fd00:ec2::254`, `metadata`,
-  `metadata.google.internal`, `kubernetes.default*`), unspecified,
-  broadcast, multicast, the reserved/documentation/tunnel ranges, other
-  schemes, credentials in URLs. The `Fetcher` keeps its public-only clients
-  and builds a second set whose `GuardedResolver` admits private answers (so
-  DNS rebinding protection and pooled connections never cross); a call runs
-  on it only inside `tools::egress::scope(true, …)`, which the registry
-  installs for every tool body as `!contact_scoped(session)` (183 Z3-R2).
-  A contact's turn in a shared chat, a contact's inbox and its subagents,
-  and any caller outside a registry scope are public-only whatever the key
-  says. Settings › Network › Local network access writes this key and
-  `browser.allow_private_network` together; both apply at restart.
+  (default `true`) now admits loopback, RFC 1918, CGNAT `100.64/10`, IPv6
+  ULA / link-local and the internal names (`localhost`, `.local`, `.lan`,
+  `.internal`, `.home.arpa`, `.intranet`, `.corp`), for IP literals, DNS
+  answers and every redirect hop; `false` is the old guard exactly. Always
+  refused: all of `169.254.0.0/16` and `fd00:ec2::/32` (every cloud's
+  metadata), `100.100.100.200`, `192.0.0.192`, `168.63.129.16`, their
+  IPv4-mapped / -translated / NAT64 spellings, `64:ff9b:1::/48`, `fec0::/10`,
+  the metadata names (`metadata`, `metadata.google.internal`,
+  `kubernetes.default*`), unspecified, broadcast, multicast, the
+  reserved/documentation/tunnel ranges, other schemes, credentials in URLs.
+  The `Fetcher` keeps its public-only clients and builds a second set whose
+  `GuardedResolver` admits private answers (DNS rebinding protection and
+  pooled connections never cross); a call uses it only inside
+  `tools::egress::scope(true, …)`. The registry installs that scope for
+  every tool body from `lan_allowed(session)`: no contact session (183
+  Z3-R2), and no no-LAN marker on the session or an ancestor. The agent sets
+  the marker for every contact inbox (capped or full, at every actor start),
+  for the running turn of a chat once it takes a contact's message (capped
+  or full, 190; a resume re-installs it from the journal), and, persistently
+  (`no_lan_sessions`), for a child spawned while its parent had none. Work
+  that leaves the tool's task carries the grant explicitly: the `WebActor`'s
+  `Read` / `Render` messages (`lan`), a search's read tasks, a notebook
+  source's ingest jobs (stored per source; `Refresh` pre-checks again under
+  the stricter of the stored and the refresher's grant). Without the grant
+  there is no browser rung at all: `Render` and a non-`scrape` `Read` are
+  refused ("rendered pages aren't available in a contact's turn"), the
+  scrape engine never renders and never falls back to obscura on a guard
+  refusal (for anyone), and every `browser_*` tool refuses, since obscura
+  resolves, redirects and runs scripts itself. Settings › Network › Local
+  network access writes this key and `browser.allow_private_network`
+  together; both apply at restart.
 
 ## 6. Config and credentials
 

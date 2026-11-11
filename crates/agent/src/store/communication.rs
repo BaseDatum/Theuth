@@ -2087,6 +2087,26 @@ impl Store {
         Ok(())
     }
 
+    /// 16 §5 (2026-11-11): `session` (a child a contact's turn spawned) never reaches the local
+    /// network; kept across restarts ([`Self::no_lan`]).
+    pub async fn mark_no_lan(&self, session: SessionId) -> anyhow::Result<()> {
+        sqlx::query("INSERT OR IGNORE INTO no_lan_sessions (session_id) VALUES (?)")
+            .bind(session.to_string())
+            .execute(&self.write)
+            .await?;
+        Ok(())
+    }
+
+    /// [`Self::mark_no_lan`] was written for `session`.
+    pub async fn no_lan(&self, session: SessionId) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM no_lan_sessions WHERE session_id = ?")
+                .bind(session.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(row.is_some())
+    }
+
     /// 186 (D6): `Some` when `session` is a contact's inbox whose last admission was shared
     /// in full: who it is for and the exported agent's stored ceiling.
     pub async fn a2a_inbox_full(&self, session: SessionId) -> anyhow::Result<Option<FullInbox>> {

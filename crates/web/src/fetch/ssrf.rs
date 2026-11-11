@@ -2,10 +2,11 @@
 //! a hostname denylist, IP-range classification, and DNS resolve-and-check.
 //!
 //! `private` (16 §5 as amended 2026-11-11) admits this machine's local
-//! network: loopback, RFC 1918, CGNAT, link-local, IPv6 ULA / link-local and
-//! the internal hostnames. Cloud metadata endpoints, unspecified, broadcast,
-//! multicast and the reserved / documentation / tunnel ranges stay refused
-//! either way.
+//! network: loopback, RFC 1918, CGNAT, IPv6 ULA / link-local and the internal
+//! hostnames. Cloud metadata endpoints (all of `169.254.0.0/16`,
+//! `fd00:ec2::/32`, Oracle's, Azure's, Alibaba's), unspecified, broadcast,
+//! multicast and the reserved / documentation / site-local / tunnel ranges
+//! stay refused either way.
 //!
 //! [`check_url`] is the whole gate for callers that hand the URL to someone
 //! else (the rendered-fetch path). The fetcher itself runs [`check_static`]
@@ -168,12 +169,15 @@ pub fn is_blocked_hostname(host: &str, private: bool) -> bool {
 
 /// Whether an IP must not be contacted.
 ///
-/// Always: cloud metadata (`169.254.169.254`, `169.254.170.2`,
-/// `100.100.100.200`, `fd00:ec2::254`), unspecified and `0.0.0.0/8`,
-/// broadcast, multicast, documentation and benchmarking ranges, reserved
-/// `240.0.0.0/4`, 6to4 and Teredo. Unless `private`, also loopback, RFC 1918,
-/// link-local, CGNAT and IPv6 ULA / link-local. IPv4-mapped, -compatible or
-/// NAT64 (`64:ff9b::/96`) IPv6 is classified as the embedded v4.
+/// Always: IPv4 link-local `169.254.0.0/16` (every cloud's metadata lives
+/// there: AWS, GCP, Azure IMDS, EKS Pod Identity, Scaleway, Tencent, …),
+/// `100.100.100.200` (Alibaba), `192.0.0.192` (Oracle), `168.63.129.16` (Azure
+/// WireServer), `fd00:ec2::/32` (AWS), unspecified and `0.0.0.0/8`, broadcast,
+/// multicast, documentation and benchmarking ranges, reserved `240.0.0.0/4`,
+/// site-local `fec0::/10`, local-use NAT64 `64:ff9b:1::/48`, 6to4 and Teredo.
+/// Unless `private`, also loopback, RFC 1918, CGNAT and IPv6 ULA / link-local.
+/// IPv4-mapped, -translated (`::ffff:0:0/96`), -compatible or NAT64
+/// (`64:ff9b::/96`) IPv6 is classified as the embedded v4.
 #[must_use]
 pub fn is_blocked_ip(ip: IpAddr, private: bool) -> bool {
     match ip {
@@ -184,11 +188,9 @@ pub fn is_blocked_ip(ip: IpAddr, private: bool) -> bool {
 
 fn is_blocked_ipv4(ip: Ipv4Addr, private: bool) -> bool {
     let o = ip.octets();
-    let local = ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || (o[0] == 100 && (64..128).contains(&o[1])); // CGNAT 100.64.0.0/10 (tailnets)
-    matches!(o, [169, 254, 169, 254] | [169, 254, 170, 2] | [100, 100, 100, 200]) // metadata
+    let local = ip.is_loopback() || ip.is_private() || (o[0] == 100 && (64..128).contains(&o[1])); // CGNAT 100.64.0.0/10 (tailnets)
+    ip.is_link_local() // 169.254.0.0/16: the metadata endpoints
+        || matches!(o, [100, 100, 100, 200] | [192, 0, 0, 192] | [168, 63, 129, 16]) // metadata
         || ip.is_unspecified()
         || ip.is_broadcast()
         || ip.is_multicast()
@@ -211,15 +213,18 @@ fn is_blocked_ipv6(ip: Ipv6Addr, private: bool) -> bool {
         return is_blocked_ipv4(v4, private);
     }
     let seg = ip.segments();
-    // NAT64 well-known prefix 64:ff9b::/96 carries an IPv4 address in the low 32 bits.
-    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+    // NAT64 well-known prefix 64:ff9b::/96 and IPv4-translated ::ffff:0:0/96 carry an IPv4
+    // address in the low 32 bits.
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] || seg[..6] == [0, 0, 0, 0, 0xffff, 0] {
         return is_blocked_ipv4(
             Ipv4Addr::from((u32::from(seg[6]) << 16) | u32::from(seg[7])),
             private,
         );
     }
     let local = ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local();
-    seg == [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254] // AWS metadata fd00:ec2::254
+    (seg[0] == 0xfd00 && seg[1] == 0x0ec2) // AWS metadata fd00:ec2::/32
+        || (seg[0] & 0xffc0) == 0xfec0 // site-local fec0::/10
+        || seg[..3] == [0x64, 0xff9b, 0x0001] // local-use NAT64 64:ff9b:1::/48
         || ip.is_unspecified()
         || ip.is_multicast()
         || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation 2001:db8::/32

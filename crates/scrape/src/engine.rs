@@ -238,7 +238,9 @@ impl Scrape {
 
     /// Fetch `url` up the ladder: HTTP, then — by the diagnosed issue or a
     /// thin body — the data island, then obscura when `force_render`, the
-    /// issue's `next` says `rendered`, or the page is thin.
+    /// issue's `next` says `rendered`, or the page is thin. 16 §5 (2026-11-11): a guard
+    /// refusal never falls back to obscura (it resolves and redirects on its own), nor does
+    /// anything outside the local-network grant ([`web::actor::CONTACT_NO_RENDER`]).
     pub async fn fetch_page(
         &self,
         url: &Url,
@@ -251,7 +253,12 @@ impl Scrape {
         let page = match self.fetch_http(url, only_main_content).await {
             Ok(page) => page,
             Err(e) => {
-                let Some(actor) = browser_actor() else {
+                let rejected = matches!(
+                    e.downcast_ref::<web::fetch::FetchError>(),
+                    Some(web::fetch::FetchError::Rejected(_))
+                );
+                let Some(actor) = browser_actor().filter(|_| !rejected && tools::egress::lan())
+                else {
                     return Err(e);
                 };
                 tracing::debug!(url = %url, error = %e, "fetch failed; trying obscura");
@@ -322,7 +329,7 @@ impl Scrape {
             .fetcher
             .fetch_html(url.as_str(), PAGE_CHARS)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .map_err(anyhow::Error::from)?;
         let html = resp.content;
         let final_url = Url::parse(&resp.url).unwrap_or_else(|_| url.clone());
         if !html_looks_like_html(&html) {
@@ -376,6 +383,7 @@ impl Scrape {
 
     /// `browser_navigate` → `browser_markdown` → `browser_close` on a free render slot.
     pub async fn render(&self, url: &Url, only_main_content: bool) -> anyhow::Result<Fetched> {
+        anyhow::ensure!(tools::egress::lan(), web::actor::CONTACT_NO_RENDER);
         let actor = browser_actor()
             .ok_or_else(|| anyhow::anyhow!("browser not available for rendered fetch"))?;
         self.render_with(&actor, url, only_main_content).await
@@ -390,6 +398,8 @@ impl Scrape {
         url: &Url,
         only_main_content: bool,
     ) -> anyhow::Result<Fetched> {
+        // 16 §5 (2026-11-11): every obscura rung of the engine passes here.
+        anyhow::ensure!(tools::egress::lan(), web::actor::CONTACT_NO_RENDER);
         let slot = self.slots.acquire().await?;
         let session = slot.session;
         let navigated = call(

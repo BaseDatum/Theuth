@@ -959,8 +959,8 @@ agent:
 #   keyless_fallback: true   # false: built-ins run only when no external provider serves the category
 #   degraded_is_error: false # true: a degraded search (no external, <= 1 general engine) is an error result
 #   allow_private_network: true    # read_url / http_request / scrape_url / crawl / map_site / site_*: false blocks
-#                            # localhost / RFC1918 / CGNAT / link-local / .local again; metadata endpoints and
-#                            # contacts' turns never reach the local network. Settings > Network > Local network access
+#                            # localhost / RFC1918 / CGNAT / IPv6 ULA and link-local / .local again; cloud metadata
+#                            # (169.254/16 …) and contacts' turns never reach it. Settings > Network > Local network access
 
 # scrape:                    # scrape_url / crawl / map_site (design doc 38)
 #   concurrency: 5

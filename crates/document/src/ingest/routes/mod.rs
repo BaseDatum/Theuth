@@ -147,22 +147,39 @@ pub fn registry() -> Option<ActorRef<tools::ToolRegistry>> {
 }
 
 /// Call a registered tool (`scrape_url`, `session_read`, an MCP tool) the way a plugin does: a quiet
-/// call under a fresh session; a tool error is an `Err` here.
+/// call under a fresh session; a tool error is an `Err` here. 16 §5 (2026-11-11): without the
+/// caller's local-network grant (the job's, [`tools::egress::lan`]) that session carries the
+/// registry's no-LAN marker for the call.
 pub async fn invoke(
     reg: &ActorRef<tools::ToolRegistry>,
     name: &str,
     args: serde_json::Value,
     deadline: Duration,
 ) -> anyhow::Result<tools::ToolOutput> {
+    let session = runtime::SessionId::new();
+    let lan = tools::egress::lan();
+    let no_lan = |on| tools::SetNoLan {
+        session,
+        turn: false,
+        on,
+    };
+    if !lan {
+        reg.ask(no_lan(true))
+            .await
+            .map_err(|e| anyhow::anyhow!("{name}: no-LAN marker: {e}"))?;
+    }
     let call = tools::ToolCall {
         id: format!("ingest-{}", uuid::Uuid::now_v7()),
         name: name.to_owned(),
         args,
-        session: runtime::SessionId::new(),
+        session,
         quiet: true,
     };
-    let out = tokio::time::timeout(deadline, reg.ask(tools::Invoke(call)))
-        .await
+    let out = tokio::time::timeout(deadline, reg.ask(tools::Invoke(call))).await;
+    if !lan {
+        let _ = reg.ask(no_lan(false)).await;
+    }
+    let out = out
         .map_err(|_| anyhow::anyhow!("{name} timed out after {} s", deadline.as_secs()))?
         .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
     anyhow::ensure!(!out.is_error, "{name}: {}", out.content.trim());
@@ -171,4 +188,53 @@ pub async fn invoke(
 
 fn mb(b: u64) -> f64 {
     b as f64 / (1024.0 * 1024.0)
+}
+
+#[cfg(test)]
+mod tests {
+    /// A tool that answers with the local-network grant its call ran under.
+    struct Probe;
+
+    #[async_trait::async_trait]
+    impl tools::Tool for Probe {
+        const NAME: &'static str = "scrape_url";
+        const RISK: tools::Risk = tools::Risk::ReadOnly;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: tools::ToolCx) -> anyhow::Result<tools::ToolOutput> {
+            Ok(tools::ToolOutput::ok(tools::egress::lan().to_string()))
+        }
+    }
+
+    /// 16 §5 (2026-11-11): an ingest job's `scrape_url` runs under the job's grant, not the
+    /// fresh session's owner default: a source a contact (or an unknown caller) added never
+    /// reaches the local network; the owner's does.
+    #[tokio::test]
+    async fn a_jobs_tool_call_runs_under_the_jobs_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = tools::registry::start(&runtime::Runtime::new(
+            figment::Figment::new(),
+            dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+        reg.ask(tools::RegisterTool(std::sync::Arc::new(Probe)))
+            .await
+            .unwrap();
+        let call = || {
+            super::invoke(
+                &reg,
+                "scrape_url",
+                serde_json::json!({}),
+                super::Duration::from_secs(5),
+            )
+        };
+        for (lan, want) in [(false, "false"), (true, "true")] {
+            let out = tools::egress::scope(lan, call()).await.unwrap();
+            assert_eq!(out.content, want, "job grant {lan}");
+        }
+        assert_eq!(call().await.unwrap().content, "false", "no grant known");
+    }
 }

@@ -174,7 +174,7 @@ async fn private_admits_the_local_network_never_metadata() {
         "172.16.0.1",
         "192.168.8.123",
         "100.64.0.1",
-        "169.254.1.1",
+        "fd12:3456::1",
         "fc00::1",
         "fe80::1",
         "::ffff:192.168.1.1",
@@ -183,13 +183,30 @@ async fn private_admits_the_local_network_never_metadata() {
         assert!(!is_blocked_ip(ip, true), "{ip} on");
         assert!(is_blocked_ip(ip, false), "{ip} off");
     }
+    // Cloud metadata (all of 169.254/16 and fd00:ec2::/32, Oracle, Azure WireServer, Alibaba,
+    // their translated / NAT64 spellings), unspecified, broadcast, multicast, reserved,
+    // site-local and tunnel ranges: refused in both modes.
     for ip in [
         "169.254.169.254",
+        "169.254.169.253",
+        "169.254.169.123",
         "169.254.170.2",
+        "169.254.170.23",
+        "169.254.42.42",
+        "169.254.0.23",
+        "169.254.1.1",
         "100.100.100.200",
+        "192.0.0.192",
+        "168.63.129.16",
         "fd00:ec2::254",
+        "fd00:ec2::23",
         "::ffff:169.254.169.254",
+        "::ffff:0:a9fe:a9fe",
+        "::ffff:0:c000:c0",
         "64:ff9b::a9fe:a9fe",
+        "64:ff9b:1::a9fe:a9fe",
+        "64:ff9b:1::808:808",
+        "fec0::1",
         "0.0.0.0",
         "::",
         "255.255.255.255",
@@ -198,7 +215,13 @@ async fn private_admits_the_local_network_never_metadata() {
         "240.0.0.1",
         "2002:7f00:1::1",
     ] {
-        assert!(is_blocked_ip(ip.parse().unwrap(), true), "{ip}");
+        let ip = ip.parse().unwrap();
+        assert!(is_blocked_ip(ip, true), "{ip} on");
+        assert!(is_blocked_ip(ip, false), "{ip} off");
+    }
+    // Public neighbours stay open.
+    for ip in ["168.63.129.17", "192.0.0.193", "100.128.100.200", "8.8.8.8"] {
+        assert!(!is_blocked_ip(ip.parse().unwrap(), false), "{ip}");
     }
     for h in [
         "localhost",

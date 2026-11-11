@@ -3163,6 +3163,8 @@ impl Agents {
         self.caps.insert(id, cap);
         self.network.inbox_limits.insert(id, (cap, tools.clone()));
         self.network.inboxes.insert(id);
+        // 16 §5 (2026-11-11): an inbox never reaches the local network, capped or full.
+        crate::supervisor::set_no_lan(id).await;
         let Some(reg) =
             kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
                 .map_err(|e| format!("a2a: inbox limits: tool registry: {e}"))?
@@ -3250,6 +3252,7 @@ impl Agents {
         };
         self.network.inbox_limits.remove(&id);
         self.network.inboxes.insert(id);
+        crate::supervisor::set_no_lan(id).await;
         let Some(reg) =
             kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
                 .map_err(|e| format!("a2a: inbox limits: tool registry: {e}"))?
@@ -6889,6 +6892,55 @@ mod full_inbox_tests {
         forget(&mut a, inbox);
         a.reinstall_contact_limits(inbox).await.unwrap();
         assert_eq!(a.caps.get(&inbox), Some(&tools::Risk::Mutating));
+    }
+
+    /// 16 §5 (2026-11-11): a contact's inbox never reaches the local network, run in full
+    /// (no allowlist, no contact cap) and again after an actor start; a child a contact's
+    /// turn spawned keeps no LAN in the store, for every later actor start.
+    #[test]
+    fn a_full_inbox_and_a_contact_turns_child_never_reach_the_lan() {
+        crate::with_test_registry(async {
+            let (scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+            tools::registry::start(&runtime::Runtime::new(
+                figment::Figment::new(),
+                scratch.0.clone(),
+            ))
+            .await
+            .unwrap();
+            let reg = kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
+                .unwrap()
+                .unwrap();
+            a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+            let binding = a
+                .store
+                .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+                .await
+                .unwrap();
+            route(&mut a, binding.id);
+            let inbox = admit(&mut a, binding.id).await.unwrap();
+            assert!(!a.network.is_inbox(inbox), "full: no contact limits");
+            assert!(reg.ask(tools::NoLan(inbox)).await.unwrap());
+            reg.ask(tools::SetNoLan {
+                session: inbox,
+                turn: false,
+                on: false,
+            })
+            .await
+            .unwrap();
+            forget(&mut a, inbox);
+            a.reinstall_contact_limits(inbox).await.unwrap();
+            assert!(reg.ask(tools::NoLan(inbox)).await.unwrap(), "actor start");
+
+            let (owner, child) = (SessionId::new(), SessionId::new());
+            a.install_no_lan(child).await;
+            assert!(reg.ask(tools::NoLan(child)).await.unwrap());
+            assert!(
+                a.store.no_lan(child).await.unwrap(),
+                "kept for the next start"
+            );
+            assert!(!a.store.no_lan(owner).await.unwrap());
+            assert!(!reg.ask(tools::NoLan(owner)).await.unwrap());
+        });
     }
 
     /// 186 review 1, 2 (D6): an agent inbox shared in full runs under the agent's own ceiling,

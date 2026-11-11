@@ -123,10 +123,11 @@ async fn fetch_direct(ctx: &Ctx, url: &str, max_chars: usize) -> anyhow::Result<
     })
 }
 
-/// The stealth fetcher built as `scrape` builds it from the `web` section (122 R1-D1).
+/// The stealth fetcher built as `scrape` builds it from the `web` section (122 R1-D1), its
+/// local-network lane included (used only inside the job's grant, 16 §5).
 pub fn fetcher(ctx: &Ctx) -> anyhow::Result<web::fetch::Fetcher> {
     let web_cfg: web::WebConfig = ctx.rt.section("web").unwrap_or_default();
-    Ok(web::fetch::Fetcher::new_with_timeouts(
+    web::fetch::Fetcher::new_with_timeouts(
         &web_cfg.user_agent,
         web_cfg
             .max_fetch_bytes
@@ -139,7 +140,8 @@ pub fn fetcher(ctx: &Ctx) -> anyhow::Result<web::fetch::Fetcher> {
         web_cfg.impersonate,
         web_cfg.header_ladder,
         Some(&web_cfg.accept_language),
-    ))
+    )
+    .with_private_network(web_cfg.allow_private_network)
 }
 
 #[cfg(test)]

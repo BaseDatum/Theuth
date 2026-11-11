@@ -80,6 +80,13 @@ pub struct ToolRegistry {
     allow_only: HashMap<SessionId, HashSet<String>>,
     /// The turn-scoped allowlist of a contact's turn, from [`SetAllowOnly`] with `turn`.
     turn_allow_only: HashMap<SessionId, HashSet<String>>,
+    /// 16 §5 (2026-11-11): sessions that never reach the local network, nor do their
+    /// subagents: a contact's inbox (full or capped), a child a contact's turn spawned. From
+    /// [`SetNoLan`]; re-installed by the agent at every actor start.
+    no_lan: HashSet<SessionId>,
+    /// The same for the running contact-origin turn of a session (full or capped), it and its
+    /// subagents, from [`SetNoLan`] with `turn`; cleared at that turn's end.
+    turn_no_lan: HashSet<SessionId>,
     /// `<data_dir>/config.yaml`, for the persistent switch.
     config_path: PathBuf,
     /// Per-root file capability from [`InstallResources`] (51 §4.5); a
@@ -900,6 +907,8 @@ impl Message<Forget> for ToolRegistry {
             self.turn_cap.remove(s);
             self.allow_only.remove(s);
             self.turn_allow_only.remove(s);
+            self.no_lan.remove(s);
+            self.turn_no_lan.remove(s);
             crate::seat::forget(*s);
         }
     }
@@ -1100,6 +1109,27 @@ impl ToolRegistry {
                 None => return false,
             }
         }
+    }
+
+    /// 16 §5 (2026-11-11): a call of `id` may reach the local network: it is no contact session
+    /// ([`Self::contact_scoped`]), and neither it nor an ancestor carries a no-LAN marker (the
+    /// session's own or its running contact-origin turn's). The chain is bounded like a cycle
+    /// guard; one too deep counts as marked (fail closed).
+    fn lan_allowed(&self, id: SessionId) -> bool {
+        if self.contact_scoped(id) {
+            return false;
+        }
+        let mut cur = id;
+        for _ in 0..64 {
+            if self.no_lan.contains(&cur) || self.turn_no_lan.contains(&cur) {
+                return false;
+            }
+            match self.parents.get(&cur) {
+                Some(p) => cur = *p,
+                None => return true,
+            }
+        }
+        false
     }
 
     /// 67 §6.3: an MCP tool outside the allowlist of the agent `id` works for.
@@ -1360,7 +1390,7 @@ impl ToolRegistry {
         let resources = self.resources_for(call.session);
         let inflight = self.inflight.clone();
         // 16 §5 (2026-11-11): only an owner's call may reach the local network.
-        let lan = !self.contact_scoped(call.session);
+        let lan = self.lan_allowed(call.session);
         let kind = Kind::Invoke {
             tool: call.name.clone(),
             call_id: call.id.clone(),
@@ -1601,6 +1631,49 @@ impl Message<ContactScoped> for ToolRegistry {
 
     async fn handle(&mut self, m: ContactScoped, _: &mut Context<Self, Self::Reply>) -> bool {
         self.contact_scoped(m.0)
+    }
+}
+
+/// `ask` (16 §5, 2026-11-11): `session` (and its subagents) may not reach the local network,
+/// for good (`turn: false`, a contact's inbox or a contact turn's child) or while its running
+/// turn took a contact's message (`turn: true`). `on: false` lifts that entry only.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNoLan {
+    /// The session.
+    pub session: SessionId,
+    /// The running turn's marker rather than the session's own.
+    pub turn: bool,
+    /// Set or lift.
+    pub on: bool,
+}
+
+impl Message<SetNoLan> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetNoLan, _: &mut Context<Self, Self::Reply>) {
+        let set = if m.turn {
+            &mut self.turn_no_lan
+        } else {
+            &mut self.no_lan
+        };
+        if m.on {
+            set.insert(m.session);
+        } else {
+            set.remove(&m.session);
+        }
+    }
+}
+
+/// `ask` → `bool` (16 §5, 2026-11-11): a tool call of `session` now would run with the local
+/// network out of reach (what [`crate::egress::lan`] reads `false` for).
+#[derive(Clone, Copy, Debug)]
+pub struct NoLan(pub SessionId);
+
+impl Message<NoLan> for ToolRegistry {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: NoLan, _: &mut Context<Self, Self::Reply>) -> bool {
+        !self.lan_allowed(m.0)
     }
 }
 
@@ -2235,6 +2308,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             turn_cap: HashMap::new(),
             allow_only: HashMap::new(),
             turn_allow_only: HashMap::new(),
+            no_lan: HashSet::new(),
+            turn_no_lan: HashSet::new(),
             config_path: rt.data_dir.join("config.yaml"),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(&rt.data_dir),
@@ -2307,6 +2382,8 @@ pub(crate) mod tests {
             turn_cap: HashMap::new(),
             allow_only: HashMap::new(),
             turn_allow_only: HashMap::new(),
+            no_lan: HashSet::new(),
+            turn_no_lan: HashSet::new(),
             config_path: PathBuf::new(),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(std::path::Path::new("/tmp")),
@@ -3554,6 +3631,40 @@ pub(crate) mod tests {
         reg.tell(turn(None)).await.unwrap();
         assert_eq!(lan(chat).await, "true");
         assert!(!crate::egress::lan());
+
+        // Full shares (190): no allowlist, no cap. A full inbox (and its subtree) carries the
+        // session marker; a full contact turn in a shared chat the turn marker, which reaches
+        // a subagent too and lifts at the turn's end; a child that turn spawned keeps its own.
+        let (full_inbox, full_child, spawned, bg) = (
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+        );
+        for (session, parent) in [(full_child, full_inbox), (spawned, chat), (bg, chat)] {
+            reg.tell(SetParent { session, parent }).await.unwrap();
+        }
+        let no_lan = |session, turn, on| SetNoLan { session, turn, on };
+        reg.ask(no_lan(full_inbox, false, true)).await.unwrap();
+        reg.ask(no_lan(chat, true, true)).await.unwrap();
+        reg.ask(no_lan(spawned, false, true)).await.unwrap();
+        for s in [full_inbox, full_child, chat, spawned, bg] {
+            assert_eq!(lan(s).await, "false", "{s}");
+            assert!(reg.ask(NoLan(s)).await.unwrap(), "{s}");
+        }
+        assert_eq!(lan(owner).await, "true");
+        // The turn ends: the owner's next turn in that chat, and the owner's subagent, have
+        // the LAN again; the spawned child and the full inbox do not.
+        reg.ask(no_lan(chat, true, false)).await.unwrap();
+        for (s, want) in [
+            (chat, "true"),
+            (bg, "true"),
+            (spawned, "false"),
+            (full_inbox, "false"),
+            (full_child, "false"),
+        ] {
+            assert_eq!(lan(s).await, want, "{s}");
+        }
     }
 
     /// 183 Z4 (W-40): an allowlist holds only what a contact may ever be granted, whoever sent

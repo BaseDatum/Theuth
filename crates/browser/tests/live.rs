@@ -162,7 +162,10 @@ impl Kit {
             cancel: tools::CancellationToken::new(),
             promote_after: None,
         };
-        tool.call(args, cx).await.expect(name)
+        // The owner's call (16 §5): only a call with the local-network grant gets the browser.
+        tools::egress::scope(true, tool.call(args, cx))
+            .await
+            .expect(name)
     }
 
     async fn ok(&self, name: &str, args: Value) -> String {

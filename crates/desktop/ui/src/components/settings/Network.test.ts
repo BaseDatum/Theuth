@@ -208,6 +208,21 @@ test('16 §5 Local network access: on only when both allow_private_network keys 
   expect(on.paint().match(lan)?.[1]).toBe('false')
 })
 
+test('16 §5 Local network access: a write that fails on the second key puts the first back', async () => {
+  api.config_flag_set.mockImplementationOnce(async (key, on) => ({ key, enabled: on, running: true, restart_required: !on }))
+  api.config_flag_set.mockImplementationOnce(async () => {
+    throw new Error('config.yaml: read-only')
+  })
+  await render(createElement(MachineTab))
+  handlers['Local network access']!(false as never)
+  await vi.waitFor(() => expect(api.config_flag_set).toHaveBeenCalledTimes(3))
+  expect(api.config_flag_set.mock.calls).toEqual([
+    ['web.allow_private_network', false],
+    ['browser.allow_private_network', false],
+    ['web.allow_private_network', true],
+  ])
+})
+
 test('Nearby: empty, then the rows a MeshEvent.nearby carries, each with Pair…', async () => {
   const { html, qc, paint } = await render(createElement(MachinesTab))
   expect(html).toContain('No unpaired machine found on this network.')
