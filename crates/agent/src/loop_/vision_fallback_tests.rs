@@ -41,6 +41,11 @@ const LEAKY_QUESTION: &str = "Is the token sk-live-deadbeef42 visible in m0.p1?"
 const QUESTION_USAGE: (u32, u32) = (11, 2);
 const VISION_USAGE: (u32, u32) = (23, 5);
 pub(super) const MAIN_USAGE: (u32, u32) = (37, 7);
+/// What the `rejecting` model's provider answers a request with an image part.
+const IMAGE_REFUSAL: &str =
+    "{\"error\":{\"message\":\"image input is not supported by this model\"}}";
+/// llama.cpp's 500 for an image sent to a model loaded without its projector.
+const LLAMACPP_REFUSAL: &str = "{\"error\":{\"code\":500,\"message\":\"image input is not supported - hint: if this is unexpected, you may need to provide the mmproj\",\"type\":\"server_error\"}}";
 
 /// The summariser's reply: long enough not to count as degenerate.
 fn summary() -> String {
@@ -157,6 +162,21 @@ impl Respond for Fake {
             };
         }
         if sys == vision::VISION_SYSTEM {
+            // A fallback that errors (deterministic 400) or never answers in time.
+            match model(&b) {
+                "faulty" => {
+                    return ResponseTemplate::new(400)
+                        .set_body_string("{\"error\":{\"message\":\"vision backend exploded\"}}");
+                }
+                // A fallback whose own provider takes no images.
+                "blindfallback" => {
+                    return ResponseTemplate::new(400).set_body_string(IMAGE_REFUSAL);
+                }
+                "slow" => {
+                    return sse("[]", "stop", VISION_USAGE).set_delay(Duration::from_secs(10));
+                }
+                _ => {}
+            }
             if self.malformed {
                 return sse("I see a square, but this is not JSON", "stop", VISION_USAGE);
             }
@@ -173,6 +193,34 @@ impl Respond for Fake {
         if model(&b) == "broken" {
             return ResponseTemplate::new(500)
                 .set_body_string("{\"error\":{\"message\":\"boom\"}}");
+        }
+        // A model its catalog calls vision-capable whose provider refuses any
+        // image part, with the body of the brief's fake server.
+        let images = !image_urls(&b).is_empty();
+        if model(&b) == "rejecting" && images {
+            return ResponseTemplate::new(400).set_body_string(IMAGE_REFUSAL);
+        }
+        // An image the provider refuses for its size (Anthropic's text): not a
+        // model refusal, the model is not marked.
+        if model(&b) == "toobig" && images {
+            return ResponseTemplate::new(400).set_body_string(
+                "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content.1.image.source.base64: image exceeds 5 MB maximum: 6120000 bytes > 5242880 bytes\"}}",
+            );
+        }
+        // llama.cpp's answer for a model without mmproj (ggml-org/llama.cpp#13566).
+        if model(&b) == "llamacpp" && images {
+            return ResponseTemplate::new(500).set_body_string(LLAMACPP_REFUSAL);
+        }
+        // A refusal inside the event stream: HTTP 200, an SSE error event.
+        if model(&b) == "sserefuse" && images {
+            return ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {IMAGE_REFUSAL}\n\n"));
+        }
+        // Says "image input is not supported" whether or not an image was sent
+        // (a mis-classified refusal), until the user says AFTER-LIAR.
+        if model(&b) == "liar" && !all_text(&b).contains("AFTER-LIAR") {
+            return ResponseTemplate::new(400).set_body_string(IMAGE_REFUSAL);
         }
         let text = all_text(&b);
         if text.contains(
@@ -362,6 +410,16 @@ impl Harness {
                 "textonly": model("textonly", false),
                 "eyes": model("eyes", true),
                 "broken": model("broken", true),
+                // read-file-images: the catalog says vision; the provider refuses
+                // images (`rejecting`), or the fallback errors / never answers.
+                "rejecting": model("rejecting", true),
+                "faulty": model("faulty", true),
+                "slow": model("slow", true),
+                "llamacpp": model("llamacpp", true),
+                "sserefuse": model("sserefuse", true),
+                "liar": model("liar", true),
+                "toobig": model("toobig", true),
+                "blindfallback": model("blindfallback", true),
                 "tiny": tiny,
                 // 137G R1-10: the endless turn-budget test's own model id, so no
                 // other scenario's learned bytes/token reaches it.
@@ -371,16 +429,6 @@ impl Harness {
         )
         .unwrap();
         // A red and a blue 4x4 PNG: the facts live in pixels only.
-        let square = |rgb: [u8; 3]| {
-            let mut bytes = Vec::new();
-            let mut enc = png::Encoder::new(&mut bytes, 4, 4);
-            enc.set_color(png::ColorType::Rgb);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut w = enc.write_header().unwrap();
-            w.write_image_data(&rgb.repeat(16)).unwrap();
-            drop(w);
-            bytes
-        };
         let png = dir.join("shot.png");
         let bytes = square([255, 0, 0]);
         std::fs::write(&png, &bytes).unwrap();
@@ -621,7 +669,17 @@ impl Harness {
         style: CompactStyle,
         head: Option<String>,
     ) -> (u32, Vec<AgentEvent>) {
-        let (mut turn, _) = self.turn("openai/textonly", CancellationToken::new()).await;
+        self.compact_as("openai/textonly", style, head).await
+    }
+
+    /// [`Harness::compact_with`] on `main`'s session.
+    async fn compact_as(
+        &mut self,
+        main: &str,
+        style: CompactStyle,
+        head: Option<String>,
+    ) -> (u32, Vec<AgentEvent>) {
+        let (mut turn, _) = self.turn(main, CancellationToken::new()).await;
         let epoch = turn.compact_now(Some(style), head).await.unwrap();
         let events = self
             .drain_until(|e| matches!(e, AgentEvent::Compacted { .. }))
@@ -818,17 +876,46 @@ async fn vision_scenarios() {
     tools::registry::start(&reg_rt).await.unwrap();
     tools::secrets::install(Arc::new(Vault));
 
-    text_only_main_asks_fallback_looks_main_answers().await;
-    vision_capable_main_bypasses_a_broken_fallback().await;
-    text_only_main_without_fallback_gets_one_untyped_notice().await;
-    malformed_fallback_reply_fails_explicitly_and_retries_next_turn().await;
-    cancellation_during_the_question_appends_nothing().await;
-    two_images_in_one_input_share_one_consultation().await;
-    steered_image_is_prepared_before_the_next_main_call().await;
-    manual_summary_compaction_inspects_pending_images_first().await;
-    leaked_secret_in_the_question_is_redacted_before_it_leaves().await;
-    cut_compaction_budgets_the_tail_and_folds_tool_results().await;
-    empty_reply_is_surfaced_as_an_error().await;
+    // Each scenario's future is built inside `boxed` and lives on the heap: a
+    // debug build gives every `.await`ed temporary its own slot in this
+    // function's poll frame, and a score of inline turn-sized futures pass
+    // the 2 MiB test-thread stack.
+    let scenarios: [fn() -> Scenario; 24] = [
+        || boxed(text_only_main_asks_fallback_looks_main_answers()),
+        || boxed(vision_capable_main_bypasses_a_broken_fallback()),
+        || boxed(text_only_main_without_fallback_gets_one_untyped_notice()),
+        || boxed(malformed_fallback_reply_fails_explicitly_and_retries_next_turn()),
+        || boxed(cancellation_during_the_question_appends_nothing()),
+        || boxed(two_images_in_one_input_share_one_consultation()),
+        || boxed(steered_image_is_prepared_before_the_next_main_call()),
+        || boxed(manual_summary_compaction_inspects_pending_images_first()),
+        || boxed(leaked_secret_in_the_question_is_redacted_before_it_leaves()),
+        || boxed(cut_compaction_budgets_the_tail_and_folds_tool_results()),
+        || boxed(empty_reply_is_surfaced_as_an_error()),
+        || boxed(read_file_image_takes_the_fallback_path()),
+        || boxed(provider_refusing_images_marks_the_model_and_retries_once()),
+        || boxed(failing_or_slow_fallback_yields_the_note_and_the_turn_completes()),
+        || boxed(switch_to_text_only_with_images_in_history()),
+        || boxed(local_and_stream_refusals_are_caught()),
+        || boxed(retry_refused_the_same_way_clears_the_mark()),
+        || boxed(summariser_refusal_and_compact_after_restart()),
+        || boxed(unreadable_attachment_becomes_a_note()),
+        || boxed(reselecting_the_model_clears_its_refusal()),
+        || boxed(image_caused_error_projects_until_compaction()),
+        || boxed(failed_or_refusing_fallback_is_not_asked_again()),
+        || boxed(a_repeated_image_points_at_its_description()),
+        || boxed(oversized_header_attachment_is_unreadable()),
+    ];
+    for scenario in scenarios {
+        scenario().await;
+    }
+}
+
+/// A scenario future on the heap (see [`vision_scenarios`]).
+type Scenario = std::pin::Pin<Box<dyn Future<Output = ()>>>;
+
+fn boxed(f: impl Future<Output = ()> + 'static) -> Scenario {
+    Box::pin(f)
 }
 
 /// Gate "Main-authored question" / "Privacy and accounting" / "Stable prefix".
@@ -1470,3 +1557,482 @@ async fn leaked_secret_in_the_question_is_redacted_before_it_leaves() {
         "{note}"
     );
 }
+
+// region:    --- read-file-images: every image source, provider refusal
+
+/// A red 4x4 RGB PNG (or any colour): the facts live in pixels only.
+fn square(rgb: [u8; 3]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut enc = png::Encoder::new(&mut bytes, 4, 4);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut w = enc.write_header().unwrap();
+    w.write_image_data(&rgb.repeat(16)).unwrap();
+    drop(w);
+    bytes
+}
+
+/// The red square on disk outside any harness (a fake is built before its
+/// harness), its path, and the base64 a provider must receive for it.
+fn picture() -> (crate::TestDir, PathBuf, String) {
+    let dir = crate::TestDir::new("pics");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("red.png");
+    let bytes = square([255, 0, 0]);
+    std::fs::write(&path, &bytes).unwrap();
+    (dir, path, BASE64.encode(&bytes))
+}
+
+/// Requests that carry at least one `image_url` part.
+fn with_images(reqs: &[Value]) -> usize {
+    reqs.iter().filter(|r| !image_urls(r).is_empty()).count()
+}
+
+/// The text-only path for a `read_file` picture: with a fallback the vision
+/// model gets the very image and the main gets its description; without one
+/// the main gets the marker and the 52 notice. The main never gets an image.
+async fn read_file_image_takes_the_fallback_path() {
+    let (_pics, png, b64) = picture();
+    let read = json!({"path": png.to_string_lossy()});
+    let mut h = Harness::new(Fake::tool_call("read_file", &read)).await;
+    h.set_fallback(Some("openai/eyes"));
+    let events = h.run("openai/textonly", "go", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(
+        reqs.len(),
+        4,
+        "tool call, question, vision, main: {reqs:#?}"
+    );
+    assert_eq!(system(&reqs[1]), vision::QUESTION_SYSTEM);
+    assert_eq!(
+        (system(&reqs[2]), model(&reqs[2])),
+        (vision::VISION_SYSTEM, "eyes")
+    );
+    assert_eq!(
+        image_urls(&reqs[2]),
+        vec![format!("data:image/png;base64,{b64}")]
+    );
+    let main = all_text(&reqs[3]);
+    assert_eq!(
+        with_images(&reqs),
+        1,
+        "only the vision call sees the picture"
+    );
+    assert!(
+        main.contains(&format!(
+            "[read_file {}: image/png 4\u{d7}4, 1 KB]",
+            png.display()
+        )),
+        "{main}"
+    );
+    assert!(
+        main.contains("<vision_observation>") && main.contains(ANSWER),
+        "{main}"
+    );
+
+    // No fallback: the marker and the notice, nobody looks.
+    let mut h = Harness::new(Fake::tool_call("read_file", &read)).await;
+    h.set_fallback(None);
+    let events = h.run("openai/textonly", "go", false).await;
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 2, "{reqs:#?}");
+    assert_eq!(with_images(&reqs), 0);
+    let main = all_text(&reqs[1]);
+    assert!(main.contains(", image/png, fp "), "{main}");
+    assert!(
+        main.contains("no vision fallback model is configured"),
+        "{main}"
+    );
+}
+
+/// A model the catalog calls vision-capable whose provider answers an image
+/// part with 400 "image input is not supported": caught, the model marked
+/// text-only (durably), its images replaced through 52, exactly ONE retry,
+/// and the next turn — a fresh session over the same store, as a resume
+/// builds it — sends no image. With a fallback the retry carries its
+/// description instead of the notice.
+async fn provider_refusing_images_marks_the_model_and_retries_once() {
+    let (_pics, png, _) = picture();
+    let read = json!({"path": png.to_string_lossy()});
+    let mut h = Harness::new(Fake::tool_call("read_file", &read)).await;
+    h.set_fallback(None);
+    let events = h.run("openai/rejecting", "go", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 3, "tool call, refused, retry: {reqs:#?}");
+    assert_eq!(with_images(&reqs), 1, "one refused request, then none");
+    assert!(!image_urls(&reqs[1]).is_empty());
+    let retry = all_text(&reqs[2]);
+    assert!(
+        retry.contains("openai/rejecting (its provider refused an image) is text-only")
+            && retry.contains("no vision fallback model is configured"),
+        "{retry}"
+    );
+    // One user-visible notice row says what happened and how to undo it.
+    assert!(
+        retry.contains("openai/rejecting's provider refused an image (")
+            && retry.contains("Re-select the model to send it images again."),
+        "{retry}"
+    );
+    assert_eq!(
+        h.store.image_refusals(h.id).await.unwrap(),
+        ["openai/rejecting"]
+    );
+    let rows = h.store.messages(h.id).await.unwrap();
+    assert_eq!(text_of(&rows.last().unwrap().1.content), FINAL);
+    // A fork keeps the mark.
+    let fork = h.store.fork(h.id, None, None).await.unwrap();
+    assert_eq!(
+        h.store.image_refusals(fork).await.unwrap(),
+        ["openai/rejecting"]
+    );
+
+    // Next turn, fresh session (resume): no image is sent again.
+    let events = h.run("openai/rejecting", "And the colour?", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 4, "{reqs:#?}");
+    assert_eq!(with_images(&reqs), 1);
+
+    // With a fallback: the retry goes question → vision → main.
+    let mut h = Harness::new(Fake::tool_call("read_file", &read)).await;
+    h.set_fallback(Some("openai/eyes"));
+    let events = h.run("openai/rejecting", "go", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(
+        reqs.len(),
+        5,
+        "tool call, refused, question, vision, main: {reqs:#?}"
+    );
+    assert_eq!(model(&reqs[3]), "eyes");
+    assert!(!image_urls(&reqs[3]).is_empty());
+    assert!(image_urls(&reqs[4]).is_empty());
+    assert!(all_text(&reqs[4]).contains(ANSWER));
+}
+
+/// 52 §5.3 under failure: a fallback that errors or never answers yields the
+/// NOT SEEN note; the turn completes, no error, no loop.
+async fn failing_or_slow_fallback_yields_the_note_and_the_turn_completes() {
+    for (fallback, why) in [
+        ("openai/faulty", "vision backend exploded"),
+        ("openai/slow", "timed out after 3s"),
+    ] {
+        let mut h = Harness::new(fake()).await;
+        h.set_fallback(Some(fallback));
+        let events = h
+            .run("openai/textonly", "What is in the picture?", true)
+            .await;
+        assert_eq!(errors(&events), Vec::<String>::new(), "{fallback}");
+        assert_eq!(stop_reason(&events), "stop", "{fallback}");
+        let reqs = h.requests().await;
+        assert_eq!(reqs.len(), 3, "question, vision, main: {reqs:#?}");
+        let main = all_text(&reqs[2]);
+        assert!(
+            main.contains("m0.p1: NOT SEEN (") && main.contains(why),
+            "{main}"
+        );
+        assert!(image_urls(&reqs[2]).is_empty());
+    }
+}
+
+/// 52 §7.2 model switch: an image the vision model saw natively is, after a
+/// switch to a text-only model, a marker plus the notice — never the image.
+async fn switch_to_text_only_with_images_in_history() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    h.run("openai/eyes", "What is in the picture?", true).await;
+    let events = h.run("openai/textonly", "And now?", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 2, "{reqs:#?}");
+    assert!(!image_urls(&reqs[0]).is_empty());
+    assert!(image_urls(&reqs[1]).is_empty());
+    let text = all_text(&reqs[1]);
+    assert!(
+        text.contains("[image m0.p1: shot.png, image/png, fp "),
+        "{text}"
+    );
+    assert!(
+        text.contains("no vision fallback model is configured"),
+        "{text}"
+    );
+}
+
+/// A picture `read_file` returns inside a python cell reaches the outer
+/// tool result and takes the same 52 path. Run by
+/// [`super::runtime_bridge_tests`], which owns the worker pool (and skips
+/// without one), so a missing or stale worker cannot fail the 52 contract.
+pub(super) async fn python_cell_image_takes_the_same_path(pool: Arc<Pool>) {
+    let (_pics, png, b64) = picture();
+    let code =
+        json!({"code": format!("r = await read_file(path={:?})\n'read'", png.to_string_lossy())});
+    let mut h = Harness::new(Fake::tool_call(repl::NAME, &code)).await;
+    h.pool = Some(pool);
+    h.set_fallback(Some("openai/eyes"));
+    let events = h.run("openai/textonly", "go", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 4, "cell, question, vision, main: {reqs:#?}");
+    assert_eq!(model(&reqs[2]), "eyes");
+    assert_eq!(
+        image_urls(&reqs[2]),
+        vec![format!("data:image/png;base64,{b64}")]
+    );
+    assert_eq!(with_images(&reqs), 1);
+    assert!(all_text(&reqs[3]).contains(ANSWER));
+}
+
+/// A local server's 500 refusal (llama.cpp) and a refusal inside the event
+/// stream are caught like a 400: one refused request, no backoff resend, the
+/// marked retry completes.
+async fn local_and_stream_refusals_are_caught() {
+    for main in ["openai/llamacpp", "openai/sserefuse"] {
+        let mut h = Harness::new(fake()).await;
+        h.set_fallback(None);
+        let events = h.run(main, "What is in the picture?", true).await;
+        assert_eq!(errors(&events), Vec::<String>::new(), "{main}");
+        assert_eq!(stop_reason(&events), "stop", "{main}");
+        let reqs = h.requests().await;
+        assert_eq!(reqs.len(), 2, "{main}: refused, retry: {reqs:#?}");
+        assert_eq!(with_images(&reqs), 1, "{main}");
+        assert_eq!(h.store.image_refusals(h.id).await.unwrap(), [main]);
+    }
+}
+
+/// A "refusal" that is not about images: the images-off retry is refused the
+/// same way, so the mark is cleared, the turn ends with a readable error, and
+/// the next message works — with its image, the model was never text-only.
+async fn retry_refused_the_same_way_clears_the_mark() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    let events = h.run("openai/liar", "Look at this.", true).await;
+    assert_eq!(stop_reason(&events), "error");
+    let errs = errors(&events);
+    assert!(
+        errs.iter()
+            .any(|e| e.starts_with("model: ") && e.contains("image input is not supported")),
+        "{errs:?}"
+    );
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 2, "refused, retry refused: {reqs:#?}");
+    assert_eq!(with_images(&reqs), 1);
+    assert!(h.store.image_refusals(h.id).await.unwrap().is_empty());
+    let events = h.run("openai/liar", "AFTER-LIAR: and now?", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert!(!image_urls(reqs.last().unwrap()).is_empty(), "images again");
+}
+
+/// A summariser refused for its images marks the model and resends without
+/// them; after a restart (a fresh session over the store) `/compact` sends
+/// a marked model no image at all.
+async fn summariser_refusal_and_compact_after_restart() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    h.run("openai/eyes", "Hello there.", false).await;
+    h.run("openai/eyes", "Look at this.", true).await;
+    let before = h.requests().await.len();
+    let (epoch, _) = h
+        .compact_as("openai/rejecting", CompactStyle::Summary, None)
+        .await;
+    assert_eq!(epoch, 1);
+    let reqs = h.requests().await;
+    let summariser: Vec<&Value> = reqs[before..]
+        .iter()
+        .filter(|r| all_text(r).contains(compact::COMPACT_INSTRUCTION))
+        .collect();
+    assert_eq!(summariser.len(), 2, "refused, resent: {reqs:#?}");
+    assert!(!image_urls(summariser[0]).is_empty());
+    assert!(image_urls(summariser[1]).is_empty());
+    assert_eq!(
+        h.store.image_refusals(h.id).await.unwrap(),
+        ["openai/rejecting"]
+    );
+
+    // Marked in an earlier process: the very first request carries no image.
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    h.run("openai/eyes", "Hello there.", false).await;
+    h.run("openai/eyes", "Look at this.", true).await;
+    h.store
+        .refuse_images(h.id, "openai/rejecting")
+        .await
+        .unwrap();
+    let before = h.requests().await.len();
+    h.compact_as("openai/rejecting", CompactStyle::Summary, None)
+        .await;
+    let reqs = h.requests().await;
+    assert!(reqs.len() > before);
+    assert_eq!(with_images(&reqs[before..]), 0, "{reqs:#?}");
+}
+
+/// An attachment whose bytes are not the image its name says becomes the
+/// "unreadable" note, never an image part a provider would reject.
+async fn unreadable_attachment_becomes_a_note() {
+    let mut h = Harness::new(fake()).await;
+    let junk = h.dir.join("junk.png");
+    std::fs::write(&junk, b"not a png at all").unwrap();
+    let (turn, tid) = h.turn("openai/eyes", CancellationToken::new()).await;
+    turn.run(tid, vec![h.input_files("See attached.", vec![junk])])
+        .await;
+    let events = h.drain().await;
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(with_images(&reqs), 0);
+    let text = all_text(&reqs[0]);
+    assert!(
+        text.contains("junk.png unreadable: image/png is not a supported image"),
+        "{text}"
+    );
+}
+
+/// Re-picking a model (`set_model` → `SwitchModel`) is the undo for its
+/// image refusal.
+async fn reselecting_the_model_clears_its_refusal() {
+    let h = Harness::new(fake()).await;
+    h.store
+        .refuse_images(h.id, "openai/rejecting")
+        .await
+        .unwrap();
+    let actor = h.actor("openai/rejecting").await;
+    actor
+        .ask(SwitchModel(h.resolve("openai/rejecting")))
+        .await
+        .unwrap();
+    assert!(h.store.image_refusals(h.id).await.unwrap().is_empty());
+}
+
+/// An image the provider refuses for its size: one retry with the images as
+/// text and a visible note; the model is not marked and still counts as
+/// seeing for snap compaction.
+async fn image_caused_error_projects_until_compaction() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    let events = h
+        .run("openai/toobig", "What is in the picture?", true)
+        .await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 2, "refused, retry: {reqs:#?}");
+    assert_eq!(with_images(&reqs), 1);
+    let retry = all_text(&reqs[1]);
+    assert!(
+        retry.contains("openai/toobig's provider refused an image in this chat (")
+            && retry.contains("until the next compaction"),
+        "{retry}"
+    );
+    assert!(h.store.image_refusals(h.id).await.unwrap().is_empty());
+    let mut c = Current::new(
+        h.resolve("openai/toobig"),
+        None,
+        &h.client,
+        &Auth::stub(&h.dir),
+    );
+    c.images_off = true;
+    assert!(!c.vision() && c.can_see(), "snap stays snap");
+}
+
+/// Two pending image groups: the fallback fails (or refuses images) on the
+/// first, so the second is not sent to it — the notice says why.
+async fn failed_or_refusing_fallback_is_not_asked_again() {
+    for (fallback, why) in [
+        ("openai/faulty", "openai/faulty failed: "),
+        (
+            "openai/blindfallback",
+            "openai/blindfallback refused images: ",
+        ),
+    ] {
+        let mut h = Harness::new(fake()).await;
+        h.set_fallback(None);
+        h.run("openai/eyes", "First picture.", true).await;
+        h.set_fallback(Some(fallback));
+        let (turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
+        turn.run(
+            tid,
+            vec![h.input_files("Second picture.", vec![h.png2.clone()])],
+        )
+        .await;
+        let events = h.drain().await;
+        assert_eq!(stop_reason(&events), "stop", "{fallback}");
+        let reqs = h.requests().await;
+        let vision_calls = reqs
+            .iter()
+            .filter(|r| system(r) == vision::VISION_SYSTEM)
+            .count();
+        assert_eq!(vision_calls, 1, "{fallback}: {reqs:#?}");
+        let main = all_text(reqs.last().unwrap());
+        assert!(
+            main.contains("the vision fallback is unavailable (") && main.contains(why),
+            "{main}"
+        );
+    }
+}
+
+/// The same image again is not described again: its marker points at the
+/// first description. A newly chosen fallback describes it afresh.
+async fn a_repeated_image_points_at_its_description() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(Some("openai/eyes"));
+    h.run("openai/textonly", "Look.", true).await;
+    let before = h.requests().await.len();
+    let events = h
+        .run("openai/textonly", "The same picture again.", true)
+        .await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    let reqs = h.requests().await;
+    assert_eq!(
+        reqs.len(),
+        before + 1,
+        "no question, no vision call: {reqs:#?}"
+    );
+    let main = all_text(reqs.last().unwrap());
+    assert!(
+        main.contains("(the same image as m0.p1: its vision observation describes this one too)"),
+        "{main}"
+    );
+
+    h.set_fallback(Some("openai/rejecting"));
+    let before = reqs.len();
+    h.run("openai/textonly", "And with the new fallback?", false)
+        .await;
+    let reqs = h.requests().await;
+    let vision_calls: Vec<&Value> = reqs[before..]
+        .iter()
+        .filter(|r| system(r) == vision::VISION_SYSTEM)
+        .collect();
+    assert_eq!(vision_calls.len(), 1, "{reqs:#?}");
+    assert_eq!(model(vision_calls[0]), "rejecting");
+}
+
+/// An attachment whose header claims 20 000×20 000 is refused before any
+/// pixel buffer is allocated and becomes the "unreadable" note.
+async fn oversized_header_attachment_is_unreadable() {
+    let mut h = Harness::new(fake()).await;
+    let huge = h.dir.join("huge.gif");
+    let mut gif = b"GIF89a\x20\x4e\x20\x4e\x00\x00\x00".to_vec();
+    gif.extend_from_slice(b",\x00\x00\x00\x00\x20\x4e\x20\x4e\x00\x02\x02D\x01\x00;");
+    std::fs::write(&huge, gif).unwrap();
+    let (turn, tid) = h.turn("openai/eyes", CancellationToken::new()).await;
+    turn.run(tid, vec![h.input_files("See attached.", vec![huge])])
+        .await;
+    let events = h.drain().await;
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(with_images(&reqs), 0);
+    let text = all_text(&reqs[0]);
+    assert!(
+        text.contains("huge.gif unreadable: image/gif would need 1525 MB to decode"),
+        "{text}"
+    );
+}
+
+// endregion: --- read-file-images

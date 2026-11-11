@@ -183,13 +183,16 @@ pub fn search_description(all: &[ProviderMeta]) -> String {
 #[must_use]
 pub fn fetch_description(metas: &[ProviderMeta]) -> String {
     let mut s = String::from(
-        "Fetch one http(s) page and return its readable content as markdown (default) or plain \
-         text, capped at max_chars; offset pages through a long page and a cut result names the \
-         omitted sections. A page behind a bot wall, login or consent screen starts with `ISSUE:` \
+        "Fetch one http(s) page as markdown or text, or an image URL as a picture you can see. \
+         Page content is markdown (default) or plain text, capped at max_chars; offset pages \
+         through a long page and a cut result names the omitted sections. A page behind a bot \
+         wall, login or consent screen starts with `ISSUE:` \
          and names the next rung (rendered: true, browser_import_cookies, desktop_handoff). Known \
          hosts (HN, Reddit, npm, PyPI, crates.io, arXiv, Wikipedia, Stack Overflow) are read from \
-         their JSON API unless source: page. Private, loopback and link-local destinations are \
-         refused.",
+         their JSON API unless source: page. An image URL (Content-Type image/*, or image bytes) \
+         comes back as a picture you can look at under a one-line header, like read_file; a \
+         text-only model gets the vision fallback's description or a note instead. Private, \
+         loopback and link-local destinations are refused.",
     );
     match metas.iter().find(|m| m.renders) {
         Some(m) => {
@@ -546,7 +549,7 @@ impl Tool for FetchTool {
         fetch_description(&metas(&self.providers))
     }
 
-    async fn call(&self, a: FetchArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: FetchArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let max_chars = match a.max_chars {
             None => snapshot(&self.cfg).fetch_max_chars,
             Some(m) if (200..=16000).contains(&m) => usize::try_from(m).unwrap_or(usize::MAX),
@@ -591,6 +594,9 @@ impl Tool for FetchTool {
         } else {
             match self.read_page_or_api(&a, format, opts).await {
                 Ok(r) => r,
+                Err(e) if e.starts_with(IMAGE_REFUSED) => {
+                    return self.read_image(&a.url, &cx).await;
+                }
                 Err(e) => return Ok(ToolOutput::err(e)),
             }
         };
@@ -598,7 +604,37 @@ impl Tool for FetchTool {
     }
 }
 
+/// How the page fetch refuses an image body ([`crate::fetch`]'s unsupported
+/// content type): `read_url` then reads it as a picture.
+const IMAGE_REFUSED: &str = "unsupported content type: image/";
+
 impl FetchTool {
+    /// `read_url` on an image: one raw GET under the same guard and byte cap
+    /// ([`Fetcher::request`]; the page fetch refused it before the body),
+    /// returned as a picture like `read_file` ([`tools::images::tool_output`]).
+    /// A failed, non-2xx, cut or undecodable image is a text error.
+    async fn read_image(&self, url: &str, cx: &ToolCx) -> anyhow::Result<ToolOutput> {
+        let r = match self.fetcher.request("GET", url, &[], None).await {
+            Ok(r) => r,
+            Err(e) => return Ok(ToolOutput::err(e.to_string())),
+        };
+        if !(200..300).contains(&r.status) {
+            return Ok(ToolOutput::err(format!("HTTP {}", r.status)));
+        }
+        if r.truncated {
+            return Ok(ToolOutput::err(format!(
+                "image larger than max_fetch_bytes ({} bytes); not read",
+                r.body.len()
+            )));
+        }
+        let dir = cx.resources.dir("images").join(cx.session.to_string());
+        Ok(tokio::task::spawn_blocking(move || {
+            tools::images::tool_output("read_url", &r.url, &r.body, &dir)
+        })
+        .await?
+        .unwrap_or_else(|e| ToolOutput::err(e.to_string())))
+    }
+
     /// The D11 dispatch: under `source: auto|api` a known host is read from
     /// its JSON API (`sources::api_source` → `fetch_html` → `sources::render`),
     /// `tier: "api"`; `reddit-old` is a URL rewrite through the page pipeline.
@@ -1050,5 +1086,102 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error);
+    }
+
+    /// An `image/*` response, and image bytes labelled octet-stream, come back
+    /// as a picture under one header line; a broken image is a text error.
+    #[tokio::test]
+    async fn read_url_returns_an_image_as_a_picture() {
+        use kameo::actor::Spawn as _;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let png = {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::RgbImage::from_pixel(5, 3, image::Rgb([200, 10, 10]))
+                .write_to(&mut out, image::ImageFormat::Png)
+                .unwrap();
+            out.into_inner()
+        };
+        let server = MockServer::start().await;
+        for (p, body, ct) in [
+            ("/pic.png", png.clone(), "image/png"),
+            ("/blob", png.clone(), "application/octet-stream"),
+            ("/broken.png", png[..png.len() / 2].to_vec(), "image/png"),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(body, ct))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/missing.png"))
+            .respond_with(ResponseTemplate::new(404).set_body_raw(png.clone(), "image/png"))
+            .mount(&server)
+            .await;
+        let tool = FetchTool {
+            actor: WebActor::spawn(WebActor::with_config(
+                crate::WebConfig::default(),
+                reqwest::Client::new(),
+                vec![],
+                ProviderMetas::default(),
+            )),
+            fetcher: Arc::new(
+                Fetcher::new("test", 2_097_152, 5)
+                    .unwrap()
+                    .allowing(vec![*server.address()]),
+            ),
+            providers: ProviderMetas::default(),
+            cfg: Arc::new(std::sync::RwLock::new(crate::WebConfig::default())),
+        };
+        let read = |p: &str| FetchArgs {
+            url: format!("{}{p}", server.uri()),
+            max_chars: None,
+            format: None,
+            rendered: None,
+            offset: None,
+            compact: None,
+            source: None,
+        };
+        for p in ["/pic.png", "/blob"] {
+            let out = tool.call(read(p), cx()).await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert_eq!(
+                out.content,
+                format!("[read_url {}{p}: image/png 5\u{d7}3, 1 KB]", server.uri())
+            );
+            assert_eq!(out.files.len(), 1);
+            assert_eq!(std::fs::read(&out.files[0]).unwrap(), png);
+        }
+        let out = tool.call(read("/broken.png"), cx()).await.unwrap();
+        assert!(out.is_error && out.files.is_empty());
+        assert!(out.content.contains("invalid image/png"), "{}", out.content);
+
+        // Non-2xx: never a picture, never bytes.
+        let out = tool.call(read("/missing.png"), cx()).await.unwrap();
+        assert!(
+            out.files.is_empty()
+                && !out.content.starts_with("[read_url")
+                && !out.content.contains("PNG"),
+            "{}",
+            out.content
+        );
+
+        // Over the byte cap: a text error, no picture.
+        let small = FetchTool {
+            fetcher: Arc::new(
+                Fetcher::new("test", 32, 5)
+                    .unwrap()
+                    .allowing(vec![*server.address()]),
+            ),
+            ..tool
+        };
+        let out = small.call(read("/pic.png"), cx()).await.unwrap();
+        assert!(out.is_error && out.files.is_empty(), "{}", out.content);
+        assert!(
+            out.content.contains("too large") || out.content.contains("larger than"),
+            "{}",
+            out.content
+        );
     }
 }

@@ -575,7 +575,7 @@ browser_tool!(
     /// `browser_screenshot` → `browser_screenshot`; the PNG is written to
     /// [`shot_dir`]`/shot-<n>.png` and attached (23 §5).
     ScreenshotTool, "browser_screenshot", ScreenshotArgs,
-    "Render the current page to a PNG and attach it to this result as an image you can look at: use it to check layout, styling or anything text cannot show. Optional `width` / `height` in CSS pixels override the viewport. Text-only models receive a note instead of the image.",
+    "Render the current page to a PNG and attach it to this result as an image you can look at: use it to check layout, styling or anything text cannot show. Optional `width` / `height` in CSS pixels override the viewport. A text-only model gets the vision fallback's description or a note instead of the image.",
     |ctx, a, cx| {
         let args = compact(json!({ "width": a.width, "height": a.height }));
         let result = match ctx.raw(cx.session, "browser_screenshot", args).await? {

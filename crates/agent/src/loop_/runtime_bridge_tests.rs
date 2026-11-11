@@ -163,7 +163,7 @@ async fn scenarios() {
     // (c) The same name hidden for the session is in neither the index nor
     // the array: refused, not run.
     let mut h = Harness::new(Fake::tool_call("list_dir", &json!({"path": "/"}))).await;
-    h.pool = Some(pool);
+    h.pool = Some(pool.clone());
     registry
         .ask(tools::registry::SetHidden {
             session: h.id,
@@ -182,4 +182,7 @@ async fn scenarios() {
         )]
     );
     assert_eq!(started(&events).len(), 1, "no inner call ran: {events:?}");
+
+    // read-file-images: a picture read inside a python cell takes the 52 path.
+    super::vision_fallback_tests::python_cell_image_takes_the_same_path(pool).await;
 }

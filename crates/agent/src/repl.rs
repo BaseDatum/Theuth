@@ -2132,6 +2132,31 @@ mod tests {
         );
     }
 
+    /// read-file-images: the runtime index shows only [`summary`] (first
+    /// sentence, ≤ [`SUMMARY_CHARS`]); for `read_file` and `read_url` it must
+    /// still say they return images, and the standing guidance says how to
+    /// look at one.
+    #[test]
+    fn index_lines_and_guidance_name_images() {
+        for line in [
+            summary(&tools::Tool::description(&tools::fs::ReadFile)),
+            summary(&web::tools::fetch_description(&[])),
+        ] {
+            assert!(
+                line.contains("image") && line.contains("picture") && !line.ends_with('…'),
+                "{line}"
+            );
+        }
+        let scratch = crate::TestDir::new("image-guidance");
+        let prompt =
+            crate::frame::baseline(&scratch.0, None, "", "", false, None, false, false, false);
+        let guidance = prompt.split("## Guidance").nth(1).unwrap_or_default();
+        assert!(
+            guidance.contains("To look at an image") && guidance.contains("`read_file(path)`"),
+            "{prompt}"
+        );
+    }
+
     /// The footer never outgrows [`FOOTER_CHARS`], whatever the namespace
     /// holds; the overflow is a count, and the hint is the caller's choice.
     #[test]

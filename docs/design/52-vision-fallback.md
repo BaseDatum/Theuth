@@ -782,3 +782,14 @@ usage accounting; a failed config write leaving the live value unchanged
 (`supervisor.rs` tests an unconfigured provider being rejected with nothing
 written); an unavailable saved selection rendered as unavailable rather than
 Off. §10's gates for those rows remain open.
+
+## 12. Amendment (2026-11-11): read_file images, provider refusal
+
+[52-notes-read-file-images](52-notes-read-file-images.md) records the
+change. In short: `read_file`/`read_url` return pictures through the
+`ToolOutput.files` path; every attachment and tool image passes one
+ingress guard (MIME from bytes, decoded, scaled into provider limits); and
+§4.1's "not provider-error recovery" gains one narrow exception — a round
+call refused with a 400/415/422 that says the model takes no images marks
+that model text-only for the session (local table `image_refusals`) and retries
+the round once through this design's text-only path.

@@ -24740,6 +24740,7 @@ dependencies = [
  "flate2",
  "futures",
  "html-to-markdown-rs",
+ "image",
  "kameo",
  "rand 0.10.3",
  "reqwest 0.13.5",

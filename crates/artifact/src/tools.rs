@@ -166,7 +166,8 @@ impl Tool for ReadTool {
         "Read a saved artifact by its call_id. Line 1 is a header `[artifact_read \"<title>\" (<name> v<N> of <M>, \
          <kind>, <size>, shown <date> in session \"…\"): …]` — a newer version is named there. Text kinds and \
          PDFs/documents (rendered as Markdown) page like `read_file`: first 2000 lines, then `offset`/`limit`, \
-         `tail` or `ranges`. Images come back as pictures, archives as their listing, apps as their source; a \
+         `tail` or `ranges`. Images come back as pictures (a text-only model gets the vision fallback's \
+         description or a note instead), archives as their listing, apps as their source; a \
          markdown artifact bound to a document names its document id for `doc_read`/`doc_replace`."
             .into()
     }

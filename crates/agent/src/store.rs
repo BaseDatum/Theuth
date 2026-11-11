@@ -1389,6 +1389,43 @@ impl Store {
             .transpose()?)
     }
 
+    /// Remember that `model`'s provider refused image input in session `id`
+    /// (read-file-images notes §2), so a resumed session never sends that
+    /// model an image. A local table: the session log does not replicate it.
+    pub async fn refuse_images(&self, id: SessionId, model: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("INSERT OR IGNORE INTO image_refusals (session, model) VALUES (?, ?)")
+            .bind(id.to_string())
+            .bind(model)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Forget [`Store::refuse_images`] for `model` in session `id`: the user
+    /// re-picked the model, or the refusal turned out not to be one.
+    pub async fn allow_images(&self, id: SessionId, model: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM image_refusals WHERE session = ? AND model = ?")
+            .bind(id.to_string())
+            .bind(model)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The model ids recorded by [`Store::refuse_images`].
+    pub async fn image_refusals(&self, id: SessionId) -> anyhow::Result<Vec<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT model FROM image_refusals WHERE session = ? ORDER BY model")
+                .bind(id.to_string())
+                .fetch_all(&self.read)
+                .await?,
+        )
+    }
+
     /// Mark `id` as an external harness session: `agent` is the `agents.yaml`
     /// key, `cwd` the harness's working directory (design doc 06 §3.6),
     /// `skills` the theuth skills named for it (75 §10: replayed by a resume).
@@ -2637,6 +2674,15 @@ impl Store {
         .bind(&new)
         .execute(&mut *tx)
         .await?;
+        // read-file-images: a model that refused images still refuses them in the fork.
+        sqlx::query(
+            "INSERT OR IGNORE INTO image_refusals (session, model) \
+             SELECT ?1, model FROM image_refusals WHERE session = ?2",
+        )
+        .bind(&new)
+        .bind(&old)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -3110,6 +3156,11 @@ impl Store {
                 .await?;
             // 176 E2: the roster's cached last reply.
             sqlx::query("DELETE FROM last_texts WHERE session = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
+            // read-file-images: the session's remembered image refusals.
+            sqlx::query("DELETE FROM image_refusals WHERE session = ?")
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;
