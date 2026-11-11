@@ -227,8 +227,13 @@ are rewritten on every start.
   look at. `browser_show` opens a live view of your browser on the user's
   screen (desktop app only): use it when they ask to watch, when a page
   needs their eyes, or before a long browse they may want to follow.
-  `localhost` and private addresses are reachable by default; set
-  `browser.allow_private_network: false` in config to block them.
+  `localhost`, LAN addresses and `.local` names are reachable by default,
+  for the browser and the web tools (`read_url`, `http_request`,
+  `scrape_url`, `crawl`, `map_site`, `site_*`) alike: one setting,
+  Settings › Network › Local network access (`web.allow_private_network`
+  and `browser.allow_private_network`), turns them off. Cloud metadata
+  endpoints never answer, and a contact's turn never reaches this machine's
+  network, whatever the setting.
 - `read_url` tells you when a page is a wall: a result that starts with
   `ISSUE:` names the kind and the next rung — `rendered: true`, then
   `browser_import_cookies`, then `desktop_handoff`; do not quote the wall as

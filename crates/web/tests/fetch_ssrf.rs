@@ -38,11 +38,11 @@ async fn rejects_ip_literals_localhost_credentials_and_schemes() {
         "data:text/plain,x",
         "/relative",
     ] {
-        let err = check_url(s).await.expect_err(s);
+        let err = check_url(s, false).await.expect_err(s);
         assert!(matches!(err, FetchError::Rejected(_)), "{s}: {err}");
     }
     assert!(
-        check_url("https://user:pass@example.com/a")
+        check_url("https://user:pass@example.com/a", false)
             .await
             .unwrap_err()
             .to_string()
@@ -52,11 +52,13 @@ async fn rejects_ip_literals_localhost_credentials_and_schemes() {
 
 #[tokio::test]
 async fn allows_public_ip_literal() {
-    check_url("http://93.184.216.34/").await.expect("public ip");
-    assert!(!is_blocked_hostname("example.com"));
-    assert!(!is_blocked_ip("8.8.8.8".parse().unwrap()));
-    assert!(is_blocked_ip("169.254.169.254".parse().unwrap()));
-    assert!(is_blocked_ip("100.64.1.1".parse().unwrap()));
+    check_url("http://93.184.216.34/", false)
+        .await
+        .expect("public ip");
+    assert!(!is_blocked_hostname("example.com", false));
+    assert!(!is_blocked_ip("8.8.8.8".parse().unwrap(), false));
+    assert!(is_blocked_ip("169.254.169.254".parse().unwrap(), false));
+    assert!(is_blocked_ip("100.64.1.1".parse().unwrap(), false));
 }
 
 #[tokio::test]
@@ -74,7 +76,7 @@ async fn internal_suffixes_nat64_and_reserved_v4_are_refused() {
         "intranet",
         "Build.CORP.",
     ] {
-        assert!(is_blocked_hostname(h), "{h}");
+        assert!(is_blocked_hostname(h, false), "{h}");
     }
     for h in [
         "corporate.example.com",
@@ -82,30 +84,36 @@ async fn internal_suffixes_nat64_and_reserved_v4_are_refused() {
         "internal-tools.example.org",
         "example.corp.com",
     ] {
-        assert!(!is_blocked_hostname(h), "{h}");
+        assert!(!is_blocked_hostname(h, false), "{h}");
     }
     // NAT64 carries the embedded IPv4: loopback refused, a public address not.
-    assert!(is_blocked_ip("64:ff9b::7f00:1".parse().unwrap()));
-    assert!(is_blocked_ip("64:ff9b::a00:1".parse().unwrap()), "10.0.0.1");
+    assert!(is_blocked_ip("64:ff9b::7f00:1".parse().unwrap(), false));
     assert!(
-        !is_blocked_ip("64:ff9b::808:808".parse().unwrap()),
+        is_blocked_ip("64:ff9b::a00:1".parse().unwrap(), false),
+        "10.0.0.1"
+    );
+    assert!(
+        !is_blocked_ip("64:ff9b::808:808".parse().unwrap(), false),
         "8.8.8.8"
     );
     // 183 Z3-R3: 6to4 and Teredo tunnel to an IPv4 address: refused; other 2001:: stays open.
     assert!(
-        is_blocked_ip("2002:7f00:1::1".parse().unwrap()),
+        is_blocked_ip("2002:7f00:1::1".parse().unwrap(), false),
         "6to4 of 127.0.0.1"
     );
     assert!(
-        is_blocked_ip("2001:0:4136:e378::1".parse().unwrap()),
+        is_blocked_ip("2001:0:4136:e378::1".parse().unwrap(), false),
         "Teredo"
     );
-    assert!(!is_blocked_ip("2001:4860:4860::8888".parse().unwrap()));
+    assert!(!is_blocked_ip(
+        "2001:4860:4860::8888".parse().unwrap(),
+        false
+    ));
     // 240.0.0.0/4 reserved.
-    assert!(is_blocked_ip("240.0.0.1".parse().unwrap()));
-    assert!(is_blocked_ip("250.1.2.3".parse().unwrap()));
+    assert!(is_blocked_ip("240.0.0.1".parse().unwrap(), false));
+    assert!(is_blocked_ip("250.1.2.3".parse().unwrap(), false));
     assert!(
-        !is_blocked_ip("223.255.255.254".parse().unwrap()),
+        !is_blocked_ip("223.255.255.254".parse().unwrap(), false),
         "just below 240/4"
     );
     for s in [
@@ -114,7 +122,7 @@ async fn internal_suffixes_nat64_and_reserved_v4_are_refused() {
         "http://git.internal/",
         "http://nas.home.arpa/",
     ] {
-        let err = check_url(s).await.expect_err(s);
+        let err = check_url(s, false).await.expect_err(s);
         assert!(matches!(err, FetchError::Rejected(_)), "{s}: {err}");
     }
 }
@@ -152,6 +160,144 @@ async fn redirect_to_private_is_rejected_on_the_hop() {
         .await
         .unwrap_err();
     assert!(matches!(err, FetchError::Rejected(_)), "got {err}");
+}
+
+/// 16 §5 (2026-11-11): `private` admits the local network (literals and names); cloud
+/// metadata, unspecified, broadcast, multicast, the reserved ranges, other schemes and
+/// credentials stay refused.
+#[tokio::test]
+async fn private_admits_the_local_network_never_metadata() {
+    for ip in [
+        "127.0.0.1",
+        "::1",
+        "10.1.2.3",
+        "172.16.0.1",
+        "192.168.8.123",
+        "100.64.0.1",
+        "169.254.1.1",
+        "fc00::1",
+        "fe80::1",
+        "::ffff:192.168.1.1",
+    ] {
+        let ip = ip.parse().unwrap();
+        assert!(!is_blocked_ip(ip, true), "{ip} on");
+        assert!(is_blocked_ip(ip, false), "{ip} off");
+    }
+    for ip in [
+        "169.254.169.254",
+        "169.254.170.2",
+        "100.100.100.200",
+        "fd00:ec2::254",
+        "::ffff:169.254.169.254",
+        "64:ff9b::a9fe:a9fe",
+        "0.0.0.0",
+        "::",
+        "255.255.255.255",
+        "224.0.0.1",
+        "ff02::1",
+        "240.0.0.1",
+        "2002:7f00:1::1",
+    ] {
+        assert!(is_blocked_ip(ip.parse().unwrap(), true), "{ip}");
+    }
+    for h in [
+        "localhost",
+        "Foo.Localhost",
+        "service.local",
+        "printer.lan",
+        "nas.home.arpa",
+        "git.internal",
+    ] {
+        assert!(!is_blocked_hostname(h, true), "{h}");
+    }
+    for h in [
+        "metadata.google.internal",
+        "metadata",
+        "kubernetes.default",
+        "kubernetes.default.svc.cluster.local",
+    ] {
+        assert!(is_blocked_hostname(h, true), "{h}");
+    }
+    for s in [
+        "http://192.168.8.123:28499/v1/chat/completions",
+        "http://[fe80::1]/",
+    ] {
+        check_url(s, true).await.expect(s);
+    }
+    for s in [
+        "http://169.254.169.254/latest/meta-data",
+        "http://[fd00:ec2::254]/",
+        "http://metadata.google.internal/",
+        "http://0.0.0.0/",
+        "https://user:pass@127.0.0.1/",
+        "file:///etc/passwd",
+    ] {
+        let err = check_url(s, true).await.expect_err(s);
+        assert!(matches!(err, FetchError::Rejected(_)), "{s}: {err}");
+    }
+}
+
+/// A name whose DNS answer is loopback passes the resolve check only under `private`.
+#[tokio::test]
+async fn private_dns_answer_passes_only_with_the_flag() {
+    check_url("http://localhost:1/", true)
+        .await
+        .expect("localhost on");
+    let err = check_url("http://localhost:1/", false).await.unwrap_err();
+    assert!(err.to_string().contains("not allowed"), "{err}");
+}
+
+/// The fetcher's twin: an owner's scope reaches a loopback server by literal, and follows
+/// its redirect to a loopback *name* (static check, then the guarded resolver); the
+/// metadata endpoint stays refused; a contact's scope and an unscoped call get today's
+/// refusal on the first hop. No test allowlist anywhere.
+#[tokio::test]
+async fn lan_twin_serves_owner_scopes_only() {
+    let server = MockServer::start().await;
+    let port = server.address().port();
+    Mock::given(method("GET"))
+        .and(path("/a"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("http://localhost:{port}/b")),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/b"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("<p>on the lan</p>", "text/html"))
+        .mount(&server)
+        .await;
+    let fetcher = Fetcher::new("theuth-test", 2_097_152, 5)
+        .and_then(|f| f.with_private_network(true))
+        .expect("client");
+    let start = format!("{}/a", server.uri());
+    let r = tools::egress::scope(true, fetcher.fetch(&start, FetchFormat::Text, 4000))
+        .await
+        .expect("owner reaches loopback");
+    assert!(r.content.contains("on the lan"), "{}", r.content);
+    assert!(r.url.ends_with("/b"), "{}", r.url);
+    for s in [
+        "http://169.254.169.254/latest/meta-data",
+        "http://metadata.google.internal/",
+    ] {
+        let err = tools::egress::scope(true, fetcher.fetch(s, FetchFormat::Text, 4000))
+            .await
+            .expect_err(s);
+        assert!(matches!(err, FetchError::Rejected(_)), "{s}: {err}");
+    }
+    let refused = format!("IP address `{}` is not allowed", server.address().ip());
+    for err in [
+        tools::egress::scope(false, fetcher.fetch(&start, FetchFormat::Text, 4000))
+            .await
+            .unwrap_err(),
+        fetcher
+            .fetch(&start, FetchFormat::Text, 4000)
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(err.to_string().contains(&refused), "{err}");
+    }
 }
 
 #[tokio::test]

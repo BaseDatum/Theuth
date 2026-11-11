@@ -14,6 +14,7 @@ import type { NearbyEngine } from '@/rpc/bindings/NearbyEngine'
 import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import type { RotationState } from '@/rpc/bindings/RotationState'
 import type { UnpairPreview } from '@/rpc/bindings/UnpairPreview'
+import type { ConfigFlag, ConfigFlagKey } from '@/rpc/api'
 import { MachineTab, MachinesTab, pathChip, relayChip } from './Network'
 import { PairBody, type PairView, pairView, usePairFlow } from './PairDialog'
 import { RotationProgress, UnpairBody, UnpairDialog, useRotation } from './UnpairDialog'
@@ -99,7 +100,11 @@ const PREVIEW: UnpairPreview = {
   old_build: ['cloud'],
   devices: 2,
 }
+/** config.yaml's `allow_private_network` keys; absent = on. */
+const LAN: Partial<Record<ConfigFlagKey, boolean>> = {}
 const api = {
+  config_flag_get: vi.fn(async (key: ConfigFlagKey): Promise<ConfigFlag> => ({ key, enabled: LAN[key] ?? true, running: true, restart_required: !(LAN[key] ?? true) })),
+  config_flag_set: vi.fn(async (key: ConfigFlagKey, on: boolean): Promise<ConfigFlag> => ({ key, enabled: on, running: true, restart_required: !on })),
   mesh_status: vi.fn(async () => MESH),
   mesh_nearby: vi.fn(async (): Promise<NearbyEngine[]> => []),
   mesh_nearby_watch: vi.fn(async () => null),
@@ -183,6 +188,24 @@ test('switches call their RPCs: Agents can message → mesh_set_messaging(id, on
   await vi.waitFor(() => expect(api.mesh_set_nearby).toHaveBeenCalledWith(false))
   expect(api.mesh_set_messaging).toHaveBeenCalledWith('xeus', false)
   expect(api.mesh_set_messaging).toHaveBeenCalledWith('cloud', true)
+})
+
+test('16 §5 Local network access: on only when both allow_private_network keys are; a change writes both', async () => {
+  const lan = /aria-checked="(true|false)" aria-label="Local network access"/
+  LAN['browser.allow_private_network'] = false
+  const off = await render(createElement(MachineTab))
+  expect(off.html.match(lan)?.[1]).toBe('false')
+  expect(off.html).toContain('Contacts&#x27; turns never can.')
+  expect(off.html).toContain('Applies after theuth restarts.')
+  delete LAN['browser.allow_private_network']
+  const on = await render(createElement(MachineTab))
+  expect(on.html.match(lan)?.[1]).toBe('true')
+  expect(on.html).not.toContain('Applies after theuth restarts.')
+  handlers['Local network access']!(false as never)
+  await vi.waitFor(() => expect(api.config_flag_set).toHaveBeenCalledTimes(2))
+  expect(api.config_flag_set).toHaveBeenCalledWith('web.allow_private_network', false)
+  expect(api.config_flag_set).toHaveBeenCalledWith('browser.allow_private_network', false)
+  expect(on.paint().match(lan)?.[1]).toBe('false')
 })
 
 test('Nearby: empty, then the rows a MeshEvent.nearby carries, each with Pair…', async () => {

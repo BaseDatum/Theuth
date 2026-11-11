@@ -188,8 +188,9 @@ pub fn fetch_description(metas: &[ProviderMeta]) -> String {
          omitted sections. A page behind a bot wall, login or consent screen starts with `ISSUE:` \
          and names the next rung (rendered: true, browser_import_cookies, desktop_handoff). Known \
          hosts (HN, Reddit, npm, PyPI, crates.io, arXiv, Wikipedia, Stack Overflow) are read from \
-         their JSON API unless source: page. Private, loopback and link-local destinations are \
-         refused.",
+         their JSON API unless source: page. Cloud metadata endpoints are always refused; \
+         loopback and LAN destinations are refused when local network access is off and in a \
+         contact's turn.",
     );
     match metas.iter().find(|m| m.renders) {
         Some(m) => {
@@ -468,6 +469,8 @@ impl Tool for SearchTool {
             let budget = Duration::from_millis(cfg.read_budget_ms.max(1));
             let render_cap = Duration::from_millis(cfg.render_cap_ms.max(1));
             let activity = activity::current();
+            // The reads run in spawned tasks: carry this call's local-network grant.
+            let lan = tools::egress::lan();
             let mut set = JoinSet::new();
             for (i, url) in inflight.iter().enumerate() {
                 let fut = read_page(
@@ -480,7 +483,7 @@ impl Tool for SearchTool {
                     render_cap,
                     budget,
                 );
-                set.spawn(async move { (i, fut.await) });
+                set.spawn(tools::egress::scope(lan, async move { (i, fut.await) }));
             }
             let phase = Instant::now();
             let mut finished: Vec<Option<ReadPage>> = vec![None; inflight.len()];
@@ -565,7 +568,7 @@ impl Tool for FetchTool {
         };
         let format = a.format.unwrap_or_default();
         let resp = if a.rendered.unwrap_or(false) {
-            let url = match check_url(&a.url).await {
+            let url = match check_url(&a.url, self.fetcher.reaches_private()).await {
                 Ok(u) => u,
                 Err(e) => return Ok(ToolOutput::err(e.to_string())),
             };

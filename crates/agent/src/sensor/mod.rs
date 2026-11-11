@@ -160,6 +160,9 @@ pub struct SensorProfile {
     pub max_state: usize,
     /// Sensors running at once, harness-wide; 4.
     pub max_concurrent: usize,
+    /// `web.allow_private_network`: a sensor's `http_request` may reach the
+    /// local network (sensors are the owner's); `true` like the web default.
+    pub allow_private_network: bool,
 }
 
 impl Default for SensorProfile {
@@ -172,6 +175,18 @@ impl Default for SensorProfile {
             max_payload: 4 << 10,
             max_state: 16 << 10,
             max_concurrent: 4,
+            allow_private_network: true,
+        }
+    }
+}
+
+impl SensorProfile {
+    /// The default profile under `rt`'s `web.allow_private_network`.
+    pub fn for_runtime(rt: &runtime::Runtime) -> Self {
+        let web: web::WebConfig = rt.section("web").unwrap_or_default();
+        Self {
+            allow_private_network: web.allow_private_network,
+            ..Self::default()
         }
     }
 }
@@ -1423,6 +1438,55 @@ mod tests {
             );
             let res = r.check(&meta, &a, &Value::Null, Some(&cwd), t).await;
             assert_eq!(res.is_ok(), ok, "{n} calls: {res:?}");
+        }
+    }
+
+    /// 16 §5 (2026-11-11): a sensor's `http_request` follows `web.allow_private_network`
+    /// (its profile): on, a GET to a loopback server answers; off, today's refusal.
+    #[tokio::test]
+    async fn sensor_http_follows_the_private_network_flag() {
+        use wiremock::matchers::{method, path};
+        let Some(pool) = worker_pool().await else {
+            return;
+        };
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/lan"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("on the lan"))
+            .mount(&server)
+            .await;
+        let src = format!(
+            "async def check(s, a):\n    try:\n        r = await http_request(\"{}/lan\", \"GET\", None, None)\n        return {{\"fire\": True, \"payload\": str(r[\"body\"])}}\n    except RuntimeError as e:\n        return {{\"fire\": False, \"payload\": str(e)}}\n",
+            server.uri()
+        );
+        for (on, fire, want) in [
+            (true, true, "on the lan".to_owned()),
+            (
+                false,
+                false,
+                format!("IP address `{}` is not allowed", server.address().ip()),
+            ),
+        ] {
+            let scratch = crate::TestDir::new(&format!("sensor-lan-{on}"));
+            let profile = SensorProfile {
+                allow_private_network: on,
+                ..SensorProfile::default()
+            };
+            let r = SensorRunner::new(scratch.0.clone(), Some(Arc::clone(&pool)), None, profile);
+            r.install_builtins().unwrap();
+            let meta = put(&r, "lan.py", &src);
+            let run = r
+                .check(
+                    &meta,
+                    &args(&[]),
+                    &Value::Null,
+                    None,
+                    Duration::from_secs(20),
+                )
+                .await
+                .unwrap();
+            assert_eq!(run.fire, fire, "{on}: {}", run.payload);
+            assert!(run.payload.contains(&want), "{on}: {}", run.payload);
         }
     }
 

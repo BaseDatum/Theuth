@@ -1359,6 +1359,8 @@ impl ToolRegistry {
         let journal = self.journal.clone();
         let resources = self.resources_for(call.session);
         let inflight = self.inflight.clone();
+        // 16 §5 (2026-11-11): only an owner's call may reach the local network.
+        let lan = !self.contact_scoped(call.session);
         let kind = Kind::Invoke {
             tool: call.name.clone(),
             call_id: call.id.clone(),
@@ -1404,6 +1406,7 @@ impl ToolRegistry {
                     journal,
                     promote_after,
                     inflight,
+                    lan,
                 ))
                 .await;
             drop(running);
@@ -1957,6 +1960,7 @@ async fn invoke(
     journal: Arc<dyn Journal>,
     promote_after: Option<Duration>,
     inflight: Arc<Mutex<HashMap<(SessionId, String), CancellationToken>>>,
+    lan: bool,
 ) -> ToolOutput {
     let session = call.session;
     let call_id = call.id.clone();
@@ -2021,13 +2025,15 @@ async fn invoke(
     // `started` before the body runs.
     journal.call_started(session, &call_id).await;
     // Own task so a panicking tool is an error output, not a dead registry.
-    // Task-locals do not cross `spawn`: re-enter both scopes on the spawned
+    // Task-locals do not cross `spawn`: re-enter the scopes on the spawned
     // future, so the body sees `current()` (a panic there marks the operation
-    // unknown) and a gated tool reads *this* admission at dispatch rather than
-    // a fresh generation minted by an off→on since the check above (50 §8).
-    let body = activity.scope(communication::scope(admitted, async move {
-        tool.call(call.args, cx).await
-    }));
+    // unknown), a gated tool reads *this* admission at dispatch rather than
+    // a fresh generation minted by an off→on since the check above (50 §8),
+    // and the web tools read the session's `egress::lan()`.
+    let body = activity.scope(communication::scope(
+        admitted,
+        crate::egress::scope(lan, async move { tool.call(call.args, cx).await }),
+    ));
     let key = (session, call_id.clone());
     lock(&inflight).insert(key.clone(), cancel.clone());
     let mut handle = tokio::spawn(body);
@@ -3490,6 +3496,64 @@ pub(crate) mod tests {
             reg.ask(Allowlisted(chat, locals())).await.unwrap(),
             locals()
         );
+    }
+
+    /// 16 §5 (2026-11-11): the web tools reach the local network only in an owner's call.
+    /// A contact's turn in a shared chat, a contact's inbox and its subagent run with
+    /// `egress::lan()` false; the chat is the owner's again once the turn ends; a caller
+    /// outside any registry scope is treated as a contact.
+    #[tokio::test]
+    async fn only_owner_calls_may_reach_the_local_network() {
+        struct Probe;
+        #[async_trait::async_trait]
+        impl Tool for Probe {
+            const NAME: &'static str = "read_url";
+            const RISK: Risk = Risk::ReadOnly;
+            type Args = serde_json::Value;
+            fn description(&self) -> String {
+                String::new()
+            }
+            async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+                Ok(ToolOutput::ok(crate::egress::lan().to_string()))
+            }
+        }
+        let reg = registry(vec![Arc::new(Probe)], None);
+        let lan = |s: SessionId| {
+            let reg = reg.clone();
+            async move { reg.ask(Invoke(call("read_url", s))).await.unwrap().content }
+        };
+        let (owner, inbox, child, chat) = (
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+        );
+        reg.tell(SetParent {
+            session: child,
+            parent: inbox,
+        })
+        .await
+        .unwrap();
+        reg.tell(SetAllowOnly {
+            session: inbox,
+            tools: Some(vec!["read_url".into()]),
+            turn: false,
+        })
+        .await
+        .unwrap();
+        let turn = |tools: Option<Vec<String>>| SetAllowOnly {
+            session: chat,
+            tools,
+            turn: true,
+        };
+        reg.tell(turn(Some(vec!["read_url".into()]))).await.unwrap();
+        assert_eq!(lan(owner).await, "true");
+        for s in [inbox, child, chat] {
+            assert_eq!(lan(s).await, "false", "{s}");
+        }
+        reg.tell(turn(None)).await.unwrap();
+        assert_eq!(lan(chat).await, "true");
+        assert!(!crate::egress::lan());
     }
 
     /// 183 Z4 (W-40): an allowlist holds only what a contact may ever be granted, whoever sent

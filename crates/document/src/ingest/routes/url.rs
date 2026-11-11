@@ -15,7 +15,7 @@ pub const DEADLINE: Duration = Duration::from_secs(120);
 pub async fn preflight(url: &str) -> anyhow::Result<(SourceOrigin, Option<String>)> {
     let url = url.trim().to_owned();
     let canonical = web::url::canonicalize(&url).map(|c| c.key);
-    let refusal = match web::fetch::check_url(&url).await {
+    let refusal = match web::fetch::check_url(&url, false).await {
         Ok(_) => None,
         Err(web::fetch::FetchError::Rejected(why)) => Some(format!("{REFUSED} ({why})")),
         Err(web::fetch::FetchError::Failed(why)) => anyhow::bail!("{why}"),

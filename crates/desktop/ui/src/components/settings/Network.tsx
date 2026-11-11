@@ -4,6 +4,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { CLASS } from '@/components/chat/NewChatPane'
+import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
 import { Editable } from '@/components/settings/Link'
 import { VaultWarning, usePairFlow } from '@/components/settings/PairDialog'
 import { Dot, Empty, RenameInput, Row, Section, useAction } from '@/components/settings/shared'
@@ -53,6 +54,8 @@ const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.me
 const NODE_EVENTS = ['NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked'] as const satisfies readonly NodeEvent['type'][]
 const NEARBY_SWITCH = 'Let nearby machines find this one while pairing'
 const HUB = <span className="rounded-full bg-layer-3 px-1.5 text-xs text-fg-secondary">hub</span>
+/** 16 §5 (2026-11-11): one switch, both keys; on only when both are. */
+const LAN_KEYS = ['web.allow_private_network', 'browser.allow_private_network'] as const
 
 /**
  * 188 Settings › Network › This machine (183 §6.7): its name, id and paths and the Nearby switch, then the mesh rows
@@ -189,6 +192,12 @@ function ThisMachine({ s, managing }: { s: MeshStatus; managing: string | null }
       <Row label={NEARBY_SWITCH} description="Announces this machine on your LAN via mDNS while a pairing window is open.">
         <Switch aria-label={NEARBY_SWITCH} checked={nearby.isPending ? nearby.variables : s.nearby} disabled={nearby.isPending} onCheckedChange={(v) => nearby.mutate(v)} />
       </Row>
+      <ConfigFlagRow
+        flag={LAN_KEYS}
+        name="Local network access"
+        label="Local network access"
+        description="Web tools and the browser can reach localhost, LAN addresses and .local names. Contacts' turns never can."
+      />
     </Section>
   )
 }

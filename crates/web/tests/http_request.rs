@@ -265,3 +265,50 @@ async fn cross_origin_redirect_never_carries_a_custom_header() {
     assert!(out.is_error, "{}", out.content);
     assert!(out.structured.is_none(), "{}", out.content);
 }
+
+/// `POST url` with a small JSON body through `t`.
+async fn post(t: &HttpRequestTool, url: &str) -> ToolOutput {
+    t.call(
+        args("POST", url.to_owned(), &[], Some(json!({"model": "m"}))),
+        cx(),
+    )
+    .await
+    .expect("call")
+}
+
+/// 16 §5 (2026-11-11): with `web.allow_private_network` on (the twin built) an owner's call
+/// reaches a loopback server with no test allowlist; a contact's turn (`egress` scope
+/// `false`) and an unscoped caller are refused with the guard's message, the server
+/// untouched; with the key off the owner is refused too.
+#[tokio::test]
+async fn local_network_reaches_owners_only_and_follows_the_flag() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"ok":true}"#, "application/json"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let lan = |on: bool| HttpRequestTool {
+        fetcher: Arc::new(
+            Fetcher::new_with_timeouts("theuth-test", MAX_BYTES, 5, TIMEOUT, CONNECT_TIMEOUT)
+                .and_then(|f| f.with_private_network(on))
+                .expect("client"),
+        ),
+        deadline: TIMEOUT,
+    };
+    let url = format!("{}/v1/chat/completions", server.uri());
+    let refused = format!("IP address `{}` is not allowed", server.address().ip());
+    let (on, off) = (lan(true), lan(false));
+    for out in [
+        tools::egress::scope(false, post(&on, &url)).await,
+        post(&on, &url).await,
+        tools::egress::scope(true, post(&off, &url)).await,
+    ] {
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains(&refused), "{}", out.content);
+    }
+    let out = tools::egress::scope(true, post(&on, &url)).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(structured(&out).body, json!({"ok": true}));
+}

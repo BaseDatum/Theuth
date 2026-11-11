@@ -3274,7 +3274,7 @@ impl runtime::Plugin for SchedulePlugin {
         let timeout = Duration::from_secs(cfg.run_timeout_secs);
         // 40 §4.2: the sensor-profile pool; the worker is this binary (`t subprocess`,
         // 08 §9) as for the main runtime. Without it Monty sensors are `Unavailable`.
-        let profile = agent::sensor::SensorProfile::default();
+        let profile = agent::sensor::SensorProfile::for_runtime(&rt);
         let pool = match std::env::current_exe() {
             Ok(exe) => agent::repl::open_pool(&exe, profile.max_concurrent).await,
             Err(e) => {

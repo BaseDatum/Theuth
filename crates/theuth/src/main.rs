@@ -958,6 +958,9 @@ agent:
 #   recent_default: null     # day | week | month | year applied when a call passes none
 #   keyless_fallback: true   # false: built-ins run only when no external provider serves the category
 #   degraded_is_error: false # true: a degraded search (no external, <= 1 general engine) is an error result
+#   allow_private_network: true    # read_url / http_request / scrape_url / crawl / map_site / site_*: false blocks
+#                            # localhost / RFC1918 / CGNAT / link-local / .local again; metadata endpoints and
+#                            # contacts' turns never reach the local network. Settings > Network > Local network access
 
 # scrape:                    # scrape_url / crawl / map_site (design doc 38)
 #   concurrency: 5
@@ -998,7 +1001,7 @@ agent:
 
 # browser:                   # embedded headless browser, browser_* tools (design doc 23)
 #   enabled: true
-#   allow_private_network: true    # false blocks localhost / RFC1918 / link-local again
+#   allow_private_network: true    # false blocks localhost / RFC1918 / link-local again (Settings > Network)
 #   import_cookies: false    # adds browser_list_profiles + browser_import_cookies:
 #                            # the agent loads the user's real browser cookies and acts as them (§7)
 

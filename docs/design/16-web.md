@@ -517,6 +517,27 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   44 §0.6) beside `fetch`/`fetch_html`: same per-hop SSRF guard; non-2xx is
   `Ok`; 301/302/303 → GET, 307/308 keep method and body. `routes` replays
   learned routes through it.
+- **Amendment 2026-11-11: the local network is reachable by default.** The
+  guard was "not configurable off" and refused every non-global address, so
+  `http_request` to a LAN model server (`192.168.8.123:28499`) failed while
+  the browser (23 §0.8) already reached it. `web.allow_private_network`
+  (default `true`) now admits loopback, RFC 1918, CGNAT `100.64/10`,
+  link-local, IPv6 ULA / link-local and the internal names (`localhost`,
+  `.local`, `.lan`, `.internal`, `.home.arpa`, `.intranet`, `.corp`), for IP
+  literals, DNS answers and every redirect hop; `false` is the old guard
+  exactly. Always refused: the metadata endpoints (`169.254.169.254`,
+  `169.254.170.2`, `100.100.100.200`, `fd00:ec2::254`, `metadata`,
+  `metadata.google.internal`, `kubernetes.default*`), unspecified,
+  broadcast, multicast, the reserved/documentation/tunnel ranges, other
+  schemes, credentials in URLs. The `Fetcher` keeps its public-only clients
+  and builds a second set whose `GuardedResolver` admits private answers (so
+  DNS rebinding protection and pooled connections never cross); a call runs
+  on it only inside `tools::egress::scope(true, …)`, which the registry
+  installs for every tool body as `!contact_scoped(session)` (183 Z3-R2).
+  A contact's turn in a shared chat, a contact's inbox and its subagents,
+  and any caller outside a registry scope are public-only whatever the key
+  says. Settings › Network › Local network access writes this key and
+  `browser.allow_private_network` together; both apply at restart.
 
 ## 6. Config and credentials
 

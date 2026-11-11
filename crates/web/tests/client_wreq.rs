@@ -22,6 +22,7 @@ fn cfg() -> ClientConfig {
         connect_timeout: Duration::from_secs(2),
         read_timeout: Duration::from_secs(5),
         max_body: MIB,
+        private: false,
     }
 }
 

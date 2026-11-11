@@ -347,8 +347,8 @@ export type PermissionStatus = {
   note: string
 }
 
-/** 188: the four `enabled` flags Settings could only describe, never change. */
-export type ConfigFlagKey = 'decision.enabled' | 'a2a.enabled' | 'computer.enabled' | 'double.enabled'
+/** 188: the config flags Settings could only describe, never change: four `enabled` and the two `allow_private_network` keys behind Local network access (16 §5). */
+export type ConfigFlagKey = 'decision.enabled' | 'a2a.enabled' | 'computer.enabled' | 'double.enabled' | 'web.allow_private_network' | 'browser.allow_private_network'
 
 /** 188: a flag as config.yaml has it (`enabled`) and as the running engine started with it (`running`); they differ until theuth restarts. */
 export type ConfigFlag = {
@@ -442,7 +442,7 @@ export interface Api {
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
   computer_permissions(): Promise<PermissionStatus>
-  /** 188: one of the four flags with no other write path: its config.yaml value and the running engine's. */
+  /** 188: one of the flags with no other write path: its config.yaml value and the running engine's. */
   config_flag_get(key: ConfigFlagKey): Promise<ConfigFlag>
   /** 188: write `key: on` into config.yaml (the rest of the file untouched); the engine keeps running with its old value until it restarts. */
   config_flag_set(key: ConfigFlagKey, on: boolean): Promise<ConfigFlag>
