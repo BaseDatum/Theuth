@@ -73,6 +73,9 @@ internal sealed record AnswerCardContent
     /// <summary>The status line pulses (thinking never looks frozen, §12.4).</summary>
     public bool Busy { get; init; }
 
+    /// <summary>192w P3: the model's reasoning — a live "Thinking" section in place of the bare spinner, then "Thought for N s"; null when none came.</summary>
+    public ThinkingView? Thinking { get; init; }
+
     public IReadOnlyList<ToolChip> Chips { get; init; } = Array.Empty<ToolChip>();
 
     public IReadOnlyList<CardStepRow> Steps { get; init; } = Array.Empty<CardStepRow>();
@@ -134,6 +137,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     private readonly StackPanel content;
     private AnswerCardContent model = new();
     private ScreenMonitor? anchor;
+    private bool thinkingExpanded;
     private TextBox? followUp;
     private string followUpDraft = "";
     private string? material;
@@ -170,6 +174,9 @@ internal sealed partial class AnswerCardWindow : ToolWindow
 
     /// <summary>The one instance (created on first use on the UI thread).</summary>
     public static AnswerCardWindow Shared() => shared ??= new AnswerCardWindow();
+
+    /// <summary>192w P2: the pictures of the replies on screen (the Store's cache): every closed picture fence of the answer asks it for its PNG. Set once at startup.</summary>
+    public static PictureCache? Pictures { get; set; }
 
     /// <summary>The instance if one was created.</summary>
     public static AnswerCardWindow? Instance => shared;
@@ -210,6 +217,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     {
         Generation++;
         Owner = owner;
+        thinkingExpanded = false; // 192w: a new request starts with the thinking folded
         if (!keepPlace || anchor is null)
         {
             var all = ScreenMonitor.All();
@@ -363,6 +371,18 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         }
         if (c.Steps.Count > 0) content.Children.Add(Steps(c, theme));
         if (c.Approval is { } box) content.Children.Add(Approval(box, theme));
+        if (c.Thinking is { } thought)
+        {
+            // 192w P3: live → "Thinking" with ≈ 6 lines of the newest reasoning; folded → "Thought for N s ›" holding all of it.
+            var section = new ThinkingSection(() => theme, thinkingExpanded);
+            section.Toggled += open =>
+            {
+                thinkingExpanded = open;
+                Place();
+            };
+            section.Set(thought);
+            content.Children.Add(section);
+        }
         var bodyText = Expanded ? c.Body : (c.Collapsed.Length > 0 ? c.Collapsed : c.Body);
         if (bodyText.Length > 0)
         {
@@ -562,7 +582,8 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     private FrameworkElement Status(AnswerCardContent c, ElementTheme theme)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        if (c.Busy) row.Children.Add(new ProgressRing { IsActive = true, Width = 12, Height = 12, MinWidth = 12, MinHeight = 12 });
+        // 192w P3: while the reasoning text is on screen it is the sign of life — no bare spinner next to it.
+        if (c.Busy && c.Thinking is not { Active: true }) row.Children.Add(new ProgressRing { IsActive = true, Width = 12, Height = 12, MinWidth = 12, MinHeight = 12 });
         string key = c.Tone switch
         {
             CardTone.Failed => NativeLook.Critical,
@@ -615,7 +636,16 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     /// </summary>
     private FrameworkElement Markdown(string markdown, ElementTheme theme)
     {
-        var view = new MarkdownView(() => theme, 13.5);
+        var view = new MarkdownView(() => theme, 13.5)
+        {
+            Pictures = Pictures,
+            PictureWidth = () => CardWidth - 28 - 14, // the card's 14 + 14 padding and the body scroll viewer's bar
+            RasterScale = () => host.XamlRoot?.RasterizationScale ?? 1,
+        };
+        view.OpenRequested += () =>
+        {
+            if (model.OpenUrl is { } url) _ = Links.Open(new Uri(url)); // a picture opens the reply in theuth, as the tool chips do
+        };
         view.Set(markdown, model.Streaming);
         return view;
     }

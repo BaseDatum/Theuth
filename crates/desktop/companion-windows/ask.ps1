@@ -20,6 +20,8 @@
   Flags (run): -AskProbe N → --ask-probe N · -Synthetic → --synthetic-dictation · -Speech "text" → --synthetic-speech
   "text" (underscores become spaces: the build service refuses spaces in args) · -MicProbe N → --mic-probe N · -MixFormat → --mic-mix-format · -Replay → --ask-replay · -Shareable → --shareable ·
   -Ask → --ask (open the bar at launch).
+  192w: -Replay -Pictures ok|fail|mixed|old replays a desk reply with ReasoningDelta chunks and closed json-render + mermaid fences against a stub fence_snapshot (ok: both drawn · fail: no_renderer ·
+  mixed: json-render drawn, mermaid fails · old: -32601) and writes %TEMP%\192w-ask-pictures-{1-thinking,2-drawing,3-drawn,4-finished}.png (w153c-gate.ps1 b64 192w-<name>.png).
   189w: -Replay renders a markdown desk reply cut mid-mark through the real Store path (the catch-up reads a recorded transcript) and writes
   %TEMP%\189w-ask-replay-{1-streaming,2-streaming,3-finished}.png (read them with w153c-gate.ps1 b64 189w-<name>.png); -CatchUp →
   --ask-catchup (load_session against the real engine, logged); -Send "text_with_underscores" → --ask-send (a typed Enter once the desk resolved).
@@ -43,6 +45,7 @@ param(
     [switch] $Ask,
     [switch] $CatchUp,
     [string] $Send = '',
+    [ValidateSet('', 'ok', 'fail', 'mixed', 'old')] [string] $Pictures = '',
     [string] $Pattern = 'dictation|voice|desk|send_input|turn|provider|model|error|warn',
     [int] $Tail = 60
 )
@@ -190,6 +193,7 @@ switch ($Command) {
         if ($MixFormat) { $a += '--mic-mix-format' }
         if ($Replay) { $a += '--ask-replay' }
         if ($CatchUp) { $a += '--ask-catchup' }
+        if ($Pictures) { $a += @('--ask-pictures', $Pictures) } # 192w: with -Replay, the picture stream and a stub fence_snapshot
         if ($Send) { $a += @('--ask-send', ('"' + ($Send -replace '_', ' ') + '"')) } # the build service refuses spaces in args: write_them_like_this
         if ($Shareable) { $a += '--shareable' }
         if ($Ask) { $a += '--ask' }

@@ -17,6 +17,7 @@ namespace Theuth.Companion.Ui;
 /// streamed text is diffed against the previous blocks (<see cref="MdDiff"/>) and only the block being written is touched — updated in
 /// place, its last run's text grown when only that grew — never the whole answer. Streaming mode closes the unclosed marks of the last
 /// block and holds back a bare marker line, so nothing flashes. A <see cref="StackPanel"/> like <c>ReplyField</c>: one UI thread.
+/// 192w: picture fences (<c>json-render</c>, <c>mermaid</c>, <c>openui</c>) are blocks of their own — see MarkdownView.Pictures.cs.
 /// </summary>
 internal sealed partial class MarkdownView : StackPanel
 {
@@ -46,6 +47,7 @@ internal sealed partial class MarkdownView : StackPanel
 
     public void Reset()
     {
+        DisposeWatches();
         Children.Clear();
         signatures.Clear();
         shown.Clear();
@@ -81,12 +83,20 @@ internal sealed partial class MarkdownView : StackPanel
             else
             {
                 var element = Build(block);
-                if (i < Children.Count) Children[i] = element;
+                if (i < Children.Count)
+                {
+                    DisposeWatch(Children[i]);
+                    Children[i] = element;
+                }
                 else Children.Add(element);
                 built++;
             }
         }
-        while (Children.Count > blocks.Count) Children.RemoveAt(Children.Count - 1);
+        while (Children.Count > blocks.Count)
+        {
+            DisposeWatch(Children[^1]);
+            Children.RemoveAt(Children.Count - 1);
+        }
         signatures.Clear();
         signatures.AddRange(sigs);
         shown.Clear();
@@ -132,16 +142,9 @@ internal sealed partial class MarkdownView : StackPanel
                 return grid;
             }
             case MdBlock.Code c:
-            {
-                var t = new TextBlock { FontFamily = Mono, FontSize = size - 0.5, IsTextSelectionEnabled = true, Foreground = Theme.Brush(NativeLook.TextPrimary, theme()), Text = c.Text };
-                return new Border
-                {
-                    Background = Theme.Brush(NativeLook.ControlFill, theme()),
-                    CornerRadius = CardChrome.ControlRadius,
-                    Padding = new Thickness(8, 6, 8, 6),
-                    Child = new ScrollViewer { Content = t, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Enabled },
-                };
-            }
+                return CodeBox(c.Text);
+            case MdBlock.Picture g:
+                return BuildPicture(g);
             default:
             {
                 var t = Text(size, FontWeights.Normal);
@@ -149,6 +152,19 @@ internal sealed partial class MarkdownView : StackPanel
                 return t;
             }
         }
+    }
+
+    /// <summary>A code block: monospace text on a control fill, scrolling sideways instead of wrapping.</summary>
+    private Border CodeBox(string text)
+    {
+        var t = new TextBlock { FontFamily = Mono, FontSize = size - 0.5, IsTextSelectionEnabled = true, Foreground = Theme.Brush(NativeLook.TextPrimary, theme()), Text = text };
+        return new Border
+        {
+            Background = Theme.Brush(NativeLook.ControlFill, theme()),
+            CornerRadius = CardChrome.ControlRadius,
+            Padding = new Thickness(8, 6, 8, 6),
+            Child = new ScrollViewer { Content = t, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Enabled },
+        };
     }
 
     /// <summary>The element of the same kind is kept; its content follows <paramref name="next"/> (the block being written).</summary>
@@ -170,6 +186,9 @@ internal sealed partial class MarkdownView : StackPanel
             }
             case MdBlock.Code c:
                 ((TextBlock)((ScrollViewer)((Border)element).Child).Content).Text = c.Text;
+                break;
+            case MdBlock.Picture g:
+                ShowPicture((PictureHost)element, g);
                 break;
             case MdBlock.Paragraph p:
                 Refill((TextBlock)element, ((MdBlock.Paragraph)before).Inlines, p.Inlines);

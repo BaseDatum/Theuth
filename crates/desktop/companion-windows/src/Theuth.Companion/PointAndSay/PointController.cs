@@ -956,6 +956,15 @@ internal sealed class PointController : IDisposable
                 card.TextDelta(d.Text ?? "", Now);
                 RenderVoice();
                 break;
+            case "ReasoningDelta":
+                // 192w P3: the model's reasoning shows as a "Thinking" section in the card instead of the bare spinner.
+                if (card.ReasoningDelta(d.Text ?? "", Now)) Log.Write($"point: first ReasoningDelta ({(d.Text ?? "").Length} chars) for the desk");
+                RenderVoice();
+                break;
+            case "ReasoningDone":
+                card.ReasoningDone((ulong)Math.Max(0, d.Ms ?? 0));
+                RenderVoice();
+                break;
             case "ToolCallStarted":
                 working = true;
                 toolName = ToolNameOf(json);
@@ -993,7 +1002,7 @@ internal sealed class PointController : IDisposable
                     && SpeakerModel.ShouldSpeak(SpeechSource.VoiceKey, settings().Speak, askSpeak: false, answer, replaying || probing);
                 Log.Write($"point: desk turn finished ({d.StopReason}) — {answer.Length} chars, card {card.Phase.ToString().ToLowerInvariant()}{(commandCard ? $", command {command.Phase.ToString().ToLowerInvariant()} {CommandCard.Summary(command.Current?.Steps ?? Array.Empty<CommandStep>())}" : "")}{(speakIt ? ", speaking" : settings().Speak ? "" : " (Voice key › Speak the answer is off)")}");
                 toolName = null;
-                if (speakIt) speech.Speak(deskSession, answer, SpeechSource.VoiceKey); // final text only, never a partial
+                if (speakIt && PictureFence.StripForVoice(answer) is { Length: > 0 } spoken) speech.Speak(deskSession, spoken, SpeechSource.VoiceKey); // final text only, never a partial; a diagram is not read aloud (192w)
                 RenderVoice();
                 if (state is PointState.Sending) Step(new PointEvent.PanelDone()); // Sending → Replying
                 ArmDone();
@@ -1337,6 +1346,7 @@ internal sealed class PointController : IDisposable
             Status = status,
             Tone = tone,
             Busy = thinking,
+            Thinking = card.Thinking(Now), // 192w P3
             Chips = cmd ? Array.Empty<ToolChip>() : x.Tools,
             Steps = cmd ? StepRows() : Array.Empty<CardStepRow>(),
             StepSummary = null,

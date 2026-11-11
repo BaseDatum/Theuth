@@ -66,6 +66,13 @@ public interface IStoreEngine
     /// (the Ask catch-up). A default member: engines written before 189w (the test fakes) answer "not supported" and the catch-up degrades.
     /// </summary>
     Task<SessionTail> LoadSessionAsync(string session, uint limit) => Task.FromException<SessionTail>(new NotSupportedException("load_session"));
+
+    /// <summary>
+    /// 192w: <c>fence_snapshot(lang, source, width, appearance, scale)</c> — the main app's renderer draws a picture fence to a PNG.
+    /// A default member: engines written before 192 (the test fakes) answer "not supported" and every fence stays code.
+    /// </summary>
+    Task<FenceSnapshot> FenceSnapshotAsync(string lang, string source, int width, string appearance, double scale) =>
+        Task.FromException<FenceSnapshot>(new NotSupportedException("fence_snapshot"));
 }
 
 /// <summary>Timers on the Store's owner thread (the app: <c>DispatcherQueueTimer</c>; tests: virtual time). Dispose cancels.</summary>
@@ -132,4 +139,7 @@ public sealed class RpcStoreEngine(RpcClient client) : IStoreEngine
 
     // 189w
     public Task<SessionTail> LoadSessionAsync(string session, uint limit) => Client.LoadSessionAsync(session, limit);
+
+    // 192w
+    public Task<FenceSnapshot> FenceSnapshotAsync(string lang, string source, int width, string appearance, double scale) => Client.FenceSnapshotAsync(lang, source, width, appearance, scale);
 }

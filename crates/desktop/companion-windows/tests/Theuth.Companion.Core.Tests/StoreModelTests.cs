@@ -64,6 +64,9 @@ internal sealed class FakeEngine : IStoreEngine
     /// <summary>189w: what <c>load_session</c> answers; null = the engine has no such method (the default member's "not supported").</summary>
     public Func<string, uint, Task<SessionTail>>? LoadSession;
 
+    /// <summary>192w: what <c>fence_snapshot</c> answers; null = the engine has no such method (the default member's "not supported").</summary>
+    public Func<string, string, int, string, double, Task<FenceSnapshot>>? Fence;
+
     private Task<T> Reply<T>(string call, T value)
     {
         Calls.Add(call);
@@ -107,6 +110,12 @@ internal sealed class FakeEngine : IStoreEngine
     {
         Calls.Add($"load_session {session} {limit}");
         return LoadSession is { } f ? f(session, limit) : Task.FromException<SessionTail>(new NotSupportedException("load_session"));
+    }
+
+    public Task<FenceSnapshot> FenceSnapshotAsync(string lang, string source, int width, string appearance, double scale)
+    {
+        Calls.Add($"fence_snapshot {lang} {width} {appearance} {scale.ToString(System.Globalization.CultureInfo.InvariantCulture)} {source.Length}");
+        return Fence is { } f ? f(lang, source, width, appearance, scale) : Task.FromException<FenceSnapshot>(new NotSupportedException("fence_snapshot"));
     }
 
     public Task<ValueList<ActivityEntry>> ActivityListAsync(ActivityFilter filter)
