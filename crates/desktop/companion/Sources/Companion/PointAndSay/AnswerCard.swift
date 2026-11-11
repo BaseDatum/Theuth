@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CompanionCore
+import SwiftStreamingMarkdown
 import SwiftUI
 import TheuthKit
 
@@ -126,7 +127,7 @@ struct AnswerCardView: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let q = turn?.question, !q.isEmpty { Text("“\(q)”").font(.body).foregroundColor(.tertiary) }
                 if let c = turn?.command { commandBody(c, compact: false) }
-                else if let text = turn?.text, !text.isEmpty { MarkdownBlocks(text: text, streaming: s.phase == .thinking && s.current == s.turns.count - 1) }
+                else if let text = turn?.text, !text.isEmpty { AnswerMarkdown(text: text) }
                 else if s.phase == .thinking { ProgressView().controlSize(.small).padding(.vertical, 2) }
                 if let tools = turn?.tools, !tools.isEmpty, turn?.command == nil { chips(tools, running: s.phase == .thinking) }
             }
@@ -302,60 +303,74 @@ struct SpeakingGlyph: View {
     }
 }
 
-/// §12.2 markdown: `AttributedString(markdown:)` for inline marks, a tiny block pass for headings, bullets and fenced code.
-struct MarkdownBlocks: View {
+/// §12.2 / 189 D4: the answer body, rendered by SwiftStreamingMarkdown's `DocumentView`. Every text change re-parses the
+/// whole answer off the main actor (the library's snapshot model, `StreamedMarkdownView`'s too) with LaTeX off and the
+/// speculative rewrite on (a half-streamed `**bold` or table renders, not its marks). System fonts and label colours,
+/// citations and the "Select more text" sheet off. 189 F3: the library's fade-in of appended text is on (none under
+/// Reduce Motion); it and the bullets, quote bar and code/table chrome read the library's `Bundle.module`, which loads
+/// from Contents/Resources because the app is built with xcodebuild (`scripts/bundle-companion.sh`, `--probe-markdown`).
+struct AnswerMarkdown: View {
     let text: String
-    var streaming = false
-
-    enum Block: Equatable { case para(String), heading(String), bullet(String), code(String) }
+    /// `--probe-markdown` passes `false`: an off-screen window drives no fade, so the text would stay transparent.
+    var animate = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var document = RenderableDocument.empty
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            let blocks = Self.blocks(text)
-            ForEach(Array(blocks.enumerated()), id: \.offset) { i, b in
-                switch b {
-                case .heading(let t): inline(t).font(.body.weight(.semibold))
-                case .para(let t): inline(t).font(.body)
-                case .bullet(let t): HStack(alignment: .firstTextBaseline, spacing: 6) { Text("•"); inline(t).font(.body) }
-                case .code(let t):
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(t).font(.callout.monospaced()).foregroundColor(.primary).padding(8)
-                    }
-                    .background(RoundedRectangle(cornerRadius: Type.buttonRadius, style: .continuous).fill(Color.primary.opacity(0.06)))
-                }
-            }
+        let config = animate && !reduceMotion ? Self.animated : Self.still
+        DocumentView(renderableDocument: document, config: config)
             .frame(maxWidth: .infinity, alignment: .leading)
-            if streaming { Shimmer() }
-        }
-        .textSelection(.enabled)
-    }
-
-    private func inline(_ t: String) -> Text {
-        Text((try? AttributedString(markdown: t, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(t))
-    }
-
-    /// Lines → blocks: ``` fences, `#` headings, `-`/`*`/`•` bullets, paragraphs joined by blank lines.
-    static func blocks(_ text: String) -> [Block] {
-        var out: [Block] = []
-        var para: [String] = []
-        var code: [String]?
-        func flush() { if !para.isEmpty { out.append(.para(para.joined(separator: " "))); para = [] } }
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                if let c = code { out.append(.code(c.joined(separator: "\n"))); code = nil } else { flush(); code = [] }
-                continue
+            .task(id: text) {
+                let parsed = await Self.parse(text, config: config)
+                if !Task.isCancelled { document = parsed } // a newer snapshot's task replaced this one
             }
-            if code != nil { code?.append(line); continue }
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.isEmpty { flush(); continue }
-            if t.hasPrefix("#") { flush(); out.append(.heading(String(t.drop { $0 == "#" }).trimmingCharacters(in: .whitespaces))); continue }
-            if let m = ["- ", "* ", "• "].first(where: t.hasPrefix) { flush(); out.append(.bullet(String(t.dropFirst(m.count)))); continue }
-            para.append(t)
-        }
-        if let c = code { out.append(.code(c.joined(separator: "\n"))) }
-        flush()
-        return out
+    }
+
+    nonisolated static func parse(_ text: String, config: MarkdownRenderConfig) async -> RenderableDocument {
+        let result = await MarkdownParserImpl().parse(text: text, option: MarkdownParseOption(speculativeRewrite: true, latexMatchingRules: []))
+        return await RenderableDocument(document: result.document, config: config)
+    }
+
+    static let animated = config(animate: true)
+    static let still = config(animate: false)
+
+    /// Every style spelled out: the library's defaults are its own palette (`Color.Theme`), not the system's.
+    static func config(animate: Bool) -> MarkdownRenderConfig {
+        let label = Color(nsColor: .labelColor), secondary = Color(nsColor: .secondaryLabelColor)
+        let separator = Color(nsColor: .separatorColor), fill = Color.primary.opacity(0.06)
+        let body = fonts(.body), small = fonts(.callout), code = fonts(.body, monospaced: true)
+        let text = MarkdownRenderConfig.MarkdownTextStyle(textFonts: body, textColor: label)
+        return MarkdownRenderConfig(
+            shouldAnimateText: animate,
+            blockQuoteStyle: .init(textFonts: body, textColor: secondary),
+            headingStyle: .init(h1Font: fonts(.title3, weight: .semibold), h2Font: fonts(.headline), h3Font: fonts(.body, weight: .semibold),
+                                h4Font: fonts(.body, weight: .semibold), h5Font: fonts(.body, weight: .semibold),
+                                h6Font: fonts(.body, weight: .semibold), textColor: label),
+            orderedListStyle: text,
+            paragraphStyle: text,
+            tableStyle: .init(textFonts: small, headerTextColor: label, regularTextColor: label, headerBackgroundColor: fill,
+                              borderColor: separator, actionButtonColor: .accentColor),
+            inlineStyle: .init(boldTextColor: label, linkTextFont: body.normal, linkTextColor: Color(nsColor: .linkColor),
+                               codeTextFont: code.normal, codeTextColor: label, codeBackgroundColor: fill, codeUnderlineColor: .clear),
+            textContextMenu: nil,
+            citationConfig: .init(isEnabled: false, font: small.normal, textColor: secondary, backgroundColor: .clear),
+            codeBlockConfig: CodeBlockConfig(theme: .xcode, backgroundColor: fill, foregroundColor: secondary,
+                                             codeTextFonts: code, chromeTextFonts: fonts(.caption1)),
+            blockSpacing: 8,
+            textSelectionConfig: TextSelectionConfig(isEnabled: false, backgroundColor: Color(nsColor: .windowBackgroundColor)),
+            thematicBreakColor: separator,
+            imageConfig: .disabled
+        )
+    }
+
+    /// The system font at `style`'s size, with its bold and italic faces.
+    private static func fonts(_ style: NSFont.TextStyle, weight: NSFont.Weight = .regular, monospaced: Bool = false) -> TextFonts {
+        let size = NSFont.preferredFont(forTextStyle: style).pointSize
+        func face(_ w: NSFont.Weight) -> NSFont { monospaced ? .monospacedSystemFont(ofSize: size, weight: w) : .systemFont(ofSize: size, weight: w) }
+        let normal = face(weight), bold = face(.bold)
+        let italic = NSFontManager.shared.convert(normal, toHaveTrait: .italicFontMask)
+        let boldItalic = NSFontManager.shared.convert(bold, toHaveTrait: .italicFontMask)
+        return TextFonts(normal: normal, italic: italic, bold: bold, boldItalic: boldItalic, preferredLetterSpacing: nil, preferredLineHeight: nil)
     }
 }
 
@@ -376,6 +391,8 @@ final class AnswerCard {
     private var subs = Set<AnyCancellable>()
     var onEscape: (() -> Void)?
     var onOpen: (() -> Void)?
+    /// 189 D1: the card left the screen (the Ask's focus claim ends with it).
+    var onHide: (() -> Void)?
     /// ⌘L: who supplies the last answers.
     var historySource: (() -> [CompanionCore.Receipt])?
     var onStop: (() -> Void)? {
@@ -433,6 +450,7 @@ final class AnswerCard {
         model.history = nil
         if returnKey, let app = previousApp, app != .current { app.activate() }
         previousApp = nil
+        onHide?()
     }
 
     /// §15: ⏎ approve · ⎋ deny while the box is up (they win over expand/dismiss); else ⏎ expand/collapse, ⎋ collapse-or-dismiss,

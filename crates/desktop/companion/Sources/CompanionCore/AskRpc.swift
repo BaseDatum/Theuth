@@ -19,11 +19,6 @@ public extension RpcClient {
         try await call("activity_list", [.init(filter)])
     }
 
-    /// `set_event_focus(sessions)`: delta-class events for these sessions only (129 §3.2; `api.rs:1862-1868`).
-    func setEventFocus(_ sessions: [String]) async throws {
-        let _: JSONValue = try await call("set_event_focus", [.init(sessions)])
-    }
-
     // MARK: live dictation (W6; design 54 §8, `api.rs:1293-1325`)
 
     /// Load the streaming model once after connect; never opens a microphone. The reply is the model state.
