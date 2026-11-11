@@ -842,7 +842,7 @@ pub trait Api {
     #[method(name = "resume_child", with_extensions)]
     async fn resume_child(&self, session: SessionId) -> RpcResult<ChildResumed>;
     /// MCP servers, their tools, and their `mcp/config.yaml` risk lines; with
-    /// a session, which tools it hid (`set_mcp_hidden`).
+    /// a session, which tools it hid (`set_mcp_hidden`), answered by its owner.
     #[method(name = "list_mcp", with_extensions)]
     async fn list_mcp(&self, session: Option<SessionId>) -> RpcResult<Vec<McpServer>>;
     /// MCP connection progress snapshot (`McpProgress`), for a UI attaching after startup.
@@ -6076,7 +6076,15 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: Option<SessionId>,
     ) -> RpcResult<Vec<McpServer>> {
-        self.authorize_opt(ext, session).await?;
+        self.authorize_opt_fwd(ext, session).await?;
+        // The hides live in the owner's registry (`set_mcp_hidden` runs there):
+        // read them there too, or a chat owned elsewhere reads back this
+        // engine's (empty) set. Owner offline → `-32010`, never local state.
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "list_mcp", (session,)).await?
+        {
+            return Ok(r);
+        }
         ask::<Mcp, _>(tools::MCP_ACTOR, ListServers { session }).await
     }
 

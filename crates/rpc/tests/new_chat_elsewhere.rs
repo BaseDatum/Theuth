@@ -133,7 +133,44 @@ fn target(seen: Seen) -> jsonrpsee::Methods {
         Ok(serde_json::json!({ "cells": [], "kernels": [], "pass": null }))
     })
     .unwrap();
+    // The owner's registry holds the chat's hides: its answer says `read` is off.
+    m.register_method(
+        "list_mcp",
+        |p, seen, _| -> RpcResult<Vec<tools::McpServer>> {
+            let session: Option<String> = p.sequence().next()?;
+            seen.lock()
+                .push(("list_mcp".into(), session.unwrap_or_default()));
+            Ok(vec![hidden_read()])
+        },
+    )
+    .unwrap();
     m.into()
+}
+
+/// One server whose `read` the owner hid for the chat.
+fn hidden_read() -> tools::McpServer {
+    tools::McpServer {
+        name: "fs".into(),
+        connected: true,
+        gate: None,
+        tools: vec![tools::McpToolInfo {
+            name: "read".into(),
+            description: String::new(),
+            gate: None,
+            risk: tools::Risk::ReadOnly,
+            action: tools::PolicyAction::Allow,
+            registered: Some("read".into()),
+            hidden: true,
+        }],
+        repo: None,
+        auth: tools::McpAuth::None,
+        home: None,
+        home_name: None,
+        home_here: true,
+        everywhere: false,
+        state: tools::McpState::Running,
+        reason: None,
+    }
 }
 
 /// Log lines, for the WARN.
@@ -231,6 +268,9 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
         .unwrap();
     let _: Vec<agent::AgentInfo> = api.call("list_agents", (open.session,)).await.unwrap();
     let _: agent::todo::TodoSnapshot = api.call("get_todos", (open.session,)).await.unwrap();
+    // The Tools switches read the owner's hides, not this engine's (empty) set.
+    let mcp: Vec<tools::McpServer> = api.call("list_mcp", (Some(open.session),)).await.unwrap();
+    assert!(mcp[0].tools[0].hidden, "{mcp:?}");
 
     let methods: Vec<(String, String)> = seen.lock().clone();
     assert_eq!(
@@ -240,7 +280,8 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
             "send_input",
             "load_session",
             "list_agents",
-            "get_todos"
+            "get_todos",
+            "list_mcp"
         ]
         .map(|m| (m.to_owned(), id.clone()))
         .to_vec()
@@ -378,9 +419,21 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
         .call("load_session", (other, None::<i64>, Some(60), None::<bool>))
         .await
         .unwrap();
+    // A landed row owned by b: list_mcp still asks b. One owned by c, which is
+    // not connected: `-32010`, never this engine's registry as if it were c's.
+    let mcp: Vec<tools::McpServer> = api.call("list_mcp", (Some(open.session),)).await.unwrap();
+    assert!(mcp[0].tools[0].hidden, "{mcp:?}");
+    let e = api
+        .call::<_, Vec<tools::McpServer>>("list_mcp", (Some(other),))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("unreachable"), "{e}");
     assert_eq!(
         seen.lock()[before..].to_vec(),
-        vec![("load_session".to_owned(), id.clone())],
+        vec![
+            ("load_session".to_owned(), id.clone()),
+            ("list_mcp".to_owned(), id.clone())
+        ],
         "after landing: b's chat reads from b, the moved one locally"
     );
     theirs.close().await;
