@@ -9,6 +9,7 @@
                   its newest log — why the Ask bar says "theuth engine unreachable"
   engine-start    start the task, wait 12 s, then the same report
   engine-errors   the newest engine log's last ERROR/WARN/panic lines and engine-run.ps1 (why the engine restarts in a loop)
+  tail PATH [N]   the last N lines of any text file (diagnostics)
   companion-log N today's companion log lines about the Ask (focus, first TextDelta, catch-up, watchdog, finish), last N (default 60)
 #>
 param(
@@ -58,6 +59,13 @@ switch ($Action) {
         $run = 'C:\Users\user\tools\theuth-test\engine-run.ps1'
         if (Test-Path $run) { Say "engine-run.ps1:"; Get-Content $run | ForEach-Object { Say "  $_" } }
     }
+    'tail' {
+        $p = if ($Rest.Count -ge 1) { $Rest[0] } else { '' }
+        $n = if ($Rest.Count -ge 2) { [int] $Rest[1] } else { 30 }
+        if (-not $p -or -not (Test-Path $p)) { Say "no such file: $p"; break }
+        Say "tail $p ($((Get-Item $p).Length) bytes)"
+        Get-Content $p -Tail $n | ForEach-Object { Say "  $((($_ -replace '\x1b\[[0-9;]*m', ''))[0..300] -join '')" }
+    }
     'companion-log' {
         $n = if ($Rest.Count -ge 1) { [int] $Rest[0] } else { 60 }
         $dir = Join-Path $env:LOCALAPPDATA 'theuth\companion\logs'
@@ -66,5 +74,5 @@ switch ($Action) {
         Say "log $($file.FullName)"
         Get-Content $file.FullName | Where-Object { $_ -match 'ask|set_event_focus|catch-up|watchdog|TextDelta|desk' } | Select-Object -Last $n | ForEach-Object { Say $_ }
     }
-    default { Say 'usage: engine | engine-start | engine-errors | companion-log [N]' }
+    default { Say 'usage: engine | engine-start | engine-errors | tail PATH [N] | companion-log [N]' }
 }
