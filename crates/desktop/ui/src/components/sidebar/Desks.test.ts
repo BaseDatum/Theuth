@@ -8,6 +8,8 @@ import { SidebarMenu, SidebarProvider } from '@/components/ui/sidebar'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { AgentInfo } from '@/rpc/extra'
+import { useSessions } from '@/store/sessions'
 import { Desks, deskLabels } from './Desks'
 
 vi.mock('@tanstack/react-router', async (original) => ({
@@ -27,7 +29,7 @@ vi.mock('@/lib/rpc', async (original) => ({
 const agent = (name: string, desk: string | null, status = 'idle') => ({ desk, status, file: { name } })
 const AGENTS = [agent('sergei', 'd-sergei'), agent('theuth', 'd-theuth', 'working'), agent('stas', 'd-stas'), agent('maya', null), agent('ghost', null, 'proposed')]
 const session = (id: string, parent: string | null, running = false) => ({ id, parent, running, kind: 'chat' }) as unknown as SessionSummary
-const SESSIONS = [session('d-theuth', null), session('d-sergei', null), session('sub-1', 'd-sergei', true), session('sub-2', 'sub-1'), session('d-stas', null)]
+const SESSIONS = [session('d-theuth', null), session('d-sergei', null), session('sub-1', 'd-sergei', true), session('sub-2', 'sub-1', true), session('d-stas', null)]
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -59,15 +61,15 @@ test('one tile per active desk in a wrapping grid, theuth first; text, aria-labe
   expect(tiles.map((t) => t.querySelector('.pointer-coarse\\:hidden')!.textContent)).toEqual(['T', 'Se', 'St', 'M'])
   expect(tiles.map((t) => t.getAttribute('aria-label'))).toEqual([
     'theuth desk, working',
-    'sergei desk, idle, 1 subagent running',
+    'sergei desk, idle, 2 subagents running',
     'stas desk, idle',
     'maya desk, idle',
   ])
-  // The dot and the glyph live inside the tile.
+  // The dot and the live-subagent count live inside the tile; no count while none runs.
   expect(tile('theuth').querySelector('[data-dot]')!.getAttribute('data-dot')).toBe('working')
   expect(tile('stas').querySelector('[data-dot]')!.getAttribute('data-dot')).toBe('idle')
-  expect(tile('sergei').querySelector('[aria-label="1 subagent running"]')).not.toBeNull()
-  expect(tile('stas').querySelector('svg')).toBeNull()
+  expect(tile('sergei').querySelector('[data-live-count]')!.textContent).toBe('2')
+  expect(tile('stas').querySelector('[data-live-count]')).toBeNull()
   // A desk links to its session; one without asks to open it.
   expect(tile('sergei').getAttribute('href')).toBe('/c/d-sergei')
   expect(tile('maya').tagName).toBe('BUTTON')
@@ -80,7 +82,7 @@ test('one tile per active desk in a wrapping grid, theuth first; text, aria-labe
 test('focus shows the full name and state in a tooltip', async () => {
   const { root, tile } = await mount(undefined)
   await act(async () => tile('sergei').focus())
-  expect(document.querySelector('[role="tooltip"]')!.textContent).toBe('sergei · idle, 1 subagent running')
+  expect(document.querySelector('[role="tooltip"]')!.textContent).toBe('sergei · idle, 2 subagents running')
   await act(async () => root.unmount())
 })
 
@@ -98,4 +100,20 @@ test('the open desk, or the desk owning the open subagent, is highlighted and it
   expect(host.querySelector('[data-active="true"]')).toBeNull()
   expect(host.querySelector('[data-tree]')).toBeNull()
   await act(async () => root.unmount())
+})
+
+const info = (id: string, parent: string, state: string) => ({ id, name: id, parent, depth: 1, state: { state } }) as unknown as AgentInfo
+
+test('the tree opens with a line naming the open desk, linking to it, with its live and finished counts; none without subagents', async () => {
+  useSessions.getState().setChildren('d-sergei', [info('sub-1', 'd-sergei', 'running'), info('sub-2', 'sub-1', 'idle'), info('sub-3', 'd-sergei', 'error')])
+  const { host, root } = await mount('sub-2')
+  const header = host.querySelector<HTMLElement>('[data-desk-header]')!
+  expect(header.textContent).toBe('sergei1 live · 2 finished')
+  expect(header.getAttribute('href')).toBe('/c/d-sergei')
+  expect(header.compareDocumentPosition(host.querySelector('[data-tree]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  await act(async () => root.unmount())
+  const stas = await mount('d-stas')
+  expect(stas.host.querySelector('[data-tree]')!.getAttribute('data-tree')).toBe('d-stas')
+  expect(stas.host.querySelector('[data-desk-header]')).toBeNull()
+  await act(async () => stas.root.unmount())
 })

@@ -11,12 +11,12 @@ import { Button } from '@/components/ui/button'
 import { SidebarGroupLabel, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { subtrees } from '@/lib/session-tree'
+import { live, subtrees } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { AgentTree } from './AgentTree'
-import { SessionSubagents, runningSubagents } from './SessionItem'
+import { runningSubagents } from './SessionItem'
 
 const NONE: SessionSummary[] = []
 
@@ -35,9 +35,9 @@ export function deskLabels(names: readonly string[]): string[] {
  * Sky 2026-11-11: one tile per active roster agent (not proposed, not invalid), theuth first, in a grid that wraps with the
  * sidebar's width, whether or not its desk session exists yet: a tile with a desk (`AgentSummary.desk`, roster-owned)
  * opens it; one without asks the roster to open it first. Pinning has nothing to do with this group. Tiles cannot carry
- * trees, so only the active desk's subagents (any depth, from `list_sessions`) show, as one `AgentTree` below the grid —
+ * trees, so only the active desk's subagents (any depth, from `list_sessions`) show, as one `DeskTree` below the grid —
  * the whole tree, under the one list rule (live first, most recent next, `TREE_CAP` per parent behind `Show more`). An
- * inactive desk's live subagents show as the glyph in its tile.
+ * inactive desk's live subagents show as the count in its tile.
  */
 export function Desks({ active }: { active: string | undefined }) {
   const api = useApi()
@@ -51,7 +51,7 @@ export function Desks({ active }: { active: string | undefined }) {
   if (desks.length === 0) return null
   const labels = deskLabels(desks.map((d) => d.name))
   // The desk the open session belongs to (itself or a subagent of it); at most one.
-  const open = desks.find((d) => d.id !== null && (d.id === active || (subs.get(d.id)?.some((s) => s.id === active) ?? false)))?.id
+  const open = desks.find((d) => d.id !== null && (d.id === active || (subs.get(d.id)?.some((s) => s.id === active) ?? false)))
   return (
     <>
       <SidebarGroupLabel className="mt-2">
@@ -76,24 +76,47 @@ export function Desks({ active }: { active: string | undefined }) {
               {...d}
               label={labels[i]!}
               subagents={d.id === null ? undefined : subs.get(d.id)}
-              active={d.id === open}
+              active={d === open}
             />
           ))}
         </ul>
       </SidebarMenuItem>
-      {open && (
-        <SidebarMenuItem>
-          <AgentTree session={open} active={active} />
-        </SidebarMenuItem>
-      )}
+      {open?.id && <DeskTree id={open.id} name={open.name} active={active} />}
     </>
   )
 }
 
 /**
- * One desk: its prefix centred, the working dot (roster says working, or a turn in flight) top-left, the running-subagent
- * glyph top-right; hover or focus names it and its state. Fingers have no hover, so a coarse pointer shows the name
- * (truncated) instead of the prefix.
+ * The open desk's subagents below the grid, under a line naming the desk (the tiles show letters only) with its live and
+ * finished counts; clicking the name opens the desk. No line while the desk has no subagents.
+ */
+function DeskTree({ id, name, active }: { id: string; name: string; active: string | undefined }) {
+  const rows = Object.values(useSessionField(id, 'children') ?? {})
+  const n = rows.filter((r) => live(r.state.state)).length
+  return (
+    <SidebarMenuItem>
+      {rows.length > 0 && (
+        <Link
+          to="/c/$session"
+          params={{ session: id }}
+          data-desk-header
+          className="mx-1 flex h-7 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-sidebar-accent"
+        >
+          <span className="truncate font-semibold">{name}</span>
+          <span className="shrink-0 text-fg-tertiary">
+            {n} live · {rows.length - n} finished
+          </span>
+        </Link>
+      )}
+      <AgentTree session={id} active={active} />
+    </SidebarMenuItem>
+  )
+}
+
+/**
+ * One desk: its prefix centred, the working dot (roster says working, or a turn in flight) top-right, the number of live
+ * subagents bottom-right; hover or focus names it and its state. Fingers have no hover, so a coarse pointer shows the
+ * name (truncated, clear of the corners) instead of the prefix.
  */
 function DeskTile({
   id,
@@ -133,12 +156,14 @@ function DeskTile({
     .join(', ')
   const body = (
     <>
-      <span className={cn('absolute top-1.5 left-1.5 size-1.5 rounded-full', busy ? 'bg-success' : 'bg-fg-tertiary/40')} data-dot={busy ? 'working' : 'idle'} aria-hidden />
-      <span className="absolute top-1 right-1 flex [&>svg]:size-2.5" aria-hidden>
-        <SessionSubagents subagents={subagents} />
-      </span>
+      <span className={cn('absolute top-1.5 right-1.5 size-1.5 rounded-full', busy ? 'bg-success' : 'bg-fg-tertiary/40')} data-dot={busy ? 'working' : 'idle'} aria-hidden />
+      {subRunning > 0 && (
+        <span className="absolute right-1.5 bottom-1 text-[10px] leading-none font-bold text-info" data-live-count aria-hidden>
+          {subRunning}
+        </span>
+      )}
       <span className="pointer-coarse:hidden">{label}</span>
-      <span className="hidden max-w-full truncate px-1.5 text-xs pointer-coarse:block">{name}</span>
+      <span className="hidden max-w-full truncate px-3 text-xs pointer-coarse:block">{name}</span>
     </>
   )
   return (
