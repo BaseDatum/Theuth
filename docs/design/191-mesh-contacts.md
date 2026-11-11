@@ -48,39 +48,44 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
     - Rows come from the mesh's `peers` table (`mesh::pairing::PeerEntry`, M/pairing.rs:97-129).
     - **Every live row** of the paired set is listed, uncapped: the mesh's real size, sandbox VMs included, since they are mesh peers. Quarantined rows are left out (M/store.rs:152-168).
     - Tombstones are listed as `removed`, the newest 64 only. Tombstones never expire, so a cap that counted live rows would one day drop them.
-    - A tombstone that falls off the list stays in force, because accusations are sticky at the reader (next bullets).
+    - A tombstone that falls off the list stays in force while it still matters, because accusations are sticky at the reader (next bullets).
     - Names are clipped to 64 characters.
   - **Signature.** It uses the card's existing JWS. Extension `params` survive parsing and are covered by the signature (A/contacts.rs:473-481, :621-631).
   - **The card is only ever fetched from its signer.** It travels over the signer's own TLS-authenticated stream and is checked with `kid == eid` (A/contacts.rs:587-632). Cards are never relayed, so an old card cannot be replayed by anyone else.
   - **Write order.**
-    - Our machines fold each fetched card into the voter's *vote*. Live entries come from the newest card. `removed` entries stay from every earlier card until the same voter lists that endpoint live again. A tombstone the signer has trimmed therefore never withdraws an accusation.
+    - Our machines fold each fetched card into the voter's *vote*. Live entries come from the newest card. A `removed` entry stays from earlier cards until the same voter lists that endpoint live again, so a tombstone the signer trimmed does not withdraw an accusation that still matters.
+    - **The fold is bounded.** A `removed` entry is kept only while its endpoint could otherwise be a member, that is, while it is an anchor or some current member's vote lists it live. It is dropped otherwise, and in any case at most 128 are kept (oldest dropped first). A change therefore never rewrites an unbounded set.
     - The fold is written as an immutable vote row, keyed by voter and `at`, and **only when the folded content differs** from the voter's current vote. Rows replicate, so this avoids churn.
     - The reader uses each voter's highest `at`. `at` is clamped to the reader's clock plus `MEMBER_SKEW_MS` (10 min), so a future stamp cannot outrank the same voter's later cards for long.
   - **A card without the extension** means "no new vote": the voter's previous vote stands. It never withdraws everything.
   - The extension is omitted only when the list is empty, so the JWS test vector (A/contacts.rs:2254-2341) keeps its value.
-  - **Whose cards are fetched.** The anchors, every endpoint that ever had a vote row in the group, and every endpoint named (live or removed) in a vote, up to 64 per group. Denied endpoints and non-members included.
-  - We dial them outbound with our own key, so the gate's refusal of an inbound stream from them (reach.rs:161-163) does not stop the fetch.
+  - **Whose cards are fetched.** Anchors first, then the known current members, then the endpoints that current members list live (the candidates for addition). At most 64 per group, so names planted by one member cannot starve honest members or new machines. **Barred endpoints are never fetched.**
   - They are fetched on notice, at boot, and once per `OFFERS_TTL` (60 s, N:327-328).
-- **Membership is computed from the votes on record, and it fails closed.** The same algorithm runs on both sides and on every machine, per contact group (D2 merge).
-  1. **Voters** are every endpoint of the group with a vote row, except barred ones (step 6).
-  2. **Accusers of X** are the voters whose current vote lists X as `removed`. Every voter counts, members or not, so an anchor that cut the honest machines out of its list is still accused by them.
-  3. **Uncontested (U)** are the voters with no accuser.
-  4. **An accusation does not count** if its author has an accuser in U.
-  5. **Denied** is every endpoint with a counting accusation, plus every barred endpoint. This step does not depend on membership, so it needs no iteration.
-  6. **Anchors** are the endpoints a human pinned in a ceremony (`contact_endpoints`). A ceremony into a record adds its endpoint as an anchor and **bars every anchor that is denied at that moment**. Barred anchors keep a row with `barred_ms`. Their votes no longer count, and they are never live again in this record. A live anchor stays. So a re-pair after "Pair again" replaces a rogue or contested anchor.
-  7. **Members (M)** start as the non-denied anchors. Add Y, if Y is not denied, when some E in M lists Y as live in E's current vote *and* Y's current vote lists E as live: both sides have signed. Repeat until M stops changing. This is answer 3 ("automatically, vouched"). It is also why contact A cannot claim contact B's machine: B's card would have to list A. Omission withdraws a vote: Y stays only while a current vote of a member, or an anchor, holds it. An endpoint vouched for only by denied endpoints drops out.
-  8. **Live** = M. The gate admits only these.
-- **What the rule gives (answer 1, fail-closed).**
+- **Membership (honest-code threat model, fail-closed).** The same algorithm runs on both sides and on every machine, per contact group (D2 merge). Votes and accusations count **only from current members**.
+  1. **Anchors** are the non-barred endpoints a human pinned in a ceremony (`contact_endpoints`).
+  2. **Members (M)** start as the anchors. Add Y, if Y is not barred, when some E in M lists Y as live in E's current vote *and* Y's current vote lists E as live: both sides have signed. Repeat until M stops changing.
+     - This is answer 3 ("automatically, vouched").
+     - It is why contact A cannot claim contact B's machine: B's card would have to list A.
+     - Omission withdraws a vote.
+  3. **Removal.** X in M is denied when some member of M lists X as `removed` in its current vote. Anchors are included.
+  4. **Repeat.** Drop the denied from M. Grow M again from the remaining anchors without them, so anything reachable only through a denied endpoint drops out. Re-check the accusations from the new M. M only shrinks, so this stops within |M| rounds.
+  5. **Live** = the final M. The gate admits only these.
+- **A pairing ceremony is a trust reset.** The ceremony's endpoint N becomes the root of the record:
+  - N is added as an anchor, and un-barred if it was barred, so an honest machine can re-pair from the same row.
+  - Every other anchor and voter that is not reachable from N through mutual live votes, with N as the only root, is barred (`barred_ms`). This is computed at the moment of the ceremony.
+  - Barred endpoints are never fetched and never counted.
+  - The reset also clears a removed voter's sticky tombstones, because a barred voter's vote no longer exists for the algorithm.
+- **What the rule gives (answer 1).**
 
 | Case | Result at the contact |
 |---|---|
-| An honest machine is removed (it never learns this: M/net.rs:1272-1297 sends nothing) | The remaining machines accuse it, and nobody accuses them, so it is denied. Its own vote stops counting. Anything only it vouched for drops out. |
-| A rogue member or anchor R accuses every honest machine, or omits them | Once R is removed from the mesh, every honest machine's card accuses R, and those cards are fetched even though they are not members. If R accuses them back, U is empty and all are denied. If R only omits them, U holds them and R is denied. Either way R is denied. If R was the only anchor, nobody is live until a fresh ceremony from an honest machine, which bars R and admits the rest through their votes. R never keeps access. |
-| Contested: A accuses B and B accuses A, and an uncontested C also accuses B | B's accusations no longer count, so A is live. B is denied. |
-| Contested with no uncontested member | Both are denied. A fresh ceremony bars the denied anchors, and the new anchor's mesh is admitted through the votes again. |
-| An endpoint is omitted from a list (not marked removed) | That voter has withdrawn its vote. The endpoint stays a member only while another current vote, or an anchor, holds it. |
-| A machine is re-paired into its mesh | Its `peers` row is live again, so the next cards list it live. The accusation is lifted, because the same voters now list it live, and it is a member again. |
+| An honest-code machine is removed (lost, sold, retired; it never learns this: M/net.rs:1272-1297 sends nothing) | The remaining members' cards list it `removed`, so it is denied. Anything reachable only through it drops out. Automatic. |
+| A machine is added to the other mesh | Both sides sign (step 2), so it is added automatically. |
+| An endpoint is omitted from a list (not marked removed) | That voter has withdrawn its vote. The endpoint stays only while another current member, or an anchor, holds it. |
+| A machine is re-paired into its mesh | Its `peers` row is live again, so the next cards list it live. The sticky `removed` entry is lifted by the same voters, and it is a member again. |
 | A machine is cut wrongly (transiently) | It cannot notify, because the gate refuses it. It is restored at the contact's next card refresh: at most `OFFERS_TTL` (60 s), sooner if another live member notifies. |
+| A machine that is dead but not removed | It stays a member on the strength of its last vote. The user removes it in Settings › Network › Machines (Unpair, `mesh_remove`), and contacts then follow automatically. |
+| A member runs **modified (malicious) code** while it is still a member: sock puppets, counter-accusations, planted names | **This is the limit.** No automatic rule can tell the honest camp from sock puppets, so the contact's view of our machines may be confused. **Remedy:** remove the machine from the mesh, then pair each affected contact again from an honest machine. The ceremony's trust reset bars the rogue machine and its puppets; the honest machines are reachable from the new root and stay live. |
 - **How our machines tell contacts.**
   - The a2a actor awaits `Net.peers_gen.changed()` (M/net.rs:460-461). That watch is bumped inside `refresh_paired` (M/net.rs:1322), which `remove_peer` calls (M/net.rs:1275-1297).
   - So the machine where the user pressed Unpair notices at once, not on the 2 s tick. The others notice when the tombstone arrives: by the replica, by `KeyGrant`, or on the 5 s `keys::tick`.
@@ -91,7 +96,7 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
 - **The window.** Until a contact applies the new votes, a removed machine can still pass as us to that contact.
   - While the contact is online, that lasts seconds: one notice plus one card fetch.
   - While the contact is offline, the window has no bound: it stays open until the contact comes back and fetches a remaining machine's card. (Until then nobody reaches the contact at all.)
-  - Within the window a rogue machine can do no more than it could the second before it was removed. Once the votes are applied it is denied, as in the table above, and it never keeps access. The worst case is that the contact must pair again.
+  - Within the window a removed machine can do no more than it could the second before it was removed. Running honest code, it is denied once the votes are applied. Running modified code, it can confuse the contact until that contact pairs again (the limit above).
 
 ### D2. Replication: last-writer-wins tables in `sessions.sqlite`
 - **Mechanism.** `replica::attach`: per-column LWW under HLC, tombstones, version-vector catch-up (R/lib.rs:1-14, :104-121; R/sync.rs:1-14). The record tables are appended to `replicate_records` beside `projects` and `cost_owners` (`crates/agent/src/store.rs:903-915`, attach at :913).
@@ -168,7 +173,7 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
     - 30 s pass (`lapse_secs`) with no peer connected; or
     - 150 s pass at worst (M/lib.rs:1478-1520).
   - It cannot be used raw. `SYNCED` starts true (M/lib.rs:126), and the mesh sets it false only at the end of its start, when this machine has paired peers (M/lib.rs:1481-1482). The mesh starts before a2a (`crates/theuth/src/main.rs:2023`, :2034).
-  - So contacts get their own flag, `contacts_ready`. It **starts false**.
+  - So contacts get their own flag, `contacts_ready`. It **starts false**. It is a static atomic in the agent crate, like `mesh::SYNCED` (M/lib.rs:126). `reinstall_contact_limits` and the gate read it directly. An ask from the agent to the a2a actor could deadlock with the reconcile, which itself asks the agents (`CommitPeerConfig`).
   - It flips only after `mesh::synced()` is true **and** the first contact reconcile has finished all six steps: the revokes, the inbox caps and the closes, on the post-latch tables.
   - **Until `contacts_ready`:**
     - the gate (`ContactAlpn::admit`, A/contacts/reach.rs:116-121; `iroh_gate`, A/server.rs:916-935) refuses every contact;
@@ -256,7 +261,7 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
   - A deleted inbox takes its marker with it. The next message goes to the home, which makes a new inbox.
 - **The moved-inbox fail-open.**
   - Today inbox caps live only in the local `a2a_contexts` (capture.rs:4-5). On a machine that took the inbox, `a2a_inbox_identity` finds nothing and `reinstall_contact_limits` returns `Ok(())` with no limits (N:3192-3195). `ContactScoped` then says false (`crates/agent/src/loop_.rs:4949-4964`).
-  - The separate fix on main refuses `session_move` and the owner's release for inbox sessions. From now on, an inbox cannot move by a user action.
+  - The separate fix on main (`INBOX_STAYS`, landed in 4bc0dddd) makes `sessionsync::owner::move_to` and `answer_release` refuse inbox sessions, so an inbox cannot move by a user action. **P3 lifts that refusal, together with forwarding, and not earlier.** Before P2's `NOT_OWNER` check and P3's forward, a moved inbox's contact messages would be delivered to a machine that no longer owns it.
   - The case left is a Write take from an unreachable owner. P1's marker closes it: a session with `contact_inbox` set and no local `a2a_contexts` row runs **capped** (`INBOX_FAIL_CLOSED` and an empty allowlist, N:3146), with the contact prompt.
   - The owner re-admits the inbox full on the contact's next message. `handle_inbox` adopts the marked session, reads the live persona there (S6) and marks its local row (S:2030-2061).
   - **An inbox that moved before 191**, by a take, cannot be marked: only its owner writes its row. Its home still holds the old `a2a_contexts` row. When the contact's next message reaches the home and finds that row's session owned elsewhere, the home unmarks it and caps it there (`unmark_a2a_inbox_full`, S:2080-2088). It then opens a new, marked inbox locally, so contact messages never reach the moved session again.
@@ -337,8 +342,8 @@ The new paths:
 | Owner offline, or unreadable | Refused at once (D3). An error from `session_owner` refuses (N:1641-1650). |
 | Contact paths reach a session that is not owned here (from P2 on) | Refused with `NOT_OWNER` (D3). |
 | Invalid or conflicting replicated row | That row is quarantined and its endpoints denied; the rest stage (D2). |
-| A rogue or contested member or anchor | Accusations count from every voter on record, members or not, and the cards of denied machines and non-members are fetched too. A contest with no uncontested voter denies both sides. A fresh ceremony bars denied anchors (D1). |
-| An endpoint vouched for only by a removed member | It loses its vote (D1, step 7). |
+| A removed member, or an endpoint vouched for only by it | Denied by current members' votes; whatever is reachable only through it drops out (D1, steps 3–4). |
+| A member running modified code (sock puppets, counter-accusations) | The stated limit (D1): the contact's view may be confused until the user removes the machine from the mesh and pairs each affected contact again. The ceremony's trust reset bars every endpoint not reachable from the new root, and barred endpoints are never fetched or counted. |
 | A card without the extension, or a tombstone the signer trimmed | The previous vote stands, and a `removed` entry stays until the same voter lists the endpoint live again (D1). |
 | An endpoint live in two unmerged records | Denied in both until they merge. |
 | A merged-away record, or a broken chain | The binding is revoked and its inboxes capped; a broken chain quarantines the group. |
@@ -396,8 +401,8 @@ The new paths:
 | Phase | What | Prod | Tests | Proof |
 |---|---|---|---|---|
 | **P1 RECORDS** | 0059 and the attach; import and pointer merge; staging from the tables with per-row quarantine; reconcile on the content hash; `contacts_ready`, including the actor-start cap; the replicated binding id, never un-revoked; contact RPCs write the tables; export ids; `sessions.contact_inbox` | 1,200–1,500 | 1,000–1,200 | Rig cases 5 and 6; a contact paired on n1 is listed on n2 |
-| **P2 MEMBERS** | Members extension; notice on `peers_gen` and at boot; folded vote rows and the membership algorithm, barring included; gate over the live set; dialing over the set; per-endpoint hints; owner refusal on contact paths | 1,000–1,200 | 800–1,000 | Rig cases 2 and 4 (a rogue anchor included) |
-| **P3 ROUTING** | `a2a_forward`; owner resolution; offline refusal; forwarding of `~return` and task ids; inbox home; `contact_holds` (0060) and Attention from every machine; completing tasks on drain; **W-40 deleted** | +900–1,100, −600–650 | +850–1,050, −360 | Rig cases 1 and 3 |
+| **P2 MEMBERS** | Members extension; notice on `peers_gen` and at boot; bounded folded vote rows; membership from current members only; the ceremony's trust reset (`barred_ms`); prioritized, capped card fetches; gate over the live set; dialing over the set; per-endpoint hints; owner refusal on contact paths | 1,000–1,200 | 800–1,000 | Rig cases 2 and 4 (a rogue anchor with a sock puppet) |
+| **P3 ROUTING** | `a2a_forward`; owner resolution; offline refusal; forwarding of `~return` and task ids; inbox home; lifting the main-branch `INBOX_STAYS` refusal (4bc0dddd) together with forwarding (D4); `contact_holds` (0060) and Attention from every machine; completing tasks on drain; **W-40 deleted** | +900–1,100, −600–650 | +850–1,050, −360 | Rig cases 1 and 3 |
 | **P4 UI and docs** | D8; site docs; as-built | 400–600 | 400–500 | Vite fixture screenshots; the whole rig |
 | Total | | ≈ 3,500–4,400 gross; ≈ 2,900–3,750 net | ≈ 3,050–3,750 gross | |
 
@@ -417,10 +422,12 @@ The cases:
 3. **n2 off.** Stop n2. C's message to X reads "the chat's machine is offline" in under 1 s, and nothing is queued.
 4. **n2 removed.**
    - Honest leaver: `mesh_remove(n2)` on n1. Within one notice, C shows n2 as left and refuses its streams (log: gate refused). n2's sends to C fail.
-   - **Rogue anchor.** C's anchor is n1. Remove n1 with `mesh_remove(n1)` on n2. Stop n1, write a tombstone for n2 straight into n1's `mesh.sqlite` (as 183's Q5b did), and restart n1.
-     - n1's card now accuses n2, and n2's card accuses n1. n2 is not an anchor, but C fetches its card because n2 has a vote on record.
-     - U is empty, so C denies both, refuses both, and shows "Pair again". n1 does not keep access.
-     - A fresh ceremony from n2 bars n1 and makes n2 the anchor. n2 is live again, and n1 stays refused.
+   - **Rogue anchor with a sock puppet.** C's anchor is n1. Remove n1 with `mesh_remove(n1)` on n2. Then stand in for modified code with data edits:
+     - stop n1 and write a tombstone for n2 straight into n1's `mesh.sqlite` (as 183's Q5b did);
+     - start a fourth scratch engine Z1 and pair it with n1 only, so the two list each other live;
+     - write a tombstone for n2 into Z1's `mesh.sqlite`, and restart n1 and Z1.
+     - **Assert the contact is confused:** C's live set is {n1, Z1}, while n2's sends to C are refused. This is the stated limit.
+     - **A ceremony from n2** (C pairs again with n2) is the trust reset. Assert that n1 and Z1 are barred and never fetched again, that n2 is live, and that C refuses n1 and Z1.
 5. **A block made while n2 was down (the accepted cost).**
    - Stop n2. Block C on n1, then stop n1. Start n2.
    - For the first 30 s, C's dial to n2 is refused (not ready).
@@ -448,10 +455,12 @@ The cases:
   - Adding needs both signatures, and a stranger listed by one member is not added.
   - Omitting an endpoint withdraws the vote.
   - An endpoint vouched for only by a removed member drops out.
-  - A rogue **anchor** that accuses the honest machines denies everyone; one that omits them is denied alone. In both cases a fresh ceremony bars it and restores the honest machines (MUST 1).
+  - Votes and accusations from non-members are ignored, and a planted name is never fetched ahead of anchors and current members.
+  - The ceremony's trust reset: endpoints not reachable from the new root are barred, the new anchor is un-barred when it was barred, and barred endpoints are never fetched or counted. An honest re-pair from the same anchor row works.
+  - A removed member's sticky tombstones stop counting after the reset. The fold drops a `removed` entry that cannot matter, and it keeps at most 128.
   - A card without the extension keeps the previous vote. A tombstone the signer trimmed keeps its accusation.
   - A quarantine-only list change bumps `at` and writes a new vote. An unchanged list writes no row.
-  - A contest with an uncontested accuser resolves to the honest side.
+  - A rogue anchor with one sock puppet stays live until the ceremony from an honest machine, which then bars both (the stated limit).
   - A future `at` is clamped, and a later card from the same voter still applies (S3).
   - `NOT_OWNER` on `~return` makes the client try the next member (S4).
 - **P3**
@@ -484,7 +493,8 @@ The S1–S10 tests stay.
 - **Accepted cost of the bounded latch (Sky, 17:59, option (b)).**
   - A block or removal made on another machine while this one was down is missed until this machine next syncs with a peer. With every other machine off, that has no bound.
   - A machine removed from the mesh is never told (M/net.rs:1272-1297). After 30 s it would serve contacts from its copy, until those contacts hear of the removal from our other machines: seconds while they are online (D1).
-- **The window after a removal (D1).** It lasts seconds while the contact is online. While the contact is offline, it stays open until the contact returns. A rogue member or anchor can force the contact to pair again, but it never keeps access.
+- **The window after a removal (D1).** It lasts seconds while the contact is online. While the contact is offline, it stays open until the contact returns.
+- **The limit of automatic membership (D1).** A machine running modified (malicious) code while it is still a member can confuse a contact's view of our machines, because no automatic rule can tell the honest camp from sock puppets. **Remedy:** remove it from the mesh and pair each affected contact again (the trust reset). Sky's answer 1 holds automatically for a lost, retired or honest-code machine.
 - **A wrongly cut machine** waits up to `OFFERS_TTL` (60 s) to be restored, because it cannot notify.
 - **A merge ends conversations, once.** The next message starts fresh.
 - **Write contention.** Replica apply takes `BEGIN IMMEDIATE` on the single `sessions.sqlite` write connection (R/apply.rs:454). The rows are tiny and the writes rare. Watch it in the P1 rig.
