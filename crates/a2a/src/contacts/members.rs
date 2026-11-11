@@ -573,18 +573,23 @@ impl Ctx {
             let family = family(self.net().as_deref());
             let now = mesh::identity::now_ms() as i64;
             let mut w = Vec::new();
+            // Dial and chain hints are untrusted: any machine's row gives them, a retired
+            // one's included; only live machines' heads count for adoption and divergence.
+            let anyone: BTreeSet<String> =
+                r.heads.iter().filter_map(|h| h.machine.clone()).collect();
             for m in a.groups.iter().flat_map(|g| g.members.iter()) {
                 let pins = records::pins_of(&r, &m.id);
                 let peers = records::heads_of(&r, &m.id, &me, &family, false);
                 let mine = records::heads_of(&r, &m.id, &me, &family, true)
                     .into_iter()
                     .find(|h| h.machine == me);
-                let hints: Vec<String> = peers.iter().flat_map(|p| p.members.clone()).collect();
+                let hinted = records::heads_of(&r, &m.id, &me, &anyone, false);
+                let hints: Vec<String> = hinted.iter().flat_map(|p| p.members.clone()).collect();
                 match records::admit_of(&r, &m.id, &family, now) {
                     Admit::Pins => {}
                     Admit::Unverified => {
                         w.extend(
-                            self.bootstrap(&m.id, &me, &pins, &peers, &hints, &family)
+                            self.bootstrap(&m.id, &me, &pins, &peers, &hinted, &family)
                                 .await,
                         );
                     }
@@ -617,21 +622,24 @@ impl Ctx {
     }
 
     /// A record this machine has no state for, based elsewhere: proof paths from its pins,
-    /// dialled by the pins and the untrusted hints; the highest verified head, adopted only
-    /// if corroborated ([`rosters::adopt`]). Otherwise nothing: the record stays denied.
+    /// of the chains and dialled by the machines the heads rows name (`hinted`: untrusted, a
+    /// retired machine's row included); the highest verified head, adopted only if
+    /// corroborated by a live machine's head (`peers`) or two sources ([`rosters::adopt`]).
+    /// Otherwise nothing: the record stays denied.
     async fn bootstrap(
         &self,
         record: &str,
         me: &str,
         pins: &BTreeSet<String>,
         peers: &[PeerHead],
-        hints: &[String],
+        hinted: &[PeerHead],
         family: &BTreeSet<String>,
     ) -> Vec<RecordWrite> {
-        let mut chains: Vec<String> = peers.iter().map(|p| p.chain.clone()).collect();
+        let mut chains: Vec<String> = hinted.iter().map(|p| p.chain.clone()).collect();
         chains.retain(|c| plain(c));
         chains.sort();
         chains.dedup();
+        let hints = hinted.iter().flat_map(|p| p.members.iter());
         let targets = dial_order(pins.iter().chain(hints), family);
         let mut best: Option<(Verified, usize)> = None;
         for chain in &chains {
