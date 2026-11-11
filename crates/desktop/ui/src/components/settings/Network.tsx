@@ -196,7 +196,7 @@ function ThisMachine({ s, managing }: { s: MeshStatus; managing: string | null }
         flag={LAN_KEYS}
         name="Local network access"
         label="Local network access"
-        description="Web tools and the browser can reach localhost, LAN addresses and .local names. Contacts' turns never can."
+        description="Web tools and the browser can reach localhost, LAN addresses and .local names. Restricted contacts never can."
       />
     </Section>
   )

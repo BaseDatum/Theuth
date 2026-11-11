@@ -535,21 +535,22 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   `GuardedResolver` admits private answers (DNS rebinding protection and
   pooled connections never cross); a call uses it only inside
   `tools::egress::scope(true, …)`. The registry installs that scope for
-  every tool body from `lan_allowed(session)`: no contact session (183
-  Z3-R2), and no no-LAN marker on the session or an ancestor. The agent sets
-  the marker for every contact inbox (capped or full, at every actor start),
-  for the running turn of a chat once it takes a contact's message (capped
-  or full, 190; a resume re-installs it from the journal), and, persistently
-  (`no_lan_sessions`), for a child spawned while its parent had none. Work
-  that leaves the tool's task carries the grant explicitly: the `WebActor`'s
-  `Read` / `Render` messages (`lan`), a search's read tasks, a notebook
-  source's ingest jobs (stored per source; `Refresh` pre-checks again under
-  the stricter of the stored and the refresher's grant). Without the grant
+  every tool body from `lan_allowed(session)`: `false` only in a restricted
+  (capped) contact state (`contact_scoped`, 183 Z3-R2: the fixed public-web
+  allowlist) and for a call a plugin marked without the grant (`SetNoLan`,
+  a notebook ingest job). A full-share contact turn or full inbox (190) runs
+  with the agent's own tools and ceiling, `read_file` and `shell` included,
+  so the LAN and the browser work there exactly as in the owner's turns
+  (Sky, 20:28: a per-tool rule there protects nothing). Work that leaves
+  the tool's task carries the grant explicitly: the `WebActor`'s `Read` /
+  `Render` messages (`lan`), a search's read tasks, a notebook source's
+  ingest jobs (stored per source; `Refresh` pre-checks again under the
+  stricter of the stored and the refresher's grant). Without the grant
   there is no browser rung at all: `Render` and a non-`scrape` `Read` are
-  refused ("rendered pages aren't available in a contact's turn"), the
-  scrape engine never renders and never falls back to obscura on a guard
-  refusal (for anyone), and every `browser_*` tool refuses, since obscura
-  resolves, redirects and runs scripts itself. Settings › Network › Local
+  refused ("rendered pages aren't available to a restricted contact"), the
+  scrape engine never renders, and every `browser_*` tool refuses, since
+  obscura resolves, redirects and runs scripts itself. For everyone, a
+  guard refusal never falls back to obscura. Settings › Network › Local
   network access writes this key and `browser.allow_private_network`
   together; both apply at restart.
 

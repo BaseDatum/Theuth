@@ -195,7 +195,7 @@ test('16 §5 Local network access: on only when both allow_private_network keys 
   LAN['browser.allow_private_network'] = false
   const off = await render(createElement(MachineTab))
   expect(off.html.match(lan)?.[1]).toBe('false')
-  expect(off.html).toContain('Contacts&#x27; turns never can.')
+  expect(off.html).toContain('Restricted contacts never can.')
   expect(off.html).toContain('Applies after theuth restarts.')
   delete LAN['browser.allow_private_network']
   const on = await render(createElement(MachineTab))

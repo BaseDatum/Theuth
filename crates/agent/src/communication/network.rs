@@ -3163,8 +3163,6 @@ impl Agents {
         self.caps.insert(id, cap);
         self.network.inbox_limits.insert(id, (cap, tools.clone()));
         self.network.inboxes.insert(id);
-        // 16 §5 (2026-11-11): an inbox never reaches the local network, capped or full.
-        crate::supervisor::set_no_lan(id).await;
         let Some(reg) =
             kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
                 .map_err(|e| format!("a2a: inbox limits: tool registry: {e}"))?
@@ -3252,7 +3250,6 @@ impl Agents {
         };
         self.network.inbox_limits.remove(&id);
         self.network.inboxes.insert(id);
-        crate::supervisor::set_no_lan(id).await;
         let Some(reg) =
             kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
                 .map_err(|e| format!("a2a: inbox limits: tool registry: {e}"))?
@@ -6894,22 +6891,53 @@ mod full_inbox_tests {
         assert_eq!(a.caps.get(&inbox), Some(&tools::Risk::Mutating));
     }
 
-    /// 16 §5 (2026-11-11): a contact's inbox never reaches the local network, run in full
-    /// (no allowlist, no contact cap) and again after an actor start; a child a contact's
-    /// turn spawned keeps no LAN in the store, for every later actor start.
+    /// 16 §5 (2026-11-11), Sky's ruling (20:28): a full inbox runs with the agent's own tools,
+    /// so its calls get the local-network grant like the owner's (the fetcher's setting decides
+    /// the rest), also after an actor start; once its share is no longer granted it is capped,
+    /// a restricted state, and the public web only.
     #[test]
-    fn a_full_inbox_and_a_contact_turns_child_never_reach_the_lan() {
+    fn a_full_inbox_keeps_the_lan_a_capped_one_does_not() {
+        struct Probe;
+        #[async_trait::async_trait]
+        impl tools::Tool for Probe {
+            const NAME: &'static str = "read_url";
+            const RISK: tools::Risk = tools::Risk::ReadOnly;
+            type Args = serde_json::Value;
+            fn description(&self) -> String {
+                String::new()
+            }
+            async fn call(
+                &self,
+                _: Self::Args,
+                _: tools::ToolCx,
+            ) -> anyhow::Result<tools::ToolOutput> {
+                Ok(tools::ToolOutput::ok(tools::egress::lan().to_string()))
+            }
+        }
         crate::with_test_registry(async {
             let (scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
-            tools::registry::start(&runtime::Runtime::new(
+            let reg = tools::registry::start(&runtime::Runtime::new(
                 figment::Figment::new(),
                 scratch.0.clone(),
             ))
             .await
             .unwrap();
-            let reg = kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
-                .unwrap()
-                .unwrap();
+            reg.ask(tools::RegisterTool(Arc::new(Probe))).await.unwrap();
+            let lan = |session| {
+                let reg = reg.clone();
+                async move {
+                    reg.ask(tools::Invoke(tools::ToolCall {
+                        id: "c".into(),
+                        name: "read_url".into(),
+                        args: serde_json::json!({}),
+                        session,
+                        quiet: true,
+                    }))
+                    .await
+                    .unwrap()
+                    .content
+                }
+            };
             a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
             let binding = a
                 .store
@@ -6919,27 +6947,17 @@ mod full_inbox_tests {
             route(&mut a, binding.id);
             let inbox = admit(&mut a, binding.id).await.unwrap();
             assert!(!a.network.is_inbox(inbox), "full: no contact limits");
-            assert!(reg.ask(tools::NoLan(inbox)).await.unwrap());
-            reg.ask(tools::SetNoLan {
-                session: inbox,
-                turn: false,
-                on: false,
-            })
-            .await
-            .unwrap();
+            assert_eq!(lan(inbox).await, "true", "a full inbox");
             forget(&mut a, inbox);
             a.reinstall_contact_limits(inbox).await.unwrap();
-            assert!(reg.ask(tools::NoLan(inbox)).await.unwrap(), "actor start");
-
-            let (owner, child) = (SessionId::new(), SessionId::new());
-            a.install_no_lan(child).await;
-            assert!(reg.ask(tools::NoLan(child)).await.unwrap());
-            assert!(
-                a.store.no_lan(child).await.unwrap(),
-                "kept for the next start"
-            );
-            assert!(!a.store.no_lan(owner).await.unwrap());
-            assert!(!reg.ask(tools::NoLan(owner)).await.unwrap());
+            assert_eq!(lan(inbox).await, "true", "after an actor start");
+            // No longer granted: capped fail-closed, a restricted state (the public web only).
+            a.apply_contact_limits(ContactLimits {
+                contact: "bob".into(),
+                full: Vec::new(),
+            })
+            .await;
+            assert!(reg.ask(tools::ContactScoped(inbox)).await.unwrap());
         });
     }
 

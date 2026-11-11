@@ -1,7 +1,8 @@
 //! 16 §5 (2026-11-11): the browser rung of the scrape engine follows the local-network grant.
-//! A contact's rendered fetch is refused before obscura is asked; a guard refusal never falls
-//! back to obscura; the owner's rendered fetch of a loopback page still runs through the
-//! embedded browser. One test: the browser actor is a process-global name.
+//! A restricted (capped) contact's rendered fetch is refused before obscura is asked; a guard
+//! refusal never falls back to obscura; a granted rendered fetch (the owner's, or a full-share
+//! contact's, Sky 20:28) of a loopback page still runs through the embedded browser. One test:
+//! the browser actor is a process-global name.
 
 use kameo::actor::Spawn;
 use scrape::{Scrape, ScrapeConfig};
@@ -43,7 +44,7 @@ async fn the_browser_rung_follows_the_local_network_grant() {
     };
     let hits = || async { server.received_requests().await.unwrap_or_default().len() };
 
-    // A contact's `scrape_url rendered: true`: refused, nothing reaches the page.
+    // A restricted contact's `scrape_url rendered: true`: refused, nothing reaches the page.
     let err = tools::egress::scope(false, scrape(true).fetch_page(&url, true, false))
         .await
         .unwrap_err();

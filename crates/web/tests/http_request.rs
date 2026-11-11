@@ -276,10 +276,10 @@ async fn post(t: &HttpRequestTool, url: &str) -> ToolOutput {
     .expect("call")
 }
 
-/// 16 §5 (2026-11-11): with `web.allow_private_network` on (the twin built) an owner's call
-/// reaches a loopback server with no test allowlist; a contact's turn (`egress` scope
-/// `false`) and an unscoped caller are refused with the guard's message, the server
-/// untouched; with the key off the owner is refused too.
+/// 16 §5 (2026-11-11): with `web.allow_private_network` on (the twin built) a granted call
+/// (the owner's, or a full-share contact's, Sky 20:28) reaches a loopback server with no test
+/// allowlist; a restricted contact (`egress` scope `false`) and an unscoped caller are refused
+/// with the guard's message, the server untouched; with the key off a granted call is refused too.
 #[tokio::test]
 async fn local_network_reaches_owners_only_and_follows_the_flag() {
     let server = MockServer::start().await;

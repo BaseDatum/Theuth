@@ -29,8 +29,8 @@ pub const NO_RENDERER: &str =
 
 /// Error text of a rendered page asked for outside the local-network grant (16 §5, amended
 /// 2026-11-11): a browser (or a self-hosted renderer) resolves and redirects on its own, so a
-/// contact's turn gets none.
-pub const CONTACT_NO_RENDER: &str = "rendered pages aren't available in a contact's turn";
+/// restricted (capped) contact state gets none.
+pub const CONTACT_NO_RENDER: &str = "rendered pages aren't available to a restricted contact";
 
 /// The provider registry actor, registered as [`crate::provider::WEB_ACTOR`].
 #[derive(kameo::Actor)]

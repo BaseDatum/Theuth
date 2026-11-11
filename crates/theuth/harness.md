@@ -232,8 +232,8 @@ are rewritten on every start.
   `scrape_url`, `crawl`, `map_site`, `site_*`) alike: one setting,
   Settings › Network › Local network access (`web.allow_private_network`
   and `browser.allow_private_network`), turns them off. Cloud metadata
-  endpoints never answer. A turn that took a contact's message never
-  reaches this machine's network, whatever the setting: the web tools stay
+  endpoints never answer. A restricted (capped) contact session never
+  reaches this machine's network, whatever the setting: its web tools stay
   public, and the browser and `rendered: true` are refused in it.
 - `read_url` tells you when a page is a wall: a result that starts with
   `ISSUE:` names the kind and the next rung — `rendered: true`, then

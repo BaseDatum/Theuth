@@ -89,8 +89,8 @@ pub struct WebConfig {
     /// (default), `on_challenge`, `never` (122 revision 1).
     pub impersonate: fetch::client::Impersonate,
     /// The web tools reach localhost, LAN addresses and `.local` names (16 §5,
-    /// amended 2026-11-11). Cloud metadata endpoints never; contacts' turns
-    /// never (`tools::egress`). Read at start: a change applies after a restart.
+    /// amended 2026-11-11). Cloud metadata endpoints never; restricted (capped)
+    /// contact states never (`tools::egress`). Read at start: a change applies after a restart.
     pub allow_private_network: bool,
 }
 

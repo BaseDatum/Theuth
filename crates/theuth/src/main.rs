@@ -960,7 +960,7 @@ agent:
 #   degraded_is_error: false # true: a degraded search (no external, <= 1 general engine) is an error result
 #   allow_private_network: true    # read_url / http_request / scrape_url / crawl / map_site / site_*: false blocks
 #                            # localhost / RFC1918 / CGNAT / IPv6 ULA and link-local / .local again; cloud metadata
-#                            # (169.254/16 …) and contacts' turns never reach it. Settings > Network > Local network access
+#                            # (169.254/16 …) and restricted contacts never reach it. Settings > Network > Local network access
 
 # scrape:                    # scrape_url / crawl / map_site (design doc 38)
 #   concurrency: 5

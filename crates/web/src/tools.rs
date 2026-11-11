@@ -193,7 +193,7 @@ pub fn fetch_description(metas: &[ProviderMeta]) -> String {
          comes back as a picture you can look at under a one-line header, like read_file; a \
          text-only model gets the vision fallback's description or a note instead. Cloud \
          metadata endpoints are always refused; loopback and LAN destinations are refused when \
-         local network access is off and in a contact's turn.",
+         local network access is off and for a restricted contact.",
     );
     match metas.iter().find(|m| m.renders) {
         Some(m) => {

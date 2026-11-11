@@ -158,11 +158,7 @@ pub async fn invoke(
 ) -> anyhow::Result<tools::ToolOutput> {
     let session = runtime::SessionId::new();
     let lan = tools::egress::lan();
-    let no_lan = |on| tools::SetNoLan {
-        session,
-        turn: false,
-        on,
-    };
+    let no_lan = |on| tools::SetNoLan { session, on };
     if !lan {
         reg.ask(no_lan(true))
             .await
