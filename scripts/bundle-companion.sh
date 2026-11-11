@@ -1,9 +1,15 @@
 #!/bin/bash
-# Build `Theuth Companion.app` from the SwiftPM package with the Command Line Tools alone (no Xcode;
-# spike SA): `swift build -c release`, a hand-written Info.plist, PkgInfo, theuth's own tray glyph and .icns from
-# crates/desktop/icons, codesign (ad-hoc, or `THEUTH_SIGN_IDENTITY`), `codesign --verify --deep --strict`.
+# Build `Theuth Companion.app` from the SwiftPM package with Xcode's toolchain (189 D5: SwiftStreamingMarkdown's
+# `#Preview` blocks and asset catalogs do not build with the Command Line Tools): `swift build -c release`, a
+# hand-written Info.plist, PkgInfo, theuth's own tray glyph and .icns from crates/desktop/icons, codesign (ad-hoc, or
+# `THEUTH_SIGN_IDENTITY`), `codesign --verify --deep --strict`.
 # Output: target/release/companion/Theuth Companion.app. Nesting into the Tauri bundle is W1S's.
 set -euo pipefail
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+case "$DEV_DIR" in
+  *.app/Contents/Developer) ;;
+  *) echo "error: xcode-select -p is '${DEV_DIR:-unset}': SwiftStreamingMarkdown needs Xcode's toolchain (#Preview macros); run on the release Mac or install Xcode" >&2; exit 1 ;;
+esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PKG="$ROOT/crates/desktop/companion"
 OUT="${CARGO_TARGET_DIR:-$ROOT/target}/release/companion"
