@@ -132,6 +132,14 @@ impl VisionNote {
             .iter()
             .any(|o| o.status == VisionStatus::Answered && o.source == *source)
     }
+
+    /// An image with `fingerprint` (the same bytes and MIME) has a successful
+    /// observation here, whichever occurrence it was.
+    pub fn answered_bytes(&self, fingerprint: &str) -> bool {
+        self.observations
+            .iter()
+            .any(|o| o.status == VisionStatus::Answered && o.source.fingerprint == fingerprint)
+    }
 }
 
 impl VisionSource {
@@ -274,15 +282,22 @@ pub fn images(owner: ContextOwner, m: &ChatMessage, mask: &Mask) -> Vec<VisionIm
     out
 }
 
-/// Images whose source has no successful observation in an effective note
-/// (52 §5.1 step 1). The turn subtracts its own per-turn failure set.
+/// Images whose bytes have no successful observation in an effective note
+/// (52 §5.1 step 1; read-file-images §3: each distinct image is described
+/// once per session — a second occurrence of the same bytes, e.g. the same
+/// file read twice, reuses the first answer, matched by the `fp` both
+/// markers carry). The turn subtracts its own per-turn failure set.
 pub fn pending<'a>(
     images: &'a [VisionImage],
     notes: &BTreeMap<i64, VisionNote>,
 ) -> Vec<&'a VisionImage> {
     images
         .iter()
-        .filter(|im| !notes.values().any(|n| n.answered(&im.source)))
+        .filter(|im| {
+            !notes
+                .values()
+                .any(|n| n.answered_bytes(&im.source.fingerprint))
+        })
         .collect()
 }
 
@@ -655,41 +670,115 @@ pub fn note(
 
 // region:    --- Provider refusal
 
-/// Words a provider error uses for image input (lowercase, backticks removed).
-const IMAGE_TERMS: [&str; 4] = ["image", "vision", "multimodal", "multi-modal"];
+/// Phrases that say "this model takes no images" on their own: matched with
+/// or without a status, because local servers answer them with a 500
+/// (llama.cpp, Ollama) and a stream can carry them in an error event with no
+/// status at all. Lowercase, backticks removed.
+const STRONG_REFUSALS: [&str; 16] = [
+    "image input is not supported",
+    "image input not supported",
+    "images are not supported",
+    "does not support image",
+    "doesn't support image",
+    "does not support the image",
+    "doesn't support the image",
+    "does not support vision",
+    "doesn't support vision",
+    "vision is not supported",
+    "missing data required for image",
+    "not a multimodal model",
+    "is not multimodal",
+    "unknown variant image_url",
+    "image_url is only supported",
+    "at most 0 image",
+];
 
-/// Phrases that make an image mention mean "this model takes no images".
-const REFUSAL_TERMS: [&str; 16] = [
+/// Words that make a weak phrase about image input (a MIME `image/…` too).
+const IMAGE_TERMS: [&str; 10] = [
+    "image input",
+    "image content",
+    "image part",
+    "image block",
+    "images",
+    "image(s)",
+    "image/",
+    "vision",
+    "multimodal",
+    "multi-modal",
+];
+
+/// Weak refusal phrases: they count only next to an image term and a client
+/// status. Bare "unsupported" is not one: "unsupported image" is a defect of
+/// one image, not of the model.
+const WEAK_REFUSALS: [&str; 12] = [
     "not support",
     "doesn't support",
     "does not support",
-    "unsupported",
     "only supported",
     "not enabled",
-    "not a multimodal",
-    "not multimodal",
-    "unknown variant",
     "expected text",
-    "at most 0 image",
     "does not accept",
     "cannot accept",
     "incompatible",
     "invalid content type",
-    "missing data required for image",
+    "unsupported content type",
+    "unsupported media type",
 ];
 
-/// Whether provider error `err` says the model does not take image input
-/// (read-file-images notes §2). Narrow on purpose: a client status token
-/// (`400`, `415` or `422`, as genai renders `status: 400` / `status code
-/// '400'`) AND an image word AND a refusal phrase. An oversize or corrupt
-/// image ("image exceeds 5 MB maximum", "Invalid image"), a rate limit or
-/// any 5xx is not this: those stay the errors they are.
-pub fn rejects_images(err: &str) -> bool {
-    let e = err.to_lowercase().replace('`', "");
+/// `err` lowercased, backticks removed.
+fn norm(err: &str) -> String {
+    err.to_lowercase().replace('`', "")
+}
+
+/// `e` without identifier-like words (`generate_image`, `invalid_request_error`):
+/// a tool or field name is not the provider talking about image input.
+fn prose(e: &str) -> String {
+    e.split_whitespace()
+        .filter(|w| !w.contains('_'))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A standalone client status token in `e` among `codes`.
+fn status(e: &str, codes: &[&str]) -> bool {
     e.split(|c: char| !c.is_ascii_digit())
-        .any(|t| matches!(t, "400" | "415" | "422"))
-        && IMAGE_TERMS.iter().any(|t| e.contains(t))
-        && REFUSAL_TERMS.iter().any(|p| e.contains(p))
+        .any(|t| codes.contains(&t))
+}
+
+/// [`STRONG_REFUSALS`] alone: also what [`crate::compact::classify`] calls
+/// deterministic, so a 500 refusal is not resent with backoff.
+pub fn refuses_images_strongly(err: &str) -> bool {
+    let e = norm(err);
+    STRONG_REFUSALS.iter().any(|p| e.contains(p))
+}
+
+/// Whether provider error `err` says the model does not take image input
+/// (read-file-images notes §2): a [`STRONG_REFUSALS`] phrase with any status
+/// or none, or a client status (`400`, `415`, `422`) with an image term and a
+/// [`WEAK_REFUSALS`] phrase in the prose. A defect of one image ("image
+/// exceeds 5 MB", "Invalid image", "unsupported image", content policy) is
+/// not this: see [`image_caused`].
+pub fn rejects_images(err: &str) -> bool {
+    if refuses_images_strongly(err) {
+        return true;
+    }
+    let e = norm(err);
+    let p = prose(&e);
+    status(&e, &["400", "415", "422"])
+        && IMAGE_TERMS.iter().any(|t| p.contains(t))
+        && WEAK_REFUSALS.iter().any(|w| p.contains(w))
+}
+
+/// A client error that names an image but is not a model refusal: too large,
+/// too many, unreadable, refused by a content policy. The image stays in
+/// history, so the caller projects it through 52 for this turn's retry
+/// instead of resending it; the model is not marked. Overflow is excluded:
+/// compaction owns that.
+pub fn image_caused(err: &str) -> bool {
+    let e = norm(err);
+    status(&e, &["400", "413", "415", "422"])
+        && prose(&e).contains("image")
+        && !crate::compact::is_overflow(&e)
 }
 
 // endregion: --- Provider refusal
@@ -714,14 +803,6 @@ mod tests {
 
     fn owner(seq: i64) -> ContextOwner {
         ContextOwner::Message { seq }
-    }
-
-    fn bin(seq: i64, part: u32, image: Option<u32>) -> ContextTarget {
-        ContextTarget::Binary {
-            owner: owner(seq),
-            part,
-            image,
-        }
     }
 
     /// text, A, PDF, B (same bytes as A), text.
@@ -894,17 +975,22 @@ mod tests {
         );
         let mut notes = BTreeMap::new();
         notes.insert(20, n.clone());
+        // m7.p3 has m7.p1's bytes: described once, so not pending either.
         let p = pending(&all, &notes);
         assert_eq!(
             p.iter().map(|i| i.source.reference()).collect::<Vec<_>>(),
-            ["m7.p3", "m9.p0.i0", "m9.p0.i1", "m9.p1.i0"]
+            ["m9.p0.i0", "m9.p0.i1", "m9.p1.i0"]
         );
-        // Same-bytes sibling with a different target is still pending.
-        let mut forged = n;
-        forged.observations[0].source.target = bin(8, 1, None);
-        notes.insert(21, forged);
-        assert_eq!(pending(&all, &notes).len(), 4);
+        // Only an answered observation covers bytes: a failed one does not.
+        notes.clear();
+        let mut failed = n;
+        failed
+            .observations
+            .retain(|o| o.status == VisionStatus::Failed);
+        notes.insert(21, failed);
+        assert_eq!(pending(&all, &notes).len(), all.len());
 
+        let p: Vec<&VisionImage> = all.iter().skip(1).collect();
         let g = groups(&p, usize::MAX);
         assert_eq!(g.len(), 2, "one group per source row");
         assert_eq!(g[1].len(), 3);
@@ -1101,13 +1187,38 @@ mod tests {
                 "status 415: Unsupported Media Type: image/webp",
                 true,
             ),
-            // An image format the endpoint refuses counts too: replacing the
-            // image is what keeps the session going (the ingress guard only
-            // lets png/jpeg/gif/webp through, so this is the endpoint's limit).
+            // Local servers answer a text-only model with a 500.
+            (
+                "llama.cpp (ggml-org/llama.cpp#13566)",
+                "Web stream error for model 'qwen (adapter: OpenAI)'.\nCause: HTTP error.\nStatus: 500 Internal Server Error Internal Server Error\nBody: {\"error\":{\"code\":500,\"message\":\"image input is not supported - hint: if this is unexpected, you may need to provide the mmproj\",\"type\":\"server_error\"}}",
+                true,
+            ),
+            (
+                "ollama (ollama/ollama#9967)",
+                "Web stream error for model 'llama3 (adapter: OpenAI)'.\nCause: HTTP error.\nStatus: 500 Internal Server Error Internal Server Error\nBody: {\"error\":\"this model is missing data required for image input\"}",
+                true,
+            ),
+            // A refusal in a stream error event carries no status.
+            (
+                "sse error event (genai's text, captured from the scratch engine)",
+                "Error event in stream for model 'vlm (adapter: OpenAI)'. Body: {\"message\":\"image input is not supported by this model\",\"type\":\"invalid_request_error\"}",
+                true,
+            ),
+            // A defect of one image is not the model refusing images.
             (
                 "openai format",
                 r#"status 400. Body: {"error":{"message":"You uploaded an unsupported image. Please make sure your image is valid.","code":"invalid_image_format"}}"#,
-                true,
+                false,
+            ),
+            (
+                "openai content policy",
+                r#"status 400. Body: {"error":{"message":"Your input image may contain content that is not allowed by our safety system.","type":"invalid_request_error","code":"content_policy_violation"}}"#,
+                false,
+            ),
+            (
+                "tool named like an image",
+                "status 400: generate_image: parameter `seed` is not supported by this model",
+                false,
             ),
             // Size and corruption: the image is wrong, not the model.
             (
@@ -1146,13 +1257,48 @@ mod tests {
                 "status 400: tool_choice is not supported by this model",
                 false,
             ),
+        ] {
+            assert_eq!(rejects_images(err), want, "{backend}: {err}");
+        }
+        // Strong refusals are not resent with backoff, whatever their status.
+        assert_eq!(
+            crate::compact::classify(
+                "Status: 500 Internal Server Error\nBody: {\"error\":\"this model is missing data required for image input\"}"
+            ),
+            crate::compact::Failure::Deterministic
+        );
+    }
+
+    /// Image-caused client errors that are not refusals get the turn-only
+    /// projection; overflow, 5xx and errors about something else do not.
+    #[test]
+    fn image_caused_table() {
+        for (err, want) in [
             (
-                "no status",
-                "image input is not supported by this model",
+                "status code '400': image exceeds 5 MB maximum: 6120000 bytes > 5242880 bytes",
+                true,
+            ),
+            (
+                "status 400: Your input image may contain content that is not allowed by our safety system.",
+                true,
+            ),
+            (
+                "status: 400 At most 20 image(s) may be provided in one request.",
+                true,
+            ),
+            ("status 400: You uploaded an unsupported image.", true),
+            ("status 503: image service down", false),
+            (
+                "status 400: tool_choice is not supported by this model",
+                false,
+            ),
+            ("status 400: generate_image failed schema validation", false),
+            (
+                "413 Payload Too Large: request entity too large with image",
                 false,
             ),
         ] {
-            assert_eq!(rejects_images(err), want, "{backend}: {err}");
+            assert_eq!(image_caused(err), want, "{err}");
         }
     }
 }

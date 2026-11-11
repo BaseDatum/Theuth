@@ -1403,6 +1403,19 @@ impl Store {
         Ok(())
     }
 
+    /// Forget [`Store::refuse_images`] for `model` in session `id`: the user
+    /// re-picked the model, or the refusal turned out not to be one.
+    pub async fn allow_images(&self, id: SessionId, model: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM image_refusals WHERE session = ? AND model = ?")
+            .bind(id.to_string())
+            .bind(model)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The model ids recorded by [`Store::refuse_images`].
     pub async fn image_refusals(&self, id: SessionId) -> anyhow::Result<Vec<String>> {
         Ok(
@@ -2659,6 +2672,15 @@ impl Store {
              (SELECT COUNT(*) FROM todo_snapshots WHERE session_id = ?1) WHERE id = ?1",
         )
         .bind(&new)
+        .execute(&mut *tx)
+        .await?;
+        // read-file-images: a model that refused images still refuses them in the fork.
+        sqlx::query(
+            "INSERT OR IGNORE INTO image_refusals (session, model) \
+             SELECT ?1, model FROM image_refusals WHERE session = ?2",
+        )
+        .bind(&new)
+        .bind(&old)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;

@@ -1,86 +1,118 @@
 # 52 notes — read_file shows images; image input never breaks a session
 
-Status: **as-built · 2026-11-11**. Extends [52](52-vision-fallback.md). Sky's ask
-(2026-11-11): `read_file` on an image must give the agent the picture, and a
-model that cannot take images must never break the session: catch the error,
-drop the image from what is sent, put text in its place (the vision fallback's
-description when one is configured, else a note).
+Status: **as-built · 2026-11-11** (review round 1 applied). Extends
+[52](52-vision-fallback.md). Sky's ask (2026-11-11): `read_file` on an image
+must give the agent the picture, and a model that cannot take images must
+never break the session: catch the error, drop the image from what is sent,
+put text in its place (the vision fallback's description when one is
+configured, else a note).
 
 ## 1. Images in
 
 | Source | Path |
 |---|---|
-| `read_file` | Magic bytes (PNG, JPEG, GIF, WebP) → `tools::images::tool_output`: decoded, scaled to a long side of `MAX_EDGE` (1568, `computer_screenshot`'s `max_edge` default) and to at most `MAX_IMAGE_BYTES` (5 MB, the attachment cap), saved content-addressed under `<resources>/images/<session>`, attached as `ToolOutput.files`. Text part: one header line `[read_file <path>: image/png 1600×1100, 12 KB]`, plus `; scaled to W×H` when downscaled. |
-| `read_url` | The page fetch refuses `image/*` before the body (and now refuses image magic bytes under any other label); `read_url` then does one raw GET through `Fetcher::request` (same SSRF guard, `max_fetch_bytes` cap) and returns the picture the same way. |
-| Every attachment and tool file | `loop_::file_part` → `tools::images::for_provider`: MIME from the bytes (genai's `Binary::from_file` took it from the extension), decoded, scaled into `PROVIDER_MAX_SIDE` (8000 px) and 5 MB. An image the guard refuses, or a name that says image over bytes that are not a supported one, becomes the existing `[file … unreadable: …]` note. |
+| `read_file` | Magic bytes (PNG, JPEG, GIF, WebP) → `tools::images::tool_output`: `fit` to a long side of `MAX_EDGE` (1568, `computer_screenshot`'s `max_edge` default) and at most `SEND_MAX_BYTES`, saved content-addressed under `<resources>/images/<session>`, attached as `ToolOutput.files`. Text part: one header line `[read_file <path>: image/png 1600×1100, 12 KB]`, plus `; scaled to W×H` when downscaled or `; re-encoded as <mime>`. A known format no provider takes (BMP, TIFF, ICO, HEIC, AVIF) is a one-line refusal: "BMP images aren't supported …; convert it to PNG". |
+| `read_url` | The page fetch refuses `image/*` before the body (and image magic bytes under any other label); `read_url` then does one raw GET through `Fetcher::request` (same SSRF guard, `max_fetch_bytes` cap) and returns the picture the same way. Non-2xx, cut or undecodable: a text error. |
+| Every attachment and tool file | `loop_::file_part` on a blocking thread → `tools::images::for_provider`: MIME from the bytes (genai's `Binary::from_file` took it from the extension), decoded, `fit` to `PROVIDER_MAX_SIDE` (8000 px) and `SEND_MAX_BYTES`. An image the guard refuses, a decoder panic, or a name that says image over bytes that are not a supported one becomes the existing `[file … unreadable: …]` note. |
+
+`fit` (`tools::images`): decoded under side (20 000 px) and allocation (256 MiB)
+limits; EXIF orientation applied; a still PNG/JPEG that fits goes unchanged,
+anything else is re-encoded — GIF and WebP always, as a still PNG of the first
+frame (OpenAI takes only still GIFs), a rotated photo upright, a large one
+scaled (JPEG stays JPEG, else PNG, then JPEG with alpha flattened onto white,
+then halved while over the cap).
 
 Decisions:
 
+- `SEND_MAX_BYTES` is 3.75 MB, Bedrock's limit and the lowest common one, for
+  every provider. `MAX_IMAGE_BYTES` (5 MB) stays the ingress acceptance cap
+  (MCP blocks, python snapshots); anything between is re-encoded at
+  `file_part`.
 - `offset`/`limit`/`tail`/`ranges`/`outline` on an image are **refused** with a
   message naming them; `numbers` is ignored.
-- BMP, TIFF and HEIC are not added: the workspace `image` crate decodes only
-  png/jpeg/gif/webp. Such a file reads as text bytes in `read_file` as before;
-  as an attachment or tool file it is refused at ingress with a note.
-- `read_url` images over `max_fetch_bytes` (2 MiB default) are a text error.
-  Ceiling: raise the cap for image bodies if large web images matter.
 - The size guard runs at ingress, once per image. Images stored in history
   before this change are sent as stored.
+- Not done (NITs): `read_url`'s image cap stays `max_fetch_bytes` (2 MiB), and
+  an octet-stream image is downloaded twice (page probe, then raw GET).
 
 Every image source reaches the request through one of the two ingress points
 above and then through 52's `Turn::prepare_images`: user attachments
 (`user_message`), and every tool's `ToolOutput.files` in `run_batch` —
 `read_file`, `read_url`, `artifact_read`, `browser_screenshot`,
 `computer_screenshot`, `computer_clipboard_read(format=image)`, MCP image
-blocks, and the outer result of a python cell (52 §7.1 snapshots). None
-bypasses it.
+blocks, and the outer result of a python cell (52 §7.1 snapshots).
 
-## 2. A provider that refuses images
+## 2. Errors the images cause
 
 52 §4.1 says the fallback is not provider-error recovery. Sky's ask overrides
-that for one narrow class of error; nothing else changes.
+that for errors the images cause; nothing else changes.
 
-- **Classifier** `vision::rejects_images`: a client status token (`400`,
-  `415`, `422`) AND an image word (image, vision, multimodal) AND a refusal
-  phrase ("not supported", "unsupported", "only supported", "unknown variant",
-  "at most 0 image", …). Table test over OpenAI, OpenAI-compatible, DeepSeek,
-  vLLM, Anthropic, Bedrock, Groq and LiteLLM bodies; size ("image exceeds
-  5 MB"), dimension, "Invalid image", 429, 5xx and overflow bodies do not
-  match. One classifier for all backends: genai renders every backend's
-  status and body into the error string.
-- **On a match** in a round call (`Turn::round`, `Abort::Model`), when the
-  model was sent images: the model id joins `Shared::image_refusals` and the
-  store's local `image_refusals` table (migration `0058`), `Current::vision()` is false
-  for it from then on, and the round returns `Round::Retry`. The retry runs
-  52's preparation: fallback description when `agent.vision_model` is set,
-  else the notice (now naming the refusal). A marked model is never sent an
-  image again, so the retry happens once.
-- **Durability: reapplied from the remembered flag.** The flag is loaded from
-  the store once per session at its first round; 52's projection is a request
-  copy, so the stored transcript keeps its images and stays consistent, and a
-  reload, resume or restart sends that model text. The table is local, not
-  attached to the session log: `SESSIONS_WIRE_SCHEMA` stays 53 so session
-  sync between mixed versions is not held for this. A fork or a replica does
-  not carry the flag and re-learns it with one refused call. Deleting the
-  session deletes its rows.
-- **Retry fails too:** the ordinary round error (`model: …`), the turn ends,
-  the session takes the next message.
-- **Switch to a text-only model with images in history:** 52 §7.2, unchanged;
-  now covered by a test.
-- Only round calls are classified. A summary/harvest continuation refused for
-  images reports its error as before; the next round marks the model.
+**Classifiers** (`vision`), with table tests over OpenAI, OpenAI-compatible
+(genai's text captured from the scratch engine), DeepSeek, vLLM, Anthropic,
+Bedrock, Groq, LiteLLM, llama.cpp, Ollama and an SSE error event:
+
+- `rejects_images` — the model takes no images. A *strong* phrase ("image
+  input is not supported", "does not support image", "missing data required
+  for image", "not a multimodal model", "unknown variant image_url",
+  "image_url is only supported", "at most 0 image", …) matches with any
+  status or none: llama.cpp and Ollama answer 500, a stream error event has no
+  status. `compact::classify` calls a strong refusal deterministic, so it is
+  never resent with backoff. A *weak* phrase ("not supported", "incompatible",
+  "unsupported media type", …) needs a 400/415/422 and an image term
+  ("image input", "images", "image/…", "vision", "multimodal", …) in the prose;
+  identifier-like words (`generate_image`) are ignored. Bare "unsupported" is
+  not a refusal: "unsupported image" is one image's defect.
+- `image_caused` — a 400/413/415/422 naming an image that is not a refusal:
+  too large, too many ("At most 20 image(s)"), unreadable, content policy.
+  Overflow is excluded (compaction owns it).
+
+**Round** (`Turn::image_failure`), only when the frame holds images:
+
+- Refusal → the model is marked text-only for the session (`Shared::
+  image_refusals` + the local `image_refusals` table, migration `0058`), one
+  notice row says "<model>'s provider refused an image (<reason>). This chat
+  now sends <model> text in place of images … Re-select the model to send it
+  images again.", and the round retries once through 52 (fallback
+  description, else the notice).
+- Undo: **re-picking the model** (`set_model` → `SwitchModel`) clears its mark.
+- The retry refused the same way with no image in it → the refusal was not
+  about images: the mark is cleared, a notice says so, and the turn ends with
+  the ordinary `model: …` error. The next message sends images again.
+- `image_caused` → the images go through 52 for the rest of this turn only,
+  one retry, the model not marked. The image stays in history, so a later turn
+  sends it natively again and, if refused again, retries again once.
+- Retry fails otherwise: the ordinary round error; the session takes the next
+  message.
+
+**Compaction and harvest**: `resolve()` loads the flag too, so `/compact` and
+`/knowledge harvest` in a fresh process never send a marked model images. A
+summariser or harvest continuation refused for its images (either class) marks
+the model on a refusal and resends once with the images stripped.
+
+**Durability**: reapplied from the remembered flag; 52's projection is a
+request copy, so the stored transcript keeps its images. The table is local
+(not attached to the session log): `SESSIONS_WIRE_SCHEMA` stays 53. A fork
+copies the session's marks; a replica re-learns with one refused call;
+deleting the session deletes its rows.
+
+**Switch to a text-only model with images in history**: 52 §7.2, unchanged.
 
 ## 3. The fallback itself
 
-Already 52: an erroring, timing-out or unset fallback yields a `NOT SEEN`
-observation or the notice and the turn continues; a failed occurrence is not
-retried within the turn. The vision call's timeout is `VISION_TIMEOUT`
-(= `SUMMARISE_TIMEOUT`, 300 s; 3 s under test).
-
-Caching stays per occurrence (source coordinates + content fingerprint), as
-52 built it: one consultation per image occurrence, never repeated once
-answered. Reading the same file twice is a second occurrence and is consulted
-again: 52 §5.3 "reattaching an image creates a new occurrence and
-consultation", kept. No content-hash dedupe across occurrences was added.
+- An erroring, timing-out or unset fallback yields a `NOT SEEN` observation or
+  the notice and the turn continues (52).
+- Each auxiliary call (question, vision) is bounded by `AUX_TIMEOUT` = 75 s
+  (was the summariser's 300 s).
+- A fallback whose vision call fails or times out is not asked again in this
+  session for `FALLBACK_COOLDOWN` (10 min); one that refuses images is not
+  asked again in this session at all. Meanwhile images get the notice naming
+  why. A malformed reply (the call worked) does not start a cooldown; the next
+  user turn retries it once, as 52 built.
+- **Each distinct image is described once per session**: `vision::pending`
+  matches answered observations by content fingerprint, so the same bytes
+  (the same file read twice, the same screenshot) reuse the first answer; both
+  markers carry the same `fp`. This replaces 52 §5.3's "reattaching an image
+  creates a new occurrence and consultation" at Sky's rule.
 
 ## 4. Prompting
 

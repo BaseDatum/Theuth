@@ -1114,6 +1114,11 @@ mod tests {
                 .mount(&server)
                 .await;
         }
+        Mock::given(method("GET"))
+            .and(path("/missing.png"))
+            .respond_with(ResponseTemplate::new(404).set_body_raw(png.clone(), "image/png"))
+            .mount(&server)
+            .await;
         let tool = FetchTool {
             actor: WebActor::spawn(WebActor::with_config(
                 crate::WebConfig::default(),
@@ -1151,5 +1156,32 @@ mod tests {
         let out = tool.call(read("/broken.png"), cx()).await.unwrap();
         assert!(out.is_error && out.files.is_empty());
         assert!(out.content.contains("invalid image/png"), "{}", out.content);
+
+        // Non-2xx: never a picture, never bytes.
+        let out = tool.call(read("/missing.png"), cx()).await.unwrap();
+        assert!(
+            out.files.is_empty()
+                && !out.content.starts_with("[read_url")
+                && !out.content.contains("PNG"),
+            "{}",
+            out.content
+        );
+
+        // Over the byte cap: a text error, no picture.
+        let small = FetchTool {
+            fetcher: Arc::new(
+                Fetcher::new("test", 32, 5)
+                    .unwrap()
+                    .allowing(vec![*server.address()]),
+            ),
+            ..tool
+        };
+        let out = small.call(read("/pic.png"), cx()).await.unwrap();
+        assert!(out.is_error && out.files.is_empty(), "{}", out.content);
+        assert!(
+            out.content.contains("too large") || out.content.contains("larger than"),
+            "{}",
+            out.content
+        );
     }
 }

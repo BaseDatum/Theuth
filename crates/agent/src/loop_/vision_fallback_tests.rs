@@ -44,6 +44,8 @@ pub(super) const MAIN_USAGE: (u32, u32) = (37, 7);
 /// What the `rejecting` model's provider answers a request with an image part.
 const IMAGE_REFUSAL: &str =
     "{\"error\":{\"message\":\"image input is not supported by this model\"}}";
+/// llama.cpp's 500 for an image sent to a model loaded without its projector.
+const LLAMACPP_REFUSAL: &str = "{\"error\":{\"code\":500,\"message\":\"image input is not supported - hint: if this is unexpected, you may need to provide the mmproj\",\"type\":\"server_error\"}}";
 
 /// The summariser's reply: long enough not to count as degenerate.
 fn summary() -> String {
@@ -190,7 +192,23 @@ impl Respond for Fake {
         }
         // A model its catalog calls vision-capable whose provider refuses any
         // image part, with the body of the brief's fake server.
-        if model(&b) == "rejecting" && !image_urls(&b).is_empty() {
+        let images = !image_urls(&b).is_empty();
+        if model(&b) == "rejecting" && images {
+            return ResponseTemplate::new(400).set_body_string(IMAGE_REFUSAL);
+        }
+        // llama.cpp's answer for a model without mmproj (ggml-org/llama.cpp#13566).
+        if model(&b) == "llamacpp" && images {
+            return ResponseTemplate::new(500).set_body_string(LLAMACPP_REFUSAL);
+        }
+        // A refusal inside the event stream: HTTP 200, an SSE error event.
+        if model(&b) == "sserefuse" && images {
+            return ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {IMAGE_REFUSAL}\n\n"));
+        }
+        // Says "image input is not supported" whether or not an image was sent
+        // (a mis-classified refusal), until the user says AFTER-LIAR.
+        if model(&b) == "liar" && !all_text(&b).contains("AFTER-LIAR") {
             return ResponseTemplate::new(400).set_body_string(IMAGE_REFUSAL);
         }
         let text = all_text(&b);
@@ -386,6 +404,9 @@ impl Harness {
                 "rejecting": model("rejecting", true),
                 "faulty": model("faulty", true),
                 "slow": model("slow", true),
+                "llamacpp": model("llamacpp", true),
+                "sserefuse": model("sserefuse", true),
+                "liar": model("liar", true),
                 "tiny": tiny,
                 // 137G R1-10: the endless turn-budget test's own model id, so no
                 // other scenario's learned bytes/token reaches it.
@@ -635,7 +656,17 @@ impl Harness {
         style: CompactStyle,
         head: Option<String>,
     ) -> (u32, Vec<AgentEvent>) {
-        let (mut turn, _) = self.turn("openai/textonly", CancellationToken::new()).await;
+        self.compact_as("openai/textonly", style, head).await
+    }
+
+    /// [`Harness::compact_with`] on `main`'s session.
+    async fn compact_as(
+        &mut self,
+        main: &str,
+        style: CompactStyle,
+        head: Option<String>,
+    ) -> (u32, Vec<AgentEvent>) {
+        let (mut turn, _) = self.turn(main, CancellationToken::new()).await;
         let epoch = turn.compact_now(Some(style), head).await.unwrap();
         let events = self
             .drain_until(|e| matches!(e, AgentEvent::Compacted { .. }))
@@ -832,21 +863,41 @@ async fn vision_scenarios() {
     tools::registry::start(&reg_rt).await.unwrap();
     tools::secrets::install(Arc::new(Vault));
 
-    text_only_main_asks_fallback_looks_main_answers().await;
-    vision_capable_main_bypasses_a_broken_fallback().await;
-    text_only_main_without_fallback_gets_one_untyped_notice().await;
-    malformed_fallback_reply_fails_explicitly_and_retries_next_turn().await;
-    cancellation_during_the_question_appends_nothing().await;
-    two_images_in_one_input_share_one_consultation().await;
-    steered_image_is_prepared_before_the_next_main_call().await;
-    manual_summary_compaction_inspects_pending_images_first().await;
-    leaked_secret_in_the_question_is_redacted_before_it_leaves().await;
-    cut_compaction_budgets_the_tail_and_folds_tool_results().await;
-    empty_reply_is_surfaced_as_an_error().await;
-    read_file_image_takes_the_fallback_path().await;
-    provider_refusing_images_marks_the_model_and_retries_once().await;
-    failing_or_slow_fallback_yields_the_note_and_the_turn_completes().await;
-    switch_to_text_only_with_images_in_history().await;
+    // Each scenario's future is built inside `boxed` and lives on the heap: a
+    // debug build gives every `.await`ed temporary its own slot in this
+    // function's poll frame, and nineteen inline turn-sized futures pass the
+    // 2 MiB test-thread stack.
+    let scenarios: [fn() -> Scenario; 19] = [
+        || boxed(text_only_main_asks_fallback_looks_main_answers()),
+        || boxed(vision_capable_main_bypasses_a_broken_fallback()),
+        || boxed(text_only_main_without_fallback_gets_one_untyped_notice()),
+        || boxed(malformed_fallback_reply_fails_explicitly_and_retries_next_turn()),
+        || boxed(cancellation_during_the_question_appends_nothing()),
+        || boxed(two_images_in_one_input_share_one_consultation()),
+        || boxed(steered_image_is_prepared_before_the_next_main_call()),
+        || boxed(manual_summary_compaction_inspects_pending_images_first()),
+        || boxed(leaked_secret_in_the_question_is_redacted_before_it_leaves()),
+        || boxed(cut_compaction_budgets_the_tail_and_folds_tool_results()),
+        || boxed(empty_reply_is_surfaced_as_an_error()),
+        || boxed(read_file_image_takes_the_fallback_path()),
+        || boxed(provider_refusing_images_marks_the_model_and_retries_once()),
+        || boxed(failing_or_slow_fallback_yields_the_note_and_the_turn_completes()),
+        || boxed(switch_to_text_only_with_images_in_history()),
+        || boxed(local_and_stream_refusals_are_caught()),
+        || boxed(retry_refused_the_same_way_clears_the_mark()),
+        || boxed(summariser_refusal_and_compact_after_restart()),
+        || boxed(unreadable_attachment_becomes_a_note()),
+    ];
+    for scenario in scenarios {
+        scenario().await;
+    }
+}
+
+/// A scenario future on the heap (see [`vision_scenarios`]).
+type Scenario = std::pin::Pin<Box<dyn Future<Output = ()>>>;
+
+fn boxed(f: impl Future<Output = ()> + 'static) -> Scenario {
+    Box::pin(f)
 }
 
 /// Gate "Main-authored question" / "Privacy and accounting" / "Stable prefix".
@@ -1599,8 +1650,14 @@ async fn provider_refusing_images_marks_the_model_and_retries_once() {
     assert!(!image_urls(&reqs[1]).is_empty());
     let retry = all_text(&reqs[2]);
     assert!(
-        retry.contains("openai/rejecting (its provider refused image input) is text-only")
+        retry.contains("openai/rejecting (its provider refused an image) is text-only")
             && retry.contains("no vision fallback model is configured"),
+        "{retry}"
+    );
+    // One user-visible notice row says what happened and how to undo it.
+    assert!(
+        retry.contains("openai/rejecting's provider refused an image (")
+            && retry.contains("Re-select the model to send it images again."),
         "{retry}"
     );
     assert_eq!(
@@ -1609,6 +1666,12 @@ async fn provider_refusing_images_marks_the_model_and_retries_once() {
     );
     let rows = h.store.messages(h.id).await.unwrap();
     assert_eq!(text_of(&rows.last().unwrap().1.content), FINAL);
+    // A fork keeps the mark.
+    let fork = h.store.fork(h.id, None, None).await.unwrap();
+    assert_eq!(
+        h.store.image_refusals(fork).await.unwrap(),
+        ["openai/rejecting"]
+    );
 
     // Next turn, fresh session (resume): no image is sent again.
     let events = h.run("openai/rejecting", "And the colour?", false).await;
@@ -1706,6 +1769,111 @@ pub(super) async fn python_cell_image_takes_the_same_path(pool: Arc<Pool>) {
     );
     assert_eq!(with_images(&reqs), 1);
     assert!(all_text(&reqs[3]).contains(ANSWER));
+}
+
+/// A local server's 500 refusal (llama.cpp) and a refusal inside the event
+/// stream are caught like a 400: one refused request, no backoff resend, the
+/// marked retry completes.
+async fn local_and_stream_refusals_are_caught() {
+    for main in ["openai/llamacpp", "openai/sserefuse"] {
+        let mut h = Harness::new(fake()).await;
+        h.set_fallback(None);
+        let events = h.run(main, "What is in the picture?", true).await;
+        assert_eq!(errors(&events), Vec::<String>::new(), "{main}");
+        assert_eq!(stop_reason(&events), "stop", "{main}");
+        let reqs = h.requests().await;
+        assert_eq!(reqs.len(), 2, "{main}: refused, retry: {reqs:#?}");
+        assert_eq!(with_images(&reqs), 1, "{main}");
+        assert_eq!(h.store.image_refusals(h.id).await.unwrap(), [main]);
+    }
+}
+
+/// A "refusal" that is not about images: the images-off retry is refused the
+/// same way, so the mark is cleared, the turn ends with a readable error, and
+/// the next message works — with its image, the model was never text-only.
+async fn retry_refused_the_same_way_clears_the_mark() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    let events = h.run("openai/liar", "Look at this.", true).await;
+    assert_eq!(stop_reason(&events), "error");
+    let errs = errors(&events);
+    assert!(
+        errs.iter()
+            .any(|e| e.starts_with("model: ") && e.contains("image input is not supported")),
+        "{errs:?}"
+    );
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 2, "refused, retry refused: {reqs:#?}");
+    assert_eq!(with_images(&reqs), 1);
+    assert!(h.store.image_refusals(h.id).await.unwrap().is_empty());
+    let events = h.run("openai/liar", "AFTER-LIAR: and now?", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert!(!image_urls(reqs.last().unwrap()).is_empty(), "images again");
+}
+
+/// A summariser refused for its images marks the model and resends without
+/// them; after a restart (a fresh session over the store) `/compact` sends
+/// a marked model no image at all.
+async fn summariser_refusal_and_compact_after_restart() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    h.run("openai/eyes", "Hello there.", false).await;
+    h.run("openai/eyes", "Look at this.", true).await;
+    let before = h.requests().await.len();
+    let (epoch, _) = h
+        .compact_as("openai/rejecting", CompactStyle::Summary, None)
+        .await;
+    assert_eq!(epoch, 1);
+    let reqs = h.requests().await;
+    let summariser: Vec<&Value> = reqs[before..]
+        .iter()
+        .filter(|r| all_text(r).contains(compact::COMPACT_INSTRUCTION))
+        .collect();
+    assert_eq!(summariser.len(), 2, "refused, resent: {reqs:#?}");
+    assert!(!image_urls(summariser[0]).is_empty());
+    assert!(image_urls(summariser[1]).is_empty());
+    assert_eq!(
+        h.store.image_refusals(h.id).await.unwrap(),
+        ["openai/rejecting"]
+    );
+
+    // Marked in an earlier process: the very first request carries no image.
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    h.run("openai/eyes", "Hello there.", false).await;
+    h.run("openai/eyes", "Look at this.", true).await;
+    h.store
+        .refuse_images(h.id, "openai/rejecting")
+        .await
+        .unwrap();
+    let before = h.requests().await.len();
+    h.compact_as("openai/rejecting", CompactStyle::Summary, None)
+        .await;
+    let reqs = h.requests().await;
+    assert!(reqs.len() > before);
+    assert_eq!(with_images(&reqs[before..]), 0, "{reqs:#?}");
+}
+
+/// An attachment whose bytes are not the image its name says becomes the
+/// "unreadable" note, never an image part a provider would reject.
+async fn unreadable_attachment_becomes_a_note() {
+    let mut h = Harness::new(fake()).await;
+    let junk = h.dir.join("junk.png");
+    std::fs::write(&junk, b"not a png at all").unwrap();
+    let (turn, tid) = h.turn("openai/eyes", CancellationToken::new()).await;
+    turn.run(tid, vec![h.input_files("See attached.", vec![junk])])
+        .await;
+    let events = h.drain().await;
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(with_images(&reqs), 0);
+    let text = all_text(&reqs[0]);
+    assert!(
+        text.contains("junk.png unreadable: image/png is not a supported image"),
+        "{text}"
+    );
 }
 
 // endregion: --- read-file-images

@@ -521,6 +521,11 @@ pub enum Failure {
 /// `status: 4..`, `status code 4..` and `http 4..`) or an auth/schema word;
 /// the rest is transient. Same heuristic as grok `session_compact.rs:145-217`.
 pub fn classify(err: &str) -> Failure {
+    // read-file-images: "this model takes no images" is the same answer next
+    // time whatever its status (llama.cpp and Ollama send a 500).
+    if crate::vision::refuses_images_strongly(err) {
+        return Failure::Deterministic;
+    }
     let e = err.to_lowercase();
     let (mut rate, mut client) = (false, false);
     for code in e

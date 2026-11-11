@@ -10,11 +10,16 @@ use std::path::{Path, PathBuf};
 
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader, Limits};
+use image::metadata::Orientation;
+use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
 use sha2::{Digest, Sha256};
 
-/// Largest encoded image a provider accepts (Anthropic's 5 MB is the binding cap).
+/// Largest encoded image accepted at ingress ([`validate_bytes`], MCP, snapshots).
 pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Largest encoded image [`fit`] sends: Bedrock's 3.75 MB, the lowest common
+/// provider limit (Anthropic 5 MB, OpenAI 20 MB).
+pub const SEND_MAX_BYTES: u64 = 3_750_000;
 
 /// Longest side `read_file`/`read_url` scale an image to: `computer_screenshot`'s
 /// `max_edge` default, Anthropic's recommended long edge (larger is downscaled
@@ -31,6 +36,9 @@ const MAX_SIDE: u32 = 10_000;
 /// Largest side [`fit`] decodes before scaling (a full-page screenshot is
 /// tall); the decoder's allocation limit still bounds memory.
 const FIT_MAX_SIDE: u32 = 20_000;
+
+/// Decoder allocation cap for [`fit`] (an RGBA 8000×8000 is 256 MiB).
+const DECODE_MAX_ALLOC: u64 = 256 * 1024 * 1024;
 
 /// Largest source file [`for_provider`] reads before scaling.
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
@@ -60,6 +68,30 @@ pub fn sniff(bytes: &[u8]) -> Option<ImageFormat> {
         .filter(|f| SUPPORTED.contains(f))
 }
 
+/// A known image format theuth cannot send (`TIFF`, `ICO`, `BMP`, `HEIC`,
+/// `AVIF`), from its magic bytes; checked tightly enough that a text file
+/// starting with "BM" is not one.
+#[must_use]
+pub fn unsupported_kind(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(b"II*\0") || b.starts_with(b"MM\0*") {
+        return Some("TIFF");
+    }
+    if b.len() >= 6 && b.starts_with(&[0, 0, 1, 0]) && b[4..6] != [0, 0] {
+        return Some("ICO");
+    }
+    if b.len() >= 14 && b.starts_with(b"BM") && b[6..10] == [0; 4] {
+        return Some("BMP");
+    }
+    if b.len() >= 12 && &b[4..8] == b"ftyp" {
+        return match &b[8..12] {
+            b"heic" | b"heix" | b"hevc" | b"heim" | b"heis" | b"mif1" | b"msf1" => Some("HEIC"),
+            b"avif" | b"avis" => Some("AVIF"),
+            _ => None,
+        };
+    }
+    None
+}
+
 /// An image ready to attach: [`fit`]'s result.
 #[derive(Debug)]
 pub struct Fitted<'a> {
@@ -75,24 +107,33 @@ pub struct Fitted<'a> {
 
 /// `bytes` as an image every provider accepts. Format from the magic bytes;
 /// the image is decoded (a corrupt file is an error here, not a provider
-/// 400 later). Unchanged when its long side is within `max_edge` and it is
-/// at most [`MAX_IMAGE_BYTES`]; else scaled to a long side of `max_edge` and
-/// re-encoded (JPEG stays JPEG, the rest becomes PNG, then JPEG, then half
-/// the size while still over the byte cap). Errors carry no payload text.
+/// 400 later) under side and allocation limits, and its EXIF orientation is
+/// applied. A still PNG or JPEG whose long side is within `max_edge` and
+/// that is at most [`SEND_MAX_BYTES`] goes unchanged; anything else is
+/// re-encoded — GIF and WebP always, as a still PNG of the first frame
+/// (they may be animated), a rotated photo upright — after scaling to a long
+/// side of `max_edge`: JPEG stays JPEG, the rest becomes PNG, then JPEG
+/// (alpha flattened onto white), then half the size while still over the
+/// byte cap. Errors carry no payload text.
 pub fn fit(bytes: &[u8], max_edge: u32) -> Result<Fitted<'_>, String> {
     let format = sniff(bytes).ok_or("not a supported image (png, jpeg, gif, webp)")?;
+    let mime = format.to_mime_type();
+    let invalid = |e: image::ImageError| format!("invalid {mime}: {e}");
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = Limits::default();
     limits.max_image_width = Some(FIT_MAX_SIDE);
     limits.max_image_height = Some(FIT_MAX_SIDE);
+    limits.max_alloc = Some(DECODE_MAX_ALLOC);
     reader.limits(limits);
-    let mime = format.to_mime_type();
-    let mut img = reader
-        .decode()
-        .map_err(|e| format!("invalid {mime}: {e}"))?;
+    let mut decoder = reader.into_decoder().map_err(invalid)?;
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut img = DynamicImage::from_decoder(decoder).map_err(invalid)?;
+    img.apply_orientation(orientation);
     let source = img.dimensions();
     let long = source.0.max(source.1);
-    if long <= max_edge && bytes.len() as u64 <= MAX_IMAGE_BYTES {
+    let still = matches!(format, ImageFormat::Png | ImageFormat::Jpeg)
+        && orientation == Orientation::NoTransforms;
+    if still && long <= max_edge && bytes.len() as u64 <= SEND_MAX_BYTES {
         return Ok(Fitted {
             bytes: Cow::Borrowed(bytes),
             mime,
@@ -103,23 +144,23 @@ pub fn fit(bytes: &[u8], max_edge: u32) -> Result<Fitted<'_>, String> {
     if long > max_edge {
         img = img.resize(max_edge, max_edge, FilterType::Triangle);
     }
-    let (mut out, mut mime) = if format == ImageFormat::Jpeg {
+    let (mut out, mut mime) = if format == ImageFormat::Jpeg && !img.color().has_alpha() {
         (jpeg(&img)?, "image/jpeg")
     } else {
         (png(&img)?, "image/png")
     };
-    if out.len() as u64 > MAX_IMAGE_BYTES && mime == "image/png" {
+    if out.len() as u64 > SEND_MAX_BYTES && mime == "image/png" {
         (out, mime) = (jpeg(&img)?, "image/jpeg");
     }
-    while out.len() as u64 > MAX_IMAGE_BYTES && img.width().min(img.height()) > 64 {
+    while out.len() as u64 > SEND_MAX_BYTES && img.width().min(img.height()) > 64 {
         img = img.resize(img.width() / 2, img.height() / 2, FilterType::Triangle);
         out = jpeg(&img)?;
         mime = "image/jpeg";
     }
-    if out.len() as u64 > MAX_IMAGE_BYTES {
+    if out.len() as u64 > SEND_MAX_BYTES {
         return Err(format!(
-            "still over {} MB after scaling",
-            MAX_IMAGE_BYTES >> 20
+            "still over {:.2} MB after scaling",
+            SEND_MAX_BYTES as f64 / 1e6
         ));
     }
     let size = img.dimensions();
@@ -138,9 +179,22 @@ fn png(img: &DynamicImage) -> Result<Vec<u8>, String> {
     Ok(out.into_inner())
 }
 
+/// JPEG of `img`, alpha flattened onto white (JPEG has none).
 fn jpeg(img: &DynamicImage) -> Result<Vec<u8>, String> {
+    let rgb = if img.color().has_alpha() {
+        let rgba = img.to_rgba8();
+        image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+            let p = rgba.get_pixel(x, y).0;
+            let a = u16::from(p[3]);
+            image::Rgb(
+                [p[0], p[1], p[2]].map(|c| ((u16::from(c) * a + 255 * (255 - a)) / 255) as u8),
+            )
+        })
+    } else {
+        img.to_rgb8()
+    };
     let mut out = Vec::new();
-    DynamicImage::ImageRgb8(img.to_rgb8())
+    DynamicImage::ImageRgb8(rgb)
         .write_with_encoder(JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY))
         .map_err(|e| format!("jpeg encode: {e}"))?;
     Ok(out)
@@ -150,8 +204,9 @@ fn jpeg(img: &DynamicImage) -> Result<Vec<u8>, String> {
 /// one guard every attachment and tool image passes before it is stored and
 /// sent. `None` when its magic bytes are not a supported image (a PDF goes
 /// its own way); otherwise [`fit`] to [`PROVIDER_MAX_SIDE`] and
-/// [`MAX_IMAGE_BYTES`], so nothing a provider rejects for size or a corrupt
-/// payload leaves.
+/// [`SEND_MAX_BYTES`], so nothing a provider rejects for size, animation or
+/// a corrupt payload leaves. Blocking (decode/encode): callers run it on a
+/// blocking thread.
 pub fn for_provider(path: &Path) -> anyhow::Result<Option<(Vec<u8>, &'static str)>> {
     if sniff(&read_regular(path, 64)?).is_none() {
         return Ok(None);
@@ -388,6 +443,50 @@ pub(crate) mod tests {
                 .unwrap_err()
                 .starts_with("invalid image/png")
         );
+    }
+
+    /// GIF and WebP may be animated (OpenAI takes still GIF only): even a
+    /// small one is sent as a still PNG of its first frame.
+    #[test]
+    fn gif_and_webp_become_still_png() {
+        for format in [ImageFormat::Gif, ImageFormat::WebP] {
+            let src = encoded(format, 6, 4, 9);
+            let f = fit(&src, MAX_EDGE).unwrap();
+            assert_eq!(
+                (f.mime, f.source, f.scaled),
+                ("image/png", (6, 4), None),
+                "{format:?}"
+            );
+            assert_eq!(sniff(&f.bytes), Some(ImageFormat::Png));
+        }
+    }
+
+    /// A header claiming 65535×65535 is refused by the decoder limits before
+    /// any pixel buffer is allocated.
+    #[test]
+    fn decompression_bomb_header_is_an_error() {
+        let mut gif = b"GIF89a\xff\xff\xff\xff\x00\x00\x00".to_vec();
+        gif.extend_from_slice(b",\x00\x00\x00\x00\xff\xff\xff\xff\x00\x02\x02D\x01\x00;");
+        let e = fit(&gif, MAX_EDGE).unwrap_err();
+        assert!(e.starts_with("invalid image/gif"), "{e}");
+    }
+
+    #[test]
+    fn unsupported_kinds_are_named_and_text_is_not() {
+        let bmp = [
+            b"BM".as_slice(),
+            &[0x46, 0, 0, 0, 0, 0, 0, 0, 0x36, 0, 0, 0],
+        ]
+        .concat();
+        assert_eq!(unsupported_kind(&bmp), Some("BMP"));
+        assert_eq!(unsupported_kind(b"II*\0\x08\0\0\0"), Some("TIFF"));
+        assert_eq!(unsupported_kind(&[0, 0, 1, 0, 1, 0, 16, 16]), Some("ICO"));
+        assert_eq!(
+            unsupported_kind(b"\0\0\0\x18ftypheic\0\0\0\0"),
+            Some("HEIC")
+        );
+        assert_eq!(unsupported_kind(b"BMW cars are fast, everyone says."), None);
+        assert_eq!(unsupported_kind(&encoded(ImageFormat::Png, 2, 2, 1)), None);
     }
 
     #[test]

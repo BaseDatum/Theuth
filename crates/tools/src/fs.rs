@@ -136,6 +136,11 @@ impl Tool for ReadFile {
         if crate::images::sniff(&bytes).is_some() {
             return read_image(&shown, bytes, &a, &cx).await;
         }
+        if let Some(kind) = crate::images::unsupported_kind(&bytes) {
+            anyhow::bail!(
+                "{shown}: {kind} images aren't supported (png, jpeg, gif, webp are); convert it to PNG and read that"
+            );
+        }
         let (note, text) = text_of(bytes, &shown).await?;
         let mut notes = Vec::new();
         if a.outline {
@@ -1207,6 +1212,22 @@ mod tests {
         std::fs::write(&p, &small[..small.len() / 2]).unwrap();
         let e = read_err(args(&p, None, None)).await;
         assert!(e.contains("invalid image/png"), "{e}");
+
+        // A known format no provider takes: one line, never mojibake.
+        let p = dir.0.join("old.bmp");
+        let bmp = [
+            b"BM".as_slice(),
+            &[0x46, 0, 0, 0, 0, 0, 0, 0, 0x36, 0, 0, 0, 40, 0],
+        ]
+        .concat();
+        std::fs::write(&p, bmp).unwrap();
+        assert_eq!(
+            read_err(args(&p, None, None)).await,
+            format!(
+                "{}: BMP images aren't supported (png, jpeg, gif, webp are); convert it to PNG and read that",
+                p.display()
+            )
+        );
     }
 
     #[tokio::test]
