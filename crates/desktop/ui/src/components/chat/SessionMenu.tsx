@@ -54,6 +54,7 @@ import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { useModels } from './ModelMenu'
 import { useMessagingSheet } from './messaging-sheet'
+import { useToolsSheet } from './tools-sheet'
 import { type Ctx, openSurface, run, type Surface, surfaceOf } from './slash'
 import { PopoutTerminalButton } from './TerminalViewer'
 
@@ -559,6 +560,7 @@ export function SessionMenu({ session }: { session: string }) {
           <DropdownMenuItem onSelect={() => openSurface('prompt')}>Show prompt</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('jobs')}>Jobs</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => useMessagingSheet.getState().show(session)}>Messaging…</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => useToolsSheet.getState().show(session)}>Tools…</DropdownMenuItem>
           {/* 183 §12.10: contacts live on this machine; a phone or iPad never shares (§12.8). */}
           {hasLocal() && <SharingItems session={session} onShare={() => setShare(true)} />}
         </DropdownMenuContent>

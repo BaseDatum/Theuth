@@ -19,6 +19,7 @@ import { EMPTY, openDraftSession, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { notebookKeys } from '@/lib/notebooks-rpc'
 import { openContextPicker, type ShakeCategory } from './ContextPicker'
 import { openBroadcastDialog } from './BroadcastDialog'
+import { useToolsSheet } from './tools-sheet'
 
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
 export const COMMANDS: readonly { name: string; hint: string; desc: string }[] = [
@@ -159,6 +160,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     hint: '[profile|clear]',
     desc: 'AWS profile Bedrock signs with, node-wide (picker without arg)',
   },
+  { name: '/tools', hint: '[add <url|json>|sync]', desc: 'same as /mcp' },
   { name: '/exit', hint: '', desc: 'same as /quit' },
 ]
 
@@ -472,8 +474,10 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       )
       return
     }
+    // In a chat both open its Tools sheet (its own "Off here" switches); without one, Settings › Tools › MCP.
     case '/mcp':
-      if (!arg) return navigate({ to: '/settings/$tab', params: { tab: 'tools' }, search: session ? { session } : {} })
+    case '/tools':
+      if (!arg) return session ? useToolsSheet.getState().show(session) : navigate({ to: '/settings/$tab', params: { tab: 'tools' } })
       if (sub === 'sync') return synced(await api.sync_mcp())
       if (sub === 'add' && rest) {
         if (gitUrl(rest)) {
@@ -486,7 +490,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         toast(`added ${name}`)
         return
       }
-      throw new Error('usage: /mcp [add <url|json> | sync]')
+      throw new Error(`usage: ${cmd} [add <url|json> | sync]`)
     case '/acp':
       if (!arg) return settings(navigate, 'harnesses')
       if (sub === 'add' && rest) {

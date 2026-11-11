@@ -5,7 +5,7 @@ import { Fragment, useState } from 'react'
 import { toast } from 'sonner'
 import { type HomeAction, homeActions, homeChip, stateText } from '@/components/library/mcp-home'
 import { segments } from '@/components/library/names'
-import { type Action, Dot, Empty, Section, toastSync, useAction } from '@/components/settings/shared'
+import { type Action, Dot, Empty, Section, errorText, toastSync, useAction } from '@/components/settings/shared'
 import { type Engine, engines } from '@/components/tasks/home'
 import { useMesh } from '@/components/tasks/queries'
 import {
@@ -56,6 +56,8 @@ function serverSwitch(s: McpServer): SwitchState {
 
 /** The gate select's `annotations` sentinel: no line in `mcp/config.yaml`. */
 const ANNOTATIONS = 'annotations'
+/** Why a "this chat" switch is greyed on Settings › Tools › MCP: it needs the chat it would apply to. */
+const CHAT_HINT = 'Open from a chat: ⋯ › Tools… or /tools'
 const RISKS: [Exclude<Gate, 'off'>, string][] = [
   ['read_only', 'Read-only'],
   ['mutating', 'Mutating'],
@@ -143,7 +145,8 @@ function useMcpActions(session: string | null): Actions {
 }
 
 /** Settings › Tools › MCP: the MCP servers (design doc 37 §4) — status, risk gates, login, home machine (187), per-tool
- * overrides. `?session=` is the chat the tab was opened from (`/mcp`, `/tools?session=`); the "off here" switches need one. */
+ * overrides. `?session=` is the chat an old `/tools?session=` link carried; the "off here" switches need one. In a chat,
+ * ⋯ › Tools…, `/tools` and `/mcp` open these switches in the chat's own sheet (`ToolsSheet`). */
 export function McpServersTab() {
   const session = useSearch({ from: '/settings/$tab', select: (s) => s.session ?? null })
   return <Tools session={session} />
@@ -184,6 +187,7 @@ export function Tools({ session }: { session: string | null }) {
           {status.data.homes_problem} — homes stay as they were and nothing is written until it reads again.
         </p>
       )}
+      {servers.error && <p className="py-2 text-[13px] break-words text-destructive">{errorText(servers.error)}</p>}
       {servers.data?.length === 0 && (
         <Empty>
           No tool servers yet. An MCP server gives the harness tools (files, browsers, APIs…); add one with a git URL
@@ -261,7 +265,7 @@ function ServerRow({
   const on = sw !== 'always' && s.connected
   // 187: a server not running here says why (homed elsewhere, not installed here, …).
   const status = sw === 'always' ? 'off' : s.connected ? 'connected' : s.auth === 'required' ? 'login required' : stateText(s, machines ?? [])
-  const sessionHint = !session ? 'Open a chat first' : !live ? 'Not connected' : undefined
+  const sessionHint = !session ? CHAT_HINT : !live ? 'Not connected' : undefined
   return (
     <Collapsible
       open={open}
@@ -431,7 +435,7 @@ function ToolRow({
         <Switch
           checked={!t.hidden}
           disabled={!session || t.registered === null}
-          title={!session ? 'Open a chat first' : undefined}
+          title={!session ? CHAT_HINT : undefined}
           onCheckedChange={(v) =>
             t.registered && act.hidden.mutate({ names: [t.registered], hidden: !v })
           }
