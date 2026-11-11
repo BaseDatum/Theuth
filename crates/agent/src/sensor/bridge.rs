@@ -78,7 +78,9 @@ static SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
     ]
 });
 
-/// The bridge's `http_request`, built once: 46 §5's bounds, its own client.
+/// The bridge's `http_request`, built once: 46 §5's bounds, its own client,
+/// the local-network twin built; each call scopes it with the profile's
+/// `allow_private_network`.
 static HTTP: LazyLock<Result<web::http::HttpRequestTool, String>> = LazyLock::new(|| {
     web::fetch::Fetcher::new_with_timeouts(
         "theuth-sensor",
@@ -87,6 +89,7 @@ static HTTP: LazyLock<Result<web::http::HttpRequestTool, String>> = LazyLock::ne
         web::http::TIMEOUT,
         web::fetch::CONNECT_TIMEOUT,
     )
+    .and_then(|f| f.with_private_network(true))
     .map(|f| web::http::HttpRequestTool {
         fetcher: Arc::new(f),
         deadline: web::http::TIMEOUT,
@@ -393,9 +396,12 @@ impl Bridge<'_> {
             tools::secrets::expand(h).map_err(|e| format!("http_request: {e}"))?;
         }
         let tool = HTTP.as_ref().map_err(|e| format!("http client: {e}"))?;
-        let mut out = ErasedTool::call(tool, args.take(), self.cx.clone())
-            .await
-            .unwrap_or_else(|e| ToolOutput::err(e.to_string()));
+        let mut out = tools::egress::scope(
+            self.profile.allow_private_network,
+            ErasedTool::call(tool, args.take(), self.cx.clone()),
+        )
+        .await
+        .unwrap_or_else(|e| ToolOutput::err(e.to_string()));
         let body = out
             .structured
             .as_ref()

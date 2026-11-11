@@ -7073,6 +7073,76 @@ mod full_inbox_tests {
         assert_eq!(a.caps.get(&inbox), Some(&tools::Risk::Mutating));
     }
 
+    /// 16 §5 (2026-11-11), Sky's ruling (20:28): a full inbox runs with the agent's own tools,
+    /// so its calls get the local-network grant like the owner's (the fetcher's setting decides
+    /// the rest), also after an actor start; once its share is no longer granted it is capped,
+    /// a restricted state, and the public web only.
+    #[test]
+    fn a_full_inbox_keeps_the_lan_a_capped_one_does_not() {
+        struct Probe;
+        #[async_trait::async_trait]
+        impl tools::Tool for Probe {
+            const NAME: &'static str = "read_url";
+            const RISK: tools::Risk = tools::Risk::ReadOnly;
+            type Args = serde_json::Value;
+            fn description(&self) -> String {
+                String::new()
+            }
+            async fn call(
+                &self,
+                _: Self::Args,
+                _: tools::ToolCx,
+            ) -> anyhow::Result<tools::ToolOutput> {
+                Ok(tools::ToolOutput::ok(tools::egress::lan().to_string()))
+            }
+        }
+        crate::with_test_registry(async {
+            let (scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+            let reg = tools::registry::start(&runtime::Runtime::new(
+                figment::Figment::new(),
+                scratch.0.clone(),
+            ))
+            .await
+            .unwrap();
+            reg.ask(tools::RegisterTool(Arc::new(Probe))).await.unwrap();
+            let lan = |session| {
+                let reg = reg.clone();
+                async move {
+                    reg.ask(tools::Invoke(tools::ToolCall {
+                        id: "c".into(),
+                        name: "read_url".into(),
+                        args: serde_json::json!({}),
+                        session,
+                        quiet: true,
+                    }))
+                    .await
+                    .unwrap()
+                    .content
+                }
+            };
+            a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+            let binding = a
+                .store
+                .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+                .await
+                .unwrap();
+            route(&mut a, binding.id);
+            let inbox = admit(&mut a, binding.id).await.unwrap();
+            assert!(!a.network.is_inbox(inbox), "full: no contact limits");
+            assert_eq!(lan(inbox).await, "true", "a full inbox");
+            forget(&mut a, inbox);
+            a.reinstall_contact_limits(inbox).await.unwrap();
+            assert_eq!(lan(inbox).await, "true", "after an actor start");
+            // No longer granted: capped fail-closed, a restricted state (the public web only).
+            a.apply_contact_limits(ContactLimits {
+                contact: "bob".into(),
+                full: Vec::new(),
+            })
+            .await;
+            assert!(reg.ask(tools::ContactScoped(inbox)).await.unwrap());
+        });
+    }
+
     /// 186 review 1, 2 (D6): an agent inbox shared in full runs under the agent's own ceiling,
     /// read live: kept across a restart before the roster joins (the stored one), tightened
     /// on a running inbox when the roster reads a stricter one, capped while the agent is gone

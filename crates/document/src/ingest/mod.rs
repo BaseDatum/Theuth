@@ -434,12 +434,13 @@ impl IngestActor {
         Ok(actor)
     }
 
-    fn enqueue(&mut self, me: ActorRef<Self>, id: DocId, refresh: bool) {
+    /// Run the job under `lan`, the local-network grant of whoever queued it (16 §5).
+    fn enqueue(&mut self, me: ActorRef<Self>, id: DocId, refresh: bool, lan: bool) {
         self.active.insert(id.clone());
         let (ctx, sem) = (self.ctx.clone(), self.sem.clone());
         tokio::spawn(async move {
             let _permit = sem.acquire_owned().await;
-            job::run(&ctx, &id, refresh).await;
+            tools::egress::scope(lan, job::run(&ctx, &id, refresh)).await;
             let _ = me.tell(Done(id)).await;
         });
     }
@@ -465,6 +466,9 @@ pub struct Add {
     pub args: SourceAddArgs,
     /// Who adds (the item row's `added_by`).
     pub by: Principal,
+    /// The adder's `tools::egress::lan()`, read in its own task: the URL pre-check may pass a
+    /// local address only with it (16 §5, amended 2026-11-11).
+    pub lan: bool,
 }
 
 impl Message<Add> for IngestActor {
@@ -483,7 +487,7 @@ impl Message<Add> for IngestActor {
             return Err(format!("no such notebook: {}", args.notebook));
         }
         // Pre-flight (§4.1 end): the origin and, when it cannot work, the permanent reason.
-        let (origin, refusal) = routes::preflight(&c, &args)
+        let (origin, refusal) = routes::preflight(&c, &args, m.lan)
             .await
             .map_err(|e| format!("{e:#}"))?;
         let key = origin.key();
@@ -573,6 +577,14 @@ impl Message<Add> for IngestActor {
             .source_upsert(&row)
             .await
             .map_err(|e| format!("{e:#}"))?;
+        // 16 §5 (2026-11-11): the first adder's grant is the card's; a re-add never rewrites it
+        // (its own run below still goes under the re-adder's).
+        if fresh {
+            c.store
+                .set_source_lan(&id, m.lan)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+        }
         c.store
             .item_add(&NotebookItem {
                 notebook: args.notebook.clone(),
@@ -589,7 +601,7 @@ impl Message<Add> for IngestActor {
                 .source_set_status(&id, SourceStatus::Queued, None, row.attempts)
                 .await
                 .map_err(|e| format!("{e:#}"))?;
-            self.enqueue(ctx.actor_ref().clone(), id.clone(), false);
+            self.enqueue(ctx.actor_ref().clone(), id.clone(), false, m.lan);
         }
         c.rt.publish(SourceEvent::Changed {
             source: id.clone(),
@@ -609,6 +621,16 @@ impl Message<Add> for IngestActor {
 pub struct Refresh {
     /// The source.
     pub id: DocId,
+    /// The refresher's `tools::egress::lan()`; the job runs under `refresh_lan` of it and the
+    /// stored grant, and a URL source is pre-checked again under that (16 §5, 2026-11-11).
+    pub lan: bool,
+}
+
+/// 16 §5 (2026-11-11): the grant a refresh runs under: the refresher's, unless the card's
+/// adder had none (`Some(false)` stays); a card from before grants were kept (`None`) follows
+/// its refresher.
+fn refresh_lan(stored: Option<bool>, refresher: bool) -> bool {
+    refresher && stored != Some(false)
 }
 
 impl Message<Refresh> for IngestActor {
@@ -626,12 +648,40 @@ impl Message<Refresh> for IngestActor {
             .await
             .map_err(|e| format!("{e:#}"))?
             .ok_or_else(|| format!("no such source: {}", m.id))?;
+        // 16 §5 (2026-11-11): the refresher's grant, unless the card's adder had none (a stored
+        // `false` stays); a card from before grants were kept follows its refresher. Nothing is
+        // written back. A URL source is pre-checked again under it.
+        let store = &self.ctx.store;
+        let stored = store.source_lan(&m.id).await.unwrap_or_else(|e| {
+            tracing::error!(source = %m.id, "source grant lookup failed, no LAN: {e:#}");
+            Some(false)
+        });
+        let lan = refresh_lan(stored, m.lan);
+        if let SourceOrigin::Url { url, .. } = &row.origin {
+            let (_, refusal) = routes::url::preflight(&self.ctx.rt, url, lan)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            if let Some(why) = refusal {
+                store
+                    .source_set_status(&m.id, SourceStatus::Failed, Some(&why), row.attempts)
+                    .await
+                    .map_err(|e| format!("{e:#}"))?;
+                self.ctx
+                    .rt
+                    .publish(SourceEvent::Changed {
+                        source: m.id.clone(),
+                        status: SourceStatus::Failed,
+                    })
+                    .await;
+                return self.get(&m.id).await;
+            }
+        }
         self.ctx
             .store
             .source_set_status(&m.id, SourceStatus::Queued, None, row.attempts)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        self.enqueue(ctx.actor_ref().clone(), m.id.clone(), true);
+        self.enqueue(ctx.actor_ref().clone(), m.id.clone(), true, lan);
         self.ctx
             .rt
             .publish(SourceEvent::Changed {
@@ -697,13 +747,16 @@ fn ingest() -> anyhow::Result<ActorRef<IngestActor>> {
 // ---- The four entry points -----------------------------------------------------------------------
 
 /// Pre-flight the origin, write the `sources` row (`new`) and the `Source` document, file it in the
-/// notebook, queue the job; answers at once with the card. Hub only (`NotHub` off the hub).
+/// notebook, queue the job; answers at once with the card. Hub only (`NotHub` off the hub). A URL on
+/// the local network passes only inside the caller's `tools::egress` grant (an owner's tool call, the
+/// owner's RPC) and with `web.allow_private_network`; otherwise it is refused as private.
 pub async fn source_add(
     _actor: &ActorRef<DocumentActor>,
     args: SourceAddArgs,
     by: Principal,
 ) -> anyhow::Result<Source> {
-    flat(ingest()?.ask(Add { args, by }).await).map_err(|e| anyhow::anyhow!(e))
+    let lan = tools::egress::lan();
+    flat(ingest()?.ask(Add { args, by, lan }).await).map_err(|e| anyhow::anyhow!(e))
 }
 
 /// One source with its ingest state. Any engine.
@@ -720,17 +773,39 @@ pub async fn source_list(
 }
 
 /// Re-run the job from the origin or the blob (§4.2); refused while `running | queued`. Hub only.
+/// It runs under the caller's `tools::egress` grant unless the source's first adder had none
+/// (`refresh_lan`), and a URL source is pre-checked again (16 §5, 2026-11-11).
 pub async fn source_refresh(
     _actor: &ActorRef<DocumentActor>,
     id: DocId,
     _by: Principal,
 ) -> anyhow::Result<Source> {
-    flat(ingest()?.ask(Refresh { id }).await).map_err(|e| anyhow::anyhow!(e))
+    let lan = tools::egress::lan();
+    flat(ingest()?.ask(Refresh { id, lan }).await).map_err(|e| anyhow::anyhow!(e))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 16 §5 (2026-11-11): a refresh runs under the refresher's grant; only an adder's stored
+    /// `false` sticks, and a legacy card (no stored grant) gets the owner's LAN back.
+    #[test]
+    fn a_refresh_keeps_only_a_stored_false() {
+        for (stored, refresher, want) in [
+            (None, true, true),
+            (Some(true), true, true),
+            (Some(false), true, false),
+            (None, false, false),
+            (Some(true), false, false),
+        ] {
+            assert_eq!(
+                refresh_lan(stored, refresher),
+                want,
+                "{stored:?} {refresher}"
+            );
+        }
+    }
 
     #[test]
     fn cap_keeps_the_first_n_chars_and_says_so() {

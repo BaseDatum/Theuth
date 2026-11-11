@@ -191,8 +191,9 @@ pub fn fetch_description(metas: &[ProviderMeta]) -> String {
          hosts (HN, Reddit, npm, PyPI, crates.io, arXiv, Wikipedia, Stack Overflow) are read from \
          their JSON API unless source: page. An image URL (Content-Type image/*, or image bytes) \
          comes back as a picture you can look at under a one-line header, like read_file; a \
-         text-only model gets the vision fallback's description or a note instead. Private, \
-         loopback and link-local destinations are refused.",
+         text-only model gets the vision fallback's description or a note instead. Cloud \
+         metadata endpoints are always refused; loopback and LAN destinations are refused when \
+         local network access is off and for a restricted contact.",
     );
     match metas.iter().find(|m| m.renders) {
         Some(m) => {
@@ -267,7 +268,10 @@ async fn read_page(
         Ok(parsed) => match tokio::time::timeout(
             render_cap.min(budget),
             actor.ask(Tracked {
-                message: Read(parsed),
+                message: Read {
+                    url: parsed,
+                    lan: tools::egress::lan(),
+                },
                 activity,
             }),
         )
@@ -471,6 +475,8 @@ impl Tool for SearchTool {
             let budget = Duration::from_millis(cfg.read_budget_ms.max(1));
             let render_cap = Duration::from_millis(cfg.render_cap_ms.max(1));
             let activity = activity::current();
+            // The reads run in spawned tasks: carry this call's local-network grant.
+            let lan = tools::egress::lan();
             let mut set = JoinSet::new();
             for (i, url) in inflight.iter().enumerate() {
                 let fut = read_page(
@@ -483,7 +489,7 @@ impl Tool for SearchTool {
                     render_cap,
                     budget,
                 );
-                set.spawn(async move { (i, fut.await) });
+                set.spawn(tools::egress::scope(lan, async move { (i, fut.await) }));
             }
             let phase = Instant::now();
             let mut finished: Vec<Option<ReadPage>> = vec![None; inflight.len()];
@@ -568,12 +574,16 @@ impl Tool for FetchTool {
         };
         let format = a.format.unwrap_or_default();
         let resp = if a.rendered.unwrap_or(false) {
-            let url = match check_url(&a.url).await {
+            let url = match check_url(&a.url, self.fetcher.reaches_private()).await {
                 Ok(u) => u,
                 Err(e) => return Ok(ToolOutput::err(e.to_string())),
             };
             let start = Instant::now();
-            let r = match self.actor.ask(Tracked::new(Render(url))).await {
+            let render = Render {
+                url,
+                lan: tools::egress::lan(),
+            };
+            let r = match self.actor.ask(Tracked::new(render)).await {
                 Ok(r) => r,
                 Err(kameo::error::SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
                 Err(e) => anyhow::bail!("web actor unavailable: {e}"),
@@ -974,15 +984,19 @@ mod tests {
         ));
         let fetcher = Arc::new(Fetcher::new("test", 1024, 1).unwrap());
         let start = Instant::now();
-        let page = read_page(
-            actor,
-            None,
-            fetcher,
-            "https://example.com/app".into(),
-            "query".into(),
-            2500,
-            Duration::from_millis(300),
-            Duration::from_secs(6),
+        // The owner's read (16 §5): without the grant only `scrape` would be asked.
+        let page = tools::egress::scope(
+            true,
+            read_page(
+                actor,
+                None,
+                fetcher,
+                "https://example.com/app".into(),
+                "query".into(),
+                2500,
+                Duration::from_millis(300),
+                Duration::from_secs(6),
+            ),
         )
         .await;
         assert!(

@@ -80,6 +80,9 @@ pub struct ToolRegistry {
     allow_only: HashMap<SessionId, HashSet<String>>,
     /// The turn-scoped allowlist of a contact's turn, from [`SetAllowOnly`] with `turn`.
     turn_allow_only: HashMap<SessionId, HashSet<String>>,
+    /// 16 §5 (2026-11-11): sessions a plugin runs a tool call under without the local-network
+    /// grant it holds itself (a notebook source's ingest job), from [`SetNoLan`].
+    no_lan: HashSet<SessionId>,
     /// `<data_dir>/config.yaml`, for the persistent switch.
     config_path: PathBuf,
     /// Per-root file capability from [`InstallResources`] (51 §4.5); a
@@ -900,6 +903,7 @@ impl Message<Forget> for ToolRegistry {
             self.turn_cap.remove(s);
             self.allow_only.remove(s);
             self.turn_allow_only.remove(s);
+            self.no_lan.remove(s);
             crate::seat::forget(*s);
         }
     }
@@ -1100,6 +1104,15 @@ impl ToolRegistry {
                 None => return false,
             }
         }
+    }
+
+    /// 16 §5 (2026-11-11): a call of `id` may reach the local network unless `id` is in a
+    /// restricted (capped) contact state ([`Self::contact_scoped`]: the public web only) or a
+    /// plugin ran it without the grant ([`SetNoLan`]). A full-share contact turn or full inbox
+    /// runs with the agent's own tools and ceiling (190), so the LAN follows the setting there
+    /// like in the owner's own turns (Sky, 2026-11-11 20:28).
+    fn lan_allowed(&self, id: SessionId) -> bool {
+        !self.contact_scoped(id) && !self.no_lan.contains(&id)
     }
 
     /// 67 §6.3: an MCP tool outside the allowlist of the agent `id` works for.
@@ -1359,6 +1372,8 @@ impl ToolRegistry {
         let journal = self.journal.clone();
         let resources = self.resources_for(call.session);
         let inflight = self.inflight.clone();
+        // 16 §5 (2026-11-11): only an owner's call may reach the local network.
+        let lan = self.lan_allowed(call.session);
         let kind = Kind::Invoke {
             tool: call.name.clone(),
             call_id: call.id.clone(),
@@ -1404,6 +1419,7 @@ impl ToolRegistry {
                     journal,
                     promote_after,
                     inflight,
+                    lan,
                 ))
                 .await;
             drop(running);
@@ -1598,6 +1614,29 @@ impl Message<ContactScoped> for ToolRegistry {
 
     async fn handle(&mut self, m: ContactScoped, _: &mut Context<Self, Self::Reply>) -> bool {
         self.contact_scoped(m.0)
+    }
+}
+
+/// `ask` (16 §5, 2026-11-11): tool calls of `session` run without the local network (`on`), or
+/// with it again. For a plugin that calls a tool on behalf of a caller whose grant it carries
+/// (a notebook source's ingest job, `document::ingest`).
+#[derive(Clone, Copy, Debug)]
+pub struct SetNoLan {
+    /// The session.
+    pub session: SessionId,
+    /// Set or lift.
+    pub on: bool,
+}
+
+impl Message<SetNoLan> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetNoLan, _: &mut Context<Self, Self::Reply>) {
+        if m.on {
+            self.no_lan.insert(m.session);
+        } else {
+            self.no_lan.remove(&m.session);
+        }
     }
 }
 
@@ -1957,6 +1996,7 @@ async fn invoke(
     journal: Arc<dyn Journal>,
     promote_after: Option<Duration>,
     inflight: Arc<Mutex<HashMap<(SessionId, String), CancellationToken>>>,
+    lan: bool,
 ) -> ToolOutput {
     let session = call.session;
     let call_id = call.id.clone();
@@ -2021,13 +2061,15 @@ async fn invoke(
     // `started` before the body runs.
     journal.call_started(session, &call_id).await;
     // Own task so a panicking tool is an error output, not a dead registry.
-    // Task-locals do not cross `spawn`: re-enter both scopes on the spawned
+    // Task-locals do not cross `spawn`: re-enter the scopes on the spawned
     // future, so the body sees `current()` (a panic there marks the operation
-    // unknown) and a gated tool reads *this* admission at dispatch rather than
-    // a fresh generation minted by an off→on since the check above (50 §8).
-    let body = activity.scope(communication::scope(admitted, async move {
-        tool.call(call.args, cx).await
-    }));
+    // unknown), a gated tool reads *this* admission at dispatch rather than
+    // a fresh generation minted by an off→on since the check above (50 §8),
+    // and the web tools read the session's `egress::lan()`.
+    let body = activity.scope(communication::scope(
+        admitted,
+        crate::egress::scope(lan, async move { tool.call(call.args, cx).await }),
+    ));
     let key = (session, call_id.clone());
     lock(&inflight).insert(key.clone(), cancel.clone());
     let mut handle = tokio::spawn(body);
@@ -2229,6 +2271,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             turn_cap: HashMap::new(),
             allow_only: HashMap::new(),
             turn_allow_only: HashMap::new(),
+            no_lan: HashSet::new(),
             config_path: rt.data_dir.join("config.yaml"),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(&rt.data_dir),
@@ -2301,6 +2344,7 @@ pub(crate) mod tests {
             turn_cap: HashMap::new(),
             allow_only: HashMap::new(),
             turn_allow_only: HashMap::new(),
+            no_lan: HashSet::new(),
             config_path: PathBuf::new(),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(std::path::Path::new("/tmp")),
@@ -3490,6 +3534,84 @@ pub(crate) mod tests {
             reg.ask(Allowlisted(chat, locals())).await.unwrap(),
             locals()
         );
+    }
+
+    /// 16 §5 (2026-11-11): restricted (capped) contact states stay on the public web: a capped
+    /// contact turn in a shared chat, a capped inbox and its subagent run with `egress::lan()`
+    /// false; the chat is the owner's again once the turn ends; a caller outside any registry
+    /// scope is treated as restricted. Full shares keep the LAN (Sky's ruling, 20:28).
+    #[tokio::test]
+    async fn restricted_contact_states_stay_off_the_local_network() {
+        struct Probe;
+        #[async_trait::async_trait]
+        impl Tool for Probe {
+            const NAME: &'static str = "read_url";
+            const RISK: Risk = Risk::ReadOnly;
+            type Args = serde_json::Value;
+            fn description(&self) -> String {
+                String::new()
+            }
+            async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+                Ok(ToolOutput::ok(crate::egress::lan().to_string()))
+            }
+        }
+        let reg = registry(vec![Arc::new(Probe)], None);
+        let lan = |s: SessionId| {
+            let reg = reg.clone();
+            async move { reg.ask(Invoke(call("read_url", s))).await.unwrap().content }
+        };
+        let (owner, inbox, child, chat) = (
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+        );
+        reg.tell(SetParent {
+            session: child,
+            parent: inbox,
+        })
+        .await
+        .unwrap();
+        reg.tell(SetAllowOnly {
+            session: inbox,
+            tools: Some(vec!["read_url".into()]),
+            turn: false,
+        })
+        .await
+        .unwrap();
+        let turn = |tools: Option<Vec<String>>| SetAllowOnly {
+            session: chat,
+            tools,
+            turn: true,
+        };
+        reg.tell(turn(Some(vec!["read_url".into()]))).await.unwrap();
+        assert_eq!(lan(owner).await, "true");
+        for s in [inbox, child, chat] {
+            assert_eq!(lan(s).await, "false", "{s}");
+        }
+        reg.tell(turn(None)).await.unwrap();
+        assert_eq!(lan(chat).await, "true");
+        assert!(!crate::egress::lan());
+
+        // Full shares (190): no allowlist, no cap. Sky, 2026-11-11 20:28: a full-share contact
+        // turn or full inbox runs with the agent's own tools and ceiling, so the LAN works there
+        // exactly as in the owner's turns (the setting is the fetcher's half). Only a plugin's
+        // marker ([`SetNoLan`]: an ingest job without the grant) takes it away.
+        let (full_inbox, full_child, job) = (SessionId::new(), SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: full_child,
+            parent: full_inbox,
+        })
+        .await
+        .unwrap();
+        for s in [full_inbox, full_child, chat] {
+            assert_eq!(lan(s).await, "true", "{s}");
+        }
+        let marker = |on| SetNoLan { session: job, on };
+        reg.ask(marker(true)).await.unwrap();
+        assert_eq!(lan(job).await, "false");
+        reg.ask(marker(false)).await.unwrap();
+        assert_eq!(lan(job).await, "true");
     }
 
     /// 183 Z4 (W-40): an allowlist holds only what a contact may ever be granted, whoever sent

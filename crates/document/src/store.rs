@@ -61,6 +61,9 @@ const CREATE_SOURCES: &str = "CREATE TABLE IF NOT EXISTS sources (\
     fetched_ms INTEGER, content_sha TEXT, changed_since INTEGER, \
     bytes INTEGER, words INTEGER, duration_ms INTEGER, pages INTEGER, meta TEXT, \
     insights INTEGER NOT NULL DEFAULT 0, hlc TEXT)";
+/// 16 §5 (2026-11-11): the local-network grant of a source's ingest jobs ([`Store::source_lan`]).
+const CREATE_SOURCE_LAN: &str =
+    "CREATE TABLE IF NOT EXISTS source_lan (id TEXT PRIMARY KEY, lan INTEGER NOT NULL)";
 /// 171 §13.2 (W-g): the latest run of each note cell, capped text, replicated to members and guests.
 /// 184 §6.4 (W-h): `payload` is the whole `CellLatest` as JSON (`engine` inside), written whole by
 /// every upsert; readers prefer it, and `''` (a pre-184 row or writer) means the old columns.
@@ -204,6 +207,7 @@ impl Store {
             CREATE_NBI_NOTEBOOK,
             CREATE_NBI_ITEM,
             CREATE_SOURCES,
+            CREATE_SOURCE_LAN,
             CREATE_CELL_LATEST,
             CREATE_CELL_LATEST_DOC,
         ] {
@@ -1349,6 +1353,29 @@ impl Store {
             .execute(&self.db)
             .await?;
         Ok(())
+    }
+
+    /// 16 §5 (2026-11-11): the local-network grant of the caller who added `id` (written once,
+    /// when the source is first added). Engine-local.
+    pub async fn set_source_lan(&self, id: &DocId, lan: bool) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO source_lan (id, lan) VALUES (?, ?) \
+             ON CONFLICT (id) DO UPDATE SET lan = excluded.lan",
+        )
+        .bind(id.as_str())
+        .bind(lan)
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// [`Self::set_source_lan`]'s grant; `None` for a source added before grants were kept.
+    pub async fn source_lan(&self, id: &DocId) -> anyhow::Result<Option<bool>> {
+        let row: Option<(bool,)> = sqlx::query_as("SELECT lan FROM source_lan WHERE id = ?")
+            .bind(id.as_str())
+            .fetch_optional(&self.db)
+            .await?;
+        Ok(row.map(|(lan,)| lan))
     }
 
     /// The `sources` row, when there is one.

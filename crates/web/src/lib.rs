@@ -88,6 +88,10 @@ pub struct WebConfig {
     /// When page fetches use the Chrome-emulating `wreq` client: `always`
     /// (default), `on_challenge`, `never` (122 revision 1).
     pub impersonate: fetch::client::Impersonate,
+    /// The web tools reach localhost, LAN addresses and `.local` names (16 §5,
+    /// amended 2026-11-11). Cloud metadata endpoints never; restricted (capped)
+    /// contact states never (`tools::egress`). Read at start: a change applies after a restart.
+    pub allow_private_network: bool,
 }
 
 impl Default for WebConfig {
@@ -115,6 +119,7 @@ impl Default for WebConfig {
             accept_language: "en-US,en;q=0.9".to_owned(),
             header_ladder: true,
             impersonate: fetch::client::Impersonate::default(),
+            allow_private_network: true,
         }
     }
 }
@@ -157,17 +162,21 @@ impl runtime::Plugin for WebPlugin {
                     cfg.impersonate,
                     cfg.header_ladder,
                     Some(&cfg.accept_language),
-                ),
+                )
+                .with_private_network(cfg.allow_private_network)?,
         );
         // Own client: the page fetcher's 8 s per-hop timeout and 2 MiB cap are
         // page policy; the API tool's bounds are fixed by 46 §5.
-        let api_fetcher = Arc::new(fetch::Fetcher::new_with_timeouts(
-            &cfg.user_agent,
-            http::MAX_BYTES,
-            cfg.max_redirects,
-            http::TIMEOUT,
-            fetch::CONNECT_TIMEOUT,
-        )?);
+        let api_fetcher = Arc::new(
+            fetch::Fetcher::new_with_timeouts(
+                &cfg.user_agent,
+                http::MAX_BYTES,
+                cfg.max_redirects,
+                http::TIMEOUT,
+                fetch::CONNECT_TIMEOUT,
+            )?
+            .with_private_network(cfg.allow_private_network)?,
+        );
         let rt = rt.clone();
         tokio::spawn(async move {
             let vault = secrets::handle(&rt).await;

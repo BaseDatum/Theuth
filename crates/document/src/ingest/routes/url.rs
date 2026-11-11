@@ -11,11 +11,19 @@ use crate::notebook::SourceOrigin;
 /// A fetch of one page, ladder included.
 pub const DEADLINE: Duration = Duration::from_secs(120);
 
-/// SSRF guard (122 §5) at pre-flight: a private or blocked address is a permanent refusal.
-pub async fn preflight(url: &str) -> anyhow::Result<(SourceOrigin, Option<String>)> {
+/// SSRF guard (122 §5) at pre-flight: a blocked address is a permanent refusal. The local network
+/// passes only when `lan` (the adder's `tools::egress` grant: an owner, never a contact or an
+/// unknown caller) and `web.allow_private_network` both say so (16 §5, amended 2026-11-11).
+pub async fn preflight(
+    rt: &runtime::Runtime,
+    url: &str,
+    lan: bool,
+) -> anyhow::Result<(SourceOrigin, Option<String>)> {
     let url = url.trim().to_owned();
     let canonical = web::url::canonicalize(&url).map(|c| c.key);
-    let refusal = match web::fetch::check_url(&url).await {
+    let web_cfg: web::WebConfig = rt.section("web").unwrap_or_default();
+    let private = lan && web_cfg.allow_private_network;
+    let refusal = match web::fetch::check_url(&url, private).await {
         Ok(_) => None,
         Err(web::fetch::FetchError::Rejected(why)) => Some(format!("{REFUSED} ({why})")),
         Err(web::fetch::FetchError::Failed(why)) => anyhow::bail!("{why}"),
@@ -115,10 +123,11 @@ async fn fetch_direct(ctx: &Ctx, url: &str, max_chars: usize) -> anyhow::Result<
     })
 }
 
-/// The stealth fetcher built as `scrape` builds it from the `web` section (122 R1-D1).
+/// The stealth fetcher built as `scrape` builds it from the `web` section (122 R1-D1), its
+/// local-network lane included (used only inside the job's grant, 16 §5).
 pub fn fetcher(ctx: &Ctx) -> anyhow::Result<web::fetch::Fetcher> {
     let web_cfg: web::WebConfig = ctx.rt.section("web").unwrap_or_default();
-    Ok(web::fetch::Fetcher::new_with_timeouts(
+    web::fetch::Fetcher::new_with_timeouts(
         &web_cfg.user_agent,
         web_cfg
             .max_fetch_bytes
@@ -131,5 +140,52 @@ pub fn fetcher(ctx: &Ctx) -> anyhow::Result<web::fetch::Fetcher> {
         web_cfg.impersonate,
         web_cfg.header_ladder,
         Some(&web_cfg.accept_language),
-    ))
+    )
+    .with_private_network(web_cfg.allow_private_network)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LAN_URL: &str = "http://192.168.8.123:28499/v1/models";
+
+    /// The refusal [`preflight`] writes on the card for `url` under config `yaml` and grant `lan`.
+    async fn refusal(yaml: &str, url: &str, lan: bool) -> Option<String> {
+        use figment::providers::{Format, Yaml};
+        let rt = runtime::Runtime::new(
+            figment::Figment::from(Yaml::string(yaml)),
+            std::env::temp_dir(),
+        );
+        preflight(&rt, url, lan).await.unwrap().1
+    }
+
+    /// 16 §5 (2026-11-11): an owner's (granted) LAN URL passes while `web.allow_private_network`
+    /// is on, absent included; the metadata endpoint stays refused even then.
+    #[tokio::test]
+    async fn an_owners_lan_url_passes_with_the_setting_on() {
+        for yaml in ["", "web:\n  allow_private_network: true\n"] {
+            assert_eq!(refusal(yaml, LAN_URL, true).await, None, "{yaml:?}");
+        }
+        let metadata = refusal("", "http://169.254.169.254/latest/meta-data", true).await;
+        assert!(metadata.is_some_and(|r| r.starts_with(REFUSED)));
+    }
+
+    /// Without the grant (a contact's call, an unknown caller) or with the setting off, the same
+    /// URL is refused as private.
+    #[tokio::test]
+    async fn a_lan_url_without_the_grant_or_the_setting_is_refused() {
+        for (yaml, lan) in [
+            ("", false),
+            ("web:\n  allow_private_network: true\n", false),
+            ("web:\n  allow_private_network: false\n", true),
+        ] {
+            let r = refusal(yaml, LAN_URL, lan).await;
+            assert!(
+                r.as_deref()
+                    .is_some_and(|r| r.starts_with(REFUSED) && r.contains("192.168.8.123")),
+                "{yaml:?} lan={lan}: {r:?}"
+            );
+        }
+    }
 }

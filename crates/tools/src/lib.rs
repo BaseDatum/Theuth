@@ -28,6 +28,7 @@ pub mod ask;
 pub mod communication;
 pub mod doc;
 pub mod edit;
+pub mod egress;
 pub mod fs;
 pub mod git;
 pub mod glob;
@@ -87,7 +88,7 @@ pub use registry::{
 };
 pub use registry::{
     Allowlisted, CancelCalls, ContactScoped, EffectiveCap, InstallResources, RemoveResources,
-    RestoreApprovals, SetAllowOnly, SetPromoteAfter, SetTurnCap,
+    RestoreApprovals, SetAllowOnly, SetNoLan, SetPromoteAfter, SetTurnCap,
 };
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,

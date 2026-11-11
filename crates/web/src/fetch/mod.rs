@@ -162,11 +162,21 @@ pub enum FetchError {
     Failed(String),
 }
 
+/// Start of the [`FetchError::Rejected`] text for a redirect chain past `max_redirects`.
+const TOO_MANY_REDIRECTS: &str = "too many redirects";
+
 impl FetchError {
     /// Map a transport error, surfacing a guard refusal from the DNS
     /// resolver as [`FetchError::Rejected`].
     fn from_reqwest(e: &reqwest::Error) -> Self {
         ClientError::from_reqwest(e).into()
+    }
+
+    /// The refusal is the redirect limit, not the guard (scheme, credentials, an address): a
+    /// browser may still try such a page (16 §5, 2026-11-11); a guard refusal never.
+    #[must_use]
+    pub fn is_redirect_limit(&self) -> bool {
+        matches!(self, Self::Rejected(m) if m.starts_with(TOO_MANY_REDIRECTS))
     }
 }
 
@@ -282,6 +292,12 @@ enum Attempt {
 /// clients per [`Impersonate`] (122 R1-D1), and diagnose walls with
 /// [`issue::detect`]. [`Fetcher::request`] keeps one attempt and plain
 /// `reqwest`.
+///
+/// The guard is public-only. [`Self::with_private_network`] adds a twin whose
+/// guard and clients admit the local network; a call uses it only inside a
+/// [`tools::egress::scope`] granting it (an owner's tool call), so contacts'
+/// turns and unscoped callers stay public-only, and the twin's connection
+/// pool is never shared with the public lane.
 pub struct Fetcher {
     /// The honest client (122 §5): the only one `Impersonate::Never` uses.
     reqwest: Arc<dyn HttpClient>,
@@ -299,6 +315,10 @@ pub struct Fetcher {
     max_bytes: usize,
     max_redirects: usize,
     allow: Vec<SocketAddr>,
+    /// This fetcher's guard admits the local network (only ever the twin).
+    private: bool,
+    /// The local-network twin, when `web.allow_private_network` is on.
+    lan: Option<Box<Fetcher>>,
 }
 
 impl Fetcher {
@@ -338,22 +358,76 @@ impl Fetcher {
             connect_timeout,
             read_timeout: timeout,
             max_body: max_bytes,
+            private: false,
         };
-        let reqwest = client::build(ClientKind::Reqwest, &cfg)?;
-        let client = client::reqwest_client(&cfg)?;
+        Ok(Self::build(cfg, max_redirects)?.with_policy(
+            defaults.impersonate,
+            defaults.header_ladder,
+            None,
+        ))
+    }
+
+    /// The `Reqwest` clients for `cfg` (its `private` sets the guard), no
+    /// stealth client, no twin; `Impersonate::Never` until [`Self::with_policy`].
+    fn build(cfg: ClientConfig, max_redirects: usize) -> anyhow::Result<Self> {
+        let defaults = crate::WebConfig::default();
         Ok(Self {
-            reqwest,
+            reqwest: client::build(ClientKind::Reqwest, &cfg)?,
             stealth: None,
             impersonate: Impersonate::Never,
             header_ladder: defaults.header_ladder,
-            accept_language: defaults.accept_language,
-            client,
+            accept_language: cfg.accept_language.clone(),
+            client: client::reqwest_client(&cfg)?,
+            max_bytes: cfg.max_body,
+            private: cfg.private,
             cfg,
-            max_bytes,
             max_redirects,
             allow: Vec::new(),
+            lan: None,
+        })
+    }
+
+    /// `web.allow_private_network` (16 §5, amended 2026-11-11): `true` builds
+    /// the local-network twin (same limits, policy and test allowlist, kept in
+    /// step by [`Self::with_policy`] and [`Self::allowing`]); `false` drops it.
+    ///
+    /// # Errors
+    /// When the twin's `reqwest` client cannot be built.
+    pub fn with_private_network(mut self, on: bool) -> anyhow::Result<Self> {
+        self.lan = None;
+        if on {
+            let twin = Self::build(
+                ClientConfig {
+                    private: true,
+                    ..self.cfg.clone()
+                },
+                self.max_redirects,
+            )?
+            .with_policy(
+                self.impersonate,
+                self.header_ladder,
+                Some(&self.accept_language),
+            )
+            .allowing(self.allow.clone());
+            self.lan = Some(Box::new(twin));
         }
-        .with_policy(defaults.impersonate, defaults.header_ladder, None))
+        Ok(self)
+    }
+
+    /// The lane this call runs on: the twin inside an `egress` scope granting
+    /// the local network, else this (public-only) fetcher.
+    fn lane(&self) -> &Self {
+        match &self.lan {
+            Some(twin) if tools::egress::lan() => twin,
+            _ => self,
+        }
+    }
+
+    /// Whether a call made here now may reach the local network; what the
+    /// render path passes to [`check_url`].
+    #[must_use]
+    pub fn reaches_private(&self) -> bool {
+        self.lane().private
     }
 
     /// Apply the page policy (122 R1-D1, D4): which client goes first, whether
@@ -374,6 +448,9 @@ impl Fetcher {
         }
         self.impersonate = impersonate;
         self.header_ladder = header_ladder;
+        self.lan = self
+            .lan
+            .map(|twin| Box::new(twin.with_policy(impersonate, header_ladder, accept_language)));
         self.stealth = match impersonate {
             Impersonate::Never => None,
             Impersonate::OnChallenge | Impersonate::Always => {
@@ -394,6 +471,7 @@ impl Fetcher {
     #[doc(hidden)]
     #[must_use]
     pub fn allowing(mut self, addrs: Vec<SocketAddr>) -> Self {
+        self.lan = self.lan.map(|twin| Box::new(twin.allowing(addrs.clone())));
         self.allow = addrs;
         self
     }
@@ -491,6 +569,15 @@ impl Fetcher {
     }
 
     async fn fetch_kind(
+        &self,
+        url: &str,
+        format: Option<FetchFormat>,
+        opts: PageOptions,
+    ) -> Result<FetchResponse, FetchError> {
+        self.lane().fetch_on_lane(url, format, opts).await
+    }
+
+    async fn fetch_on_lane(
         &self,
         url: &str,
         format: Option<FetchFormat>,
@@ -599,7 +686,7 @@ impl Fetcher {
         let headers = self.headers(http);
         let mut redirects = 0usize;
         loop {
-            if let Err(e) = ssrf::check_static(&current, &self.allow) {
+            if let Err(e) = ssrf::check_static(&current, &self.allow, self.private) {
                 return Attempt::Fatal(e);
             }
             tracing::debug!(url = %current, redirects, client = ?http.kind(), "fetch hop");
@@ -622,7 +709,7 @@ impl Fetcher {
             if Self::is_redirect(status) {
                 if redirects >= self.max_redirects {
                     return Attempt::Fatal(FetchError::Rejected(format!(
-                        "too many redirects (max {})",
+                        "{TOO_MANY_REDIRECTS} (max {})",
                         self.max_redirects
                     )));
                 }
@@ -698,6 +785,18 @@ impl Fetcher {
         method: &str,
         url: &str,
         headers: &[(String, String)],
+        body: Option<Vec<u8>>,
+    ) -> Result<RawResponse, FetchError> {
+        self.lane()
+            .request_on_lane(method, url, headers, body)
+            .await
+    }
+
+    async fn request_on_lane(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(String, String)],
         mut body: Option<Vec<u8>>,
     ) -> Result<RawResponse, FetchError> {
         let started = Instant::now();
@@ -707,7 +806,7 @@ impl Fetcher {
         let origin = current.origin();
         let mut redirects = 0usize;
         loop {
-            ssrf::check_static(&current, &self.allow)?;
+            ssrf::check_static(&current, &self.allow, self.private)?;
             tracing::debug!(url = %current, %method, redirects, "request hop");
             let mut req = self.client.request(method.clone(), current.as_str());
             for (name, value) in headers {
@@ -725,7 +824,7 @@ impl Fetcher {
             if Self::is_redirect(status) {
                 if redirects >= self.max_redirects {
                     return Err(FetchError::Rejected(format!(
-                        "too many redirects (max {})",
+                        "{TOO_MANY_REDIRECTS} (max {})",
                         self.max_redirects
                     )));
                 }
