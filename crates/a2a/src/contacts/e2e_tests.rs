@@ -1869,6 +1869,7 @@ async fn replicate(from: &Engine, to: &Engine) {
                 ("eid", t(&e.eid)),
                 ("paired_ms", i(&e.paired_ms)),
                 ("barred_ms", i(&e.barred_ms)),
+                ("pinned_by", t(&e.pinned_by)),
             ],
         ));
     }
@@ -1896,6 +1897,44 @@ async fn replicate(from: &Engine, to: &Engine) {
                 ("description", t(&x.description)),
                 ("home", t(&x.home)),
                 ("removed_ms", i(&x.removed_ms)),
+            ],
+        ));
+    }
+    // 191 (P2): our signed copies and the heads rows (a machine's own row is its own: never
+    // written back over it); `contact_roster_local` never travels.
+    for x in &r.rosters.rows {
+        w.push(RecordWrite::new(
+            RecordTable::Rosters,
+            x.id.clone(),
+            vec![
+                ("contact", t(&x.contact)),
+                ("chain", t(&x.chain)),
+                ("version", i(&x.version)),
+                ("signer", t(&x.signer)),
+                ("hash", t(&x.hash)),
+                ("roster", t(&x.roster)),
+            ],
+        ));
+    }
+    let dest = to.eid();
+    for h in r
+        .heads
+        .iter()
+        .filter(|h| h.machine.as_deref() != Some(dest.as_str()))
+    {
+        w.push(RecordWrite::new(
+            RecordTable::Heads,
+            h.id.clone(),
+            vec![
+                ("record", t(&h.record)),
+                ("machine", t(&h.machine)),
+                ("chain", t(&h.chain)),
+                ("version", i(&h.version)),
+                ("hash", t(&h.hash)),
+                ("history", t(&h.history)),
+                ("members", t(&h.members)),
+                ("conflict", i(&h.conflict)),
+                ("at_ms", i(&h.at_ms)),
             ],
         ));
     }
@@ -2159,3 +2198,5 @@ async fn a_broken_peers_yaml_never_stops_a_block() {
         .unwrap();
     assert!(n1.ctx.contact_list().is_empty(), "the RPC applied");
 }
+
+mod rosters;

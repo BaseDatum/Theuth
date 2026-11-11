@@ -2378,22 +2378,22 @@ impl crate::Ctx {
         let Some(net) = self.net() else { return };
         let live = self.shared.read().clone();
         let now_at = std::time::Instant::now();
-        // 191 (D3): every machine of a contact, each with its own hints.
+        // 191 (D3): every machine of a contact, each with its own addresses.
         let changed: Vec<(String, Vec<String>)> = {
             let s = self.state.lock();
             live.staged
                 .contacts
                 .values()
                 .filter(|f| !f.blocked)
-                .flat_map(|f| f.eids.iter().map(move |e| (f, e)))
-                .filter(|(_, eid)| {
+                .flat_map(|f| f.eids.iter())
+                .filter(|eid| {
                     s.addr_written
                         .get(*eid)
                         .is_none_or(|t| now_at.duration_since(*t) >= EVERY)
                 })
-                .filter_map(|(f, eid)| {
+                .filter_map(|eid| {
                     let now = net.a2a_direct_addrs(eid);
-                    (!now.is_empty() && f.hints.get(eid) != Some(&now))
+                    (!now.is_empty() && live.staged.addrs.get(eid) != Some(&now))
                         .then(|| (eid.clone(), now.iter().map(ToString::to_string).collect()))
                 })
                 .collect()

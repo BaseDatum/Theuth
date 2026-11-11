@@ -299,8 +299,6 @@ pub struct ContactFacts {
     /// 191 (D1): every endpoint the group admits, `eid` first: its records' current rosters
     /// (pins while none is based).
     pub eids: Vec<String>,
-    /// 191 (D3): the last direct addresses of each of `eids` (dial hints).
-    pub hints: BTreeMap<String, Vec<std::net::SocketAddr>>,
     /// Display name from its card.
     pub display: String,
     /// Its machine, from its card.
@@ -384,6 +382,9 @@ pub struct Staged {
     /// 191 (D2): endpoints of removed records, never admitted as a contact until a newer
     /// ceremony pins them in a live record (they may pair again).
     pub removed: std::collections::BTreeSet<String>,
+    /// 191 (D3): the last direct addresses this machine saw for each endpoint (its local
+    /// `contact_addrs`): dial hints for every machine of every contact, verified or not yet.
+    pub addrs: BTreeMap<String, Vec<std::net::SocketAddr>>,
     /// 191 (D2): records quarantined by the reconcile, listed with their problem.
     pub quarantined: Vec<Quarantined>,
     /// 191 (D2): export name → its replicated id (chat and agent exports).
@@ -657,7 +658,6 @@ fn stage_contact<'a>(
             id: String::new(),
             eid: eid.to_owned(),
             eids: vec![eid.to_owned()],
-            hints: BTreeMap::new(),
             display: p.name.clone().unwrap_or_else(|| name.to_owned()),
             machine: p.machine.clone().unwrap_or_default(),
             cap: cap.min(tools::Risk::Mutating),

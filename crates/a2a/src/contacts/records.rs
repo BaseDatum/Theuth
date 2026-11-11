@@ -637,7 +637,14 @@ fn effective(rows: &[&GrantRow]) -> (Option<bool>, Option<FirstContact>) {
 /// included, without a route), and every record that cannot be proven sound quarantined
 /// with its endpoints denied. `family` is this mesh's own machines' endpoint ids.
 pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools::Risk) -> Staged {
-    let mut staged = Staged::default();
+    let mut staged = Staged {
+        addrs: r
+            .addrs
+            .iter()
+            .map(|(e, a)| (e.clone(), a.iter().filter_map(|x| x.parse().ok()).collect()))
+            .collect(),
+        ..Staged::default()
+    };
     // Exports: valid live rows, one per name (the oldest id; the reconcile renames the rest).
     let mut export_names: BTreeMap<&str, String> = BTreeMap::new();
     for e in r.exports.iter().filter(|e| e.removed_ms.is_none()) {
@@ -905,14 +912,6 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             .collect();
         order.extend(rest);
         let eid = order[0].clone();
-        let addrs_of = |e: &str| -> Vec<std::net::SocketAddr> {
-            r.addrs
-                .get(e)
-                .into_iter()
-                .flatten()
-                .filter_map(|a| a.parse().ok())
-                .collect()
-        };
         if blocked {
             staged.deny.extend(eids.iter().cloned());
             staged.deny.extend(order.iter().cloned());
@@ -936,8 +935,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             alias.clone(),
             ContactFacts {
                 id: c.id.clone(),
-                addrs: addrs_of(&eid),
-                hints: order.iter().map(|e| (e.clone(), addrs_of(e))).collect(),
+                addrs: staged.addrs.get(&eid).cloned().unwrap_or_default(),
                 eid,
                 eids: order,
                 display: c.name.clone().unwrap_or_else(|| alias.clone()),
@@ -980,6 +978,18 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
         }
         for e in set.iter().filter(|e| !lifted.contains(e)) {
             staged.removed.insert(e.clone());
+        }
+    }
+    // A refused endpoint is never dialled either: the dial list keeps the admitted ones.
+    for (alias, f) in &mut staged.contacts {
+        f.eids.retain(|e| !staged.removed.contains(e));
+        if staged.removed.contains(&f.eid)
+            && let Some(first) = f.eids.first()
+        {
+            f.eid.clone_from(first);
+            if let Some(p) = staged.peers.get_mut(alias) {
+                p.eid = Some(first.clone());
+            }
         }
     }
     staged
@@ -1169,7 +1179,7 @@ pub fn import(file: &PeersFile, staged: &Staged, r: &Records) -> Import {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent::store::contacts::ExportRow;
+    use agent::store::contacts::{ExportRow, HeadRow, LocalRow};
 
     fn eid(n: u8) -> String {
         iroh::SecretKey::from_bytes(&[n; 32]).public().to_string()
@@ -1746,5 +1756,216 @@ mod tests {
             s.peers["dave"].exports.is_empty(),
             "the unresolvable grant is skipped"
         );
+    }
+
+    // -------------------------------------------------------------------------------------
+    // 191 P2: rosters in staging.
+    // -------------------------------------------------------------------------------------
+
+    /// `record`'s local state at `version` listing `members`, with `signers`.
+    fn local(record: &str, version: u64, members: &[String], signers: &[String]) -> LocalRow {
+        let mut m = members.to_vec();
+        m.sort();
+        let l = Local {
+            chain: format!("chain-{record}"),
+            // The first member as given is the base signer (callers name the pin first).
+            base: members[0].clone(),
+            signers: signers.iter().cloned().collect(),
+            history: vec![Entry {
+                version,
+                hash: rosters::content_hash(&format!("chain-{record}"), version, &m),
+                members: m,
+            }],
+        };
+        let w = local_row(record, &l);
+        let text = |k: &str| match &w.set.iter().find(|(c, _)| *c == k).unwrap().1 {
+            Cell::Text(t) => t.clone(),
+            _ => unreachable!(),
+        };
+        LocalRow {
+            record: record.into(),
+            chain: text("chain"),
+            version: version as i64,
+            hash: text("hash"),
+            roster: text("roster"),
+            history: text("history"),
+        }
+    }
+
+    fn head(record: &str, machine: &str, conflict: bool, at_ms: i64) -> HeadRow {
+        HeadRow {
+            id: format!("{record}|{machine}"),
+            record: Some(record.into()),
+            machine: Some(machine.into()),
+            chain: Some(format!("chain-{record}")),
+            version: Some(1),
+            hash: Some("h".into()),
+            history: Some("[]".into()),
+            members: Some("[]".into()),
+            conflict: Some(i64::from(conflict)),
+            at_ms: Some(at_ms),
+        }
+    }
+
+    /// 191 (D1): a record admits its pins only while no machine has based it; then its own
+    /// verified roster (never the pins alone); based elsewhere but not here, nothing ("cannot
+    /// verify", a retired machine's row included); a live conflict denies it until the flag
+    /// expires, and a conflict from a machine no longer in the mesh is ignored.
+    #[test]
+    fn a_record_admits_its_roster_and_never_its_pins_alone_once_based() {
+        let (me, c2, gone) = (eid(40), eid(41), eid(42));
+        let family = BTreeSet::from([me.clone(), c2.clone()]);
+        let mut r = Records {
+            me: me.clone(),
+            contacts: vec![contact("c", "bob", 1)],
+            endpoints: vec![anchor("c", 1, 1)],
+            ..Records::default()
+        };
+        let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+        assert_eq!(
+            s.contacts["bob"].eids,
+            vec![eid(1)],
+            "pins, nothing based yet"
+        );
+        r.local = vec![local("c", 2, &[eid(2), eid(3)], &[])];
+        let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+        assert_eq!(
+            s.contacts["bob"].eids.iter().collect::<BTreeSet<_>>(),
+            BTreeSet::from([&eid(2), &eid(3)])
+        );
+        assert_eq!(s.contact_by_eid(&eid(1)), None, "the pin left the roster");
+        // Based on another machine, not here: denied, the binding kept, never the pin.
+        r.local.clear();
+        for row in [head("c", &c2, false, 0), head("c", &gone, false, 0)] {
+            r.heads = vec![row];
+            let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+            assert!(!s.contacts.contains_key("bob"));
+            let q = &s.quarantined[0];
+            assert_eq!(q.problem, rosters::NOT_VERIFIED);
+            assert!(q.hold.is_some() && s.deny.contains(&eid(1)));
+        }
+        // A live conflict denies; an expired one or one from a retired machine does not.
+        r.local = vec![local("c", 2, &[eid(2)], &[])];
+        let now = now_ms();
+        r.heads = vec![head("c", &c2, true, now)];
+        let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+        assert_eq!(s.quarantined[0].problem, rosters::DISAGREE);
+        let old = now - 4 * rosters::ROUND.as_millis() as i64;
+        r.heads = vec![head("c", &c2, true, old)];
+        assert!(
+            stage_records(&r, &family, tools::Risk::ReadOnly)
+                .contacts
+                .contains_key("bob")
+        );
+        r.heads = vec![head("c", &gone, true, now)];
+        assert!(
+            stage_records(&r, &family, tools::Risk::ReadOnly)
+                .contacts
+                .contains_key("bob")
+        );
+    }
+
+    /// 191 (D1 attribution): an endpoint two unmerged contacts' rosters list is admitted only
+    /// for the one that pinned it or holds a copy it signed; neither, and it is admitted for
+    /// none. The overlap denies nothing else.
+    #[test]
+    fn an_endpoint_two_rosters_list_is_admitted_only_where_pinned_or_signed() {
+        let mut r = Records {
+            contacts: vec![contact("a", "alice", 1), contact("b", "bob", 2)],
+            endpoints: vec![anchor("a", 1, 1), anchor("b", 5, 2)],
+            local: vec![
+                local("a", 1, &[eid(1), eid(9)], &[]),
+                local("b", 1, &[eid(5), eid(9)], &[]),
+            ],
+            ..Records::default()
+        };
+        let s = stage(&r);
+        assert_eq!(s.contacts["alice"].eids, vec![eid(1)]);
+        assert_eq!(s.contacts["bob"].eids, vec![eid(5)]);
+        assert!(s.quarantined.is_empty() && !s.deny.contains(&eid(9)));
+        r.local[1] = local("b", 1, &[eid(5), eid(9)], &[eid(9)]);
+        let s = stage(&r);
+        assert_eq!(
+            s.contact_by_eid(&eid(9)),
+            Some("bob"),
+            "it signed bob's copy"
+        );
+        // A listing of another contact's pinned machine: it stays with its own record.
+        r.local[1] = local("b", 1, &[eid(5), eid(1)], &[]);
+        let s = stage(&r);
+        assert_eq!(s.contact_by_eid(&eid(1)), Some("alice"));
+        assert_eq!(s.contacts["bob"].eids, vec![eid(5)]);
+    }
+
+    /// 191 (D1 merge proof): two records whose rosters each list the other's pin merge (two
+    /// pairings of one mesh); a roster listing another contact's pin merges nothing.
+    #[test]
+    fn records_merge_only_when_each_roster_lists_the_others_pin() {
+        let mut r = Records {
+            contacts: vec![contact("x", "carol", 1), contact("y", "carol2", 2)],
+            endpoints: vec![anchor("x", 1, 1), anchor("y", 2, 2)],
+            local: vec![
+                local("x", 1, &[eid(1), eid(2)], &[]),
+                local("y", 1, &[eid(1), eid(2)], &[]),
+            ],
+            ..Records::default()
+        };
+        let w = reconcile_writes(&r);
+        assert!(
+            w.iter()
+                .any(|w| w.id == "y" && w.set == vec![("merged_into", Cell::Text("x".into()))]),
+            "{w:?}"
+        );
+        r.local[1] = local("y", 1, &[eid(2)], &[]);
+        assert!(reconcile_writes(&r).is_empty(), "one-sided: no merge");
+    }
+
+    /// 191 (D2 deny lift, rig case 11): a removed record's pins and listed machines stay
+    /// refused; a late duplicate pinned to one (older than the removal) and another
+    /// contact's listing never lift it; a newer ceremony lifts only what the new record's own
+    /// roster lists (its newer pins while it has none).
+    #[test]
+    fn a_deny_lifts_only_by_a_newer_ceremony_for_its_own_roster() {
+        let (n1, z1, n2, n3, a1) = (eid(1), eid(2), eid(3), eid(4), eid(5));
+        let mut r = Records {
+            contacts: vec![
+                ContactRow {
+                    removed_ms: Some(10),
+                    ..contact("old", "bob", 1)
+                },
+                contact("dup", "bob-dup", 5),
+                contact("alice", "alice", 20),
+            ],
+            endpoints: vec![
+                anchor("old", 1, 1),
+                anchor("dup", 1, 5),
+                anchor("alice", 5, 20),
+            ],
+            local: vec![
+                local("old", 3, &[n1.clone(), z1.clone(), n2.clone()], &[]),
+                local("alice", 1, &[a1.clone(), n1.clone()], &[]),
+            ],
+            ..Records::default()
+        };
+        let s = stage(&r);
+        assert!(s.removed.contains(&n1) && s.removed.contains(&z1) && s.removed.contains(&n2));
+        assert!(!s.contacts.contains_key("bob-dup"), "the late duplicate");
+        assert_eq!(
+            s.contacts["alice"].eids,
+            vec![a1.clone()],
+            "a listing lifts nothing"
+        );
+        // A fresh pairing through n2 (newer than the removal), still pin-only: n2 only.
+        r.contacts.push(contact("fresh", "bob", 30));
+        r.endpoints.push(anchor("fresh", 3, 30));
+        let s = stage(&r);
+        assert!(!s.removed.contains(&n2));
+        assert!(s.removed.contains(&n1) && s.removed.contains(&z1));
+        // Its own roster {n2, n3}: n2 stays lifted; n1 and z1 stay refused.
+        r.local
+            .push(local("fresh", 1, &[n2.clone(), n3.clone()], &[]));
+        let s = stage(&r);
+        assert_eq!(s.contacts["bob"].eids, vec![n2.clone(), n3.clone()]);
+        assert!(s.removed.contains(&n1) && s.removed.contains(&z1) && !s.removed.contains(&n2));
     }
 }

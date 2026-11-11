@@ -243,8 +243,9 @@ struct State {
     retry_at: Option<std::time::Instant>,
     /// 191 (D1): the `peers_gen` the last reconcile saw (a mesh membership change signs).
     peers_gen: Option<u64>,
-    /// 191 (D1): this process pushed its chains once (at boot, after the first pass).
-    pushed: bool,
+    /// 191 (D1): the contacts (record ids) this process pushed our chains to since the last
+    /// signing: one newly admitted (at boot, after a bootstrap) gets them once too.
+    pushed_to: std::collections::BTreeSet<String>,
 }
 
 /// 190 (D10): unless the marker `a2a/.190-full-notice` exists beside `peers.yaml`, log one
@@ -944,15 +945,13 @@ impl Ctx {
                 .await;
         }
         // 191 (D1): our side signs, co-signs and prunes each live record's chain (never before
-        // `contacts_ready`, never for a removed record), then pushes after a signing, and
-        // once at boot. A failure here leaves the install standing; the next pass retries.
+        // `contacts_ready`, never for a removed record), then pushes: everything after a
+        // signing, else to a contact newly admitted here (at boot, after a bootstrap). A
+        // failure here leaves the install standing; the next pass retries.
         match self.sign_rosters(&records).await {
             Ok(signed) => {
-                let first = !std::mem::replace(&mut self.state.lock().pushed, true);
-                if (signed || first)
-                    && let Ok(r) = self.records().await
-                {
-                    self.push_rosters(&r).await;
+                if let Ok(r) = self.records().await {
+                    self.push_rosters(&r, signed).await;
                 }
             }
             Err(e) => tracing::warn!("191: rosters not signed: {e}"),

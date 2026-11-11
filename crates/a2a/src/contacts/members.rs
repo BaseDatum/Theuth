@@ -187,16 +187,31 @@ impl Ctx {
         Ok(Self::carried_for(&r, &root, &added))
     }
 
-    /// 191 (D1 push): our chains to every machine of every live contact, as a `NOTICE_PATH`
-    /// body. A failed post is tried again from [`PUSH_FIRST`], doubling up to [`PUSH_MAX`];
-    /// a newer push to the same endpoint supersedes it.
-    pub(crate) async fn push_rosters(&self, r: &Records) {
+    /// 191 (D1 push): our chains to every machine of every live contact (`all`, after a
+    /// signing), else only to a contact not pushed to since (newly admitted, or at boot), as
+    /// a `NOTICE_PATH` body. A failed post is tried again from [`PUSH_FIRST`], doubling up to
+    /// [`PUSH_MAX`]; a newer push to the same endpoint supersedes it.
+    pub(crate) async fn push_rosters(&self, r: &Records, all: bool) {
+        let live = self.shared.read().clone();
+        let due: Vec<&crate::config::ContactFacts> = {
+            let mut s = self.state.lock();
+            if all {
+                s.pushed_to.clear();
+            }
+            live.staged
+                .contacts
+                .values()
+                .filter(|f| !f.blocked && s.pushed_to.insert(f.id.clone()))
+                .collect()
+        };
+        if due.is_empty() {
+            return;
+        }
         let (Some(net), Ok(members)) = (self.net(), self.mesh_members().await) else {
             return;
         };
         let added: BTreeMap<String, u64> = members.into_iter().collect();
-        let live = self.shared.read().clone();
-        for f in live.staged.contacts.values().filter(|f| !f.blocked) {
+        for f in due {
             let body = Self::carried_for(r, &f.id, &added);
             if body.chains.is_empty() {
                 continue;

@@ -138,13 +138,10 @@ impl mesh::net::ContactAlpn for Gate {
         let Some(c) = self.0.upgrade() else {
             return Vec::new();
         };
+        // 191 (D3): any machine of any contact this machine has addresses for (a roster's
+        // other members, a record still bootstrapping), not only a staged contact's first.
         let live = c.shared.read().clone();
-        live.staged
-            .contacts
-            .values()
-            .find_map(|f| f.hints.get(remote).filter(|a| !a.is_empty()))
-            .cloned()
-            .unwrap_or_default()
+        live.staged.addrs.get(remote).cloned().unwrap_or_default()
     }
 }
 
@@ -354,7 +351,7 @@ impl IrohTransport {
     /// the gate (not a contact, no export granted) is `UNSUPPORTED_OPERATION`, so the sender
     /// records it as refused; anything after the request left is `INTERNAL_ERROR` (the
     /// outcome is unknown) and is never sent again elsewhere.
-    async fn call(
+    pub(crate) async fn call(
         &self,
         params: &ServiceParams,
         method: &str,

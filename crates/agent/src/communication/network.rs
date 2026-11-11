@@ -6959,6 +6959,63 @@ mod tests {
             "unpaired"
         );
     }
+
+    /// 191 (D3, S4): a contact's answer on the return route into a session another machine
+    /// of this mesh owns is `NOT_OWNER` (the contact's client tries its next member), and
+    /// nothing is accepted here.
+    #[tokio::test]
+    async fn the_return_route_refuses_a_session_owned_elsewhere_with_not_owner() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("bob/proj", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let (session, _, _) = exported_task(&mut a, "peer:lab").await;
+        a.network.peers.insert(
+            binding.id,
+            RemotePeer {
+                name: "bob".into(),
+                roots: Vec::new(),
+                sender: None,
+                generation: CancellationToken::new(),
+                contact: true,
+                full: Vec::new(),
+            },
+        );
+        a.network.set_offers(BTreeMap::from([(
+            "bob".into(),
+            vec![ContactOffer {
+                name: "proj".into(),
+                title: "proj".into(),
+                kind: OfferKind::Chat,
+                state: OfferState::Allowed,
+                mode: super::super::ShareMode::Full,
+            }],
+        )]));
+        a.store
+            .open_contact_thread(binding.id, "ctx-1", session, "proj", true)
+            .await
+            .unwrap();
+        a.store.set_owner(session, "other-engine", 9).await.unwrap();
+        let before = a.store.peer_records(session, None, 50).await.unwrap().len();
+        let r = a
+            .full_return(A2aReturn {
+                binding: binding.id,
+                route: CancellationToken::new(),
+                request: full_send("r-1", "ctx-1", &FullWire::default()),
+            })
+            .await;
+        assert_eq!(
+            r.err().map(|e| e.code),
+            Some(crate::communication::mesh::NOT_OWNER)
+        );
+        assert_eq!(
+            a.store.peer_records(session, None, 50).await.unwrap().len(),
+            before,
+            "nothing accepted here"
+        );
+    }
 }
 
 #[cfg(test)]
