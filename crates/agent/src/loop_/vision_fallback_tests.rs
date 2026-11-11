@@ -98,13 +98,13 @@ pub(super) fn sse(text: &str, finish: &str, (prompt, completion): (u32, u32)) ->
 }
 
 /// One OpenAI SSE reply carrying a single tool call, `finish_reason: tool_calls`.
-fn sse_tool_call(name: &str, arguments: &str) -> ResponseTemplate {
+pub(super) fn sse_tool_call(id: &str, name: &str, arguments: &str) -> ResponseTemplate {
     let chunk = |choices: Value| json!({"id": "c", "object": "chat.completion.chunk", "model": "m", "choices": choices});
     let body = format!(
         "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         chunk(
             json!([{"index": 0, "delta": {"role": "assistant", "tool_calls": [
-            {"index": 0, "id": "call_bridge_1", "type": "function",
+            {"index": 0, "id": id, "type": "function",
              "function": {"name": name, "arguments": arguments}}
         ]}, "finish_reason": null}])
         ),
@@ -261,7 +261,7 @@ impl Respond for Fake {
                 .as_array()
                 .is_some_and(|m| m.iter().any(|m| m["role"] == "tool"))
         {
-            return sse_tool_call(name, arguments);
+            return sse_tool_call("call_bridge_1", name, arguments);
         }
         if self.overflow_until_head && !text.contains("<context_summary") {
             return ResponseTemplate::new(400).set_body_string(
