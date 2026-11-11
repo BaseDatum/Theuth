@@ -14,7 +14,6 @@ import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { Contact } from '@/rpc/bindings/Contact'
 import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
 import type { Export } from '@/rpc/bindings/Export'
-import type { GrantableTool } from '@/rpc/bindings/GrantableTool'
 import type { NearbyAgent } from '@/rpc/bindings/NearbyAgent'
 import type { PairCeremony } from '@/rpc/bindings/PairCeremony'
 import { dispatch } from '@/store/sessions'
@@ -60,7 +59,6 @@ const BOB: Contact = {
   cap: 'read_only',
   exports: ['research', 'ops-chat'],
   first_contact: { research: 'allow' },
-  modes: {},
   full_capable: true,
   shared: [],
   blocked: false,
@@ -88,8 +86,8 @@ const A2A: A2aStatus = {
     { name: 'lab', binding: 'b2', outbound: true, inbound: true, sessions: ['s-lab'], exports: ['docs'], card: 'Lab', error: null },
   ],
   exports: [
-    { name: 'ops-chat', session: 's-ops', peer: 'bob', url: 'http://127.0.0.1:7780/agents/ops-chat/rpc', mode: 'cautious' },
-    { name: 'docs', session: 's-docs', peer: 'lab', url: 'http://127.0.0.1:7780/agents/docs/rpc', mode: null },
+    { name: 'ops-chat', session: 's-ops', peer: 'bob', url: 'http://127.0.0.1:7780/agents/ops-chat/rpc' },
+    { name: 'docs', session: 's-docs', peer: 'lab', url: 'http://127.0.0.1:7780/agents/docs/rpc' },
   ],
 }
 const api = {
@@ -116,14 +114,6 @@ const api = {
   attention_snooze: vi.fn(async () => null),
   sandboxes_list: vi.fn(async () => []),
   a2a_status: vi.fn(async (): Promise<A2aStatus> => A2A),
-  a2a_grantable_tools: vi.fn(async () =>
-    [
-      { name: 'knowledge_search', risk: 'read_only' },
-      { name: 'mcp:files/search', risk: 'read_only', mcp_server: 'files' },
-      { name: 'read_url', risk: 'read_only' },
-      { name: 'search_web', risk: 'read_only' },
-    ] as GrantableTool[],
-  ),
   reload_a2a: vi.fn(async (): Promise<A2aStatus> => A2A),
   get_communication: vi.fn(async () => ({ effective: true, global: true, opted_out: false, inherited_from: null, source: 'config' }) as unknown as CommunicationState),
   config_flag_get: vi.fn(async () => ({ key: 'a2a.enabled', enabled: false, running: false, restart_required: false })),
@@ -186,7 +176,7 @@ test('contact words: export names, fingerprint, first-contact ids, sharing and i
   expect(names([BOB, ALICE, { name: 'carol' }])).toBe('bob, alice and carol')
   const s = sharingOf('s-ops', EXPORTS, [BOB, ALICE, { ...BOB, name: 'eve', blocked: true }])
   expect(s?.contacts.map((c) => c.name)).toEqual(['bob', 'alice'])
-  expect(sharedLabel(s)).toBe('Shared with bob · read only, alice · can change things · paused (chat archived)')
+  expect(sharedLabel(s)).toBe('Shared with bob, alice · paused (chat archived)')
   expect(sharedLabel(sharingOf('s-plan', EXPORTS, [BOB]))).toBeNull()
   expect(sharedLabel(sharingOf('s-ops', EXPORTS, []))).toBeNull()
 })
@@ -196,18 +186,18 @@ test('188 ?focus=access:<contact>: the contact it names, colons and all; any oth
   for (const focus of [null, '', 'access:', 'model', 'spend', 'contact:bob']) expect(focusedContact(focus)).toBeNull()
 })
 
-test('§12.7 Contacts: each row has name, machine, cap, fingerprint, path and the exports it may reach (paused named)', async () => {
+test('§12.7 Contacts: each row has name, machine, fingerprint, path and the exports it may reach (paused named), no mode or cap', async () => {
   await mount(createElement(Contacts))
   const t = body()
-  expect(t).toContain('A contact reaches only what you share, and you choose how each time.')
-  // Both of bob's shares are cautious: his cap still binds and shows.
-  expect(t).toContain("Bob's MacBook · read only")
+  expect(t).toContain('A contact reaches only what you share. Their agent and yours talk freely')
+  expect(t).toContain("Bob's MacBook")
   expect(t).toContain('K3J9 Q2M4 X7P1 R8T5 W6Y0')
   expect(t).toContain('Relay')
-  expect(t).toContain('studio · can change things')
   expect(t).toContain('LAN')
   expect(t).toContain('research@studio')
   expect(t).toContain('Ops chat · Paused (chat archived)')
+  // 190: a share chip is a plain share: no mode suffix, no cap beside the machine.
+  for (const gone of ['read only', 'can change things', 'cautious', 'Cautious', 'full', 'Full collaboration']) expect(t).not.toContain(gone)
 })
 
 test('§12.7 Contacts: empty', async () => {
@@ -282,7 +272,7 @@ test('ceremony: the code and the check line, Cancel focused (never Accept); Acce
   // The dialog is described by the line that pairing alone shares nothing.
   const dialog = document.querySelector('[role=dialog]')!
   expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toBe(
-    'A paired contact reaches nothing until you share an agent or chat with them, and you choose how: Full collaboration (their agent and yours talk freely) or Cautious (plain text, one limited turn per message, read-only tools).',
+    'A paired contact reaches nothing until you share an agent or chat with them.',
   )
   await click('Accept')
   expect(api.contact_answer).toHaveBeenCalledWith('c1', true)
@@ -386,41 +376,48 @@ test('CeremonyBody: every end state', () => {
   expect(view('paired')).toContain('Choose what Bob may reach')
 })
 
-test('§7.6 Contacts\' access: cap → contact_update(cap); first contact → contact_first_answer; paused named', async () => {
+test('§7.6 Contacts\' access: first contact → contact_first_answer; paused named; no cap, mode or tools editor', async () => {
+  api.a2a_exports.mockImplementation(async () => [EXPORTS[0]!, { ...EXPORTS[1]!, tools: ['search_web'] } as Export])
   await mount(createElement(ContactAccess))
   expect(body()).toContain('Ops chat · Paused (chat archived)')
-  expect(document.querySelector('[aria-label="Cap of bob"]')?.getAttribute('data-value')).toBe('read_only')
   expect(document.querySelector('[aria-label="First contact from bob to research"]')?.getAttribute('data-value')).toBe('allow')
   expect(document.querySelector('[aria-label="First contact from bob to ops-chat"]')?.getAttribute('data-value')).toBe('ask')
-  await run(() => selects['Cap of bob']!('mutating'))
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: 'mutating', exports: null, blocked: null, modes: null })
   await run(() => selects['First contact from bob to ops-chat']!('block'))
   expect(api.contact_first_answer).toHaveBeenCalledWith('bob', 'ops-chat', 'block')
+  // 190: every share is full: the only select per row is its first-contact answer.
+  expect(Object.keys(selects).sort()).toEqual(['First contact from alice to ops-chat', 'First contact from bob to ops-chat', 'First contact from bob to research'])
+  expect(document.querySelector('[role=group][aria-label^="Tools "]')).toBeNull()
+  for (const gone of ['Cautious', 'cautious', 'Full collaboration', 'Read only', 'Can change things', 'Add tool', 'search_web']) expect(body()).not.toContain(gone)
 })
 
-test('§12.10 export picker: agents and chats (not archived, with their machine); a new chat export is put then granted in the chosen mode; an existing one only granted', async () => {
-  api.contact_list.mockImplementation(async () => [{ ...BOB, exports: [] }, ALICE])
+test('190 export picker: agents and chats (not archived, with their machine); a pick grants at once, `modes` naming only the new export as full', async () => {
+  api.contact_list.mockImplementation(async () => [{ ...BOB, exports: ['ops-chat'] }, ALICE])
   await mount(createElement(ContactAccess))
   await click('Share with bob…')
   const agents = document.querySelector('[role=group][aria-label="Agents"]')!.textContent
   expect(agents).toContain('theuth')
   expect(agents).toContain('research@studio')
   const chats = document.querySelector('[role=group][aria-label="Chats"]')!.textContent
-  expect(chats).toContain('Ops chat')
+  expect(chats).not.toContain('Ops chat')
   expect(chats).toContain('Launch plan')
   expect(chats).toContain('xeus')
   expect(chats).not.toContain('Old')
-  // 186 D3: picking a row grants nothing yet; the mode is the second, required step.
-  await click('Launch planxeus')
-  expect(api.contact_update).not.toHaveBeenCalled()
-  await click('Full collaboration: share Launch plan with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['launch-plan'], blocked: null, modes: { 'launch-plan': 'full' } }))
+  // The consent line at the moment of sharing: what the agent may do there.
+  expect(body()).toContain('yours works with its normal tools and your usual approvals')
+  await click('Share Launch plan with bob')
+  // A new export is put, then granted: the existing grant (ops-chat) rides in `exports` but gets no `modes` entry.
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['ops-chat', 'launch-plan'], blocked: null, modes: { 'launch-plan': 'full' } }))
   expect(api.a2a_export_put).toHaveBeenCalledWith({ name: 'launch-plan', target: { kind: 'chat', session: 's-plan' }, description: 'Launch plan', paused: null })
   vi.clearAllMocks()
-  await click('research@studioagent')
-  await click('Cautious: share research@studio with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['research'], blocked: null, modes: { research: 'cautious' } }))
+  await click('Share research@studio with bob')
+  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['ops-chat', 'research'], blocked: null, modes: { research: 'full' } }))
   expect(api.a2a_export_put).not.toHaveBeenCalled()
+})
+
+test('190: Share… is on for every paired contact, whatever its card says (`full_capable` false: card unread, offline)', async () => {
+  await mount(createElement(ContactAccess))
+  for (const who of ['bob', 'alice']) expect((button(`Share with ${who}…`) as HTMLButtonElement).disabled).toBe(false)
+  expect(body()).not.toContain('to share')
 })
 
 test('§12.10 unset: taking an export back updates the grant; the export goes once nobody holds it', async () => {
@@ -435,59 +432,26 @@ test('§12.10 unset: taking an export back updates the grant; the export goes on
   expect(api.a2a_export_remove).not.toHaveBeenCalled()
 })
 
-test('183 Z3-R2 tools: each export row lists its allowlist (default the public web); × and Add tool put the export', async () => {
-  api.a2a_exports.mockImplementation(async () => [EXPORTS[0]!, { ...EXPORTS[1]!, tools: [] } as Export])
-  await mount(createElement(ContactAccess))
-  expect(body()).toContain('Cautious shares can use only these tools. Everything else, including your files, sessions, knowledge and vault, is hidden from them.')
-  expect(body()).toContain('Only the public web, read-only readers and read-only MCP tools can be added.')
-  const tools = (label: string) => document.querySelector(`[role=group][aria-label="Tools ${label} offers contacts"]`)!
-  expect(tools('research@studio').textContent).toContain('search_webread_url')
-  expect(api.a2a_grantable_tools).toHaveBeenCalled()
-  expect(tools('Ops chat').textContent).toContain('No tools: answers only')
-  await click('Remove read_url from research@studio')
-  await vi.waitFor(() => expect(api.a2a_export_put).toHaveBeenCalledWith({ ...EXPORTS[0], tools: ['search_web'] }))
-  vi.clearAllMocks()
-  // Add tool offers only what the engine lets an export grant (Z4: `a2a_grantable_tools`) and the list lacks; the first row is bob's research.
-  const items = () => [...tools('research@studio').querySelectorAll('[role=menuitem]')]
-  expect(items().map((b) => b.querySelector('.font-mono')?.textContent)).toEqual(['knowledge_search', 'mcp:files/search'])
-  // Z4-R1: a reader warns that it sees all of its kind; an MCP tool that its risk is the server's word.
-  expect(items()[0]!.textContent).toContain('Sees ALL your knowledge, not just what you share here')
-  expect(items()[1]!.textContent).toContain('Read-only as the server declares it; for a server you don’t control, pin its risk on Settings › Tools › MCP')
-  await run(() => (items()[0] as HTMLButtonElement).click())
-  await vi.waitFor(() => expect(api.a2a_export_put).toHaveBeenCalledWith({ ...EXPORTS[0], tools: ['search_web', 'read_url', 'knowledge_search'] }))
-})
-
-test('183 Z4-R1 tools line: once a reader is granted it names what contacts can read, all of it', async () => {
-  api.a2a_exports.mockImplementation(async () => [
-    { ...EXPORTS[0]!, tools: ['read_url', 'knowledge_get', 'nb_search'] } as Export,
-    { ...EXPORTS[1]!, tools: ['doc_read', 'knowledge_search'] } as Export,
-  ])
-  await mount(createElement(ContactAccess))
-  expect(body()).toContain(
-    'Cautious shares can use only these tools. Everything else, including your files, sessions and vault, is hidden from them. The readers granted below let them read ALL your knowledge, notebooks and notes and documents, not just what you share.',
-  )
-  expect(body()).not.toContain('sessions, knowledge and vault')
-  await reset()
-  api.a2a_exports.mockImplementation(async () => [{ ...EXPORTS[0]!, tools: ['artifact_read'] } as Export])
-  await mount(createElement(ContactAccess))
-  expect(body()).toContain('including your files, sessions, knowledge and vault, is hidden from them. The readers granted below let them read ALL your artifacts, not just what you share.')
-})
-
-test('⋯ Share with contact…: Cautious or Full collaboration grants this chat, Shared · Stop takes it back; Stop sharing with <contacts> removes the export', async () => {
+test('⋯ Share with contact…: one Share per contact grants this chat (`modes` full for it alone), Shared · Stop takes it back; Stop sharing with <contacts> removes the export', async () => {
   await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
   expect(body()).toContain("They see only what this chat's agent sends back")
-  expect(body()).toContain('You can switch this share between Full collaboration and Cautious, or stop sharing, at any time.')
+  expect(body()).toContain('You can stop sharing at any time.')
+  expect(body()).toContain('A contact reaches only what you share. Their agent and yours talk freely, with Markdown, links and images, and yours works with its normal tools and your usual approvals.')
+  for (const gone of ['Cautious', 'Full collaboration', 'read only', 'can change things']) expect(body()).not.toContain(gone)
   await click('Stop sharing with bob')
   await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['research'], blocked: null, modes: null }))
   await reset()
-  api.contact_list.mockImplementation(async () => [{ ...BOB, exports: [] }])
+  api.contact_list.mockImplementation(async () => [{ ...BOB, exports: ['research'] }, { ...ALICE, exports: [] }])
   await mount(createElement(ShareDialog, { session: 's-new', title: 'New chat', onClose: vi.fn() }))
-  // 186: no grant button takes focus on open, so Enter never shares in full by accident.
-  expect(document.querySelectorAll('[role=group][aria-label="Share this chat with bob"] button')).toHaveLength(2)
+  // 186: no share button takes focus on open, so Enter never shares by accident.
   expect(document.activeElement?.tagName).not.toBe('BUTTON')
-  await click('Cautious: share this chat with bob')
+  // alice's card says nothing about `full`: her Share is on all the same.
+  expect((button('Share this chat with alice') as HTMLButtonElement).disabled).toBe(false)
+  expect(body()).toContain('studio')
+  expect(body()).not.toContain('to share')
+  await click('Share this chat with bob')
   await vi.waitFor(() => expect(api.a2a_export_put).toHaveBeenCalledWith({ name: 'new-chat', target: { kind: 'chat', session: 's-new' }, description: 'New chat', paused: null }))
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['new-chat'], blocked: null, modes: { 'new-chat': 'cautious' } })
+  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['research', 'new-chat'], blocked: null, modes: { 'new-chat': 'full' } })
   await reset()
   api.contact_list.mockImplementation(async () => [BOB, ALICE])
   const onShare = vi.fn()
@@ -533,14 +497,14 @@ test('W-27 first contact: Allow once → ask, Always → allow, Block → block 
   ])
 })
 
-test('ContactFirstScreen: who asks, what it wants to reach, the share\'s mode and the three answers', async () => {
-  api.contact_first_waiting.mockImplementation(async () => [{ contact: 'bob', machine: "Bob's MacBook", export: 'research', session: 's1', since_ms: NOW, waiting: 1, preview: 'hi', mode: 'full' }])
+test('ContactFirstScreen: who asks, what it wants to reach and the three answers; no share mode', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [{ contact: 'bob', machine: "Bob's MacBook", export: 'research', session: 's1', since_ms: NOW, waiting: 1, preview: 'hi' }])
   await mount(createElement(ContactFirstScreen, { item: FIRST }))
   const t = body()
   expect(t).toContain("bob (Bob's MacBook) wants to reach research")
   expect(t).toContain('Wants to reach')
-  // research is an agent export: the hint names "this agent".
-  await vi.waitFor(() => expect(body()).toContain('Full collaboration: Their agent and this agent talk freely'))
+  expect(t).not.toContain('Full collaboration')
+  expect(t).not.toContain('Cautious')
   expect(t).not.toContain('limited trust')
   expect(t).toContain('Allow once lets this message through. Always lets every later message to this export through. Block blocks this contact entirely.')
   for (const b of ['Allow once', 'Always', 'Block']) expect(button(b)).toBeDefined()
@@ -577,7 +541,8 @@ test('188 Messaging › A2A lists only the HTTP peers: a contact is no peer row 
   expect(t).toContain('1 local root may send · may call docs')
   expect(t).not.toContain('0 local roots may send')
   // The contact's chat export has no HTTP URL to copy; the HTTP peer's export keeps it.
-  expect(t).toContain('reached by the contact over theuth/a2a/1, cautious: one capped turn per message')
+  expect(t).toContain('reached by the contact over theuth/a2a/1: its agent and this chat’s agent talk freely, like mesh peers')
+  for (const gone of ['Cautious', 'cautious', 'Full collaboration', 'capped']) expect(t).not.toContain(gone)
   expect(t).not.toContain('http://127.0.0.1:7780/agents/ops-chat/rpc')
   expect(button('Copy URL of ops-chat')).toBeUndefined()
   expect(button('Copy URL of docs')).toBeDefined()
@@ -597,14 +562,15 @@ test('the chat banner names HTTP-peer exports only: a chat shared with a contact
   await vi.waitFor(() => expect(body()).toContain('Exported: docs → lab'))
 })
 
-const WAIT: FirstWaiting = { contact: 'bob', machine: "Bob's MacBook", export: 'ops-chat', session: 's-ops', since_ms: NOW, waiting: 1, preview: 'hello', mode: 'cautious' }
+const WAIT: FirstWaiting = { contact: 'bob', machine: "Bob's MacBook", export: 'ops-chat', session: 's-ops', since_ms: NOW, waiting: 1, preview: 'hello' }
 
-test('183 F3 Communication: a held first message sits under its export row; Allow once · Always · Block answer it; no machine, no parentheses', async () => {
-  api.contact_first_waiting.mockImplementation(async () => [WAIT, { ...WAIT, contact: 'alice', machine: '' }])
+test('183 F3 Communication: a held first message sits under its export row; Allow once · Always · Block answer it; no machine, no parentheses; a queued row (186 engine) never shows', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [WAIT, { ...WAIT, contact: 'alice', machine: '' }, { ...WAIT, contact: 'carol', queued: true, position: 1 }])
   await mount(createElement(A2aSection, { state: undefined }))
   await vi.waitFor(() => expect(body()).toContain("bob (Bob's MacBook) is waiting for you to allow its first message to ops-chat"))
   expect(body()).toContain('alice is waiting for you to allow its first message to ops-chat')
   expect(body()).not.toContain('alice ()')
+  expect(body()).not.toContain('carol')
   const buttons = [...document.querySelectorAll('button')].filter((b) => b.textContent === 'Allow once')
   expect(buttons).toHaveLength(2)
   await run(() => (buttons[0] as HTMLElement).click())
@@ -616,7 +582,7 @@ test('183 F3 Communication: a held first message sits under its export row; Allo
   expect(api.contact_first_answer).toHaveBeenLastCalledWith('alice', 'ops-chat', 'allow')
 })
 
-test('183 F3 Contacts: each contact\'s row carries its own waiting line and answers; 186: a queued message is no hold and never shows here', async () => {
+test('183 F3 Contacts: each contact\'s row carries its own waiting line and answers; a queued message (186 engine) is no hold and never shows here', async () => {
   api.contact_first_waiting.mockImplementation(async () => [WAIT, { ...WAIT, export: 'research', queued: true, position: 1 }])
   await mount(createElement(Contacts))
   await vi.waitFor(() => expect(body()).toContain("bob (Bob's MacBook) is waiting for you to allow its first message to ops-chat"))
@@ -638,7 +604,7 @@ test('183 F10 Contacts: "Shared with you" lists what the contact shares, marking
     ALICE,
   ])
   await mount(createElement(Contacts))
-  expect(body()).toContain('Shared with you: Ops (full), Bot (asks first), Old (paused)')
+  expect(body()).toContain('Shared with you: Ops, Bot (asks first), Old (paused)')
   expect(body().match(/Shared with you/g)).toHaveLength(1)
 })
 
@@ -653,8 +619,7 @@ test('183 F2: after Share… the engine stores Always allow and the row shows it
   await mount(createElement(ContactAccess))
   await click('Share with bob…')
   api.contact_list.mockImplementation(async () => [{ ...BOB, exports: ['research'], first_contact: { research: 'allow' } }])
-  await click('research@studioagent')
-  await click('Cautious: share research@studio with bob')
+  await click('Share research@studio with bob')
   await vi.waitFor(() => expect(document.querySelector('[aria-label="First contact from bob to research"]')?.getAttribute('data-value')).toBe('allow'))
   expect(body()).toContain('A new share starts on "Always allow"')
   await reset()
@@ -663,72 +628,3 @@ test('183 F2: after Share… the engine stores Always allow and the row shows it
   expect(document.querySelector('[aria-label="First contact from bob to research"]')?.getAttribute('data-value')).toBe('ask')
 })
 
-test('186 D3, D10: sharing is a required choice — two equal buttons, neither preselected; Full collaboration is off for a contact on an older build', async () => {
-  api.contact_list.mockImplementation(async () => [{ ...BOB, exports: [] }, { ...ALICE, exports: [] }])
-  await mount(createElement(ShareDialog, { session: 's-new', title: 'New chat', onClose: vi.fn() }))
-  const choice = (who: string) => [...document.querySelectorAll(`[role=group][aria-label="Share this chat with ${who}"] button`)] as HTMLButtonElement[]
-  for (const who of ['bob', 'alice']) {
-    expect(choice(who).map((b) => b.querySelector('.font-medium')?.textContent)).toEqual(['Full collaboration', 'Cautious'])
-    // Equal weight: one look for both, nothing pressed or primary.
-    expect(new Set(choice(who).map((b) => b.className)).size).toBe(1)
-    expect(choice(who).some((b) => b.getAttribute('aria-pressed') === 'true')).toBe(false)
-  }
-  expect(body()).toContain('Their agent and this chat’s agent talk freely, with Markdown, links and images, and this chat’s agent works with its normal tools.')
-  expect(body()).toContain('Plain text, one limited turn per message, read-only tools.')
-  expect(choice('bob').map((b) => b.disabled)).toEqual([false, false])
-  expect(choice('alice').map((b) => b.disabled)).toEqual([true, false])
-  expect(choice('alice')[0]!.textContent).toContain('update studio to share in full')
-  // Nothing is granted until a mode is pressed.
-  expect(api.contact_update).not.toHaveBeenCalled()
-  await click('Full collaboration: share this chat with bob')
-  await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['new-chat'], blocked: null, modes: { 'new-chat': 'full' } }))
-})
-
-test('186: each grant shows its mode and changes it; a full grant hides the tools editor, and the cap is off once every grant is full', async () => {
-  const FULL = { ...BOB, modes: { research: 'full' as const } }
-  api.contact_list.mockImplementation(async () => [FULL, ALICE])
-  await mount(createElement(ContactAccess))
-  const mode = (exp: string, who = 'bob') => document.querySelector(`[aria-label="Mode of ${exp} for ${who}"]`)?.getAttribute('data-value')
-  expect(mode('research')).toBe('full')
-  // No entry is cautious (D2).
-  expect(mode('ops-chat')).toBe('cautious')
-  expect(document.querySelector('[role=group][aria-label="Tools research@studio offers contacts"]')).toBeNull()
-  expect(body()).toContain('Full collaboration: Their agent and this agent talk freely')
-  expect(document.querySelector('[role=group][aria-label="Tools Ops chat offers contacts"]')).not.toBeNull()
-  await run(() => selects['Mode of ops-chat for bob']!('full'))
-  // Only the changed entry: a stale snapshot never re-sends research's mode (the engine merges entry by entry).
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: null, blocked: null, modes: { 'ops-chat': 'full' } })
-  await reset()
-  api.contact_list.mockImplementation(async () => [{ ...FULL, exports: ['research'] }])
-  await mount(createElement(ContactAccess))
-  expect(body()).toContain('Every share with bob is full: the cap applies to cautious shares only.')
-  await reset()
-  // The Contacts list, the shared chat's header chip and the chat's share dialog say it too.
-  api.contact_list.mockImplementation(async () => [{ ...BOB, modes: { 'ops-chat': 'full' } }, ALICE])
-  await mount(createElement(Contacts))
-  expect(body()).toContain('research@studio · cautious')
-  expect(body()).toContain('Ops chat · Paused (chat archived) · full')
-  expect(body()).toContain("Bob's MacBook · read only")
-  await reset()
-  // Every share full: the cap bounds nothing, so the row does not print it.
-  api.contact_list.mockImplementation(async () => [{ ...BOB, modes: { research: 'full', 'ops-chat': 'full' } }])
-  await mount(createElement(Contacts))
-  expect(body()).toContain("Bob's MacBook")
-  expect(body()).not.toContain('read only')
-  expect(sharedLabel(sharingOf('s-ops', EXPORTS, [{ ...BOB, modes: { 'ops-chat': 'full' } }, ALICE]))).toBe('Shared with bob · full, alice · can change things · paused (chat archived)')
-  await reset()
-  api.contact_list.mockImplementation(async () => [{ ...BOB, modes: { 'ops-chat': 'full' } }, ALICE])
-  await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
-  expect(mode('ops-chat')).toBe('full')
-  expect(mode('ops-chat', 'alice')).toBe('cautious')
-  await run(() => selects['Mode of ops-chat for bob']!('cautious'))
-  expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: null, blocked: null, modes: { 'ops-chat': 'cautious' } })
-})
-
-test('186 Communication: a full export says so; a cautious one keeps "one capped turn per message"', async () => {
-  api.a2a_status.mockImplementation(async () => ({ ...A2A, exports: [{ ...A2A.exports[0]!, mode: 'full' }, A2A.exports[1]!] }))
-  await mount(createElement(A2aSection, { state: undefined }))
-  expect(body()).toContain('Full collaboration')
-  expect(body()).toContain('reached by the contact over theuth/a2a/1, full collaboration')
-  expect(body()).not.toContain('one capped turn per message')
-})

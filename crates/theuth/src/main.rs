@@ -1264,7 +1264,7 @@ agent:
 #                            # listener is plain HTTP for loopback development only; never forward that port to a network.
 #   mdns_types: [_a2a._tcp, _agent._tcp, _lad-a2a._tcp]   # browsed while an Add contact window is open; the first is advertised
 #   contact_window_secs: 600 # how long an Add contact window (and its invite ticket) stays open
-#   contact_cap: read_only   # a new contact's risk cap: read_only | mutating
+#   contact_cap: read_only   # a contact's turn cap in a chat another machine of the mesh owns: read_only | mutating
 
 tools:
   policy:

@@ -265,8 +265,8 @@ pub trait Api {
     #[method(name = "list_queued", with_extensions)]
     async fn list_queued(&self, session: SessionId) -> RpcResult<Vec<QueuedInput>>;
     /// Abort the in-flight turn; `scope` `tree` also stops every running descendant (133 §4; default `root`).
-    /// 186 (D8): `reason` `input` (the owner's interject or flush) is refused while the turn is a
-    /// contact's; `stop` (the default) is an explicit Stop.
+    /// 190 (D5): `reason` is accepted and ignored: an interject or flush cancels a contact's
+    /// turn like any other.
     #[method(name = "cancel", with_extensions)]
     async fn cancel(
         &self,
@@ -2681,9 +2681,6 @@ pub trait Api {
     /// 183 §12.10: remove an export and its grants (Stop sharing).
     #[method(name = "a2a_export_remove")]
     async fn a2a_export_remove(&self, name: String) -> RpcResult<()>;
-    /// 183 Z4: the tools an export may allow a contact (the allowlist editor offers only these).
-    #[method(name = "a2a_grantable_tools")]
-    async fn a2a_grantable_tools(&self) -> RpcResult<Vec<tools::GrantableTool>>;
     /// 183 §7.6 (W-27): the `contact_first` Attention item's Allow once · Always · Block.
     #[method(name = "contact_first_answer")]
     async fn contact_first_answer(
@@ -4615,12 +4612,9 @@ impl ApiServer for Server {
         reason: Option<agent::CancelReason>,
     ) -> RpcResult<()> {
         self.authorize_fwd(ext, session).await?;
-        // 186 (D8): the reason travels with a forwarded cancel; a plain Stop keeps the old
-        // two-parameter call, so an engine that predates the reason still takes it.
-        let routed = match &reason {
-            Some(_) => forward::route(ext, session, "cancel", (session, &scope, &reason)).await?,
-            None => forward::route(ext, session, "cancel", (session, &scope)).await?,
-        };
+        // 190 (D5): the reason is ignored, so a forwarded cancel is the plain two-parameter
+        // call: an owner engine on 186 takes it as a Stop and never refuses it.
+        let routed = forward::route(ext, session, "cancel", (session, &scope)).await?;
         if let Some(r) = routed {
             return Ok(r);
         }
@@ -9610,10 +9604,6 @@ impl ApiServer for Server {
     async fn a2a_export_remove(&self, name: String) -> RpcResult<()> {
         let msg = a2a::contacts::ExportRemove { name };
         contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
-    }
-
-    async fn a2a_grantable_tools(&self) -> RpcResult<Vec<tools::GrantableTool>> {
-        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, tools::ContactGrantable).await
     }
 
     async fn contact_first_answer(

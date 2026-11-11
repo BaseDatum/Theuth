@@ -429,9 +429,9 @@ pub enum CancelScope {
     Tree,
 }
 
-/// 186 (D8): why a turn is cancelled. `Input`: the owner's message (interject, flush) —
-/// refused while the turn is a contact's, so the owner never cancels a contact turn by
-/// typing. `Stop` (the default): an explicit Stop.
+/// Why a turn is cancelled: `Input` (the owner's interject or flush) or `Stop` (the default,
+/// an explicit Stop). 190 (D5): accepted and ignored; either cancels any turn, a contact's
+/// included.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -463,7 +463,7 @@ pub struct Cancel {
     /// Root (default) or the whole running subtree (133 §2).
     #[serde(default)]
     pub scope: CancelScope,
-    /// 186 (D8): `Input` is refused while the session's turn is a contact's.
+    /// 190 (D5): accepted and ignored (186 D8's refusal is gone).
     #[serde(default)]
     pub reason: CancelReason,
 }

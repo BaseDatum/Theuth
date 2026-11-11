@@ -246,7 +246,6 @@ async fn export_bindings() {
         agent::overviews::Overview,
         agent::overviews::OverviewRun,
         tools::ToolSpec,
-        tools::GrantableTool,
         tools::Risk,
         tools::PolicyAction,
         tools::Gate,

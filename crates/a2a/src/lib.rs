@@ -42,7 +42,7 @@ pub mod contacts;
 pub mod server;
 
 use client::{ConnectError, PeerClient, Sender};
-use config::{A2aConfig, Listener, PEERS_FILE, PeersFile, ShareMode, Staged};
+use config::{A2aConfig, Listener, PEERS_FILE, PeersFile, Staged};
 use server::{Live, Shared};
 
 /// Registry name of the [`A2aActor`].
@@ -123,8 +123,6 @@ pub struct A2aExportStatus {
     pub url: String,
     /// The one peer granted this export.
     pub peer: Option<String>,
-    /// 186: the granted peer's share mode (contacts only).
-    pub mode: Option<ShareMode>,
 }
 
 /// `ask` → [`A2aStatus`].
@@ -214,6 +212,30 @@ struct State {
     addr_error: Option<String>,
     /// The mode warning was logged.
     mode_warned: bool,
+    /// 190 (D10): this process tried the one-time notice.
+    notice_tried: bool,
+}
+
+/// 190 (D10): unless the marker `a2a/.190-full-notice` exists beside `peers.yaml`, log one
+/// INFO line per grant of `file` and write the marker (creating `a2a/`). A marker that cannot
+/// be written is a warning, never an error. Returns the lines logged.
+fn full_notice_once(data_dir: &std::path::Path, file: &PeersFile) -> Vec<String> {
+    let marker = data_dir.join(config::FULL_NOTICE);
+    if marker.exists() {
+        return Vec::new();
+    }
+    let lines = config::full_notice(file);
+    for line in &lines {
+        tracing::info!("{line}");
+    }
+    let wrote = marker
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&marker, b""));
+    if let Err(e) = wrote {
+        tracing::warn!("a2a: {}: {e}", marker.display());
+    }
+    lines
 }
 
 impl Ctx {
@@ -259,18 +281,6 @@ impl Ctx {
                 session: e.session,
                 url: format!("{}/agents/{}/rpc", base.as_deref().unwrap_or(""), e.name),
                 peer: e.peer.clone(),
-                mode: e
-                    .peer
-                    .as_ref()
-                    .and_then(|p| live.staged.peers.get(p))
-                    .filter(|p| p.eid.is_some())
-                    .map(|p| {
-                        if p.full.contains(&e.name) {
-                            ShareMode::Full
-                        } else {
-                            ShareMode::Cautious
-                        }
-                    }),
             })
             .collect();
         A2aStatus {
@@ -504,7 +514,12 @@ impl Ctx {
                     roots: p.sessions.clone(),
                     generation: epochs[&p.name].clone(),
                     sender,
-                    full: p.full.iter().cloned().collect(),
+                    // 190: a contact's exports, every one shared in full.
+                    full: if p.eid.is_some() {
+                        p.exports.clone()
+                    } else {
+                        Vec::new()
+                    },
                 }
             })
             .collect();
@@ -562,38 +577,21 @@ impl Ctx {
             self.subscribers.clone(),
             policy,
         ));
-        // 183 Z3-R2: a contact's cap or an agent export's allowlist reaches its live inboxes
-        // at once (a running turn included), not at the contact's next request.
+        // 186 review 2: the agent exports each contact holds now; every other inbox of the
+        // contact stops running uncapped at once (a running turn included).
         let limits: Vec<agent::communication::network::ContactLimits> = live
             .staged
             .contacts
             .iter()
             .filter(|(_, f)| !f.blocked)
-            .map(|(alias, f)| agent::communication::network::ContactLimits {
+            .map(|(alias, _)| agent::communication::network::ContactLimits {
                 contact: alias.clone(),
-                cap: f.cap,
-                // 186 (D6): an agent shared in full runs under its own policy.
-                exports: live
-                    .staged
-                    .peers
-                    .get(alias)
-                    .map(|p| {
-                        p.exports
-                            .iter()
-                            .filter(|e| !p.full.contains(*e))
-                            .filter_map(|e| live.staged.agents.get(e))
-                            .map(|a| (a.name.clone(), a.tools.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                // 186 review 2: and which agent exports it holds in full (every other inbox
-                // of the contact stops running in full).
                 full: live
                     .staged
                     .peers
                     .get(alias)
                     .map(|p| {
-                        p.full
+                        p.exports
                             .iter()
                             .filter(|e| live.staged.agents.contains_key(*e))
                             .cloned()
@@ -628,6 +626,11 @@ impl Ctx {
             if !clients.get(alias).is_some_and(|c| Arc::ptr_eq(c, old)) {
                 old.generation().cancel();
             }
+        }
+        // 190 (D10): once, at the first good load after the upgrade, every grant says it is
+        // full now (tried once per process, so an unwritable marker never repeats it).
+        if !std::mem::replace(&mut self.state.lock().notice_tried, true) {
+            full_notice_once(&self.rt.data_dir, &file);
         }
         {
             let mut s = self.state.lock();
@@ -1126,6 +1129,52 @@ mod tests {
         assert_eq!(transition(false, false), Transition::Keep);
     }
 
+    /// A 186-written file: `bob` holds `proj` (no `modes`).
+    fn granted_file() -> PeersFile {
+        let bob = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
+        serde_yaml::from_str(&format!(
+            "peers:\n  bob:\n    endpoint: {bob}\n    exports: [proj]\nexports:\n  proj: {{ session: \"00000000-0000-0000-0000-000000000003\", name: Proj }}\n"
+        ))
+        .unwrap()
+    }
+
+    const NOTICE: &str = "a2a: share proj to bob is full (cautious mode removed)";
+
+    /// 190 (D10): the notice runs once: the first load logs each grant and writes the
+    /// marker; a second load logs nothing.
+    #[test]
+    fn the_full_notice_logs_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("a2a")).unwrap();
+        assert_eq!(full_notice_once(dir.path(), &granted_file()), [NOTICE]);
+        assert!(dir.path().join(config::FULL_NOTICE).is_file());
+        assert!(full_notice_once(dir.path(), &granted_file()).is_empty());
+    }
+
+    /// 190 (D10): with no `a2a/` yet, the notice creates it beside `peers.yaml` and logs.
+    #[test]
+    fn the_full_notice_creates_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(full_notice_once(dir.path(), &granted_file()), [NOTICE]);
+        assert!(dir.path().join(config::FULL_NOTICE).is_file());
+    }
+
+    /// 190 (D10): a marker that cannot be written is only a warning: the lines are logged,
+    /// nothing panics, and the reload goes on (it is tried once per process).
+    #[cfg(unix)]
+    #[test]
+    fn an_unwritable_marker_warns_and_never_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let a2a = dir.path().join("a2a");
+        std::fs::create_dir(&a2a).unwrap();
+        std::fs::set_permissions(&a2a, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let lines = full_notice_once(dir.path(), &granted_file());
+        std::fs::set_permissions(&a2a, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(lines, [NOTICE]);
+        assert!(!dir.path().join(config::FULL_NOTICE).exists());
+    }
+
     fn staged(peers: &[(&str, &str)]) -> Staged {
         let mut s = Staged::default();
         for (alias, token) in peers {
@@ -1138,7 +1187,6 @@ mod tests {
                     inbound: Some(config::Token::for_test(token)),
                     sessions: vec![],
                     exports: vec![],
-                    full: Default::default(),
                     allow_private: false,
                     eid: None,
                 },

@@ -613,14 +613,15 @@ fn mcp_remote<'a>(name: &'a str, server: &str) -> &'a str {
 /// anything the cap protects. The policy still runs for these.
 const CAP_EXEMPT: &[&str] = &["send_message"];
 
-/// 183 Z4: the only tools an export may EVER allow a contact — the public web and the
-/// read-only readers the owner opts into. Nothing else is grantable, read-only or not:
-/// anything that reaches past the contact's capped session (the screen, the browser and
-/// its cookies, knowledge writes, briefs, routines and drafts, reminders, the owner's
-/// sessions, the vault, tasks, agents, schedules, spawning, messaging) stays out. Besides
-/// these, an MCP tool at effective risk `read_only` is grantable as `mcp:<server>/<tool>`.
-/// Checked when `peers.yaml` loads, at `a2a_export_put`, and here at every [`SetAllowOnly`].
-pub const CONTACT_GRANTABLE: &[&str] = &[
+/// 183 Z4: the only tools a contact allowlist may EVER hold — the public web and the
+/// read-only readers. Nothing else is grantable, read-only or not: anything that reaches past
+/// the contact's capped session (the screen, the browser and its cookies, knowledge writes,
+/// briefs, routines and drafts, reminders, the owner's sessions, the vault, tasks, agents,
+/// schedules, spawning, messaging) stays out. Besides these, an MCP tool at effective risk
+/// `read_only` is grantable as `mcp:<server>/<tool>`. Checked here at every [`SetAllowOnly`]
+/// (a W-40 turn's allowlist comes from another engine of the mesh).
+// W-40 only; removed by design 191 (contacts are mesh-wide)
+const CONTACT_GRANTABLE: &[&str] = &[
     "search_web",
     "read_url",
     "scrape_url",
@@ -640,7 +641,8 @@ const MCP_GRANT: &str = "mcp:";
 /// 183 Z4: `name` may stand in a contact allowlist: one of [`CONTACT_GRANTABLE`], or an
 /// MCP key (`mcp:<server>/<tool>`, whose risk only the registry knows; it admits the key
 /// only while that tool is `read_only`).
-pub fn contact_grantable(name: &str) -> bool {
+// W-40 only; removed by design 191 (contacts are mesh-wide)
+fn contact_grantable(name: &str) -> bool {
     CONTACT_GRANTABLE.contains(&name)
         || name.len() <= 160
             && name
@@ -651,55 +653,6 @@ pub fn contact_grantable(name: &str) -> bool {
                         && !tool.is_empty()
                         && !name.chars().any(|c| c.is_whitespace() || c.is_control())
                 })
-}
-
-/// One tool an export may allow a contact (`a2a_grantable_tools`): `name` is what the
-/// allowlist holds (`mcp:<server>/<tool>` for an MCP tool).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct GrantableTool {
-    /// The allowlist key.
-    pub name: String,
-    /// The tool's risk (always `read_only` for an MCP tool).
-    pub risk: Risk,
-    /// The MCP server, for an MCP tool.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub mcp_server: Option<String>,
-}
-
-/// `ask` → `Vec<GrantableTool>` (183 Z4): the registered tools an export may allow a
-/// contact, sorted by name — the allowlist editor offers only these.
-#[derive(Clone, Copy, Debug)]
-pub struct ContactGrantable;
-
-impl Message<ContactGrantable> for ToolRegistry {
-    type Reply = Vec<GrantableTool>;
-
-    async fn handle(
-        &mut self,
-        _: ContactGrantable,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        let mut out: Vec<GrantableTool> = self
-            .tools
-            .iter()
-            .filter_map(|(name, t)| {
-                let name = self.grant_key(name)?;
-                let mcp_server = match t.source() {
-                    ToolSource::Mcp { server, .. } => Some(server),
-                    _ => None,
-                };
-                Some(GrantableTool {
-                    name: name.into_owned(),
-                    risk: t.spec().risk,
-                    mcp_server,
-                })
-            })
-            .collect();
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        out
-    }
 }
 
 /// `tell` (183 §7.6, Z3-R2): contact sessions are default-deny — only the tools in `tools`
@@ -3539,10 +3492,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// 183 Z4: an allowlist holds only what a contact may ever be granted, whoever sent it
-    /// (a paired engine's `origin.tools`): `browser_open` is intersected away at install
+    /// 183 Z4 (W-40): an allowlist holds only what a contact may ever be granted, whoever sent
+    /// it (a paired engine's `origin.tools`): `browser_open` is intersected away at install
     /// though read-only; an MCP tool is admitted by its `mcp:<server>/<tool>` key only while
-    /// it is read-only, never by its bare name; and the editor's set is exactly that.
+    /// it is read-only, never by its bare name.
     #[tokio::test]
     async fn an_allowlist_from_a_peer_holds_only_grantable_tools() {
         let reg = registry_with(
@@ -3587,18 +3540,6 @@ pub(crate) mod tests {
                 assert!(out.content.contains("unknown tool"), "{out:?}");
             }
         }
-        let grantable = |name: &str, mcp: bool| GrantableTool {
-            name: name.into(),
-            risk: Risk::ReadOnly,
-            mcp_server: mcp.then(|| "files".into()),
-        };
-        assert_eq!(
-            reg.ask(ContactGrantable).await.unwrap(),
-            [
-                grantable("mcp:files/search", true),
-                grantable("read_url", false)
-            ]
-        );
     }
 
     /// Stands in for `crawl`: answers with the arguments it was called with.

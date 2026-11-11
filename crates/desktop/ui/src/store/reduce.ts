@@ -1056,8 +1056,6 @@ function turn(
         model: e.model,
         turnSeq: e.turn_seq,
         lastInjected: undefined,
-        // 183 §12.10: a contact's capped turn (its wrapped row is not echoed into `entries` here).
-        contactNote: cls?.[0]?.kind === "contact_message" ? cls[0] : undefined,
         // 186: the opener's `PeerDelivered` came first: its row's seq is this turn's.
         turnBy: s.entries.findLast((x): x is Extract<Entry, { kind: "peer" }> => x.kind === "peer" && x.seq === e.turn_seq && x.origin?.contact_mode === "full")?.from,
         // The actor is busy; the settled reload after `TurnDone` restores the authoritative flag.
@@ -1248,7 +1246,6 @@ function turn(
         running: false,
         waiting: false,
         activity: "idle",
-        contactNote: undefined,
         turnBy: undefined,
       };
     }

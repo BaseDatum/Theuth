@@ -20,7 +20,7 @@ import { canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import { useSecretRequests } from '@/store/approvals'
-import { FIRST_ANSWERS, MODE_LABEL, contactFirstOf, useFirstWaiting } from '@/lib/contacts'
+import { FIRST_ANSWERS, contactFirstOf } from '@/lib/contacts'
 import { snoozeUntil } from './model'
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useActivityToday, useActivityWeek, useAttention, useAttentionActions, useSessionContexts, useSecretRequestRows, useSessionList, useSpendReport } from './queries'
 import { sceneFixture } from './scene/fixtures'
@@ -197,18 +197,6 @@ export function AttentionList({ items }: { items: AttentionItem[] | undefined })
   )
 }
 
-/** 186: the held share's mode beside the first-contact answers, so "Always" on a full share is pressed knowingly. */
-function FirstAnswers({ id }: { id: string }) {
-  const first = contactFirstOf(id)
-  const mode = useFirstWaiting().data?.find((w) => w.contact === first?.contact && w.export === first?.exp)?.mode
-  return (
-    <p className="text-xs text-fg-tertiary">
-      {mode && <span className="font-medium text-fg-secondary">{MODE_LABEL[mode]} share. </span>}
-      {FIRST_ANSWERS}
-    </p>
-  )
-}
-
 /** One inbox row with its decision inline: allow/deny · answer · hire/decline · done/back · start/unblock · un-pause; snooze and dismiss on every row. */
 function AttentionCard({ item }: { item: AttentionItem }) {
   const qc = useQueryClient()
@@ -250,7 +238,7 @@ function AttentionCard({ item }: { item: AttentionItem }) {
           <span className="ml-auto shrink-0 text-xs text-fg-tertiary tabular-nums">{age(item.at_ms)}</span>
         </div>
         {item.detail && <p className="truncate text-fg-secondary">{item.detail}</p>}
-        {item.kind === 'contact_first' && <FirstAnswers id={item.id} />}
+        {item.kind === 'contact_first' && <p className="text-xs text-fg-tertiary">{FIRST_ANSWERS}</p>}
       </div>
       <KindActions item={item} />
     </li>

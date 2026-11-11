@@ -666,8 +666,7 @@ impl Talk {
                                 session,
                                 keep,
                                 scope: agent::CancelScope::Root,
-                                // 186 (D8): the owner's speech: a contact's turn keeps running.
-                                reason: agent::CancelReason::Input,
+                                reason: agent::CancelReason::default(),
                             })
                             .await;
                     }

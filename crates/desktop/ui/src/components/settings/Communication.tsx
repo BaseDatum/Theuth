@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
 import { Dot, Empty, Row, Section, errorText, refreshInfo, useAction } from '@/components/settings/shared'
 import { WaitingRow } from '@/components/settings/Contacts'
-import { MODE_LABEL, useContacts, useFirstWaiting } from '@/lib/contacts'
+import { useContacts, useFirstWaiting } from '@/lib/contacts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -206,15 +206,12 @@ export function A2aSection({ state }: { state: CommunicationState | undefined })
                   <Dot on={x.peer !== null} />
                   {x.name}
                   <Badge variant="outline">export</Badge>
-                  {x.mode && <Badge variant="outline">{MODE_LABEL[x.mode]}</Badge>}
                   <span className="text-fg-secondary">{x.peer ? `granted to ${x.peer}` : 'no peer'}</span>
                 </span>
               }
               description={
                 x.peer !== null && contactNames.has(x.peer) ? (
-                  x.mode === 'full'
-                    ? 'reached by the contact over theuth/a2a/1, full collaboration: its agent and this chat’s agent talk freely, like mesh peers'
-                    : 'reached by the contact over theuth/a2a/1, cautious: one capped turn per message'
+                  'reached by the contact over theuth/a2a/1: its agent and this chat’s agent talk freely, like mesh peers'
                 ) : (
                   <span className="break-all font-mono text-xs">{x.url}</span>
                 )

@@ -141,8 +141,6 @@ pub struct ContactCaller(pub String);
 struct ContactGrant {
     alias: String,
     facts: crate::config::ContactFacts,
-    /// 186: the exports shared with it in full.
-    full: std::collections::BTreeSet<String>,
 }
 
 impl Live {
@@ -204,17 +202,11 @@ impl Live {
                 .values()
                 .filter_map(|p| {
                     let facts = staged.contacts.get(&p.peer)?.clone();
-                    let full = staged
-                        .peers
-                        .get(&p.peer)
-                        .map(|x| x.full.clone())
-                        .unwrap_or_default();
                     Some((
                         p.binding,
                         ContactGrant {
                             alias: p.peer.clone(),
                             facts,
-                            full,
                         },
                     ))
                 })
@@ -223,31 +215,21 @@ impl Live {
         let targets = staged
             .exports
             .values()
-            .map(|e| {
-                (
-                    &e.name,
-                    Target::Chat(e.session),
-                    &e.title,
-                    &e.description,
-                    &e.tools,
-                )
-            })
+            .map(|e| (&e.name, Target::Chat(e.session), &e.title, &e.description))
             .chain(staged.agents.values().map(|a| {
                 (
                     &a.name,
                     Target::Agent(a.agent.clone()),
                     &a.title,
                     &a.description,
-                    &a.tools,
                 )
             }));
         let mut router = Router::new();
-        for (name, target, title, description, tools) in targets {
+        for (name, target, title, description) in targets {
             let prefix = format!("/agents/{name}");
             let handler = Arc::new(Handler {
                 export: name.clone(),
                 target,
-                tools: tools.clone(),
                 agents: agents.clone(),
                 subscribers: subscribers.clone(),
                 epochs: epochs.clone(),
@@ -270,7 +252,6 @@ impl Live {
             let handler = Arc::new(Handler {
                 export: RETURN_ROUTE.to_owned(),
                 target: Target::Return,
-                tools: Vec::new(),
                 agents: agents.clone(),
                 subscribers: subscribers.clone(),
                 epochs: epochs.clone(),
@@ -571,7 +552,7 @@ fn accepts_text(mode: &str) -> bool {
 enum Target {
     /// One exact session (an HTTP peer's export, or an exported chat, D9).
     Chat(SessionId),
-    /// 183 §7.6: an agent: each contact gets its own capped inbox.
+    /// 183 §7.6: an agent: each contact gets its own inbox.
     Agent(String),
     /// 186 (D5): the return route: a contact's answers in conversations this engine opened.
     Return,
@@ -581,8 +562,6 @@ enum Target {
 struct Handler {
     export: String,
     target: Target,
-    /// 183 Z3-R2: the export's allowlist for its contact sessions.
-    tools: Vec<String>,
     agents: ActorRef<Agents>,
     subscribers: Arc<Semaphore>,
     /// Binding → grant epoch of the configuration these routes belong to.
@@ -616,21 +595,20 @@ impl Handler {
 
     async fn admit(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
         let (binding, route) = self.caller(params)?;
-        // 183 §7.6: a contact's origin rides with every admission: the inbox's cap, the
-        // exported chat's turn cap, the first-contact hold.
+        // 183 §7.6: a contact's origin rides with every admission: the first-contact hold, and
+        // (W-40) what a chat owned by another engine of the mesh caps the contact's turn at.
+        // 190 (D1): every share is full.
         let grant = self.grants.get(&binding);
         let contact = grant.map(|g| agent::communication::ContactOrigin {
             contact: g.alias.clone(),
             machine: g.facts.machine.clone(),
             export: self.export.clone(),
+            // W-40 only; removed by design 191 (contacts are mesh-wide)
             cap: g.facts.cap,
             holder: mesh::self_id().unwrap_or_default(),
-            tools: self.tools.clone(),
-            mode: if g.full.contains(&self.export) {
-                agent::ShareMode::Full
-            } else {
-                agent::ShareMode::Cautious
-            },
+            // W-40 only; removed by design 191 (contacts are mesh-wide)
+            tools: crate::config::default_contact_tools(),
+            mode: agent::ShareMode::Full,
         });
         let ask_first = match grant.map(|g| g.facts.first_contact.get(&self.export)) {
             None | Some(Some(crate::config::FirstContact::Allow)) => false,
