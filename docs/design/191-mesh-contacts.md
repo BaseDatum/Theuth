@@ -159,6 +159,25 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
 - **The window.** Until a contact accepts the new version, a removed machine can still pass as us to that contact.
   - While the contact is online, that lasts seconds: one push.
   - While the contact is offline, it stays open until the contact comes back and fetches a card.
+- **P2 notes from the final review.** These add to the rules above and change nothing in them.
+  1. **Co-signing.**
+     - A loser's co-sign counts as a signing, so it is pushed like any other.
+     - A machine that jumped or bootstrapped verifies the winner through an old member's co-signature.
+     - For an equal-version replacement, a signer from the head's **own** roster is accepted as well as one from the roster before it. That gives no extra power.
+     - At most one equal-version flip per record per refresh, so hash grinding cannot flush the 64-entry history.
+  2. **Inflation alert (our side).** A machine of ours that is synced (`contacts_ready`, with no parked rows pending) can see either of two things, for two refreshes:
+     - a proof-path request `to=<V>` above its latest version;
+     - a head hash it never signed.
+     
+     It then raises `Contact.problem` and an Attention item: "a machine of <contact> follows a roster we never signed; one of ours may be compromised". It **only alerts** and never denies, so a partition cannot lock out an honest contact.
+  3. **Fresh-machine adoption.** A machine with no state adopts a verified head only if one of these holds:
+     - it equals a peer's head;
+     - it appears in a peer's history;
+     - two independent sources of ours agree on it.
+     
+     If peers are present and none of these holds, it denies with "cannot verify this contact's machines". With no peers at all, it uses its verified path. That is in the limit class: a pin-holder serving an inflated path wins there.
+  4. **Heads rows.** Rows from machines no longer live in C's mesh are ignored. A `conflict` flag that is not refreshed within 3 refreshes expires, so a retired machine's flag cannot deny the record forever.
+  5. **Pruning.** The hop chain is recomputed before any version is dropped, so continuity survives the 8-version window.
 
 ### D2. Replication: last-writer-wins tables in `sessions.sqlite`
 - **Mechanism.** `replica::attach`: per-column LWW under HLC, tombstones, version-vector catch-up (R/lib.rs:1-14, :104-121; R/sync.rs:1-14). The record tables are appended to `replicate_records` beside `projects` and `cost_owners` (`crates/agent/src/store.rs:903-915`, attach at :913).
@@ -554,6 +573,14 @@ The cases:
     - Partition n1 from n2. Pair a fifth scratch engine n5 through n1 and a sixth, n6, through n2, so that n1 and n2 each sign a different version 2.
     - Let c1 fetch only from n1 and c2 only from n2. Heal the partition.
     - Assert that c1 and c2 both end on the higher-hash version 2, that `conflict` is never set, and that our side signs version 3 with both n5 and n6. Neither contact machine denies the record.
+13. **A fork with a jumped machine.** As in case 12, but c2 is offline during both version-2 signings and later jumps from version 1 to version 3.
+    - Assert that c2 verifies version 3 through an old member's co-signature on the winner.
+    - Assert that all of C's machines agree, and that no conflict is set.
+14. **A fresh machine offered an inflated path by a pin-holder.**
+    - A modified n1, the pin, serves a proof path to version 20, above our latest version.
+    - With c1 present at our real head, a fresh machine c4 adopts nothing. It denies with "cannot verify this contact's machines".
+    - The synced n2 raises the inflation alert within two refreshes and denies nothing.
+    - With no peer present, c4 follows the verified path: the limit class.
 
 **Unit tests**, one for each plausible regression:
 - **P1**
