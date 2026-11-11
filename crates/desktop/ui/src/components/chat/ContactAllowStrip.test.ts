@@ -10,7 +10,7 @@ import { useToolRuns } from '@/lib/tool-runs'
 import { ContactAllowStrip } from './ContactAllowStrip'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
-const W: FirstWaiting = { contact: 'sky', machine: "Sky's Mac", export: 'ops', session: 's1', since_ms: 1, waiting: 1, preview: 'ping from sky', mode: 'cautious' }
+const W: FirstWaiting = { contact: 'sky', machine: "Sky's Mac", export: 'ops', session: 's1', since_ms: 1, waiting: 1, preview: 'ping from sky' }
 const api = {
   contact_first_waiting: vi.fn(async (): Promise<FirstWaiting[]> => [W]),
   contact_first_answer: vi.fn(async (_c: string, _e: string, _a: string) => null),
@@ -46,31 +46,13 @@ afterEach(async () => {
   document.body.innerHTML = ''
 })
 
-test('one waiting contact: a collapsed row with its mode and three answers; expanding adds the preview and what the mode lets through', async () => {
+test('one waiting contact: a collapsed row with three answers and no share mode; expanding adds the preview', async () => {
   await mount()
-  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Cautious")
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat")
   expect(body()).not.toContain('ping from sky')
   await click('Details')
   expect(body()).toContain('ping from sky')
-  expect(body()).toContain('Cautious: Plain text, one limited turn per message, read-only tools.')
-  expect(body()).not.toContain('Full collaboration:')
-})
-
-test('186: a full share says so, and what it lets through; mixed modes print one line each', async () => {
-  api.contact_first_waiting.mockImplementation(async () => [{ ...W, mode: 'full' }])
-  await mount()
-  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Full collaboration")
-  await click('Details')
-  expect(body()).toContain('Full collaboration: Their agent and this chat’s agent talk freely, with Markdown, links and images')
-  expect(body()).not.toContain('Cautious:')
-  await unmount()
-  document.body.innerHTML = ''
-  useToolRuns.setState({ disclosed: {} })
-  api.contact_first_waiting.mockImplementation(async () => [{ ...W, mode: 'full' }, { ...W, contact: 'eve', export: 'docs' }, { ...W, contact: 'kim', export: 'kb' }])
-  await mount()
-  await click('Details')
-  expect(body().match(/Full collaboration: /g)).toHaveLength(1)
-  expect(body().match(/Cautious: /g)).toHaveLength(1)
+  for (const gone of ['Cautious', 'Full collaboration', 'limited turn']) expect(body()).not.toContain(gone)
 })
 
 test.each([
@@ -90,7 +72,7 @@ test.each([
 test('several first messages from one contact: the row says how many', async () => {
   api.contact_first_waiting.mockImplementation(async () => [{ ...W, waiting: 3 }])
   await mount()
-  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · Cautious · 3 messages")
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat · 3 messages")
 })
 
 test('several waiting: collapsed "N contacts waiting"; expanded one row each with its own buttons', async () => {
@@ -109,41 +91,28 @@ test('nothing waits for this session: no strip', async () => {
   expect(document.querySelector('[role=region]')).toBeNull()
 })
 
-const Q: FirstWaiting = { ...W, preview: 'is the build green?', queued: true, position: 1 }
-
-test('186: a cautious message queued behind the running turn is a quiet row with no buttons; open, its first line', async () => {
-  api.contact_first_waiting.mockImplementation(async () => [Q])
-  await mount()
-  expect(body()).toContain("sky (Sky's Mac) · 1 message waits for this turn to finish")
-  expect([...document.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['Details'])
-  expect(body()).not.toContain('is the build green?')
-  await click('Details')
-  expect(body()).toContain('“is the build green?”')
-  // No mode line: there is nothing to allow.
-  expect(body()).not.toContain('Cautious:')
-})
-
-test('186: queued counts are summed per contact; holds come first and keep their buttons', async () => {
-  api.contact_first_waiting.mockImplementation(async () => [
-    Q,
-    { ...Q, export: 'docs', waiting: 2, preview: 'and the docs?', position: 2 },
-    { ...W, contact: 'eve', machine: '', export: 'kb' },
-  ])
-  await mount()
-  expect(body()).toContain('2 contacts waiting')
-  await click('Details')
-  const t = body()
-  expect(t).toContain("sky (Sky's Mac) · 3 messages wait for this turn to finish")
-  expect(t.match(/messages? waits? for this turn/g)).toHaveLength(1)
-  expect(t.indexOf('eve wants to message this chat')).toBeLessThan(t.indexOf('3 messages wait'))
-  expect([...document.querySelectorAll('button')].filter((b) => b.textContent === 'Allow once')).toHaveLength(1)
-})
-
-test("186: the queued row goes once its turn starts (the engine stops listing it)", async () => {
-  api.contact_first_waiting.mockImplementation(async () => [Q])
+test('an answered hold goes once the list is refetched (the engine stops listing it)', async () => {
   await mount()
   expect(document.querySelector('[role=region]')).not.toBeNull()
   api.contact_first_waiting.mockImplementation(async () => [])
   await run(() => client.invalidateQueries())
   expect(document.querySelector('[role=region]')).toBeNull()
+})
+
+const Q: FirstWaiting = { ...W, contact: 'kim', preview: 'is the build green?', queued: true, position: 1 }
+
+test('190: a queued row (a 186 engine in the mesh still sends them) never shows: alone it draws no strip', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [Q, { ...Q, export: 'docs', waiting: 2, position: 2 }])
+  await mount()
+  expect(document.querySelector('[role=region]')).toBeNull()
+})
+
+test('190: beside a held row a queued one adds nothing: one row, its own three answers', async () => {
+  api.contact_first_waiting.mockImplementation(async () => [Q, W])
+  await mount()
+  expect(body()).not.toContain('contacts waiting')
+  expect(body()).toContain("sky (Sky's Mac) wants to message this chat")
+  await click('Details')
+  for (const gone of ['kim', 'is the build green?', 'wait for this turn', 'waits for this turn']) expect(body()).not.toContain(gone)
+  expect([...document.querySelectorAll('button')].filter((b) => b.textContent === 'Allow once')).toHaveLength(1)
 })
