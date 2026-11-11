@@ -39,6 +39,9 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
 {
     public const int Width = 480;
 
+    /// <summary>189w D4: the markdown reply grows to this height (epx), then scrolls inside the bar.</summary>
+    public const double ReplyMaxHeight = 320;
+
     private readonly Store store;
     private readonly DispatcherQueue dispatcher;
     private readonly VoiceRecorder recorder;
@@ -55,6 +58,9 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private readonly Border receiptRow;
     private readonly TextBlock receiptText;
     private readonly TextBlock receiptTrailing;
+    private readonly MarkdownView replyView; // 189w D4: the desk's reply as markdown, updated in place as text arrives
+    private readonly ScrollViewer replyScroll;
+    private bool followTail = true;
     private readonly Button speakingGlyph; // spoken replies: Segoe Fluent Volume (E767) while the reply is read aloud; click stops
     private readonly Rectangle holdBar;
     // 149 NATIVE: the system's theme brushes, read live for the root's actual theme (no palette, no startup snapshot).
@@ -177,6 +183,8 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        receiptGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        receiptGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         receiptText = new TextBlock { FontSize = 12, Foreground = ink, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis };
         AutomationProperties.SetAutomationId(receiptText, "receipt-row");
         AutomationProperties.SetName(receiptText, "Receipt");
@@ -186,6 +194,26 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         Grid.SetColumn(receiptTrailing, 1);
         receiptGrid.Children.Add(receiptText);
         receiptGrid.Children.Add(receiptTrailing);
+        // 189w D4: row 1 of the receipt is the reply itself, rendered as markdown (≤ ReplyMaxHeight epx, then it scrolls and follows the tail).
+        replyView = new MarkdownView(() => root.ActualTheme, 13);
+        AutomationProperties.SetAutomationId(replyView, "ask-reply");
+        replyScroll = new ScrollViewer
+        {
+            Content = replyView, MaxHeight = ReplyMaxHeight, Visibility = Visibility.Collapsed, Padding = new Thickness(0, 6, 10, 0),
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        AutomationProperties.SetAutomationId(replyScroll, "ask-reply-scroll");
+        Grid.SetRow(replyScroll, 1);
+        Grid.SetColumnSpan(replyScroll, 3);
+        receiptGrid.Children.Add(replyScroll);
+        replyView.SizeChanged += (_, _) =>
+        {
+            if (followTail) replyScroll.ChangeView(null, replyScroll.ExtentHeight, null, disableAnimation: true);
+        };
+        replyScroll.ViewChanged += (_, e) =>
+        {
+            if (!e.IsIntermediate) followTail = replyScroll.VerticalOffset >= replyScroll.ScrollableHeight - 24; // the user scrolled up: stop following
+        };
         speakingGlyph = new Button
         {
             Content = new FontIcon { Glyph = "\uE767", FontSize = 14 }, Width = 28, Height = 24, Padding = new Thickness(0), BorderThickness = new Thickness(0),
@@ -230,8 +258,12 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     /// <summary>153 W153B probe evidence: the bar's content rendered to a PNG (RenderTargetBitmap — independent of the desktop's capture).</summary>
     public async Task<bool> CapturePng(string path)
     {
+        var before = root.Background;
         try
         {
+            // 189w: the acrylic sits behind a transparent tree; for the file only, the theme's solid base goes behind the text.
+            root.Background = Theme.Brush(NativeLook.SolidBackgroundBase, root.ActualTheme);
+            await Task.Delay(80);
             await Ui.XamlPng.Write(root, path);
             return true;
         }
@@ -239,6 +271,10 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         {
             Log.Write($"ask bar: capture {path} failed: {e.GetType().Name}: {e.Message}");
             return false;
+        }
+        finally
+        {
+            root.Background = before;
         }
     }
 
@@ -398,6 +434,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         receiptRow.BorderBrush = rule;
         receiptText.Foreground = ink;
         receiptTrailing.Foreground = ink2;
+        replyView.Retheme();
         holdBar.Fill = accent;
         if (holdKey is not null) holdKey.Foreground = ink2;
         if (escWords is not null) escWords.Foreground = sand;
@@ -474,11 +511,28 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
             if (receiptRow.Visibility == Visibility.Visible)
             {
                 receiptRow.Visibility = Visibility.Collapsed;
+                HideReply();
                 Fit();
             }
             return;
         }
-        receiptText.Text = l.Text;
+        // 189w D4: a desk reply with text is drawn as markdown under a one-line header; every other receipt keeps its one-line row.
+        if (AskBarModel.ReplyMarkdown(store.Receipt) is { } reply && store.Receipt is StoreModel.ReceiptRow.Reply replyRow)
+        {
+            receiptText.Text = AskBarModel.ReplyHeader(replyRow);
+            if (replyScroll.Visibility != Visibility.Visible)
+            {
+                followTail = true;
+                replyScroll.Visibility = Visibility.Visible;
+            }
+            var diff = replyView.Set(reply.Markdown, reply.Streaming);
+            ReplyRendered?.Invoke($"{reply.Markdown.Length} chars → {replyView.Children.Count} blocks: kept {diff.Kept}, updated {diff.Updated}, built {diff.Built}");
+        }
+        else
+        {
+            receiptText.Text = l.Text;
+            HideReply();
+        }
         receiptText.Foreground = store.Receipt switch
         {
             StoreModel.ReceiptRow.Sent => success,
@@ -499,7 +553,17 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         }
         AutomationProperties.SetName(receiptText, $"Receipt: {l.Text}");
         receiptRow.Visibility = Visibility.Visible;
-        Fit(); // the row grows to two lines as the reply streams
+        Fit(); // the row grows to two lines as the reply streams — and, for a markdown reply, line by line up to ReplyMaxHeight
+    }
+
+    /// <summary>189w probe: one line per markdown render — how many blocks a chunk left alone, updated in place and built.</summary>
+    public event Action<string>? ReplyRendered;
+
+    private void HideReply()
+    {
+        if (replyScroll.Visibility != Visibility.Visible) return;
+        replyScroll.Visibility = Visibility.Collapsed;
+        replyView.Reset();
     }
 
     // MARK: placement (top-centre of the display under the mouse, ≈ 20 % down, like the Attention panel's `.mouse`)

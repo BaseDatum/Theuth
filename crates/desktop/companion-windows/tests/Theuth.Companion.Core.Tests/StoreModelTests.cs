@@ -61,6 +61,9 @@ internal sealed class FakeEngine : IStoreEngine
     public bool NoMesh = true;
     public ActivityFilter? LastFilter;
 
+    /// <summary>189w: what <c>load_session</c> answers; null = the engine has no such method (the default member's "not supported").</summary>
+    public Func<string, uint, Task<SessionTail>>? LoadSession;
+
     private Task<T> Reply<T>(string call, T value)
     {
         Calls.Add(call);
@@ -99,6 +102,12 @@ internal sealed class FakeEngine : IStoreEngine
 
     public Task<string> DeskOpenAsync(string name) => Reply($"desk_open {name}", "desk-1");
     public Task SetEventFocusAsync(IReadOnlyList<string> sessions) => Done($"set_event_focus {string.Join(",", sessions)}");
+
+    public Task<SessionTail> LoadSessionAsync(string session, uint limit)
+    {
+        Calls.Add($"load_session {session} {limit}");
+        return LoadSession is { } f ? f(session, limit) : Task.FromException<SessionTail>(new NotSupportedException("load_session"));
+    }
 
     public Task<ValueList<ActivityEntry>> ActivityListAsync(ActivityFilter filter)
     {
@@ -347,7 +356,8 @@ public sealed class StoreModelTests
         Assert.Equal(new StoreModel.ReceiptRow.Reply("theuth", "sent — waiting for the desk", "desk-1"), store.Receipt);
         Assert.StartsWith("ask:", store.Ask.Current);
         store.HandleEvent(Json("""{"type":"TextDelta","session":"desk-1","text":"- handed to w3\nthen docs"}"""));
-        Assert.Equal(new StoreModel.ReceiptRow.Reply("theuth", "handed to w3 — then docs", "desk-1"), store.Receipt);
+        // 189w D4: the row carries the whole reply as markdown while it streams, the two plain lines as its text.
+        Assert.Equal(new StoreModel.ReceiptRow.Reply("theuth", "handed to w3 — then docs", "desk-1", "- handed to w3\nthen docs", Streaming: true), store.Receipt);
         store.HandleEvent(Json("""{"type":"TurnFinished","session":"desk-1","turn":"t","stop_reason":"end_turn","context":1}"""));
         Assert.True(store.Ask.Router.Reply?.Finished);
         clock.Advance(12);
