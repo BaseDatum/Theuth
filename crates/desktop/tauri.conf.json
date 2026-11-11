@@ -22,7 +22,8 @@
         "minWidth": 720,
         "minHeight": 480,
         "decorations": true,
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "backgroundThrottling": "disabled"
       },
       {
         "label": "island",
