@@ -35,6 +35,10 @@ pub const EXPECT_FOR: Duration = Duration::from_secs(120);
 /// Most chats remembered at once; the least recently used goes first.
 const EXPECT_MAX: usize = 256;
 
+/// Why a contact's inbox never changes machines: its contact limits live in
+/// this engine's `a2a_contexts` only, so elsewhere it would run unlimited.
+pub const INBOX_STAYS: &str = "This chat is a contact's inbox, so it stays on this machine.";
+
 /// Session → (the engine that created it at our request, last use).
 static EXPECTED: std::sync::LazyLock<
     parking_lot::Mutex<std::collections::HashMap<SessionId, (PeerId, Instant)>>,
@@ -183,7 +187,9 @@ impl Take {
         let mut transferred = false;
         if self.connected.contains(&peer) {
             match self.release_from(&peer, id).await {
-                Ok(()) => transferred = true,
+                Ok(None) => transferred = true,
+                // The owner keeps it (a contact's inbox): no reason takes it, nothing changed.
+                Ok(Some(why)) => return Err(why),
                 // The user chose to continue here now: A's tail becomes A's orphans (§4.3).
                 Err(e) if reason == TakeReason::User => {
                     tracing::warn!("sessions: take {id} from {owner} without its tail: {e:#}");
@@ -194,6 +200,7 @@ impl Take {
             // 181 D2: a move is a handover, never a takeover.
             return Err(format!("owner {owner} is not connected here"));
         } else if reason == TakeReason::Write {
+            // inbox sessions: the take of an unreachable owner stays open until design 191 P1 (contact_inboxes)
             self.unseen_long_enough(&owner)?;
         }
         // Re-read: a concurrent take moved the fence meanwhile.
@@ -418,8 +425,9 @@ impl Take {
     /// until our cursor for the owner reached `last_seq`. The reply is
     /// bounded by `release_wait_secs + durability.drain_secs` (139 Q4: the
     /// owner drains for `release_wait_secs − 1` and then flushes), the
-    /// cursor by `release_wait_secs`.
-    async fn release_from(&self, peer: &PeerId, id: SessionId) -> anyhow::Result<()> {
+    /// cursor by `release_wait_secs`. `Some(why)`: the owner answered
+    /// `Refused` and keeps the session.
+    async fn release_from(&self, peer: &PeerId, id: SessionId) -> anyhow::Result<Option<String>> {
         let t = self.transport.as_ref().context("no transport")?;
         let wait = Duration::from_secs(self.config.release_wait_secs);
         let reply_wait = wait + Duration::from_secs(self.durability().drain_secs);
@@ -439,6 +447,7 @@ impl Take {
             .context("owner closed the stream")??;
         let last_seq = match Msg::decode(&frame)? {
             Msg::Released { last_seq, .. } => i64::try_from(last_seq)?,
+            Msg::Refused { why, .. } => return Ok(Some(why)),
             other => anyhow::bail!("unexpected reply {other:?}"),
         };
         let deadline = Instant::now() + wait;
@@ -451,7 +460,7 @@ impl Take {
                 .find(|c| c.origin == peer.0 && c.peer.is_empty())
                 .map_or(0, |c| c.seq);
             if applied >= last_seq {
-                return Ok(());
+                return Ok(None);
             }
             anyhow::ensure!(
                 Instant::now() < deadline,
@@ -496,8 +505,8 @@ pub enum MoveFailure {
 }
 
 /// 181 D2, the origin side of "Move to ▸": `id` must be ours, not a desk, an
-/// ACP harness or a paused agent's tree (`held`: `HeldDesks`, the per-engine
-/// pause map the target would not know), and `to` a connected peer; then
+/// ACP harness, a contact's inbox or a paused agent's tree (`held`: `HeldDesks`,
+/// the per-engine pause map the target would not know), and `to` a connected peer; then
 /// `ask` — the target's `session_take(id, "moved")`, sent over the mesh by
 /// the caller — runs the ordinary take there, which releases (drains) the
 /// session here and lands the new epoch. `ask` answers `Ok(None)` when it
@@ -543,6 +552,14 @@ pub async fn move_to(
         return Err(format!(
             "this is {agent}'s desk: a desk stays on the engine that runs its agent, so it cannot move"
         ));
+    }
+    if store
+        .a2a_inbox_identity(id)
+        .await
+        .map_err(|e| format!("{e:#}"))?
+        .is_some()
+    {
+        return Err(INBOX_STAYS.to_owned());
     }
     if !connected.contains(to) {
         return Err(format!("{name} is offline"));
@@ -655,7 +672,21 @@ pub(crate) async fn answer_release(
         );
         return Ok(());
     }
-    let last_seq = release(store, session.parse()?).await?;
+    let id: SessionId = session.parse()?;
+    // A contact's inbox keeps its limits here only: refuse before anything drains.
+    let refused = match store.a2a_inbox_identity(id).await {
+        Ok(None) => None,
+        Ok(Some(_)) => Some(INBOX_STAYS.to_owned()),
+        Err(e) => Some(format!(
+            "could not tell whether this chat is a contact's inbox, so it stays here: {e:#}"
+        )),
+    };
+    if let Some(why) = refused {
+        tracing::info!("sessions: refusing release of {session} to {taker}: {why}");
+        framed.send(Msg::Refused { session, why }.encode()?).await?;
+        return Ok(());
+    }
+    let last_seq = release(store, id).await?;
     framed
         .send(Msg::Released { session, last_seq }.encode()?)
         .await?;
@@ -1356,6 +1387,110 @@ mod tests {
             }
         }
         a.close().await;
+    }
+
+    /// Mark `id` on `store` as a contact's inbox, as an admission does.
+    async fn mark_inbox(store: &Store, id: SessionId) {
+        let scope = agent::store::communication::A2aScope {
+            principal: "peer:bob",
+            export: "ops",
+        };
+        store.create_a2a_context(scope, "c1", id).await.unwrap();
+        store
+            .mark_a2a_inbox(id, None, "ops", false, None)
+            .await
+            .unwrap();
+    }
+
+    /// A contact's inbox never moves: `move_to` refuses it before asking the
+    /// target, and the session stays owned here, unchanged.
+    #[tokio::test]
+    async fn move_of_a_contact_inbox_is_refused() {
+        let a = engine("a").await;
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &agent_msg("u1")).await.unwrap();
+        mark_inbox(&a.store, id).await;
+        let before = a.store.session_log_seq(id).await.unwrap();
+        let xeus = PeerId("x".into());
+        let mut asked = false;
+        let got = move_to(
+            &a.store,
+            id,
+            &xeus,
+            "xeus",
+            std::slice::from_ref(&xeus),
+            &[],
+            async {
+                asked = true;
+                Ok(Some(("x".to_owned(), 2)))
+            },
+        )
+        .await;
+        assert_eq!(got, Err(INBOX_STAYS.to_owned()));
+        assert!(!asked, "the target is never asked");
+        assert_eq!(a.store.fence(id).await.unwrap(), Some((1, "a".into())));
+        assert_eq!(a.store.owner(id).await.unwrap(), Some(("a".into(), 1)));
+        assert_eq!(a.store.session_log_seq(id).await.unwrap(), before);
+        a.close().await;
+    }
+
+    /// "Continue here" (and any take) of a contact's inbox from its reachable
+    /// owner: the owner answers `Refused` before draining, the taker returns
+    /// its words, and neither side changed owner, epoch or log.
+    #[tokio::test]
+    async fn take_of_a_contact_inbox_is_refused_by_its_owner() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &agent_msg("u1")).await.unwrap();
+        b.pull(&a).await;
+        mark_inbox(&a.store, id).await;
+        let turn = open_turn_on(&a.store, id).await;
+        let before = a.store.session_log_seq(id).await.unwrap();
+
+        let switch = Arc::new(Switch::default());
+        let (la, lb) = (Loop::new("a", &switch), Loop::new("b", &switch));
+        for reason in [TakeReason::User, TakeReason::Write] {
+            let shipper =
+                crate::ship::Shipper::new(a.store.clone(), None, &SessionsConfig::default());
+            let la2 = la.clone();
+            let served = tokio::spawn(async move {
+                let (peer, stream) = la2.accept(ALPN_SESSIONS).await.unwrap();
+                crate::SessionSync::serve(shipper, peer, stream)
+                    .await
+                    .unwrap();
+            });
+            let e = b
+                .take(Some(lb.clone()), vec![a.id()], vec![])
+                .run(id, reason)
+                .await
+                .unwrap_err();
+            served.await.unwrap();
+            assert_eq!(e, INBOX_STAYS, "{reason:?}");
+            assert_eq!(b.store.fence(id).await.unwrap(), Some((1, "a".into())));
+            assert_eq!(b.store.owner(id).await.unwrap(), Some(("a".into(), 1)));
+            assert!(b.store.moved(id).await.unwrap().is_empty(), "no Moved row");
+            assert_eq!(a.store.owner(id).await.unwrap(), Some(("a".into(), 1)));
+            assert_eq!(
+                a.store.session_log_seq(id).await.unwrap(),
+                before,
+                "{reason:?}: nothing drained or written on the owner"
+            );
+            assert_eq!(
+                a.store.open_turn(id).await.unwrap().map(|(t, _)| t),
+                Some(turn),
+                "the turn stays open on the owner"
+            );
+        }
+        a.close().await;
+        b.close().await;
     }
 
     fn agent_msg(t: &str) -> genai::chat::ChatMessage {

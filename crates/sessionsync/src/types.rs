@@ -178,6 +178,15 @@ pub enum Msg {
         /// The event as JSON.
         bytes: Vec<u8>,
     },
+    /// Owner → taker, instead of [`Msg::Released`]: the owner keeps
+    /// `session` (a contact's inbox, whose limits live only here); `why` is
+    /// shown to the user. Every take reason stops on it, nothing is taken.
+    Refused {
+        /// The session.
+        session: String,
+        /// The owner's words.
+        why: String,
+    },
 }
 
 impl Msg {
@@ -197,6 +206,7 @@ impl Msg {
             Self::HarnessAck { .. } => 10,
             Self::Watch { .. } => 11,
             Self::Bus { .. } => 12,
+            Self::Refused { .. } => 13,
         }
     }
 
