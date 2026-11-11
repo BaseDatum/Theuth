@@ -37,75 +37,78 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
   - Grants, first-contact answers, block and removal belong to the record, never to one endpoint.
   - No secret is involved, so nothing has to rotate.
 - **The other side's set is a signed, versioned roster, one chain per record.**
-  - **Shape of one signed copy.** `{epoch, version, members: [eid…], signer, sig}`.
+  - **Shape of one signed copy.** `{chain, version, members: [eid…], signer, sig}`.
     - `members` is the signing mesh's current membership: the mesh `peers` that are neither removed nor quarantined (M/store.rs:152-168), plus the signer itself.
     - **Cap of 256.** A member refuses to sign a roster of more than 256 members (it logs, and contacts keep the older roster). A contact refuses a larger one.
-    - `epoch` is 128 bits: a 48-bit ms timestamp prefix, then 80 random bits. Epochs therefore order. A derived epoch (below) has prefix 0, so any ceremony epoch outranks it.
-    - `version` is a counter within the epoch.
-    - `sig` is an Ed25519 signature by the signer's own iroh key (`Net::sign`, M/net.rs:945-947) over `b"theuth/a2a/roster/v1\n"` followed by the JCS of `{epoch, version, members (sorted), signer}`. The prefix separates it from the card JWS, which the same key signs.
-    - The **content** is `{epoch, version, members (sorted)}`, and its hash breaks ties. Every machine that signs the same membership at the same version signs the same content, so a version can carry several signed copies of one content.
-  - **Each record has its own chain, in its own epoch.**
-    - Every record, on either side, has its own chain: one current epoch, and versions within it. A merge never touches an epoch. A merged group admits the **union** of its records' current rosters (D2 merge).
-    - A record's current epoch is the highest epoch for which a *base* row exists (`contact_rosters.base = 1`). It is derived from the rows, not stored in a column, so concurrent re-pairs converge on the later epoch.
-    - All rows of the current epoch are kept; they are tiny. Rows of older epochs are dropped once a newer base exists. So a machine that syncs late always has its base.
-  - **Signing (our side), checked in every reconcile.** The reconcile runs when the `Net.peers_gen` watch bumps (M/net.rs:460-461; bumped inside `refresh_paired`, M/net.rs:1322, which `remove_peer` calls, M/net.rs:1275-1297), when `contact_rosters` rows arrive (they are in the reconcile hash, D2), and at boot. For each of our records, a machine compares the membership it computes with the **latest** roster of that record's chain (highest version, highest hash among equals), then:
-    - if they differ, it signs a new roster at `version` = latest + 1;
-    - if they are equal and it holds no copy of that version, it **co-signs**: it signs the same content under its own key;
-    - otherwise it does nothing.
-    
-    Every member therefore signs the latest version once, and a contact that trusts only one of our machines still gets a copy that machine signed. Rows replicate (`contact_rosters`, D2).
-  - **Delivery: the last 8 versions, every copy.**
-    - The card a contact fetches is built for that caller (`ContactCaller`, A/contacts/reach.rs:174-209). Its extension `https://theuth.io/a2a/ext/members/v1` carries, for each of our records whose chain lists the caller, the last 8 versions of that chain. Each version carries its content once, plus up to 16 signatures: pinned signers first, then by eid.
+    - `chain` is the id of the signing side's contact record: a UUIDv7 that is already replicated and never changes. It is not an epoch and has no order. It only binds a copy to one record, so a roster we signed for contact A cannot be replayed to contact B.
+    - `version` is a plain counter in that chain.
+    - `sig` is an Ed25519 signature by the signer's own iroh key (`Net::sign`, M/net.rs:945-947) over `b"theuth/a2a/roster/v1\n"` followed by the JCS of `{chain, version, members (sorted), signer}`. The prefix separates it from the card JWS, which the same key signs.
+    - The **content** is `{chain, version, members (sorted)}`, and its hash breaks ties. Every machine that signs the same membership at the same version signs the same content, so one version can carry several signed copies.
+  - **Each record has exactly one chain.** A merge never touches a chain. A merged group admits the **union** of its records' current rosters (D2 merge).
+  - **Signing (our side), checked in every reconcile.**
+    - The reconcile runs when the `Net.peers_gen` watch bumps (M/net.rs:460-461; bumped inside `refresh_paired`, M/net.rs:1322, which `remove_peer` calls, M/net.rs:1275-1297), when `contact_rosters` rows arrive (they are in the reconcile hash, D2), and at boot.
+    - A machine signs nothing before `contacts_ready` (D2), and never signs for a removed record.
+    - For each live record, it compares the membership it computes with the **latest** roster of the record's chain (highest version; highest hash among equals), then:
+      - if they differ, it signs a new roster at `version` = latest + 1;
+      - if they are equal and it **has not signed it**, it **co-signs**: it signs the same content under its own key;
+      - otherwise it does nothing.
+    - Every member therefore signs the latest version once, and a contact that trusts only one of our machines still gets a copy that machine signed.
+    - Our rows replicate (`contact_rosters`, D2). We keep the last 8 versions per chain.
+  - **Delivery: the last 8 versions.**
+    - The card a contact fetches is built for that caller (`ContactCaller`, A/contacts/reach.rs:174-209). Its extension `https://theuth.io/a2a/ext/members/v1` carries, for each of our records whose chain lists the caller, the last 8 versions of that chain.
+    - Each version carries its content once and at most 16 signatures: first the signers who are members of the previous version, then the pinned signers, then the rest. The signers the contact trusts are therefore never crowded out.
       ```json
       { "uri": "https://theuth.io/a2a/ext/members/v1",
-        "params": { "chains": [ { "epoch": "<32 hex>", "versions": [
+        "params": { "chains": [ { "chain": "<record uuid>", "versions": [
           { "version": 7, "members": ["<eid hex>", "<eid hex>"],
             "sigs": [ { "signer": "<eid hex>", "sig": "<b64url>" } ] } ] } ] } }
       ```
-    - Size is bounded by the caps: 8 versions × 256 members ≈ 130 KB at worst. A mesh of under 10 machines stays under 10 KB.
+    - **Size.** The caps bound it: 8 versions × 256 members ≈ 130 KB at worst. A mesh of under 10 machines stays under 10 KB.
     - Each copy carries its own signature, so the same payload also travels in a push. The card's JWS covers `params` too (A/contacts.rs:473-481, :621-631).
     - The extension is omitted while no chain exists, so the JWS test vector (A/contacts.rs:2254-2341) keeps its value.
-    - **Push.** After any signing, the payload is pushed at once to every contact, as the body of a `NOTICE_PATH` POST (A/contacts/offers.rs:25; routed at reach.rs:211-246). It is retried every 2 s until one post succeeds, and sent again at boot, so nothing is persisted.
+    - **Push.** After any signing, our machines push the payload to every contact as the body of a `NOTICE_PATH` POST (A/contacts/offers.rs:25).
+      - Today that route ignores the body and answers 204 (reach.rs:241-243). It now reads a body of up to 192 KiB and answers 413 above that.
+      - A failed post is retried with exponential backoff, from 2 s up to a 10-minute cap, per contact. The backoff resets on each new signing.
+      - The payload is sent again at boot, so nothing is persisted.
     - **Refresh.** The contact fetches the card from **every** member it trusts, not one: at pairing, at boot, on notice, and at most once per `OFFERS_TTL` of 60 s (N:327-328).
     - A card without the extension changes nothing.
-- **The contact's accept rule.** Contact C replays each chain in version order from the record's base. From current version v, it accepts version v + 1 only if:
-  1. it has the record's current `epoch`;
-  2. it has a copy whose `signer` is a member of C's **current** roster;
-  3. that copy's `sig` verifies;
-  4. its version is v + 1. Versions are taken in order, never skipped.
-  
-  - Among the qualifying contents at one version, the higher content hash wins. Anything older than the current version is ignored. That is the whole replay protection: no timestamps, no skew rule.
-  - Carrying 8 versions lets a contact that was offline across several changes catch up, as long as each version is signed by a member of the one before. **A full turnover of our machines beyond 8 versions, while the contact was offline, needs a ceremony.**
-  - **Determinism under replication.** `contact_rosters` rows are immutable, keyed `<contact>|<side>|<epoch>|<version>|<signer>`, where `side` is `ours` or `theirs`. C's machines insert each received signed copy after checking its signature. Every reader replays the same rows by the same rule, so it computes the same current roster.
-- **Bases: where a chain starts.**
-  - **At a ceremony** (the trust reset, the human step on both sides, as today). The pairing machine mints a new epoch and signs its current roster as version 1. That is the base, sent with the ceremony result: the first card fetched from the pinned endpoint.
-    - The pairing machine must be `contacts_ready` (D2). The Add contact window refuses with "waiting for your other machines" until it is, so its version 1 never comes from a stale view.
-  - **For a record from before any ceremony** (P1 records and imports, which have pins only, in `contact_endpoints`):
-    - Our side uses the derived epoch: prefix 0 plus 80 bits of `hash(record id)`, the same on every one of our machines. Any machine that reconciles may sign version 1, and every member co-signs it.
-    - C adopts as the base the first copy that is **signed by one of the record's pinned endpoints and lists that endpoint**. The pin was a human ceremony. Because every member co-signs, the pinned machine's copy arrives as soon as that machine runs.
-    - Residual: if the pinned machine was lost before it ever signed, the record needs a re-pair.
+- **The contact's accept rule.** For each record, contact C holds a current roster `R` at version `v` in the record's chain. It repeats this step:
+  - Take the **lowest** carried version `w > v` that has a copy with the record's `chain`, signed by a member of `R`, with a valid `sig`.
+  - At `w`, take the highest content hash among such copies.
+  - Accept it: `R` and `v` become that roster and `w`. The next step must then be signed by a member of the new `R`.
+  - **Gaps are allowed.** C may jump straight to the first version it can verify, so a contact that missed any number of versions catches up, provided one member it trusts still signs. Versions never go down, and anything at or below `v` is ignored. That is the whole replay protection: no timestamps, no skew rule.
+  - **The real limit** is that every member C trusts has been removed. The remedy is to remove the contact and pair fresh (below).
+  - **Storage on C's side: a checkpoint.** C evaluates a delivery in memory and stores only the result. That is one row per record: the accepted roster plus the one signature that qualified it, at its version. C's machines are one mesh and trust each other's rows, so the record's current roster is the highest-version checkpoint (highest hash among equals). Older checkpoints are pruned. C never stores copies that did not qualify.
+- **Where a chain starts (the base).**
+  - **At a ceremony.** It is the human step on both sides, as today. The pairing machine must be `contacts_ready` (D2): the Add contact window refuses with "waiting for your other machines" until it is, so version 1 never comes from a stale view.
+    - On a new record, the pairing machine signs version 1, and every member co-signs.
+    - A ceremony with an endpoint that already belongs to a live record only adds a pin to it (`pin()` keeps the alias of a known endpoint, A/contacts.rs:1052-1056). The chain is unchanged: **Pair again is not a reset.**
+  - **The contact's base.** C adopts, as the record's first checkpoint, a copy **signed by one of the record's pinned endpoints that lists that endpoint**. The pin was a human ceremony.
+    - If copies of several chains qualify (our side has duplicate records), C takes the lowest `chain`, and its machines converge on it.
+    - Records from before any roster (P1 records and imports, with pins only in `contact_endpoints`) use the same rule. Because every member co-signs, the pinned machine's copy arrives as soon as that machine runs.
     - Until a base exists, the record admits exactly its pins, as today (D7).
-  - **A re-pair retires the whole group.** The ceremony writes the new base to one record of the group: the record that lists the peer, or the one the user chose with Pair again. Every other record of the group gets `retired_ms` and admits nothing more. Retired records keep `merged_into`, so their grants still count in the group's strictest-wins read. No duplicate record pinned to a rogue machine keeps admitting it.
+    - Residual: if the pinned machine was lost before it ever signed, remove the contact and pair fresh.
 - **Merge proof and attribution (D2).**
-  - **Merge proof.** Two records merge only if each record's current roster lists the **other** record's pinned endpoint or its base signer. Each roster is signed by its own mesh, and B's honest roster never lists a machine of contact A, so A cannot merge into B by listing one of B's machines.
+  - **Merge proof.** Two records merge only if each record's current roster lists the **other** record's pinned endpoint or base signer. Each roster is signed by its own mesh, and B's honest roster never lists a machine of contact A, so A cannot merge into B by listing one of B's machines.
     - Two of our machines that each paired the same machine share a pin, so their records merge.
-    - Mesh to mesh, a record pinned to c1 and one pinned to c2 merge: each mesh's roster lists its own other machine.
-  - **Attribution.** When an endpoint Y appears in the current rosters of two unmerged records, it is admitted only for the record that **pinned Y or holds a copy signed by Y**. It is never denied in that record because of the overlap, so another contact cannot evict a machine by listing it. If neither record qualifies, Y is not admitted, and that ends when Y co-signs.
+    - Mesh to mesh: a record pinned to c1 and a record pinned to c2 merge, because each mesh's roster lists its own other machine.
+    - The survivor keeps its binding; merged-away bindings are revoked (D2).
+  - **Attribution.** When an endpoint Y appears in the current rosters of two unmerged records, it is admitted only for the record that **pinned Y or holds a copy signed by Y**. It is never denied there because of the overlap, so another contact cannot evict a machine by listing it. If neither record qualifies, Y is not admitted until Y co-signs.
 - **What the rule gives (answer 1).** Every case below is automatic under honest code.
 
 | Case | Result at the contact |
 |---|---|
-| A lost or retired machine, the pairing machine included | Any remaining member signs the next version without it, and the others co-sign. C accepts it, because the signer is in C's current roster, and drops the machine. The removed machine is never told (M/net.rs:1272-1297); it does not need to be. |
-| A new machine in our mesh | A member signs a version that includes it. No co-signature from the contact's side is needed, because mesh pairing already proved key possession. |
-| A contact that was offline during one or more changes | The removed machine keeps reaching it until C next replays our chain. That happens on a card fetch from any trusted member, or on a push: the stated window. Up to 8 versions replay in order; beyond that, after a full turnover, a ceremony is needed. |
+| A lost or retired machine, the pairing machine included | Any remaining member signs the next version without it, and the others co-sign. C accepts it, because the signer is in C's current roster, and drops the machine. The removed machine is never told (M/net.rs:1272-1297), and it does not need to be. |
+| A new machine in our mesh | A member signs a version that includes it. No co-signature from the contact's side is needed: mesh pairing already proved key possession. |
+| A contact that was offline during any number of changes | The removed machine keeps reaching it until C next fetches a card or gets a push: the stated window. Then C jumps to the first carried version a member it trusts signed, and replays forward. |
 | Two different rosters at the same version | The content hash picks one. The next signing converges. |
 | An existing (pin-only) contact | Our machines sign version 1 and co-sign it. C adopts the copy its pin signed. |
-| A stale ceremony machine | It cannot pair before `contacts_ready`. After that, the next version any member signs corrects its view. |
 | A machine that is dead but not removed | It stays in the roster. The user removes it in Settings › Network › Machines (Unpair, `mesh_remove`); the next version drops it. |
-| A member running **modified (malicious) code**, or an **unmodified machine operated by a thief**, who can `mesh_remove` the honest machines from its UI | **This is the limit.** Such a member can sign a roster that excludes the honest machines, and C follows it. **Remedy:** remove the machine from the mesh, and pair each affected contact again. The new epoch retires the whole group (the trust reset). Sky's answer 1 is automatic for lost, retired or honest-code machines. |
+| A member running **modified (malicious) code**, or an **unmodified machine operated by a thief** (who can `mesh_remove` the honest machines from its UI) | **This is the limit.** Such a member can sign a roster that excludes the honest machines, and C follows it. **The remedy is manual and complete:** (1) remove the machine from our mesh; (2) both sides **remove the contact**: every record of the merged group is tombstoned, and its roster rows are ignored from then on; (3) pair fresh as a **new** contact, which gets a new record and a new chain at version 1. A removed record is never revived, and its deny entries never block the new pairing (D2). The user must review the grants and exports the rogue machine wrote. Sky's answer 1 is automatic for lost, retired or honest-code machines. |
+| Every member C trusts was removed while C was offline | C cannot verify any newer version. Remedy: remove the contact and pair fresh. |
 - **The window.** Until a contact accepts the new version, a removed machine can still pass as us to that contact.
   - While the contact is online, that lasts seconds: one push.
-  - While the contact is offline, the window stays open until it comes back and replays our chain.
+  - While the contact is offline, it stays open until the contact comes back and fetches a card.
 
 ### D2. Replication: last-writer-wins tables in `sessions.sqlite`
 - **Mechanism.** `replica::attach`: per-column LWW under HLC, tombstones, version-vector catch-up (R/lib.rs:1-14, :104-121; R/sync.rs:1-14). The record tables are appended to `replicate_records` beside `projects` and `cost_owners` (`crates/agent/src/store.rs:903-915`, attach at :913).
@@ -126,7 +129,7 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
 | `contacts` | `id`: UUIDv7 minted at pairing | `alias`, `name`, `machine`, `binding` (the `peer:<uuid>` id), `paired_ms`, `paired_on` (the engine id of our machine that ran the ceremony), `blocked` (0/1), `removed_ms` (tombstone, never cleared), `merged_into` (record id, or NULL) | pairing, every contact RPC, import, merge |
 | `contact_endpoints` | `<contact>\|<eid>` | `contact`, `eid`, `paired_ms`, `barred_ms` (unused since D1's roster) | the ceremony only: the pinned endpoints, which D1 uses until a roster exists |
 | `contact_votes` | — | — | superseded by D1's roster. P1 may leave it out. If 0059 already created it, P2's 0060 drops it. |
-| `contact_rosters` (P2, 0060) | `<contact>\|<side>\|<epoch>\|<version>\|<signer>` | `contact`, `side` (`ours`/`theirs`), `epoch`, `version`, `signer`, `hash` (of the content), `base` (0/1), `roster` (the signed copy, JSON) | `ours`: any of our machines, when it signs or co-signs. `theirs`: any of our machines, after checking the copy's signature. Rows are immutable. All rows of the current epoch are kept; older epochs are dropped once a newer base exists (D1). |
+| `contact_rosters` (P2, 0060) | `<contact>\|<side>\|<chain>\|<version>\|<signer>` | `contact`, `side` (`ours`/`theirs`), `chain`, `version`, `signer`, `hash` (of the content), `roster` (the signed copy, JSON) | `ours`: any of our machines, when it signs or co-signs; only the last 8 versions per chain are kept, and none are written for a removed record. `theirs`: one checkpoint per record, the accepted roster plus the one signature that qualified it, written after the accept rule; older checkpoints are pruned (D1). Rows are immutable. Rows of a removed record are ignored. |
 | `contact_grants` | `<contact>\|<export id>` | `contact`, `export`, `granted` (0/1), `first_contact` (`ask`/`allow`/`block`; NULL = ask) | contact_update, contact_first_answer |
 | `a2a_exports` | `id`: UUIDv7 minted when the export is made | `name` (the card skill and the `/agents/<name>` path; made unique by the reconcile), `session`, `agent`, `title`, `description`, `home` (engine id), `removed_ms` | a2a_export_put and a2a_export_remove, import |
 | `contact_threads` (rebuilt) | `<binding>\|<context_id>` | the 0056 columns: `binding`, `context_id`, `session`, `export`, `outbound`, `last_ms` | as today (S:1591-1676) |
@@ -153,7 +156,10 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
     - An id already revoked here **stays revoked**, and its record is quarantined on this machine. A replica never un-revokes.
   - Unblock and re-pair write a fresh `binding`.
 - **Reconcile: one pass.**
-  - **Trigger.** On the existing 2 s a2a tick (A/lib.rs:712), hash the full content of every row of the staged tables: `contacts`, `contact_endpoints`, `contact_grants` and `a2a_exports`; `contact_rosters` from P2; `contact_holds` from P3. `contact_threads` is read per request and never staged. The tables are tiny.
+  - **Trigger.** On the existing 2 s a2a tick (A/lib.rs:712), hash the full content of every row of the staged tables: `contacts`, `contact_endpoints`, `contact_grants` and `a2a_exports`; `contact_rosters` from P2; `contact_holds` from P3. `contact_threads` is read per request and never staged. The tables are bounded:
+    - one row per contact record, per pin, per grant, per export;
+    - in `contact_rosters`, at most 8 versions × the co-signers (at most 256) per record on our side, and one checkpoint per record on theirs;
+    - in `contact_holds`, one row per waiting hold.
     - A row's `hlc` is not enough. It is the max over its columns (R/apply.rs:582-604). A remote column write wins per column (R/apply.rs:558-562), so the row can change without its `hlc` changing.
     - Content hashing also catches parked batches applied later.
     - The pass also runs right after every local RPC write.
@@ -193,13 +199,13 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
   - A machine with no paired peer is latched at once; it reconciles, then it is ready.
   - **The accepted cost** is stated under Risks.
 - **Merge (answer 5): a pointer, never a copy.**
-  - **What counts as the same contact.** Records that pinned the same endpoint, or that pass D1's merge proof: each record's current roster lists the **other** record's pin or base signer. The first covers two of our machines having paired the same machine. A merge never touches either record's epoch; the group admits the union of its records' current rosters, retired records excluded (D1).
+  - **What counts as the same contact.** Records that pinned the same endpoint, or that pass D1's merge proof: each record's current roster lists the **other** record's pin or base signer. The first case covers two of our machines having paired the same machine. A merge never touches either record's chain; the group admits the union of its records' current rosters (D1).
   - **The survivor** is the lower `(paired_ms, id)`.
   - **The write.** Each machine writes `merged_into = <root>` on every other record of the group. The root is the group's survivor, so the value is the same from every machine. Pointers always point at a lower key, so chains (C→B→A) resolve by following them to the record whose `merged_into` is NULL. The reconcile rewrites every pointer to the root. A chain that does not end within 16 hops, or that loops, quarantines the whole group.
   - **The effective contact.**
     - Endpoints: union over the group.
     - Blocked: true if any record is blocked.
-    - Alias and binding: the survivor's.
+    - Alias and binding: the survivor's. The survivor keeps its binding unchanged; only the merged-away bindings are revoked.
     - Grants are taken per export over the records **that have a row for it**. A record with no row abstains, so a grant held by only one duplicate carries over.
     - Among the rows present: `granted = 0` beats `granted = 1`, and `first_contact` takes the strictest, `block` > `ask` (NULL) > `allow`.
   - **Why not copy.** Copying values instead would race: a machine missing a `block` could write `allow` last.
@@ -321,7 +327,7 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
 - **Both sides run the same code.** Each side's record of the other holds the other's member set.
 - **Any machine can dial any machine.** The receiving machine forwards to the owner (D3).
 - **Bounds.** The rate and concurrency bounds are per principal (`admit_contact`, A/server.rs:290-302), so all members share them. Connection and stream budgets stay per endpoint (M/net.rs:47-49).
-- **Pairing.** One ceremony runs between one machine on each side. Each side starts an epoch with its own roster at version 1, and that roster covers every other machine of its mesh. Both humans press Accept once. A side that is a single engine has a roster of one.
+- **Pairing.** One ceremony runs between one machine on each side. Each side signs its record's roster at version 1, which covers every other machine of its mesh, and its other machines co-sign it. Both humans press Accept once. A side that is a single engine has a roster of one.
 - **Family.** A machine of our own mesh is still refused, both ways (dial: M/net.rs:839-844; gate: M/net.rs:2029-2032).
 - **A contact that joins our mesh.** Its record shows `problem: "now one of your machines"` and stays denied until it is removed.
 
@@ -352,12 +358,14 @@ The new paths:
 | Owner offline, or unreadable | Refused at once (D3). An error from `session_owner` refuses (N:1641-1650). |
 | Contact paths reach a session that is not owned here (from P2 on) | Refused with `NOT_OWNER` (D3). |
 | Invalid or conflicting replicated row | That row is quarantined and its endpoints denied; the rest stage (D2). |
-| A removed member | Dropped by the next version any remaining member signs. C accepts version v + 1 only with the record's epoch and a copy signed, with a valid signature, by a member of its current roster (D1). |
-| A replayed or forged roster | Refused: an older version, a skipped version, a wrong epoch, a signer outside the current roster, a bad signature (domain-separated, `theuth/a2a/roster/v1`), or more than 256 members (D1). |
-| A pin-only legacy record (before any base) | It admits exactly its pins, as today. It adopts a base only from a copy signed by one of its pins that lists that pin. A pin lost before it ever signed needs a re-pair (D1). |
-| A contact offline across several changes | It replays up to 8 carried versions in order. Beyond that, a full turnover needs a ceremony; until then it keeps admitting only its last accepted roster (D1). |
+| A removed member | Dropped by the next version any remaining member signs. C accepts the lowest newer version of the record's `chain` that carries a valid copy signed by a member of its current roster (D1). |
+| A replayed or forged roster | Refused if it has an equal or older version, another record's `chain`, a signer outside the current roster, a bad signature (domain-separated: `theuth/a2a/roster/v1`), or more than 256 members (D1). |
+| A mesh removal made while one of our machines was down | That machine signs nothing before `contacts_ready`. If every other machine was off and it signed from a stale view, the next version a synced member signs supersedes it once they meet, within the accepted latch cost (D2). |
+| A pin-only legacy record (before any base) | It admits exactly its pins, as today. It adopts a base only from a copy signed by one of its pins that lists that pin. If the pin was lost before it ever signed, the contact must be removed and paired fresh (D1). |
+| A contact offline across any number of changes | It jumps to the lowest carried version signed by a member it trusts and replays forward from there. If every member it trusts was removed, the user removes the contact and pairs fresh (D1). |
 | A ceremony run from a stale machine | Refused until that machine is `contacts_ready` (D1). |
-| A member running modified code, or an unmodified machine operated by a thief | The stated limit (D1): it can sign a roster that excludes the honest machines. Remedy: remove it from the mesh and pair each affected contact again. The new epoch retires every other record of the group. |
+| A member running modified code, or an unmodified machine operated by a thief | This is the stated limit (D1): such a machine can sign a roster that excludes the honest machines. Remedy: remove it from the mesh; remove the contact on both sides, which tombstones every record of the group and makes its roster rows ignored; then pair fresh as a new contact. The user reviews the grants and exports the rogue machine wrote. |
+| Pushes to an offline contact | Exponential backoff, from 2 s up to a 10-minute cap per contact. The notice body is capped at 192 KiB (413 above that) (D1). |
 | An endpoint listed by two unmerged records | Admitted only for the record that pinned it or holds a copy it signed. It is never denied there because of the overlap, and a planted listing neither merges records nor evicts the machine (D1). |
 | A merged-away record, or a broken chain | The binding is revoked and its inboxes capped; a broken chain quarantines the group. |
 | Export name collision | Exports are keyed by id; the reconcile makes the name unique; a grant names the id (D2). |
@@ -396,13 +404,13 @@ The new paths:
 | RPC `contact_deliver` | removed |
 | RPC `a2a_forward` (mesh-internal; `Forwarded` only) | `{ caller: eid, method: "GET"\|"POST", path, body } → { status, body }`; the owner re-checks the caller at its own gate |
 | RPCs `contact_list`, `contact_update`, `contact_remove`, `a2a_exports`, `a2a_export_put`, `a2a_export_remove`, `contact_first_answer`, `contact_first_waiting` (`crates/rpc/src/api.rs:2648-2696`; impls :9547-9625) | same names; they read and write the tables, so they answer for the whole mesh. A write to a merged contact writes every record of the group. Export RPCs take the export id. |
-| Card | + extension `https://theuth.io/a2a/ext/members/v1` `{chains: [{epoch, versions: [{version, members, sigs: [{signer, sig}]}]}]}`: per record that lists the caller, the last 8 versions, each with up to 16 signatures. Omitted while no chain exists. The same payload is the body of a `NOTICE_PATH` push. |
+| Card | + extension `https://theuth.io/a2a/ext/members/v1` `{chains: [{chain, versions: [{version, members, sigs: [{signer, sig}]}]}]}`: for each record that lists the caller, the last 8 versions, each with up to 16 signatures (members of the previous version first, then pinned signers). Omitted while no chain exists. The same payload is the body of a `NOTICE_PATH` push, which is now read up to 192 KiB (today the body is ignored and the route answers 204, `A/contacts/reach.rs:241-243`). |
 | A2A task id | `<16 hex engine prefix>-<uuidv7>` |
-| Migration | **`0059_mesh_contacts.sql`** (P1): `contacts`, `contact_endpoints`, `contact_grants`, `a2a_exports`, `contact_addrs`, `sessions.contact_inbox`, and `contact_threads` rebuilt (new table, copy with the new `id`, drop, rename; index kept). **`0060_contact_rosters.sql`** (P2): `contact_rosters`, and `contacts.retired_ms`; it drops `contact_votes` if 0059 created it. **`0061`** (P3): `contact_holds`. 0058 is skipped: another branch holds it for `image_refusals`. The highest today is `0057_inbox_ceiling.sql`. |
+| Migration | **`0059_mesh_contacts.sql`** (P1): `contacts`, `contact_endpoints`, `contact_grants`, `a2a_exports`, `contact_addrs`, `sessions.contact_inbox`, and `contact_threads` rebuilt (new table, copy with the new `id`, drop, rename; index kept). **`0060_contact_rosters.sql`** (P2): `contact_rosters`; it drops `contact_votes` if 0059 created it. **`0061`** (P3): `contact_holds`. 0058 is skipped: another branch holds it for `image_refusals`. The highest today is `0057_inbox_ceiling.sql`. |
 | Attach | `replicate_records` (`crates/agent/src/store.rs:913`) + `contacts`, `contact_endpoints`, `contact_grants`, `a2a_exports`, `contact_threads`; + `contact_rosters` in P2; + `contact_holds` in P3 |
 | `SESSIONS_WIRE_SCHEMA` | 53 → **59**, the number of 191's migration that adds `sessions.contact_inbox`. At landing it follows that migration's number (D2). |
 | `peers.yaml` | after import: HTTP peers only. The structs are unchanged, so an old file still loads. |
-| Config | − `a2a.contact_cap`. `A2aConfig` is not `deny_unknown_fields` (A/config.rs:27-28), so an old `config.yaml` still loads. No new key. Constants: a roster holds at most 256 members; a card carries 8 versions per chain and 16 signatures per version; the roster signature's domain prefix is `theuth/a2a/roster/v1`. |
+| Config | − `a2a.contact_cap`. `A2aConfig` is not `deny_unknown_fields` (A/config.rs:27-28), so an old `config.yaml` still loads. No new key. Constants: a roster holds at most 256 members; a card carries 8 versions per chain and 16 signatures per version; the roster signature's domain prefix is `theuth/a2a/roster/v1`; the notice body is capped at 192 KiB; pushes back off up to 10 minutes. |
 
 ## Phases
 - **The order differs from the recon's** (there: P2 routing, P3 endpoint sets). Here endpoint sets come first (P2), and routing follows (P3). With sets first, a session on any machine dials with its own key. Routing first would need an outbound relay through the pairing machine, which the standing rule rules out, and P3 would only delete it again.
@@ -413,10 +421,10 @@ The new paths:
 | Phase | What | Prod | Tests | Proof |
 |---|---|---|---|---|
 | **P1 RECORDS** | 0059 and the attach; import and pointer merge; staging from the tables with per-row quarantine; reconcile on the content hash; `contacts_ready`, including the actor-start cap; the replicated binding id, never un-revoked; contact RPCs write the tables; export ids; `sessions.contact_inbox` | 1,200–1,500 | 1,000–1,200 | Rig cases 5 and 6; a contact paired on n1 is listed on n2 |
-| **P2 ROSTERS** | 0060; per-record chains: signing and co-signing in the reconcile, `contact_rosters`, ordered epochs, bases (ceremony and legacy adoption), the replay accept rule, retiring the group at a re-pair; the card extension and the `NOTICE_PATH` push carrying 8 versions; refresh from every trusted member; gate over the group's union; dialing over it; per-endpoint hints; merge proof and attribution; the `contacts_ready` check before a ceremony; owner refusal on contact paths | 800–1,000 | 650–850 | Rig cases 2, 4a, 4b and 7 |
+| **P2 ROSTERS** | 0060. Per-record chains: signing and co-signing in the reconcile, `contact_rosters` (8 versions on our side, one checkpoint on theirs), base adoption from a pin, and the jump-and-replay accept rule. The card extension and the `NOTICE_PATH` push with its body cap and backoff. Refresh from every trusted member. Gate and dialing over the group's union, with per-endpoint hints. Merge proof and attribution. The `contacts_ready` check before a ceremony. Owner refusal on contact paths. | 650–850 | 500–700 | Rig cases 2, 4a, 4b, 7 and 8 |
 | **P3 ROUTING** | `a2a_forward`; owner resolution; offline refusal; forwarding of `~return` and task ids; inbox home; lifting the main-branch `INBOX_STAYS` refusal (4bc0dddd) together with forwarding (D4); `contact_holds` (0061) and Attention from every machine; completing tasks on drain; **W-40 deleted** | +900–1,100, −600–650 | +850–1,050, −360 | Rig cases 1 and 3 |
 | **P4 UI and docs** | D8; site docs; as-built | 400–600 | 400–500 | Vite fixture screenshots; the whole rig |
-| Total | | ≈ 3,300–4,200 gross; ≈ 2,700–3,550 net | ≈ 2,900–3,600 gross | |
+| Total | | ≈ 3,150–4,050 gross; ≈ 2,550–3,400 net | ≈ 2,750–3,450 gross | |
 
 ## Tests and proof
 **Rig.** Three scratch engines on loopback, discovery off, with a fake model server (the 186 rig `/tmp/d186/rig`, if present).
@@ -442,7 +450,11 @@ The cases:
      - write a tombstone for n2 straight into n1's `mesh.sqlite` (as 183's Q5b did);
      - start n1 first, so it signs and pushes the roster {n1, Z1} at a higher version.
      - **Assert that C is confused:** it admits n1 and Z1 and refuses n2. This is the stated limit.
-     - **Re-pair C from n2.** A new epoch starts (ms prefix, so it outranks the old one). Assert that n1 and Z1 are gone from C's roster and refused, that every other record of the group is retired, that n2 works, and that rosters of the old epoch are ignored.
+     - **The remedy.** Remove n1 from the mesh, on n2. On both sides, remove the contact: every record of the group gets a tombstone. Then pair fresh from n2, which makes a new record with a new chain at version 1. Assert that:
+       - n1 and Z1 are refused;
+       - the old record's roster rows are ignored;
+       - the removed record is never revived, and its deny entries do not block the new pairing;
+       - n2 works.
 5. **A block made while n2 was down (the accepted cost).**
    - Stop n2. Block C on n1, then stop n1. Start n2.
    - For the first 30 s, C's dial to n2 is refused (not ready).
@@ -453,11 +465,12 @@ The cases:
    - Boot n2 with n1 off. The inbox actor starts inside the first 30 s, capped: read-only, empty allowlist.
    - After the flip it runs full from the stale binding (the accepted cost).
    - After n1 returns, the binding is revoked and the inbox is capped again.
-7. **An existing contact gets its roster, and an offline contact catches up.**
+7. **An existing contact gets its roster.**
    - Start from a P1 record: C pinned n1 only, and no chain exists. Start n2 first, so n2 signs version 1. C ignores n2's copy, because n2 is not its pin.
-   - Start n1. It co-signs version 1, and C adopts n1's copy as the base. From then on, C admits n1 and n2.
-   - Stop C. Add a machine n3 to our mesh, then remove n1. That is versions 2 and 3; version 3 is signed by n3 and n2.
-   - Start C. It replays versions 2 and 3 from n2's card and admits n2 and n3, not n1.
+   - Start n1. It co-signs version 1, and C adopts n1's copy as its base. From then on, C admits n1 and n2.
+8. **A contact that missed 9 or more versions.**
+   - Stop C. Make 10 membership changes: add a fifth scratch engine n5, remove it, and repeat five times. That is versions 2 to 11. Our machines keep and carry only versions 4 to 11.
+   - Start C, still at version 1. It jumps to version 4, signed by n2, a member of its version-1 roster, then replays to version 11. It ends with n1 and n2 admitted and n5 refused.
 
 **Unit tests**, one for each plausible regression:
 - **P1**
@@ -473,17 +486,19 @@ The cases:
   - An alias collision converges.
 - **P2**
   - **Accept rule:**
-    - a roster of the wrong epoch is refused;
+    - a copy of another record's `chain` is refused;
     - a copy whose signer is not a current member is refused;
-    - a lower, equal or skipped version is refused;
+    - an equal or lower version is refused;
     - at an equal version, the higher content hash wins;
     - a bad signature is refused, and so is a signature made without the `theuth/a2a/roster/v1` prefix (for example a card JWS signature);
     - a roster over 256 members is refused, and our side refuses to sign one.
-  - **Replay:** a contact at v7 that is offered v8, signed by an old member, and v9, signed by a machine added in v8, ends at v9. Offered v9 alone, it stays at v7.
+  - **Jump and replay:** a contact at v1 that is offered only v4 to v11, with v4 signed by an old member, ends at v11. Each step needs a signer from the roster current at that step. Offered only copies signed by machines it does not trust, it stays at v1.
   - **Co-signing:** every member co-signs the latest version once, and a machine whose view differs signs v + 1 instead. A legacy record adopts the copy signed by its pin, not one signed by another member.
-  - **Determinism:** two machines with the same rows compute the same current roster, even when a late machine syncs after many versions (no pruning within an epoch).
+  - **Determinism:** two of C's machines with the same checkpoints compute the same current roster. Our side keeps only the last 8 versions per chain and signs nothing for a removed record.
   - **Removal:** removing the pairing machine leaves the others admitted.
-  - **Epochs:** a ceremony epoch outranks a derived one (prefix 0). Of two concurrent re-pairs, the later epoch wins on every machine. A re-pair retires every other record of the group, and their grants still count.
+  - **Remedy:** removing the contact tombstones every record of the merged group, and its roster rows are then ignored. A fresh pairing makes a new record with a new chain at v1 and is not blocked by the old deny entries.
+  - **Carried signatures:** members of the previous version come first, then pinned signers; at most 16.
+  - **Bounds:** C stores one checkpoint per record and never a copy that did not qualify. A notice body over 192 KiB gets 413. Pushes back off up to 10 minutes.
   - **Merge proof:** two records pinned to c1 and c2 of one mesh merge. A contact that lists another contact's pinned machine merges nothing, and that machine stays admitted for its own record.
   - **Attribution:** an endpoint listed by two records is admitted only for the one it pinned or signed for.
   - **Missing extension:** a card without it changes nothing.
@@ -519,8 +534,14 @@ The S1–S10 tests stay.
 - **Accepted cost of the bounded latch (Sky, 17:59, option (b)).**
   - A block or removal made on another machine while this one was down is missed until this machine next syncs with a peer. With every other machine off, that has no bound.
   - A machine removed from the mesh is never told (M/net.rs:1272-1297). After 30 s it would serve contacts from its copy, until those contacts get the next roster from our other machines: seconds while they are online (D1).
-- **The window after a removal (D1).** It lasts seconds while the contact is online. While the contact is offline, it stays open until the contact next reads a roster.
-- **The limit of automatic membership (D1).** A member running modified (malicious) code, or an unmodified machine operated by a thief (who can `mesh_remove` the honest machines from its UI), can sign a roster that excludes the honest machines, and the contact follows it. **Remedy:** remove it from the mesh, and pair each affected contact again; the new epoch retires the group's other records. Sky's answer 1 is automatic for lost, retired or honest-code machines.
-- **Residuals of the roster (D1).** A legacy record whose pinned machine was lost before it ever signed needs a re-pair. So does a contact that was offline across a full turnover of more than 8 versions.
+- **The window after a removal (D1).** It lasts seconds while the contact is online. While the contact is offline, it stays open until the contact next fetches a card.
+- **The limit of automatic membership (D1).** A member running modified (malicious) code, or an unmodified machine operated by a thief (who can `mesh_remove` the honest machines from its UI), can sign a roster that excludes the honest machines, and the contact follows it. **Remedy, manual and complete:**
+  - remove the machine from the mesh;
+  - remove the contact on both sides, which tombstones the whole group;
+  - pair fresh as a new contact;
+  - review the grants and exports the rogue machine wrote.
+  
+  Sky's answer 1 is automatic for lost, retired or honest-code machines.
+- **Residuals of the roster (D1).** A legacy record whose pinned machine was lost before it ever signed, or a contact for which every trusted member was removed, needs the contact removed and paired fresh.
 - **A merge ends conversations, once.** The next message starts fresh.
 - **Write contention.** Replica apply takes `BEGIN IMMEDIATE` on the single `sessions.sqlite` write connection (R/apply.rs:454). The rows are tiny and the writes rare. Watch it in the P1 rig.
