@@ -4997,6 +4997,8 @@ impl Agents {
         runtime::write_config_value(&path, "agent", "vision_model", value)
             .map_err(|e| format!("config.yaml: {e}"))?;
         *self.vision_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        // read-file-images §3: a (re)chosen fallback gets a fresh chance everywhere.
+        crate::vision::fallback_changed();
         self.vision_error = None;
         Ok(info)
     }

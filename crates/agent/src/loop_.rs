@@ -115,11 +115,13 @@ const TITLE_TIMEOUT: Duration = Duration::from_secs(45);
 const TOOL_RESULT_FLOOR_CHARS: usize = 1000;
 /// Stored payload bytes one vision consultation batch may carry (52 §5.3).
 const VISION_BATCH_BYTES: usize = 4 * 1024 * 1024;
-/// Wall clock on one auxiliary vision-fallback call, the question or the
-/// vision call (52 §5.3, read-file-images §3): a turn waits on it, so far
-/// shorter than the summariser's. Expiry is a failed observation, never a
-/// failed turn.
+/// Wall clock on the fallback's vision call (52 §5.3, read-file-images §3): a
+/// turn waits on it, so far shorter than the summariser's. Expiry is a failed
+/// observation, never a failed turn.
 const AUX_TIMEOUT: Duration = Duration::from_secs(75);
+/// Wall clock on the question call: the main model at the session's effort
+/// (a max-effort model thinks first), so longer than [`AUX_TIMEOUT`].
+const QUESTION_TIMEOUT: Duration = Duration::from_secs(180);
 /// [`AUX_TIMEOUT`] for the vision call; short under test so the timeout path
 /// runs in seconds.
 const VISION_TIMEOUT: Duration = if cfg!(test) {
@@ -806,6 +808,12 @@ struct Shared {
     /// read-file-images §3: the vision fallback that failed in this session.
     /// While down, images get the notice instead of a consultation.
     fallback_down: Arc<parking_lot::Mutex<Option<FallbackDown>>>,
+    /// read-file-images §2: an image-caused client error — images go as text
+    /// ([`Current::images_off`]) until the next compaction.
+    images_off: Arc<std::sync::atomic::AtomicBool>,
+    /// read-file-images §2: a notice a continuation (summary, harvest) could
+    /// not append itself; the next round appends it.
+    image_notice: Arc<parking_lot::Mutex<Option<String>>>,
     /// Tier-2 model of the decision oracle (57 §0.9); `None` = the title model,
     /// then the session's model. Shared with the supervisor.
     escalate_model: Arc<RwLock<Option<Resolved>>>,
@@ -878,8 +886,10 @@ struct Shared {
 }
 
 /// A vision fallback that failed in this session (read-file-images §3):
-/// `(model id, until, reason)`; `until: None` = it refused images, for good.
-type FallbackDown = (String, Option<Instant>, String);
+/// `(model id, until, reason, fallback epoch)`; `until: None` = it refused
+/// images, for good; an entry from an older [`vision::fallback_epoch`] (the
+/// fallback was set again since) no longer applies.
+type FallbackDown = (String, Option<Instant>, String, u64);
 
 /// The model, what streams it (12 §6) and the resolution error of the
 /// configured id, if any; an error makes the next round stop instead of
@@ -894,6 +904,9 @@ struct Current {
     /// The provider refused image input from this model in this session
     /// ([`Shared::image_refusals`]): it is text-only whatever the catalog says.
     no_images: bool,
+    /// An image-caused client error ([`Shared::images_off`]): images go as
+    /// text until the next compaction; the model itself still sees.
+    images_off: bool,
 }
 
 impl Current {
@@ -904,13 +917,21 @@ impl Current {
             error,
             effort: None,
             no_images: false,
+            images_off: false,
         }
     }
 
-    /// Whether the model takes image parts through its backend (52 §4.1,
-    /// [`crate::backend::supports_images`]): Cursor serialises text only, and
-    /// a model whose provider refused an image is text-only from then on.
+    /// Whether the model is sent image parts (52 §4.1,
+    /// [`crate::backend::supports_images`]): Cursor serialises text only, a
+    /// model whose provider refused an image is text-only from then on, and
+    /// images go as text while [`Current::images_off`].
     fn vision(&self) -> bool {
+        !self.images_off && self.can_see()
+    }
+
+    /// The model can take images at all — what snap compaction needs;
+    /// [`Current::images_off`] does not change it.
+    fn can_see(&self) -> bool {
         !self.no_images && crate::backend::supports_images(&self.model)
     }
 
@@ -988,6 +1009,8 @@ impl Session {
                 vision_model,
                 image_refusals: Arc::default(),
                 fallback_down: Arc::default(),
+                images_off: Arc::default(),
+                image_notice: Arc::default(),
                 escalate_model,
                 polish_model: Arc::default(),
                 subagent_model,
@@ -3014,9 +3037,6 @@ struct Turn {
     vision_failed: BTreeSet<VisionSource>,
     /// The "no vision fallback configured" note was appended this turn.
     vision_noticed: bool,
-    /// read-file-images: an image-caused client error this turn — images go
-    /// the 52 path for the rest of the turn, the model is not marked.
-    images_off: bool,
     /// read-file-images: the model this turn marked as refusing images; a
     /// retry refused the same way clears the mark again.
     refused_now: Option<String>,
@@ -3877,7 +3897,6 @@ impl Turn {
             first_seq: None,
             vision_failed: BTreeSet::new(),
             vision_noticed: false,
-            images_off: false,
             refused_now: None,
             risks: HashMap::new(),
             resume_call: parking_lot::Mutex::new(None),
@@ -4077,13 +4096,13 @@ impl Turn {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
-        current.no_images = self.images_off
-            || self
-                .shared
-                .image_refusals
-                .lock()
-                .as_ref()
-                .is_some_and(|ids| ids.contains(&current.model.id));
+        current.no_images = self
+            .shared
+            .image_refusals
+            .lock()
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&current.model.id));
+        current.images_off = self.shared.images_off.load(Ordering::Relaxed);
         current
     }
 
@@ -6308,6 +6327,11 @@ impl Turn {
         }
         // Boxed: these futures would otherwise widen `round`'s state machine.
         Box::pin(self.load_image_refusals()).await;
+        // read-file-images §2: a notice a continuation left for the frame.
+        let notice = self.shared.image_notice.lock().take();
+        if let Some(text) = notice {
+            Box::pin(self.note("vision", &text)).await;
+        }
         let current = self.model();
         if let Some(e) = &current.error {
             self.error(format!("model: {e}")).await;
@@ -7554,6 +7578,8 @@ impl Turn {
         self.reset_this_round = true;
         self.since = 0;
         self.hint_since = 0;
+        // read-file-images §2: the fold is where images may go natively again.
+        self.shared.images_off.store(false, Ordering::Relaxed);
         self.publish(AgentEvent::Compacted {
             session,
             turn: None,
@@ -7750,7 +7776,9 @@ impl Turn {
             .compact_style
             .read()
             .unwrap_or_else(|p| p.into_inner());
-        let vision = current.vision();
+        // `can_see`, not `vision`: images that go as text only until the next
+        // compaction (`images_off`) do not turn a snap into a cut.
+        let vision = current.can_see();
         let mut style = compact::resolve(r#override, cfg_style, reason, vision)?;
         // 52 §7.2: a summary reads the images, so pending ones are inspected
         // first (and the notes counted below); cut/clear/snap discard or keep
@@ -8070,6 +8098,7 @@ impl Turn {
         {
             tracing::warn!(session = %session, before = projected, after, fixed, avail = fold.avail, tail_budget = fold.tail, "compaction freed under 30 % of the headroom");
         }
+        self.shared.images_off.store(false, Ordering::Relaxed);
         self.publish(AgentEvent::Compacted {
             session,
             turn: self.turn,
@@ -8149,6 +8178,8 @@ impl Turn {
         // read-file-images §2: one resend with the images stripped when they
         // caused the error (the model refusing them is also marked).
         let mut send_images = current.vision();
+        // This call marked the model: a resend refused the same way unmarks it.
+        let mut marked = false;
         loop {
             // 116: the fold's frame, priced like the live one.
             let projected = full
@@ -8212,11 +8243,40 @@ impl Turn {
                         && (vision::rejects_images(&e) || vision::image_caused(&e))
                         && (head.is_some_and(has_images) || full.iter().any(has_images)) =>
                 {
-                    if vision::rejects_images(&e) {
-                        Box::pin(mark_images(&self.shared, &current.model.id, true)).await;
-                    }
-                    tracing::warn!(session = %self.shared.id, model = %current.model.id, "continuation refused for its images; resending without them: {e}");
+                    let model = &current.model.id;
+                    let why =
+                        frame::truncate(&e.split_whitespace().collect::<Vec<_>>().join(" "), 240);
+                    let notice = if vision::rejects_images(&e) {
+                        Box::pin(mark_images(&self.shared, model, true)).await;
+                        marked = true;
+                        format!(
+                            "{model}'s provider refused an image ({why}). This chat now sends {model} \
+                             text in place of images: the vision fallback's description, else a note. \
+                             Re-select the model to send it images again."
+                        )
+                    } else {
+                        self.shared.images_off.store(true, Ordering::Relaxed);
+                        format!(
+                            "{model}'s provider refused an image in this chat ({why}). Images now go \
+                             to {model} as text — the vision fallback's description, else a note — \
+                             until the next compaction; {model} itself still takes images."
+                        )
+                    };
+                    // A continuation cannot append rows itself (a detached
+                    // harvest is not the session's writer): the next round does.
+                    *self.shared.image_notice.lock() = Some(notice);
+                    tracing::warn!(session = %self.shared.id, %model, "continuation refused for its images; resending without them: {e}");
                     send_images = false;
+                }
+                Ok(Err(Abort::Model(e))) if marked && vision::rejects_images(&e) => {
+                    // Refused the same way with no image in it: not about images.
+                    let model = &current.model.id;
+                    Box::pin(mark_images(&self.shared, model, false)).await;
+                    *self.shared.image_notice.lock() = Some(format!(
+                        "{model} was refused the same way with no image in the request, so that \
+                         refusal was not about images: {model} gets images again."
+                    ));
+                    return Err(e);
                 }
                 Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
                 Ok(Err(Abort::Budget {
@@ -8442,9 +8502,15 @@ impl Turn {
             Box::pin(self.note("vision", &text)).await;
             return true;
         }
-        if !self.images_off && vision::image_caused(e) {
-            tracing::warn!(session = %self.shared.id, %model, "an image was refused; images go as text for the rest of this turn: {e}");
-            self.images_off = true;
+        if !current.images_off && vision::image_caused(e) {
+            tracing::warn!(session = %self.shared.id, %model, "an image was refused; images go as text until the next compaction: {e}");
+            self.shared.images_off.store(true, Ordering::Relaxed);
+            let text = format!(
+                "{model}'s provider refused an image in this chat ({why}). Images now go to \
+                 {model} as text — the vision fallback's description, else a note — until the \
+                 next compaction; {model} itself still takes images."
+            );
+            Box::pin(self.note("vision", &text)).await;
             return true;
         }
         false
@@ -8475,10 +8541,13 @@ impl Turn {
         let Some(vf) = self.vision_frame(current).await? else {
             return Ok(Vec::new());
         };
-        let pending: Vec<&VisionImage> = vision::pending(&vf.images, &vf.notes)
-            .into_iter()
-            .filter(|im| !self.vision_failed.contains(&im.source))
-            .collect();
+        let fallback_id = self.vision_model().map(|f| f.id);
+        let pending: Vec<&VisionImage> =
+            vision::pending_for(&vf.images, &vf.notes, fallback_id.as_deref())
+                .into_iter()
+                .filter(|im| !self.vision_failed.contains(&im.source))
+                .collect();
+        let mut consulted = false;
         for group in &vision::groups(&pending, VISION_BATCH_BYTES) {
             if self.cancel.is_cancelled() {
                 return Err("cancelled".into());
@@ -8499,8 +8568,21 @@ impl Turn {
                 break;
             }
             self.consult(&current, &fallback, &vf.images, group).await?;
+            consulted = true;
         }
-        Ok(vf.images)
+        // read-file-images §3: a repeat of described bytes points at that
+        // description; the notes this preparation appended count too.
+        let notes = if consulted {
+            Box::pin(self.shared.store.vision_frame(self.shared.id))
+                .await
+                .map_err(|e| format!("store: {e:#}"))?
+                .notes
+        } else {
+            vf.notes
+        };
+        let mut images = vf.images;
+        vision::link_repeats(&mut images, &notes);
+        Ok(images)
     }
 
     /// 52 §4.1: no fallback configured, or (`down`) the configured one is in
@@ -8519,7 +8601,7 @@ impl Turn {
         self.vision_noticed = true;
         let refs: Vec<String> = pending.iter().map(|im| im.source.reference()).collect();
         let model = &current.model.id;
-        let refused = if current.no_images {
+        let refused = if current.no_images || current.images_off {
             " (its provider refused an image)"
         } else {
             ""
@@ -8543,17 +8625,19 @@ impl Turn {
     /// images in this session, or failed less than [`FALLBACK_COOLDOWN`] ago.
     fn fallback_down(&self, fallback: &Resolved) -> Option<String> {
         let mut down = self.shared.fallback_down.lock();
-        match down.as_ref() {
-            Some((id, until, why)) if *id == fallback.id => match until {
-                None => Some(format!("{id} refused images: {why}")),
-                Some(t) if Instant::now() < *t => Some(format!("{id} failed: {why}")),
-                Some(_) => {
-                    *down = None;
-                    None
-                }
-            },
-            _ => None,
+        let (id, until, why, epoch) = down.as_ref()?;
+        if *id != fallback.id || *epoch != vision::fallback_epoch() {
+            return None;
         }
+        let why = match until {
+            None => format!("{id} refused images: {why}"),
+            Some(t) if Instant::now() < *t => format!("{id} failed: {why}"),
+            Some(_) => {
+                *down = None;
+                return None;
+            }
+        };
+        Some(why)
     }
 
     /// One consultation (52 §5.1 steps 3–5): `current` writes the question
@@ -8715,7 +8799,8 @@ impl Turn {
                 let until =
                     (!vision::rejects_images(&e)).then(|| Instant::now() + FALLBACK_COOLDOWN);
                 let why = frame::truncate(&e.split_whitespace().collect::<Vec<_>>().join(" "), 160);
-                *self.shared.fallback_down.lock() = Some((fallback.id.clone(), until, why));
+                *self.shared.fallback_down.lock() =
+                    Some((fallback.id.clone(), until, why, vision::fallback_epoch()));
                 return Err(e);
             }
         };
@@ -8758,7 +8843,11 @@ impl Turn {
             CallKind::Vision,
             &mut thinking,
         );
-        let limit = if vision { VISION_TIMEOUT } else { AUX_TIMEOUT };
+        let limit = if vision {
+            VISION_TIMEOUT
+        } else {
+            QUESTION_TIMEOUT
+        };
         let end = match tokio::time::timeout(limit, call).await {
             Err(_) => {
                 return Err(format!("timed out after {}s", limit.as_secs()));

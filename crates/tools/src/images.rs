@@ -126,12 +126,29 @@ pub fn fit(bytes: &[u8], max_edge: u32) -> Result<Fitted<'_>, String> {
     limits.max_alloc = Some(DECODE_MAX_ALLOC);
     reader.limits(limits);
     let mut decoder = reader.into_decoder().map_err(invalid)?;
+    // `into_decoder` checks the sides only, and `from_decoder` allocates
+    // `total_bytes` unchecked: a few-MB file claiming 20 000×20 000 would ask
+    // for 1.6 GB. Refuse it here, before any pixel buffer exists.
+    let need = decoder.total_bytes();
+    if need > DECODE_MAX_ALLOC {
+        return Err(format!(
+            "{mime} would need {} MB to decode (limit {} MB)",
+            need >> 20,
+            DECODE_MAX_ALLOC >> 20
+        ));
+    }
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     let mut img = DynamicImage::from_decoder(decoder).map_err(invalid)?;
     img.apply_orientation(orientation);
     let source = img.dimensions();
     let long = source.0.max(source.1);
+    // An APNG carries `acTL` before its first `IDAT`: animated, like GIF/WebP.
+    let animated_png = format == ImageFormat::Png
+        && bytes[..bytes.len().min(64 * 1024)]
+            .windows(4)
+            .any(|w| w == b"acTL");
     let still = matches!(format, ImageFormat::Png | ImageFormat::Jpeg)
+        && !animated_png
         && orientation == Orientation::NoTransforms;
     if still && long <= max_edge && bytes.len() as u64 <= SEND_MAX_BYTES {
         return Ok(Fitted {
@@ -469,6 +486,63 @@ pub(crate) mod tests {
         gif.extend_from_slice(b",\x00\x00\x00\x00\xff\xff\xff\xff\x00\x02\x02D\x01\x00;");
         let e = fit(&gif, MAX_EDGE).unwrap_err();
         assert!(e.starts_with("invalid image/gif"), "{e}");
+    }
+
+    /// A tiny GIF whose header claims 20 000×20 000 passes the side limit but
+    /// would need 1.6 GB: refused before any pixel buffer is allocated.
+    pub(crate) fn gif_20k() -> Vec<u8> {
+        let mut gif = b"GIF89a\x20\x4e\x20\x4e\x00\x00\x00".to_vec();
+        gif.extend_from_slice(b",\x00\x00\x00\x00\x20\x4e\x20\x4e\x00\x02\x02D\x01\x00;");
+        gif
+    }
+
+    #[test]
+    fn header_over_the_allocation_cap_is_refused() {
+        let e = fit(&gif_20k(), MAX_EDGE).unwrap_err();
+        assert_eq!(e, "image/gif would need 1525 MB to decode (limit 256 MB)");
+    }
+
+    /// A JPEG 4×2 tagged EXIF orientation 6 (rotate 90° clockwise) comes out
+    /// upright, 2×4, re-encoded rather than passed through.
+    #[test]
+    fn exif_orientation_is_applied() {
+        let jpg = encoded(ImageFormat::Jpeg, 4, 2, 200);
+        let tiff: &[u8] = b"MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0";
+        let mut app1 = vec![0xFF, 0xE1];
+        app1.extend_from_slice(&((2 + 6 + tiff.len()) as u16).to_be_bytes());
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(tiff);
+        let rotated = [&jpg[..2], &app1, &jpg[2..]].concat();
+        let f = fit(&rotated, MAX_EDGE).unwrap();
+        assert_eq!(f.source, (2, 4));
+        assert!(matches!(f.bytes, Cow::Owned(_)), "re-encoded upright");
+        assert_eq!(
+            image::load_from_memory(&f.bytes).unwrap().dimensions(),
+            (2, 4)
+        );
+    }
+
+    /// An APNG (`acTL` before `IDAT`) is re-encoded to a still PNG.
+    #[test]
+    fn apng_is_not_passed_through() {
+        let png = encoded(ImageFormat::Png, 3, 3, 5);
+        // acTL chunk (1 frame, play forever) right after IHDR (8-byte
+        // signature + 25-byte IHDR chunk), with its real CRC.
+        let body = [b"acTL".as_slice(), &[0, 0, 0, 1, 0, 0, 0, 0]].concat();
+        let crc = body.iter().fold(!0u32, |c, &b| {
+            (0..8).fold(c ^ u32::from(b), |c, _| {
+                if c & 1 == 1 {
+                    (c >> 1) ^ 0xEDB8_8320
+                } else {
+                    c >> 1
+                }
+            })
+        });
+        let actl = [&8u32.to_be_bytes()[..], &body, &(!crc).to_be_bytes()].concat();
+        let apng = [&png[..33], &actl, &png[33..]].concat();
+        let f = fit(&apng, MAX_EDGE).unwrap();
+        assert!(matches!(f.bytes, Cow::Owned(_)));
+        assert_eq!(f.mime, "image/png");
     }
 
     #[test]

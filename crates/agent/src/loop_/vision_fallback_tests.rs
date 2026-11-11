@@ -168,6 +168,10 @@ impl Respond for Fake {
                     return ResponseTemplate::new(400)
                         .set_body_string("{\"error\":{\"message\":\"vision backend exploded\"}}");
                 }
+                // A fallback whose own provider takes no images.
+                "blindfallback" => {
+                    return ResponseTemplate::new(400).set_body_string(IMAGE_REFUSAL);
+                }
                 "slow" => {
                     return sse("[]", "stop", VISION_USAGE).set_delay(Duration::from_secs(10));
                 }
@@ -195,6 +199,13 @@ impl Respond for Fake {
         let images = !image_urls(&b).is_empty();
         if model(&b) == "rejecting" && images {
             return ResponseTemplate::new(400).set_body_string(IMAGE_REFUSAL);
+        }
+        // An image the provider refuses for its size (Anthropic's text): not a
+        // model refusal, the model is not marked.
+        if model(&b) == "toobig" && images {
+            return ResponseTemplate::new(400).set_body_string(
+                "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content.1.image.source.base64: image exceeds 5 MB maximum: 6120000 bytes > 5242880 bytes\"}}",
+            );
         }
         // llama.cpp's answer for a model without mmproj (ggml-org/llama.cpp#13566).
         if model(&b) == "llamacpp" && images {
@@ -407,6 +418,8 @@ impl Harness {
                 "llamacpp": model("llamacpp", true),
                 "sserefuse": model("sserefuse", true),
                 "liar": model("liar", true),
+                "toobig": model("toobig", true),
+                "blindfallback": model("blindfallback", true),
                 "tiny": tiny,
                 // 137G R1-10: the endless turn-budget test's own model id, so no
                 // other scenario's learned bytes/token reaches it.
@@ -865,9 +878,9 @@ async fn vision_scenarios() {
 
     // Each scenario's future is built inside `boxed` and lives on the heap: a
     // debug build gives every `.await`ed temporary its own slot in this
-    // function's poll frame, and nineteen inline turn-sized futures pass the
-    // 2 MiB test-thread stack.
-    let scenarios: [fn() -> Scenario; 19] = [
+    // function's poll frame, and a score of inline turn-sized futures pass
+    // the 2 MiB test-thread stack.
+    let scenarios: [fn() -> Scenario; 24] = [
         || boxed(text_only_main_asks_fallback_looks_main_answers()),
         || boxed(vision_capable_main_bypasses_a_broken_fallback()),
         || boxed(text_only_main_without_fallback_gets_one_untyped_notice()),
@@ -887,6 +900,11 @@ async fn vision_scenarios() {
         || boxed(retry_refused_the_same_way_clears_the_mark()),
         || boxed(summariser_refusal_and_compact_after_restart()),
         || boxed(unreadable_attachment_becomes_a_note()),
+        || boxed(reselecting_the_model_clears_its_refusal()),
+        || boxed(image_caused_error_projects_until_compaction()),
+        || boxed(failed_or_refusing_fallback_is_not_asked_again()),
+        || boxed(a_repeated_image_points_at_its_description()),
+        || boxed(oversized_header_attachment_is_unreadable()),
     ];
     for scenario in scenarios {
         scenario().await;
@@ -1872,6 +1890,147 @@ async fn unreadable_attachment_becomes_a_note() {
     let text = all_text(&reqs[0]);
     assert!(
         text.contains("junk.png unreadable: image/png is not a supported image"),
+        "{text}"
+    );
+}
+
+/// Re-picking a model (`set_model` → `SwitchModel`) is the undo for its
+/// image refusal.
+async fn reselecting_the_model_clears_its_refusal() {
+    let h = Harness::new(fake()).await;
+    h.store
+        .refuse_images(h.id, "openai/rejecting")
+        .await
+        .unwrap();
+    let actor = h.actor("openai/rejecting").await;
+    actor
+        .ask(SwitchModel(h.resolve("openai/rejecting")))
+        .await
+        .unwrap();
+    assert!(h.store.image_refusals(h.id).await.unwrap().is_empty());
+}
+
+/// An image the provider refuses for its size: one retry with the images as
+/// text and a visible note; the model is not marked and still counts as
+/// seeing for snap compaction.
+async fn image_caused_error_projects_until_compaction() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    let events = h
+        .run("openai/toobig", "What is in the picture?", true)
+        .await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 2, "refused, retry: {reqs:#?}");
+    assert_eq!(with_images(&reqs), 1);
+    let retry = all_text(&reqs[1]);
+    assert!(
+        retry.contains("openai/toobig's provider refused an image in this chat (")
+            && retry.contains("until the next compaction"),
+        "{retry}"
+    );
+    assert!(h.store.image_refusals(h.id).await.unwrap().is_empty());
+    let mut c = Current::new(
+        h.resolve("openai/toobig"),
+        None,
+        &h.client,
+        &Auth::stub(&h.dir),
+    );
+    c.images_off = true;
+    assert!(!c.vision() && c.can_see(), "snap stays snap");
+}
+
+/// Two pending image groups: the fallback fails (or refuses images) on the
+/// first, so the second is not sent to it — the notice says why.
+async fn failed_or_refusing_fallback_is_not_asked_again() {
+    for (fallback, why) in [
+        ("openai/faulty", "openai/faulty failed: "),
+        (
+            "openai/blindfallback",
+            "openai/blindfallback refused images: ",
+        ),
+    ] {
+        let mut h = Harness::new(fake()).await;
+        h.set_fallback(None);
+        h.run("openai/eyes", "First picture.", true).await;
+        h.set_fallback(Some(fallback));
+        let (turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
+        turn.run(
+            tid,
+            vec![h.input_files("Second picture.", vec![h.png2.clone()])],
+        )
+        .await;
+        let events = h.drain().await;
+        assert_eq!(stop_reason(&events), "stop", "{fallback}");
+        let reqs = h.requests().await;
+        let vision_calls = reqs
+            .iter()
+            .filter(|r| system(r) == vision::VISION_SYSTEM)
+            .count();
+        assert_eq!(vision_calls, 1, "{fallback}: {reqs:#?}");
+        let main = all_text(reqs.last().unwrap());
+        assert!(
+            main.contains("the vision fallback is unavailable (") && main.contains(why),
+            "{main}"
+        );
+    }
+}
+
+/// The same image again is not described again: its marker points at the
+/// first description. A newly chosen fallback describes it afresh.
+async fn a_repeated_image_points_at_its_description() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(Some("openai/eyes"));
+    h.run("openai/textonly", "Look.", true).await;
+    let before = h.requests().await.len();
+    let events = h
+        .run("openai/textonly", "The same picture again.", true)
+        .await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    let reqs = h.requests().await;
+    assert_eq!(
+        reqs.len(),
+        before + 1,
+        "no question, no vision call: {reqs:#?}"
+    );
+    let main = all_text(reqs.last().unwrap());
+    assert!(
+        main.contains("(the same image as m0.p1: its vision observation describes this one too)"),
+        "{main}"
+    );
+
+    h.set_fallback(Some("openai/rejecting"));
+    let before = reqs.len();
+    h.run("openai/textonly", "And with the new fallback?", false)
+        .await;
+    let reqs = h.requests().await;
+    let vision_calls: Vec<&Value> = reqs[before..]
+        .iter()
+        .filter(|r| system(r) == vision::VISION_SYSTEM)
+        .collect();
+    assert_eq!(vision_calls.len(), 1, "{reqs:#?}");
+    assert_eq!(model(vision_calls[0]), "rejecting");
+}
+
+/// An attachment whose header claims 20 000×20 000 is refused before any
+/// pixel buffer is allocated and becomes the "unreadable" note.
+async fn oversized_header_attachment_is_unreadable() {
+    let mut h = Harness::new(fake()).await;
+    let huge = h.dir.join("huge.gif");
+    let mut gif = b"GIF89a\x20\x4e\x20\x4e\x00\x00\x00".to_vec();
+    gif.extend_from_slice(b",\x00\x00\x00\x00\x20\x4e\x20\x4e\x00\x02\x02D\x01\x00;");
+    std::fs::write(&huge, gif).unwrap();
+    let (turn, tid) = h.turn("openai/eyes", CancellationToken::new()).await;
+    turn.run(tid, vec![h.input_files("See attached.", vec![huge])])
+        .await;
+    let events = h.drain().await;
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(with_images(&reqs), 0);
+    let text = all_text(&reqs[0]);
+    assert!(
+        text.contains("huge.gif unreadable: image/gif would need 1525 MB to decode"),
         "{text}"
     );
 }

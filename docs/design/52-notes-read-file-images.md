@@ -15,12 +15,16 @@ configured, else a note).
 | `read_url` | The page fetch refuses `image/*` before the body (and image magic bytes under any other label); `read_url` then does one raw GET through `Fetcher::request` (same SSRF guard, `max_fetch_bytes` cap) and returns the picture the same way. Non-2xx, cut or undecodable: a text error. |
 | Every attachment and tool file | `loop_::file_part` on a blocking thread → `tools::images::for_provider`: MIME from the bytes (genai's `Binary::from_file` took it from the extension), decoded, `fit` to `PROVIDER_MAX_SIDE` (8000 px) and `SEND_MAX_BYTES`. An image the guard refuses, a decoder panic, or a name that says image over bytes that are not a supported one becomes the existing `[file … unreadable: …]` note. |
 
-`fit` (`tools::images`): decoded under side (20 000 px) and allocation (256 MiB)
-limits; EXIF orientation applied; a still PNG/JPEG that fits goes unchanged,
-anything else is re-encoded — GIF and WebP always, as a still PNG of the first
-frame (OpenAI takes only still GIFs), a rotated photo upright, a large one
-scaled (JPEG stays JPEG, else PNG, then JPEG with alpha flattened onto white,
-then halved while over the cap).
+`fit` (`tools::images`): decoded under a side limit (20 000 px) and an
+allocation cap (256 MiB) checked against the decoder's `total_bytes` before
+any pixel buffer exists (`from_decoder` does not check it; a few-MB file
+claiming 20 000×20 000 would ask for 1.6 GB); EXIF orientation applied; a
+still PNG/JPEG that fits goes unchanged, anything else is re-encoded — GIF,
+WebP and APNG always, as a still PNG of the first frame (OpenAI takes only
+still GIFs), a rotated photo upright, a large one scaled (JPEG stays JPEG,
+else PNG, then JPEG with alpha flattened onto white, then halved while over
+the cap). Every decode path (`read_file`, `read_url`, `file_part`) goes
+through `fit`.
 
 Decisions:
 
@@ -32,8 +36,9 @@ Decisions:
   message naming them; `numbers` is ignored.
 - The size guard runs at ingress, once per image. Images stored in history
   before this change are sent as stored.
-- Not done (NITs): `read_url`'s image cap stays `max_fetch_bytes` (2 MiB), and
-  an octet-stream image is downloaded twice (page probe, then raw GET).
+- Not done (NITs): the send cap is not provider-aware (stored once at
+  ingress, before the provider is known); `read_url`'s image cap stays
+  `max_fetch_bytes` (2 MiB), and an octet-stream image is downloaded twice.
 
 Every image source reaches the request through one of the two ingress points
 above and then through 52's `Turn::prepare_images`: user attachments
@@ -52,19 +57,25 @@ that for errors the images cause; nothing else changes.
 Bedrock, Groq, LiteLLM, llama.cpp, Ollama and an SSE error event:
 
 - `rejects_images` — the model takes no images. A *strong* phrase ("image
-  input is not supported", "does not support image", "missing data required
-  for image", "not a multimodal model", "unknown variant image_url",
-  "image_url is only supported", "at most 0 image", …) matches with any
-  status or none: llama.cpp and Ollama answer 500, a stream error event has no
-  status. `compact::classify` calls a strong refusal deterministic, so it is
-  never resent with backoff. A *weak* phrase ("not supported", "incompatible",
-  "unsupported media type", …) needs a 400/415/422 and an image term
-  ("image input", "images", "image/…", "vision", "multimodal", …) in the prose;
-  identifier-like words (`generate_image`) are ignored. Bare "unsupported" is
-  not a refusal: "unsupported image" is one image's defect.
-- `image_caused` — a 400/413/415/422 naming an image that is not a refusal:
-  too large, too many ("At most 20 image(s)"), unreadable, content policy.
-  Overflow is excluded (compaction owns it).
+  input is not supported", "does not support image input", "does not support
+  images", "missing data required for image input", "not a multimodal
+  model", "unknown variant image_url", "image_url is only supported", "at
+  most 0 image", …) matches with any status or none: llama.cpp and Ollama
+  answer 500, a stream error event has no status. It is matched only in the
+  provider's own words — the string values under `message`/`msg`/`error`/
+  `detail`/`reason` of the response JSON, never an echoed request (pydantic's
+  `input`, `messages`, `content`) — and only as a whole phrase ("images/gif",
+  "image generation" are not it). `compact::classify` calls a strong refusal
+  deterministic, so it is never resent with backoff. A *weak* phrase ("not
+  supported", "incompatible", "unsupported media type", …) needs a
+  400/415/422 and an image term ("image input", "images", "vision",
+  "multimodal", …; not a MIME) in the same provider prose; identifier-like
+  words (`generate_image`) are ignored. Bare "unsupported" is not a refusal:
+  "unsupported image" is one image's defect.
+- `image_caused` — a 400/413/415/422 whose provider message names an image
+  but is not a refusal: too large, too many ("At most 20 image(s)"),
+  unreadable, a format, content policy. Overflow is excluded (compaction owns
+  it).
 
 **Round** (`Turn::image_failure`), only when the frame holds images:
 
@@ -78,16 +89,21 @@ Bedrock, Groq, LiteLLM, llama.cpp, Ollama and an SSE error event:
 - The retry refused the same way with no image in it → the refusal was not
   about images: the mark is cleared, a notice says so, and the turn ends with
   the ordinary `model: …` error. The next message sends images again.
-- `image_caused` → the images go through 52 for the rest of this turn only,
-  one retry, the model not marked. The image stays in history, so a later turn
-  sends it natively again and, if refused again, retries again once.
+- `image_caused` → one retry with the images as text, and they stay text
+  (`Shared::images_off`) until the next compaction, so the same image is not
+  re-uploaded and re-refused every turn; one notice row says so. The model is
+  not marked, and compaction's snap/cut choice uses `Current::can_see`, so a
+  snap stays a snap.
 - Retry fails otherwise: the ordinary round error; the session takes the next
   message.
 
 **Compaction and harvest**: `resolve()` loads the flag too, so `/compact` and
 `/knowledge harvest` in a fresh process never send a marked model images. A
-summariser or harvest continuation refused for its images (either class) marks
-the model on a refusal and resends once with the images stripped.
+summariser or harvest continuation refused for its images (either class)
+marks the model on a refusal (or turns images off until the next compaction)
+and resends once with the images stripped; a resend refused the same way
+unmarks it. Its notice row is appended by the next round (a detached harvest
+is not the session's writer).
 
 **Durability**: reapplied from the remembered flag; 52's projection is a
 request copy, so the stored transcript keeps its images. The table is local
@@ -101,18 +117,27 @@ deleting the session deletes its rows.
 
 - An erroring, timing-out or unset fallback yields a `NOT SEEN` observation or
   the notice and the turn continues (52).
-- Each auxiliary call (question, vision) is bounded by `AUX_TIMEOUT` = 75 s
-  (was the summariser's 300 s).
+- The question call (the main model at the session's effort) is bounded by
+  `QUESTION_TIMEOUT` = 180 s, the vision call by `AUX_TIMEOUT` = 75 s (both
+  were the summariser's 300 s).
 - A fallback whose vision call fails or times out is not asked again in this
   session for `FALLBACK_COOLDOWN` (10 min); one that refuses images is not
-  asked again in this session at all. Meanwhile images get the notice naming
-  why. A malformed reply (the call worked) does not start a cooldown; the next
-  user turn retries it once, as 52 built.
-- **Each distinct image is described once per session**: `vision::pending`
-  matches answered observations by content fingerprint, so the same bytes
-  (the same file read twice, the same screenshot) reuse the first answer; both
-  markers carry the same `fp`. This replaces 52 §5.3's "reattaching an image
-  creates a new occurrence and consultation" at Sky's rule.
+  asked again in this session at all. Setting or changing the fallback
+  (`set_vision_model`, any session) starts every cooldown over
+  (`vision::fallback_epoch`). Meanwhile images get the notice naming why. A
+  malformed reply (the call worked) does not start a cooldown; the next user
+  turn retries it once, as 52 built.
+- **Each distinct image is described once per session**: `vision::pending_for`
+  skips an occurrence whose bytes were answered elsewhere by the current
+  fallback (repeats inside one batch too), and `vision::link_repeats` adds a
+  pointer to the repeat's marker: "(the same image as m0.p1: its vision
+  observation describes this one too)". A newly chosen fallback describes
+  repeats again; a folded (no longer effective) note does not count, so its
+  repeat is described again. An occurrence answered itself stays answered
+  whoever answered it (52 §5.3). A different question about the same bytes
+  does not trigger a new description: the main model asks only about
+  pending images. This replaces 52 §5.3's "reattaching an image creates a new
+  occurrence and consultation" at Sky's rule.
 
 ## 4. Prompting
 

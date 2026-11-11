@@ -190,6 +190,9 @@ pub struct VisionImage {
     pub part: usize,
     /// `Some`: index into the projected `ToolResponse.images` of that part.
     pub image: Option<usize>,
+    /// read-file-images §3: the same bytes were described as this other
+    /// occurrence (its reference); the projection points there.
+    pub seen_as: Option<String>,
 }
 
 impl VisionImage {
@@ -202,6 +205,18 @@ impl VisionImage {
             self.binary.content_type.trim(),
             self.source.fingerprint
         )
+    }
+
+    /// [`VisionImage::marker`], plus the pointer to the observation of the
+    /// same bytes when this occurrence is a repeat ([`link_repeats`]).
+    pub fn shown(&self) -> String {
+        let mut s = self.marker();
+        if let Some(r) = &self.seen_as {
+            s.push_str(&format!(
+                " (the same image as {r}: its vision observation describes this one too)"
+            ));
+        }
+        s
     }
 }
 
@@ -254,6 +269,7 @@ pub fn images(owner: ContextOwner, m: &ChatMessage, mask: &Mask) -> Vec<VisionIm
                         binary: b.clone(),
                         part: i - dropped_parts,
                         image: None,
+                        seen_as: None,
                     });
                 }
             }
@@ -272,6 +288,7 @@ pub fn images(owner: ContextOwner, m: &ChatMessage, mask: &Mask) -> Vec<VisionIm
                             binary: b.clone(),
                             part: i - dropped_parts,
                             image: Some(k - dropped),
+                            seen_as: None,
                         });
                     }
                 }
@@ -285,20 +302,55 @@ pub fn images(owner: ContextOwner, m: &ChatMessage, mask: &Mask) -> Vec<VisionIm
 /// Images whose bytes have no successful observation in an effective note
 /// (52 §5.1 step 1; read-file-images §3: each distinct image is described
 /// once per session — a second occurrence of the same bytes, e.g. the same
-/// file read twice, reuses the first answer, matched by the `fp` both
-/// markers carry). The turn subtracts its own per-turn failure set.
+/// file read twice, reuses the first answer). The turn subtracts its own
+/// per-turn failure set. [`pending_for`] with no fallback.
 pub fn pending<'a>(
     images: &'a [VisionImage],
     notes: &BTreeMap<i64, VisionNote>,
 ) -> Vec<&'a VisionImage> {
+    pending_for(images, notes, None)
+}
+
+/// [`pending`] for the fallback `fallback`: an occurrence answered itself is
+/// done whoever answered it (52 §5.3); a repeat of bytes answered elsewhere
+/// is done only when that answer came from `fallback` (`None`: any), so a
+/// newly chosen fallback describes again. Repeats inside the result are
+/// dropped too: one consultation per distinct image.
+pub fn pending_for<'a>(
+    images: &'a [VisionImage],
+    notes: &BTreeMap<i64, VisionNote>,
+    fallback: Option<&str>,
+) -> Vec<&'a VisionImage> {
+    let mut seen = std::collections::BTreeSet::new();
     images
         .iter()
         .filter(|im| {
-            !notes
-                .values()
-                .any(|n| n.answered_bytes(&im.source.fingerprint))
+            let own = notes.values().any(|n| n.answered(&im.source));
+            let elsewhere = notes.values().any(|n| {
+                fallback.is_none_or(|f| n.vision_model == f)
+                    && n.answered_bytes(&im.source.fingerprint)
+            });
+            !own && !elsewhere && seen.insert(im.source.fingerprint.clone())
         })
         .collect()
+}
+
+/// Point every occurrence not answered itself at an answered occurrence of
+/// the same bytes ([`VisionImage::seen_as`]); a note that is no longer
+/// effective (folded) is not in `notes`, so its repeat goes back to pending.
+pub fn link_repeats(images: &mut [VisionImage], notes: &BTreeMap<i64, VisionNote>) {
+    for im in images.iter_mut() {
+        if notes.values().any(|n| n.answered(&im.source)) {
+            continue;
+        }
+        im.seen_as = notes
+            .values()
+            .flat_map(|n| &n.observations)
+            .find(|o| {
+                o.status == VisionStatus::Answered && o.source.fingerprint == im.source.fingerprint
+            })
+            .map(|o| o.source.reference());
+    }
 }
 
 /// Consultation batches: same source row, original order, split when the
@@ -346,7 +398,7 @@ pub fn project(m: &ChatMessage, images: &[VisionImage]) -> ChatMessage {
         match p {
             ContentPart::Binary(_) => {
                 match images.iter().find(|im| im.part == i && im.image.is_none()) {
-                    Some(im) => parts.push(ContentPart::Text(im.marker())),
+                    Some(im) => parts.push(ContentPart::Text(im.shown())),
                     None => parts.push(p.clone()),
                 }
             }
@@ -363,7 +415,7 @@ pub fn project(m: &ChatMessage, images: &[VisionImage]) -> ChatMessage {
                         if !content.is_empty() {
                             content.push('\n');
                         }
-                        content.push_str(&im.marker());
+                        content.push_str(&im.shown());
                     }
                     hit.is_none()
                 });
@@ -670,22 +722,41 @@ pub fn note(
 
 // region:    --- Provider refusal
 
+/// Bumped whenever the vision fallback is set or changed
+/// (`set_vision_model`): a session's fallback cooldown recorded under an
+/// older value no longer applies (read-file-images §3).
+static FALLBACK_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The vision fallback was set or changed.
+pub fn fallback_changed() {
+    FALLBACK_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The current [`FALLBACK_EPOCH`].
+pub fn fallback_epoch() -> u64 {
+    FALLBACK_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Phrases that say "this model takes no images" on their own: matched with
 /// or without a status, because local servers answer them with a 500
 /// (llama.cpp, Ollama) and a stream can carry them in an error event with no
-/// status at all. Lowercase, backticks removed.
-const STRONG_REFUSALS: [&str; 16] = [
+/// status at all. Matched in the provider's own message ([`provider_text`])
+/// and only as whole phrases ("does not support images/gif" or "image
+/// generation" are not these). Lowercase, backticks removed.
+const STRONG_REFUSALS: [&str; 18] = [
     "image input is not supported",
     "image input not supported",
     "images are not supported",
-    "does not support image",
-    "doesn't support image",
-    "does not support the image",
-    "doesn't support the image",
+    "does not support image input",
+    "doesn't support image input",
+    "does not support images",
+    "doesn't support images",
+    "does not support the image content",
+    "doesn't support the image content",
     "does not support vision",
     "doesn't support vision",
     "vision is not supported",
-    "missing data required for image",
+    "missing data required for image input",
     "not a multimodal model",
     "is not multimodal",
     "unknown variant image_url",
@@ -693,15 +764,15 @@ const STRONG_REFUSALS: [&str; 16] = [
     "at most 0 image",
 ];
 
-/// Words that make a weak phrase about image input (a MIME `image/…` too).
-const IMAGE_TERMS: [&str; 10] = [
+/// Words that make a weak phrase about image input. Not a MIME `image/…`:
+/// "does not support image/gif" is one image's format, not the model.
+const IMAGE_TERMS: [&str; 9] = [
     "image input",
     "image content",
     "image part",
     "image block",
     "images",
     "image(s)",
-    "image/",
     "vision",
     "multimodal",
     "multi-modal",
@@ -725,9 +796,49 @@ const WEAK_REFUSALS: [&str; 12] = [
     "unsupported media type",
 ];
 
+/// Keys whose string values are the provider talking; keys whose subtrees
+/// echo the request (pydantic's `input`, a body) are skipped.
+const MESSAGE_KEYS: [&str; 5] = ["message", "msg", "error", "detail", "reason"];
+const ECHO_KEYS: [&str; 5] = ["input", "messages", "body", "request", "content"];
+
 /// `err` lowercased, backticks removed.
 fn norm(err: &str) -> String {
     err.to_lowercase().replace('`', "")
+}
+
+/// The provider's own words in `err`: the string values under
+/// [`MESSAGE_KEYS`] of the first JSON object in it (genai appends the
+/// response body), never an echoed request; `err` itself when it holds no
+/// JSON object.
+fn provider_text(err: &str) -> String {
+    fn collect(v: &serde_json::Value, key: Option<&str>, out: &mut String) {
+        match v {
+            serde_json::Value::String(s) if key.is_some_and(|k| MESSAGE_KEYS.contains(&k)) => {
+                out.push_str(s);
+                out.push('\n');
+            }
+            serde_json::Value::Object(m) => {
+                for (k, v) in m {
+                    if !ECHO_KEYS.contains(&k.as_str()) {
+                        collect(v, Some(k), out);
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|v| collect(v, key, out)),
+            _ => {}
+        }
+    }
+    for (i, _) in err.match_indices('{') {
+        if let Some(Ok(v)) = serde_json::Deserializer::from_str(&err[i..])
+            .into_iter::<serde_json::Value>()
+            .next()
+        {
+            let mut out = String::new();
+            collect(&v, None, &mut out);
+            return out;
+        }
+    }
+    err.to_owned()
 }
 
 /// `e` without identifier-like words (`generate_image`, `invalid_request_error`):
@@ -745,39 +856,50 @@ fn status(e: &str, codes: &[&str]) -> bool {
         .any(|t| codes.contains(&t))
 }
 
-/// [`STRONG_REFUSALS`] alone: also what [`crate::compact::classify`] calls
-/// deterministic, so a 500 refusal is not resent with backoff.
+/// `phrase` in `text` as a whole phrase: not followed by a letter, digit or
+/// `/` (so "images" is not "images/gif", "image input" not "image inputs").
+fn has_phrase(text: &str, phrase: &str) -> bool {
+    text.match_indices(phrase).any(|(i, _)| {
+        text[i + phrase.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '/')
+    })
+}
+
+/// [`STRONG_REFUSALS`] in the provider's message: also what
+/// [`crate::compact::classify`] calls deterministic, so a 500 refusal is not
+/// resent with backoff.
 pub fn refuses_images_strongly(err: &str) -> bool {
-    let e = norm(err);
-    STRONG_REFUSALS.iter().any(|p| e.contains(p))
+    let t = norm(&provider_text(err));
+    STRONG_REFUSALS.iter().any(|p| has_phrase(&t, p))
 }
 
 /// Whether provider error `err` says the model does not take image input
 /// (read-file-images notes §2): a [`STRONG_REFUSALS`] phrase with any status
 /// or none, or a client status (`400`, `415`, `422`) with an image term and a
-/// [`WEAK_REFUSALS`] phrase in the prose. A defect of one image ("image
-/// exceeds 5 MB", "Invalid image", "unsupported image", content policy) is
-/// not this: see [`image_caused`].
+/// [`WEAK_REFUSALS`] phrase in the provider's prose. A defect of one image
+/// ("image exceeds 5 MB", "Invalid image", "unsupported image", content
+/// policy, a format) is not this: see [`image_caused`].
 pub fn rejects_images(err: &str) -> bool {
     if refuses_images_strongly(err) {
         return true;
     }
-    let e = norm(err);
-    let p = prose(&e);
-    status(&e, &["400", "415", "422"])
+    let p = prose(&norm(&provider_text(err)));
+    status(&norm(err), &["400", "415", "422"])
         && IMAGE_TERMS.iter().any(|t| p.contains(t))
         && WEAK_REFUSALS.iter().any(|w| p.contains(w))
 }
 
-/// A client error that names an image but is not a model refusal: too large,
-/// too many, unreadable, refused by a content policy. The image stays in
-/// history, so the caller projects it through 52 for this turn's retry
-/// instead of resending it; the model is not marked. Overflow is excluded:
-/// compaction owns that.
+/// A client error whose provider message names an image but is not a model
+/// refusal: too large, too many, unreadable, a format, a content policy. The
+/// image stays in history, so the caller sends images as text until the next
+/// compaction instead of resending it; the model is not marked. Overflow is
+/// excluded: compaction owns that.
 pub fn image_caused(err: &str) -> bool {
     let e = norm(err);
     status(&e, &["400", "413", "415", "422"])
-        && prose(&e).contains("image")
+        && prose(&norm(&provider_text(err))).contains("image")
         && !crate::compact::is_overflow(&e)
 }
 
@@ -988,7 +1110,13 @@ mod tests {
             .observations
             .retain(|o| o.status == VisionStatus::Failed);
         notes.insert(21, failed);
-        assert_eq!(pending(&all, &notes).len(), all.len());
+        // All pending again, except m7.p3: it repeats m7.p1's bytes, and one
+        // consultation covers both.
+        let p = pending(&all, &notes);
+        assert_eq!(
+            p.iter().map(|i| i.source.reference()).collect::<Vec<_>>(),
+            ["m7.p1", "m9.p0.i0", "m9.p0.i1", "m9.p1.i0"]
+        );
 
         let p: Vec<&VisionImage> = all.iter().skip(1).collect();
         let g = groups(&p, usize::MAX);
@@ -1183,9 +1311,9 @@ mod tests {
                 true,
             ),
             (
-                "unsupported media type",
+                "unsupported media type (a format: image-caused, not the model)",
                 "status 415: Unsupported Media Type: image/webp",
-                true,
+                false,
             ),
             // Local servers answer a text-only model with a 500.
             (
@@ -1218,6 +1346,21 @@ mod tests {
             (
                 "tool named like an image",
                 "status 400: generate_image: parameter `seed` is not supported by this model",
+                false,
+            ),
+            (
+                "an image format",
+                r#"status 400. Body: {"error":{"message":"This model does not support image/gif; use png or jpeg"}}"#,
+                false,
+            ),
+            (
+                "image generation",
+                r#"Status: 500 Body: {"error":{"message":"This model does not support image generation"}}"#,
+                false,
+            ),
+            (
+                "a 422 echoing the request (the harness's own notice in it)",
+                r#"status 422. Body: {"detail":[{"type":"missing","loc":["body","model"],"msg":"Field required","input":{"messages":[{"role":"user","content":"fake/vlm's provider refused an image (image input is not supported by this model)."}]}}]}"#,
                 false,
             ),
             // Size and corruption: the image is wrong, not the model.
@@ -1287,6 +1430,11 @@ mod tests {
                 true,
             ),
             ("status 400: You uploaded an unsupported image.", true),
+            ("status 415: Unsupported Media Type: image/webp", true),
+            (
+                r#"status 422. Body: {"detail":[{"msg":"Field required","input":{"content":"an image"}}]}"#,
+                false,
+            ),
             ("status 503: image service down", false),
             (
                 "status 400: tool_choice is not supported by this model",
