@@ -672,6 +672,7 @@ async fn export_bindings() {
         artifact::snapshot::FenceSnapshotRequested,
         artifact::snapshot::FenceSnapshotResolved,
         artifact::snapshot::FenceSnapshotAnswer,
+        artifact::snapshot::FenceSnapshotReply,
         artifact::archive::ArchiveListing,
         artifact::archive::ArchiveEntry,
         app::AppDoc,

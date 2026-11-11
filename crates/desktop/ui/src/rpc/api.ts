@@ -163,6 +163,9 @@ import type { Packet } from '@/rpc/bindings/Packet'
 import type { PagePreviewAnswer } from '@/rpc/bindings/PagePreviewAnswer'
 import type { FenceSnapshotAnswer } from '@/rpc/bindings/FenceSnapshotAnswer'
 import type { FenceSnapshotId } from '@/rpc/bindings/FenceSnapshotId'
+import type { FenceSnapshotReply } from '@/rpc/bindings/FenceSnapshotReply'
+import type { FenceLang } from '@/rpc/bindings/FenceLang'
+import type { Appearance } from '@/rpc/bindings/Appearance'
 import type { PreviewId } from '@/rpc/bindings/PreviewId'
 import type { DeviceInfo } from '@/rpc/bindings/DeviceInfo'
 import type { Put } from '@/rpc/bindings/Put'
@@ -1153,6 +1156,8 @@ export interface Api {
   answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
   /** 164 D3: answer a `FenceSnapshotRequested` — `started`, then the first `done` (base64 PNG) or `failed` resolves it. `false` when `id` was no longer pending. */
   answer_fence_snapshot(id: FenceSnapshotId, answer: FenceSnapshotAnswer): Promise<boolean>
+  /** 192: draw one fence through the 164 renderer and return the PNG (native companions). `width` clamped to 240..=1200 CSS px, `scale` to 1..=3. Guests refused. */
+  fence_snapshot(lang: FenceLang, source: string, width: number, appearance: Appearance, scale: number): Promise<FenceSnapshotReply>
   /** 120 §11.2: answer a `PagePreviewRequested` — `started` extends the engine's wait, the first `done`/`failed` resolves it. `false` when `id` was no longer pending. */
   answer_page_preview(id: PreviewId, answer: PagePreviewAnswer): Promise<boolean>
   /** Answer a `SecretsEvent.SecretRequested` (37 §3.8) or a replicated `secret_requests` row (79 §6.6): `value` answers the (first) field, `values` answers a form by field name (H's positional params); both `null` declines. `false` when `id` was no longer pending. */
@@ -1630,6 +1635,7 @@ export const METHODS = [
   'engine_agents_list',
   'escalate_model',
   'export_artifact',
+  'fence_snapshot',
   'fire_schedule',
   'fork_session',
   'get_app',
