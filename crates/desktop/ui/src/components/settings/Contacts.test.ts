@@ -452,7 +452,7 @@ test('183 Z3-R2 tools: each export row lists its allowlist (default the public w
   expect(items().map((b) => b.querySelector('.font-mono')?.textContent)).toEqual(['knowledge_search', 'mcp:files/search'])
   // Z4-R1: a reader warns that it sees all of its kind; an MCP tool that its risk is the server's word.
   expect(items()[0]!.textContent).toContain('Sees ALL your knowledge, not just what you share here')
-  expect(items()[1]!.textContent).toContain('Read-only as the server declares it; for a server you don’t control, pin its risk on Agents › Tools')
+  expect(items()[1]!.textContent).toContain('Read-only as the server declares it; for a server you don’t control, pin its risk on Settings › Tools › MCP')
   await run(() => (items()[0] as HTMLButtonElement).click())
   await vi.waitFor(() => expect(api.a2a_export_put).toHaveBeenCalledWith({ ...EXPORTS[0], tools: ['search_web', 'read_url', 'knowledge_search'] }))
 })

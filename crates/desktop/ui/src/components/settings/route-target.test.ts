@@ -1,8 +1,10 @@
+import { isRedirect } from '@tanstack/react-router'
 import { afterEach, expect, test, vi } from 'vitest'
 // The registry imports every tab component; some stores read `localStorage` at import; no DOM in the runner.
 vi.hoisted(() => {
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined })
 })
+import { Route as ToolsRoute } from '@/routes/tools'
 import { CATEGORIES } from './registry'
 import { routeTarget } from './route-target'
 
@@ -21,14 +23,35 @@ test('a shown tab renders, whatever the search', () => {
   expect(routeTarget('contacts', {})).toEqual({ kind: 'render' })
   expect(routeTarget('memory', { focus: 'spend' })).toEqual({ kind: 'render' })
   expect(routeTarget('messaging', { session: 's1' })).toEqual({ kind: 'render' })
+  expect(routeTarget('tools', { session: 's1' })).toEqual({ kind: 'render' })
 })
 
 test('1: tabs that became pages leave Settings, keeping a legacy session', () => {
   hide()
-  expect(routeTarget('skills', {})).toEqual({ kind: 'page', to: '/skills', search: {} })
-  expect(routeTarget('tools', { session: 's1', focus: 'x' })).toEqual({ kind: 'page', to: '/tools', search: { session: 's1' } })
+  expect(routeTarget('skills', { session: 's1', focus: 'x' })).toEqual({ kind: 'page', to: '/skills', search: { session: 's1' } })
   expect(routeTarget('secrets', {})).toEqual({ kind: 'page', to: '/secrets', search: {} })
   expect(routeTarget('schedules', {})).toEqual({ kind: 'page', to: '/routines', search: {} })
+})
+
+/** Where `/tools?<raw>` sends the router: the redirect its `beforeLoad` throws for the validated search. */
+function toolsLanding(raw: Record<string, unknown>) {
+  const search = (ToolsRoute.options.validateSearch as (s: Record<string, unknown>) => { session?: string })(raw)
+  try {
+    ToolsRoute.options.beforeLoad!({ search } as never)
+  } catch (e) {
+    if (isRedirect(e)) return e.options
+    throw e
+  }
+  throw new Error('/tools did not redirect')
+}
+
+test('Sky 2026-11-11: /tools?session=x lands on Settings › Tools › MCP with session=x, which renders there', () => {
+  hide()
+  const landing = toolsLanding({ session: 'x', focus: 'y' })
+  expect(landing).toMatchObject({ to: '/settings/$tab', params: { tab: 'tools' }, replace: true })
+  expect(landing.search).toEqual({ session: 'x' })
+  expect(routeTarget('tools', { session: 'x' })).toEqual({ kind: 'render' })
+  expect(toolsLanding({}).search).toEqual({})
 })
 
 test('2: an old communication link that names a chat opens that chat’s Messaging sheet, with its peer request', () => {

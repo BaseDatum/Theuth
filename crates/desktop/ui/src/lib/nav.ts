@@ -1,13 +1,13 @@
 // 97: the sidebar's two grouped buttons (Agents, Library) and the route-backed tab rows under their pages.
-// URLs do not change; a tab IS a navigation to its route. 143 R1: Skills and Tools sit under Agents (what agents
-// are made of), Library keeps the content pages.
+// URLs do not change; a tab IS a navigation to its route. Sky (2026-11-11): Skills is a Library tab and Tools is
+// Settings › Tools › MCP (143 R1 had both under Agents); Agents keeps the work, Library the content.
 
-import { BookOpen, Bot, CalendarClock, FlaskConical, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Notebook, Sparkles, StickyNote, Wrench } from 'lucide-react'
+import { BookOpen, Bot, CalendarClock, FlaskConical, FolderOpen, ListChecks, Lock, type LucideIcon, Mic, Notebook, Sparkles, StickyNote } from 'lucide-react'
 
 export type Group = 'agents' | 'library'
 
 /** A tab's route, as a literal so `navigate({ to })` type-checks. */
-export type Tab = '/agents' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/notebooks' | '/meetings' | '/skills' | '/secrets' | '/tools' | '/autoresearch'
+export type Tab = '/agents' | '/tasks' | '/routines' | '/artifacts' | '/knowledge' | '/notes' | '/notebooks' | '/meetings' | '/skills' | '/secrets' | '/autoresearch'
 
 export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: LucideIcon }[]> = {
   agents: [
@@ -16,13 +16,12 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
     { to: '/routines', label: 'Routines', icon: CalendarClock },
     // 140 (Sky, 2026-10-08 23:58): the Study view sits next to Routines — a study is a routine-driven loop.
     { to: '/autoresearch', label: 'Autoresearch', icon: FlaskConical },
-    { to: '/skills', label: 'Skills', icon: Sparkles },
-    { to: '/tools', label: 'Tools', icon: Wrench },
   ],
   // Artifacts first (Sky, 2026-09-27): the most-opened entry.
   library: [
     { to: '/artifacts', label: 'Artifacts', icon: FolderOpen },
     { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
+    { to: '/skills', label: 'Skills', icon: Sparkles },
     { to: '/notes', label: 'Notes', icon: StickyNote },
     { to: '/notebooks', label: 'Notebooks', icon: Notebook },
     { to: '/meetings', label: 'Meetings', icon: Mic },

@@ -931,7 +931,7 @@ const READS: Record<string, string> = {
 /** 183 Z4-R1: the warning under a tool in Add tool, if any (a reader's reach, an MCP tool's self-declared risk). */
 export function toolNote(tool: string): string | null {
   if (READS[tool]) return `Sees ALL your ${READS[tool]}, not just what you share here`
-  if (tool.startsWith('mcp:')) return 'Read-only as the server declares it; for a server you don’t control, pin its risk on Agents › Tools'
+  if (tool.startsWith('mcp:')) return 'Read-only as the server declares it; for a server you don’t control, pin its risk on Settings › Tools › MCP'
   return null
 }
 
