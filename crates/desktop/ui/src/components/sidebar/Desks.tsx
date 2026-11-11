@@ -4,6 +4,7 @@ import { Megaphone } from 'lucide-react'
 import { useMemo } from 'react'
 import { toast } from 'sonner'
 import { openBroadcastDialog } from '@/components/chat/BroadcastDialog'
+import { useSessionDrag } from '@/components/chat/Panes'
 import { errorText } from '@/components/settings/shared'
 import { THEUTH } from '@/components/tasks/helpers'
 import { keys, useAgents } from '@/components/tasks/queries'
@@ -91,6 +92,7 @@ export function Desks({ active }: { active: string | undefined }) {
  * finished counts; clicking the name opens the desk. No line while the desk has no subagents.
  */
 function DeskTree({ id, name, active }: { id: string; name: string; active: string | undefined }) {
+  const drag = useSessionDrag(id, name)
   const rows = Object.values(useSessionField(id, 'children') ?? {})
   const n = rows.filter((r) => live(r.state.state)).length
   return (
@@ -99,6 +101,7 @@ function DeskTree({ id, name, active }: { id: string; name: string; active: stri
         <Link
           to="/c/$session"
           params={{ session: id }}
+          {...drag}
           data-desk-header
           className="mx-1 flex h-7 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-sidebar-accent"
         >
@@ -137,6 +140,8 @@ function DeskTile({
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const running = useSessionField(id ?? '', 'running')
+  // Spread only on the session Link: a desk without a session opens via `desk_open` and has nothing to drag.
+  const drag = useSessionDrag(id, name)
   const subRunning = useSessions((s) => runningSubagents(subagents, s.sessions))
   const open = useMutation({
     mutationFn: () => api.desk_open(name),
@@ -185,7 +190,7 @@ function DeskTile({
                 {body}
               </button>
             ) : (
-              <Link to="/c/$session" params={{ session: id }}>
+              <Link to="/c/$session" params={{ session: id }} {...drag}>
                 {body}
               </Link>
             )}
