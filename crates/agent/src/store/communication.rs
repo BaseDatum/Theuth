@@ -1547,40 +1547,6 @@ impl Store {
         Ok(row.and_then(|(c, r)| Some((c?, r))))
     }
 
-    /// 186 review 1: an outbound message's remote task waits behind its chat's running turn
-    /// (`note`), or no longer (`None`): the receipt's `error` carries the note while it is
-    /// still `accepted`/`consumed`; nothing fails. `Some(receipt)` when it changed.
-    pub async fn note_queued_exchange(
-        &self,
-        id: Uuid,
-        note: Option<&str>,
-    ) -> anyhow::Result<Option<PeerReceipt>> {
-        let ids = id.to_string();
-        let mut tx = self.begin_write().await?;
-        let n = sqlx::query(
-            "UPDATE peer_exchanges SET error = ?, updated_at = ? WHERE id = ? \
-             AND state IN ('accepted', 'consumed') AND error IS NOT ? \
-             AND (error IS NULL OR error LIKE 'queued:%')",
-        )
-        .bind(note)
-        .bind(now())
-        .bind(&ids)
-        .bind(note)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        let r = if n == 1 {
-            exchange_in(&mut tx, &ids)
-                .await?
-                .map(|r| r.receipt())
-                .transpose()?
-        } else {
-            None
-        };
-        tx.commit().await?;
-        Ok(r)
-    }
-
     /// 186 review 1, 2: how many of the contact `binding`'s answers to `recipient` (messages
     /// on conversations this engine opened, the return route's) are accepted and not yet
     /// taken in. Its messages to our exports (their conversations) do not count.

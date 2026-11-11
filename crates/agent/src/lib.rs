@@ -463,7 +463,7 @@ pub struct Cancel {
     /// Root (default) or the whole running subtree (133 §2).
     #[serde(default)]
     pub scope: CancelScope,
-    /// 186 (D8): `Input` is refused while the session's turn is a contact's.
+    /// 190 (D5): accepted and ignored (186 D8's refusal is gone).
     #[serde(default)]
     pub reason: CancelReason,
 }

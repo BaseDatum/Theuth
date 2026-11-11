@@ -1109,30 +1109,6 @@ impl Store {
         }))
     }
 
-    /// 186 (D8): `turn` of `session` took a contact's incoming message: an `input_accepted`
-    /// of source `contact` (a cautious chat turn), `contact_full` (a message shared in full) or
-    /// `contact_inbox` (a cautious agent inbox). Answers to our own messages are `peer`.
-    pub async fn turn_took_contact(
-        &self,
-        session: SessionId,
-        turn: TurnId,
-    ) -> anyhow::Result<bool> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT payload FROM turn_steps \
-             WHERE session_id = ? AND turn_id = ? AND kind = 'input_accepted'",
-        )
-        .bind(session.to_string())
-        .bind(turn.to_string())
-        .fetch_all(&self.read)
-        .await?;
-        Ok(rows.iter().any(|(p,)| {
-            matches!(
-                json(p)["source"].as_str(),
-                Some("contact" | "contact_full" | "contact_inbox")
-            )
-        }))
-    }
-
     /// §3.3 step 2: `reserve_call` plus `turn_steps(model_call)` with the
     /// attempt's `call_id`, one transaction.
     #[expect(clippy::too_many_arguments, reason = "one row, one call")]

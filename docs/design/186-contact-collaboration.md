@@ -2,6 +2,8 @@
 
 As built on `feat/186-engine` (engine) and `feat/186-ui` (UI), from main 19251272.
 
+Superseded in part by design 190 (`docs/design/190-drop-cautious.md`): the cautious mode is gone, every share is full, and the D8 owner-turn guard is removed.
+
 ## Sky's words (2026-11-10)
 
 > "I don't understand why we've made it a restrictive. their message must have a complete turn. is that built into A2A or something? The way I see it once the chat is shared and a message is allowed and such, then the two agents should be able to message freely as if they're in the same mesh or running on the same theuth harness. that's the whole point to make it where they can work together. So it seems like this has kinda missed the point, and was built too restrictive, unless you have a good reason for it. the message should arrive like any other message and the agent that received it should be free to reply with whatever information they want. I also don't know why we restricted links, images, etc. why wouldn't they be able to send those things. the trust is established, so why are we treating this like it's a danger zone?"

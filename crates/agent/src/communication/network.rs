@@ -592,11 +592,10 @@ pub struct NetworkState {
     /// Exchanges already handed to intake: a dedup hit re-enqueues nothing.
     enqueued: HashSet<Uuid>,
     outbound: HashMap<Uuid, Outbound>,
-    /// 183 §7.6: inbox sessions resolved this run → their first contact row still owes the
-    /// `<contact_inbox/>` notice (§11.5).
-    inboxes: HashMap<SessionId, bool>,
-    /// 183 §7.6: request scope → the contact behind it (its turn cap, its wrapper, its
-    /// first-contact hold); gone with the scope.
+    /// 183 §7.6: inbox sessions resolved this run.
+    inboxes: HashSet<SessionId>,
+    /// 183 §7.6: request scope → the contact behind it (its first-contact hold; W-40: what
+    /// another engine's chat caps its turn at); gone with the scope.
     contact_scopes: HashMap<Uuid, super::ContactOrigin>,
     /// 183 W-27, F11: tasks waiting for a first-contact answer, by (contact, export), oldest
     /// first, with the admission each waits under. A held task waits aside: it is neither the
@@ -616,8 +615,8 @@ pub struct NetworkState {
     /// 183 §7.6, W-25: inbox session → the exported agent's persona, recorded on every
     /// resolve (so after a restart too, before the contact's turn runs).
     inbox_personas: HashMap<SessionId, crate::supervisor::InboxPersona>,
-    /// 183 Z3-R2: inbox session → the cap and allowlist its last admission installed,
-    /// re-installed at every actor start (fail-closed when absent).
+    /// 183 Z3-R2: inbox session → the limits installed (190: only ever the fail-closed
+    /// ones), re-installed at every actor start (fail-closed when absent).
     inbox_limits: HashMap<SessionId, (tools::Risk, Vec<String>)>,
     /// 183 Z3-R2: the paired-machine count `mesh_default` last saw (re-run when contacts change).
     last_paired: Option<usize>,
@@ -628,9 +627,6 @@ pub struct NetworkState {
 
 /// 186 (D8): what a contact reads when the owner stopped the turn its message opened.
 pub const STOPPED_BY_OWNER: &str = "stopped by the owner";
-
-/// 186 review 1: the status message of a contact's message waiting behind the chat's turn.
-pub const QUEUED_NOTE: &str = "queued: the chat is busy; it runs when the current turn ends";
 
 /// 183 F5: a held first message fails after this long without the owner's answer.
 pub const HOLD_TTL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -686,9 +682,6 @@ pub struct HeldContact {
     pub waiting: usize,
     /// 183 F11: the first line of the oldest waiting message.
     pub preview: String,
-    /// 186 review 1: `0` for a first-contact hold; for a message queued behind the chat's
-    /// running turn ([`ContactsQueued`]), its place in the chat's queue (1 = next).
-    pub position: u32,
 }
 
 impl NetworkState {
@@ -748,7 +741,7 @@ impl NetworkState {
     /// contact is a row for every root, tagged `contact` — except a contact's inbox, which
     /// sees no contact (Z3-R2, §7.5: a contact never learns our contact list).
     pub(crate) fn remote_peers(&self, root: SessionId) -> Vec<PeerInfo> {
-        let inbox = self.inboxes.contains_key(&root);
+        let inbox = self.inboxes.contains(&root);
         let row =
             |address: String, name: String, title: Option<String>, tags: Vec<String>| PeerInfo {
                 address,
@@ -802,7 +795,6 @@ impl NetworkState {
                         "contact".to_owned(),
                         o.kind.as_str().to_owned(),
                         o.state.as_str().to_owned(),
-                        o.mode.as_str().to_owned(),
                     ],
                 ));
             }
@@ -1500,11 +1492,9 @@ impl Agents {
                 )));
             }
         }
-        // 186 (D5): a contact sharing in full writes in the conversation its engine minted.
-        let full = p
-            .contact
-            .as_ref()
-            .is_some_and(|o| o.mode == super::ShareMode::Full);
+        // 186 (D5): a contact writes in the conversation its engine minted (190: every share
+        // is full).
+        let full = p.contact.is_some();
         // New task in an owned (or freshly minted) context.
         let context_id = match message.context_id.clone() {
             Some(ctx) => {
@@ -1599,10 +1589,10 @@ impl Agents {
             self.network
                 .contact_scopes
                 .insert(task.request_scope, origin.clone());
-            // 186: the row's provenance (and D8: the turn that takes it is the contact's).
+            // 186: the row's provenance (190: every contact's message is `full`).
             if let Err(e) = self
                 .store
-                .set_exchange_contact(receipt.id, origin.mode, None)
+                .set_exchange_contact(receipt.id, super::ShareMode::Full, None)
                 .await
             {
                 tracing::warn!(exchange = %receipt.id, "a2a: contact mode not recorded: {e:#}");
@@ -1639,14 +1629,13 @@ impl Agents {
         generation: Generation,
         route: CancellationToken,
     ) -> A2aTask {
-        // 186 (D4): in full, the message takes no slot: it goes in as a mesh peer's at once.
+        // 186 (D4): a contact's message takes no slot: it goes in as a mesh peer's at once.
         // W-40 (D11): a chat another engine owns gets it there (that owner lowers it).
         if self
             .network
             .contact_scopes
-            .get(&task.request_scope)
-            .is_some_and(|o| o.mode == super::ShareMode::Full)
-            && (self.network.inboxes.contains_key(&task.session)
+            .contains_key(&task.request_scope)
+            && (self.network.inboxes.contains(&task.session)
                 || self.remote_owner(task.session).await.is_none())
         {
             return self.deliver_full(task, generation).await;
@@ -1677,28 +1666,6 @@ impl Agents {
                         watch,
                     },
                 );
-                // 186 review 1: a contact's message waiting behind the chat's running turn is
-                // visible: the sender reads why, the owner's strip lists it.
-                if self.network.contact_scopes.contains_key(&scope) {
-                    let task = match self
-                        .transition(
-                            &task,
-                            A2aTaskStatus::Submitted,
-                            Some(QUEUED_NOTE),
-                            None,
-                            None,
-                        )
-                        .await
-                    {
-                        Ok(t) => t,
-                        Err(e) => {
-                            tracing::warn!(task = %task.id, "a2a: queued note: {e:#}");
-                            task
-                        }
-                    };
-                    self.rt.publish(ContactsHeldChanged).await;
-                    return task;
-                }
                 task
             }
             Err(e) => {
@@ -1754,7 +1721,7 @@ impl Agents {
             .contact_scopes
             .get(&task.request_scope)
             .cloned()
-            && !self.network.inboxes.contains_key(&task.session)
+            && !self.network.inboxes.contains(&task.session)
             && let Some(owner) = self.remote_owner(task.session).await
         {
             let envelope = super::ContactEnvelope {
@@ -3064,18 +3031,16 @@ impl Agents {
         // W-25: the exported agent's persona, charter, model and ceiling (`<agent>@<engine>`
         // names the agent of this engine).
         let bare = m.agent.split('@').next().unwrap_or(&m.agent);
-        let full = m.origin.mode == super::ShareMode::Full;
         let live = self.live_persona(bare).await;
-        // 186 review 2: a share in full runs under the agent's own ceiling, read live: with no
-        // persona for an agent (the roster not joined yet, its file gone or invalid) it does
-        // not run. theuth's own inbox, before the roster joins, keeps its stored ceiling.
-        if full
-            && match live {
-                full::Live::Known(_) => false,
-                full::Live::Unknown => bare != "theuth",
-                full::Live::Missing => true,
-            }
-        {
+        // 186 review 2: a share (190: every share is full) runs under the agent's own ceiling,
+        // read live: with no persona for an agent (the roster not joined yet, its file gone or
+        // invalid) it does not run. theuth's own inbox, before the roster joins, keeps its
+        // stored ceiling.
+        if match live {
+            full::Live::Known(_) => false,
+            full::Live::Unknown => bare != "theuth",
+            full::Live::Missing => true,
+        } {
             // 186 review 3: the contact hears its export's name, never the roster agent's.
             tracing::warn!(
                 agent = bare,
@@ -3120,64 +3085,52 @@ impl Agents {
                     .await
                     .map_err(internal)?;
                 tracing::info!(session = %id, contact = %m.origin.contact, export = %m.origin.export, agent = %m.agent, "a2a: contact inbox opened");
-                self.network.inboxes.insert(id, true);
+                self.network.inboxes.insert(id);
                 id
             }
         };
-        self.network.inboxes.entry(id).or_insert(false);
+        self.network.inboxes.insert(id);
         // Z3-R2: every later actor start of this session re-installs its limits (an inbox
         // opened by an older build is marked on its first resolve); Z3-R3: and a resumed turn
         // speaks as the agent again, though the roster's source joins after the boot resume.
-        // 186 (D6): in full the inbox runs under the agent's own policy: its row keeps the
-        // agent and the ceiling of its real persona, so an actor start re-reads the live one
-        // and takes the stricter; it is never capped as a contact's.
-        // §7.6: on every resolve, so the cap holds after a restart and a change applies now;
-        // the agent's own `tools:` ceiling holds there too (the stricter one wins).
-        let ceiling = persona.as_ref().and_then(|p| p.tools);
+        // 186 (D6): the inbox runs under the agent's own policy: its row keeps the agent and
+        // the ceiling of its real persona, so an actor start re-reads the live one and takes
+        // the stricter; it is never capped as a contact's.
         let real = persona.as_ref().map(|p| p.tools);
         self.store
             .mark_a2a_inbox(
                 id,
                 persona.as_ref().and_then(|p| p.identity.as_deref()),
                 bare,
-                full,
+                true,
                 real,
             )
             .await
             .map_err(internal)?;
-        let cap = ceiling.map_or(m.origin.cap, |t| t.min(m.origin.cap));
         match persona {
             Some(p) => self.network.inbox_personas.insert(id, p),
             None => self.network.inbox_personas.remove(&id),
         };
-        if full {
-            // A live persona's ceiling as is; theuth before the roster joins: its stored one.
-            let run = match real {
-                Some(c) => Some(c),
-                None => self
-                    .store
-                    .a2a_inbox_full(id)
-                    .await
-                    .map_err(internal)?
-                    .and_then(|r| r.ceiling),
-            };
-            self.run_full_inbox(id, run)
+        // A live persona's ceiling as is; theuth before the roster joins: its stored one.
+        let run = match real {
+            Some(c) => Some(c),
+            None => self
+                .store
+                .a2a_inbox_full(id)
                 .await
-                .map_err(|e| internal(anyhow::anyhow!(e)))?;
-            return Ok(id);
-        }
-        // Z3-R2: and default-deny: only the export's allowlist exists in the inbox. Z3-R3: not
-        // installed = not admitted.
-        self.install_contact_limits(id, cap, m.origin.tools.clone())
+                .map_err(internal)?
+                .and_then(|r| r.ceiling),
+        };
+        self.run_full_inbox(id, run)
             .await
             .map_err(|e| internal(anyhow::anyhow!(e)))?;
         Ok(id)
     }
 }
 
-/// 183 Z3-R2: the default-deny limits of a contact inbox no admission has given yet (an
-/// actor start after a restart, a child result waking it): read-only, and nothing but the
-/// reply. The contact's next admission installs its real cap and allowlist.
+/// 183 Z3-R2: the default-deny limits of a contact inbox that cannot prove its agent's
+/// ceiling or a live binding (an actor start before the contact's next admission, a child
+/// result waking it): read-only, and nothing but the reply.
 const INBOX_FAIL_CLOSED: tools::Risk = tools::Risk::ReadOnly;
 
 /// 183 Z3-R2: tasks one contact may have waiting on one export (queued behind a running
@@ -3197,7 +3150,7 @@ impl Agents {
     ) -> Result<(), String> {
         self.caps.insert(id, cap);
         self.network.inbox_limits.insert(id, (cap, tools.clone()));
-        self.network.inboxes.entry(id).or_insert(false);
+        self.network.inboxes.insert(id);
         let Some(reg) =
             kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
                 .map_err(|e| format!("a2a: inbox limits: tool registry: {e}"))?
@@ -3270,8 +3223,9 @@ impl Agents {
         self.install_contact_limits(id, cap, tools).await
     }
 
-    /// 186 (D6): a contact's inbox shared in full: no contact limits (allowlist, contact cap),
-    /// only the exported agent's own `tools:` ceiling, as for its owner's sessions.
+    /// 186 (D6): a contact's inbox that may run uncapped: no contact limits (allowlist,
+    /// contact cap), only the exported agent's own `tools:` ceiling, as for its owner's
+    /// sessions.
     pub(crate) async fn clear_contact_limits(
         &mut self,
         id: SessionId,
@@ -3282,7 +3236,7 @@ impl Agents {
             None => self.caps.remove(&id),
         };
         self.network.inbox_limits.remove(&id);
-        self.network.inboxes.entry(id).or_insert(false);
+        self.network.inboxes.insert(id);
         let Some(reg) =
             kameo::actor::ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)
                 .map_err(|e| format!("a2a: inbox limits: tool registry: {e}"))?
@@ -3305,19 +3259,14 @@ impl Agents {
     }
 }
 
-/// `ask` → `()` (183 §7.6, Z3-R2): contact `contact`'s cap or an export's allowlist changed
-/// (`peers.yaml` reloaded): its live inboxes take the new limits at once, a running turn
-/// included. `exports` = (agent export, its allowlist) for every agent export granted.
+/// `ask` → `()` (183 §7.6, 186 review 2): `peers.yaml` reloaded: contact `contact`'s inboxes
+/// whose export it no longer holds stop running uncapped at once, a running turn included.
 #[derive(Clone, Debug)]
 pub struct ContactLimits {
     /// The contact's alias.
     pub contact: String,
-    /// Its cap.
-    pub cap: tools::Risk,
-    /// Agent export → its allowlist.
-    pub exports: Vec<(String, Vec<String>)>,
-    /// 186 review 2: the agent exports granted to it in full (their inboxes keep running
-    /// in full; every other inbox of this contact does not).
+    /// The agent exports granted to it (190: every one in full); their inboxes keep running
+    /// under the agent's ceiling, every other inbox of this contact is capped.
     pub full: Vec<String>,
 }
 
@@ -3336,24 +3285,20 @@ impl Agents {
             return;
         };
         let key = format!("peer:{}", binding.id);
-        // 186 review 2: an inbox whose export is no longer granted in full (unshared, deleted,
-        // downgraded) stops running in full now; one no longer granted at all is capped as a
-        // contact's inbox no admission has limited.
+        // 186 review 2: an inbox whose export is no longer granted (unshared, deleted) stops
+        // running uncapped now and is capped as a contact's inbox that proves no ceiling.
         match self.store.a2a_inboxes_of(&key).await {
             Ok(rows) => {
                 for (export, inbox, full) in rows {
-                    if full
-                        && !m.full.contains(&export)
-                        && let Err(e) = self.store.unmark_a2a_inbox_full(inbox).await
-                    {
+                    if m.full.contains(&export) {
+                        continue;
+                    }
+                    if full && let Err(e) = self.store.unmark_a2a_inbox_full(inbox).await {
                         tracing::error!(session = %inbox, "a2a: inbox mode not reset: {e:#}");
                     }
-                    let granted =
-                        m.full.contains(&export) || m.exports.iter().any(|(e, _)| *e == export);
-                    if !granted
-                        && let Err(e) = self
-                            .install_contact_limits(inbox, INBOX_FAIL_CLOSED, Vec::new())
-                            .await
+                    if let Err(e) = self
+                        .install_contact_limits(inbox, INBOX_FAIL_CLOSED, Vec::new())
+                        .await
                     {
                         tracing::error!(session = %inbox, "{e}");
                     }
@@ -3361,32 +3306,17 @@ impl Agents {
             }
             Err(e) => tracing::error!(contact = %m.contact, "a2a: inboxes: {e:#}"),
         }
-        for (export, tools) in m.exports {
-            let scope = A2aScope {
-                principal: &key,
-                export: &export,
-            };
-            let Ok(Some(inbox)) = self.store.a2a_inbox(scope).await else {
-                continue;
-            };
-            let cap = self
-                .network
-                .inbox_persona(inbox)
-                .and_then(|p| p.tools)
-                .map_or(m.cap, |t| t.min(m.cap));
-            if let Err(e) = self.install_contact_limits(inbox, cap, tools).await {
-                tracing::error!(session = %inbox, "{e}");
-            }
-        }
     }
 }
 
 impl Agents {
-    /// 183 §11.5/§11.6: how `record` reaches its session when a contact sent it: as the
-    /// `<contact_message>` turn of an exported chat (owned here for this engine's own A2A
-    /// task, or for another engine's, W-40), or as an inbox's peer message.
+    /// 183 §11.6: how `record` reaches its session when a contact's message runs a capped
+    /// turn: the `<contact_message>` turn of an exported chat this engine owns for another
+    /// engine's contact (W-40), or for a task of this engine whose chat's remote owner was
+    /// gone by the time it started (fail closed). Every other contact message arrives full.
+    // W-40 only; removed by design 191 (contacts are mesh-wide)
     pub(crate) fn network_contact_frame(
-        &mut self,
+        &self,
         record: &PeerRecord,
     ) -> Option<crate::loop_::ContactFrame> {
         if let Some(env) = self.network.contact_replies.get(&record.receipt.id) {
@@ -3400,15 +3330,9 @@ impl Agents {
             .contact_scopes
             .get(&record.request_scope?)?
             .clone();
-        Some(match self.network.inboxes.get_mut(&record.session) {
-            Some(first) => crate::loop_::ContactFrame::Inbox {
-                origin,
-                first: std::mem::take(first),
-            },
-            None => crate::loop_::ContactFrame::Chat {
-                origin,
-                scope: None,
-            },
+        Some(crate::loop_::ContactFrame::Chat {
+            origin,
+            scope: None,
         })
     }
 }
@@ -3686,66 +3610,10 @@ impl Message<ContactsHeld> for Agents {
                     since_ms: first.since_ms,
                     waiting: tasks.len(),
                     preview: first.preview.clone(),
-                    position: 0,
                 })
             })
             .collect();
         out.sort_by(|a, b| (&a.contact, &a.export).cmp(&(&b.contact, &b.export)));
-        out
-    }
-}
-
-/// `ask` → `Vec<HeldContact>` (186 review 1): every contact message (cautious) admitted and
-/// waiting behind its chat's running turn, one row each with its place in that chat's queue.
-/// A full contact's message never waits here: it joins the running turn.
-#[derive(Clone, Copy, Debug)]
-pub struct ContactsQueued;
-
-impl Message<ContactsQueued> for Agents {
-    type Reply = Vec<HeldContact>;
-
-    async fn handle(
-        &mut self,
-        _: ContactsQueued,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.contacts_queued().await
-    }
-}
-
-impl Agents {
-    /// [`ContactsQueued`].
-    pub(crate) async fn contacts_queued(&self) -> Vec<HeldContact> {
-        let mut tasks = Vec::with_capacity(self.network.queued.len());
-        for (scope, q) in &self.network.queued {
-            let s = A2aScope {
-                principal: &q.principal,
-                export: &q.export,
-            };
-            if let Ok(Some(t)) = self.store.a2a_task(s, &q.task).await {
-                tasks.push((*scope, t));
-            }
-        }
-        // The store starts a chat's queued tasks in accepted order.
-        tasks.sort_by_key(|(_, t)| t.seq);
-        let mut place: HashMap<SessionId, u32> = HashMap::new();
-        let mut out = Vec::new();
-        for (scope, t) in tasks {
-            let position = place.entry(t.session).or_default();
-            *position += 1;
-            let Some(origin) = self.network.contact_scopes.get(&scope) else {
-                continue;
-            };
-            out.push(HeldContact {
-                contact: origin.contact.clone(),
-                export: origin.export.clone(),
-                session: t.session,
-                since_ms: t.created_at.timestamp_millis().max(0) as u64,
-                waiting: 1,
-                preview: preview_of(&t),
-                position: *position,
-            });
-        }
         out
     }
 }
@@ -4221,7 +4089,7 @@ impl Agents {
                 // Z3-R2: a contact's inbox reaches no contact (no relay through it). 186 (D5):
                 // it may answer, in full, the contact whose message it holds.
                 let answer = full.as_ref().is_some_and(|f| f.ret);
-                let granted = (contact && (answer || !self.network.inboxes.contains_key(&root)))
+                let granted = (contact && (answer || !self.network.inboxes.contains(&root)))
                     || self
                         .network
                         .peers
@@ -4524,23 +4392,6 @@ impl Agents {
                     Ok(Some(r)) => self.peer_changed(&r).await,
                     Ok(None) => {}
                     Err(e) => tracing::warn!(exchange = %exchange, "a2a: unhold exchange: {e:#}"),
-                }
-                // 186 review 1: queued behind the contact's busy chat (its status says so):
-                // the receipt says so too, without failing it; gone once it runs.
-                let queued = t.status.state == TaskState::Submitted
-                    && t.status
-                        .message
-                        .as_ref()
-                        .and_then(|m| parts_text(&m.parts))
-                        .is_some_and(|s| s.starts_with("queued:"));
-                match self
-                    .store
-                    .note_queued_exchange(exchange, queued.then_some(QUEUED_NOTE))
-                    .await
-                {
-                    Ok(Some(r)) => self.peer_changed(&r).await,
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!(exchange = %exchange, "a2a: queued note: {e:#}"),
                 }
             }
             TaskState::Unspecified => {}
@@ -5459,9 +5310,9 @@ mod tests {
     }
 
     /// 183 W-27, F11: a contact's first task waits in `AUTH_REQUIRED` at once, saying so, and
-    /// aside: the session's running task keeps its slot, an allowed message queues behind that
-    /// one only and starts when it ends, never behind the held one; Allow once queues the held
-    /// one normally; Block fails a waiting one as not a contact.
+    /// aside: the session's running task keeps its slot, and (190: every share is full) an
+    /// allowed message goes in at once, never behind the held one; Allow once delivers the
+    /// held one as any admitted message; Block fails a waiting one as not a contact.
     #[tokio::test]
     async fn first_contact_holds_until_the_owner_answers() {
         let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
@@ -5507,29 +5358,22 @@ mod tests {
             refused.message.contains("not allowed this task yet"),
             "{refused:?}"
         );
-        // F11: an allowed message waits for the running task only.
+        // F11: an allowed message goes in at once, though one still waits for the owner.
         let allowed = a.admit_send(&p(false), &send("m-b")).await.unwrap().task;
+        assert_eq!(allowed.status, A2aTaskStatus::Working, "no slot taken");
         assert_eq!(
-            allowed.status,
-            A2aTaskStatus::Submitted,
-            "behind the busy one"
-        );
-        let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
-        a.transition(&busy, A2aTaskStatus::Completed, None, Some("done"), None)
-            .await
-            .unwrap();
-        let _ = a.network.retire(busy.request_scope);
-        a.start_next(session).await;
-        let allowed = a.store.a2a_task(s, &allowed.id).await.unwrap().unwrap();
-        assert_eq!(
-            allowed.status,
-            A2aTaskStatus::Working,
-            "the allowed message starts though one still waits for the owner"
+            a.store
+                .active_a2a_task(session)
+                .await
+                .unwrap()
+                .map(|t| t.id),
+            Some(busy.id),
+            "the running task keeps its slot"
         );
         let still = a.store.a2a_task(s, &first.id).await.unwrap().unwrap();
         assert_eq!(still.status, A2aTaskStatus::AuthRequired, "it did not run");
 
-        // Allow once: it is queued as any admitted message (behind the running one).
+        // Allow once: it is delivered as any admitted message.
         let n = a
             .release_held(ContactRelease {
                 contact: "bob".into(),
@@ -5542,8 +5386,8 @@ mod tests {
         let now = a.store.a2a_task(s, &first.id).await.unwrap().unwrap();
         assert_eq!(
             now.status,
-            A2aTaskStatus::Submitted,
-            "queued behind the running one, as any admitted message"
+            A2aTaskStatus::Working,
+            "delivered, as any admitted message"
         );
 
         // Block: a first-contact task still waiting fails as not a contact.
@@ -5739,7 +5583,7 @@ mod tests {
             .await
             .unwrap();
         let principal = format!("peer:{}", binding.id);
-        let (session, busy, _) = exported_task(&mut a, &principal).await;
+        let (session, _, _) = exported_task(&mut a, &principal).await;
         let p = A2aPrincipal {
             binding: binding.id,
             export: "research".into(),
@@ -5748,23 +5592,14 @@ mod tests {
             contact: Some(bob("research", tools::Risk::ReadOnly)),
             ask_first: false,
         };
-        let s = A2aScope {
-            principal: &principal,
-            export: "research",
-        };
-        let mut done = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
         for i in 0..70 {
-            // Each answered before the next one (its turn is not run here: fail it).
-            a.transition(&done, A2aTaskStatus::Failed, None, None, Some("ended"))
-                .await
-                .unwrap();
-            a.start_next(session).await;
             let task = a
                 .admit_send(&p, &send(&format!("m-{i}")))
                 .await
                 .unwrap_or_else(|e| panic!("message {i}: {e:?}"))
                 .task;
-            done = a.store.a2a_task(s, &task.id).await.unwrap().unwrap();
+            // Each taken in before the next one (no turn runs here: its receipt completes it).
+            a.full_consumed(task.dedup_exchange.unwrap()).await.unwrap();
         }
     }
 
@@ -6039,6 +5874,95 @@ mod tests {
         assert_eq!(r.reply.as_deref(), Some("hi back"));
     }
 
+    /// 190 (D9): to an export an older contact's card still tags `cautious`, a send keeps the
+    /// 183 shape (no conversation, no `theuth` metadata), and the turn's final text the
+    /// contact's engine completes the task with comes back as the reply; one tagged `full`
+    /// goes full.
+    #[tokio::test]
+    async fn a_cautious_tagged_card_gets_the_183_shape_and_its_final_text_reply() {
+        struct Record(tokio::sync::mpsc::UnboundedSender<OutboundPeerMessage>);
+        #[async_trait]
+        impl PeerSender for Record {
+            async fn send(&self, o: OutboundPeerMessage) -> Result<RemoteReply, RemoteSendError> {
+                let _ = self.0.send(o);
+                Err(RemoteSendError::Unknown("recorded".into()))
+            }
+        }
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("sky", &contact_endpoint("sky-endpoint"))
+            .await
+            .unwrap();
+        let (tx, mut out) = tokio::sync::mpsc::unbounded_channel();
+        a.network.peers.insert(
+            binding.id,
+            RemotePeer {
+                name: "sky".into(),
+                roots: Vec::new(),
+                sender: Some(Arc::new(Record(tx))),
+                generation: CancellationToken::new(),
+                contact: true,
+                full: Vec::new(),
+            },
+        );
+        let offer = |name: &str, mode| ContactOffer {
+            name: name.into(),
+            title: name.into(),
+            kind: OfferKind::Chat,
+            state: OfferState::Allowed,
+            mode,
+        };
+        a.network.set_offers(BTreeMap::from([(
+            "sky".into(),
+            vec![
+                offer("old", super::super::ShareMode::Cautious),
+                offer("new", super::super::ShareMode::Full),
+            ],
+        )]));
+        let owner = a
+            .new_root(None, super::super::PeerScope::Owner, None, None)
+            .await
+            .unwrap();
+        let sent = a
+            .network_send(owner, "sky/old", "hello", None, None, false)
+            .await
+            .unwrap();
+        let wire = tokio::time::timeout(Duration::from_secs(10), out.recv())
+            .await
+            .expect("it leaves")
+            .unwrap();
+        assert!(
+            wire.full.is_none() && wire.context_id.is_none(),
+            "the 183 shape"
+        );
+        let t = Task {
+            id: "t-1".into(),
+            context_id: "c-1".into(),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                message: None,
+                timestamp: None,
+            },
+            artifacts: Some(vec![text_artifact("the turn's answer")]),
+            history: None,
+            metadata: None,
+        };
+        a.apply_remote_task(sent.id, &t).await;
+        let r = a.store.exchange_receipt(sent.id).await.unwrap().unwrap();
+        assert_eq!(r.state, PeerMessageState::Replied);
+        assert_eq!(r.reply.as_deref(), Some("the turn's answer"));
+
+        a.network_send(owner, "sky/new", "hello", None, None, false)
+            .await
+            .unwrap();
+        let wire = tokio::time::timeout(Duration::from_secs(10), out.recv())
+            .await
+            .expect("it leaves")
+            .unwrap();
+        assert!(wire.full.is_some() && wire.context_id.is_some(), "full");
+    }
+
     /// 183 F4: a grant change keeps a held first message whose export is unchanged: it moves
     /// to the new grant epoch, so Allow once runs it after the old epoch ended; one whose
     /// export was taken away or redefined fails at once (`HOLD_CHANGED`), before any Allow.
@@ -6111,42 +6035,11 @@ mod tests {
         );
     }
 
-    /// 183 Z3-R2: a lowered cap or a changed allowlist reaches the contact's live inbox at
-    /// once (the reload pushes `ContactLimits`), not at its next request.
-    #[tokio::test]
-    async fn a_cap_or_allowlist_change_reaches_a_live_inbox_at_once() {
-        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
-        let binding = a
-            .store
-            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
-            .await
-            .unwrap();
-        let inbox = a
-            .handle_inbox(ContactInbox {
-                binding: binding.id,
-                agent: "theuth".into(),
-                origin: bob("research", tools::Risk::Mutating),
-            })
-            .await
-            .unwrap();
-        a.apply_contact_limits(ContactLimits {
-            contact: "bob".into(),
-            cap: tools::Risk::ReadOnly,
-            exports: vec![("research".into(), vec!["search_web".into()])],
-            full: Vec::new(),
-        })
-        .await;
-        assert_eq!(
-            a.network.inbox_limits.get(&inbox),
-            Some(&(tools::Risk::ReadOnly, vec!["search_web".to_owned()]))
-        );
-        assert_eq!(a.caps.get(&inbox), Some(&tools::Risk::ReadOnly));
-    }
-
     /// 183 Z3-R2 (M1): an inbox's limits come back at every actor start, before anything of
     /// it runs: after a restart (or a child result waking it) the engine has no admission
     /// yet, so the inbox is read-only with nothing but the reply until the contact writes;
-    /// an ordinary chat gets nothing.
+    /// an ordinary chat gets nothing. 190: theuth's inbox with no ceiling known (no roster
+    /// yet, none stored) runs capped from its first admission too.
     #[tokio::test]
     async fn an_inbox_is_capped_and_default_deny_at_every_actor_start() {
         let scratch = crate::TestDir::new("z3r2");
@@ -6166,10 +6059,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             a.network.inbox_limits.get(&inbox),
-            Some(&(
-                tools::Risk::Mutating,
-                vec!["search_web".to_owned(), "read_url".to_owned()]
-            ))
+            Some(&(tools::Risk::ReadOnly, Vec::new()))
         );
         a.store.close().await;
         drop(a);
@@ -6246,20 +6136,18 @@ mod tests {
         );
     }
 
-    /// 183 §7.6: an agent export's inbox is one root per (contact, export), titled for both,
-    /// capped at the contact's cap on every resolve (a lowered cap applies at once); its
-    /// first contact row carries `<contact_inbox/>`, later ones do not.
+    /// 183 §7.6: an agent export's inbox is one isolated root per (contact, export), titled
+    /// for both, reused on every resolve.
     #[tokio::test]
-    async fn a_contact_inbox_is_one_capped_root_reused_per_contact_and_export() {
+    async fn a_contact_inbox_is_one_root_reused_per_contact_and_export() {
         let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
         let binding = Uuid::now_v7();
-        let ask = |cap| ContactInbox {
+        let ask = |export: &str| ContactInbox {
             binding,
             agent: "theuth".into(),
-            origin: bob("research", cap),
+            origin: bob(export, tools::Risk::ReadOnly),
         };
-        let first = a.handle_inbox(ask(tools::Risk::Mutating)).await.unwrap();
-        assert_eq!(a.caps.get(&first), Some(&tools::Risk::Mutating));
+        let first = a.handle_inbox(ask("research")).await.unwrap();
         let row = a.store.session(first).await.unwrap().unwrap();
         assert_eq!(row.title, "bob · research");
         assert_eq!(
@@ -6267,54 +6155,10 @@ mod tests {
             super::super::PeerScope::Isolated,
             "an inbox reaches no other root"
         );
-        let again = a.handle_inbox(ask(tools::Risk::ReadOnly)).await.unwrap();
+        let again = a.handle_inbox(ask("research")).await.unwrap();
         assert_eq!(again, first, "the same contact and export reuse the inbox");
-        assert_eq!(
-            a.caps.get(&first),
-            Some(&tools::Risk::ReadOnly),
-            "lowered at once"
-        );
-        let other = a
-            .handle_inbox(ContactInbox {
-                binding,
-                agent: "theuth".into(),
-                origin: bob("ops", tools::Risk::ReadOnly),
-            })
-            .await
-            .unwrap();
+        let other = a.handle_inbox(ask("ops")).await.unwrap();
         assert_ne!(other, first, "another export, another inbox");
-
-        let scope = Uuid::now_v7();
-        a.network
-            .contact_scopes
-            .insert(scope, bob("research", tools::Risk::ReadOnly));
-        let record = |id| PeerRecord {
-            receipt: PeerReceipt {
-                id,
-                to: format!("session:{first}"),
-                state: PeerMessageState::Accepted,
-                reply_to: None,
-                reply: None,
-                task_id: None,
-                error: None,
-                answered_by: None,
-            },
-            from: format!("peer:{binding}"),
-            session: first,
-            text: "hi".into(),
-            created_at: Utc::now(),
-            request_scope: Some(scope),
-            contact_mode: None,
-        };
-        let mut frame = |r| match a.network_contact_frame(&r) {
-            Some(crate::loop_::ContactFrame::Inbox { first, .. }) => first,
-            other => panic!("an inbox frame, got {other:?}"),
-        };
-        assert!(
-            frame(record(Uuid::now_v7())),
-            "the first row carries the notice"
-        );
-        assert!(!frame(record(Uuid::now_v7())), "later rows do not");
     }
 
     /// 183 §7.7: `peer:<contact>/<export>` names the contact's route (the export rides on
@@ -6348,8 +6192,8 @@ mod tests {
     }
 
     /// 183 §7.6, W-25: an exported agent's inbox runs that agent: its identity block leads
-    /// the system prompt (not theuth's), the session starts on its model, and the stricter
-    /// of its `tools:` ceiling and the contact's cap holds. Another agent's inbox is its own.
+    /// the system prompt (not theuth's), the session starts on its model, and its `tools:`
+    /// ceiling holds (190: not the contact's cap). Another agent's inbox is its own.
     #[tokio::test]
     async fn an_agent_export_inbox_runs_the_exported_agents_persona_model_and_ceiling() {
         struct Roster;
@@ -6359,13 +6203,21 @@ mod tests {
                 None
             }
             async fn inbox(&self, agent: &str) -> Option<crate::InboxPersona> {
-                (agent == "research").then(|| crate::InboxPersona {
-                    identity: Some(
-                        "You are Research (`research`). Your charter:\nfind things".into(),
-                    ),
-                    model: Some("fake/research-model".into()),
-                    tools: Some(tools::Risk::ReadOnly),
-                })
+                match agent {
+                    "research" => Some(crate::InboxPersona {
+                        identity: Some(
+                            "You are Research (`research`). Your charter:\nfind things".into(),
+                        ),
+                        model: Some("fake/research-model".into()),
+                        tools: Some(tools::Risk::ReadOnly),
+                    }),
+                    "theuth" => Some(crate::InboxPersona {
+                        identity: None,
+                        model: None,
+                        tools: None,
+                    }),
+                    _ => None,
+                }
             }
         }
         let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
@@ -6388,7 +6240,7 @@ mod tests {
         assert_eq!(
             a.caps.get(&inbox),
             Some(&tools::Risk::ReadOnly),
-            "the agent's ceiling is stricter than the contact's mutating cap"
+            "the agent's ceiling"
         );
 
         let plain = a
@@ -6400,7 +6252,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(a.identity_of(plain).await, None, "theuth's own persona");
-        assert_eq!(a.caps.get(&plain), Some(&tools::Risk::Mutating));
+        assert_eq!(a.caps.get(&plain), None, "theuth has no ceiling");
     }
 
     fn full_bob(export: &str) -> super::super::ContactOrigin {
@@ -6502,16 +6354,6 @@ mod tests {
             "{:?}",
             refused.error
         );
-        // A cautious contact may not name a context it does not own.
-        let cautious = A2aPrincipal {
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
-            ..p.clone()
-        };
-        assert!(
-            a.admit_send(&cautious, &full_send("m-c", "other-ctx", &wire))
-                .await
-                .is_err()
-        );
     }
 
     /// 186 (D8): a contact's task whose turn the owner stopped reads "stopped by the owner",
@@ -6527,6 +6369,94 @@ mod tests {
         assert_eq!(now.status, A2aTaskStatus::Canceled);
         let why = snapshot(&now).status.message.unwrap();
         assert_eq!(why.text(), Some(STOPPED_BY_OWNER));
+    }
+
+    /// 190 (D1, D3, D5): a contact's message to a chat is delivered full whatever its
+    /// origin's mode says (`bob` carries `cautious`): no slot, a `full` row and no
+    /// `<contact_message>` turn, its task a receipt once consumed, in a context its sender
+    /// named. The owner then cancels the turn that took it (an interject): a later
+    /// `send_message(reply_to)` still goes back to the contact over the return route.
+    #[tokio::test]
+    async fn a_contact_message_is_full_and_answerable_after_its_turn_is_cancelled() {
+        struct Record(tokio::sync::mpsc::UnboundedSender<OutboundPeerMessage>);
+        #[async_trait]
+        impl PeerSender for Record {
+            async fn send(&self, o: OutboundPeerMessage) -> Result<RemoteReply, RemoteSendError> {
+                let _ = self.0.send(o);
+                Err(RemoteSendError::Unknown("recorded".into()))
+            }
+        }
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.communication.0.write().set_network(true, true);
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, busy, _) = exported_task(&mut a, &principal).await;
+        let (tx, mut out) = tokio::sync::mpsc::unbounded_channel();
+        a.network.peers.insert(
+            binding.id,
+            RemotePeer {
+                name: "bob".into(),
+                roots: Vec::new(),
+                sender: Some(Arc::new(Record(tx))),
+                generation: CancellationToken::new(),
+                contact: true,
+                full: vec!["research".into()],
+            },
+        );
+        let p = A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            ask_first: false,
+        };
+        let task = a
+            .admit_send(&p, &full_send("m-1", "bob-ctx", &FullWire::default()))
+            .await
+            .unwrap()
+            .task;
+        assert_eq!(task.status, A2aTaskStatus::Working, "{:?}", task.error);
+        assert_eq!(task.context_id, "bob-ctx", "the sender's conversation");
+        assert_eq!(
+            a.store
+                .active_a2a_task(session)
+                .await
+                .unwrap()
+                .map(|t| t.id),
+            Some(busy.id),
+            "it takes no slot"
+        );
+        let exchange = task.dedup_exchange.unwrap();
+        let record = a.store.exchange_record(exchange).await.unwrap().unwrap();
+        assert_eq!(record.contact_mode, Some(super::super::ShareMode::Full));
+        assert!(
+            a.network.full_inbound.contains_key(&exchange),
+            "delivered full (a peer message), not a capped <contact_message> turn"
+        );
+
+        let mut stop = finished(session, TurnId::new(), None, "");
+        stop.stop_reason = "cancelled".into();
+        a.network_turn_finished(&stop).await;
+        let done = a.full_consumed(exchange).await.unwrap();
+        assert_eq!(done.status, A2aTaskStatus::Completed);
+        assert!(full::task_is_receipt(&snapshot(&done)), "a receipt");
+
+        a.network_send(session, "bob", "the answer", None, Some(exchange), false)
+            .await
+            .unwrap();
+        let sent = tokio::time::timeout(Duration::from_secs(10), out.recv())
+            .await
+            .expect("the answer leaves")
+            .unwrap();
+        assert_eq!(sent.export.as_deref(), Some(RETURN_ROUTE));
+        assert_eq!(sent.context_id.as_deref(), Some("bob-ctx"));
+        assert_eq!(sent.full.and_then(|w| w.re).as_deref(), Some("m-1"));
+        assert_eq!(sent.record.text, "the answer");
     }
 
     /// 186 (D5): the return route admits a contact's answer only in a conversation this
@@ -6781,98 +6711,6 @@ mod tests {
             "unpaired"
         );
     }
-
-    /// 186 review 1: a cautious contact's message waiting behind the chat's running turn is
-    /// visible at once — a queued row with its place, and a task status the sender reads as a
-    /// note without failing — and the row goes when its turn starts. (A full message takes no
-    /// slot, so it never waits here: `a_full_contact_message_is_a_peer_message…`.)
-    #[tokio::test]
-    async fn a_queued_contact_message_is_visible_until_its_turn_starts() {
-        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
-        let binding = a
-            .store
-            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
-            .await
-            .unwrap();
-        let principal = format!("peer:{}", binding.id);
-        let (session, busy, _) = exported_task(&mut a, &principal).await;
-        let p = A2aPrincipal {
-            binding: binding.id,
-            export: "research".into(),
-            session,
-            route: CancellationToken::new(),
-            contact: Some(bob("research", tools::Risk::ReadOnly)),
-            ask_first: false,
-        };
-        let waiting = a.admit_send(&p, &send("m-q")).await.unwrap().task;
-        assert_eq!(waiting.status, A2aTaskStatus::Submitted);
-        let status = snapshot(&waiting).status.message.unwrap();
-        assert_eq!(status.text(), Some(QUEUED_NOTE), "the sender reads why");
-        let rows = a.contacts_queued().await;
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            (rows[0].contact.as_str(), rows[0].export.as_str()),
-            ("bob", "research")
-        );
-        assert_eq!((rows[0].session, rows[0].position), (session, 1));
-        assert_eq!(rows[0].preview, "do research");
-
-        // The sender's receipt carries the note while queued, and loses it once it runs.
-        let (from, to) = (format!("session:{session}"), principal.clone());
-        let sent = a
-            .store
-            .accept_exchange(&AcceptExchange {
-                sender: &from,
-                recipient: &to,
-                sender_session: Some(session),
-                recipient_session: None,
-                request_id: None,
-                reply_to: None,
-                request_scope: None,
-                generation: 1,
-                body: "hello",
-            })
-            .await
-            .unwrap();
-        a.network.outbound.insert(
-            sent.id,
-            Outbound {
-                binding: binding.id,
-                session,
-                generation: live(),
-                route: CancellationToken::new(),
-                task_id: None,
-                alias: "bob".into(),
-                contact: true,
-                ret: false,
-            },
-        );
-        a.apply_remote_task(sent.id, &snapshot(&waiting)).await;
-        let noted = a.store.exchange_receipt(sent.id).await.unwrap().unwrap();
-        assert_eq!(noted.state, PeerMessageState::Accepted, "not failed");
-        assert_eq!(noted.error.as_deref(), Some(QUEUED_NOTE));
-
-        // The running task ends: the queued one starts and its row goes.
-        let s = A2aScope {
-            principal: &principal,
-            export: "research",
-        };
-        let busy = a.store.a2a_task(s, &busy.id).await.unwrap().unwrap();
-        a.transition(&busy, A2aTaskStatus::Completed, None, Some("done"), None)
-            .await
-            .unwrap();
-        let _ = a.network.retire(busy.request_scope);
-        a.start_next(session).await;
-        let started = a.store.a2a_task(s, &waiting.id).await.unwrap().unwrap();
-        assert_eq!(started.status, A2aTaskStatus::Working);
-        assert!(
-            a.contacts_queued().await.is_empty(),
-            "its row goes as it starts"
-        );
-        a.apply_remote_task(sent.id, &snapshot(&started)).await;
-        let cleared = a.store.exchange_receipt(sent.id).await.unwrap().unwrap();
-        assert_eq!(cleared.error, None, "running: no note");
-    }
 }
 
 #[cfg(test)]
@@ -6959,6 +6797,42 @@ mod full_inbox_tests {
         );
     }
 
+    /// 190 (D1, D6): an agent export runs full under the agent's own ceiling whatever the
+    /// contact's origin says (an older holder's `cautious`, its cap and allowlist): no contact
+    /// limits, the row marked full, so an actor start keeps the ceiling.
+    #[tokio::test]
+    async fn an_agent_export_runs_full_whatever_the_origin_says() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let inbox = a
+            .handle_inbox(ContactInbox {
+                binding: binding.id,
+                agent: "research@sky-mac".into(),
+                origin: crate::communication::ContactOrigin {
+                    mode: crate::communication::ShareMode::Cautious,
+                    ..full_bob()
+                },
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            a.caps.get(&inbox),
+            Some(&tools::Risk::Mutating),
+            "the agent's ceiling, not the contact's read_only"
+        );
+        assert!(!a.network.is_inbox(inbox), "no allowlist");
+        assert!(a.store.a2a_inbox_full(inbox).await.unwrap().is_some());
+        forget(&mut a, inbox);
+        a.reinstall_contact_limits(inbox).await.unwrap();
+        assert_eq!(a.caps.get(&inbox), Some(&tools::Risk::Mutating));
+    }
+
     /// 186 review 1, 2 (D6): an agent inbox shared in full runs under the agent's own ceiling,
     /// read live: kept across a restart before the roster joins (the stored one), tightened
     /// on a running inbox when the roster reads a stricter one, capped while the agent is gone
@@ -7024,11 +6898,9 @@ mod full_inbox_tests {
         );
         assert!(!a.network.is_inbox(inbox));
 
-        // Downgraded (the reload's limits), then a restart: capped fail-closed.
+        // No longer granted (the reload's limits), then a restart: capped fail-closed.
         a.apply_contact_limits(ContactLimits {
             contact: "bob".into(),
-            cap: tools::Risk::ReadOnly,
-            exports: vec![("research".into(), vec!["search_web".into()])],
             full: Vec::new(),
         })
         .await;
@@ -7102,8 +6974,6 @@ mod full_inbox_tests {
         assert!(full_row(&a, inbox).await);
         a.apply_contact_limits(ContactLimits {
             contact: "bob".into(),
-            cap: tools::Risk::ReadOnly,
-            exports: Vec::new(),
             full: Vec::new(),
         })
         .await;

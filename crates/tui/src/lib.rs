@@ -398,11 +398,8 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         } => {
             let r: anyhow::Result<()> = async {
                 // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
-                // 186 (D8): as input: the engine keeps a contact's turn running and the text queues.
                 if interject {
-                    msg(api
-                        .cancel(session, None, Some(agent::CancelReason::Input))
-                        .await)?;
+                    msg(api.cancel(session, None, None).await)?;
                 }
                 msg(api
                     .steer(session, text.clone(), Some(id), files, None)

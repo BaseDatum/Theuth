@@ -2195,11 +2195,6 @@ impl Agents {
         self.ledger.chain(session)
     }
 
-    /// 186: the model turn owning `session`'s state.
-    pub(crate) fn turn_of(&self, session: SessionId) -> Option<TurnId> {
-        self.ledger.turn_of(session)
-    }
-
     /// 186: `id` is handed to a runner now (`false`: already queued in this process).
     pub(crate) fn claim_enqueued(&mut self, id: Uuid) -> bool {
         self.enqueued.insert(id)
@@ -4158,12 +4153,6 @@ impl Message<Cancel> for Agents {
 impl Agents {
     /// [`Cancel`].
     pub(crate) async fn cancel(&mut self, mut m: Cancel) {
-        // 186 (D8): the owner's input (interject, flush) never cancels a contact's turn; the
-        // input itself queues behind it. An explicit Stop still does.
-        if m.reason == crate::CancelReason::Input && self.contact_turn(m.session).await {
-            tracing::info!(session = %m.session, "cancel for input refused: a contact's turn is running");
-            return;
-        }
         // `Tree`: every running descendant, not one level (design doc 19 §2.3).
         // `Root` (the default): the target alone; its children keep working and
         // their later `TurnFinished` reaches the parent as when it is idle (133 §2).
@@ -14917,10 +14906,10 @@ pub(crate) mod tests {
         words.next().unwrap().parse().unwrap()
     }
 
-    /// 186 (D8): the owner's input (interject, flush) cancels the owner's own turn but never a
-    /// turn that took a contact's message, in either mode; an explicit Stop still does.
+    /// 190 (D5): the owner's input (interject, flush) cancels a turn that took a contact's
+    /// message exactly like the owner's own turn: no refusal, whatever the journal says.
     #[tokio::test]
-    async fn input_never_cancels_a_contact_turn_and_stop_does() {
+    async fn an_interject_cancels_a_contact_turn_like_any_turn() {
         let (_scratch, mut a) = agents_with(true).await;
         let (p, t) = in_turn(&mut a).await;
         let cancel = |reason| Cancel {
@@ -14932,26 +14921,15 @@ pub(crate) mod tests {
         let before = a.ledger.epoch(p);
         a.cancel(cancel(crate::CancelReason::Input)).await;
         assert!(a.ledger.epoch(p) > before, "the owner's own turn");
-        // An answer to ours (journaled `peer`) is no contact's turn; a full contact's message is.
-        a.store
-            .input_accepted(p, t, Some("answer"), "peer")
-            .await
-            .unwrap();
-        let before = a.ledger.epoch(p);
-        a.cancel(cancel(crate::CancelReason::Input)).await;
-        assert!(
-            a.ledger.epoch(p) > before,
-            "an answer's turn is the owner's to interject"
-        );
-        a.store
-            .input_accepted(p, t, Some("contact"), "contact_full")
-            .await
-            .unwrap();
-        let before = a.ledger.epoch(p);
-        a.cancel(cancel(crate::CancelReason::Input)).await;
-        assert_eq!(a.ledger.epoch(p), before, "a contact's turn keeps running");
-        a.cancel(cancel(crate::CancelReason::Stop)).await;
-        assert!(a.ledger.epoch(p) > before, "Stop stops it");
+        for source in ["peer", "contact_full", "contact", "contact_inbox"] {
+            a.store
+                .input_accepted(p, t, Some("contact"), source)
+                .await
+                .unwrap();
+            let before = a.ledger.epoch(p);
+            a.cancel(cancel(crate::CancelReason::Input)).await;
+            assert!(a.ledger.epoch(p) > before, "{source}: cancelled");
+        }
     }
 
     /// A certified root in turn `t` with its opener consumed.

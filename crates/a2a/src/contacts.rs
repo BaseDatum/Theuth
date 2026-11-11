@@ -1583,21 +1583,6 @@ fn contact_view(
         blocked: c.blocked,
         paired_ms: c.paired_ms,
         shared,
-        modes: peer
-            .map(|p| {
-                p.exports
-                    .iter()
-                    .map(|e| {
-                        let mode = if p.full.contains(e) {
-                            ShareMode::Full
-                        } else {
-                            ShareMode::Cautious
-                        };
-                        (e.clone(), mode)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
         full_capable,
     })
 }
@@ -1608,7 +1593,6 @@ pub(crate) fn drop_export(file: &mut PeersFile, name: &str) {
     for p in file.peers.values_mut() {
         p.exports.retain(|e| e != name);
         p.first_contact.remove(name);
-        p.modes.remove(name);
     }
 }
 
@@ -1662,7 +1646,7 @@ impl crate::Ctx {
     /// [`ContactUpdate`].
     pub(crate) async fn update_contact(&self, m: ContactUpdate) -> Result<Contact, String> {
         let ContactUpdate { name, patch } = m;
-        // 186 (D10): `full` only with a contact whose build collaborates in full.
+        // 190 (D9): a newly granted export needs a contact whose build collaborates in full.
         let capable = self
             .shared
             .read()
@@ -1670,36 +1654,22 @@ impl crate::Ctx {
             .contacts
             .get(&name)
             .is_some_and(|c| self.full_of(&c.eid));
+        // 190 (D2): every share is full; `cap` is inert (accepted and ignored).
+        if patch
+            .modes
+            .iter()
+            .flat_map(|m| m.values())
+            .any(|m| *m == ShareMode::Cautious)
+        {
+            return Err("cautious shares are gone: every share is full".into());
+        }
         let alias = self
             .edit(|file| {
                 let mut e = entry(file, &name)?.clone();
-                if let Some(cap) = patch.cap {
-                    if cap > tools::Risk::Mutating {
-                        return Err("a contact's cap is read_only or mutating".into());
-                    }
-                    e.cap = Some(cap);
-                }
                 let exports = patch.exports.clone().unwrap_or_else(|| e.exports.clone());
-                // 186 (D3): the choice is required: a newly granted export names its mode.
-                let modes = patch.modes.clone().unwrap_or_default();
-                if let Some(x) = exports
-                    .iter()
-                    .find(|x| !e.exports.contains(x) && !modes.contains_key(*x))
-                {
-                    return Err(format!(
-                        "choose full or cautious for {x}: every share picks its mode"
-                    ));
-                }
-                if let Some(x) = modes.keys().find(|x| !exports.contains(x)) {
-                    return Err(format!("{x} is not shared with {name}"));
-                }
-                // Only a new or upgraded full entry needs it: one already full may be sent back.
-                let upgraded = modes.iter().any(|(x, m)| {
-                    *m == ShareMode::Full && e.modes.get(x) != Some(&ShareMode::Full)
-                });
-                if !capable && upgraded {
+                if !capable && exports.iter().any(|x| !e.exports.contains(x)) {
                     let machine = e.machine.clone().unwrap_or_else(|| name.clone());
-                    return Err(format!("update {machine} to share in full"));
+                    return Err(format!("update {machine} to share"));
                 }
                 if patch.exports.is_some() {
                     // 183 F2: sharing counts as allowing: a newly granted export starts on
@@ -1709,14 +1679,6 @@ impl crate::Ctx {
                             .entry(x.clone())
                             .or_insert(FirstContact::Allow);
                     }
-                }
-                // 186 (D2): absent = cautious; only `full` is stored.
-                e.modes.retain(|x, _| exports.contains(x));
-                for (x, m) in modes {
-                    match m {
-                        ShareMode::Full => e.modes.insert(x, m),
-                        ShareMode::Cautious => e.modes.remove(&x),
-                    };
                 }
                 e.exports = exports;
                 if let Some(blocked) = patch.blocked {
@@ -1819,7 +1781,6 @@ impl crate::Ctx {
                 target: ExportTarget::Chat { session: e.session },
                 description: e.description.clone(),
                 paused,
-                tools: Some(e.tools.clone()),
             });
         }
         out.extend(live.staged.agents.values().map(|a| Export {
@@ -1829,7 +1790,6 @@ impl crate::Ctx {
             },
             description: a.description.clone(),
             paused: None,
-            tools: Some(a.tools.clone()),
         }));
         out.sort_by(|a, b| a.name.cmp(&b.name));
         if !gone.is_empty()
@@ -1864,48 +1824,16 @@ impl crate::Ctx {
             name,
             target,
             description,
-            tools,
             ..
         } = exp;
         crate::config::check_alias(&name)?;
-        if let Some(tools) = &tools {
-            if tools.len() > 32 {
-                return Err("tools: at most 32 names".into());
-            }
-            // 183 Z4: only what a contact may ever be granted (`a2a_grantable_tools`).
-            let refused: Vec<&str> = tools
-                .iter()
-                .map(String::as_str)
-                .filter(|t| !tools::contact_grantable(t))
-                .collect();
-            if !refused.is_empty() {
-                return Err(format!(
-                    "tools: a contact may not be granted {}",
-                    refused.join(", ")
-                ));
-            }
-        }
         let (session, agent) = match target {
             ExportTarget::Chat { session } => (Some(session), None),
             ExportTarget::Agent { agent } => (None, Some(agent)),
         };
+        // 190 (D8): a re-pointed export (another chat or agent) stays shared, in full; its
+        // grant epoch rotates (`Staged::same_grant`), so a held first message fails.
         self.edit(|file| {
-            // Absent: the export keeps its list (a re-put from an older client never
-            // resets it); a new export starts on the default.
-            let tools = tools
-                .or_else(|| file.exports.get(&name).map(|e| e.tools.clone()))
-                .unwrap_or_else(crate::config::default_contact_tools);
-            // 186 review 1: a re-pointed export (another chat or agent) is shared cautiously
-            // until its owner picks full again: full was chosen for what it published before.
-            let moved = file
-                .exports
-                .get(&name)
-                .is_some_and(|e| e.session != session || e.agent != agent);
-            if moved {
-                for p in file.peers.values_mut() {
-                    p.modes.remove(&name);
-                }
-            }
             file.exports.insert(
                 name.clone(),
                 ExportEntry {
@@ -1913,7 +1841,7 @@ impl crate::Ctx {
                     agent,
                     name: name.clone(),
                     description,
-                    tools,
+                    tools: Vec::new(),
                 },
             );
             Ok(())
@@ -2172,33 +2100,15 @@ impl crate::Ctx {
     /// 183 W-27, F3: the (contact, export) pairs whose first message waits for the owner,
     /// from the agent's holds and the contacts' facts. The one source of the Attention item,
     /// `contact_first_waiting`, the Communication window, the Contacts row and the strip.
+    /// 190: holds only (no queued rows).
     pub(crate) async fn first_waiting(&self) -> Vec<FirstWaiting> {
-        self.waiting(false).await
-    }
-
-    /// `contact_first_waiting` (186 review 1): the holds, then every contact message queued
-    /// behind its chat's running turn (`queued: true`, with its place in the queue).
-    pub(crate) async fn contact_waiting(&self) -> Vec<FirstWaiting> {
-        let mut rows = self.waiting(false).await;
-        rows.extend(self.waiting(true).await);
-        rows
-    }
-
-    async fn waiting(&self, queued: bool) -> Vec<FirstWaiting> {
         let Ok(agents) = self.agents() else {
             return Vec::new();
         };
-        let held = match queued {
-            false => agents
-                .ask(agent::communication::network::ContactsHeld)
-                .await
-                .ok(),
-            true => agents
-                .ask(agent::communication::network::ContactsQueued)
-                .await
-                .ok(),
-        };
-        let Some(held) = held else {
+        let Ok(held) = agents
+            .ask(agent::communication::network::ContactsHeld)
+            .await
+        else {
             return Vec::new();
         };
         let live = self.shared.read().clone();
@@ -2210,20 +2120,14 @@ impl crate::Ctx {
                     .get(&h.contact)
                     .map(|f| clip(&f.machine))
                     .unwrap_or_default(),
-                mode: live
-                    .staged
-                    .peers
-                    .get(&h.contact)
-                    .filter(|p| p.full.contains(&h.export))
-                    .map_or(ShareMode::Cautious, |_| ShareMode::Full),
                 contact: h.contact,
                 export: h.export,
                 session: h.session,
                 since_ms: h.since_ms,
                 waiting: h.waiting as u32,
                 preview: h.preview,
-                queued,
-                position: h.position,
+                queued: false,
+                position: 0,
             })
             .collect()
     }
@@ -2242,7 +2146,7 @@ impl Message<ContactsWaiting> for A2aActor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let c = self.ctx.clone();
-        off_mailbox(ctx, async move { c.contact_waiting().await })
+        off_mailbox(ctx, async move { c.first_waiting().await })
     }
 }
 
@@ -2312,7 +2216,6 @@ mod tests {
             },
             description: String::new(),
             paused: Some("chat archived".into()),
-            tools: Some(crate::config::default_contact_tools()),
         };
         let v = serde_json::to_value(&chat).unwrap();
         assert_eq!(v["target"]["kind"], "chat");

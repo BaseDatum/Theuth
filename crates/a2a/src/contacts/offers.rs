@@ -110,11 +110,8 @@ pub(crate) fn granted(staged: &Staged, alias: &str) -> Vec<ContactOffer> {
                 },
                 kind,
                 state,
-                mode: if peer.full.contains(name) {
-                    ShareMode::Full
-                } else {
-                    ShareMode::Cautious
-                },
+                // 190 (D1): every share is full; the card keeps its `full` tag (D9).
+                mode: ShareMode::Full,
             })
         })
         .collect()
