@@ -1396,15 +1396,16 @@ impl Agents {
         req: &SendMessageRequest,
     ) -> Result<Admitted, A2AError> {
         let generation = self.admit_principal(p).await?;
-        // 191 (D3, S4): a contact's message into an inbox session another machine of this mesh
-        // now owns is `NOT_OWNER` before anything is accepted here: the contact's client tries
-        // its next member. (A chat export owned elsewhere still takes W-40 until P3.)
-        if p.contact.is_some() && self.network.inboxes.contains(&p.session) {
-            match self.session_owner(p.session).await {
-                Ok(None) => {}
-                Ok(Some(owner)) => return Err(full::not_owner(&owner)),
-                Err(e) => return Err(internal(e)),
-            }
+        // 191 (D3, S4): a contact's message into a session that is not strictly this engine's
+        // (an unknown row, an empty owner, another machine's) is `NOT_OWNER` before anything is
+        // accepted here: the contact's client tries its next member. The one exception until
+        // P3: a chat export another engine of the mesh owns still takes W-40 (never an inbox).
+        if p.contact.is_some()
+            && let Err(e) = self.contact_owned(p.session).await
+            && (self.network.inboxes.contains(&p.session)
+                || self.remote_owner(p.session).await.is_none())
+        {
+            return Err(e);
         }
         if req
             .configuration
@@ -6960,12 +6961,15 @@ mod tests {
         );
     }
 
-    /// 191 (D3, S4): a contact's answer on the return route into a session another machine
-    /// of this mesh owns is `NOT_OWNER` (the contact's client tries its next member), and
-    /// nothing is accepted here.
+    /// 191 (D3, S4): a contact path serves only a session whose row exists here and whose
+    /// owner is this engine. On the return route another engine's session, an empty owner and
+    /// an unknown row are each `NOT_OWNER` (the contact's client tries its next member) with
+    /// nothing accepted; this engine's own is served.
     #[tokio::test]
-    async fn the_return_route_refuses_a_session_owned_elsewhere_with_not_owner() {
-        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+    async fn the_return_route_serves_only_a_session_strictly_owned_here() {
+        let scratch = crate::TestDir::new("agents");
+        let mut a =
+            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
         let binding = a
             .store
             .bind_peer("bob/proj", &contact_endpoint("bob-endpoint"))
@@ -6993,28 +6997,94 @@ mod tests {
                 mode: super::super::ShareMode::Full,
             }],
         )]));
-        a.store
-            .open_contact_thread(binding.id, "ctx-1", session, "proj", true)
+        for (ctx, s) in [("ctx-1", session), ("ctx-unknown", SessionId::new())] {
+            a.store
+                .open_contact_thread(binding.id, ctx, s, "proj", true)
+                .await
+                .unwrap();
+        }
+        let answer = |ctx: &str, id: &str| A2aReturn {
+            binding: binding.id,
+            route: CancellationToken::new(),
+            request: full_send(id, ctx, &FullWire::default()),
+        };
+        let peer = format!("peer:{}", binding.id);
+        for (owner, ctx, id) in [
+            (Some("other-engine"), "ctx-1", "r-other"),
+            (Some(""), "ctx-1", "r-empty"),
+            (None, "ctx-unknown", "r-unknown"),
+        ] {
+            if let Some(owner) = owner {
+                a.store.owned_elsewhere(session, owner).await;
+            }
+            let r = a.full_return(answer(ctx, id)).await;
+            assert_eq!(
+                r.err().map(|e| e.code),
+                Some(crate::communication::mesh::NOT_OWNER),
+                "{id}"
+            );
+            assert_eq!(
+                a.store.exchange_by_request_id(&peer, id).await.unwrap(),
+                None,
+                "{id}: nothing accepted here"
+            );
+        }
+        a.store.owned_elsewhere(session, "me-engine").await;
+        match a.full_return(answer("ctx-1", "r-mine")).await {
+            Ok(SendMessageResponse::Message(m)) => assert!(is_receipt(m.metadata.as_ref())),
+            other => panic!("served, got {other:?}"),
+        }
+    }
+
+    /// 191 (D3, S4): a contact's message into a chat whose owner is empty (not this engine's,
+    /// and no other engine to take it: no W-40) is `NOT_OWNER` at admission, before anything is
+    /// accepted; one held before the owner went empty is never delivered full.
+    #[tokio::test]
+    async fn a_contact_message_into_a_session_not_strictly_ours_is_never_delivered() {
+        let scratch = crate::TestDir::new("agents");
+        let mut a =
+            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
             .await
             .unwrap();
-        a.store.owned_elsewhere(session, "other-engine").await;
-        let r = a
-            .full_return(A2aReturn {
-                binding: binding.id,
-                route: CancellationToken::new(),
-                request: full_send("r-1", "ctx-1", &FullWire::default()),
-            })
-            .await;
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        let p = |ask_first| A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            ask_first,
+        };
+        let held = a.admit_send(&p(true), &send("m-1")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        let generation = a.admit_principal(&p(false)).await.unwrap();
+        let h = a
+            .network
+            .held
+            .remove(&("bob".into(), "research".into()))
+            .unwrap()
+            .remove(0);
+        h.watch.abort();
+        a.store.owned_elsewhere(session, "").await;
+        let refused = a.admit_send(&p(false), &send("m-2")).await.err();
         assert_eq!(
-            r.err().map(|e| e.code),
+            refused.map(|e| e.code),
             Some(crate::communication::mesh::NOT_OWNER)
         );
-        let peer = format!("peer:{}", binding.id);
-        assert_eq!(
-            a.store.exchange_by_request_id(&peer, "r-1").await.unwrap(),
-            None,
-            "nothing accepted here"
+        let task = a.start_or_queue(h.task, generation, h.route).await;
+        assert_eq!(task.status, A2aTaskStatus::Failed);
+        assert!(
+            task.error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("NOT_OWNER")),
+            "{:?}",
+            task.error
         );
+        assert!(a.network.full_inbound.is_empty(), "never delivered full");
     }
 }
 

@@ -120,13 +120,28 @@ fn gone() -> A2AError {
     A2AError::task_not_found("conversation")
 }
 
-/// 191 (D3, S4): the session is owned by another machine of this mesh: the contact's
-/// client tries its next member (P3 forwards instead). Never served here.
-pub(crate) fn not_owner(owner: &str) -> A2AError {
+/// 191 (D3, S4): `NOT_OWNER`: the session is not this engine's (another machine owns it, its
+/// owner is empty, or its row is unknown here). The contact's client tries its next member
+/// (P3 forwards instead). Never served here.
+pub(crate) fn not_owner(session: SessionId) -> A2AError {
     A2AError::new(
         crate::communication::mesh::NOT_OWNER,
-        format!("NOT_OWNER: the session is on another machine ({owner})"),
+        format!("NOT_OWNER: session {session} is not this machine's"),
     )
+}
+
+impl Agents {
+    /// 191 (D3, S4): the strict owner predicate of every contact path: the row exists and
+    /// this engine owns it (never "unknown or empty reads as local"). `Err`: a refusal.
+    pub(super) async fn contact_owned(&self, session: SessionId) -> Result<(), A2AError> {
+        match self.store.owned_here(session).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(not_owner(session)),
+            Err(e) => Err(A2AError::unsupported_operation(format!(
+                "the session's owner could not be read: {e:#}"
+            ))),
+        }
+    }
 }
 
 impl Agents {
@@ -279,6 +294,10 @@ impl Agents {
     /// 186 (D4): a full contact's task: it waits aside (`working`, the session's slot stays
     /// free), its message goes in like a mesh peer's, and it completes on consumption.
     pub(super) async fn deliver_full(&mut self, task: A2aTask, generation: Generation) -> A2aTask {
+        // 191 (D3, S4): never delivered into a session that is not strictly this engine's.
+        if let Err(e) = self.contact_owned(task.session).await {
+            return self.fail_task(&task, &e.message).await.unwrap_or(task);
+        }
         let Some(exchange) = task.dedup_exchange else {
             return self
                 .fail_task(&task, "task has no initiating exchange")
@@ -379,6 +398,11 @@ impl Agents {
         generation: Generation,
         chain: u32,
     ) -> Result<bool, String> {
+        // 191 (D3, S4): a contact's message never reaches a session that is not strictly this
+        // engine's (another's, an empty owner, an unknown row); an unreadable owner refuses too.
+        self.contact_owned(record.session)
+            .await
+            .map_err(|e| e.message)?;
         if let Some(q) = record.receipt.reply_to
             && let Ok(Some(mut orig)) = self.store.exchange_receipt(q).await
             && orig.state == PeerMessageState::Replied
@@ -400,13 +424,6 @@ impl Agents {
                 }
                 return Ok(true);
             }
-        }
-        // 191 (D3, S4): a contact's message never runs a session another machine owns; an
-        // owner that cannot be read refuses too.
-        match self.session_owner(record.session).await {
-            Ok(None) => {}
-            Ok(Some(owner)) => return Err(not_owner(&owner).message),
-            Err(e) => return Err(format!("the session's owner could not be read: {e:#}")),
         }
         record.from = from;
         // Unscoped: it joins a running turn as a steer, or opens one, like a mesh peer's.
@@ -665,11 +682,9 @@ impl Agents {
             .map_err(internal)?
             .filter(|t| t.outbound && now - t.last_ms <= THREAD_TTL.as_millis() as i64)
             .ok_or_else(gone)?;
-        // 191 (D3, S4): `~return` into a session another machine owns is `NOT_OWNER`; the
-        // contact tries the next member.
-        if let Some(owner) = self.session_owner(thread.session).await.map_err(internal)? {
-            return Err(not_owner(&owner));
-        }
+        // 191 (D3, S4): `~return` into a session that is not strictly this engine's is
+        // `NOT_OWNER`; the contact tries the next member.
+        self.contact_owned(thread.session).await?;
         let full = self.network.offers.get(&alias).is_some_and(|o| {
             o.iter()
                 .any(|o| o.name == thread.export && o.mode == ShareMode::Full)

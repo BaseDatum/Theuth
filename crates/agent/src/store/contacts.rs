@@ -444,6 +444,17 @@ impl Store {
         Ok(())
     }
 
+    /// 191 (D3, S4): `session`'s row exists here and this engine owns it, strictly: an
+    /// unknown row, an empty owner or another engine's is not ours (unlike [`super::Store`]'s
+    /// `here`, which reads empty as local). The predicate of every contact path.
+    pub async fn owned_here(&self, session: SessionId) -> anyhow::Result<bool> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT owner FROM sessions WHERE id = ?")
+            .bind(session.to_string())
+            .fetch_optional(&self.read)
+            .await?;
+        Ok(row.is_some_and(|(owner,)| owner == *self.me))
+    }
+
     /// Tests: `session` is owned by `owner`, as the session log applies another machine's
     /// take (off the capture connection).
     #[cfg(test)]
@@ -603,6 +614,38 @@ mod tests {
             (row.alias.as_deref(), row.blocked),
             (Some("robert"), Some(1))
         );
+    }
+
+    /// 191 (D3, S4): the contact paths' owner predicate is strict: this engine's row is ours;
+    /// an unknown row, an empty owner and another engine's are not (where `here` would read
+    /// the empty owner as local).
+    #[tokio::test]
+    async fn only_a_row_this_engine_owns_is_owned_here() {
+        let scratch = crate::TestDir::new("contacts");
+        let store = Store::open(
+            &scratch.0.join("sessions.sqlite"),
+            Some(mesh::EngineId("me-engine".into())),
+        )
+        .await
+        .unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        assert!(store.owned_here(id).await.unwrap());
+        assert!(
+            !store.owned_here(SessionId::new()).await.unwrap(),
+            "unknown"
+        );
+        store.owned_elsewhere(id, "").await;
+        assert!(
+            store.session(id).await.unwrap().unwrap().here,
+            "`here` reads it as local"
+        );
+        assert!(!store.owned_here(id).await.unwrap(), "empty");
+        store.owned_elsewhere(id, "other-engine").await;
+        assert!(!store.owned_here(id).await.unwrap(), "another engine's");
     }
 
     /// 191 (D4): every local inbox of a session this machine owns gets
