@@ -18,8 +18,13 @@ final class AnswerCardModel: ObservableObject {
     var onFollowUp: ((String) -> Void)?
     var onApprove: ((Decision) -> Void)?
     var onExpandChanged: ((Bool) -> Void)?
-    /// 189 F6: the markdown body's rendered height changed (it lays out after its async parse, not with `s`).
+    /// 189 F6 / 192: the expanded body's rendered height changed (markdown lays out after its async parse, a picture arrives
+    /// after its draw — neither with `s`).
     var onContentHeight: ((CGFloat) -> Void)?
+    /// 192 P3: the thinking view changed height on its own (its disclosure).
+    var onResize: (() -> Void)?
+    /// 192 P2: a picture was clicked — the card's Open action.
+    var onOpen: (() -> Void)?
 
     /// Header label (§10.3 / §12.2).
     var who: String { s.kind == .command ? "Command · theuth desk" : "theuth desk" }
@@ -102,11 +107,12 @@ struct AnswerCardView: View {
     @ViewBuilder private var collapsed: some View {
         if isCommand, let c = s.command { commandBody(c, compact: true) }
         else {
-            if !s.question.isEmpty, s.text.isEmpty { Text("“\(s.question)”").font(.body).foregroundColor(.tertiary).lineLimit(2) }
+            if !s.question.isEmpty, s.text.isEmpty, !s.thinking.live { Text("“\(s.question)”").font(.body).foregroundColor(.tertiary).lineLimit(2) }
+            if s.thinking.startedAt != nil { ThinkingView(thinking: s.thinking, onResize: model.onResize) } // 192 P3
             if !s.text.isEmpty {
                 Text(twoLines(s.text)).font(.body).foregroundColor(.primary).lineLimit(2).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else if !s.failed, s.phase == .thinking { ProgressView().controlSize(.small).padding(.vertical, 2) }
+            } else if !s.failed, s.phase == .thinking, !s.thinking.live { ProgressView().controlSize(.small).padding(.vertical, 2) }
             chips(s.tools, running: s.phase == .thinking)
         }
         approvalBox
@@ -128,14 +134,18 @@ struct AnswerCardView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 8) {
                 if let q = turn?.question, !q.isEmpty { Text("“\(q)”").font(.body).foregroundColor(.tertiary) }
+                if let t = turn?.thinking, t.startedAt != nil, turn?.command == nil { ThinkingView(thinking: t, onResize: model.onResize) } // 192 P3
                 if let c = turn?.command { commandBody(c, compact: false) }
                 else if let text = turn?.text, !text.isEmpty {
-                    AnswerMarkdown(text: s.markdownText(turn: s.current), onHeight: model.onContentHeight) // 189 F7: hold-back while streaming
+                    // 189 F7: hold-back while streaming; 192 P1: pictures between the markdown runs.
+                    AnswerBody(text: s.markdownText(turn: s.current), finished: s.current < s.turns.count - 1 || s.turnFinished,
+                               onOpen: model.onOpen)
                 }
-                else if s.phase == .thinking { ProgressView().controlSize(.small).padding(.vertical, 2) }
+                else if s.phase == .thinking, !(turn?.thinking.live ?? false) { ProgressView().controlSize(.small).padding(.vertical, 2) }
                 if let tools = turn?.tools, !tools.isEmpty, turn?.command == nil { chips(tools, running: s.phase == .thinking) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { h in model.onContentHeight?(h) })
         }
         .frame(maxHeight: AnswerCard.maxBodyHeight)
         approvalBox
@@ -318,15 +328,12 @@ struct AnswerMarkdown: View {
     /// `--probe-markdown` passes `false`: an off-screen window drives no fade, so the text would stay transparent.
     var animate = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// 189 F6: the rendered height, on every change — the card re-measures its panel with it.
-    var onHeight: ((CGFloat) -> Void)?
     @State private var document = RenderableDocument.empty
 
     var body: some View {
         let config = animate && !reduceMotion ? Self.animated : Self.still
         DocumentView(renderableDocument: document, config: config)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { h in onHeight?(h) })
             .task(id: text) {
                 let parsed = await Self.parse(text, config: config)
                 if !Task.isCancelled { document = parsed } // a newer snapshot's task replaced this one
@@ -388,6 +395,8 @@ struct AnswerMarkdown: View {
 @MainActor
 final class AnswerCard {
     static let width: CGFloat = 440
+    /// The body's width inside the 16 pt padding: markdown and pictures (192 P2 draws at it).
+    static let contentWidth: CGFloat = width - 32
     /// Expanded body: ≤ 70 % of the screen's visible height (§12.2), the rest scrolls inside.
     static var maxBodyHeight: CGFloat { (NSScreen.main?.visibleFrame.height ?? 800) * 0.7 - 140 }
     let model = AnswerCardModel()
@@ -422,14 +431,16 @@ final class AnswerCard {
         model.objectWillChange.receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.scheduleRelayout() }
             .store(in: &subs)
-        // 189 F6: the markdown lays out after its async parse, after the model change that started it: re-measure then too.
+        // 189 F6: the body lays out after the model change that started it (an async parse, a picture draw): re-measure then too.
         model.onContentHeight = { [weak self] h in
             self?.contentHeight = h
             self?.scheduleRelayout()
         }
+        model.onResize = { [weak self] in self?.scheduleRelayout() }
+        model.onOpen = { [weak self] in self?.onOpen?() }
     }
 
-    /// The markdown body's last rendered height (`--probe-markdown-stream` logs it); `nil` before the first.
+    /// The expanded body's last rendered height (`--probe-markdown-stream` logs it); `nil` before the first.
     private(set) var contentHeight: CGFloat?
     private var relayoutPending = false
 
@@ -517,15 +528,23 @@ final class AnswerCard {
 
     private func relayout() { if panel.isVisible { place() } }
 
+    /// 192: every frame change goes through the animator (0 s for a small change) — a plain `setFrame` during a running
+    /// 0.18 s resize was overwritten when that animation ended, leaving the panel at the earlier, transitional height
+    /// (`--probe-thinking`: 160 pt for 224 pt of content after the thinking collapsed).
     private func place() {
         hosting.layoutSubtreeIfNeeded()
         let size = NSSize(width: Self.width, height: max(84, hosting.fittingSize.height))
         let frame = fixedOrigin.map { NSRect(origin: $0, size: size) } ?? IslandArea.frame(size: size, on: anchor)
-        if panel.isVisible, abs(frame.height - panel.frame.height) > 40 {
-            NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.18; panel.animator().setFrame(frame, display: true) }
-        } else {
-            panel.setFrame(frame, display: true)
+        let from = targetFrame ?? panel.frame
+        targetFrame = frame
+        let animate = panel.isVisible && abs(frame.height - from.height) > 40
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = animate ? 0.18 : 0
+            panel.animator().setFrame(frame, display: true)
         }
         hosting.frame = panel.contentView?.bounds ?? .zero
     }
+
+    /// The frame `place()` last asked for (the panel's own frame lags it during an animation).
+    private var targetFrame: NSRect?
 }

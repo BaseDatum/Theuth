@@ -94,6 +94,10 @@ final class Store: ObservableObject {
             await client.subscribeEvents()
         }
         speaker.client = client
+        // 192 P2: the answer card's pictures come from the desktop app's renderer through the engine.
+        FenceSnapshots.shared.draw = { [client = client!] k in
+            try await client.fenceSnapshot(lang: k.lang, source: k.source, width: k.width, appearance: k.appearance, scale: k.scale)
+        }
     }
 
     // MARK: events

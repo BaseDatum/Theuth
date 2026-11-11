@@ -255,6 +255,13 @@ public extension RpcClient {
         try await call("load_session", [.init(session), .init(Int64?.none), .init(limit), .init(Bool?.none)])
     }
 
+    /// `fence_snapshot(lang, source, width, appearance, scale)` (192): the desktop app draws the fence to a PNG — 2–6 s,
+    /// at most ~20 s. `width` CSS px (the engine clamps 240…1200), `appearance` `dark`/`light`, `scale` 1…3. -32601 on an
+    /// engine without it.
+    func fenceSnapshot(lang: String, source: String, width: Int, appearance: String, scale: Double) async throws -> FenceSnapshotReply {
+        try await call("fence_snapshot", [.init(lang), .init(source), .init(width), .init(appearance), .init(scale)])
+    }
+
     func agentsList() async throws -> [AgentSummary] { try await call("agents_list") }
 
     func listActivity() async throws -> [AgentInfo] { try await call("list_activity") }

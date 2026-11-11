@@ -84,12 +84,20 @@ public struct AskRouter: Equatable, Sendable {
         case .textDelta(_, let text):
             r.text += text
             r.deltas += 1
+            if !text.isEmpty { r.thinking.end(now: now) } // 192 P3: the answer started
+        case .reasoningDelta(_, let text):
+            r.thinking.add(text, now: now)
+            r.reasoningDeltas += 1
+        case .reasoningDone(_, let ms):
+            r.thinking.done(ms: ms)
         case .turnStarted(_, let turnSeq, let text):
             // A new turn on the desk: its own `TurnFinished` is still to come.
             r.turnEnded = false
+            if r.text.isEmpty { r.thinking = Thinking() } // the turn we steered into ended its thinking; ours thinks anew
             if r.turnSeq == nil, let turnSeq, Self.same(text, r.question) { r.turnSeq = turnSeq }
         case .turnFinished(_, let stopReason):
             r.stopReason = stopReason
+            r.thinking.end(now: now)
             if let why = AskReply.terminalFailure(stopReason) {
                 r.failure = why
                 r.finished = true
@@ -100,6 +108,7 @@ public struct AskRouter: Equatable, Sendable {
             // The engine's live `AgentEvent::Error` (e.g. a missing API key): the turn will not answer.
             r.failure = AskReply.clip(message)
             r.finished = true
+            r.thinking.end(now: now)
         case .activity:
             reply = r
             return false
@@ -120,7 +129,7 @@ public struct AskRouter: Equatable, Sendable {
         defer { reply = r }
         guard let loaded else {
             guard r.turnEnded else { return false }
-            r.finish(text: nil)
+            r.finish(text: nil, now: now)
             return true
         }
         let pick = TranscriptPick.reply(in: loaded.history, question: r.question, turnSeq: r.turnSeq)
@@ -128,10 +137,11 @@ public struct AskRouter: Equatable, Sendable {
             r.turnEnded = false // the turn we saw end was the one we steered into; ours runs now
             guard r.text.isEmpty, pick.anchored, let t = pick.text else { return false }
             r.text = t
+            r.thinking.end(now: now)
             return true
         }
         guard r.turnEnded || trigger == .watchdog || (pick.anchored && pick.text != nil) else { return false }
-        r.finish(text: pick.text)
+        r.finish(text: pick.text, now: now)
         return true
     }
 
@@ -157,12 +167,17 @@ public enum ReplyEvent: Equatable, Sendable {
     /// timed_out · interrupted).
     case turnFinished(session: String, stopReason: String)
     case error(session: String, message: String)
+    /// 192 P3: `ReasoningDelta` (`crates/agent/src/lib.rs` `{session, turn, text}`).
+    case reasoningDelta(session: String, text: String)
+    /// 192 P3: `ReasoningDone` (`{session, turn, ms}`): ms from the first reasoning chunk to the call's first other event.
+    case reasoningDone(session: String, ms: UInt64)
     /// Any other event on a session: only re-arms the watchdog.
     case activity(session: String)
 
     public var session: String {
         switch self {
-        case .textDelta(let s, _), .turnStarted(let s, _, _), .turnFinished(let s, _), .error(let s, _), .activity(let s): return s
+        case .textDelta(let s, _), .turnStarted(let s, _, _), .turnFinished(let s, _), .error(let s, _), .activity(let s),
+             .reasoningDelta(let s, _), .reasoningDone(let s, _): return s
         }
     }
 }
@@ -198,6 +213,10 @@ public struct AskReply: Equatable, Sendable {
     public var turnEnded = false
     /// `TextDelta`s collected (189 D6 logs the first).
     public var deltas = 0
+    /// `ReasoningDelta`s collected (192 P4 logs the first).
+    public var reasoningDeltas = 0
+    /// 192 P3: the reasoning streamed so far; the card shows it while live, then "Thought for N s".
+    public var thinking = Thinking()
     /// The last desk event (or catch-up): the watchdog runs from here.
     public var lastEventAt = Date.distantPast
 
@@ -228,10 +247,11 @@ public struct AskReply: Equatable, Sendable {
     }
 
     /// The transcript's text replaces the streamed text (it is authoritative); no text anywhere is `noReply`.
-    mutating func finish(text transcript: String?) {
+    mutating func finish(text transcript: String?, now: Date) {
         if let t = transcript, !t.isEmpty { text = t }
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { failure = Self.noReply }
         finished = true
+        thinking.end(now: now)
     }
 
     /// 189 D3: the stop reasons that mean no reply is coming, as the failure they read; `nil` = a normal finish.
