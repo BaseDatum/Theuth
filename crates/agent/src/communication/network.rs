@@ -258,9 +258,9 @@ pub fn contact_eid(endpoint: &str) -> Option<&str> {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum OfferKind {
-    /// One of the contact's chats: one capped turn per message.
+    /// One of the contact's chats: our messages arrive there as a mesh peer's.
     Chat,
-    /// One of the contact's agents: a capped inbox.
+    /// One of the contact's agents: its inbox for us.
     Agent,
 }
 
@@ -1630,15 +1630,27 @@ impl Agents {
         route: CancellationToken,
     ) -> A2aTask {
         // 186 (D4): a contact's message takes no slot: it goes in as a mesh peer's at once.
-        // W-40 (D11): a chat another engine owns gets it there (that owner lowers it).
+        // W-40 (D11): a chat another engine owns gets it there (that owner lowers it). 190
+        // review 1: an owner that cannot be read is no local chat: the message is refused.
         if self
             .network
             .contact_scopes
             .contains_key(&task.request_scope)
-            && (self.network.inboxes.contains(&task.session)
-                || self.remote_owner(task.session).await.is_none())
         {
-            return self.deliver_full(task, generation).await;
+            let local = self.network.inboxes.contains(&task.session)
+                || match self.session_owner(task.session).await {
+                    Ok(owner) => owner.is_none(),
+                    Err(e) => {
+                        tracing::error!(task = %task.id, session = %task.session, "a2a: exported chat's owner unreadable, contact message refused: {e:#}");
+                        return self
+                            .fail_task(&task, "export unavailable: the chat could not be read")
+                            .await
+                            .unwrap_or(task);
+                    }
+                };
+            if local {
+                return self.deliver_full(task, generation).await;
+            }
         }
         match self.store.active_a2a_task(task.session).await {
             Ok(None) => {
@@ -3172,9 +3184,10 @@ impl Agents {
         .map_err(|e| format!("a2a: inbox cap: {e}"))
     }
 
-    /// 183 §7.6, Z3-R2: at every actor start of a session, before anything of it runs: a
-    /// contact's inbox gets its limits back (the last admission's, else fail-closed).
-    /// A store error is treated as an inbox (fail closed); limits not installed refuse the
+    /// 183 §7.6, Z3-R2, 186 (D6): at every actor start of a session, before anything of it
+    /// runs: a contact's inbox runs under its agent's ceiling when its row is marked full,
+    /// its binding is live and the ceiling is known; otherwise it is capped fail-closed. A
+    /// store error is treated as an inbox (fail closed); limits not installed refuse the
     /// start.
     pub(crate) async fn reinstall_contact_limits(&mut self, id: SessionId) -> Result<(), String> {
         match self.store.a2a_inbox_identity(id).await {
@@ -6457,6 +6470,51 @@ mod tests {
         assert_eq!(sent.context_id.as_deref(), Some("bob-ctx"));
         assert_eq!(sent.full.and_then(|w| w.re).as_deref(), Some("m-1"));
         assert_eq!(sent.record.text, "the answer");
+    }
+
+    /// 190 review 1: a contact's message whose chat row cannot be read (a store error) is
+    /// refused; it is never taken for a local chat and delivered uncapped.
+    #[tokio::test]
+    async fn a_contact_message_to_an_unreadable_chat_is_refused_not_delivered_full() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        let p = |ask_first| A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research", tools::Risk::ReadOnly)),
+            ask_first,
+        };
+        // Held first, so it reaches delivery only after the row broke.
+        let held = a.admit_send(&p(true), &send("m-1")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        let generation = a.admit_principal(&p(false)).await.unwrap();
+        let h = a
+            .network
+            .held
+            .remove(&("bob".into(), "research".into()))
+            .unwrap()
+            .remove(0);
+        h.watch.abort();
+        a.store.break_session_for_test(session).await;
+        assert!(
+            a.store.session(session).await.is_err(),
+            "the row no longer reads"
+        );
+        let task = a.start_or_queue(h.task, generation, h.route).await;
+        assert_eq!(task.status, A2aTaskStatus::Failed);
+        assert_eq!(
+            task.error.as_deref(),
+            Some("export unavailable: the chat could not be read")
+        );
+        assert!(a.network.full_inbound.is_empty(), "never delivered full");
     }
 
     /// 186 (D5): the return route admits a contact's answer only in a conversation this

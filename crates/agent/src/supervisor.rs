@@ -5937,8 +5937,18 @@ impl Agents {
     /// another engine (69 P); `None` for ours, unowned or unknown — today's
     /// local path. 183 W-40: also where a contact's message for an exported chat goes.
     pub(crate) async fn remote_owner(&self, session: SessionId) -> Option<String> {
-        let row = self.store.session(session).await.ok().flatten()?;
-        (!row.here && !row.owner.is_empty()).then_some(row.owner)
+        self.session_owner(session).await.ok().flatten()
+    }
+
+    /// [`Self::remote_owner`], a store error kept: a contact's message must not take an
+    /// unreadable row for a local chat (190 review 1).
+    pub(crate) async fn session_owner(&self, session: SessionId) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .store
+            .session(session)
+            .await?
+            .filter(|row| !row.here && !row.owner.is_empty())
+            .map(|row| row.owner))
     }
 
     /// The mesh transport, fetched once from the replica actor (tests inject it).

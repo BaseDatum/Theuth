@@ -2969,6 +2969,16 @@ impl Store {
         row.map(|r| r.summary(&self.me)).transpose()
     }
 
+    /// Tests: `id`'s row no longer reads ([`Self::session`] errs on its timestamp).
+    #[cfg(test)]
+    pub(crate) async fn break_session_for_test(&self, id: SessionId) {
+        sqlx::query("UPDATE sessions SET created_at = 'not a time' WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.write)
+            .await
+            .unwrap();
+    }
+
     /// Every session, pinned first, then most recently active first; advisor
     /// rows (125 §4.2) hidden.
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {

@@ -670,11 +670,11 @@ pub struct PeerDeliver {
     pub forwarder: Option<String>,
 }
 
-/// 186 (D1): how a contact share collaborates, chosen per grant (contact × export) when the
-/// share is made. `Full`: the contact's message arrives like a mesh peer's, the receiving
-/// agent replies with `send_message(reply_to)` any number of times and the chat's own tool
-/// policy applies. `Cautious`: one capped turn per message, the reply is the turn text (183).
-/// A grant with no recorded mode is `Cautious` (D2, fail closed).
+/// 186 (D1): how a contact share collaborates. 190: every share is `Full`: the contact's
+/// message arrives like a mesh peer's, the receiving agent replies with
+/// `send_message(reply_to)` any number of times and the chat's own tool policy applies.
+/// `Cautious` (183's one capped turn per message, the reply the turn text) is only read: from
+/// old rows, an older contact's card, and an older holder's W-40 envelope (absent = cautious).
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -689,7 +689,7 @@ pub enum ShareMode {
 }
 
 impl ShareMode {
-    /// The `discover_peers` tag: `full` | `cautious`.
+    /// The wire and card tag: `full` | `cautious`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Full => "full",

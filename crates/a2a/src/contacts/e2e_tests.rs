@@ -1044,12 +1044,6 @@ async fn paired(a: &Engine, b: &Engine) -> (String, String) {
     (a_alias, b_alias)
 }
 
-/// 190 (D9): a newly granted export needs the contact's card to advertise `EXT_FULL`: wait
-/// until `a` has read `b`'s.
-async fn capable(a: &Engine, b: &Engine) {
-    until("A read B's card", || a.ctx.full_of(&b.eid()).then_some(())).await;
-}
-
 /// 183 F1, F2: sharing an agent with a contact starts it on "Always allow" (an explicit "Ask
 /// first" is kept on a re-grant), the contact's engine hears of the grant and lists the
 /// export as its own `discover_peers` row (`peer:<contact>/<export>`, its description,
@@ -1061,7 +1055,6 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
     let a = engine("a", &lan, true, cfg(600)).await;
     let b = engine("b", &lan, true, cfg(600)).await;
     let (a_alias, b_alias) = paired(&a, &b).await;
-    capable(&a, &b).await;
     a.ctx
         .put_export(Export {
             name: "research".into(),
@@ -1222,7 +1215,6 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     let a = engine("a", &lan, true, cfg(600)).await;
     let b = engine("b", &lan, true, cfg(600)).await;
     let (a_alias, _) = paired(&a, &b).await;
-    capable(&a, &b).await;
     for name in ["research", "zeta"] {
         a.ctx
             .put_export(Export {
@@ -1445,9 +1437,10 @@ where
     panic!("timed out waiting for {what}");
 }
 
-/// 186 (D4, D5, D12), 190 (D2, D8, D9): a chat shared with a contact. `cautious` is refused,
-/// a newly granted export needs the contact's build, `full` is accepted and ignored. The
-/// contact's message is a peer row in the shared chat (not `<contact_message>`), its receipt
+/// 186 (D4, D5, D12), 190 (D2, D8, review 1): a chat shared with a contact. `cautious` is
+/// refused, `full` is accepted and ignored, and a share is never refused for the contact's
+/// version (its card unread or older). The contact's message is a peer row in the shared
+/// chat (not `<contact_message>`), its receipt
 /// reads consumed, the chat's `send_message(reply_to)` lands in the contact's originating
 /// session as `<message from=peer:…>` and settles its awaiting send; the two go on answering
 /// each other, several times each way, on one conversation. Unshared, an answer is refused
@@ -1501,26 +1494,18 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         })
     };
     // D2: `cautious` is refused.
-    until("A read B's card", || a.ctx.full_of(&b.eid()).then_some(())).await;
     let cautious = share(Some(ShareMode::Cautious)).await.unwrap_err();
     assert_eq!(cautious, "cautious shares are gone: every share is full");
-    // D9: a newly granted export needs a contact whose card collaborates in full.
+    // Review 1: a contact whose card does not (yet) collaborate in full is shared with all
+    // the same.
+    until("A read B's card", || a.ctx.full_of(&b.eid()).then_some(())).await;
     if let Some(c) = a.ctx.offers.lock().get_mut(&b.eid()) {
         c.full = false;
     }
-    let old = share(None).await.unwrap_err();
-    assert!(
-        old.starts_with("update ") && old.ends_with(" to share"),
-        "{old}"
-    );
-    a.ctx.refresh_offers(&b.eid()).await;
     let shared = share(None).await.unwrap();
-    assert!(shared.full_capable);
+    assert!(!shared.full_capable);
     assert_eq!(shared.exports, ["proj"]);
-    // `full` is accepted and ignored; a contact that lost the capability keeps its grant.
-    if let Some(c) = a.ctx.offers.lock().get_mut(&b.eid()) {
-        c.full = false;
-    }
+    // `full` is accepted and ignored.
     share(Some(ShareMode::Full)).await.unwrap();
     a.ctx.refresh_offers(&b.eid()).await;
     until("B sees proj shared in full", || {

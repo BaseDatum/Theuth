@@ -212,6 +212,30 @@ struct State {
     addr_error: Option<String>,
     /// The mode warning was logged.
     mode_warned: bool,
+    /// 190 (D10): this process tried the one-time notice.
+    notice_tried: bool,
+}
+
+/// 190 (D10): unless the marker `a2a/.190-full-notice` exists beside `peers.yaml`, log one
+/// INFO line per grant of `file` and write the marker (creating `a2a/`). A marker that cannot
+/// be written is a warning, never an error. Returns the lines logged.
+fn full_notice_once(data_dir: &std::path::Path, file: &PeersFile) -> Vec<String> {
+    let marker = data_dir.join(config::FULL_NOTICE);
+    if marker.exists() {
+        return Vec::new();
+    }
+    let lines = config::full_notice(file);
+    for line in &lines {
+        tracing::info!("{line}");
+    }
+    let wrote = marker
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&marker, b""));
+    if let Err(e) = wrote {
+        tracing::warn!("a2a: {}: {e}", marker.display());
+    }
+    lines
 }
 
 impl Ctx {
@@ -604,19 +628,9 @@ impl Ctx {
             }
         }
         // 190 (D10): once, at the first good load after the upgrade, every grant says it is
-        // full now; the marker sits beside `peers.yaml`, never in it.
-        let marker = self.rt.data_dir.join(config::FULL_NOTICE);
-        if !marker.exists() {
-            for line in config::full_notice(&file) {
-                tracing::info!("{line}");
-            }
-            let wrote = marker
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(&marker, b""));
-            if let Err(e) = wrote {
-                tracing::warn!("a2a: {}: {e}", marker.display());
-            }
+        // full now (tried once per process, so an unwritable marker never repeats it).
+        if !std::mem::replace(&mut self.state.lock().notice_tried, true) {
+            full_notice_once(&self.rt.data_dir, &file);
         }
         {
             let mut s = self.state.lock();
@@ -1113,6 +1127,52 @@ mod tests {
         assert_eq!(transition(true, true), Transition::Keep);
         assert_eq!(transition(false, true), Transition::Stop);
         assert_eq!(transition(false, false), Transition::Keep);
+    }
+
+    /// A 186-written file: `bob` holds `proj` (no `modes`).
+    fn granted_file() -> PeersFile {
+        let bob = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
+        serde_yaml::from_str(&format!(
+            "peers:\n  bob:\n    endpoint: {bob}\n    exports: [proj]\nexports:\n  proj: {{ session: \"00000000-0000-0000-0000-000000000003\", name: Proj }}\n"
+        ))
+        .unwrap()
+    }
+
+    const NOTICE: &str = "a2a: share proj to bob is full (cautious mode removed)";
+
+    /// 190 (D10): the notice runs once: the first load logs each grant and writes the
+    /// marker; a second load logs nothing.
+    #[test]
+    fn the_full_notice_logs_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("a2a")).unwrap();
+        assert_eq!(full_notice_once(dir.path(), &granted_file()), [NOTICE]);
+        assert!(dir.path().join(config::FULL_NOTICE).is_file());
+        assert!(full_notice_once(dir.path(), &granted_file()).is_empty());
+    }
+
+    /// 190 (D10): with no `a2a/` yet, the notice creates it beside `peers.yaml` and logs.
+    #[test]
+    fn the_full_notice_creates_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(full_notice_once(dir.path(), &granted_file()), [NOTICE]);
+        assert!(dir.path().join(config::FULL_NOTICE).is_file());
+    }
+
+    /// 190 (D10): a marker that cannot be written is only a warning: the lines are logged,
+    /// nothing panics, and the reload goes on (it is tried once per process).
+    #[cfg(unix)]
+    #[test]
+    fn an_unwritable_marker_warns_and_never_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let a2a = dir.path().join("a2a");
+        std::fs::create_dir(&a2a).unwrap();
+        std::fs::set_permissions(&a2a, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let lines = full_notice_once(dir.path(), &granted_file());
+        std::fs::set_permissions(&a2a, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(lines, [NOTICE]);
+        assert!(!dir.path().join(config::FULL_NOTICE).exists());
     }
 
     fn staged(peers: &[(&str, &str)]) -> Staged {

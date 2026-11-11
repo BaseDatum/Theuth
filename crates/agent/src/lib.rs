@@ -429,9 +429,9 @@ pub enum CancelScope {
     Tree,
 }
 
-/// 186 (D8): why a turn is cancelled. `Input`: the owner's message (interject, flush) —
-/// refused while the turn is a contact's, so the owner never cancels a contact turn by
-/// typing. `Stop` (the default): an explicit Stop.
+/// Why a turn is cancelled: `Input` (the owner's interject or flush) or `Stop` (the default,
+/// an explicit Stop). 190 (D5): accepted and ignored; either cancels any turn, a contact's
+/// included.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]

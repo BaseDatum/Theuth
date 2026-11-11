@@ -2028,12 +2028,12 @@ impl Store {
         .transpose()
     }
 
-    /// 183 Z3-R2: mark the contexts of `session` as a contact's inbox (its default-deny
-    /// limits come back at every actor start), speaking as `identity` (the exported agent's
-    /// persona at this admission, Z3-R3; `None`: the engine's own) for the exported agent
-    /// `agent` (bare roster name). 186 (D6): `full` = shared in full; `ceiling` the agent's
-    /// own `tools:` ceiling from a real persona (`Some(None)`: it has none), `None` = unknown
-    /// (kept as stored).
+    /// 183 Z3-R2: mark the contexts of `session` as a contact's inbox (its limits come back at
+    /// every actor start), speaking as `identity` (the exported agent's persona at this
+    /// admission, Z3-R3; `None`: the engine's own) for the exported agent `agent` (bare roster
+    /// name). 186 (D6), 190: `full` = may run uncapped under the agent's ceiling (`0`: capped
+    /// fail-closed); `ceiling` the agent's own `tools:` ceiling from a real persona
+    /// (`Some(None)`: it has none), `None` = unknown (kept as stored).
     pub async fn mark_a2a_inbox(
         &self,
         session: SessionId,

@@ -96,7 +96,7 @@ pub struct Contact {
     /// 183 F1: what the contact shares with us (its exports granted to this engine), from
     /// the card it last served us.
     pub shared: Vec<agent::communication::network::ContactOffer>,
-    /// 186 (D10): its card advertises [`EXT_FULL`]: a share with it may be `full`.
+    /// 186 (D10): its card advertises [`EXT_FULL`]. Shown only: a share never depends on it.
     pub full_capable: bool,
 }
 
@@ -210,14 +210,13 @@ pub struct NearbyAgent {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ExportTarget {
-    /// One of this machine's agents: a fresh capped inbox per (contact, export) (W-25).
-    // 190: a full share; the inbox runs under the agent's own `tools:` ceiling.
+    /// One of this machine's agents: an inbox per (contact, export) that runs under the
+    /// agent's own `tools:` ceiling (W-25).
     Agent {
         /// `<agent>@<engine>` desk root, or `theuth`.
         agent: String,
     },
-    /// One chat of any machine in the mesh: one capped turn per message (§7.10).
-    // 190: a full share; the contact's messages arrive as a mesh peer's.
+    /// One chat of any machine in the mesh: the contact's messages arrive as a mesh peer's.
     Chat {
         /// The exported session.
         session: SessionId,
@@ -1646,15 +1645,8 @@ impl crate::Ctx {
     /// [`ContactUpdate`].
     pub(crate) async fn update_contact(&self, m: ContactUpdate) -> Result<Contact, String> {
         let ContactUpdate { name, patch } = m;
-        // 190 (D9): a newly granted export needs a contact whose build collaborates in full.
-        let capable = self
-            .shared
-            .read()
-            .staged
-            .contacts
-            .get(&name)
-            .is_some_and(|c| self.full_of(&c.eid));
-        // 190 (D2): every share is full; `cap` is inert (accepted and ignored).
+        // 190 (D2): every share is full; `cap` is inert (accepted and ignored). Review 1: a
+        // share is never refused for the contact's version (no compatibility with older builds).
         if patch
             .modes
             .iter()
@@ -1667,10 +1659,6 @@ impl crate::Ctx {
             .edit(|file| {
                 let mut e = entry(file, &name)?.clone();
                 let exports = patch.exports.clone().unwrap_or_else(|| e.exports.clone());
-                if !capable && exports.iter().any(|x| !e.exports.contains(x)) {
-                    let machine = e.machine.clone().unwrap_or_else(|| name.clone());
-                    return Err(format!("update {machine} to share"));
-                }
                 if patch.exports.is_some() {
                     // 183 F2: sharing counts as allowing: a newly granted export starts on
                     // "Always allow"; a stored answer (Ask first included) is kept.
