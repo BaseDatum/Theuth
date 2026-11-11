@@ -1,7 +1,7 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { AudioLines, Bell, Bot, ChartColumn, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Mark } from '@/components/Mark'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
@@ -11,7 +11,6 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
-  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -25,24 +24,18 @@ import { AttentionBadge } from '@/components/hud/AttentionBadge'
 import { useCanRecord } from '@/components/meeting/MeetingList'
 import { settings } from '@/components/chat/slash'
 import { errorText } from '@/components/settings/shared'
-import { THEUTH } from '@/components/tasks/helpers'
-import { keys, useAgents } from '@/components/tasks/queries'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { sectionOf } from '@/lib/nav'
 import { canPopout, noteOpenMode, openPopout } from '@/lib/popout'
 import { label } from '@/lib/chord'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { subtrees } from '@/lib/session-tree'
 import { useShortcuts } from '@/lib/shortcuts'
 import * as talk from '@/lib/talk'
 import { useUpdate } from '@/lib/update'
 import { cn } from '@/lib/utils'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import { useSessionField } from '@/store/sessions'
-import { AgentTree } from './AgentTree'
+import { Desks } from './Desks'
 import { SearchTrigger } from './SearchTrigger'
-import { SessionSubagents } from './SessionItem'
 import { SessionList } from './SessionList'
 
 /** Injected by vite `define` from tauri.conf.json. */
@@ -50,98 +43,6 @@ declare const __APP_VERSION__: string
 
 /** 143 D2: the plus on the Note row — malachite (`--status-success-fg`); one token to swap for `text-project-nile` (olive). */
 export const NOTE_PLUS = 'text-success'
-
-/**
- * One row per active roster agent (not proposed, not invalid), theuth first, whether or not its desk session exists
- * yet: a row with a desk (`AgentSummary.desk`, roster-owned) opens it; one without asks the roster to open it first.
- * Pinning has nothing to do with this group. A desk's subagents (any depth, from `list_sessions`) hang under its row
- * like a chat row's tree — the same `AgentTree`, so the one list rule (live first, most recent next, `TREE_CAP` per
- * parent behind `Show more`) applies: the live ones always, the finished ones while the desk or one of them is open.
- */
-function Desks({ active }: { active: string | undefined }) {
-  const api = useApi()
-  const agents = useAgents().data ?? []
-  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
-  const subs = useMemo(() => subtrees(sessions), [sessions])
-  const desks = agents
-    .filter((a) => a.status !== 'proposed' && a.status !== 'invalid')
-    .map((a) => ({ id: a.desk, name: a.file.name, working: a.status === 'working' }))
-    .sort((x, y) => Number(y.name === THEUTH) - Number(x.name === THEUTH))
-  if (desks.length === 0) return null
-  return (
-    <>
-      <SidebarGroupLabel className="mt-2">
-        Desks
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="ml-auto"
-          aria-label="Broadcast to desks"
-          title="Broadcast to desks"
-          onClick={() => openBroadcastDialog({ preset: 'desks' })}
-        >
-          <Megaphone />
-        </Button>
-      </SidebarGroupLabel>
-      {desks.map((d) => (
-        <DeskRow key={d.name} {...d} subagents={d.id === null ? undefined : subs.get(d.id)} active={active} />
-      ))}
-    </>
-  )
-}
-
-/**
- * Opens the desk session (creating it when there is none yet); the dot is green while the roster says working or the
- * session has a turn in flight. Highlighted, with its whole tree shown, while the desk or any of its subagents is open.
- */
-function DeskRow({
-  id,
-  name,
-  working,
-  subagents,
-  active,
-}: {
-  id: string | null
-  name: string
-  working: boolean
-  subagents: readonly SessionSummary[] | undefined
-  active: string | undefined
-}) {
-  const api = useApi()
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
-  const running = useSessionField(id ?? '', 'running')
-  const open = useMutation({
-    mutationFn: () => api.desk_open(name),
-    onSuccess: (session) => {
-      void queryClient.invalidateQueries({ queryKey: keys.agents })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
-      void navigate({ to: '/c/$session', params: { session } })
-    },
-    onError: (e) => toast.error(errorText(e)),
-  })
-  const isActive = id !== null && (id === active || (subagents?.some((d) => d.id === active) ?? false))
-  const dot = <span className={cn('size-2 shrink-0 rounded-full', working || running ? 'bg-success' : 'bg-fg-tertiary/40')} aria-hidden />
-  return (
-    <SidebarMenuItem>
-      <SidebarMenuButton asChild isActive={isActive} className="h-9 rounded-[10px] px-2.5">
-        {id === null ? (
-          <button type="button" disabled={open.isPending} onClick={() => open.mutate()}>
-            {dot}
-            {name}
-          </button>
-        ) : (
-          <Link to="/c/$session" params={{ session: id }}>
-            {dot}
-            <SessionSubagents subagents={subagents} />
-            {name}
-          </Link>
-        )}
-      </SidebarMenuButton>
-      {id !== null && <AgentTree session={id} active={active} liveOnly={!isActive} />}
-    </SidebarMenuItem>
-  )
-}
 
 /**
  * ChatGPT's left rail: Chat, Talk, Note, Meeting, Attention, Agents, Library, Costs, the desks, the chat list, Settings; Search sits in
