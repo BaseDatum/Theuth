@@ -204,7 +204,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         {
             Pictures = store.Pictures,
             PictureWidth = () => ReplyContentWidth,
-            Scale = () => root.XamlRoot?.RasterizationScale ?? 1,
+            RasterScale = () => root.XamlRoot?.RasterizationScale ?? 1,
         };
         replyView.OpenRequested += OpenReply; // 192w P2: a picture (or its "open theuth" caption) opens the reply in theuth, like Ctrl+O
         AutomationProperties.SetAutomationId(replyView, "ask-reply");

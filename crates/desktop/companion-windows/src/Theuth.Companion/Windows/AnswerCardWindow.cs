@@ -640,7 +640,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         {
             Pictures = Pictures,
             PictureWidth = () => CardWidth - 28 - 14, // the card's 14 + 14 padding and the body scroll viewer's bar
-            Scale = () => host.XamlRoot?.RasterizationScale ?? 1,
+            RasterScale = () => host.XamlRoot?.RasterizationScale ?? 1,
         };
         view.OpenRequested += () =>
         {

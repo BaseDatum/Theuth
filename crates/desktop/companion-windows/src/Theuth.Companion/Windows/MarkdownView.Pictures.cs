@@ -23,8 +23,8 @@ internal sealed partial class MarkdownView
     /// <summary>The content width in effective pixels — what <c>fence_snapshot</c> is asked to draw at.</summary>
     public Func<double> PictureWidth { get; set; } = () => 400;
 
-    /// <summary>The XamlRoot's rasterization scale (1 until the window is on screen).</summary>
-    public Func<double> Scale { get; set; } = () => 1;
+    /// <summary>The XamlRoot's rasterization scale (1 until the window is on screen). Named so because <c>UIElement.Scale</c> is a vector.</summary>
+    public Func<double> RasterScale { get; set; } = () => 1;
 
     /// <summary>A picture or its "open theuth" caption was clicked: open the reply in theuth.</summary>
     public event Action? OpenRequested;
@@ -32,14 +32,21 @@ internal sealed partial class MarkdownView
     /// <summary>A picture's draw ended (a PNG or a fallback replaced "drawing…").</summary>
     public event Action? PictureChanged;
 
-    private sealed class PictureHost : Border
+    /// <summary>One element for the block's whole life; what it shows (the "drawing…" line, the image, the fallback) is its single child.</summary>
+    private sealed class PictureHost : StackPanel
     {
         public MdBlock.Picture? Block;
         public IDisposable? Watch;
+
+        public void Show(UIElement child)
+        {
+            Children.Clear();
+            Children.Add(child);
+        }
     }
 
     private PictureKey KeyFor(MdBlock.Picture p) =>
-        PictureKey.Of(p.Lang, p.Source, PictureWidth(), Theme.Resolve(theme()) == ElementTheme.Light ? "light" : "dark", Scale());
+        PictureKey.Of(p.Lang, p.Source, PictureWidth(), Theme.Resolve(theme()) == ElementTheme.Light ? "light" : "dark", RasterScale());
 
     private FrameworkElement BuildPicture(MdBlock.Picture p)
     {
@@ -56,12 +63,12 @@ internal sealed partial class MarkdownView
         host.Block = p;
         if (!p.Closed)
         {
-            host.Child = DrawingLine();
+            host.Show(DrawingLine());
             return;
         }
         if (Pictures is null)
         {
-            host.Child = FallbackOf(p);
+            host.Show(FallbackOf(p));
             return;
         }
         var key = KeyFor(p);
@@ -79,12 +86,12 @@ internal sealed partial class MarkdownView
     }
 
     private void Apply(PictureHost host, MdBlock.Picture p, PictureResult result) =>
-        host.Child = result.State switch
+        host.Show(result.State switch
         {
             PictureState.Ready => ImageOf(p, result),
             PictureState.Fallback => FallbackOf(p),
             _ => DrawingLine(),
-        };
+        });
 
     private void DisposeWatch(UIElement element)
     {
