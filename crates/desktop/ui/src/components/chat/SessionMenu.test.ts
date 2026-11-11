@@ -42,31 +42,32 @@ test('181 fix round: a paused agent’s tree, a desk and a harness session say w
 })
 
 test('183 §12.2 / mock panel 3: a remote session\'s ⋯ menu — settings on its owner, then Continue here and Move to', () => {
-  const rows = settingsRows({ owner: 'cloud-1', self: "Sky's MacBook", offline: false, approvals: { global: false, pin: true }, messaging: { effective: true }, model: 'Opus 5.5', effort: { value: null, options: ['low', 'high'] } })
+  const rows = settingsRows({ owner: 'cloud-1', self: "Sky's MacBook", offline: false, approvals: { global: false, pin: true }, messaging: { effective: true }, model: 'Opus 5.5', effort: 'high' })
   expect(rows.map((r) => r.label)).toEqual([
     'Settings for this session on cloud-1',
     'Approvals: Ask before risky tools',
     'Agent messaging',
-    'Model: Opus 5.5',
-    'Effort',
+    // 2026-11-11: the effort rides on the model row; the picker it opens carries the effort chips (no Effort › submenu).
+    'Model: Opus 5.5 · high',
     '',
     "Continue here (move to Sky's MacBook)",
     'Move to',
   ])
   expect(rows.find((r) => r.id === 'approvals')).toMatchObject({ value: 'on', disabled: false, options: [{ label: 'On' }, { label: 'Off' }, { label: 'cloud-1 default (off)' }] })
   expect(rows.find((r) => r.id === 'messaging')).toMatchObject({ checked: true, disabled: false })
-  expect(rows.find((r) => r.id === 'effort')).toMatchObject({ value: 'default', options: ['low', 'high'], disabled: false })
+  expect(rows.find((r) => r.id === 'model')).toMatchObject({ disabled: false })
+  expect(settingsRows({ self: 'mac', offline: false, model: 'Opus 5.5', effort: null }).find((r) => r.id === 'model')?.label).toBe('Model: Opus 5.5')
   expect(rows.find((r) => r.id === 'continue')).toMatchObject({ disabled: false })
   // §4.4 / edge 13: owner offline — the line says so and every setter greys (cached readers too); Continue here stays.
-  const off = settingsRows({ owner: 'cloud-1', self: 'mac', offline: true, approvals: { global: true, pin: true }, messaging: { effective: true }, model: 'm', effort: { value: 'high', options: ['high'] } })
+  const off = settingsRows({ owner: 'cloud-1', self: 'mac', offline: true, approvals: { global: true, pin: true }, messaging: { effective: true }, model: 'm', effort: 'high' })
   expect(off[1]).toEqual({ id: 'offline', label: 'cloud-1 is offline · Continue here' })
-  expect(off.filter((r) => 'disabled' in r && r.disabled).map((r) => r.id)).toEqual(['approvals', 'messaging', 'model', 'effort'])
+  expect(off.filter((r) => 'disabled' in r && r.disabled).map((r) => r.id)).toEqual(['approvals', 'messaging', 'model'])
   expect(off.find((r) => r.id === 'continue')).toMatchObject({ disabled: false })
 })
 
 test('183 §12.2: a session owned here gets the same settings, no header, and Continue here greyed', () => {
   const rows = settingsRows({ self: 'mac', offline: true, approvals: { global: true }, messaging: { effective: false }, model: 'm' })
-  expect(rows.map((r) => r.id)).toEqual(['approvals', 'messaging', 'model', 'effort', 'separator', 'continue', 'move'])
+  expect(rows.map((r) => r.id)).toEqual(['approvals', 'messaging', 'model', 'separator', 'continue', 'move'])
   expect(rows.find((r) => r.id === 'approvals')).toMatchObject({ value: 'default', disabled: false, options: [{}, {}, { label: 'Machine default (on)' }] })
   expect(rows.find((r) => r.id === 'continue')).toEqual({ id: 'continue', label: 'Continue here', disabled: true })
   // W-4 tri-state from the row's own pin (E183: `session` is the effective value, ancestors included).

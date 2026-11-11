@@ -1,6 +1,8 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronRight, Pause, Pencil, Play, Square, Trash2, X } from 'lucide-react'
 import { Fragment, useState } from 'react'
+import { useModels } from '@/components/agents/queries'
+import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
@@ -193,9 +195,10 @@ function Row({ field: f, draft, editing, busy, onOk, onEdit, onSave }: { field: 
   )
 }
 
-/** §4.3: one text input per leaf of the row, in the engine's grammar; Save sends `draft_edit` for every changed leaf. */
+/** §4.3: one text input per leaf of the row, in the engine's grammar (a `models.*` leaf is the standard model picker; empty = default); Save sends `draft_edit` for every changed leaf. */
 function Editor({ row, draft, busy, onSave }: { row: string; draft: DraftView; busy: boolean; onSave: (changes: Change[]) => Promise<void> }) {
   const leaves = LEAVES[row] ?? [row]
+  const models = useModels()
   const initial = Object.fromEntries(leaves.map((l) => [l, leafValue(draft.spec, l)]))
   const [values, setValues] = useState<Record<string, string>>(initial)
   const changes = leaves.filter((l) => values[l] !== initial[l]).map((l) => ({ field: l, value: values[l] ?? '' }))
@@ -212,7 +215,11 @@ function Editor({ row, draft, busy, onSave }: { row: string; draft: DraftView; b
           <label htmlFor={`leaf-${l}`} className="font-mono text-[11px] text-fg-tertiary">
             {l}
           </label>
-          <Input id={`leaf-${l}`} value={values[l] ?? ''} className="h-7 font-mono text-base md:text-xs" autoFocus={l === leaves[0]} onChange={(e) => setValues({ ...values, [l]: e.target.value })} />
+          {l.startsWith('models.') ? (
+            <ModelCombobox id={`leaf-${l}`} aria-label={l} size="sm" className="h-7 w-full text-xs" models={models.data ?? []} value={values[l] || null} none={{ label: 'Default' }} onChange={(id) => setValues({ ...values, [l]: id ?? '' })} />
+          ) : (
+            <Input id={`leaf-${l}`} value={values[l] ?? ''} className="h-7 font-mono text-base md:text-xs" autoFocus={l === leaves[0]} onChange={(e) => setValues({ ...values, [l]: e.target.value })} />
+          )}
         </Fragment>
       ))}
       <Button type="submit" size="xs" className="col-start-2 justify-self-start" disabled={busy || changes.length === 0}>
