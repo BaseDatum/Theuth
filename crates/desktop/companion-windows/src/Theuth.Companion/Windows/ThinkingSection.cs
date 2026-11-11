@@ -31,6 +31,7 @@ internal sealed class ThinkingSection : StackPanel
     private readonly ScrollViewer bodyScroll;
     private bool active;
     private bool followTail = true;
+    private double lastScrollable;
     private ThinkingView? last;
 
     public ThinkingSection(Func<ElementTheme> theme, bool expanded = false, double size = 11.5)
@@ -69,11 +70,18 @@ internal sealed class ThinkingSection : StackPanel
         {
             if (!active || !followTail) return;
             bodyScroll.UpdateLayout(); // the extent is measured after SizeChanged: scroll to where it ends now, not where it ended before this chunk
+            lastScrollable = bodyScroll.ScrollableHeight;
             bodyScroll.ChangeView(null, bodyScroll.ScrollableHeight, null, disableAnimation: true);
         };
         bodyScroll.ViewChanged += (_, e) =>
         {
-            if (!e.IsIntermediate) followTail = bodyScroll.VerticalOffset >= bodyScroll.ScrollableHeight - 12; // scrolled up: stop following
+            if (e.IsIntermediate) return;
+            if (Math.Abs(bodyScroll.ScrollableHeight - lastScrollable) > 0.5) // the text grew: not the user scrolling
+            {
+                lastScrollable = bodyScroll.ScrollableHeight;
+                return;
+            }
+            followTail = bodyScroll.VerticalOffset >= bodyScroll.ScrollableHeight - 12; // scrolled up: stop following
         };
         Children.Add(toggle);
         Children.Add(bodyScroll);

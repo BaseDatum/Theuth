@@ -66,6 +66,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private readonly StackPanel replyStack;
     private readonly ScrollViewer replyScroll;
     private bool followTail = true;
+    private double lastScrollable;
     private readonly Button speakingGlyph; // spoken replies: Segoe Fluent Volume (E767) while the reply is read aloud; click stops
     private readonly Rectangle holdBar;
     // 149 NATIVE: the system's theme brushes, read live for the root's actual theme (no palette, no startup snapshot).
@@ -229,7 +230,15 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         };
         replyScroll.ViewChanged += (_, e) =>
         {
-            if (!e.IsIntermediate) followTail = replyScroll.VerticalOffset >= replyScroll.ScrollableHeight - 24; // the user scrolled up: stop following
+            if (e.IsIntermediate) return;
+            // The content grew or shrank (a picture arrived, a block was added): the scroll viewer reports a changed view though the user did
+            // nothing — that must not stop the following. Only a view change over the same extent is the user scrolling.
+            if (Math.Abs(replyScroll.ScrollableHeight - lastScrollable) > 0.5)
+            {
+                lastScrollable = replyScroll.ScrollableHeight;
+                return;
+            }
+            followTail = replyScroll.VerticalOffset >= replyScroll.ScrollableHeight - 24; // the user scrolled up: stop following
         };
         speakingGlyph = new Button
         {
@@ -596,6 +605,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     {
         if (!followTail || replyScroll.Visibility != Visibility.Visible) return;
         replyScroll.UpdateLayout();
+        lastScrollable = replyScroll.ScrollableHeight;
         replyScroll.ChangeView(null, replyScroll.ScrollableHeight, null, disableAnimation: true);
     }
 
