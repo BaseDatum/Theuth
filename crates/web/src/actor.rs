@@ -27,6 +27,11 @@ pub type ProviderMetas = Arc<RwLock<Vec<ProviderMeta>>>;
 pub const NO_RENDERER: &str =
     "rendered fetch needs a rendering provider: scrape, browser, or firecrawl";
 
+/// Error text of a rendered page asked for outside the local-network grant (16 §5, amended
+/// 2026-11-11): a browser (or a self-hosted renderer) resolves and redirects on its own, so a
+/// restricted (capped) contact state gets none.
+pub const CONTACT_NO_RENDER: &str = "rendered pages aren't available to a restricted contact";
+
 /// The provider registry actor, registered as [`crate::provider::WEB_ACTOR`].
 #[derive(kameo::Actor)]
 pub struct WebActor {
@@ -129,6 +134,7 @@ impl WebActor {
         &self,
         url: url::Url,
         read: bool,
+        lan: bool,
         activity: Option<Activity>,
         tx: ReplySender<Result<Rendered, String>>,
     ) {
@@ -136,15 +142,26 @@ impl WebActor {
             tx.send(Err(NO_RENDERER.to_owned()));
             return;
         };
+        // 16 §5 (2026-11-11): without the grant only `scrape`'s read runs (its fetch tier keeps
+        // to the public lane, its browser rung refuses); a render, any other provider's read
+        // (a browser or a remote renderer), never.
+        if !lan && !(read && p.meta().name == "scrape") {
+            tx.send(Err(CONTACT_NO_RENDER.to_owned()));
+            return;
+        }
         let client = self.client.clone();
-        spawn_under(activity, async move {
-            let r = if read {
-                p.read(&client, &url).await
-            } else {
-                p.render(&client, &url).await
-            };
-            tx.send(r.map_err(|e| format!("{}: {e}", p.meta().name)));
-        });
+        // The grant rides into the detached work explicitly, like the activity.
+        spawn_under(
+            activity,
+            tools::egress::scope(lan, async move {
+                let r = if read {
+                    p.read(&client, &url).await
+                } else {
+                    p.render(&client, &url).await
+                };
+                tx.send(r.map_err(|e| format!("{}: {e}", p.meta().name)));
+            }),
+        );
     }
 }
 
@@ -188,16 +205,26 @@ pub struct Search {
 /// `ask` → `Result<Rendered, String>` through the browser of the `scrape`
 /// provider, else the first whose `meta().renders`; [`NO_RENDERER`] when
 /// none. Always a browser render (`read_url {rendered: true}`). Runs off the
-/// mailbox.
+/// mailbox, under `lan`; [`CONTACT_NO_RENDER`] without it.
 #[derive(Clone, Debug)]
-pub struct Render(pub url::Url);
+pub struct Render {
+    /// The page.
+    pub url: url::Url,
+    /// The caller's `tools::egress::lan()`, read in the caller's task.
+    pub lan: bool,
+}
 
 /// `ask` → `Result<Rendered, String>`: the page's real content the cheapest
 /// way the same provider `Render` would pick offers ([`Provider::read`]:
 /// scrape fetches first, browser only when the fetch is thin). What
-/// `search_web` reads hits with. Runs off the mailbox.
+/// `search_web` reads hits with. Runs off the mailbox, under `lan`.
 #[derive(Clone, Debug)]
-pub struct Read(pub url::Url);
+pub struct Read {
+    /// The page.
+    pub url: url::Url,
+    /// The caller's `tools::egress::lan()`, read in the caller's task.
+    pub lan: bool,
+}
 
 impl Message<RegisterProvider> for WebActor {
     type Reply = ();
@@ -267,12 +294,12 @@ impl Message<Render> for WebActor {
 
     async fn handle(
         &mut self,
-        Render(url): Render,
+        Render { url, lan }: Render,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         if let Some(tx) = tx {
-            self.page(url, false, None, tx);
+            self.page(url, false, lan, None, tx);
         }
         reply
     }
@@ -288,7 +315,7 @@ impl Message<Tracked<Render>> for WebActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         if let Some(tx) = tx {
-            self.page(m.message.0, false, m.activity, tx);
+            self.page(m.message.url, false, m.message.lan, m.activity, tx);
         }
         reply
     }
@@ -299,12 +326,12 @@ impl Message<Read> for WebActor {
 
     async fn handle(
         &mut self,
-        Read(url): Read,
+        Read { url, lan }: Read,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         if let Some(tx) = tx {
-            self.page(url, true, None, tx);
+            self.page(url, true, lan, None, tx);
         }
         reply
     }
@@ -320,7 +347,7 @@ impl Message<Tracked<Read>> for WebActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         if let Some(tx) = tx {
-            self.page(m.message.0, true, m.activity, tx);
+            self.page(m.message.url, true, m.message.lan, m.activity, tx);
         }
         reply
     }
@@ -535,7 +562,7 @@ mod tests {
         let asked = tokio::time::timeout(
             Duration::from_millis(50),
             actor.ask(Tracked {
-                message: Read(url),
+                message: Read { url, lan: true },
                 activity: Some(owner.clone()),
             }),
         )

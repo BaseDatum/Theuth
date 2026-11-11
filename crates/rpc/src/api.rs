@@ -2464,12 +2464,14 @@ pub trait Api {
         &self,
         settings: search_providers::SearchSettings,
     ) -> RpcResult<search_providers::SearchSettings>;
-    /// 188: `decision.enabled`, `a2a.enabled`, `computer.enabled` or `double.enabled`
-    /// as config.yaml holds it and as this engine started with it. Node-level, never
-    /// forwarded; any other key is `INVALID_PARAMS` naming the four.
+    /// 188: one [`ConfigFlagKey`] (`decision.enabled`, `a2a.enabled`, `computer.enabled`,
+    /// `double.enabled`, `web.allow_private_network`, `browser.allow_private_network`) as
+    /// config.yaml holds it and as this engine started with it. Node-level, never
+    /// forwarded; any other key is `INVALID_PARAMS` naming them.
     #[method(name = "config_flag_get")]
     fn config_flag_get(&self, key: ConfigFlagKey) -> RpcResult<ConfigFlag>;
-    /// 188: write only `<section>.enabled: <on>` into config.yaml (every other line,
+    /// 188: write only that one key (`<section>.enabled` or
+    /// `<section>.allow_private_network`) into config.yaml (every other line,
     /// comments included, untouched). Nothing changes live: the plugin keeps its boot
     /// state until theuth restarts, so the reply's `restart_required` says whether one is due.
     #[method(name = "config_flag_set")]
@@ -3116,8 +3118,10 @@ impl PendingPrompts {
     }
 }
 
-/// 188: the four `enabled` flags Settings had no write path for. Any other
-/// string fails to deserialize, an `INVALID_PARAMS` error listing these four.
+/// 188: the flags Settings had no write path for: four `<section>.enabled` and
+/// the two `allow_private_network` keys behind Network's "Local network
+/// access" (16 §5, amended 2026-11-11). Any other string fails to
+/// deserialize, an `INVALID_PARAMS` error listing these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum ConfigFlagKey {
@@ -3134,23 +3138,31 @@ pub enum ConfigFlagKey {
     /// `double_settings_set` needs the running scheduler, so it cannot turn it on.
     #[serde(rename = "double.enabled")]
     Double,
+    /// `web.allow_private_network`: the web tools reach the local network.
+    #[serde(rename = "web.allow_private_network")]
+    WebPrivateNetwork,
+    /// `browser.allow_private_network`: the browser reaches the local network.
+    #[serde(rename = "browser.allow_private_network")]
+    BrowserPrivateNetwork,
 }
 
 impl ConfigFlagKey {
-    /// The config.yaml section whose `enabled` this is.
-    fn section(self) -> &'static str {
+    /// The config.yaml `(section, key)` this flag is.
+    fn path(self) -> (&'static str, &'static str) {
         match self {
-            Self::Decision => "decision",
-            Self::A2a => "a2a",
-            Self::Computer => "computer",
-            Self::Double => "double",
+            Self::Decision => ("decision", "enabled"),
+            Self::A2a => ("a2a", "enabled"),
+            Self::Computer => ("computer", "enabled"),
+            Self::Double => ("double", "enabled"),
+            Self::WebPrivateNetwork => ("web", "allow_private_network"),
+            Self::BrowserPrivateNetwork => ("browser", "allow_private_network"),
         }
     }
 
     /// The flag in `config` as its plugin reads it at start: a missing or
     /// unreadable section is the section type's default.
     fn read(self, config: &figment::Figment) -> bool {
-        let s = self.section();
+        let (s, _) = self.path();
         match self {
             Self::Decision => {
                 let c: decision::DecisionConfig = config.extract_inner(s).unwrap_or_default();
@@ -3167,6 +3179,14 @@ impl ConfigFlagKey {
             Self::Double => {
                 let c: double::DoubleConfig = config.extract_inner(s).unwrap_or_default();
                 c.enabled
+            }
+            Self::WebPrivateNetwork => {
+                let c: web::WebConfig = config.extract_inner(s).unwrap_or_default();
+                c.allow_private_network
+            }
+            Self::BrowserPrivateNetwork => {
+                let c: browser::BrowserConfig = config.extract_inner(s).unwrap_or_default();
+                c.allow_private_network
             }
         }
     }
@@ -7032,11 +7052,15 @@ impl ApiServer for Server {
         args: document::ingest::SourceAddArgs,
     ) -> RpcResult<document::Source> {
         owner(ext)?;
+        // 16 §5 (2026-11-11): the authenticated owner may add a local-network URL.
         let r = nb_result(
-            document::ingest::source_add(
-                &documents()?,
-                args.clone(),
-                document::Principal::Owner { device: None },
+            tools::egress::scope(
+                true,
+                document::ingest::source_add(
+                    &documents()?,
+                    args.clone(),
+                    document::Principal::Owner { device: None },
+                ),
             )
             .await,
         );
@@ -7079,11 +7103,15 @@ impl ApiServer for Server {
         id: document::DocId,
     ) -> RpcResult<document::Source> {
         owner(ext)?;
+        // 16 §5 (2026-11-11): the authenticated owner refreshes under the owner's grant.
         let r = nb_result(
-            document::ingest::source_refresh(
-                &documents()?,
-                id.clone(),
-                document::Principal::Owner { device: None },
+            tools::egress::scope(
+                true,
+                document::ingest::source_refresh(
+                    &documents()?,
+                    id.clone(),
+                    document::Principal::Owner { device: None },
+                ),
             )
             .await,
         );
@@ -9298,13 +9326,9 @@ impl ApiServer for Server {
 
     fn config_flag_set(&self, key: ConfigFlagKey, on: bool) -> RpcResult<ConfigFlag> {
         let path = self.rt.data_dir.join("config.yaml");
-        runtime::write_config_value(
-            &path,
-            key.section(),
-            "enabled",
-            if on { "true" } else { "false" },
-        )
-        .map_err(|e| failed(format!("config.yaml: {e}")))?;
+        let (section, field) = key.path();
+        runtime::write_config_value(&path, section, field, if on { "true" } else { "false" })
+            .map_err(|e| failed(format!("config.yaml: {e}")))?;
         Ok(self.config_flag(key))
     }
 
@@ -11053,18 +11077,25 @@ mod tests {
 
     /// 188: `get` reports the file value, the boot value and their difference for each
     /// key; an absent key or section is that section's default (decision and computer
-    /// on, a2a off, double `DoubleConfig::default()`).
+    /// on, a2a off, double `DoubleConfig::default()`, both `allow_private_network` on).
     #[tokio::test]
     async fn config_flag_get_reports_file_boot_and_restart() {
         let flag = |key: &str, enabled: bool, running: bool| serde_json::json!({ "key": key, "enabled": enabled, "running": running, "restart_required": enabled != running });
         let boot = "decision:\n  enabled: false\na2a:\n  enabled: true\n";
-        let file =
-            "decision:\n  enabled: true\ncomputer:\n  enabled: false\ndouble:\n  enabled: true\n";
+        let file = "decision:\n  enabled: true\ncomputer:\n  enabled: false\ndouble:\n  enabled: true\nweb:\n  allow_private_network: false\n";
         for (key, want) in [
             ("decision.enabled", flag("decision.enabled", true, false)),
             ("a2a.enabled", flag("a2a.enabled", false, true)),
             ("computer.enabled", flag("computer.enabled", false, true)),
             ("double.enabled", flag("double.enabled", true, false)),
+            (
+                "web.allow_private_network",
+                flag("web.allow_private_network", false, true),
+            ),
+            (
+                "browser.allow_private_network",
+                flag("browser.allow_private_network", true, true),
+            ),
         ] {
             let (v, _dir) = config_flag_call(
                 boot,
@@ -11080,6 +11111,8 @@ mod tests {
             ("a2a.enabled", false),
             ("computer.enabled", true),
             ("double.enabled", double::DoubleConfig::default().enabled),
+            ("web.allow_private_network", true),
+            ("browser.allow_private_network", true),
         ] {
             let (v, _dir) =
                 config_flag_call("", None, "config_flag_get", &format!(r#"["{key}"]"#)).await;
@@ -11140,9 +11173,28 @@ mod tests {
             std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
             file.replace("enabled: false", "enabled: true")
         );
+
+        // 16 §5 (2026-11-11): a non-`enabled` key lands in its own section, beside the rest.
+        let file = "web:\n  max_redirects: 3  # mine\n";
+        let (v, dir) = config_flag_call(
+            "",
+            Some(file),
+            "config_flag_set",
+            r#"["web.allow_private_network", false]"#,
+        )
+        .await;
+        assert_eq!(
+            v["result"],
+            serde_json::json!({ "key": "web.allow_private_network", "enabled": false, "running": true, "restart_required": true }),
+            "{v}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
+            "web:\n  allow_private_network: false\n  max_redirects: 3  # mine\n"
+        );
     }
 
-    /// 188: only the four keys parse; anything else is `INVALID_PARAMS` naming them,
+    /// 188: only the known keys parse; anything else is `INVALID_PARAMS` naming them,
     /// and nothing is written.
     #[tokio::test]
     async fn config_flag_rejects_an_unknown_key() {
@@ -11158,6 +11210,8 @@ mod tests {
                 "a2a.enabled",
                 "computer.enabled",
                 "double.enabled",
+                "web.allow_private_network",
+                "browser.allow_private_network",
             ] {
                 assert!(text.contains(key), "{key} missing from {text}");
             }
@@ -12522,10 +12576,18 @@ mod tests {
             let (guest, _guard) = link::RpcPeer::open_guest([7; 32], [9; 32]);
             let params = r#"["mermaid","a",560,"dark",2]"#;
             let v = snapshot(&methods(&rt, guest), params).await.unwrap();
-            assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(UNAUTHORIZED)), "{v}");
+            assert_eq!(
+                v["error"]["code"].as_i64(),
+                Some(i64::from(UNAUTHORIZED)),
+                "{v}"
+            );
             let bare: jsonrpsee::Methods = Server::new(rt.clone()).into_rpc().into();
             let v = snapshot(&bare, params).await.unwrap();
-            assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(UNAUTHORIZED)), "{v}");
+            assert_eq!(
+                v["error"]["code"].as_i64(),
+                Some(i64::from(UNAUTHORIZED)),
+                "{v}"
+            );
             assert!(events.try_recv().is_err(), "no request published");
         }
     }

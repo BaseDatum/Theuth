@@ -517,6 +517,44 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   44 §0.6) beside `fetch`/`fetch_html`: same per-hop SSRF guard; non-2xx is
   `Ok`; 301/302/303 → GET, 307/308 keep method and body. `routes` replays
   learned routes through it.
+- **Amendment 2026-11-11: the local network is reachable by default.** The
+  guard was "not configurable off" and refused every non-global address, so
+  `http_request` to a LAN model server (`192.168.8.123:28499`) failed while
+  the browser (23 §0.8) already reached it. `web.allow_private_network`
+  (default `true`) now admits loopback, RFC 1918, CGNAT `100.64/10`, IPv6
+  ULA / link-local and the internal names (`localhost`, `.local`, `.lan`,
+  `.internal`, `.home.arpa`, `.intranet`, `.corp`), for IP literals, DNS
+  answers and every redirect hop; `false` is the old guard exactly. Always
+  refused: all of `169.254.0.0/16` and `fd00:ec2::/32` (every cloud's
+  metadata), `100.100.100.200`, `192.0.0.192`, `168.63.129.16`, their
+  IPv4-mapped / -translated / NAT64 spellings, `64:ff9b:1::/48`, `fec0::/10`,
+  the metadata names (`metadata`, `metadata.google.internal`,
+  `kubernetes.default*`), unspecified, broadcast, multicast, the
+  reserved/documentation/tunnel ranges, other schemes, credentials in URLs.
+  The `Fetcher` keeps its public-only clients and builds a second set whose
+  `GuardedResolver` admits private answers (DNS rebinding protection and
+  pooled connections never cross); a call uses it only inside
+  `tools::egress::scope(true, …)`. The registry installs that scope for
+  every tool body from `lan_allowed(session)`: `false` only in a restricted
+  (capped) contact state (`contact_scoped`, 183 Z3-R2: the fixed public-web
+  allowlist) and for a call a plugin marked without the grant (`SetNoLan`,
+  a notebook ingest job). A full-share contact turn or full inbox (190) runs
+  with the agent's own tools and ceiling, `read_file` and `shell` included,
+  so the LAN and the browser work there exactly as in the owner's turns
+  (Sky, 20:28: a per-tool rule there protects nothing). Work that leaves
+  the tool's task carries the grant explicitly: the `WebActor`'s `Read` /
+  `Render` messages (`lan`), a search's read tasks, a notebook source's
+  ingest jobs (the first adder's grant is kept per source; a refresh runs
+  under the refresher's unless that stored grant is `false`, pre-checking a
+  URL again; a card from before grants were kept follows its refresher).
+  Without the grant
+  there is no browser rung at all: `Render` and a non-`scrape` `Read` are
+  refused ("rendered pages aren't available to a restricted contact"), the
+  scrape engine never renders, and every `browser_*` tool refuses, since
+  obscura resolves, redirects and runs scripts itself. For everyone, a
+  guard refusal never falls back to obscura. Settings › Network › Local
+  network access writes this key and `browser.allow_private_network`
+  together; both apply at restart.
 
 ## 6. Config and credentials
 

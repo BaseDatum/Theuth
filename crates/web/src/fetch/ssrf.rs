@@ -1,6 +1,13 @@
 //! SSRF guard for `read_url` (design doc 16 §5): scheme / credential checks,
 //! a hostname denylist, IP-range classification, and DNS resolve-and-check.
 //!
+//! `private` (16 §5 as amended 2026-11-11) admits this machine's local
+//! network: loopback, RFC 1918, CGNAT, IPv6 ULA / link-local and the internal
+//! hostnames. Cloud metadata endpoints (all of `169.254.0.0/16`,
+//! `fd00:ec2::/32`, Oracle's, Azure's, Alibaba's), unspecified, broadcast,
+//! multicast and the reserved / documentation / site-local / tunnel ranges
+//! stay refused either way.
+//!
 //! [`check_url`] is the whole gate for callers that hand the URL to someone
 //! else (the rendered-fetch path). The fetcher itself runs [`check_static`]
 //! on every redirect hop and plugs [`GuardedResolver`] into its `reqwest`
@@ -19,12 +26,12 @@ use super::FetchError;
 /// # Errors
 /// [`FetchError::Rejected`] when the URL is malformed, uses a scheme other
 /// than http(s), carries credentials, names a denylisted host, or resolves to
-/// any non-global address.
-pub async fn check_url(raw: &str) -> Result<Url, FetchError> {
+/// an address [`is_blocked_ip`] refuses under `private`.
+pub async fn check_url(raw: &str, private: bool) -> Result<Url, FetchError> {
     let url = parse_absolute(raw)?;
-    check_static(&url, &[])?;
+    check_static(&url, &[], private)?;
     if let Some(Host::Domain(domain)) = url.host() {
-        resolve_checked(domain).await?;
+        resolve_checked(domain, private).await?;
     }
     Ok(url)
 }
@@ -43,7 +50,11 @@ pub(super) fn parse_absolute(raw: &str) -> Result<Url, FetchError> {
 ///
 /// `allow` is the test-only socket allowlist: an IP literal that would be
 /// blocked passes when its exact `ip:port` is listed (loopback wiremock).
-pub(super) fn check_static(url: &Url, allow: &[SocketAddr]) -> Result<(), FetchError> {
+pub(super) fn check_static(
+    url: &Url,
+    allow: &[SocketAddr],
+    private: bool,
+) -> Result<(), FetchError> {
     let scheme = url.scheme();
     if scheme != "http" && scheme != "https" {
         return Err(FetchError::Rejected(format!(
@@ -60,17 +71,22 @@ pub(super) fn check_static(url: &Url, allow: &[SocketAddr]) -> Result<(), FetchE
         .ok_or_else(|| FetchError::Rejected("URL missing host".into()))?;
     let port = url.port_or_known_default().unwrap_or(0);
     match host {
-        Host::Domain(domain) if is_blocked_hostname(domain) => Err(FetchError::Rejected(format!(
-            "hostname `{domain}` is not allowed"
-        ))),
+        Host::Domain(domain) if is_blocked_hostname(domain, private) => Err(FetchError::Rejected(
+            format!("hostname `{domain}` is not allowed"),
+        )),
         Host::Domain(_) => Ok(()),
-        Host::Ipv4(ip) => assert_ip_allowed(IpAddr::V4(ip), port, allow),
-        Host::Ipv6(ip) => assert_ip_allowed(IpAddr::V6(ip), port, allow),
+        Host::Ipv4(ip) => assert_ip_allowed(IpAddr::V4(ip), port, allow, private),
+        Host::Ipv6(ip) => assert_ip_allowed(IpAddr::V6(ip), port, allow, private),
     }
 }
 
-fn assert_ip_allowed(ip: IpAddr, port: u16, allow: &[SocketAddr]) -> Result<(), FetchError> {
-    if !is_blocked_ip(ip) || allow.contains(&SocketAddr::new(ip, port)) {
+fn assert_ip_allowed(
+    ip: IpAddr,
+    port: u16,
+    allow: &[SocketAddr],
+    private: bool,
+) -> Result<(), FetchError> {
+    if !is_blocked_ip(ip, private) || allow.contains(&SocketAddr::new(ip, port)) {
         return Ok(());
     }
     Err(FetchError::Rejected(format!(
@@ -78,35 +94,49 @@ fn assert_ip_allowed(ip: IpAddr, port: u16, allow: &[SocketAddr]) -> Result<(), 
     )))
 }
 
-/// Resolve `host` and require **every** returned address to be global.
-async fn resolve_checked(host: &str) -> Result<Vec<SocketAddr>, FetchError> {
+/// Resolve `host` and keep only the addresses [`is_blocked_ip`] clears ([`vet`]).
+async fn resolve_checked(host: &str, private: bool) -> Result<Vec<SocketAddr>, FetchError> {
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
         .await
         .map_err(|e| FetchError::Rejected(format!("DNS resolve failed for `{host}`: {e}")))?
         .collect();
-    if addrs.is_empty() {
+    vet(host, addrs, private)
+}
+
+/// The answers for `host` that pass [`is_blocked_ip`] under `private`, in order; refused only
+/// when none does. A dual-stack `.local` name whose A record is link-local (always blocked)
+/// still connects over its `fe80::` answer; the connector only ever gets vetted addresses.
+fn vet(host: &str, addrs: Vec<SocketAddr>, private: bool) -> Result<Vec<SocketAddr>, FetchError> {
+    let Some(first) = addrs.first().copied() else {
         return Err(FetchError::Rejected(format!(
             "DNS returned no addresses for `{host}`"
         )));
-    }
-    if let Some(bad) = addrs.iter().find(|a| is_blocked_ip(a.ip())) {
+    };
+    let ok: Vec<SocketAddr> = addrs
+        .into_iter()
+        .filter(|a| !is_blocked_ip(a.ip(), private))
+        .collect();
+    if ok.is_empty() {
         return Err(FetchError::Rejected(format!(
             "hostname `{host}` resolves to blocked address `{}`",
-            bad.ip()
+            first.ip()
         )));
     }
-    Ok(addrs)
+    Ok(ok)
 }
 
-/// `reqwest` DNS resolver that refuses non-global addresses, so the client can
-/// only ever connect to what [`is_blocked_ip`] cleared. IP literals never reach
-/// a resolver; [`check_static`] covers those.
-pub(super) struct GuardedResolver;
+/// `reqwest` DNS resolver that refuses what [`is_blocked_ip`] refuses under
+/// `private`, so the client can only ever connect to what the guard cleared.
+/// IP literals never reach a resolver; [`check_static`] covers those.
+pub(super) struct GuardedResolver {
+    pub(super) private: bool,
+}
 
 impl reqwest::dns::Resolve for GuardedResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let private = self.private;
         Box::pin(async move {
-            let addrs = resolve_checked(name.as_str()).await?;
+            let addrs = resolve_checked(name.as_str(), private).await?;
             Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
         })
     }
@@ -123,83 +153,127 @@ const INTERNAL_SUFFIXES: &[&str] = &[
     ".corp",
 ];
 
-/// Whether a hostname is clearly non-global without DNS: `localhost`,
-/// `*.localhost`, `*.local` (mDNS), `*.internal`, `*.lan`, `*.home.arpa`,
-/// `*.intranet`, `*.corp` (and each as a bare label), and common cloud
-/// metadata aliases.
+/// Cloud metadata and cluster-API aliases: refused even under `private`.
+const METADATA_HOSTS: &[&str] = &[
+    "metadata.google.internal",
+    "metadata",
+    "kubernetes.default",
+    "kubernetes.default.svc",
+    "kubernetes.default.svc.cluster.local",
+];
+
+/// Whether a hostname is refused without DNS: the cloud metadata aliases
+/// always; unless `private`, also `localhost`, `*.localhost`, `*.local`
+/// (mDNS), `*.internal`, `*.lan`, `*.home.arpa`, `*.intranet`, `*.corp` (and
+/// each as a bare label).
 #[must_use]
-pub fn is_blocked_hostname(host: &str) -> bool {
+pub fn is_blocked_hostname(host: &str, private: bool) -> bool {
     let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
     h.is_empty()
-        || h == "localhost"
-        || INTERNAL_SUFFIXES
-            .iter()
-            .any(|s| h.ends_with(s) || h == s[1..])
-        || matches!(
-            h.as_str(),
-            "metadata.google.internal"
-                | "metadata"
-                | "kubernetes.default"
-                | "kubernetes.default.svc"
-                | "kubernetes.default.svc.cluster.local"
-        )
+        || METADATA_HOSTS.contains(&h.as_str())
+        || (!private
+            && (h == "localhost"
+                || INTERNAL_SUFFIXES
+                    .iter()
+                    .any(|s| h.ends_with(s) || h == s[1..])))
 }
 
 /// Whether an IP must not be contacted.
 ///
-/// Loopback, RFC 1918, link-local (incl. `169.254.169.254`), CGNAT, multicast,
-/// unspecified, documentation and benchmarking ranges, reserved `240.0.0.0/4`,
-/// IPv6 ULA / link-local, and IPv4-mapped, -compatible or NAT64
-/// (`64:ff9b::/96`) IPv6 (classified as the embedded v4).
+/// Always: IPv4 link-local `169.254.0.0/16` (every cloud's metadata lives
+/// there: AWS, GCP, Azure IMDS, EKS Pod Identity, Scaleway, Tencent, …),
+/// `100.100.100.200` (Alibaba), `192.0.0.192` (Oracle), `168.63.129.16` (Azure
+/// WireServer), `fd00:ec2::/32` (AWS), unspecified and `0.0.0.0/8`, broadcast,
+/// multicast, documentation and benchmarking ranges, reserved `240.0.0.0/4`,
+/// site-local `fec0::/10`, local-use NAT64 `64:ff9b:1::/48`, 6to4 and Teredo.
+/// Unless `private`, also loopback, RFC 1918, CGNAT and IPv6 ULA / link-local.
+/// IPv4-mapped, -translated (`::ffff:0:0/96`), -compatible or NAT64
+/// (`64:ff9b::/96`) IPv6 is classified as the embedded v4.
 #[must_use]
-pub fn is_blocked_ip(ip: IpAddr) -> bool {
+pub fn is_blocked_ip(ip: IpAddr, private: bool) -> bool {
     match ip {
-        IpAddr::V4(v4) => is_blocked_ipv4(v4),
-        IpAddr::V6(v6) => is_blocked_ipv6(v6),
+        IpAddr::V4(v4) => is_blocked_ipv4(v4, private),
+        IpAddr::V6(v6) => is_blocked_ipv6(v6, private),
     }
 }
 
-fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
+fn is_blocked_ipv4(ip: Ipv4Addr, private: bool) -> bool {
     let o = ip.octets();
-    ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
+    let local = ip.is_loopback() || ip.is_private() || (o[0] == 100 && (64..128).contains(&o[1])); // CGNAT 100.64.0.0/10 (tailnets)
+    ip.is_link_local() // 169.254.0.0/16: the metadata endpoints
+        || matches!(o, [100, 100, 100, 200] | [192, 0, 0, 192] | [168, 63, 129, 16]) // metadata
+        || ip.is_unspecified()
         || ip.is_broadcast()
         || ip.is_multicast()
         || o[0] == 0 // 0.0.0.0/8
-        || (o[0] == 100 && (64..128).contains(&o[1])) // CGNAT 100.64.0.0/10
         || matches!((o[0], o[1], o[2]), (192, 0, 2) | (198, 51, 100) | (203, 0, 113)) // TEST-NET
         || (o[0] == 198 && (18..20).contains(&o[1])) // benchmarking 198.18.0.0/15
         || o[0] >= 240 // reserved 240.0.0.0/4 (incl. broadcast)
+        || (local && !private)
 }
 
-fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+fn is_blocked_ipv6(ip: Ipv6Addr, private: bool) -> bool {
     if let Some(v4) = ip.to_ipv4_mapped() {
-        return is_blocked_ipv4(v4);
+        return is_blocked_ipv4(v4, private);
     }
     // Deprecated IPv4-compatible `::x.x.x.x` (but not `::` / `::1`).
     if let Some(v4) = ip.to_ipv4()
         && !ip.is_loopback()
         && !ip.is_unspecified()
     {
-        return is_blocked_ipv4(v4);
+        return is_blocked_ipv4(v4, private);
     }
     let seg = ip.segments();
-    // NAT64 well-known prefix 64:ff9b::/96 carries an IPv4 address in the low 32 bits.
-    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-        return is_blocked_ipv4(Ipv4Addr::from(
-            (u32::from(seg[6]) << 16) | u32::from(seg[7]),
-        ));
+    // NAT64 well-known prefix 64:ff9b::/96 and IPv4-translated ::ffff:0:0/96 carry an IPv4
+    // address in the low 32 bits.
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] || seg[..6] == [0, 0, 0, 0, 0xffff, 0] {
+        return is_blocked_ipv4(
+            Ipv4Addr::from((u32::from(seg[6]) << 16) | u32::from(seg[7])),
+            private,
+        );
     }
-    ip.is_unspecified()
-        || ip.is_loopback()
+    let local = ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local();
+    (seg[0] == 0xfd00 && seg[1] == 0x0ec2) // AWS metadata fd00:ec2::/32
+        || (seg[0] & 0xffc0) == 0xfec0 // site-local fec0::/10
+        || seg[..3] == [0x64, 0xff9b, 0x0001] // local-use NAT64 64:ff9b:1::/48
+        || ip.is_unspecified()
         || ip.is_multicast()
-        || ip.is_unique_local()
-        || ip.is_unicast_link_local()
         || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation 2001:db8::/32
         // 183 Z3-R3: transition tunnels that reach an IPv4 address the checks above
         // never see: 6to4 2002::/16 and Teredo 2001::/32.
         || seg[0] == 0x2002
         || (seg[0] == 0x2001 && seg[1] == 0)
+        || (local && !private)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addrs(list: &[&str]) -> Vec<SocketAddr> {
+        list.iter()
+            .map(|a| SocketAddr::new(a.parse().unwrap(), 0))
+            .collect()
+    }
+
+    /// Blocked answers are dropped, the vetted rest kept in order; only a name with no
+    /// passing answer is refused (with the first blocked one named).
+    #[test]
+    fn only_vetted_answers_reach_the_connector() {
+        let both = addrs(&["169.254.7.7", "fe80::1"]);
+        assert_eq!(
+            vet("nas.local", both.clone(), true).unwrap(),
+            addrs(&["fe80::1"])
+        );
+        let err = vet("nas.local", both, false).unwrap_err().to_string();
+        assert!(err.contains("blocked address `169.254.7.7`"), "{err}");
+        let mixed = addrs(&["10.0.0.1", "93.184.216.34", "::1"]);
+        assert_eq!(
+            vet("rebind.example", mixed.clone(), false).unwrap(),
+            addrs(&["93.184.216.34"])
+        );
+        assert_eq!(vet("rebind.example", mixed.clone(), true).unwrap(), mixed);
+        assert!(vet("metadata.example", addrs(&["169.254.169.254"]), true).is_err());
+        assert!(vet("none.example", Vec::new(), true).is_err());
+    }
 }

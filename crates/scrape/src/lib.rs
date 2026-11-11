@@ -96,7 +96,8 @@ impl runtime::Plugin for ScrapePlugin {
             web_cfg.impersonate,
             web_cfg.header_ladder,
             Some(&web_cfg.accept_language),
-        );
+        )
+        .with_private_network(web_cfg.allow_private_network)?;
         let scrape = Arc::new(Scrape::new(fetcher, cfg).with_runtime(rt.clone()));
         let rt = rt.clone();
         tokio::spawn(async move {

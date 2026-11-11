@@ -61,6 +61,8 @@ pub struct ClientConfig {
     pub read_timeout: Duration,
     /// Body cap the caller enforces while draining `body`; carried for clients that can pre-cap.
     pub max_body: usize,
+    /// The guarded resolver admits the local network (16 §5, amended 2026-11-11).
+    pub private: bool,
 }
 
 /// Why a client could not be built or a request did not complete.
@@ -156,7 +158,9 @@ pub(super) fn reqwest_client(cfg: &ClientConfig) -> Result<reqwest::Client, Clie
         .timeout(cfg.read_timeout)
         .connect_timeout(cfg.connect_timeout)
         .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(GuardedResolver)
+        .dns_resolver(GuardedResolver {
+            private: cfg.private,
+        })
         .build()
         .map_err(|e| ClientError::Build(e.to_string()))
 }
@@ -233,7 +237,9 @@ impl WreqChromeClient {
             .timeout(cfg.read_timeout)
             .connect_timeout(cfg.connect_timeout)
             .redirect(wreq::redirect::Policy::none())
-            .dns_resolver(GuardedWreqResolver);
+            .dns_resolver(GuardedWreqResolver {
+                private: cfg.private,
+            });
         if !cfg.accept_language.is_empty() {
             let value = HeaderValue::from_str(&cfg.accept_language)
                 .map_err(|e| ClientError::Build(format!("accept_language: {e}")))?;
@@ -253,17 +259,22 @@ impl WreqChromeClient {
 /// `wreq` resolver hook over the crate's [`GuardedResolver`] (route A of
 /// R1-D1): every hostname resolves through the same guard as the `reqwest`
 /// kind; a refusal surfaces as [`FetchError::Rejected`] in the error chain.
-struct GuardedWreqResolver;
+struct GuardedWreqResolver {
+    private: bool,
+}
 
 impl wreq::dns::Resolve for GuardedWreqResolver {
     fn resolve(&self, name: wreq::dns::Name) -> wreq::dns::Resolving {
         let parsed = name.as_str().parse::<reqwest::dns::Name>();
+        let guard = GuardedResolver {
+            private: self.private,
+        };
         Box::pin(async move {
             let name = parsed.map_err(|e| {
                 Box::new(FetchError::Rejected(format!("invalid hostname: {e}")))
                     as Box<dyn std::error::Error + Send + Sync>
             })?;
-            reqwest::dns::Resolve::resolve(&GuardedResolver, name).await
+            reqwest::dns::Resolve::resolve(&guard, name).await
         })
     }
 }
@@ -326,6 +337,7 @@ mod tests {
             connect_timeout: Duration::from_secs(1),
             read_timeout: Duration::from_secs(1),
             max_body: 1,
+            private: false,
         };
         assert_eq!(
             build(ClientKind::WreqChrome, &cfg).unwrap().kind(),

@@ -489,13 +489,15 @@ impl runtime::Plugin for RoutesPlugin {
             tracing::info!("routes disabled by config");
             return Ok(());
         }
+        let web_cfg: web::WebConfig = rt.section("web").unwrap_or_default();
         let fetcher = Fetcher::new_with_timeouts(
             web::engines::USER_AGENT,
             cfg.max_body_bytes,
             web::WebConfig::default().max_redirects,
             Duration::from_millis(cfg.call_timeout_ms.max(1)),
             web::fetch::CONNECT_TIMEOUT,
-        )?;
+        )?
+        .with_private_network(web_cfg.allow_private_network)?;
         let routes = Arc::new(Routes::new(cfg, &rt.data_dir, fetcher));
         let sweeper = Arc::clone(&routes);
         let shutdown = rt.shutdown.clone();
