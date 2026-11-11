@@ -196,7 +196,7 @@ impl Agents {
                     ret: false,
                 }));
             }
-            // D12: a downgraded share's conversations end; its messages were answered by turns.
+            // D12: an export no longer shared with the contact ends its conversations.
             if !self
                 .network
                 .peers
@@ -204,7 +204,7 @@ impl Agents {
                 .is_some_and(|p| p.full.contains(&t.export))
             {
                 return Err(format!(
-                    "peer `{alias}`: {} is no longer shared in full; nothing was sent",
+                    "peer `{alias}`: {} is no longer shared; nothing was sent",
                     t.export
                 ));
             }
@@ -448,19 +448,6 @@ impl Agents {
         {
             tracing::warn!(task = %task.id, "a2a: full intake failure: {e:#}");
         }
-    }
-
-    /// 186 (D8): the session's running turn took a contact's incoming message (any mode; not an
-    /// answer to ours): the owner's input does not cancel it. From the turn's journal, so a
-    /// resumed turn keeps it; unsure counts as a contact's (the input still queues).
-    pub(crate) async fn contact_turn(&self, session: SessionId) -> bool {
-        let Some(turn) = self.turn_of(session) else {
-            return false;
-        };
-        self.store
-            .turn_took_contact(session, turn)
-            .await
-            .unwrap_or(true)
     }
 
     /// 186 review 2: the exported agent `agent` (bare roster name) as the roster reads it now.

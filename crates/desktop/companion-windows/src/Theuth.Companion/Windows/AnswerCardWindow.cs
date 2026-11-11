@@ -73,6 +73,9 @@ internal sealed record AnswerCardContent
     /// <summary>The status line pulses (thinking never looks frozen, §12.4).</summary>
     public bool Busy { get; init; }
 
+    /// <summary>192w P3: the model's reasoning — a live "Thinking" section in place of the bare spinner, then "Thought for N s"; null when none came.</summary>
+    public ThinkingView? Thinking { get; init; }
+
     public IReadOnlyList<ToolChip> Chips { get; init; } = Array.Empty<ToolChip>();
 
     public IReadOnlyList<CardStepRow> Steps { get; init; } = Array.Empty<CardStepRow>();
@@ -94,6 +97,9 @@ internal sealed record AnswerCardContent
 
     /// <summary>The speaker glyph (149s): our answer is being read aloud; a click stops it.</summary>
     public bool Speaking { get; init; }
+
+    /// <summary>189w D4: <see cref="Body"/> is still arriving — the markdown renderer shows the last block's unclosed marks as closed.</summary>
+    public bool Streaming { get; init; }
 
     /// <summary>"O open": the desk session (<c>theuth://c/&lt;desk&gt;</c>).</summary>
     public string? OpenUrl { get; init; }
@@ -131,6 +137,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     private readonly StackPanel content;
     private AnswerCardContent model = new();
     private ScreenMonitor? anchor;
+    private bool thinkingExpanded;
     private TextBox? followUp;
     private string followUpDraft = "";
     private string? material;
@@ -167,6 +174,9 @@ internal sealed partial class AnswerCardWindow : ToolWindow
 
     /// <summary>The one instance (created on first use on the UI thread).</summary>
     public static AnswerCardWindow Shared() => shared ??= new AnswerCardWindow();
+
+    /// <summary>192w P2: the pictures of the replies on screen (the Store's cache): every closed picture fence of the answer asks it for its PNG. Set once at startup.</summary>
+    public static PictureCache? Pictures { get; set; }
 
     /// <summary>The instance if one was created.</summary>
     public static AnswerCardWindow? Instance => shared;
@@ -207,6 +217,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     {
         Generation++;
         Owner = owner;
+        thinkingExpanded = false; // 192w: a new request starts with the thinking folded
         if (!keepPlace || anchor is null)
         {
             var all = ScreenMonitor.All();
@@ -360,6 +371,18 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         }
         if (c.Steps.Count > 0) content.Children.Add(Steps(c, theme));
         if (c.Approval is { } box) content.Children.Add(Approval(box, theme));
+        if (c.Thinking is { } thought)
+        {
+            // 192w P3: live → "Thinking" with ≈ 6 lines of the newest reasoning; folded → "Thought for N s ›" holding all of it.
+            var section = new ThinkingSection(() => theme, thinkingExpanded);
+            section.Toggled += open =>
+            {
+                thinkingExpanded = open;
+                Place();
+            };
+            section.Set(thought);
+            content.Children.Add(section);
+        }
         var bodyText = Expanded ? c.Body : (c.Collapsed.Length > 0 ? c.Collapsed : c.Body);
         if (bodyText.Length > 0)
         {
@@ -559,7 +582,8 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     private FrameworkElement Status(AnswerCardContent c, ElementTheme theme)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        if (c.Busy) row.Children.Add(new ProgressRing { IsActive = true, Width = 12, Height = 12, MinWidth = 12, MinHeight = 12 });
+        // 192w P3: while the reasoning text is on screen it is the sign of life — no bare spinner next to it.
+        if (c.Busy && c.Thinking is not { Active: true }) row.Children.Add(new ProgressRing { IsActive = true, Width = 12, Height = 12, MinWidth = 12, MinHeight = 12 });
         string key = c.Tone switch
         {
             CardTone.Failed => NativeLook.Critical,
@@ -604,75 +628,26 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         return row;
     }
 
-    /// <summary>The markdown blocks as TextBlocks: headings, paragraphs with inline marks, bullets, fenced code (monospace, scrolls sideways).</summary>
+    /// <summary>
+    /// 189w D4: the markdown body through the shared <see cref="MarkdownView"/> (headings, nested bullets, fenced code, table rows, paragraphs
+    /// with inline marks) — the same renderer and parser as the Ask bar's reply. This window redraws its whole content on every
+    /// <see cref="Present"/>, so each chunk builds the view afresh; <see cref="AnswerCardContent.Streaming"/> closes the marks of the
+    /// last block that has not closed yet.
+    /// </summary>
     private FrameworkElement Markdown(string markdown, ElementTheme theme)
     {
-        var panel = new StackPanel { Spacing = 6 };
-        foreach (var block in AnswerMarkdown.Parse(markdown))
+        var view = new MarkdownView(() => theme, 13.5)
         {
-            switch (block)
-            {
-                case MdBlock.Heading h:
-                    panel.Children.Add(Inlines(h.Inlines, h.Level <= 2 ? 15 : 14, FontWeights.SemiBold, theme));
-                    break;
-                case MdBlock.Paragraph p:
-                    panel.Children.Add(Inlines(p.Inlines, 13.5, FontWeights.Normal, theme));
-                    break;
-                case MdBlock.Bullet b:
-                {
-                    var g = new Grid { ColumnSpacing = 6, Margin = new Thickness(6, 0, 0, 0) };
-                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    g.Children.Add(Text(b.Numbered ? $"{b.Number}." : "•", 13.5, NativeLook.TextSecondary));
-                    var t = Inlines(b.Inlines, 13.5, FontWeights.Normal, theme);
-                    Grid.SetColumn(t, 1);
-                    g.Children.Add(t);
-                    panel.Children.Add(g);
-                    break;
-                }
-                case MdBlock.Code code:
-                {
-                    var t = new TextBlock { Text = code.Text, FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 12.5, IsTextSelectionEnabled = true, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) };
-                    panel.Children.Add(new Border
-                    {
-                        Background = Theme.Brush(NativeLook.ControlFill, theme),
-                        CornerRadius = CardChrome.ControlRadius,
-                        Padding = new Thickness(8, 6, 8, 6),
-                        Child = new ScrollViewer { Content = t, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Enabled },
-                    });
-                    break;
-                }
-            }
-        }
-        return panel;
-    }
-
-    private TextBlock Inlines(IReadOnlyList<MdInline> inlines, double size, global::Windows.UI.Text.FontWeight weight, ElementTheme theme)
-    {
-        var t = new TextBlock { FontSize = size, FontWeight = weight, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) };
-        foreach (var i in inlines)
+            Pictures = Pictures,
+            PictureWidth = () => CardWidth - 28 - 14, // the card's 14 + 14 padding and the body scroll viewer's bar
+            RasterScale = () => host.XamlRoot?.RasterizationScale ?? 1,
+        };
+        view.OpenRequested += () =>
         {
-            switch (i)
-            {
-                case MdInline.Text x: t.Inlines.Add(new Run { Text = x.Value }); break;
-                case MdInline.Bold x: t.Inlines.Add(new Run { Text = x.Value, FontWeight = FontWeights.SemiBold }); break;
-                case MdInline.Italic x: t.Inlines.Add(new Run { Text = x.Value, FontStyle = global::Windows.UI.Text.FontStyle.Italic }); break;
-                case MdInline.Code x: t.Inlines.Add(new Run { Text = x.Value, FontFamily = new FontFamily("Cascadia Mono, Consolas") }); break;
-                case MdInline.Link x:
-                {
-                    if (Uri.TryCreate(x.Url, UriKind.Absolute, out var uri))
-                    {
-                        var link = new Hyperlink();
-                        link.Inlines.Add(new Run { Text = x.Value });
-                        link.Click += (_, _) => _ = Links.Open(uri);
-                        t.Inlines.Add(link);
-                    }
-                    else t.Inlines.Add(new Run { Text = x.Value });
-                    break;
-                }
-            }
-        }
-        return t;
+            if (model.OpenUrl is { } url) _ = Links.Open(new Uri(url)); // a picture opens the reply in theuth, as the tool chips do
+        };
+        view.Set(markdown, model.Streaming);
+        return view;
     }
 
     private static TextBlock Text(string s, double size, string key, global::Windows.UI.Text.FontWeight? weight = null)

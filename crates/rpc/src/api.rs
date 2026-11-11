@@ -265,8 +265,8 @@ pub trait Api {
     #[method(name = "list_queued", with_extensions)]
     async fn list_queued(&self, session: SessionId) -> RpcResult<Vec<QueuedInput>>;
     /// Abort the in-flight turn; `scope` `tree` also stops every running descendant (133 §4; default `root`).
-    /// 186 (D8): `reason` `input` (the owner's interject or flush) is refused while the turn is a
-    /// contact's; `stop` (the default) is an explicit Stop.
+    /// 190 (D5): `reason` is accepted and ignored: an interject or flush cancels a contact's
+    /// turn like any other.
     #[method(name = "cancel", with_extensions)]
     async fn cancel(
         &self,
@@ -733,6 +733,18 @@ pub trait Api {
         id: artifact::snapshot::FenceSnapshotId,
         answer: artifact::snapshot::FenceSnapshotAnswer,
     ) -> RpcResult<bool>;
+    /// 192: draw one fence through the 164 renderer (a connected desktop/web client) and
+    /// return the PNG — the native companions' pictures. `width` is clamped to 240..=1200
+    /// CSS px, `scale` to 1..=3. Read-only; guest peers are refused.
+    #[method(name = "fence_snapshot", with_extensions)]
+    async fn fence_snapshot(
+        &self,
+        lang: artifact::snapshot::FenceLang,
+        source: String,
+        width: u32,
+        appearance: artifact::snapshot::Appearance,
+        scale: u32,
+    ) -> RpcResult<artifact::snapshot::FenceSnapshotReply>;
     /// Every catalog model whose provider is configured. 183 W-12: `engine`
     /// (mesh id) lists that engine's catalog; `None` = this engine.
     #[method(name = "list_models", with_extensions)]
@@ -2681,9 +2693,6 @@ pub trait Api {
     /// 183 §12.10: remove an export and its grants (Stop sharing).
     #[method(name = "a2a_export_remove")]
     async fn a2a_export_remove(&self, name: String) -> RpcResult<()>;
-    /// 183 Z4: the tools an export may allow a contact (the allowlist editor offers only these).
-    #[method(name = "a2a_grantable_tools")]
-    async fn a2a_grantable_tools(&self) -> RpcResult<Vec<tools::GrantableTool>>;
     /// 183 §7.6 (W-27): the `contact_first` Attention item's Allow once · Always · Block.
     #[method(name = "contact_first_answer")]
     async fn contact_first_answer(
@@ -4615,12 +4624,9 @@ impl ApiServer for Server {
         reason: Option<agent::CancelReason>,
     ) -> RpcResult<()> {
         self.authorize_fwd(ext, session).await?;
-        // 186 (D8): the reason travels with a forwarded cancel; a plain Stop keeps the old
-        // two-parameter call, so an engine that predates the reason still takes it.
-        let routed = match &reason {
-            Some(_) => forward::route(ext, session, "cancel", (session, &scope, &reason)).await?,
-            None => forward::route(ext, session, "cancel", (session, &scope)).await?,
-        };
+        // 190 (D5): the reason is ignored, so a forwarded cancel is the plain two-parameter
+        // call: an owner engine on 186 takes it as a Stop and never refuses it.
+        let routed = forward::route(ext, session, "cancel", (session, &scope)).await?;
         if let Some(r) = routed {
             return Ok(r);
         }
@@ -5813,6 +5819,24 @@ impl ApiServer for Server {
         answer: artifact::snapshot::FenceSnapshotAnswer,
     ) -> RpcResult<bool> {
         Ok(artifact::snapshot::answer(id, answer))
+    }
+
+    async fn fence_snapshot(
+        &self,
+        ext: &Extensions,
+        lang: artifact::snapshot::FenceLang,
+        source: String,
+        width: u32,
+        appearance: artifact::snapshot::Appearance,
+        scale: u32,
+    ) -> RpcResult<artifact::snapshot::FenceSnapshotReply> {
+        owner(ext)?;
+        let (width, scale) = (width.clamp(240, 1200), scale.clamp(1, 3));
+        Ok(
+            artifact::snapshot::render(&self.rt, lang, &source, width, appearance, scale)
+                .await
+                .into(),
+        )
     }
 
     async fn list_models(
@@ -9612,10 +9636,6 @@ impl ApiServer for Server {
         contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
     }
 
-    async fn a2a_grantable_tools(&self) -> RpcResult<Vec<tools::GrantableTool>> {
-        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, tools::ContactGrantable).await
-    }
-
     async fn contact_first_answer(
         &self,
         contact: String,
@@ -12368,6 +12388,145 @@ mod tests {
                 }
                 other => panic!("{other:?}"),
             }
+        }
+
+        /// A 1×1 RGBA PNG, standard base64.
+        const DOT: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+        /// Bus subscriber handing every `FenceSnapshotRequested` over whole.
+        #[derive(kameo::Actor)]
+        struct Requests(mpsc::UnboundedSender<FenceSnapshotRequested>);
+
+        impl Message<FenceSnapshotRequested> for Requests {
+            type Reply = ();
+            async fn handle(&mut self, m: FenceSnapshotRequested, _: &mut Context<Self, ()>) {
+                let _ = self.0.send(m);
+            }
+        }
+
+        /// `rt`'s methods behind `peer`.
+        fn methods(rt: &Runtime, peer: link::RpcPeer) -> jsonrpsee::Methods {
+            let mut m: jsonrpsee::Methods = Server::new(rt.clone()).into_rpc().into();
+            m.extensions_mut().insert(peer);
+            m
+        }
+
+        /// A raw `fence_snapshot` call with positional `params`, in its own task: the whole
+        /// JSON-RPC response.
+        fn snapshot(
+            m: &jsonrpsee::Methods,
+            params: &str,
+        ) -> tokio::task::JoinHandle<serde_json::Value> {
+            let m = m.clone();
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","method":"fence_snapshot","params":{params},"id":1}}"#
+            );
+            tokio::spawn(async move {
+                let (resp, _) = m.raw_json_request(&req, 1).await.unwrap();
+                serde_json::from_str(resp.get()).unwrap()
+            })
+        }
+
+        fn failed(reason: &str) -> FenceSnapshotAnswer {
+            FenceSnapshotAnswer::Failed {
+                reason: reason.into(),
+                client: Client::Desktop,
+            }
+        }
+
+        /// 192: a client draws it → `done` with the PNG as standard base64 and its header size.
+        #[tokio::test(start_paused = true)]
+        async fn the_rpc_returns_the_drawn_png() {
+            let (rt, mut events) = harness().await;
+            let (peer, _guard) = link::RpcPeer::open();
+            let m = methods(&rt, peer);
+            let call = snapshot(&m, r#"["mermaid","graph TD; A-->B",560,"dark",2]"#);
+            let (_, id) = events.recv().await.unwrap();
+            let started = FenceSnapshotAnswer::Started {
+                client: Client::Desktop,
+            };
+            assert!(answer(&m, id, &started).await);
+            let drawn = FenceSnapshotAnswer::Done {
+                png: DOT.into(),
+                width: 1,
+                height: 1,
+                client: Client::Desktop,
+            };
+            assert!(answer(&m, id, &drawn).await);
+            let v = call.await.unwrap();
+            assert_eq!(
+                v["result"],
+                serde_json::json!({"outcome":"done","png":DOT,"width":1,"height":1,"error":null}),
+                "{v}"
+            );
+        }
+
+        /// 192: nobody on the bus to draw it → `no_renderer`, every other field null.
+        #[tokio::test(start_paused = true)]
+        async fn no_subscriber_is_no_renderer() {
+            let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+            let (peer, _guard) = link::RpcPeer::open();
+            let v = snapshot(&methods(&rt, peer), r#"["openui","x",560,"light",2]"#)
+                .await
+                .unwrap();
+            assert_eq!(
+                v["result"],
+                serde_json::json!({"outcome":"no_renderer","png":null,"width":null,"height":null,"error":null}),
+                "{v}"
+            );
+        }
+
+        /// 192: a client that cannot draw it → `failed` with its reason.
+        #[tokio::test(start_paused = true)]
+        async fn a_failed_client_is_failed_with_its_reason() {
+            let (rt, mut events) = harness().await;
+            let (peer, _guard) = link::RpcPeer::open();
+            let m = methods(&rt, peer);
+            let call = snapshot(&m, r#"["json-render","{",560,"light",2]"#);
+            let (_, id) = events.recv().await.unwrap();
+            assert!(answer(&m, id, &failed("bad json")).await);
+            let v = call.await.unwrap();
+            assert_eq!(
+                v["result"],
+                serde_json::json!({"outcome":"failed","png":null,"width":null,"height":null,"error":"bad json"}),
+                "{v}"
+            );
+        }
+
+        /// 192: `width` is clamped to 240..=1200 and `scale` to 1..=3 before the request goes out.
+        #[tokio::test(start_paused = true)]
+        async fn width_and_scale_are_clamped() {
+            let (rt, _events) = harness().await;
+            let (tx, mut seen) = mpsc::unbounded_channel();
+            let req = Requests::spawn(Requests(tx));
+            rt.subscribe::<Requests, FenceSnapshotRequested>(&req).await;
+            let (peer, _guard) = link::RpcPeer::open();
+            let m = methods(&rt, peer);
+            for (params, want) in [
+                (r#"["mermaid","a",10,"dark",9]"#, (240, 3)),
+                (r#"["mermaid","b",5000,"dark",0]"#, (1200, 1)),
+            ] {
+                let call = snapshot(&m, params);
+                let r = seen.recv().await.unwrap();
+                assert_eq!((r.width, r.scale), want, "{params}");
+                assert!(answer(&m, r.id, &failed("x")).await);
+                assert_eq!(call.await.unwrap()["result"]["outcome"], "failed");
+            }
+        }
+
+        /// 192: a mode-2 document guest (and an unauthenticated call) is refused before any
+        /// request goes out.
+        #[tokio::test(start_paused = true)]
+        async fn guests_are_refused() {
+            let (rt, mut events) = harness().await;
+            let (guest, _guard) = link::RpcPeer::open_guest([7; 32], [9; 32]);
+            let params = r#"["mermaid","a",560,"dark",2]"#;
+            let v = snapshot(&methods(&rt, guest), params).await.unwrap();
+            assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(UNAUTHORIZED)), "{v}");
+            let bare: jsonrpsee::Methods = Server::new(rt.clone()).into_rpc().into();
+            let v = snapshot(&bare, params).await.unwrap();
+            assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(UNAUTHORIZED)), "{v}");
+            assert!(events.try_recv().is_err(), "no request published");
         }
     }
 

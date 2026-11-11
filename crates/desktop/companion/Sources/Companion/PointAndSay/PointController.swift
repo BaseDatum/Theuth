@@ -102,6 +102,8 @@ final class PointController {
     private var router = AskRouter()
     private var displays: [OverlayDisplay] = []
     private var subs = Set<AnyCancellable>()
+    /// 189 D2: the voice key's reply watchdog (`AskReply.watchdogDeadline`).
+    private let watchdog = ReplyWatchdog()
     private var sendTask: Task<Void, Never>?
     private var pendingChunks: [[Int16]] = []
     private var stopWanted = false
@@ -151,6 +153,7 @@ final class PointController {
             self.store.onOpenURL?(DeepLink.session(d))
         }
         card.onStop = { [weak self] in self?.speaker.stop() }
+        card.onHide = { [weak self] in self?.store.askCardHidden() } // 189 D1: the Ask's focus claim ends with its card
         card.model.onApprove = { [weak self] d in self?.resolveApproval(d, spoken: false) }
         card.model.onFollowUp = { [weak self] t in self?.typedFollowUp(t) }
         card.model.onExpandChanged = { [weak self] expanded in
@@ -162,8 +165,9 @@ final class PointController {
             .sink { [weak self] s in MainActor.assumeIsolated { self?.speakingChanged(s == .voiceKey) } }
             .store(in: &subs)
         // Installed before `store.start` (the insertion point); the client exists once the connection opens.
+        // 189 D2: a reconnect may have lost the reply's events — read the transcript.
         store.$connection.removeDuplicates().receive(on: RunLoop.main)
-            .sink { [weak self] s in MainActor.assumeIsolated { if s == .open { self?.refreshMeeting() } } }
+            .sink { [weak self] s in MainActor.assumeIsolated { if s == .open { self?.refreshMeeting(); self?.catchUp(.reconnect) } } }
             .store(in: &subs)
     }
 
@@ -293,7 +297,7 @@ final class PointController {
             card.hide(returnKey: false)
             doneTimer?.invalidate(); doneTimer = nil
             speaker.stop() // S3: a new gesture silences whatever is speaking, the Ask bar's reply included
-            router = AskRouter()
+            resetReply()
             // D2 §13.1: the target is assessed before the mic opens; a certainly-not target ends the gesture with the hint.
             if mode == .dictate, !anyAppPress() { return }
             if mode != .dictate { // the pointer trail is the voice key's and the command key's (§3.2: the pill alone for dictation)
@@ -333,7 +337,7 @@ final class PointController {
             doneTimer?.invalidate(); doneTimer = nil
             endApprovalListen()
             stopSpeaking()
-            router = AskRouter()
+            resetReply()
         case .refuse(let reason):
             pill.showHint(Self.hint(for: reason), near: NSEvent.mouseLocation)
             PointLog.write("point refused: \(reason)")
@@ -462,13 +466,29 @@ final class PointController {
     }
 
     /// The desk's path: `steer` into a running turn, else `send_input` (`PointController.swift:287-297` of 149).
+    /// 189 D1: the desk's focus is claimed before the send so its first deltas pass; a failed send with nothing else
+    /// collecting withdraws it.
     private func deliver(_ body: String, files: [String], to desk: String) async throws {
         let running = store.sessions.first { $0.id == desk }?.running ?? false
         let clientId = UUID().uuidString
-        if running { _ = try await store.client.steer(session: desk, text: body, id: clientId, files: files, delivery: nil) }
-        else { _ = try await store.client.sendInput(session: desk, text: body, files: files, delivery: nil, id: clientId) }
-        router.sent(on: desk)
+        store.claimFocus(.point, [desk])
+        do {
+            if running { _ = try await store.client.steer(session: desk, text: body, id: clientId, files: files, delivery: nil) }
+            else { _ = try await store.client.sendInput(session: desk, text: body, files: files, delivery: nil, id: clientId) }
+        } catch {
+            if router.reply?.finished ?? true { store.claimFocus(.point, []) }
+            throw error
+        }
+        router.sent(on: desk, question: body)
+        armWatchdog()
         PointLog.write("delivered via \(running ? "steer" : "send_input")")
+    }
+
+    /// A new gesture or a concealed card: the reply being collected goes, with its focus claim and its watchdog.
+    private func resetReply() {
+        router = AskRouter()
+        store.claimFocus(.point, [])
+        armWatchdog()
     }
 
     /// 45 §4.4's marker, as `voice-note.ts:5-6`.
@@ -642,8 +662,10 @@ final class PointController {
         /// 153 §4.4 / §7: the shaped form and the end command of a `DictationText` piece (D2's dictate mode reads them).
         let shaped: String?
         let command: EndCommand?
+        /// 189 D2: `TurnStarted.turn_seq`, the transcript's turn id.
+        let turnSeq: Int64?
         enum CodingKeys: String, CodingKey {
-            case type, id, session, text, stopReason, message, utterance, isFinal = "final", levels, reason, name, callId, args, arguments, isError, tool, risk, decision, timedOut, shaped, command
+            case type, id, session, text, stopReason, message, utterance, isFinal = "final", levels, reason, name, callId, args, arguments, isError, tool, risk, decision, timedOut, shaped, command, turnSeq
         }
     }
 
@@ -677,8 +699,12 @@ final class PointController {
             // §7.3: "send it" settled and the engine ended the dictation under the held key — the gesture ends now.
             if mode == .dictate, dictation.send, isLive { let g = gesture; Task { await self.dictateStop(gesture: g, reason: "send it") } }
         case "SpeechStarted", "SpeechAudio", "SpeechFinished": break // 149s: the Store's SpeechPlayer takes them
-        case "TextDelta", "TurnFinished", "Error", "ToolCallPending", "ToolCallStarted", "ToolCallFinished":
+        case "TextDelta", "TurnStarted", "TurnFinished", "Error", "ToolCallPending", "ToolCallStarted", "ToolCallFinished", "ReasoningDelta":
             replyEvent(w)
+        case "ReasoningDone":
+            replyEvent(w, ms: ReasoningDoneWire.ms(data))
+        case "Lagged":
+            catchUp(.lagged)
         case "ApprovalRequested", "ApprovalResolved":
             approvalEvent(w, data: data)
         default:
@@ -688,19 +714,29 @@ final class PointController {
 
     /// The desk's turn drives the card: "working…", tool names, the final text; then the spoken reply and `doneMs`.
     /// Command mode (§10.3): the same events feed the `CommandCard` reducer — rows from `ToolCallStarted` with `purpose`,
-    /// colours from `ToolCallFinished`, the ✓/✗ line at `TurnFinished`, the cap at 12.
-    private func replyEvent(_ w: Wire) {
+    /// colours from `ToolCallFinished`, the ✓/✗ line when the reply finishes, the cap at 12. 189 D2: a finished turn reads
+    /// the transcript before the reply ends (`catchUp`).
+    private func replyEvent(_ w: Wire, ms: UInt64 = 0) {
         guard let r = router.reply, !r.finished, let session = w.session, session == r.session else { return }
+        defer { armWatchdog() }
         switch w.type {
         case "TextDelta":
             if router.observe(.textDelta(session: session, text: w.text ?? "")) { card.state.command?.observe(.textDelta(w.text ?? "")) }
+            if router.reply?.deltas == 1 { PointLog.write("point: first TextDelta from \(session.prefix(8))") }
+        case "ReasoningDelta": // 192 P3: the card shows the thinking instead of the bare spinner
+            router.observe(.reasoningDelta(session: session, text: w.text ?? ""))
+            if router.reply?.reasoningDeltas == 1 { PointLog.write("point: first ReasoningDelta from \(session.prefix(8))") }
+        case "ReasoningDone":
+            router.observe(.reasoningDone(session: session, ms: ms))
+        case "TurnStarted":
+            router.observe(.turnStarted(session: session, turnSeq: w.turnSeq, text: w.text ?? ""))
         case "TurnFinished":
-            // A turn that ended before anything streamed is the one we steered into, not the reply (`AskRouter`): the reducer follows.
-            if router.observe(.turnFinished(session: session, stopReason: w.stopReason ?? "")) { card.state.command?.observe(.turnFinished(stopReason: w.stopReason ?? "")) }
+            router.observe(.turnFinished(session: session, stopReason: w.stopReason ?? ""))
+            catchUp(.turnFinished)
         case "Error":
             router.observe(.error(session: session, message: w.message ?? ""))
-            card.state.command?.observe(.turnFinished(stopReason: "error"))
         case "ToolCallStarted":
+            router.observe(.activity(session: session))
             guard let n = w.name else { return }
             card.state.tools.append(n)
             card.state.status = "working · \(n)"
@@ -710,27 +746,63 @@ final class PointController {
             if card.state.command?.observe(.toolCallStarted(id: w.callId ?? n, tool: n, purpose: purpose)) == true { capReached(session) }
             return
         case "ToolCallFinished":
+            router.observe(.activity(session: session))
             card.state.command?.observe(.toolCallFinished(id: w.callId ?? "", ok: !(w.isError ?? false)))
             return
         default:
+            router.observe(.activity(session: session))
             if let n = w.name { card.state.status = "working · \(n)" }
             return
         }
+        renderReply()
+    }
+
+    /// The card follows the reply; a finished reply decides the command card, drops the focus claim and may be spoken.
+    private func renderReply() {
         guard let reply = router.reply else { return }
+        if reply.finished { card.state.command?.finish(text: reply.text, failure: reply.failure) }
         card.state.text = reply.text
+        card.state.thinking = reply.thinking
         if let c = card.state.command, c.finished {
             card.state.status = c.verdict.map { v -> String in
                 switch v { case .ok: return "done"; case .failed: return "failed"; case .replied: return "replied" }
             } ?? "stopped"
         } else {
-            card.state.status = reply.finished ? (reply.failure.map { "couldn't reply — \($0)" } ?? "replied") : "working…"
+            card.state.status = reply.finished ? (reply.failureLine ?? "replied") : "working…"
         }
         let failed = reply.failure != nil || card.state.command?.verdict.map { if case .failed = $0 { return true } else { return false } } == true
             || (card.state.command?.frozen?.hasPrefix("✗") ?? false)
         card.state.phase = failed ? .failed : (reply.finished || !reply.text.isEmpty ? .answer : .thinking)
         guard reply.finished else { return }
+        PointLog.write("point finished: stop \(reply.stopReason ?? "none"), \(reply.failure.map { "failed — \($0)" } ?? "ok"), \(reply.text.count) chars")
+        store.claimFocus(.point, [])
         card.state.turnFinished = true
-        if SpokenReplies.shouldSpeak(enabled: VoiceKeySettings.speak, reply: reply) { speaker.speak(reply.text, on: session, from: .voiceKey) } else { armDoneIfReady() }
+        if SpokenReplies.shouldSpeak(enabled: VoiceKeySettings.speak, reply: reply) { speaker.speak(reply.text, on: reply.session, from: .voiceKey) } else { armDoneIfReady() }
+    }
+
+    /// 189 D2: read the desk's transcript for the reply being collected; the router decides whether it finishes. A probe
+    /// never sent anything: its reply finishes on what streamed (the "read failed" path).
+    private func catchUp(_ trigger: CatchUpTrigger) {
+        guard let r = router.reply, !r.finished else { return }
+        Task {
+            let loaded = AskFlags.automated ? nil : await store.loadTranscript(r.session)
+            guard router.caughtUp(id: r.id, loaded: loaded, trigger: trigger, now: Date()), let reply = router.reply else { return }
+            PointLog.write("point catch-up (\(trigger.rawValue)): \(reply.text.count) chars, running \(loaded.map { "\($0.running)" } ?? "unknown")")
+            armWatchdog()
+            renderReply()
+        }
+    }
+
+    /// 189 D2: 15 s without a desk event while collecting → read the transcript; re-armed after every event and catch-up.
+    private func armWatchdog() {
+        watchdog.arm(at: router.reply?.watchdogDeadline) { [weak self] in
+            guard let self else { return }
+            if self.router.watchdogFired(now: Date()) {
+                PointLog.write("point watchdog: no desk event for \(Int(AskReply.watchdog)) s")
+                self.catchUp(.watchdog)
+            }
+            self.armWatchdog()
+        }
     }
 
     /// §10.4: the 12th `ToolCallStarted` → `cancel(desk, root)`; the card already froze with "stopped after 12 steps".

@@ -16,8 +16,7 @@ const RING = 44
 const STROKE = 2.5
 const CIRC = Math.PI * (RING - STROKE)
 
-/** `label`: what a tap stops when it is not the owner's own turn (186 D8: `Stop bob's turn`). */
-export function StopButton({ count, ring, onStop, label: tap = 'Stop' }: { count: number; ring: number; onStop: (scope: CancelScope) => void; label?: string }) {
+export function StopButton({ count, ring, onStop }: { count: number; ring: number; onStop: (scope: CancelScope) => void }) {
   const [hold, setHold] = useState<Hold>(IDLE)
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null)
   const ref = useRef<HTMLButtonElement>(null)
@@ -108,8 +107,7 @@ export function StopButton({ count, ring, onStop, label: tap = 'Stop' }: { count
           hold.phase === 'pressed' && 'scale-[1.12]',
           armed && 'scale-[1.2]',
         )}
-        aria-label={armed ? 'Release to stop everything' : held ? `${tap} - slide up to stop everything` : tap}
-        title={tap === 'Stop' ? undefined : tap}
+        aria-label={armed ? 'Release to stop everything' : held ? 'Stop - slide up to stop everything' : 'Stop'}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}

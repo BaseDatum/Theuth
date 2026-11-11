@@ -59,6 +59,7 @@ public partial class App : Application
             logWindow.ShowWithoutActivating(); // a probe never takes the foreground
         }
         Store = Store.Create(dispatcher, EngineProbe.Locate);
+        Ui.AnswerCardWindow.Pictures = Store.Pictures; // 192w P2: the answer card's picture fences ask the Store's cache for their PNGs
         probe = new EngineProbe(Store, dispatcher, Flags.Probe, Quit);
         probe.Start();
         if (Flags.Probe is not null) Probe149.Install(Store); // 149 WW1: the new read-only calls in the probe log

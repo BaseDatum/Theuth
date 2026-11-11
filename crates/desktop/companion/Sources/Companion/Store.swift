@@ -65,6 +65,8 @@ final class Store: ObservableObject {
     private var receiptTimer: Timer?
     private var fetchGate = FetchGate()
     private var pacer = RefetchPacer()
+    /// 189 D1: the one writer of this connection's `set_event_focus` (`claimFocus`).
+    private var focus = FocusCoordinator()
 
     /// Hooks the panel controller sets.
     var onCloseRequest: (() -> Void)?
@@ -85,13 +87,17 @@ final class Store: ObservableObject {
     /// `locate` runs before every dial, so the engine is found whenever (and wherever) it comes up.
     func start(locate: @escaping @Sendable () -> EngineLocation?) {
         client = RpcClient(locate: locate,
-                           onState: { s in Task { @MainActor in self.connection = s } },
+                           onState: { s in Task { @MainActor in self.connection = s; if s == .open { self.connectionOpened() } } },
                            onEvent: { d in Task { @MainActor in self.handle(d) } })
         Task {
             await client.start()
             await client.subscribeEvents()
         }
         speaker.client = client
+        // 192 P2: the answer card's pictures come from the desktop app's renderer through the engine.
+        FenceSnapshots.shared.draw = { [client = client!] k in
+            try await client.fenceSnapshot(lang: k.lang, source: k.source, width: k.width, appearance: k.appearance, scale: k.scale)
+        }
     }
 
     // MARK: events
@@ -102,6 +108,7 @@ final class Store: ObservableObject {
         case .pendingPrompts(let p):
             approvals = Dictionary(p.approvals.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             onPendingPrompts?(p)
+            sendFocus(focus.resend()) // 129 §3.2: re-applied on every (re)subscription; pre-129 engines refuse, fine
             // The stream's first item on every (re)connect: `list_sessions` is re-read with this refetch.
             pacer.connected()
             scheduleRefetch(now: true)
@@ -123,6 +130,34 @@ final class Store: ObservableObject {
         speech.observe(data) // 149s: SpeechStarted / SpeechAudio / SpeechFinished for the shared speaker's utterance
         pointObserve(data) // 149 W2: the voice key's dictation and the desk's reply
         calendarObserve(data) // 158 W2: the `EventKit` bus item → EventKitSource
+    }
+
+    // MARK: the event focus (189 D1)
+
+    /// A surface's sessions in view (`[]` withdraws the claim); the engine gets the union of every claim.
+    func claimFocus(_ claim: FocusCoordinator.Claim, _ sessions: [String]) { sendFocus(focus.claim(claim, sessions)) }
+
+    /// A (re)connect: the new connection has no focus — send the union, and let a reply being collected catch up.
+    private func connectionOpened() {
+        sendFocus(focus.resend())
+        askCatchUp(.reconnect)
+    }
+
+    /// One `set_event_focus` in flight; when it lands, the union as it is then goes out if it moved (latest wins).
+    private func sendFocus(_ union: [String]?) {
+        guard let union else { return }
+        Log.write("set_event_focus([\(union.map { String($0.prefix(8)) }.joined(separator: ", "))])")
+        Task {
+            // Before `start` there is no client: the first connection's `resend` sends the union then.
+            do { try await client?.setEventFocus(sessions: union) } catch { Log.write("set_event_focus failed: \(error)") }
+            sendFocus(focus.finished(union))
+        }
+    }
+
+    /// 189 D2: the desk's last `AskReply.catchUpLimit` rows; `nil` when the read failed (logged).
+    func loadTranscript(_ session: String) async -> Loaded? {
+        do { return try await client.loadSession(session: session, limit: AskReply.catchUpLimit) }
+        catch { Log.write("load_session(\(session.prefix(8))) failed: \(error)"); return nil }
     }
 
     /// Paced by `RefetchPacer` (176 K1): 250 ms debounce, ≥ 2 s between starts, a burst coalesced into one trailing run.

@@ -434,8 +434,8 @@ impl Tool for SendMessageTool {
              `peer:<contact>` reaches the contact's first shared chat (name order); `peer:<contact>/<export>` reaches a \
              named one — discover_peers lists one such row per chat or agent the contact shares with you; the first \
              message to an export set to Ask first is held until its owner presses Allow, then delivered automatically: \
-             do not resend (its receipt reads `held`). A contact shared in full (tag `full`) talks like a mesh peer: \
-             answer its <message> with send_message(to=its `from`, reply_to=its id), as often as you like. Returns one receipt \
+             do not resend (its receipt reads `held`). A contact talks like a mesh peer: answer its <message> with \
+             send_message(to=its from, reply_to=its id), as often as you like. Returns one receipt \
              per recipient (`structured.receipts`, always a list): `accepted` means committed to their intake, not read. \
              With await_reply=true you block until each answers with reply_to set to its message's id (or one shared \
              timeout passes; unanswered messages are not recalled). When answering a <message> with \

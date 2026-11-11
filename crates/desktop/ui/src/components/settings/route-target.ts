@@ -2,7 +2,7 @@ import { type LibraryRoute, movedTab } from '@/components/library/moved'
 import { movedSettingsTab } from '@/components/routines/helpers'
 import { MOVED_TABS, isTab, shownTab } from '@/components/settings/registry'
 
-/** `/settings/$tab`'s search: `focus` names a control the tab focuses (Memory: `model` | `spend`); `session` and `peer` come only on legacy links to the per-chat rows. */
+/** `/settings/$tab`'s search: `focus` names a control the tab focuses (Memory: `model` | `spend`); `session` scopes MCP's (`tools`) per-chat rows, and `peer` comes only on legacy links to the per-chat rows. */
 export type SettingsSearch = { session?: string; peer?: string; focus?: string }
 
 /** What `/settings/<tab>` does: render the tab, or redirect (replacing the entry) to another page, a chat or a tab. */
@@ -16,7 +16,7 @@ const toTab = (tab: string, focus: string | undefined): RouteTarget => ({ kind: 
 
 /** 188 S5: where `/settings/<tab>` lands. `beforeLoad` acts on it; every redirect replaces, so Back skips the old URL. */
 export function routeTarget(tab: string, search: SettingsSearch): RouteTarget {
-  // Skills and Tools became Agents pages, Secrets a Library page, and Schedules became Routines; old links and bookmarks follow.
+  // Skills and Secrets became Library pages, and Schedules became Routines; old links and bookmarks follow.
   const moved = movedTab(tab) ?? movedSettingsTab(tab)
   if (moved) return { kind: 'page', to: moved, search: search.session ? { session: search.session } : {} }
   // The per-chat rows left Settings: an old link that named a chat opens that chat's Messaging… sheet.

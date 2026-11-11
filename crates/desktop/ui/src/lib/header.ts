@@ -36,7 +36,7 @@ export type HeaderId =
   | 'memory'
   | 'parent'
   | 'owner'
-  /** 183 §12.10: `Shared with bob · read only` — a contact's agents can message this exported chat. */
+  /** 183 §12.10: `Shared with bob` — a contact's agents can message this exported chat. */
   | 'shared'
   /** 79 §6.5: the owner engine is a sandbox VM — its desktop in a pop-out. */
   | 'desktop'

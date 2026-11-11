@@ -71,6 +71,7 @@ extension Store {
     /// collect the desk's reply from the event stream into the receipt row and the Done zone. 153 §6.1: when the text came
     /// from a dictation (`correctionId`), `dictation_correction(id, sent_text)` goes out beside it — the engine diffs what was
     /// dictated against what was sent; §3.3: the reply also drives the answer card (`showAnswerCard`, C1's view).
+    /// 189 D1: every commit claims the desk's focus (the Store sends the union), held until the answer card goes.
     func commitAsk(_ text: String) async {
         guard !AskFlags.automated else { return AskLog.write("probe: send suppressed (commit)") }
         if let dictated = ask.dictation.correctionId {
@@ -85,17 +86,20 @@ extension Store {
         showAnswerCard(askCard)
         do {
             let session = try await resolveDesk()
+            claimFocus(.ask, [session])
             _ = try await client.sendInput(session: session, text: text)
             askCard.session = session // O / a typed follow-up on the card go to the desk that answered
             let id = "ask:\(UUID().uuidString)"
-            ask.router.sent(on: session)
+            ask.router.sent(on: session, question: text)
             ask.current = id
             ask.receipts.add(CompanionCore.Receipt(id: id, kind: .ask, at: Date(), who: "theuth", text: text, session: session), now: Date())
             setReceiptCount(ask.receipts.count)
             setReceipt(.reply(who: "theuth", text: "sent — waiting for the desk", session: session))
+            armAskWatchdog()
             AskLog.write("ask sent to desk \(session) (\(text.count) chars)")
         } catch {
             ask.router.forget() // a refused or closed desk is resolved again on the next send
+            claimFocus(.ask, [])
             setReceipt(.failed("\(error)"))
             expireReceipt(after: 6)
             askCard.phase = .failed
@@ -109,7 +113,6 @@ extension Store {
     func resolveDesk() async throws -> String {
         if let s = ask.router.deskSession { return s }
         if case .unavailable(let why) = ask.router.desk { throw AskError(description: why) }
-        defer { focusDeltas() }
         let mesh = try? await client.meshStatus() // engines without a mesh actor are their own hub
         switch AskRouter.plan(mesh: mesh, agents: agents) {
         case .openHere:
@@ -130,49 +133,85 @@ extension Store {
 
     // MARK: the reply stream and the Done zone
 
-    private struct Delta: Decodable { let type: String; let session: String?; let text: String?; let stopReason: String?; let message: String? }
+    private struct Delta: Decodable { let type: String; let session: String?; let text: String?; let stopReason: String?; let message: String?; let turnSeq: Int64? }
 
-    /// 129 §3.2: a connection that never sets a focus gets every session's deltas; ours wants the desk's only.
-    /// Re-applied on every `PendingPrompts` (the first item of each (re)subscription); pre-129 engines refuse, fine.
-    private func focusDeltas() {
-        guard let s = ask.router.deskSession else { return }
-        Task {
-            do { try await client.setEventFocus([s]) } catch { return Log.write("set_event_focus failed: \(error)") }
-            if AskFlags.probe != nil { AskLog.write("set_event_focus([\(s.prefix(8))…]) ok") }
-        }
-    }
-
-    /// Every event, raw: `TextDelta`/`TurnFinished`/`Error` on the desk feed the reply while one is being collected
-    /// (a failed or cancelled turn ends it with the reason); `Dictation*` (W6) feed the live dictation; `DictionarySuggestion`
-    /// (153 §6.3) the card.
+    /// Every event, raw: the desk's events feed the reply while one is being collected (a failed or cancelled turn ends
+    /// it with the reason; 189 D2: a finished turn, `Lagged` or the watchdog read the transcript); `Dictation*` (W6) feed
+    /// the live dictation; `DictionarySuggestion` (153 §6.3) the card.
     func askObserve(_ data: Data) {
         guard let d = try? TheuthJSON.decoder.decode(Delta.self, from: data) else { return }
-        if d.type == "PendingPrompts" { return focusDeltas() }
         if d.type.hasPrefix("Dictation") { return dictationObserve(data) }
         if d.type == "DictionarySuggestion" { return suggestionObserve(data) }
-        guard let r = ask.router.reply, !r.finished, let session = d.session else { return }
+        if d.type == "Lagged" { return askCatchUp(.lagged) }
+        guard let r = ask.router.reply, !r.finished, let session = d.session, session == r.session else { return }
         let event: ReplyEvent
         switch d.type {
         case "TextDelta": event = .textDelta(session: session, text: d.text ?? "")
+        case "TurnStarted": event = .turnStarted(session: session, turnSeq: d.turnSeq, text: d.text ?? "")
         case "TurnFinished": event = .turnFinished(session: session, stopReason: d.stopReason ?? "")
         case "Error": event = .error(session: session, message: d.message ?? "")
-        default: return
+        case "ReasoningDelta": event = .reasoningDelta(session: session, text: d.text ?? "") // 192 P3
+        case "ReasoningDone": event = .reasoningDone(session: session, ms: ReasoningDoneWire.ms(data))
+        default: event = .activity(session: session)
         }
-        guard ask.router.observe(event), let reply = ask.router.reply else { return }
+        let changed = ask.router.observe(event)
+        armAskWatchdog()
+        if d.type == "TextDelta", ask.router.reply?.deltas == 1 { AskLog.write("ask: first TextDelta from \(session.prefix(8))") }
+        if d.type == "ReasoningDelta", ask.router.reply?.reasoningDeltas == 1 { AskLog.write("ask: first ReasoningDelta from \(session.prefix(8))") }
+        if d.type == "TurnFinished" { askCatchUp(.turnFinished) }
+        if changed { renderAsk() }
+    }
+
+    /// 189 D2: read the desk's transcript for the reply being collected; the router decides whether it finishes.
+    /// A probe never sent anything, so its fixture reply finishes on what streamed (the "read failed" path).
+    func askCatchUp(_ trigger: CatchUpTrigger) {
+        guard let r = ask.router.reply, !r.finished else { return }
+        Task {
+            let loaded = AskFlags.automated ? nil : await loadTranscript(r.session)
+            guard ask.router.caughtUp(id: r.id, loaded: loaded, trigger: trigger, now: Date()), let reply = ask.router.reply else { return }
+            AskLog.write("ask catch-up (\(trigger.rawValue)): \(reply.text.count) chars, running \(loaded.map { "\($0.running)" } ?? "unknown")")
+            armAskWatchdog()
+            renderAsk()
+        }
+    }
+
+    /// The receipt row and the answer card follow the reply; a finished reply expires the receipt and may be spoken.
+    private func renderAsk() {
+        guard let reply = ask.router.reply else { return }
         // ponytail: one publish per delta; coalesce on a timer if the stream ever makes the panel stutter.
         let text = reply.receiptText
         if let id = ask.current { ask.receipts.update(id: id, text: text) }
         setReceipt(.reply(who: "theuth", text: text.isEmpty ? "…" : text, session: reply.session))
         // 153 §3.3: the same stream drives the answer card (`AnswerCardState` is C1's model; the view is theirs too).
-        askCard.phase = reply.failure == nil ? .answer : .failed
+        askCard.phase = reply.failure == nil ? (reply.finished || !reply.text.isEmpty ? .answer : .thinking) : .failed
         askCard.text = reply.text
-        askCard.status = reply.failure.map { "couldn't reply — \($0)" } ?? ""
+        askCard.thinking = reply.thinking // 192 P3
+        askCard.status = reply.failureLine ?? (reply.text.isEmpty && !reply.finished ? "thinking" : "")
         askCard.turnFinished = reply.finished
         showAnswerCard(askCard)
         guard reply.finished else { return }
+        AskLog.write("ask finished: stop \(reply.stopReason ?? "none"), \(reply.failure.map { "failed — \($0)" } ?? "ok"), \(reply.text.count) chars")
         expireReceipt(after: 12)
         // S3: the same reply the receipt row shows, spoken through the voice key's path once it is final; partials never.
         if SpokenReplies.shouldSpeak(enabled: askSpeakEnabled, reply: reply) { speaker.speak(reply.text, on: reply.session, from: .askBar) }
+    }
+
+    /// 189 D2: 15 s without a desk event while collecting → read the transcript; re-armed after every event and catch-up.
+    private func armAskWatchdog() {
+        askWatchdog.arm(at: ask.router.reply?.watchdogDeadline) { [weak self] in
+            guard let self else { return }
+            if self.ask.router.watchdogFired(now: Date()) {
+                AskLog.write("ask watchdog: no desk event for \(Int(AskReply.watchdog)) s")
+                self.askCatchUp(.watchdog)
+            }
+            self.armAskWatchdog()
+        }
+    }
+
+    /// 189 D1: the answer card went away — a finished (or never sent) ask releases the desk's focus.
+    func askCardHidden() {
+        guard ask.router.reply?.finished != false else { return }
+        claimFocus(.ask, [])
     }
 
     // MARK: live dictation (W6; design 54 §8) — decoded with `TheuthKit.DictationWire` (153 §14.4)
@@ -226,6 +265,25 @@ extension Store {
 @MainActor private var activityLogged = false
 /// §3.3: the Ask bar's one answer card, fed by `commitAsk` and the reply stream; `Store.showAnswerCard` renders it (C1).
 @MainActor private var askCard = CompanionCore.AnswerCardState()
+@MainActor private let askWatchdog = ReplyWatchdog()
+
+/// 189 D2: the timer behind `AskReply.watchdogDeadline` (the Ask bar's and the voice key's). `arm` keeps a pending timer —
+/// it fires no later than a moved deadline and the handler re-arms — so a delta stream costs no timer churn; `nil` cancels.
+@MainActor
+final class ReplyWatchdog {
+    private var timer: Timer?
+
+    func arm(at deadline: Date?, _ fire: @escaping @MainActor () -> Void) {
+        guard let deadline else { timer?.invalidate(); timer = nil; return }
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: max(0.1, deadline.timeIntervalSinceNow), repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.timer = nil
+                fire()
+            }
+        }
+    }
+}
 
 /// stderr plus `/tmp/130-w3-probe.log` during `--ask-probe`.
 enum AskLog {

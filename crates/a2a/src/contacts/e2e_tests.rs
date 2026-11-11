@@ -1019,90 +1019,6 @@ async fn a_broken_http_peer_does_not_block_a_contact_edit() {
     );
 }
 
-/// Z3-R3: a put without `tools` (a re-grant, an older client) keeps the export's list; a new
-/// export without one starts on the default.
-#[tokio::test]
-async fn a_put_without_tools_keeps_the_exports_allowlist() {
-    let lan = Lan::default();
-    let a = engine("a", &lan, true, cfg(600)).await;
-    let put = |name: &str, tools: Option<Vec<String>>| Export {
-        name: name.into(),
-        target: ExportTarget::Agent {
-            agent: "theuth".into(),
-        },
-        description: "Research".into(),
-        paused: None,
-        tools,
-    };
-    let tools_of = |name: &'static str| {
-        let ctx = a.ctx.clone();
-        async move {
-            ctx.exports()
-                .await
-                .into_iter()
-                .find(|e| e.name == name)
-                .and_then(|e| e.tools)
-        }
-    };
-    a.ctx
-        .put_export(put("research", Some(vec!["read_url".into()])))
-        .await
-        .unwrap();
-    a.ctx.put_export(put("research", None)).await.unwrap();
-    assert_eq!(
-        tools_of("research").await,
-        Some(vec!["read_url".to_owned()])
-    );
-    a.ctx
-        .put_export(put("research", Some(Vec::new())))
-        .await
-        .unwrap();
-    assert_eq!(
-        tools_of("research").await,
-        Some(Vec::new()),
-        "an empty list is a list"
-    );
-    a.ctx.put_export(put("notes", None)).await.unwrap();
-    assert_eq!(
-        tools_of("notes").await,
-        Some(crate::config::default_contact_tools())
-    );
-    // Z4: a put naming a tool a contact may never be granted is refused, each such tool
-    // named, and the export is left as it was.
-    let strs = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    let e = a
-        .ctx
-        .put_export(put(
-            "research",
-            Some(strs(&[
-                "read_url",
-                "knowledge_put",
-                "computer_screenshot",
-                "remind_me_in",
-                "shell",
-            ])),
-        ))
-        .await
-        .unwrap_err();
-    for t in [
-        "knowledge_put",
-        "computer_screenshot",
-        "remind_me_in",
-        "shell",
-    ] {
-        assert!(e.contains(t), "{e}");
-    }
-    assert!(!e.contains("read_url"), "{e}");
-    assert_eq!(tools_of("research").await, Some(Vec::new()));
-    // The grantable set and a read-only MCP tool's key are accepted.
-    let ok = strs(&["read_url", "knowledge_search", "mcp:files/search"]);
-    a.ctx
-        .put_export(put("research", Some(ok.clone())))
-        .await
-        .unwrap();
-    assert_eq!(tools_of("research").await, Some(ok));
-}
-
 /// Pair `a` (inviter) and `b` by ticket; A's alias for B and B's alias for A.
 async fn paired(a: &Engine, b: &Engine) -> (String, String) {
     let w = a.ctx.open_window().await.unwrap();
@@ -1128,14 +1044,6 @@ async fn paired(a: &Engine, b: &Engine) -> (String, String) {
     (a_alias, b_alias)
 }
 
-/// 186 (D3): `exports` shared cautiously (a share names its mode).
-fn cautious(exports: &[&str]) -> std::collections::BTreeMap<String, ShareMode> {
-    exports
-        .iter()
-        .map(|e| (e.to_string(), ShareMode::Cautious))
-        .collect()
-}
-
 /// 183 F1, F2: sharing an agent with a contact starts it on "Always allow" (an explicit "Ask
 /// first" is kept on a re-grant), the contact's engine hears of the grant and lists the
 /// export as its own `discover_peers` row (`peer:<contact>/<export>`, its description,
@@ -1155,7 +1063,6 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
             },
             description: "Answers research questions".into(),
             paused: None,
-            tools: None,
         })
         .await
         .unwrap();
@@ -1164,8 +1071,6 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
             name: a_alias.clone(),
             patch: ContactPatch {
                 exports: Some(exports.iter().map(|s| s.to_string()).collect()),
-                // 186 (D3): every share picks its mode.
-                modes: Some(cautious(exports)),
                 ..ContactPatch::default()
             },
         })
@@ -1216,7 +1121,7 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
     }
     let row = row.expect("the granted export is a row on the contact's side");
     assert_eq!(row.title.as_deref(), Some("Answers research questions"));
-    assert_eq!(row.tags, ["contact", "agent", "allowed", "cautious"]);
+    assert_eq!(row.tags, ["contact", "agent", "allowed"]);
     assert!(row.send && row.reply);
     let all = rows().await;
     assert_eq!(
@@ -1302,8 +1207,8 @@ async fn a_granted_export_is_a_discover_peers_row_on_the_contacts_side_until_rev
 /// 183 F4: editing a contact (here: sharing a second export, which rotates its grant
 /// epoch) keeps a first message waiting for an export it still has, and so does a new
 /// description of that export (review 2); Always then delivers it like Allow once and it
-/// stops waiting. A changed cap fails a waiting message at once (review 1: `cap_changed` →
-/// `RebindHeld` with nothing kept).
+/// stops waiting. 190 (D8): re-pointing the export (another agent) fails a waiting message
+/// at once (`RebindHeld` with nothing kept).
 #[tokio::test]
 async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     let lan = Lan::default();
@@ -1319,7 +1224,6 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
                 },
                 description: String::new(),
                 paused: None,
-                tools: None,
             })
             .await
             .unwrap();
@@ -1329,8 +1233,6 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
             name: a_alias.clone(),
             patch: ContactPatch {
                 exports: Some(exports.iter().map(|s| s.to_string()).collect()),
-                // 186 (D3): every share picks its mode.
-                modes: Some(cautious(exports)),
                 ..ContactPatch::default()
             },
         })
@@ -1388,7 +1290,6 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
             },
             description: "Answers research questions".into(),
             paused: None,
-            tools: None,
         })
         .await
         .unwrap();
@@ -1425,7 +1326,8 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
         now.status.message.as_ref().and_then(|m| m.text())
     );
 
-    // A changed cap: the next waiting message fails at once, it never runs under the new cap.
+    // Re-pointed to another agent: the next waiting message fails at once, it never runs
+    // against what the export publishes now.
     a.ctx
         .first_answer(ContactFirstAnswer {
             contact: a_alias.clone(),
@@ -1447,12 +1349,13 @@ async fn a_grant_change_keeps_a_waiting_first_message_and_always_releases_it() {
     };
     assert_eq!(second.status.state, a2a_types::TaskState::AuthRequired);
     a.ctx
-        .update_contact(ContactUpdate {
-            name: a_alias.clone(),
-            patch: ContactPatch {
-                cap: Some(tools::Risk::Mutating),
-                ..ContactPatch::default()
+        .put_export(Export {
+            name: "research".into(),
+            target: ExportTarget::Agent {
+                agent: "theuth@elsewhere".into(),
             },
+            description: "Answers research questions".into(),
+            paused: None,
         })
         .await
         .unwrap();
@@ -1534,13 +1437,15 @@ where
     panic!("timed out waiting for {what}");
 }
 
-/// 186 (D3–D5, D10, D12): a chat shared in full. The share names its mode (none is refused,
-/// full needs the contact's build). The contact's message is a peer row in the shared chat
-/// (not `<contact_message>`), its receipt reads consumed, the chat's `send_message(reply_to)`
-/// lands in the contact's originating session as `<message from=peer:…>` and settles its
-/// awaiting send; the two go on answering each other, several times each way, on one
-/// conversation. Downgraded, an answer is refused here and the contact's return route ends
-/// the conversation (`TASK_NOT_FOUND`).
+/// 186 (D4, D5, D12), 190 (D2, D8, review 1): a chat shared with a contact. `cautious` is
+/// refused, `full` is accepted and ignored, and a share is never refused for the contact's
+/// version (its card unread or older). The contact's message is a peer row in the shared
+/// chat (not `<contact_message>`), its receipt
+/// reads consumed, the chat's `send_message(reply_to)` lands in the contact's originating
+/// session as `<message from=peer:…>` and settles its awaiting send; the two go on answering
+/// each other, several times each way, on one conversation. Unshared, an answer is refused
+/// here and the contact's return route ends the conversation (`TASK_NOT_FOUND`). Shared again
+/// and re-pointed to another chat, it stays shared in full.
 #[tokio::test]
 async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
     use agent::communication::network::{FullWire, RETURN_ROUTE};
@@ -1575,7 +1480,6 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
             target: ExportTarget::Chat { session: chat },
             description: "The project chat".into(),
             paused: None,
-            tools: None,
         })
         .await
         .unwrap();
@@ -1589,24 +1493,19 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
             },
         })
     };
-    // D3: the choice is required.
-    let none = share(None).await.unwrap_err();
-    assert!(none.contains("choose full or cautious"), "{none}");
-    // D10: full needs a contact whose card collaborates in full.
+    // D2: `cautious` is refused.
+    let cautious = share(Some(ShareMode::Cautious)).await.unwrap_err();
+    assert_eq!(cautious, "cautious shares are gone: every share is full");
+    // Review 1: a contact whose card does not (yet) collaborate in full is shared with all
+    // the same.
     until("A read B's card", || a.ctx.full_of(&b.eid()).then_some(())).await;
     if let Some(c) = a.ctx.offers.lock().get_mut(&b.eid()) {
         c.full = false;
     }
-    let old = share(Some(ShareMode::Full)).await.unwrap_err();
-    assert!(old.contains("to share in full"), "{old}");
-    a.ctx.refresh_offers(&b.eid()).await;
-    let shared = share(Some(ShareMode::Full)).await.unwrap();
-    assert!(shared.full_capable);
-    assert_eq!(shared.modes.get("proj"), Some(&ShareMode::Full));
-    // A contact that lost the capability: the existing full entry, sent back whole, passes.
-    if let Some(c) = a.ctx.offers.lock().get_mut(&b.eid()) {
-        c.full = false;
-    }
+    let shared = share(None).await.unwrap();
+    assert!(!shared.full_capable);
+    assert_eq!(shared.exports, ["proj"]);
+    // `full` is accepted and ignored.
     share(Some(ShareMode::Full)).await.unwrap();
     a.ctx.refresh_offers(&b.eid()).await;
     until("B sees proj shared in full", || {
@@ -1618,9 +1517,9 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
     })
     .await;
 
-    // B's agent lists it tagged `full` (what its send goes by).
+    // B's agent lists it (its send goes by the card's `full` tag).
     let address = format!("peer:{b_alias}/proj");
-    let tags = eventually("B's discover_peers row in full", || {
+    let tags = eventually("B's discover_peers row", || {
         let (b_agents, address) = (b_agents.clone(), address.clone());
         async move {
             b_agents
@@ -1636,12 +1535,12 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
                 .unwrap()
                 .peers
                 .into_iter()
-                .find(|p| p.address == address && p.tags.iter().any(|t| t == "full"))
+                .find(|p| p.address == address)
                 .map(|p| p.tags)
         }
     })
     .await;
-    assert_eq!(tags, ["contact", "chat", "allowed", "full"]);
+    assert_eq!(tags, ["contact", "chat", "allowed"]);
     let deliver =
         |from, to: String, text: &str, reply_to, await_reply| agent::supervisor::Deliver {
             from,
@@ -1817,7 +1716,7 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         assert_eq!(last.receipt.reply_to.map(|_| ()), Some(()), "{pong}");
     }
 
-    // D12: downgraded, the chat's answer is refused here and the conversation ends there.
+    // D12: unshared, the chat's answer is refused here and the conversation ends there.
     let context = {
         let client = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
             net: b.net.clone(),
@@ -1842,7 +1741,16 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
             .unwrap()
             .context_id
     };
-    share(Some(ShareMode::Cautious)).await.unwrap();
+    a.ctx
+        .update_contact(ContactUpdate {
+            name: a_alias.clone(),
+            patch: ContactPatch {
+                exports: Some(Vec::new()),
+                ..ContactPatch::default()
+            },
+        })
+        .await
+        .unwrap();
     let refused = a_agents
         .ask(deliver(
             chat,
@@ -1854,13 +1762,9 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(refused.contains("no longer shared in full"), "{refused}");
-    until("B sees proj cautious", || {
-        b.ctx
-            .offers_of(&a.eid())
-            .iter()
-            .find(|o| o.name == "proj" && o.mode == ShareMode::Cautious)
-            .map(|_| ())
+    assert!(refused.contains("no longer shared"), "{refused}");
+    until("B sees proj gone", || {
+        (!b.ctx.offers_of(&a.eid()).iter().any(|o| o.name == "proj")).then_some(())
     })
     .await;
     let ret = a2a_client::A2AClient::new(Box::new(reach::IrohTransport {
@@ -1892,16 +1796,8 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         gone.message
     );
 
-    // 186 review 1: full was chosen for what the export published; re-pointed to another
-    // chat, it is shared cautiously until the owner picks full again.
-    assert_eq!(
-        share(Some(ShareMode::Full))
-            .await
-            .unwrap()
-            .modes
-            .get("proj"),
-        Some(&ShareMode::Full)
-    );
+    // 190 (D8): re-pointed to another chat, the export stays shared, in full.
+    share(None).await.unwrap();
     let other = chat_of(a_agents.clone()).await;
     a.ctx
         .put_export(Export {
@@ -1909,7 +1805,6 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
             target: ExportTarget::Chat { session: other },
             description: "The project chat".into(),
             paused: None,
-            tools: None,
         })
         .await
         .unwrap();
@@ -1919,9 +1814,11 @@ async fn a_chat_shared_in_full_talks_both_ways_like_a_mesh_peer() {
         .into_iter()
         .find(|c| c.name == a_alias)
         .unwrap();
-    assert_eq!(
-        after.modes.get("proj"),
-        Some(&ShareMode::Cautious),
-        "re-pointed: cautious"
+    assert_eq!(after.exports, ["proj"], "re-pointed: still shared");
+    assert!(
+        crate::contacts::offers::granted(&a.ctx.shared.read().staged, &a_alias)
+            .iter()
+            .any(|o| o.name == "proj" && o.mode == ShareMode::Full),
+        "re-pointed: full on the card"
     );
 }

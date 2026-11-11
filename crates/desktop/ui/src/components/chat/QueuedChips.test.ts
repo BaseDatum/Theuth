@@ -10,6 +10,11 @@ import { useSessions } from '@/store/sessions'
 import { MessageUser } from './MessageUser'
 import { QueuedChips, withdrawInto } from './QueuedChips'
 import { FRESH } from './slash'
+import { StopButton } from './StopButton'
+import { interrupt, phase } from '@/lib/composer-state'
+import type { WireEvent } from '@/rpc/events'
+import { label as chordLabel } from '@/lib/chord'
+import { useShortcuts } from '@/lib/shortcuts'
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('@/lib/mobile', () => ({ usePointerCoarse: () => false }))
@@ -71,12 +76,37 @@ test('171F4: editing a queued steer brings back its text and its attachments; a 
   ])
 })
 
-test('186 D8: under a contact turn the last chip says it runs after that turn, never how to interrupt', () => {
-  const S = 'contact-turn'
-  useSessions.getState().loadHistory(S, { ...FRESH, running: true, queued: [{ id: 'q1', text: 'mine' }] }, 'replace')
-  const chips = () => render(h(QueuedChips, { session: S, onEdit: () => undefined }))
-  expect(chips()).toContain('to interrupt')
-  active().sessions.setState((s) => ({ sessions: { ...s.sessions, [S]: { ...s.sessions[S]!, contactNote: { contact: 'sky', machine: 'm', export: 'ops', cap: 'read_only' } } } }))
-  expect(chips()).toContain('queued · runs after sky&#x27;s turn')
-  expect(chips()).not.toContain('to interrupt')
+test('190: during a contact\'s turn (full, or an old cautious `<contact_message>` opener) the composer reads as in any chat: the chip says how to interrupt, Stop is plain, interject is not held back', () => {
+  const origin = { id: 'm1', from: 'peer:sky/ops', reply_to: null, scope: null, contact_mode: 'full' as const }
+  const openers: WireEvent[][] = [
+    [
+      { type: 'PeerDelivered', session: 'contact-full', origin, text: 'hi', seq: 5, turn: 'T1' },
+      { type: 'TurnStarted', session: 'contact-full', turn: 'T1', text: '<message from="peer:sky/ops" id="m1">\nhi\n</message>', model: 'm', turn_seq: 5 },
+    ],
+    [
+      {
+        type: 'TurnStarted',
+        session: 'contact-cautious',
+        turn: 'T1',
+        text: '<contact_message contact="sky" machine="m" export="ops" cap="read_only">\nThis message comes from sky, a contact outside your mesh.\nhi\n</contact_message>',
+        model: 'm',
+        turn_seq: 5,
+      },
+    ],
+  ]
+  for (const events of openers) {
+    const S = (events[0] as Extract<WireEvent, { type: 'TurnStarted' | 'PeerDelivered' }>).session
+    const st = useSessions.getState()
+    st.loadHistory(S, { ...FRESH, running: true, queued: [{ id: 'q1', text: 'mine' }] }, 'replace')
+    st.applyEvents(events)
+    const s = useSessions.getState().sessions[S]!
+    expect(s.running).toBe(true)
+    const chips = render(h(QueuedChips, { session: S, onEdit: () => undefined }))
+    // The wording of any chat: the interject chord, never "runs after <contact>'s turn".
+    expect(chips).toContain(`queued · ${chordLabel(useShortcuts.getState().chords.interject)} to interrupt`)
+    expect(chips).not.toContain('runs after')
+    expect(render(h(StopButton, { count: 0, ring: 0, onStop: () => undefined }))).toContain('aria-label="Stop"')
+    expect(interrupt(phase(s.running, s.queued?.length ?? 0), true)).toBe('interject')
+    expect(interrupt(phase(s.running, s.queued?.length ?? 0), false)).toBe('flush')
+  }
 })

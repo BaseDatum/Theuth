@@ -45,7 +45,7 @@ test('bare /skills and /mcp open their pages, carrying the chat they came from',
   await run('/skills', ctx)
   expect(navigate).toHaveBeenLastCalledWith({ to: '/skills', search: { session: 'abc' } })
   await run('/mcp', ctx)
-  expect(navigate).toHaveBeenLastCalledWith({ to: '/tools', search: { session: 'abc' } })
+  expect(navigate).toHaveBeenLastCalledWith({ to: '/settings/$tab', params: { tab: 'tools' }, search: { session: 'abc' } })
   await run('/skills', { ...ctx, session: null })
   expect(navigate).toHaveBeenLastCalledWith({ to: '/skills', search: {} })
 })

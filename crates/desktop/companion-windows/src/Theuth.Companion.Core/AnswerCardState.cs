@@ -27,7 +27,7 @@ public enum CardSource
 public sealed record ToolChip(string CallId, string Name, bool Running, bool Failed = false);
 
 /// <summary>One request of the card's thread and its streamed answer (the header dots are the thread positions).</summary>
-public sealed record CardExchange(string Request, string Answer, IReadOnlyList<ToolChip> Tools, string? Error = null, bool Stopped = false, bool Finished = false)
+public sealed record CardExchange(string Request, string Answer, IReadOnlyList<ToolChip> Tools, string? Error = null, bool Stopped = false, bool Finished = false, ThinkingState? Thinking = null)
 {
     public static CardExchange Empty { get; } = new("", "", Array.Empty<ToolChip>());
 }
@@ -164,13 +164,35 @@ public sealed class AnswerCardState
     public void TextDelta(string text, ulong nowMs)
     {
         if (Latest.Stopped || Phase == CardPhase.Failed) return;
+        Latest.Thinking?.Collapse((long)nowMs); // 192w P3: the first answer text folds the thinking into "Thought for N s"
         SetLatest(Latest with { Answer = Latest.Answer + text });
         if (Phase is CardPhase.Thinking or CardPhase.Finishing or CardPhase.Listening) Enter(CardPhase.Answer, nowMs);
     }
 
+    /// <summary>
+    /// 192w P3: a streamed piece of the model's reasoning (<c>ReasoningDelta</c>): the card shows it as a "Thinking" section instead of
+    /// the bare spinner until the first answer text. True for the exchange's very first piece (the log line).
+    /// </summary>
+    public bool ReasoningDelta(string text, ulong nowMs)
+    {
+        if (text.Length == 0 || Latest.Stopped || Phase == CardPhase.Failed) return false;
+        var x = Latest;
+        var thinking = x.Thinking ?? new ThinkingState();
+        bool first = thinking.Delta(text, (long)nowMs);
+        if (!ReferenceEquals(thinking, x.Thinking)) SetLatest(x with { Thinking = thinking });
+        return first;
+    }
+
+    /// <summary><c>ReasoningDone.ms</c>: the engine's own measure of how long the model thought (it ends up in "Thought for N s").</summary>
+    public void ReasoningDone(ulong ms) => Latest.Thinking?.Done((long)ms);
+
+    /// <summary>The thinking of the shown exchange, null when no <c>ReasoningDelta</c> ever arrived (today's spinner).</summary>
+    public ThinkingView? Thinking(ulong nowMs) => Current.Thinking is { Started: true } thinking ? thinking.View((long)nowMs) : null;
+
     /// <summary><c>TurnFinished</c>: answer (or failed for <c>error</c>/<c>cancelled</c>, unless the user's Esc stopped it — that stays the frozen answer).</summary>
     public void TurnFinished(string? stopReason, ulong nowMs)
     {
+        Latest.Thinking?.Collapse((long)nowMs);
         var latest = Latest with { Finished = true };
         if (latest.Stopped)
         {
@@ -190,6 +212,7 @@ public sealed class AnswerCardState
     /// <summary>The desk's <c>Error</c> event or a failed send: failed, which never auto-hides (⎋ only).</summary>
     public void Failed(string why, ulong nowMs)
     {
+        Latest.Thinking?.Collapse((long)nowMs);
         SetLatest(Latest with { Error = why, Finished = true });
         Speaking = false;
         Enter(CardPhase.Failed, nowMs);
@@ -202,6 +225,7 @@ public sealed class AnswerCardState
     public bool Stop(ulong nowMs)
     {
         if (Phase is not (CardPhase.Thinking or CardPhase.Answer) || Finished) return false;
+        Latest.Thinking?.Collapse((long)nowMs);
         SetLatest(Latest with { Stopped = true, Finished = true, Tools = Latest.Tools.Select(t => t with { Running = false }).ToList() });
         Enter(CardPhase.Answer, nowMs);
         return true;
@@ -387,9 +411,18 @@ public abstract record MdBlock
 
     public sealed record Paragraph(IReadOnlyList<MdInline> Inlines) : MdBlock;
 
-    public sealed record Bullet(IReadOnlyList<MdInline> Inlines, bool Numbered, int Number) : MdBlock;
+    /// <summary><paramref name="Indent"/>: the nesting level (0–4) of a bullet written with leading blanks (189w).</summary>
+    public sealed record Bullet(IReadOnlyList<MdInline> Inlines, bool Numbered, int Number, int Indent = 0) : MdBlock;
 
     public sealed record Code(string Language, string Text) : MdBlock;
+
+    /// <summary>
+    /// 192w P1: a picture fence (<c>json-render</c>, <c>mermaid</c>, <c>openui</c> — <see cref="PictureFence"/>). <paramref name="Lang"/> is the
+    /// engine's name for it; <paramref name="Closed"/> is false while the fence is still arriving (the view shows a "drawing…" line, never
+    /// the source) and true once its closing fence came. Whether it is drawn, being drawn or fell back is the view's business
+    /// (<see cref="PictureCache"/>), not the parse's.
+    /// </summary>
+    public sealed record Picture(string Lang, string Source, bool Closed) : MdBlock;
 }
 
 /// <summary>Inline marks: text, **bold**, *italic*, `code`, [text](url).</summary>
@@ -409,20 +442,39 @@ public abstract record MdInline
 }
 
 /// <summary>
-/// The tiny block renderer §12.2 asks for (lists, headings, fenced code, paragraphs) plus inline marks — enough for a desk answer.
-/// An unclosed fence (a streaming answer) renders as code so far; anything unknown is text. Pure.
+/// The minimal incremental markdown parser (189w D4, §12.2's "tiny block renderer"): headings, bullets (nested by their indent),
+/// numbered items, fenced code, table rows (kept as a monospace block) and paragraphs, plus the inline marks **bold**, *italic*, `code`
+/// and [links](url) — enough for a desk answer. Pure and total: anything unknown is text. <c>streaming: true</c> is for text that is
+/// still arriving: the LAST block's unclosed marks are shown as already closed (<c>**bo</c> renders bold so far, an unclosed code span
+/// as code, a link whose <c>)</c> has not come as its label alone) and a last line that is only the start of a block marker
+/// (<c>##</c>, <c>-</c>, <c>1.</c>, one or two backticks) is held back until it has a word — so the view never flashes stray marks that
+/// the next chunk turns into formatting. An unclosed fence renders as code so far.
 /// </summary>
 public static class AnswerMarkdown
 {
-    public static IReadOnlyList<MdBlock> Parse(string? markdown)
+    private enum RawKind
     {
-        var blocks = new List<MdBlock>();
+        Heading,
+        Paragraph,
+        Bullet,
+        Code,
+        Picture,
+    }
+
+    private sealed record Raw(RawKind Kind, string Src, int Level = 0, bool Numbered = false, int Number = 0, int Indent = 0, string Language = "", bool Closed = false);
+
+    public static IReadOnlyList<MdBlock> Parse(string? markdown) => Parse(markdown, streaming: false);
+
+    public static IReadOnlyList<MdBlock> Parse(string? markdown, bool streaming)
+    {
+        var raws = new List<Raw>();
         var para = new List<string>();
         var lines = (markdown ?? "").Replace("\r\n", "\n").Split('\n');
+        int lastLine = lines.Length - 1;
         void Flush()
         {
             if (para.Count == 0) return;
-            blocks.Add(new MdBlock.Paragraph(Inline(string.Join(" ", para.Select(p => p.Trim())))));
+            raws.Add(new Raw(RawKind.Paragraph, string.Join(" ", para.Select(p => p.Trim()))));
             para.Clear();
         }
         for (int i = 0; i < lines.Length; i++)
@@ -432,48 +484,119 @@ public static class AnswerMarkdown
             if (t.StartsWith("```", StringComparison.Ordinal))
             {
                 Flush();
+                if (streaming && i == lastLine && PictureFence.IsOpeningStub(t)) continue; // 192w: "```" or "```mer" — it may become a picture fence; nothing to show yet
                 var lang = t[3..].Trim();
                 var code = new StringBuilder();
                 i++;
                 for (; i < lines.Length && !lines[i].TrimStart().StartsWith("```", StringComparison.Ordinal); i++)
                 {
+                    if (streaming && i == lastLine && IsFenceStub(lines[i])) break; // a closing fence still being typed
                     if (code.Length > 0) code.Append('\n');
                     code.Append(lines[i]);
                 }
-                blocks.Add(new MdBlock.Code(lang, code.ToString()));
+                bool closed = i < lines.Length && lines[i].TrimStart().StartsWith("```", StringComparison.Ordinal);
+                // 192w P1: a picture fence is a picture block once closed, a "drawing…" line while it still arrives; a reply that ended with
+                // the fence open has no picture to wait for, so it stays code.
+                if (PictureFence.Lang(lang) is { } picture && (closed || streaming))
+                    raws.Add(new Raw(RawKind.Picture, code.ToString(), Language: picture, Closed: closed));
+                else
+                    raws.Add(new Raw(RawKind.Code, code.ToString(), Language: lang));
                 continue;
             }
             if (t.Length == 0) { Flush(); continue; }
+            if (streaming && i == lastLine && IsMarkerStub(t)) continue; // the start of a marker: nothing to show yet
             int hashes = 0;
             while (hashes < t.Length && hashes < 6 && t[hashes] == '#') hashes++;
             if (hashes > 0 && hashes < t.Length && t[hashes] == ' ')
             {
                 Flush();
-                blocks.Add(new MdBlock.Heading(hashes, Inline(t[(hashes + 1)..].Trim())));
+                raws.Add(new Raw(RawKind.Heading, t[(hashes + 1)..].Trim(), Level: hashes));
                 continue;
             }
-            if ((t.StartsWith("- ", StringComparison.Ordinal) || t.StartsWith("* ", StringComparison.Ordinal) || t.StartsWith("• ", StringComparison.Ordinal)))
+            if (t[0] == '|')
+            {
+                // A table: its rows stay as written, in a monospace block (no cell layout in a "minimal" renderer).
+                Flush();
+                var rows = new StringBuilder(line.TrimEnd());
+                while (i + 1 < lines.Length && lines[i + 1].TrimStart().StartsWith('|'))
+                {
+                    i++;
+                    rows.Append('\n').Append(lines[i].TrimEnd());
+                }
+                raws.Add(new Raw(RawKind.Code, rows.ToString(), Language: "table"));
+                continue;
+            }
+            if (t.StartsWith("- ", StringComparison.Ordinal) || t.StartsWith("* ", StringComparison.Ordinal) || t.StartsWith("• ", StringComparison.Ordinal))
             {
                 Flush();
-                blocks.Add(new MdBlock.Bullet(Inline(t[2..].Trim()), false, 0));
+                raws.Add(new Raw(RawKind.Bullet, t[2..].Trim(), Indent: IndentOf(line)));
                 continue;
             }
             int dot = 0;
             while (dot < t.Length && char.IsAsciiDigit(t[dot])) dot++;
-            if (dot > 0 && dot < t.Length - 1 && t[dot] is '.' or ')' && t[dot + 1] == ' ')
+            if (dot > 0 && dot < t.Length - 1 && (t[dot] is '.' or ')') && t[dot + 1] == ' ')
             {
                 Flush();
-                blocks.Add(new MdBlock.Bullet(Inline(t[(dot + 2)..].Trim()), true, int.Parse(t[..dot], System.Globalization.CultureInfo.InvariantCulture)));
+                raws.Add(new Raw(RawKind.Bullet, t[(dot + 2)..].Trim(), Numbered: true, Number: int.Parse(t[..dot], System.Globalization.CultureInfo.InvariantCulture), Indent: IndentOf(line)));
                 continue;
             }
             para.Add(line);
         }
         Flush();
+
+        var blocks = new List<MdBlock>(raws.Count);
+        for (int k = 0; k < raws.Count; k++)
+        {
+            var r = raws[k];
+            bool open = streaming && k == raws.Count - 1; // only the block still being written may hold an unclosed mark
+            blocks.Add(r.Kind switch
+            {
+                RawKind.Heading => new MdBlock.Heading(r.Level, Inline(r.Src, open)),
+                RawKind.Paragraph => new MdBlock.Paragraph(Inline(r.Src, open)),
+                RawKind.Bullet => new MdBlock.Bullet(Inline(r.Src, open), r.Numbered, r.Number, r.Indent),
+                RawKind.Picture => new MdBlock.Picture(r.Language, r.Src, r.Closed),
+                _ => new MdBlock.Code(r.Language, r.Src),
+            });
+        }
         return blocks;
     }
 
+    /// <summary>Leading blanks → a nesting level (two columns each, a tab is four), at most four deep.</summary>
+    private static int IndentOf(string line)
+    {
+        int columns = 0;
+        foreach (var c in line)
+        {
+            if (c == ' ') columns++;
+            else if (c == '\t') columns += 4;
+            else break;
+        }
+        return Math.Min(columns / 2, 4);
+    }
+
+    /// <summary>A last line that is nothing but the beginning of a block marker: <c>#</c>…<c>######</c>, a lone bullet, digits, <c>1.</c> / <c>1)</c>, one or two backticks.</summary>
+    private static bool IsMarkerStub(string line)
+    {
+        var s = line.Trim();
+        if (s.Length == 0) return false;
+        if (s.Length <= 6 && s.All(c => c == '#')) return true;
+        if (s is "-" or "*" or "•") return true;
+        if (s.All(char.IsAsciiDigit)) return true;
+        if (s.Length >= 2 && s[..^1].All(char.IsAsciiDigit) && (s[^1] is '.' or ')')) return true;
+        return IsFenceStub(s);
+    }
+
+    private static bool IsFenceStub(string line)
+    {
+        var s = line.Trim();
+        return s.Length is 1 or 2 && s.All(c => c == '`');
+    }
+
     /// <summary>The text without its marks (`code`, **bold**, *italic*, [text](url) → text) — the collapsed card's plain two lines.</summary>
-    public static string Plain(string? markdown) => string.Concat(Inline(markdown ?? "").Select(i => i switch
+    public static string Plain(string? markdown) => Plain(markdown, open: false);
+
+    /// <summary><see cref="Plain(string?)"/> for text still arriving (<c>open</c>: an unclosed mark counts as closed — no stray asterisks while it streams).</summary>
+    public static string Plain(string? markdown, bool open) => string.Concat(Inline(markdown ?? "", open).Select(i => i switch
     {
         MdInline.Text t => t.Value,
         MdInline.Bold b => b.Value,
@@ -483,7 +606,13 @@ public static class AnswerMarkdown
         _ => "",
     }));
 
-    public static IReadOnlyList<MdInline> Inline(string s)
+    public static IReadOnlyList<MdInline> Inline(string s) => Inline(s, open: false);
+
+    /// <summary>
+    /// <paramref name="open"/>: <paramref name="s"/> is the end of text that is still arriving, so a mark that has not closed yet is
+    /// rendered as if it had (see <see cref="Parse(string?, bool)"/>). Closed text parses exactly as before.
+    /// </summary>
+    public static IReadOnlyList<MdInline> Inline(string s, bool open)
     {
         var outList = new List<MdInline>();
         var text = new StringBuilder();
@@ -500,27 +629,149 @@ public static class AnswerMarkdown
             {
                 int end = s.IndexOf('`', i + 1);
                 if (end > i) { Push(); outList.Add(new MdInline.Code(s[(i + 1)..end])); i = end + 1; continue; }
+                if (open)
+                {
+                    Push();
+                    if (i + 1 < s.Length) outList.Add(new MdInline.Code(s[(i + 1)..]));
+                    i = s.Length;
+                    continue;
+                }
             }
             if (c == '*' && i + 1 < s.Length && s[i + 1] == '*')
             {
                 int end = s.IndexOf("**", i + 2, StringComparison.Ordinal);
                 if (end > i + 2) { Push(); outList.Add(new MdInline.Bold(s[(i + 2)..end])); i = end + 2; continue; }
+                if (open && end < 0)
+                {
+                    Push();
+                    var rest = s[(i + 2)..];
+                    if (rest.EndsWith('*')) rest = rest[..^1]; // the first star of the closing pair
+                    if (rest.Length > 0) outList.Add(new MdInline.Bold(rest));
+                    i = s.Length;
+                    continue;
+                }
             }
-            if (c is '*' or '_' && i + 1 < s.Length && s[i + 1] != ' ')
+            if ((c == '*' || (c == '_' && (i == 0 || !char.IsLetterOrDigit(s[i - 1])))) && i + 1 < s.Length && s[i + 1] != ' ')
             {
-                int end = s.IndexOf(c, i + 1);
+                // `_` opens emphasis only at a word start and closes only at a word end: snake_case_names stay whole (CommonMark's rule).
+                int end = c == '*' ? s.IndexOf(c, i + 1) : ClosingUnderscore(s, i + 1);
                 if (end > i + 1 && s[end - 1] != ' ') { Push(); outList.Add(new MdInline.Italic(s[(i + 1)..end])); i = end + 1; continue; }
+                if (open && end < 0) { Push(); outList.Add(new MdInline.Italic(s[(i + 1)..])); i = s.Length; continue; }
             }
             if (c == '[')
             {
                 int close = s.IndexOf("](", i + 1, StringComparison.Ordinal);
                 int end = close > i ? s.IndexOf(')', close + 2) : -1;
                 if (close > i && end > close) { Push(); outList.Add(new MdInline.Link(s[(i + 1)..close], s[(close + 2)..end])); i = end + 1; continue; }
+                if (open && PendingLink(s, i) is { } label)
+                {
+                    Push();
+                    if (label.Length > 0) outList.Add(new MdInline.Text(label));
+                    i = s.Length;
+                    continue;
+                }
             }
+            if (open && i == s.Length - 1 && c is '*' or '`') { i++; continue; } // a lone mark at the very end: the start of the next one
             text.Append(c);
             i++;
         }
         Push();
         return outList;
+    }
+
+    /// <summary>The index of the <c>_</c> that closes an emphasis opened before <paramref name="from"/>, or -1: not after a blank, not inside a word.</summary>
+    private static int ClosingUnderscore(string s, int from)
+    {
+        for (int j = from; j < s.Length; j++)
+        {
+            if (s[j] != '_' || j == 0 || s[j - 1] == ' ') continue;
+            if (j == s.Length - 1 || !char.IsLetterOrDigit(s[j + 1])) return j;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// A link still being typed at the end of <paramref name="s"/> (<c>[lab</c>, <c>[label]</c>, <c>[label](ur</c>): its label, else null.
+    /// Bounded, so a stray <c>[</c> far from the end is just a character.
+    /// </summary>
+    private static string? PendingLink(string s, int at)
+    {
+        var rest = s[at..];
+        if (rest.Length > 120) return null;
+        int b = rest.IndexOf(']');
+        if (b < 0) return rest[1..];
+        if (b == rest.Length - 1) return rest[1..b];
+        if (rest[b + 1] == '(' && rest.IndexOf(')', b + 2) < 0) return rest[1..b];
+        return null;
+    }
+}
+
+/// <summary>
+/// 189w D4: how a view that keeps the blocks it already drew updates them when the text grows. A block's signature is its kind and
+/// content; the common prefix of two signature lists is what stays untouched, and the first differing block of the same kind is
+/// updated IN PLACE (the paragraph being written) — so a streamed chunk costs one block's layout, not the whole answer's.
+/// </summary>
+public static class MdDiff
+{
+    /// <summary>One letter per element type a view builds: <c>H</c> heading · <c>P</c> paragraph · <c>B</c> bullet · <c>C</c> code · <c>G</c> picture (graphic).</summary>
+    public static char Kind(MdBlock b) => b switch
+    {
+        MdBlock.Heading => 'H',
+        MdBlock.Paragraph => 'P',
+        MdBlock.Bullet => 'B',
+        MdBlock.Code => 'C',
+        MdBlock.Picture => 'G',
+        _ => '?',
+    };
+
+    /// <summary>Kind + every attribute + the inline marks, length-prefixed so two different blocks never share a signature.</summary>
+    public static string Signature(MdBlock b)
+    {
+        var sb = new StringBuilder();
+        sb.Append(Kind(b));
+        switch (b)
+        {
+            case MdBlock.Heading h:
+                sb.Append(h.Level).Append('|');
+                Inlines(sb, h.Inlines);
+                break;
+            case MdBlock.Paragraph p:
+                Inlines(sb, p.Inlines);
+                break;
+            case MdBlock.Bullet bl:
+                sb.Append(bl.Numbered ? "n" + bl.Number : "u").Append('/').Append(bl.Indent).Append('|');
+                Inlines(sb, bl.Inlines);
+                break;
+            case MdBlock.Code c:
+                sb.Append(c.Language.Length).Append(':').Append(c.Language).Append(c.Text);
+                break;
+            case MdBlock.Picture g:
+                sb.Append(g.Lang.Length).Append(':').Append(g.Lang).Append(g.Closed ? '1' : '0').Append(g.Source);
+                break;
+        }
+        return sb.ToString();
+    }
+
+    private static void Inlines(StringBuilder sb, IReadOnlyList<MdInline> inlines)
+    {
+        foreach (var i in inlines)
+        {
+            switch (i)
+            {
+                case MdInline.Text x: sb.Append('t').Append(x.Value.Length).Append(':').Append(x.Value); break;
+                case MdInline.Bold x: sb.Append('b').Append(x.Value.Length).Append(':').Append(x.Value); break;
+                case MdInline.Italic x: sb.Append('i').Append(x.Value.Length).Append(':').Append(x.Value); break;
+                case MdInline.Code x: sb.Append('c').Append(x.Value.Length).Append(':').Append(x.Value); break;
+                case MdInline.Link x: sb.Append('l').Append(x.Value.Length).Append(':').Append(x.Value).Append('>').Append(x.Url.Length).Append(':').Append(x.Url); break;
+            }
+        }
+    }
+
+    /// <summary>How many leading signatures are identical (their elements stay as they are).</summary>
+    public static int CommonPrefix(IReadOnlyList<string> before, IReadOnlyList<string> after)
+    {
+        int n = Math.Min(before.Count, after.Count), k = 0;
+        while (k < n && string.Equals(before[k], after[k], StringComparison.Ordinal)) k++;
+        return k;
     }
 }

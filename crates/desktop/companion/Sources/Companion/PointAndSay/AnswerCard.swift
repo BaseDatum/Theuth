@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CompanionCore
+import SwiftStreamingMarkdown
 import SwiftUI
 import TheuthKit
 
@@ -17,6 +18,13 @@ final class AnswerCardModel: ObservableObject {
     var onFollowUp: ((String) -> Void)?
     var onApprove: ((Decision) -> Void)?
     var onExpandChanged: ((Bool) -> Void)?
+    /// 189 F6 / 192: the expanded body's rendered height changed (markdown lays out after its async parse, a picture arrives
+    /// after its draw — neither with `s`).
+    var onContentHeight: ((CGFloat) -> Void)?
+    /// 192 P3: the thinking view changed height on its own (its disclosure).
+    var onResize: (() -> Void)?
+    /// 192 P2: a picture was clicked — the card's Open action.
+    var onOpen: (() -> Void)?
 
     /// Header label (§10.3 / §12.2).
     var who: String { s.kind == .command ? "Command · theuth desk" : "theuth desk" }
@@ -99,11 +107,12 @@ struct AnswerCardView: View {
     @ViewBuilder private var collapsed: some View {
         if isCommand, let c = s.command { commandBody(c, compact: true) }
         else {
-            if !s.question.isEmpty, s.text.isEmpty { Text("“\(s.question)”").font(.body).foregroundColor(.tertiary).lineLimit(2) }
+            if !s.question.isEmpty, s.text.isEmpty, !s.thinking.live { Text("“\(s.question)”").font(.body).foregroundColor(.tertiary).lineLimit(2) }
+            if s.thinking.startedAt != nil { ThinkingView(thinking: s.thinking, onResize: model.onResize) } // 192 P3
             if !s.text.isEmpty {
                 Text(twoLines(s.text)).font(.body).foregroundColor(.primary).lineLimit(2).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else if !s.failed, s.phase == .thinking { ProgressView().controlSize(.small).padding(.vertical, 2) }
+            } else if !s.failed, s.phase == .thinking, !s.thinking.live { ProgressView().controlSize(.small).padding(.vertical, 2) }
             chips(s.tools, running: s.phase == .thinking)
         }
         approvalBox
@@ -125,12 +134,18 @@ struct AnswerCardView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 8) {
                 if let q = turn?.question, !q.isEmpty { Text("“\(q)”").font(.body).foregroundColor(.tertiary) }
+                if let t = turn?.thinking, t.startedAt != nil, turn?.command == nil { ThinkingView(thinking: t, onResize: model.onResize) } // 192 P3
                 if let c = turn?.command { commandBody(c, compact: false) }
-                else if let text = turn?.text, !text.isEmpty { MarkdownBlocks(text: text, streaming: s.phase == .thinking && s.current == s.turns.count - 1) }
-                else if s.phase == .thinking { ProgressView().controlSize(.small).padding(.vertical, 2) }
+                else if let text = turn?.text, !text.isEmpty {
+                    // 189 F7: hold-back while streaming; 192 P1: pictures between the markdown runs.
+                    AnswerBody(text: s.markdownText(turn: s.current), finished: s.current < s.turns.count - 1 || s.turnFinished,
+                               onOpen: model.onOpen)
+                }
+                else if s.phase == .thinking, !(turn?.thinking.live ?? false) { ProgressView().controlSize(.small).padding(.vertical, 2) }
                 if let tools = turn?.tools, !tools.isEmpty, turn?.command == nil { chips(tools, running: s.phase == .thinking) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { h in model.onContentHeight?(h) })
         }
         .frame(maxHeight: AnswerCard.maxBodyHeight)
         approvalBox
@@ -302,60 +317,74 @@ struct SpeakingGlyph: View {
     }
 }
 
-/// §12.2 markdown: `AttributedString(markdown:)` for inline marks, a tiny block pass for headings, bullets and fenced code.
-struct MarkdownBlocks: View {
+/// §12.2 / 189 D4: the answer body, rendered by SwiftStreamingMarkdown's `DocumentView`. Every text change re-parses the
+/// whole answer off the main actor (the library's snapshot model, `StreamedMarkdownView`'s too) with LaTeX off and the
+/// speculative rewrite on (a half-streamed `**bold` or table renders, not its marks). System fonts and label colours,
+/// citations and the "Select more text" sheet off. 189 F3: the library's fade-in of appended text is on (none under
+/// Reduce Motion); it and the bullets, quote bar and code/table chrome read the library's `Bundle.module`, which loads
+/// from Contents/Resources because the app is built with xcodebuild (`scripts/bundle-companion.sh`, `--probe-markdown`).
+struct AnswerMarkdown: View {
     let text: String
-    var streaming = false
-
-    enum Block: Equatable { case para(String), heading(String), bullet(String), code(String) }
+    /// `--probe-markdown` passes `false`: an off-screen window drives no fade, so the text would stay transparent.
+    var animate = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var document = RenderableDocument.empty
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            let blocks = Self.blocks(text)
-            ForEach(Array(blocks.enumerated()), id: \.offset) { i, b in
-                switch b {
-                case .heading(let t): inline(t).font(.body.weight(.semibold))
-                case .para(let t): inline(t).font(.body)
-                case .bullet(let t): HStack(alignment: .firstTextBaseline, spacing: 6) { Text("•"); inline(t).font(.body) }
-                case .code(let t):
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(t).font(.callout.monospaced()).foregroundColor(.primary).padding(8)
-                    }
-                    .background(RoundedRectangle(cornerRadius: Type.buttonRadius, style: .continuous).fill(Color.primary.opacity(0.06)))
-                }
-            }
+        let config = animate && !reduceMotion ? Self.animated : Self.still
+        DocumentView(renderableDocument: document, config: config)
             .frame(maxWidth: .infinity, alignment: .leading)
-            if streaming { Shimmer() }
-        }
-        .textSelection(.enabled)
-    }
-
-    private func inline(_ t: String) -> Text {
-        Text((try? AttributedString(markdown: t, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(t))
-    }
-
-    /// Lines → blocks: ``` fences, `#` headings, `-`/`*`/`•` bullets, paragraphs joined by blank lines.
-    static func blocks(_ text: String) -> [Block] {
-        var out: [Block] = []
-        var para: [String] = []
-        var code: [String]?
-        func flush() { if !para.isEmpty { out.append(.para(para.joined(separator: " "))); para = [] } }
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                if let c = code { out.append(.code(c.joined(separator: "\n"))); code = nil } else { flush(); code = [] }
-                continue
+            .task(id: text) {
+                let parsed = await Self.parse(text, config: config)
+                if !Task.isCancelled { document = parsed } // a newer snapshot's task replaced this one
             }
-            if code != nil { code?.append(line); continue }
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.isEmpty { flush(); continue }
-            if t.hasPrefix("#") { flush(); out.append(.heading(String(t.drop { $0 == "#" }).trimmingCharacters(in: .whitespaces))); continue }
-            if let m = ["- ", "* ", "• "].first(where: t.hasPrefix) { flush(); out.append(.bullet(String(t.dropFirst(m.count)))); continue }
-            para.append(t)
-        }
-        if let c = code { out.append(.code(c.joined(separator: "\n"))) }
-        flush()
-        return out
+    }
+
+    nonisolated static func parse(_ text: String, config: MarkdownRenderConfig) async -> RenderableDocument {
+        let result = await MarkdownParserImpl().parse(text: text, option: MarkdownParseOption(speculativeRewrite: true, latexMatchingRules: []))
+        return await RenderableDocument(document: result.document, config: config)
+    }
+
+    static let animated = config(animate: true)
+    static let still = config(animate: false)
+
+    /// Every style spelled out: the library's defaults are its own palette (`Color.Theme`), not the system's.
+    static func config(animate: Bool) -> MarkdownRenderConfig {
+        let label = Color(nsColor: .labelColor), secondary = Color(nsColor: .secondaryLabelColor)
+        let separator = Color(nsColor: .separatorColor), fill = Color.primary.opacity(0.06)
+        let body = fonts(.body), small = fonts(.callout), code = fonts(.body, monospaced: true)
+        let text = MarkdownRenderConfig.MarkdownTextStyle(textFonts: body, textColor: label)
+        return MarkdownRenderConfig(
+            shouldAnimateText: animate,
+            blockQuoteStyle: .init(textFonts: body, textColor: secondary),
+            headingStyle: .init(h1Font: fonts(.title3, weight: .semibold), h2Font: fonts(.headline, weight: .semibold), h3Font: fonts(.body, weight: .semibold),
+                                h4Font: fonts(.body, weight: .semibold), h5Font: fonts(.body, weight: .semibold),
+                                h6Font: fonts(.body, weight: .semibold), textColor: label),
+            orderedListStyle: text,
+            paragraphStyle: text,
+            tableStyle: .init(textFonts: small, headerTextColor: label, regularTextColor: label, headerBackgroundColor: fill,
+                              borderColor: separator, actionButtonColor: .accentColor),
+            inlineStyle: .init(boldTextColor: label, linkTextFont: body.normal, linkTextColor: Color(nsColor: .linkColor),
+                               codeTextFont: code.normal, codeTextColor: label, codeBackgroundColor: fill, codeUnderlineColor: .clear),
+            textContextMenu: nil,
+            citationConfig: .init(isEnabled: false, font: small.normal, textColor: secondary, backgroundColor: .clear),
+            codeBlockConfig: CodeBlockConfig(theme: .xcode, backgroundColor: fill, foregroundColor: secondary,
+                                             codeTextFonts: code, chromeTextFonts: fonts(.caption1)),
+            blockSpacing: 8,
+            textSelectionConfig: TextSelectionConfig(isEnabled: false, backgroundColor: Color(nsColor: .windowBackgroundColor)),
+            thematicBreakColor: separator,
+            imageConfig: .disabled
+        )
+    }
+
+    /// The system font at `style`'s size, with its bold and italic faces.
+    private static func fonts(_ style: NSFont.TextStyle, weight: NSFont.Weight = .regular, monospaced: Bool = false) -> TextFonts {
+        let size = NSFont.preferredFont(forTextStyle: style).pointSize
+        func face(_ w: NSFont.Weight) -> NSFont { monospaced ? .monospacedSystemFont(ofSize: size, weight: w) : .systemFont(ofSize: size, weight: w) }
+        let normal = face(weight), bold = face(.bold)
+        let italic = NSFontManager.shared.convert(normal, toHaveTrait: .italicFontMask)
+        let boldItalic = NSFontManager.shared.convert(bold, toHaveTrait: .italicFontMask)
+        return TextFonts(normal: normal, italic: italic, bold: bold, boldItalic: boldItalic, preferredLetterSpacing: nil, preferredLineHeight: nil)
     }
 }
 
@@ -366,6 +395,8 @@ struct MarkdownBlocks: View {
 @MainActor
 final class AnswerCard {
     static let width: CGFloat = 440
+    /// The body's width inside the 16 pt padding: markdown and pictures (192 P2 draws at it).
+    static let contentWidth: CGFloat = width - 32
     /// Expanded body: ≤ 70 % of the screen's visible height (§12.2), the rest scrolls inside.
     static var maxBodyHeight: CGFloat { (NSScreen.main?.visibleFrame.height ?? 800) * 0.7 - 140 }
     let model = AnswerCardModel()
@@ -376,6 +407,8 @@ final class AnswerCard {
     private var subs = Set<AnyCancellable>()
     var onEscape: (() -> Void)?
     var onOpen: (() -> Void)?
+    /// 189 D1: the card left the screen (the Ask's focus claim ends with it).
+    var onHide: (() -> Void)?
     /// ⌘L: who supplies the last answers.
     var historySource: (() -> [CompanionCore.Receipt])?
     var onStop: (() -> Void)? {
@@ -396,8 +429,31 @@ final class AnswerCard {
         hosting.autoresizingMask = [.width, .height]
         container.addSubview(hosting)
         model.objectWillChange.receive(on: RunLoop.main)
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.relayout() } }
+            .sink { [weak self] _ in self?.scheduleRelayout() }
             .store(in: &subs)
+        // 189 F6: the body lays out after the model change that started it (an async parse, a picture draw): re-measure then too.
+        model.onContentHeight = { [weak self] h in
+            self?.contentHeight = h
+            self?.scheduleRelayout()
+        }
+        model.onResize = { [weak self] in self?.scheduleRelayout() }
+        model.onOpen = { [weak self] in self?.onOpen?() }
+    }
+
+    /// The expanded body's last rendered height (`--probe-markdown-stream` logs it); `nil` before the first.
+    private(set) var contentHeight: CGFloat?
+    private var relayoutPending = false
+
+    /// One `place()` on the next run-loop turn however many changes land before it: `objectWillChange` fires before the
+    /// change, and a stream of height changes costs one measure per turn.
+    private func scheduleRelayout() {
+        guard !relayoutPending else { return }
+        relayoutPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.relayoutPending = false
+            self.relayout()
+        }
     }
 
     var isVisible: Bool { panel.isVisible }
@@ -433,6 +489,7 @@ final class AnswerCard {
         model.history = nil
         if returnKey, let app = previousApp, app != .current { app.activate() }
         previousApp = nil
+        onHide?()
     }
 
     /// §15: ⏎ approve · ⎋ deny while the box is up (they win over expand/dismiss); else ⏎ expand/collapse, ⎋ collapse-or-dismiss,
@@ -466,18 +523,28 @@ final class AnswerCard {
     }
 
     private var anchor = NSPoint.zero
+    /// `--probe-markdown-stream`: a fixed (off-screen) origin instead of the island area; the size logic is unchanged.
+    var fixedOrigin: NSPoint?
 
     private func relayout() { if panel.isVisible { place() } }
 
+    /// 192: every frame change goes through the animator (0 s for a small change) — a plain `setFrame` during a running
+    /// 0.18 s resize was overwritten when that animation ended, leaving the panel at the earlier, transitional height
+    /// (`--probe-thinking`: 160 pt for 224 pt of content after the thinking collapsed).
     private func place() {
         hosting.layoutSubtreeIfNeeded()
         let size = NSSize(width: Self.width, height: max(84, hosting.fittingSize.height))
-        let frame = IslandArea.frame(size: size, on: anchor)
-        if panel.isVisible, abs(frame.height - panel.frame.height) > 40 {
-            NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.18; panel.animator().setFrame(frame, display: true) }
-        } else {
-            panel.setFrame(frame, display: true)
+        let frame = fixedOrigin.map { NSRect(origin: $0, size: size) } ?? IslandArea.frame(size: size, on: anchor)
+        let from = targetFrame ?? panel.frame
+        targetFrame = frame
+        let animate = panel.isVisible && abs(frame.height - from.height) > 40
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = animate ? 0.18 : 0
+            panel.animator().setFrame(frame, display: true)
         }
         hosting.frame = panel.contentView?.bounds ?? .zero
     }
+
+    /// The frame `place()` last asked for (the panel's own frame lags it during an animation).
+    private var targetFrame: NSRect?
 }

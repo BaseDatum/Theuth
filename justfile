@@ -384,8 +384,9 @@ vm-image-dev:
     docker build --platform linux/$(arch) -f deploy/vm/Dockerfile.dev -t theuth-vm:dev deploy/vm
     docker save theuth-vm:dev | msb load
 
-# 130 W1: the macOS companion — `swift build -c release` + a hand-assembled, signed `Theuth Companion.app`
-# under target/release/companion/ (scripts/bundle-companion.sh; no Xcode needed).
+# 130 W1 / 189: the macOS companion — `xcodebuild` (Release) + a hand-assembled, signed `Theuth Companion.app`
+# under target/release/companion/ (scripts/bundle-companion.sh). Needs Xcode since 189: SwiftStreamingMarkdown has
+# #Preview blocks, and only Xcode's resource accessor finds package bundles in Contents/Resources.
 companion:
     scripts/bundle-companion.sh
 

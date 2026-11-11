@@ -200,6 +200,28 @@ public sealed class AskBarModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// 189w D4: the desk's reply as the Ask bar draws it — the whole markdown so far under the field, instead of the receipt's two plain
+    /// lines — with whether the turn is still streaming; null for every other receipt (and for a reply with no text yet, a failed turn,
+    /// or "finished without a reply", which keep the one-line row).
+    /// </summary>
+    public static (string Markdown, bool Streaming)? ReplyMarkdown(StoreModel.ReceiptRow? receipt) =>
+        receipt is StoreModel.ReceiptRow.Reply { Markdown.Length: > 0 } r ? (r.Markdown, r.Streaming) : null;
+
+    /// <summary>
+    /// 192w P3: the reply region's content — the markdown so far (maybe empty) and the model's thinking (null when none came). The region
+    /// shows while there is text OR thinking: a model that thinks for a while no longer leaves the bare "waiting for the desk" row.
+    /// Null for every other receipt, and for a failed turn or "no reply" (their one line stays).
+    /// </summary>
+    public static (string Markdown, bool Streaming, ThinkingView? Thinking)? ReplyView(StoreModel.ReceiptRow? receipt) =>
+        receipt is StoreModel.ReceiptRow.Reply r && (r.Markdown.Length > 0 || r.Thinking is not null) ? (r.Markdown, r.Streaming, r.Thinking) : null;
+
+    /// <summary>The line above a markdown reply: who, and "thinking…" while only reasoning came, "replying…" once text streams (the trailing hint stays "Open Ctrl+O").</summary>
+    public static string ReplyHeader(StoreModel.ReceiptRow.Reply reply) =>
+        !reply.Streaming ? reply.Who
+        : reply.Markdown.Length == 0 && reply.Thinking is { Active: true } ? $"{reply.Who} · thinking…"
+        : $"{reply.Who} · replying…";
+
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return;

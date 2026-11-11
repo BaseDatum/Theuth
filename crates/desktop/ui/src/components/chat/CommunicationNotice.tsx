@@ -13,8 +13,8 @@ const NONE: A2aExportStatus[] = []
  * Authoritative switch state for `session` (`null` = the global default) and the HTTP A2A exports publishing
  * it (50 §10). The engine computes effective/inherited; the UI only renders. Exports are listed even
  * while communication is off, so a session that is one toggle away from being reachable still says so.
- * 183 §12.10: an export granted to a contact is not listed here: the header's `Shared with bob · read only`
- * chip says it, and a contact's message runs one capped turn, not this banner's design 50 rules.
+ * 183 §12.10: an export granted to a contact is not listed here: the header's `Shared with bob` chip says it, and a
+ * contact talks like a mesh peer, not under this banner's design 50 rules.
  */
 export function useCommunication(session: string | null) {
   const api = useApi()

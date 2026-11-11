@@ -171,6 +171,70 @@ pub enum SnapshotOutcome {
     Cancelled,
 }
 
+/// How a [`FenceSnapshotReply`] ended (192): [`SnapshotOutcome`] without its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum FenceSnapshotStatus {
+    /// Drawn: `png`, `width`, `height` are set.
+    Done,
+    /// Nobody to draw it.
+    NoRenderer,
+    /// The client failed; `error` says why.
+    Failed,
+    /// Started but not done within 20 s.
+    TimedOut,
+    /// Dropped without an answer.
+    Cancelled,
+}
+
+/// Result of RPC `fence_snapshot` (192): one [`render`] for a native companion.
+/// `png`/`width`/`height` are non-null iff `outcome` is `done`; `error` only for `failed`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct FenceSnapshotReply {
+    /// How the render ended.
+    pub outcome: FenceSnapshotStatus,
+    /// Standard base64 of the PNG, no `data:` prefix.
+    pub png: Option<String>,
+    /// PNG width in pixels.
+    pub width: Option<u32>,
+    /// PNG height in pixels.
+    pub height: Option<u32>,
+    /// Why it failed.
+    pub error: Option<String>,
+}
+
+impl From<SnapshotOutcome> for FenceSnapshotReply {
+    fn from(o: SnapshotOutcome) -> Self {
+        let bare = |outcome| Self {
+            outcome,
+            png: None,
+            width: None,
+            height: None,
+            error: None,
+        };
+        match o {
+            SnapshotOutcome::Done {
+                png, width, height, ..
+            } => Self {
+                outcome: FenceSnapshotStatus::Done,
+                png: Some(base64::engine::general_purpose::STANDARD.encode(png)),
+                width: Some(width),
+                height: Some(height),
+                error: None,
+            },
+            SnapshotOutcome::NoRenderer => bare(FenceSnapshotStatus::NoRenderer),
+            SnapshotOutcome::Failed(why) => Self {
+                error: Some(why),
+                ..bare(FenceSnapshotStatus::Failed)
+            },
+            SnapshotOutcome::TimedOut => bare(FenceSnapshotStatus::TimedOut),
+            SnapshotOutcome::Cancelled => bare(FenceSnapshotStatus::Cancelled),
+        }
+    }
+}
+
 /// One picture of a painted message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Picture {

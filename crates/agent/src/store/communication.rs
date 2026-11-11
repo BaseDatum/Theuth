@@ -1547,40 +1547,6 @@ impl Store {
         Ok(row.and_then(|(c, r)| Some((c?, r))))
     }
 
-    /// 186 review 1: an outbound message's remote task waits behind its chat's running turn
-    /// (`note`), or no longer (`None`): the receipt's `error` carries the note while it is
-    /// still `accepted`/`consumed`; nothing fails. `Some(receipt)` when it changed.
-    pub async fn note_queued_exchange(
-        &self,
-        id: Uuid,
-        note: Option<&str>,
-    ) -> anyhow::Result<Option<PeerReceipt>> {
-        let ids = id.to_string();
-        let mut tx = self.begin_write().await?;
-        let n = sqlx::query(
-            "UPDATE peer_exchanges SET error = ?, updated_at = ? WHERE id = ? \
-             AND state IN ('accepted', 'consumed') AND error IS NOT ? \
-             AND (error IS NULL OR error LIKE 'queued:%')",
-        )
-        .bind(note)
-        .bind(now())
-        .bind(&ids)
-        .bind(note)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        let r = if n == 1 {
-            exchange_in(&mut tx, &ids)
-                .await?
-                .map(|r| r.receipt())
-                .transpose()?
-        } else {
-            None
-        };
-        tx.commit().await?;
-        Ok(r)
-    }
-
     /// 186 review 1, 2: how many of the contact `binding`'s answers to `recipient` (messages
     /// on conversations this engine opened, the return route's) are accepted and not yet
     /// taken in. Its messages to our exports (their conversations) do not count.
@@ -2062,12 +2028,12 @@ impl Store {
         .transpose()
     }
 
-    /// 183 Z3-R2: mark the contexts of `session` as a contact's inbox (its default-deny
-    /// limits come back at every actor start), speaking as `identity` (the exported agent's
-    /// persona at this admission, Z3-R3; `None`: the engine's own) for the exported agent
-    /// `agent` (bare roster name). 186 (D6): `full` = shared in full; `ceiling` the agent's
-    /// own `tools:` ceiling from a real persona (`Some(None)`: it has none), `None` = unknown
-    /// (kept as stored).
+    /// 183 Z3-R2: mark the contexts of `session` as a contact's inbox (its limits come back at
+    /// every actor start), speaking as `identity` (the exported agent's persona at this
+    /// admission, Z3-R3; `None`: the engine's own) for the exported agent `agent` (bare roster
+    /// name). 186 (D6), 190: `full` = may run uncapped under the agent's ceiling (`0`: capped
+    /// fail-closed); `ceiling` the agent's own `tools:` ceiling from a real persona
+    /// (`Some(None)`: it has none), `None` = unknown (kept as stored).
     pub async fn mark_a2a_inbox(
         &self,
         session: SessionId,

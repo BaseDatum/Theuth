@@ -15,6 +15,8 @@ public struct AnswerCardState: Equatable, Sendable {
         public var question: String
         public var text = ""
         public var tools: [String] = []
+        /// 192 P3: the turn's streamed reasoning.
+        public var thinking = Thinking()
         /// Set for `.command` turns: the step rows and the verdict (§10.3).
         public var command: CommandCard?
         public init(question: String, command: CommandCard? = nil) { self.question = question; self.command = command }
@@ -75,6 +77,10 @@ public struct AnswerCardState: Equatable, Sendable {
         get { turns.last?.command }
         set { if !turns.isEmpty { turns[turns.count - 1].command = newValue } }
     }
+    public var thinking: Thinking {
+        get { turns.last?.thinking ?? Thinking() }
+        set { if !turns.isEmpty { turns[turns.count - 1].thinking = newValue } }
+    }
     public var failed: Bool { phase == .failed }
     /// The marker the follow-up field prepends (§12.2): none for Ask, `[voice note, N s]` / `[command, N s]` otherwise.
     public static func marker(_ kind: Kind, durationMs: UInt64) -> String {
@@ -86,16 +92,25 @@ public struct AnswerCardState: Equatable, Sendable {
         }
     }
 
-    /// A new gesture: everything resets, the generation moves on.
+    /// A new gesture: everything resets, the generation moves on. 189 F5: an Ask opens expanded, so its answer streams as
+    /// markdown from the first delta (an expanded card never auto-hides: `armsDone`); voice and command cards collapsed.
     public mutating func begin(question: String, kind: Kind = .voiceNote) {
         var fresh = Self()
         fresh.generation = generation + 1
         fresh.kind = kind
         fresh.turns = [Turn(question: question, command: kind == .command ? CommandCard(request: question) : nil)]
         fresh.visible = true
+        fresh.expanded = kind == .ask
         fresh.phase = .thinking
         fresh.thinkingSince = Date()
         self = fresh
+    }
+
+    /// 189 F7: what the markdown body renders for turn `i` — the last turn's text with `MarkdownLines.holdBack` while it
+    /// is unfinished, every finished turn whole.
+    public func markdownText(turn i: Int) -> String {
+        guard turns.indices.contains(i) else { return "" }
+        return i == turns.count - 1 && !turnFinished ? MarkdownLines.holdBack(turns[i].text) : turns[i].text
     }
 
     /// §10.5 / §12.2: a follow-up in the same thread — a new block under the previous answer, the dots advance.
@@ -128,5 +143,43 @@ public struct AnswerCardState: Equatable, Sendable {
     /// J/K: move the viewed turn; clamped.
     public mutating func move(_ delta: Int) {
         current = min(max(0, current + delta), max(0, turns.count - 1))
+    }
+}
+
+/// 192 P3: the reasoning a turn streamed (`ReasoningDelta`) — live while the model thinks, collapsed to "Thought for N s"
+/// once the answer's first text arrives or the turn ends. No reasoning at all: nothing (the card's spinner stays).
+public struct Thinking: Equatable, Sendable {
+    public var text = ""
+    public var startedAt: Date?
+    public var endedAt: Date?
+    /// `ReasoningDone.ms` summed: the engine's own measure, preferred to the wall clock.
+    public var ms: UInt64 = 0
+
+    public init() {}
+
+    /// Reasoning has streamed and the answer has not started.
+    public var live: Bool { startedAt != nil && endedAt == nil }
+    /// The collapsed line's seconds once ended (at least 1); `nil` while live or with no reasoning.
+    public var seconds: Int? {
+        guard let s = startedAt, let e = endedAt else { return nil }
+        let t = ms > 0 ? Double(ms) / 1000 : e.timeIntervalSince(s)
+        return max(1, Int(t.rounded()))
+    }
+    public var summary: String? { seconds.map { "Thought for \($0) s" } }
+
+    /// A `ReasoningDelta`. After the answer started (a later model call thinking again) the text still grows, collapsed.
+    public mutating func add(_ fragment: String, now: Date) {
+        guard !fragment.isEmpty else { return }
+        if startedAt == nil { startedAt = now }
+        text += fragment
+    }
+
+    /// A `ReasoningDone`.
+    public mutating func done(ms: UInt64) { self.ms += ms }
+
+    /// The first `TextDelta`, or the turn ended: collapse (no-op without reasoning or once ended).
+    public mutating func end(now: Date) {
+        guard startedAt != nil, endedAt == nil else { return }
+        endedAt = now
     }
 }

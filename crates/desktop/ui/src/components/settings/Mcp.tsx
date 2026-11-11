@@ -1,7 +1,7 @@
 // 158 §12.6 (W5): Settings › MCP server — the on/off switch (`mcp_server_set`), status line, port (default 7788),
 // Token with Rotate (`mcp_server_rotate_token`), "Copy MCP config" per client (`lib/mcp-config`), the last 20 audit
 // lines (`mcp_server_audit`) and the lawful "What is shared" sentence. 188 (D2): the servers theuth uses, with their home
-// machines and logins, are on their rows on Agents › Tools.
+// machines and logins, are on their rows on Settings › Tools › MCP.
 
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'

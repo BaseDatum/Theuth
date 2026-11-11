@@ -12,14 +12,42 @@ namespace Theuth.Companion.AskBar;
 /// through <c>dictation_start/audio/stop</c> and logs every <c>Dictation*</c> event; the field fills with the transcript.
 /// Unlike the Swift probe the bar is activated (the <c>windows-build-b</c> harness types into it) and a typed Enter sends.
 /// </summary>
-internal static class AskProbe
+internal static partial class AskProbe
 {
+    // 189w D4: the reply is markdown, cut where a stream cuts it — mid-mark ("**w3" … "**"), mid-line, between fence lines — so the replay
+    // shows the unclosed marks closed while they stream, the held-back marker lines, and the blocks that stay put while one is written.
+    private static readonly string[] Pieces =
+    {
+        "## Handed to **w3",
+        "** — the docs ship tonight\n\nThe release notes are next; `crates/rpc` stays with w2.\n\n- rail: **done**\n- panel: `done`\n",
+        "  - nested: see [the notes](https://example.com/notes)\n\n```rust\nfn ship() {\n    println!(\"docs\");\n}\n```\n\n",
+        "1. then the notes\n2. then `snake_case_name`",
+    };
+
+    /// <summary>What the transcript holds for the replayed turn: the streamed text and one line the stream never delivered — the finish replaces the streamed text with this.</summary>
+    public static readonly string RecordedFinalText = string.Concat(Pieces) + "\n\nNothing else is waiting.";
+
+    /// <summary>The replayed desk's transcript as <c>load_session</c> returns it (the recorded desk exists on no engine).</summary>
+    public static readonly SessionTail RecordedTranscript = new()
+    {
+        Running = false,
+        History = new ValueList<TranscriptEntry>
+        {
+            new() { Role = "user", Text = "ship the docs", Turn = 12 },
+            new() { Role = "tool" },
+            new() { Role = "assistant", Text = RecordedFinalText, Turn = 12 },
+        },
+    };
+
+    private static string Delta(string text) => $$"""{"type":"TextDelta","session":"replay-desk","turn":"t-replay","text":{{System.Text.Json.JsonSerializer.Serialize(text)}}}""";
+
     /// <summary>A desk reply in the engine's wire shapes (<c>AgentEvent::TextDelta</c> / <c>TurnFinished</c>, crates/agent/src/lib.rs); no model answers on the scratch engine, so the words are a fixture.</summary>
     public static readonly string[] RecordedReply =
     {
-        """{"type":"TextDelta","session":"replay-desk","turn":"t-replay","text":"Handed to w3 — "}""",
-        """{"type":"TextDelta","session":"replay-desk","turn":"t-replay","text":"the docs ship tonight.\n"}""",
-        """{"type":"TextDelta","session":"replay-desk","turn":"t-replay","text":"Then the release notes; nothing else is waiting.\n\n- rail: done\n- panel: done\n"}""",
+        Delta(Pieces[0]),
+        Delta(Pieces[1]),
+        Delta(Pieces[2]),
+        Delta(Pieces[3]),
         """{"type":"TurnFinished","session":"replay-desk","turn":"t-replay","stop_reason":"end_turn","usage":{"input":812,"output":41},"context":853}""",
     };
 
@@ -41,7 +69,9 @@ internal static class AskProbe
             install.Model.Open(); // activated: the harness types into ask-field (the Swift probe showed the bar without key)
             var w = install.Bar.AppWindow;
             AskLog.Write($"ask-probe bar shown activated=true visible={Word(w.IsVisible)} pos={w.Position.X},{w.Position.Y} size={w.Size.Width}x{w.Size.Height} foreground={(install.Bar.IsForeground ? "ask-bar" : "other")}");
-            if (AskFlags.Replay) _ = Replay(store);
+            if (AskFlags.Replay) _ = Replay(store, install);
+            if (AskFlags.CatchUp) After(dispatcher, 1.5, () => _ = CatchUpProbe(store));
+            if (AskFlags.Send is { } typed) After(dispatcher, 1.5, () => TypedSend(store, install, typed));
             if (AskFlags.Fixture is { } fx) AskFixtures.Run(fx, store, install, dispatcher); // 153 W153B
             if (AskFlags.Live is { } live) After(dispatcher, 2, () => AskFixtures.Live(live, store, install, dispatcher)); // 153 W153B (after the desk resolves)
         });
@@ -118,20 +148,73 @@ internal static class AskProbe
 
     // MARK: --ask-replay: the recorded desk stream through the real path (the scratch engine has no model to answer)
 
-    private static async Task Replay(Store store)
+    private static async Task Replay(Store store, AskBarInstall install)
     {
-        AskLog.Write($"ask-replay start: {RecordedReply.Length} recorded lines for session replay-desk, 400 ms apart");
+        if (AskFlags.Pictures is { } picturesMode)
+        {
+            await ReplayPictures(store, install, picturesMode); // 192w P6: thinking, picture fences and a stub fence_snapshot
+            return;
+        }
+        AskLog.Write($"ask-replay start: {RecordedReply.Length} recorded lines for session replay-desk, 450 ms apart (markdown reply, cut mid-mark; the transcript carries one more line)");
+        install.Bar.ReplyRendered += line => AskLog.Write($"ask-replay markdown: {line}");
+        store.ReplayTranscript("replay-desk", RecordedTranscript);
         var queue = new Queue<string>(RecordedReply);
         var first = queue.Dequeue();
         store.ReplayDeskReply("replay-desk", "ship the docs", new[] { first });
         AskLog.Write($"ask-replay receipt: {Describe(store.Receipt)}");
+        int step = 1;
         while (queue.Count > 0)
         {
-            await Task.Delay(400);
+            await Task.Delay(450);
             var line = queue.Dequeue();
             store.HandleEvent(System.Text.Encoding.UTF8.GetBytes(line));
+            step++;
             AskLog.Write($"ask-replay receipt: {Describe(store.Receipt)} finished={Word(store.Ask.Router.Reply?.Finished ?? false)}");
+            // Evidence: the bar's own tree as a PNG after the second piece (a code span and a list streaming), after the fourth (a
+            // fence closed, a numbered list open) and once the finish replaced the stream with the transcript.
+            string? shot = step switch { 2 => "ask-replay-1-streaming", 4 => "ask-replay-2-streaming", 5 => "ask-replay-3-finished", _ => null };
+            if (shot is not null)
+            {
+                await Task.Delay(300);
+                var path = AskFlags.Png189(shot);
+                var ok = await install.Bar.CapturePng(path);
+                AskLog.Write($"ask-replay shot: {path} ok={Word(ok)}");
+            }
         }
+        var reply = store.Ask.Router.Reply;
+        AskLog.Write($"ask-replay done: finished={Word(reply?.Finished ?? false)} streamed={reply?.StreamedChars} chars, final text {reply?.Text.Length} chars, replaced-by-transcript={Word(reply?.Text == RecordedFinalText)}");
+    }
+
+    // MARK: --ask-catchup: the real load_session (the scratch engine has no model, but its desk has a transcript)
+
+    private static async Task CatchUpProbe(Store store)
+    {
+        try
+        {
+            var desk = await store.ResolveDesk();
+            var tail = await store.Client.LoadSessionAsync(desk, AskCatchUp.Limit);
+            var roles = string.Join(",", tail.History.Select(h => $"{h.Role}{(h.Turn is { } t ? "#" + t : "")}"));
+            AskLog.Write($"ask-catchup: load_session({desk}, null, {AskCatchUp.Limit}) → {tail.History.Count} entries running={Word(tail.Running)} roles=[{roles}]");
+            foreach (var h in tail.History.Where(h => h.Text is { Length: > 0 }).TakeLast(3))
+            {
+                var text = h.Text!.Replace('\n', ' ');
+                AskLog.Write($"ask-catchup: {h.Role} turn={(h.Turn?.ToString() ?? "null")}: {(text.Length > 100 ? text[..100] + "…" : text)}");
+            }
+            var pick = AskCatchUp.Pick(tail.History, "", null);
+            AskLog.Write($"ask-catchup: newest-assistant pick text={(pick.Text is null ? "none" : pick.Text.Length + " chars")} error={(pick.Error is null ? "none" : "\"" + pick.Error + "\"")}");
+        }
+        catch (Exception e)
+        {
+            AskLog.Write($"ask-catchup: failed: {(e is RpcException r ? r.ToString() : e.Message)}");
+        }
+    }
+
+    /// <summary><c>--ask-send "text"</c>: a typed Enter through the Ask bar once the desk resolved — the focus claim, then <c>send_input</c>, then whatever the desk answers.</summary>
+    private static void TypedSend(Store store, AskBarInstall install, string text)
+    {
+        AskLog.Write($"ask-send: typing \"{text}\" and pressing Enter (the 3 s hold, then desk_open → set_event_focus → send_input)");
+        install.Model.FieldEdited(text);
+        install.Model.Submit();
     }
 
     private static string Describe(StoreModel.ReceiptRow? r) =>

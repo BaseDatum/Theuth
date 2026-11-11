@@ -163,6 +163,9 @@ import type { Packet } from '@/rpc/bindings/Packet'
 import type { PagePreviewAnswer } from '@/rpc/bindings/PagePreviewAnswer'
 import type { FenceSnapshotAnswer } from '@/rpc/bindings/FenceSnapshotAnswer'
 import type { FenceSnapshotId } from '@/rpc/bindings/FenceSnapshotId'
+import type { FenceSnapshotReply } from '@/rpc/bindings/FenceSnapshotReply'
+import type { FenceLang } from '@/rpc/bindings/FenceLang'
+import type { Appearance } from '@/rpc/bindings/Appearance'
 import type { PreviewId } from '@/rpc/bindings/PreviewId'
 import type { DeviceInfo } from '@/rpc/bindings/DeviceInfo'
 import type { Put } from '@/rpc/bindings/Put'
@@ -265,7 +268,6 @@ import type { ContactTarget } from '@/rpc/bindings/ContactTarget'
 import type { ContactWindow } from '@/rpc/bindings/ContactWindow'
 import type { NearbyAgent } from '@/rpc/bindings/NearbyAgent'
 import type { Export } from '@/rpc/bindings/Export'
-import type { GrantableTool } from '@/rpc/bindings/GrantableTool'
 import type { FirstContact } from '@/rpc/bindings/FirstContact'
 import type { FirstWaiting } from '@/rpc/bindings/FirstWaiting'
 import type { ContactEnvelope } from '@/rpc/bindings/ContactEnvelope'
@@ -395,8 +397,8 @@ export interface Api {
   app_call_status(request_id: string): Promise<AppToolResult>
   /** Close one open app view: stop its reads, drop queued work (46 §7); idempotent. */
   app_close(instance_id: string): Promise<null>
-  /** Abort the in-flight turn; `'tree'` also stops every running descendant (133 §4; default `'root'`). 186 D8: `reason`
-   * `'input'` (an interject or flush) is refused while a contact's turn runs; `'stop'` (the default) is the owner's Stop. */
+  /** Abort the in-flight turn; `'tree'` also stops every running descendant (133 §4; default `'root'`). `reason`:
+   * `'input'` for an interject or flush, `'stop'` (the default) for the owner's Stop; 190 D5: the engine ignores it. */
   cancel(session: SessionId, scope?: CancelScope | null, reason?: CancelReason | null): Promise<null>
   cancel_job(session: SessionId, id: JobId): Promise<null>
   /** Live terminals of `session` (51 §7.2), `descendants` widens to its subtree. */
@@ -795,8 +797,6 @@ export interface Api {
   a2a_export_put(exp: Export): Promise<null>
   /** 183 §12.10: remove an export and its grants (Stop sharing). */
   a2a_export_remove(name: string): Promise<null>
-  /** 183 Z4: the tools an export may allow a contact; the allowlist editor offers only these. */
-  a2a_grantable_tools(): Promise<GrantableTool[]>
   /** 183 §7.6: the `contact_first` Attention item's Allow once (`ask`) · Always (`allow`) · Block (`block`). */
   contact_first_answer(contact: string, exp: string, answer: FirstContact): Promise<null>
   /** 183 Phase 3: every (contact, export) whose first message is held for the owner's answer; refetched on `A2aChanged`. */
@@ -1153,6 +1153,8 @@ export interface Api {
   answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
   /** 164 D3: answer a `FenceSnapshotRequested` — `started`, then the first `done` (base64 PNG) or `failed` resolves it. `false` when `id` was no longer pending. */
   answer_fence_snapshot(id: FenceSnapshotId, answer: FenceSnapshotAnswer): Promise<boolean>
+  /** 192: draw one fence through the 164 renderer and return the PNG (native companions). `width` clamped to 240..=1200 CSS px, `scale` to 1..=3. Guests refused. */
+  fence_snapshot(lang: FenceLang, source: string, width: number, appearance: Appearance, scale: number): Promise<FenceSnapshotReply>
   /** 120 §11.2: answer a `PagePreviewRequested` — `started` extends the engine's wait, the first `done`/`failed` resolves it. `false` when `id` was no longer pending. */
   answer_page_preview(id: PreviewId, answer: PagePreviewAnswer): Promise<boolean>
   /** Answer a `SecretsEvent.SecretRequested` (37 §3.8) or a replicated `secret_requests` row (79 §6.6): `value` answers the (first) field, `values` answers a form by field name (H's positional params); both `null` declines. `false` when `id` was no longer pending. */
@@ -1424,7 +1426,6 @@ export const METHODS = [
   'a2a_export_put',
   'a2a_export_remove',
   'a2a_exports',
-  'a2a_grantable_tools',
   'a2a_status',
   'activity_list',
   'add_acp',
@@ -1630,6 +1631,7 @@ export const METHODS = [
   'engine_agents_list',
   'escalate_model',
   'export_artifact',
+  'fence_snapshot',
   'fire_schedule',
   'fork_session',
   'get_app',

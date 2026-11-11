@@ -25,6 +25,21 @@ internal static class AskFlags
     public static bool Replay { get; } = Args.Contains("--ask-replay");
     public static string? Fixture { get; } = Value("--ask-fixture");
 
+    /// <summary>189w: <c>--ask-catchup</c> (with <c>--ask-probe N</c>) — <c>load_session(desk, 8)</c> against the real engine, the wire shape the catch-up reads, logged.</summary>
+    public static bool CatchUp { get; } = Args.Contains("--ask-catchup");
+
+    /// <summary>189w: <c>--ask-send "text"</c> (with <c>--ask-probe N</c>) — a typed Enter once the desk resolved: the real send path, focus claim first.</summary>
+    public static string? Send { get; } = Value("--ask-send");
+
+    /// <summary>192w: <c>--ask-pictures ok|fail|mixed|old</c> (with <c>--ask-replay</c>) — a recorded reply with <c>ReasoningDelta</c> chunks and closed <c>json-render</c> + <c>mermaid</c> fences, drawn by a stub <c>fence_snapshot</c> (ok: both · fail: <c>no_renderer</c> · mixed: json-render only · old: <c>-32601</c>).</summary>
+    public static string? Pictures { get; } = Value("--ask-pictures");
+
+    /// <summary>192w: where the picture replay's PNGs go (<c>w153c-gate.ps1 b64 192w-&lt;name&gt;.png</c> reads them there).</summary>
+    public static string Png192(string name) => Path.Combine(Path.GetTempPath(), $"192w-{name}.png");
+
+    /// <summary>189w: where the Ask replay's PNGs go (<c>w153c-gate.ps1 b64 189w-&lt;name&gt;.png</c> reads them there).</summary>
+    public static string Png189(string name) => Path.Combine(Path.GetTempPath(), $"189w-{name}.png");
+
     /// <summary>153 W153B: <c>--synthetic-speech "…" --ask-press</c> dictates the synthesized speech inside a simulated voice press (the
     /// real engine's shaped text and a spoken "send it" land through the voice path and send).</summary>
     public static bool Press { get; } = Args.Contains("--ask-press");

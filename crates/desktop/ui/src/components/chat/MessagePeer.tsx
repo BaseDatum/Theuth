@@ -276,8 +276,8 @@ export const capLabel = (cap: string) => (cap === 'read_only' ? 'read-only' : ca
 
 /**
  * The card frame: sender header, the reply quote, the body (clamped), then the footer. `origin` parts (the answer
- * form, Details) come in through `chips`, `actions` and `after`. `full`: a contact's message under a full share (186,
- * the typed `PeerOrigin.contact_mode`), which reads like a mesh peer's.
+ * form, Details) come in through `chips`, `actions` and `after`. `full`: a contact's message (186, the typed
+ * `PeerOrigin.contact_mode`; 190: every share is full), which reads like a mesh peer's. An old cautious row stays plain.
  */
 function PeerCard({
   text,
@@ -317,7 +317,7 @@ function PeerCard({
         </div>
       ) : null}
       <div className="px-4 pt-2.5">
-        <SenderHead sender={sender} tag={contact ? capLabel(contact.cap) : full ? 'Contact · full' : undefined}>
+        <SenderHead sender={sender} tag={contact ? capLabel(contact.cap) : undefined}>
           {chips}
           <Clock at={at} />
           {remove}

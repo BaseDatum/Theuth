@@ -209,8 +209,8 @@ pub fn identity(f: &AgentFile, journal: Option<&str>, max_rounds: u32) -> String
 }
 
 /// 183 §7.6, W-25: the identity block of a contact's inbox for an exported agent: who it
-/// is and its charter, never its journal or the desk manual (a contact is outside the mesh;
-/// the `<contact_inbox/>` row says so).
+/// is and its charter, never its journal or the desk manual (a contact is outside the mesh,
+/// as this block says).
 pub fn inbox_identity(f: &AgentFile) -> String {
     let mut s = format!(
         "You are {title} (`{name}`), an agent on this theuth roster, answering a contact outside the mesh. \
