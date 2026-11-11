@@ -4,7 +4,7 @@ import { expect, test } from 'vitest'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { RemoteTokens } from '@/rpc/bindings/RemoteTokens'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
-import { Breakdown, HarnessTokens, k } from './CostPill'
+import { Breakdown, HarnessTokens, k, RollingCost } from './CostPill'
 
 const row = (harness: string, model: string | null, turns: number, input: number, output: number, lower_bound = false): RemoteTokens => ({
   harness,
@@ -68,4 +68,23 @@ test('Breakdown: the per-turn cost line only when delta_suspected (75 §6)', () 
   const line = 'harness may report per-turn cost — totals may be low'
   expect(renderToStaticMarkup(createElement(Breakdown, { cost: cost(true) }))).toContain(line)
   expect(renderToStaticMarkup(createElement(Breakdown, { cost: cost(false) }))).not.toContain(line)
+})
+
+const usd = (nanos: string) => ({ currency: 'USD', nanos })
+const eur = (nanos: string) => ({ currency: 'EUR', nanos })
+/** The pill as read: each rolling number by its accessible label, other markup dropped. */
+const pill = (o: Partial<CostBucket>) =>
+  renderToStaticMarkup(createElement(RollingCost, { bucket: { ...bucket, ...o } }))
+    .replace(/<number-flow-react[\s\S]*?aria-label="([^"]*)"[\s\S]*?<\/number-flow-react>/g, '$1')
+    .replace(/<[^>]*>/g, '')
+
+test('RollingCost: returned and the estimate side by side; a zero meter never hides the estimate', () => {
+  const est = [usd('23000000')]
+  expect(pill({ dispatched: 3, unavailable: 2, returned: [usd('0')], estimated_for_unavailable: est })).toBe('~$0.023')
+  expect(pill({ dispatched: 3, unavailable: 2, returned: [usd('100000000')], estimated_for_unavailable: est })).toBe('$0.100 + ~$0.023')
+  expect(pill({ dispatched: 1, returned: [usd('0')] })).toBe('$0.000')
+  expect(pill({})).toBe('—')
+  expect(pill({ dispatched: 4, unavailable: 1, returned: [eur('500000000'), usd('0')], estimated_for_unavailable: [eur('10000000'), usd('23000000')] })).toBe(
+    '€0.500 + ~€0.010 + ~$0.023',
+  )
 })

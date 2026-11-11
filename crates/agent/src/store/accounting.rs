@@ -2005,6 +2005,44 @@ mod tests {
         assert!(store.apply_meter(r, imported(0.80, "c")).await.is_err());
     }
 
+    /// An omp child's connect-time known-zero meter over an estimate-only
+    /// native parent: the parent's total carries `returned == [USD 0]` beside
+    /// its estimate, and the parent is bumped. The UI's cost pill must not let
+    /// that zero hide the estimate.
+    #[tokio::test]
+    async fn zero_child_meter_beside_parent_estimate() {
+        let (store, _dir) = fresh().await;
+        let (parent, child) = (SessionId::new(), SessionId::new());
+        store.ensure_owner(parent, None).await.unwrap();
+        charge(
+            &store,
+            parent,
+            CostObservation {
+                estimated: Some(usd(0.25)),
+                ..Default::default()
+            },
+        )
+        .await;
+        store.ensure_owner(child, Some(parent)).await.unwrap();
+        let bumped = store
+            .apply_meter(
+                child,
+                MeterUpdate {
+                    origin: "omp".into(),
+                    external_session: "ext-0".into(),
+                    cumulative: usd(0.0),
+                    confirmed_new_session: true,
+                    report_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(bumped.iter().any(|(s, _)| *s == parent));
+        let pc = store.session_cost(parent).await.unwrap().unwrap();
+        assert_eq!(returned(&pc.total), vec![("USD", 0)]);
+        assert_eq!(pc.total.estimated_for_unavailable, vec![usd(0.25)]);
+    }
+
     /// 141 §7.6: a watch-only child's `counted` meter rows are stored with
     /// the `observed` scope and read back as such on the child and on the
     /// parent's `children[]`, while rolling up like any child's spend; the

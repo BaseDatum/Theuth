@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Coins, Eye } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { costLines, costShort, moneyParts } from '@/lib/money'
+import { costLines, costParts, costShort, costTitle, moneyParts } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { RemoteTokens } from '@/rpc/bindings/RemoteTokens'
@@ -129,7 +129,9 @@ export function Breakdown({ cost, observed }: { cost: SessionCost; observed?: Ob
                   {c.deleted && <span className="ml-1 text-fg-tertiary">(deleted)</span>}
                   {c.scope === 'opaque_remote_inclusive' && <span className="ml-1 text-fg-tertiary">(remote)</span>}
                 </td>
-                <td className="py-0.5 text-right tabular-nums">{costLines(c.total).primary}</td>
+                <td className="py-0.5 text-right tabular-nums whitespace-nowrap" title={costTitle(c.total)}>
+                  {costShort(c.total)}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -147,33 +149,33 @@ const useCost = (session: string) => {
 /** Three fixed decimals, no grouping: `formatMoney`'s digits. */
 const MILLI = { minimumFractionDigits: 3, maximumFractionDigits: 3, useGrouping: false }
 
-/** `costShort` with rolling digits: returned money, else `~` estimates, joined ` + `; `—` stays text. Reads the same at rest. */
-function RollingCost({ bucket }: { bucket: CostBucket }) {
-  const monies = bucket.returned.length ? bucket.returned : bucket.estimated_for_unavailable
+/** `costShort` with rolling digits: returned money, then `~` estimates, joined ` + `; `—` stays text. Reads the same at rest. */
+export function RollingCost({ bucket }: { bucket: CostBucket }) {
+  const { returned, estimated } = costParts(bucket)
+  const monies = [...returned.map((m) => ({ m, est: false })), ...estimated.map((m) => ({ m, est: true }))]
   if (!monies.length) return '—'
-  return monies.map((m, i) => {
+  return monies.map(({ m, est }, i) => {
     const { prefix, value } = moneyParts(m)
     return (
       <Fragment key={i}>
         {i > 0 && ' + '}
-        {!bucket.returned.length && '~'}
+        {est && '~'}
         <NumberFlow value={value} prefix={prefix} locales="en" format={MILLI} />
       </Fragment>
     )
   })
 }
 
-/** Header pill with the session's returned total, else its estimate (51 §6.2); `row`: the compact menu's line. Click opens `CostDialog`. */
+/** Header pill with the session's returned total and its estimate (51 §6.2); `row`: the compact menu's line. Click opens `CostDialog`. */
 export function CostPill({ session, row, onOpen }: { session: string; row?: boolean; onOpen(): void }) {
   const data = useCost(session)
   if (!data) return null
-  const lines = costLines(data.total)
   if (row) return <MenuRow icon={Coins} label="Cost" detail={costShort(data.total)} onSelect={onOpen} />
   return (
     <button
       type="button"
       className="rounded-full border border-border-subtle px-2.5 py-0.5 text-xs whitespace-nowrap text-fg-secondary tabular-nums"
-      title={lines.secondary ? `${lines.primary}\n${lines.secondary}` : lines.primary}
+      title={costTitle(data.total)}
       aria-label="Cost"
       onClick={onOpen}
     >

@@ -35,6 +35,7 @@ ts-rs = { workspace = true, optional = true }
 [dev-dependencies]
 wiremock = { workspace = true }
 figment = { workspace = true }
+image = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

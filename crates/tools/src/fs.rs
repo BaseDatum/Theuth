@@ -113,7 +113,7 @@ pub fn outliner() -> Option<Arc<dyn Outliner>> {
     OUTLINER.get().cloned()
 }
 
-/// Read a text file, or a document rendered as Markdown.
+/// Read a text file, an image (as a picture), or a document rendered as Markdown.
 pub struct ReadFile;
 
 #[async_trait::async_trait]
@@ -123,7 +123,7 @@ impl Tool for ReadFile {
     type Args = ReadFileArgs;
 
     fn description(&self) -> String {
-        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown; paths are relative to the working directory, `~` is not expanded. Line 1 is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
+        "Read a text file, an image (returned as a picture you can see) or a document (PDF, Office, ODF, RTF, EPUB) as Markdown. Paths are relative to the working directory, `~` is not expanded. An image (PNG, JPEG, GIF or WebP, detected from its bytes) comes back as a picture you can look at, with the one-line header `[read_file <path>: image/png W×H, N KB]` (`; scaled to W×H` when it was downscaled to fit); `offset`/`limit`/`tail`/`ranges`/`outline` are refused for an image. A text-only model gets a description from the vision fallback model instead, or a note that nobody has looked at it. A document is rendered from PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB. For text, line 1 is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
     }
 
     async fn call(&self, a: ReadFileArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -133,6 +133,14 @@ impl Tool for ReadFile {
         let bytes = tokio::fs::read(&path)
             .await
             .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
+        if crate::images::sniff(&bytes).is_some() {
+            return read_image(&shown, bytes, &a, &cx).await;
+        }
+        if let Some(kind) = crate::images::unsupported_kind(&bytes) {
+            anyhow::bail!(
+                "{shown}: {kind} images aren't supported (png, jpeg, gif, webp are); convert it to PNG and read that"
+            );
+        }
         let (note, text) = text_of(bytes, &shown).await?;
         let mut notes = Vec::new();
         if a.outline {
@@ -160,6 +168,38 @@ impl Tool for ReadFile {
             notes,
         )?))
     }
+}
+
+/// `read_file` on an image (detected by magic bytes): the picture, fitted
+/// and saved under `<resources>/images/<session>` ([`crate::images::tool_output`]).
+/// The line selectors are refused rather than ignored; `numbers` is ignored.
+async fn read_image(
+    shown: &str,
+    bytes: Vec<u8>,
+    a: &ReadFileArgs,
+    cx: &ToolCx,
+) -> anyhow::Result<ToolOutput> {
+    let set: Vec<&str> = [
+        ("offset", a.offset.is_some()),
+        ("limit", a.limit.is_some()),
+        ("tail", a.tail.is_some()),
+        ("ranges", a.ranges.is_some()),
+        ("outline", a.outline),
+    ]
+    .into_iter()
+    .filter_map(|(n, on)| on.then_some(n))
+    .collect();
+    anyhow::ensure!(
+        set.is_empty(),
+        "{shown} is an image: `{}` applies to text; read it without line options to see the picture",
+        set.join("`, `")
+    );
+    let dir = cx.resources.dir("images").join(cx.session.to_string());
+    let shown = shown.to_owned();
+    tokio::task::spawn_blocking(move || {
+        crate::images::tool_output("read_file", &shown, &bytes, &dir)
+    })
+    .await?
 }
 
 /// `bytes` as text: a detected document (PDF, Office, …) rendered as
@@ -1112,6 +1152,82 @@ mod tests {
             .await
             .unwrap_err()
             .to_string()
+    }
+
+    /// An image is detected by its bytes (whatever the name), comes back as a
+    /// picture under a one-line header, is downscaled past `MAX_EDGE`, and
+    /// refuses line selectors; a corrupt one is an error, never bytes.
+    #[tokio::test]
+    async fn read_image_attaches_a_fitted_picture() {
+        use crate::images::tests::encoded;
+        use image::ImageFormat;
+        let dir = crate::TestDir::new("read-image");
+        let small = encoded(ImageFormat::Png, 4, 3, 7);
+        let p = dir.0.join("small.png");
+        std::fs::write(&p, &small).unwrap();
+        let out = Tool::call(&ReadFile, args(&p, None, None), cx())
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert_eq!(
+            out.content,
+            format!("[read_file {}: image/png 4\u{d7}3, 1 KB]", p.display())
+        );
+        assert_eq!(out.files.len(), 1);
+        assert_eq!(
+            std::fs::read(&out.files[0]).unwrap(),
+            small,
+            "fits: sent as is"
+        );
+
+        // A JPEG named `.txt`, wider than MAX_EDGE: detected, scaled, still JPEG.
+        let p = dir.0.join("photo.txt");
+        std::fs::write(&p, encoded(ImageFormat::Jpeg, 3136, 100, 9)).unwrap();
+        let out = Tool::call(&ReadFile, args(&p, None, None), cx())
+            .await
+            .unwrap();
+        let header = format!("[read_file {}: image/jpeg 3136\u{d7}100, ", p.display());
+        assert!(out.content.starts_with(&header), "{}", out.content);
+        assert!(
+            out.content.ends_with("; scaled to 1568\u{d7}50]"),
+            "{}",
+            out.content
+        );
+        assert_eq!(out.files[0].extension().unwrap(), "jpg");
+        assert_eq!(image::image_dimensions(&out.files[0]).unwrap(), (1568, 50));
+
+        // Line selectors are refused, all named.
+        let mut a = args(&p, Some(2), None);
+        a.outline = true;
+        assert_eq!(
+            read_err(a).await,
+            format!(
+                "{} is an image: `offset`, `outline` applies to text; read it without line options to see the picture",
+                p.display()
+            )
+        );
+
+        // PNG magic, garbage after it: a text error.
+        let p = dir.0.join("broken.png");
+        std::fs::write(&p, &small[..small.len() / 2]).unwrap();
+        let e = read_err(args(&p, None, None)).await;
+        assert!(e.contains("invalid image/png"), "{e}");
+
+        // A known format no provider takes: one line, never mojibake.
+        let p = dir.0.join("old.bmp");
+        let bmp = [
+            b"BM".as_slice(),
+            &[0x46, 0, 0, 0, 0, 0, 0, 0, 0x36, 0, 0, 0, 40, 0],
+        ]
+        .concat();
+        std::fs::write(&p, bmp).unwrap();
+        assert_eq!(
+            read_err(args(&p, None, None)).await,
+            format!(
+                "{}: BMP images aren't supported (png, jpeg, gif, webp are); convert it to PNG and read that",
+                p.display()
+            )
+        );
     }
 
     #[tokio::test]

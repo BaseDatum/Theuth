@@ -115,6 +115,23 @@ const TITLE_TIMEOUT: Duration = Duration::from_secs(45);
 const TOOL_RESULT_FLOOR_CHARS: usize = 1000;
 /// Stored payload bytes one vision consultation batch may carry (52 §5.3).
 const VISION_BATCH_BYTES: usize = 4 * 1024 * 1024;
+/// Wall clock on the fallback's vision call (52 §5.3, read-file-images §3): a
+/// turn waits on it, so far shorter than the summariser's. Expiry is a failed
+/// observation, never a failed turn.
+const AUX_TIMEOUT: Duration = Duration::from_secs(75);
+/// Wall clock on the question call: the main model at the session's effort
+/// (a max-effort model thinks first), so longer than [`AUX_TIMEOUT`].
+const QUESTION_TIMEOUT: Duration = Duration::from_secs(180);
+/// [`AUX_TIMEOUT`] for the vision call; short under test so the timeout path
+/// runs in seconds.
+const VISION_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(3)
+} else {
+    AUX_TIMEOUT
+};
+/// After the fallback's call fails or times out, it is not asked again in
+/// this session for this long (read-file-images §3): images get the notice.
+const FALLBACK_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
 /// The consumption barrier of 50 §8 (recheck point 3). A peer exchange is
 /// consumed under the read side — generation check and store transaction
@@ -777,6 +794,19 @@ struct Shared {
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
     /// supervisor; snapshotted per consultation, never held across an await.
     vision_model: Arc<RwLock<Option<Resolved>>>,
+    /// Model ids whose provider refused image input in this session
+    /// (`Turn::refuse_images`); `None` until read from the store
+    /// (table `image_refusals`) at the first round. Shared with the turn.
+    image_refusals: Arc<parking_lot::Mutex<Option<HashSet<String>>>>,
+    /// read-file-images §3: the vision fallback that failed in this session.
+    /// While down, images get the notice instead of a consultation.
+    fallback_down: Arc<parking_lot::Mutex<Option<FallbackDown>>>,
+    /// read-file-images §2: an image-caused client error — images go as text
+    /// ([`Current::images_off`]) until the next compaction.
+    images_off: Arc<std::sync::atomic::AtomicBool>,
+    /// read-file-images §2: a notice a continuation (summary, harvest) could
+    /// not append itself; the next round appends it.
+    image_notice: Arc<parking_lot::Mutex<Option<String>>>,
     /// Tier-2 model of the decision oracle (57 §0.9); `None` = the title model,
     /// then the session's model. Shared with the supervisor.
     escalate_model: Arc<RwLock<Option<Resolved>>>,
@@ -848,6 +878,12 @@ struct Shared {
     test_view: Arc<parking_lot::Mutex<Option<ViewRender>>>,
 }
 
+/// A vision fallback that failed in this session (read-file-images §3):
+/// `(model id, until, reason, fallback epoch)`; `until: None` = it refused
+/// images, for good; an entry from an older [`vision::fallback_epoch`] (the
+/// fallback was set again since) no longer applies.
+type FallbackDown = (String, Option<Instant>, String, u64);
+
 /// The model, what streams it (12 §6) and the resolution error of the
 /// configured id, if any; an error makes the next round stop instead of
 /// calling the model. Set by [`Session::new`] and [`SwitchModel`].
@@ -858,6 +894,12 @@ struct Current {
     error: Option<String>,
     /// Reasoning effort sent with every call; `None` = [`crate::frame::default_effort`].
     effort: Option<ReasoningEffort>,
+    /// The provider refused image input from this model in this session
+    /// ([`Shared::image_refusals`]): it is text-only whatever the catalog says.
+    no_images: bool,
+    /// An image-caused client error ([`Shared::images_off`]): images go as
+    /// text until the next compaction; the model itself still sees.
+    images_off: bool,
 }
 
 impl Current {
@@ -867,13 +909,23 @@ impl Current {
             model,
             error,
             effort: None,
+            no_images: false,
+            images_off: false,
         }
     }
 
-    /// Whether the model takes image parts through its backend (52 §4.1,
-    /// [`crate::backend::supports_images`]): Cursor serialises text only.
+    /// Whether the model is sent image parts (52 §4.1,
+    /// [`crate::backend::supports_images`]): Cursor serialises text only, a
+    /// model whose provider refused an image is text-only from then on, and
+    /// images go as text while [`Current::images_off`].
     fn vision(&self) -> bool {
-        crate::backend::supports_images(&self.model)
+        !self.images_off && self.can_see()
+    }
+
+    /// The model can take images at all — what snap compaction needs;
+    /// [`Current::images_off`] does not change it.
+    fn can_see(&self) -> bool {
+        !self.no_images && crate::backend::supports_images(&self.model)
     }
 
     /// The reasoning effort a call carries: the session's, else [`crate::frame::default_effort`].
@@ -948,6 +1000,10 @@ impl Session {
                 title_pinned: Arc::default(),
                 title_model,
                 vision_model,
+                image_refusals: Arc::default(),
+                fallback_down: Arc::default(),
+                images_off: Arc::default(),
+                image_notice: Arc::default(),
                 escalate_model,
                 polish_model: Arc::default(),
                 subagent_model,
@@ -2537,6 +2593,9 @@ impl Message<SwitchModel> for Session {
         SwitchModel(model): SwitchModel,
         _: &mut Context<Self, Self::Reply>,
     ) {
+        // read-file-images §2: picking a model (again) is the user's way to
+        // send it images again after its provider refused one.
+        mark_images(&self.shared, &model.id, false).await;
         let mut current = self.shared.model.lock().unwrap_or_else(|p| p.into_inner());
         let effort = current.effort.take();
         *current = Current::new(model, None, &self.shared.client, &self.shared.auth);
@@ -2975,6 +3034,9 @@ struct Turn {
     vision_failed: BTreeSet<VisionSource>,
     /// The "no vision fallback configured" note was appended this turn.
     vision_noticed: bool,
+    /// read-file-images: the model this turn marked as refusing images; a
+    /// retry refused the same way clears the mark again.
+    refused_now: Option<String>,
     /// Risk per registry tool name, from this turn's `ListTools` (109 §3.3
     /// step 5: the `tool_calls.risk` column; `read_only` for loop-local tools).
     risks: HashMap<String, Risk>,
@@ -3771,6 +3833,12 @@ pub(crate) fn direct_specs(
     specs
 }
 
+/// The loop-local direct tools a python cell can await too (the repl answers
+/// them, 08 §3.1); every other loop-local one is in [`repl::DIRECT_ONLY`].
+pub(crate) fn awaitable_locals() -> impl Iterator<Item = ToolSpec> {
+    std::iter::once(todo::spec()).chain(endless_tools::specs())
+}
+
 /// The plugins' prompt blocks for [`frame::baseline`]; a `toolset` keeps only
 /// its `prompts` plugins (`meetings/06-live-toolset.md` §1.4). An unattended
 /// session (a subagent or a scheduled run: nobody reads it directly) gets
@@ -3833,6 +3901,7 @@ impl Turn {
             first_seq: None,
             vision_failed: BTreeSet::new(),
             vision_noticed: false,
+            refused_now: None,
             risks: HashMap::new(),
             resume_call: parking_lot::Mutex::new(None),
             finished_written: false,
@@ -4025,11 +4094,20 @@ impl Turn {
     }
 
     fn model(&self) -> Current {
-        self.shared
+        let mut current = self
+            .shared
             .model
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone()
+            .clone();
+        current.no_images = self
+            .shared
+            .image_refusals
+            .lock()
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&current.model.id));
+        current.images_off = self.shared.images_off.load(Ordering::Relaxed);
+        current
     }
 
     /// Context window of `model`; the catalog's figure, else the projection that
@@ -5518,7 +5596,7 @@ impl Turn {
                     chrono::Local::now(),
                     &mut self.state.last_stamp,
                 );
-                user_message(input)
+                Box::pin(user_message(input)).await
             }
         };
         if let Some(peer) = peer {
@@ -6274,6 +6352,13 @@ impl Turn {
         if !self.hold_permit().await {
             return Round::Stop("cancelled".into());
         }
+        // Boxed: these futures would otherwise widen `round`'s state machine.
+        Box::pin(self.load_image_refusals()).await;
+        // read-file-images §2: a notice a continuation left for the frame.
+        let notice = self.shared.image_notice.lock().take();
+        if let Some(text) = notice {
+            Box::pin(self.note("vision", &text)).await;
+        }
         let current = self.model();
         if let Some(e) = &current.error {
             self.error(format!("model: {e}")).await;
@@ -6576,6 +6661,13 @@ impl Turn {
                 return Round::Tools;
             }
             Err(Abort::Model(e)) => {
+                // read-file-images §2: an error the images caused — the
+                // provider refusing images (the model is marked), or another
+                // image-caused client error (this turn only) — retries the
+                // round once with the images on the 52 path.
+                if Box::pin(self.image_failure(&current, &e)).await {
+                    return Round::Retry;
+                }
                 // 137G G5: an endless view that made the request too long is
                 // re-rendered smaller once (window / prompt × 0.85; a shape
                 // without numbers, like Bedrock's, halves it), then the
@@ -7014,7 +7106,7 @@ impl Turn {
             } else if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
                 let work = plan.get_or_insert_with(|| self.state.todos.clone());
-                Self::todo(work, call.fn_arguments.clone())
+                todo::call(work, call.fn_arguments.clone())
             } else {
                 // The cell counts itself ([`CellPermit`]): running while the
                 // interpreter executes, not while it awaits its tool calls.
@@ -7024,7 +7116,7 @@ impl Turn {
                         let _ = registry.tell(tools::CancelCalls { session }).await;
                         continue;
                     }
-                    out = self.python(registry, turn, call) => out,
+                    out = self.python(registry, turn, round, call, &mut plan) => out,
                 };
                 if let Some(name) = &bridged[i] {
                     out.content = format!("{}\n{}", repl::bridge_note(name), out.content);
@@ -7181,7 +7273,7 @@ impl Turn {
             // part's `name` keeps the full path so `load_session` can replay it.
             let mut images = Vec::with_capacity(out.files.len());
             for f in &out.files {
-                match Binary::from_file(f) {
+                match file_part(f).await {
                     Ok(b) => images.push(Binary {
                         name: Some(f.to_string_lossy().into_owned()),
                         ..b
@@ -7352,24 +7444,16 @@ impl Turn {
         Round::Tools
     }
 
-    /// The loop-local `todo` tool (07 §9) against the batch's working copy:
-    /// the rendered list is the output.
-    fn todo(list: &mut Vec<todo::Todo>, args: serde_json::Value) -> ToolOutput {
-        let applied = serde_json::from_value::<todo::TodoArgs>(args)
-            .map_err(|e| format!("bad arguments: {e}"))
-            .and_then(|a| todo::apply(list, a));
-        match applied {
-            Ok(()) => ToolOutput::ok(todo::render(list)),
-            Err(e) => ToolOutput::err(e),
-        }
-    }
-
-    /// The loop-local `python` tool (08 §3.1): one [`Repl`] per turn, opened on first use.
+    /// The loop-local `python` tool (08 §3.1): one [`Repl`] per turn, opened on
+    /// first use. A cell's `todo()` calls work on the batch's plan like direct
+    /// ones; a cancelled cell leaves the plan as it was.
     async fn python(
         &mut self,
         registry: &ActorRef<ToolRegistry>,
         turn: TurnId,
+        round: u32,
         call: &ToolCall,
+        plan: &mut Option<Vec<todo::Todo>>,
     ) -> ToolOutput {
         let Some(pool) = &self.shared.pool else {
             return ToolOutput::err("python runtime is off (worker pool failed to start)");
@@ -7381,6 +7465,9 @@ impl Turn {
         let repl = match self.repl.take() {
             Some(r) => r,
             None => {
+                let offered = |name: &str| self.tools.iter().any(|t| t.name.as_str() == name);
+                let local: Vec<ToolSpec> =
+                    awaitable_locals().filter(|s| offered(&s.name)).collect();
                 let cx = RunCx {
                     session: self.shared.id,
                     turn,
@@ -7389,11 +7476,21 @@ impl Turn {
                     spill_dir: self.shared.spill_dir.clone(),
                     cwd: self.cwd.clone(),
                     permit: self.cell_permit(),
+                    local,
+                    endless: self.shared.endless.clone(),
                 };
                 Repl::open(pool, self.shared.id, &self.shared.resources.root, cx).await
             }
         };
-        self.repl.insert(repl).run(&call.call_id, &code).await
+        let repl = self.repl.insert(repl);
+        let committed = plan.as_ref().unwrap_or(&self.state.todos);
+        repl.todo.clone_from(committed);
+        let out = repl.run(&call.call_id, &code).await;
+        if repl.todo != *plan.as_ref().unwrap_or(&self.state.todos) {
+            *plan = Some(std::mem::take(&mut repl.todo));
+            self.state.todo_touched_round = round;
+        }
+        out
     }
 
     /// `/compact` between turns: same baseline/tools/transport as a turn, then [`Turn::compact`].
@@ -7513,6 +7610,8 @@ impl Turn {
         self.reset_this_round = true;
         self.since = 0;
         self.hint_since = 0;
+        // read-file-images §2: the fold is where images may go natively again.
+        self.shared.images_off.store(false, Ordering::Relaxed);
         self.publish(AgentEvent::Compacted {
             session,
             turn: None,
@@ -7551,6 +7650,7 @@ impl Turn {
     /// What a model call needs besides the frame: the current model and
     /// backend (or the model's resolution error) and the provider's transport.
     async fn resolve(&mut self) -> Result<(Current, Transport), String> {
+        Box::pin(self.load_image_refusals()).await;
         let current = self.model();
         if let Some(e) = &current.error {
             return Err(format!("model: {e}"));
@@ -7708,7 +7808,9 @@ impl Turn {
             .compact_style
             .read()
             .unwrap_or_else(|p| p.into_inner());
-        let vision = current.vision();
+        // `can_see`, not `vision`: images that go as text only until the next
+        // compaction (`images_off`) do not turn a snap into a cut.
+        let vision = current.can_see();
         let mut style = compact::resolve(r#override, cfg_style, reason, vision)?;
         // 52 §7.2: a summary reads the images, so pending ones are inspected
         // first (and the notes counted below); cut/clear/snap discard or keep
@@ -8028,6 +8130,7 @@ impl Turn {
         {
             tracing::warn!(session = %session, before = projected, after, fixed, avail = fold.avail, tail_budget = fold.tail, "compaction freed under 30 % of the headroom");
         }
+        self.shared.images_off.store(false, Ordering::Relaxed);
         self.publish(AgentEvent::Compacted {
             session,
             turn: self.turn,
@@ -8104,6 +8207,11 @@ impl Turn {
         // Prefix, not equality: a session hint (`SetCompaction`) is appended after the constant.
         let summary = instruction.starts_with(compact::COMPACT_INSTRUCTION);
         let mut text_only = false;
+        // read-file-images §2: one resend with the images stripped when they
+        // caused the error (the model refusing them is also marked).
+        let mut send_images = current.vision();
+        // This call marked the model: a resend refused the same way unmarks it.
+        let mut marked = false;
         loop {
             // 116: the fold's frame, priced like the live one.
             let projected = full
@@ -8116,7 +8224,7 @@ impl Turn {
                 system: &self.state.baseline,
                 head,
                 history: full.as_slice(),
-                vision: current.vision(),
+                vision: send_images,
                 strip_reasoning: false,
                 max_tokens: self.reply_budget(current, transport, projected),
             };
@@ -8161,6 +8269,46 @@ impl Turn {
                 }
                 Ok(Err(Abort::Cancelled | Abort::Interrupted { .. })) => {
                     return Err("cancelled".into());
+                }
+                Ok(Err(Abort::Model(e)))
+                    if send_images
+                        && (vision::rejects_images(&e) || vision::image_caused(&e))
+                        && (head.is_some_and(has_images) || full.iter().any(has_images)) =>
+                {
+                    let model = &current.model.id;
+                    let why =
+                        frame::truncate(&e.split_whitespace().collect::<Vec<_>>().join(" "), 240);
+                    let notice = if vision::rejects_images(&e) {
+                        Box::pin(mark_images(&self.shared, model, true)).await;
+                        marked = true;
+                        format!(
+                            "{model}'s provider refused an image ({why}). This chat now sends {model} \
+                             text in place of images: the vision fallback's description, else a note. \
+                             Re-select the model to send it images again."
+                        )
+                    } else {
+                        self.shared.images_off.store(true, Ordering::Relaxed);
+                        format!(
+                            "{model}'s provider refused an image in this chat ({why}). Images now go \
+                             to {model} as text — the vision fallback's description, else a note — \
+                             until the next compaction; {model} itself still takes images."
+                        )
+                    };
+                    // A continuation cannot append rows itself (a detached
+                    // harvest is not the session's writer): the next round does.
+                    *self.shared.image_notice.lock() = Some(notice);
+                    tracing::warn!(session = %self.shared.id, %model, "continuation refused for its images; resending without them: {e}");
+                    send_images = false;
+                }
+                Ok(Err(Abort::Model(e))) if marked && vision::rejects_images(&e) => {
+                    // Refused the same way with no image in it: not about images.
+                    let model = &current.model.id;
+                    Box::pin(mark_images(&self.shared, model, false)).await;
+                    *self.shared.image_notice.lock() = Some(format!(
+                        "{model} was refused the same way with no image in the request, so that \
+                         refusal was not about images: {model} gets images again."
+                    ));
+                    return Err(e);
                 }
                 Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
                 Ok(Err(Abort::Budget {
@@ -8308,10 +8456,7 @@ impl Turn {
         &self,
         current: &Current,
     ) -> Result<Option<crate::store::VisionFrame>, String> {
-        if current.vision()
-            || !(self.state.head.as_ref().is_some_and(has_images)
-                || self.state.history.iter().any(|(_, m)| has_images(m)))
-        {
+        if current.vision() || !self.frame_has_images() {
             return Ok(None);
         }
         self.shared
@@ -8320,6 +8465,87 @@ impl Turn {
             .await
             .map(Some)
             .map_err(|e| format!("store: {e:#}"))
+    }
+
+    /// The live frame carries an image a text-only model cannot receive.
+    fn frame_has_images(&self) -> bool {
+        self.state.head.as_ref().is_some_and(has_images)
+            || self.state.history.iter().any(|(_, m)| has_images(m))
+    }
+
+    /// [`Shared::image_refusals`] from the store, once per session
+    /// (read-file-images §2). A failed read leaves it empty, logged: the next
+    /// refusal is caught again.
+    async fn load_image_refusals(&self) {
+        if self.shared.image_refusals.lock().is_some() {
+            return;
+        }
+        let ids = Box::pin(self.shared.store.image_refusals(self.shared.id))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(session = %self.shared.id, "image_refusals: {e:#}");
+                Vec::new()
+            });
+        self.shared
+            .image_refusals
+            .lock()
+            .get_or_insert_with(HashSet::new)
+            .extend(ids);
+    }
+
+    /// read-file-images §2: what round error `e` means for the images `current`
+    /// was sent; `true` = retry the round, its images now on the 52 path
+    /// (fallback description, else the notice).
+    /// - [`vision::rejects_images`]: the model is marked text-only for this
+    ///   session ([`mark_images`], durable) and one notice row says so and how
+    ///   to undo it. A marked model is never sent an image again, so this
+    ///   fires once per model.
+    /// - [`vision::image_caused`] (too large, too many, content policy): the
+    ///   images go the 52 path for the rest of this turn only, once.
+    /// - The retry refused the same way without images: the refusal was not
+    ///   about images; the mark is cleared and the error stands.
+    async fn image_failure(&mut self, current: &Current, e: &str) -> bool {
+        let model = current.model.id.clone();
+        if !current.vision() {
+            if self.refused_now.as_deref() == Some(model.as_str()) && vision::rejects_images(e) {
+                self.refused_now = None;
+                Box::pin(mark_images(&self.shared, &model, false)).await;
+                let text = format!(
+                    "{model} was refused the same way with no image in the request, so that \
+                     refusal was not about images: {model} gets images again."
+                );
+                Box::pin(self.note("vision", &text)).await;
+            }
+            return false;
+        }
+        if !self.frame_has_images() {
+            return false;
+        }
+        let why = frame::truncate(&e.split_whitespace().collect::<Vec<_>>().join(" "), 240);
+        if vision::rejects_images(e) {
+            tracing::warn!(session = %self.shared.id, %model, "provider refused image input; text-only for this session from now on: {e}");
+            Box::pin(mark_images(&self.shared, &model, true)).await;
+            self.refused_now = Some(model.clone());
+            let text = format!(
+                "{model}'s provider refused an image ({why}). This chat now sends {model} text \
+                 in place of images: the vision fallback's description, else a note. Re-select \
+                 the model to send it images again."
+            );
+            Box::pin(self.note("vision", &text)).await;
+            return true;
+        }
+        if !current.images_off && vision::image_caused(e) {
+            tracing::warn!(session = %self.shared.id, %model, "an image was refused; images go as text until the next compaction: {e}");
+            self.shared.images_off.store(true, Ordering::Relaxed);
+            let text = format!(
+                "{model}'s provider refused an image in this chat ({why}). Images now go to \
+                 {model} as text — the vision fallback's description, else a note — until the \
+                 next compaction; {model} itself still takes images."
+            );
+            Box::pin(self.note("vision", &text)).await;
+            return true;
+        }
+        false
     }
 
     /// The image index for a detached harvest (52 §7.2 as built): read as it
@@ -8347,10 +8573,13 @@ impl Turn {
         let Some(vf) = self.vision_frame(current).await? else {
             return Ok(Vec::new());
         };
-        let pending: Vec<&VisionImage> = vision::pending(&vf.images, &vf.notes)
-            .into_iter()
-            .filter(|im| !self.vision_failed.contains(&im.source))
-            .collect();
+        let fallback_id = self.vision_model().map(|f| f.id);
+        let pending: Vec<&VisionImage> =
+            vision::pending_for(&vf.images, &vf.notes, fallback_id.as_deref())
+                .into_iter()
+                .filter(|im| !self.vision_failed.contains(&im.source))
+                .collect();
+        let mut consulted = false;
         for group in &vision::groups(&pending, VISION_BATCH_BYTES) {
             if self.cancel.is_cancelled() {
                 return Err("cancelled".into());
@@ -8363,33 +8592,84 @@ impl Turn {
                 break;
             }
             let Some(fallback) = self.vision_model() else {
-                self.no_fallback(&current, &pending).await;
+                Box::pin(self.no_fallback(&current, &pending, None)).await;
                 break;
             };
+            if let Some(why) = self.fallback_down(&fallback) {
+                Box::pin(self.no_fallback(&current, &pending, Some(&why))).await;
+                break;
+            }
             self.consult(&current, &fallback, &vf.images, group).await?;
+            consulted = true;
         }
-        Ok(vf.images)
+        // read-file-images §3: a repeat of described bytes points at that
+        // description; the notes this preparation appended count too.
+        let notes = if consulted {
+            Box::pin(self.shared.store.vision_frame(self.shared.id))
+                .await
+                .map_err(|e| format!("store: {e:#}"))?
+                .notes
+        } else {
+            vf.notes
+        };
+        let mut images = vf.images;
+        vision::link_repeats(&mut images, &notes);
+        Ok(images)
     }
 
-    /// 52 §4.1: no fallback configured — the model is told once per turn that
-    /// nobody has seen the pending images; their markers stay as they are.
-    async fn no_fallback(&mut self, current: &Current, pending: &[&VisionImage]) {
+    /// 52 §4.1: no fallback configured, or (`down`) the configured one is in
+    /// its cooldown or refused images (read-file-images §3) — the model is told
+    /// once per turn that nobody has seen the pending images; their markers
+    /// stay as they are.
+    async fn no_fallback(
+        &mut self,
+        current: &Current,
+        pending: &[&VisionImage],
+        down: Option<&str>,
+    ) {
         if self.vision_noticed {
             return;
         }
         self.vision_noticed = true;
         let refs: Vec<String> = pending.iter().map(|im| im.source.reference()).collect();
-        self.note(
-            "vision",
-            &format!(
-                "{} is text-only and no vision fallback model is configured, so nobody has looked \
-                 at image(s) {}. Say so rather than guessing their content; the user can set one \
-                 with `/vision <provider/model>`.",
-                current.model.id,
-                refs.join(", ")
+        let model = &current.model.id;
+        let refused = if current.no_images || current.images_off {
+            " (its provider refused an image)"
+        } else {
+            ""
+        };
+        let refs = refs.join(", ");
+        let text = match down {
+            None => format!(
+                "{model}{refused} is text-only and no vision fallback model is configured, so \
+                 nobody has looked at image(s) {refs}. Say so rather than guessing their content; \
+                 the user can set one with `/vision <provider/model>`."
             ),
-        )
-        .await;
+            Some(why) => format!(
+                "{model}{refused} is text-only and the vision fallback is unavailable ({why}), so \
+                 nobody has looked at image(s) {refs}. Say so rather than guessing their content."
+            ),
+        };
+        self.note("vision", &text).await;
+    }
+
+    /// Why `fallback` is not to be asked now (read-file-images §3): it refused
+    /// images in this session, or failed less than [`FALLBACK_COOLDOWN`] ago.
+    fn fallback_down(&self, fallback: &Resolved) -> Option<String> {
+        let mut down = self.shared.fallback_down.lock();
+        let (id, until, why, epoch) = down.as_ref()?;
+        if *id != fallback.id || *epoch != vision::fallback_epoch() {
+            return None;
+        }
+        let why = match until {
+            None => format!("{id} refused images: {why}"),
+            Some(t) if Instant::now() < *t => format!("{id} failed: {why}"),
+            Some(_) => {
+                *down = None;
+                return None;
+            }
+        };
+        Some(why)
     }
 
     /// One consultation (52 §5.1 steps 3–5): `current` writes the question
@@ -8539,16 +8819,29 @@ impl Turn {
         );
         let transport = current.backend.transport(fallback).await?;
         let message = vision::vision_message(question, group);
-        let reply = self
+        let reply = match self
             .aux_call(&current, transport, vision::VISION_SYSTEM, message, true)
-            .await?
-            .ok_or("replied without text")?;
+            .await
+        {
+            Ok(reply) => reply.ok_or("replied without text")?,
+            Err(e) if e == "cancelled" => return Err(e),
+            // read-file-images §3: a fallback that refuses images is down for
+            // good in this session; one that errors or times out cools down.
+            Err(e) => {
+                let until =
+                    (!vision::rejects_images(&e)).then(|| Instant::now() + FALLBACK_COOLDOWN);
+                let why = frame::truncate(&e.split_whitespace().collect::<Vec<_>>().join(" "), 160);
+                *self.shared.fallback_down.lock() =
+                    Some((fallback.id.clone(), until, why, vision::fallback_epoch()));
+                return Err(e);
+            }
+        };
         vision::parse_reply(&reply, group)
     }
 
     /// A stateless auxiliary call (52 §5.2): `system` plus one user message,
     /// no tools, no live events, under [`aux_conversation`], bounded by
-    /// [`SUMMARISE_TIMEOUT`]; transient retries and cancellation as any call
+    /// [`AUX_TIMEOUT`] ([`VISION_TIMEOUT`] with `vision`); transient retries and cancellation as any call
     /// (`Err("cancelled")`). `Ok(None)`: the reply carried tool calls or no
     /// text. Its usage counts toward the turn, never the main context meter.
     async fn aux_call(
@@ -8582,9 +8875,14 @@ impl Turn {
             CallKind::Vision,
             &mut thinking,
         );
-        let end = match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
+        let limit = if vision {
+            VISION_TIMEOUT
+        } else {
+            QUESTION_TIMEOUT
+        };
+        let end = match tokio::time::timeout(limit, call).await {
             Err(_) => {
-                return Err(format!("timed out after {}s", SUMMARISE_TIMEOUT.as_secs()));
+                return Err(format!("timed out after {}s", limit.as_secs()));
             }
             Ok(Err(Abort::Cancelled | Abort::Interrupted { .. })) => return Err("cancelled".into()),
             Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
@@ -8619,6 +8917,28 @@ impl Turn {
     // endregion: --- Vision fallback
 }
 
+/// Mark (`refused`) or unmark `model` as refusing images in `shared`'s
+/// session (read-file-images §2): [`Shared::image_refusals`] and the store's
+/// `image_refusals` table. A store failure is logged; memory still applies.
+async fn mark_images(shared: &Shared, model: &str, refused: bool) {
+    // Not yet loaded (`None`): the store write below is what the load reads.
+    if let Some(ids) = shared.image_refusals.lock().as_mut() {
+        if refused {
+            ids.insert(model.to_owned());
+        } else {
+            ids.remove(model);
+        }
+    }
+    let r = if refused {
+        Box::pin(shared.store.refuse_images(shared.id, model)).await
+    } else {
+        Box::pin(shared.store.allow_images(shared.id, model)).await
+    };
+    if let Err(e) = r {
+        tracing::warn!(session = %shared.id, %model, refused, "image_refusals: {e:#}");
+    }
+}
+
 /// Whether `m` carries an image a text-only model cannot receive (user
 /// binary or tool-response image; PDFs have their own path, 52 §4.2).
 fn has_images(m: &ChatMessage) -> bool {
@@ -8645,7 +8965,7 @@ fn aux_conversation(session: SessionId) -> SessionId {
 /// The user message for one input: text, then one `Binary` part per file
 /// (17 §3.2; a PDF rides as a native document part, 20 §2.5). A file that
 /// vanished since `check_files` becomes a placeholder rather than aborting the turn.
-fn user_message(
+async fn user_message(
     Input {
         text,
         context,
@@ -8661,12 +8981,42 @@ fn user_message(
     parts.extend(context.into_iter().map(ContentPart::Text));
     parts.push(ContentPart::Text(text));
     for f in files {
-        parts.push(match Binary::from_file(&f) {
+        parts.push(match file_part(&f).await {
             Ok(b) => ContentPart::Binary(b),
             Err(e) => ContentPart::Text(format!("[file {} unreadable: {e}]", f.display())),
         });
     }
     ChatMessage::user(MessageContent::from_parts(parts))
+}
+
+/// The binary part for an attachment or tool file (17 §3.1, 52 §5.3): an
+/// image goes through [`tools::images::for_provider`] — MIME from its bytes,
+/// decoded, scaled into provider limits — so nothing a provider rejects for
+/// size, format, animation or corruption is stored and re-sent every turn;
+/// anything else (a PDF) as before. The decode runs on a blocking thread; an
+/// image the guard refuses, a decoder panic, or a file whose name says image
+/// but whose bytes are not a supported one is the `Err` the caller turns into
+/// an "unreadable" note.
+async fn file_part(f: &Path) -> Result<Binary, String> {
+    let f = f.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let name = f.file_name().map(|n| n.to_string_lossy().into_owned());
+        match tools::images::for_provider(&f).map_err(|e| format!("{e:#}"))? {
+            Some((bytes, mime)) => Ok(Binary::from_base64(mime, BASE64.encode(bytes), name)),
+            None => {
+                let b = Binary::from_file(&f).map_err(|e| e.to_string())?;
+                if b.is_image() {
+                    return Err(format!(
+                        "{} is not a supported image (png, jpeg, gif, webp)",
+                        b.content_type
+                    ));
+                }
+                Ok(b)
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("image decoder failed: {e}")))
 }
 
 /// The latest `<time …/>` stamp in the frame (74 §3), for resume.
@@ -9114,6 +9464,40 @@ mod tests {
         );
         assert_eq!(direct_tool(spec("shell")).eager_input_streaming, None);
         assert_eq!(direct_tool(todo::spec()).eager_input_streaming, None);
+    }
+
+    /// The `## Runtime` sentence promises every direct tool in a cell except
+    /// the ones it names: registry tools are in the stubs by construction, so
+    /// each loop-local direct tool is either answered by the repl or named.
+    #[test]
+    fn runtime_sentence_names_exactly_the_unbound_direct_tools() {
+        let loop_local: BTreeSet<String> = [
+            todo::spec(),
+            repl::spec(),
+            advisor::advise::spec(),
+            advisor::consult::spec(),
+        ]
+        .into_iter()
+        .chain(endless_tools::specs())
+        .map(|s| s.name)
+        .collect();
+        let awaitable: BTreeSet<String> = awaitable_locals().map(|s| s.name).collect();
+        let direct_only: BTreeSet<String> = repl::DIRECT_ONLY.map(str::to_owned).into();
+        assert!(awaitable.is_disjoint(&direct_only), "{awaitable:?}");
+        assert_eq!(&awaitable | &direct_only, loop_local);
+        let block = repl::prompt_block(&[], true);
+        let sentence = block
+            .split_once("awaitable here too, by the same name, except ")
+            .and_then(|(_, rest)| rest.split_once('.'))
+            .map(|(names, _)| names)
+            .expect("the sentence names its exceptions");
+        let named: BTreeSet<String> = sentence
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(named, direct_only, "{sentence}");
     }
 
     /// `meetings/06-live-toolset.md` §1.2–4: a toolset is an allowlist that
@@ -9663,7 +10047,7 @@ mod tests {
             reason: None,
         }];
         let mut work = committed.clone();
-        let out = Turn::todo(&mut work, serde_json::json!({ "op": "done", "task": "a" }));
+        let out = todo::call(&mut work, serde_json::json!({ "op": "done", "task": "a" }));
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(work[0].status, todo::Status::Done);
         assert_eq!(committed[0].status, todo::Status::Pending);

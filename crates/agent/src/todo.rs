@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tools::{Risk, ToolSpec};
+use tools::{Risk, ToolOutput, ToolSpec};
 
 /// Tool name.
 pub const NAME: &str = "todo";
@@ -174,7 +174,8 @@ pub struct TodoArgs {
     /// Item texts for `init` and `add`.
     #[serde(default)]
     pub items: Vec<String>,
-    /// Exact text of an existing item for `start`, `done`, `drop`, `block`, `unblock`.
+    /// Text of an existing item for `start`, `done`, `drop`, `block`, `unblock`
+    /// (exact; surrounding quotes, case and spacing are forgiven when unambiguous).
     pub task: Option<String>,
     /// Why the item is blocked; required by `block`.
     pub reason: Option<String>,
@@ -205,18 +206,14 @@ pub fn apply(list: &mut Vec<Todo>, args: TodoArgs) -> Result<(), String> {
                 if text.is_empty() {
                     return Err("todo items must not be blank".into());
                 }
-                if next.iter().any(|t| t.text == text) {
-                    return Err(format!("duplicate task: {text:?}"));
+                if next.iter().any(|t| key(&t.text) == key(text)) {
+                    return Err(format!("duplicate task: {text}"));
                 }
                 next.push(Todo::pending(text.to_owned()));
             }
         }
         Op::Start | Op::Done | Op::Drop | Op::Block | Op::Unblock => {
-            let task = args.task.as_deref().unwrap_or_default();
-            let idx = next
-                .iter()
-                .position(|t| t.text == task)
-                .ok_or_else(|| format!("unknown task: {task:?}"))?;
+            let idx = find(&next, args.task.as_deref().unwrap_or_default())?;
             let cur = next[idx].status;
             let target = match args.op {
                 Op::Start => Status::InProgress,
@@ -225,6 +222,7 @@ pub fn apply(list: &mut Vec<Todo>, args: TodoArgs) -> Result<(), String> {
                 Op::Block => Status::Blocked,
                 _ => Status::Pending,
             };
+            let task = &next[idx].text;
             if cur.is_terminal() && cur != target {
                 return Err(format!(
                     "task {task:?} is already {}; done/dropped items are not reopened",
@@ -264,6 +262,70 @@ pub fn apply(list: &mut Vec<Todo>, args: TodoArgs) -> Result<(), String> {
     }
     *list = next;
     Ok(())
+}
+
+/// The loop-local `todo` call on `list` (a working copy): the rendered list,
+/// or the error. Shared by the direct call and the python runtime's `todo()`.
+pub fn call(list: &mut Vec<Todo>, args: serde_json::Value) -> ToolOutput {
+    let applied = serde_json::from_value::<TodoArgs>(args)
+        .map_err(|e| format!("bad arguments: {e}"))
+        .and_then(|a| apply(list, a));
+    match applied {
+        Ok(()) => ToolOutput::ok(render(list)),
+        Err(e) => ToolOutput::err(e),
+    }
+}
+
+/// One pair of matching surrounding quotes stripped, if `s` has them.
+fn unquote(s: &str) -> Option<&str> {
+    ['"', '\'', '`', '“', '‘']
+        .into_iter()
+        .zip(['"', '\'', '`', '”', '’'])
+        .find_map(|(open, close)| s.strip_prefix(open)?.strip_suffix(close))
+}
+
+/// The forgiving identity of an item text: trimmed, one pair of quotes off,
+/// whitespace collapsed, lowercase. Two items never share one ([`apply`]).
+fn key(s: &str) -> String {
+    let s = s.trim();
+    let s = unquote(s).unwrap_or(s);
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The item `task` names: the exact text (trimmed), else the text without
+/// one pair of surrounding quotes, else the one item with the same [`key`].
+/// Errors show the text as given and list the items to copy from.
+fn find(list: &[Todo], task: &str) -> Result<usize, String> {
+    let task = task.trim();
+    let exact = |t: &str| list.iter().position(|i| i.text == t);
+    if let Some(i) = exact(task).or_else(|| exact(unquote(task)?.trim())) {
+        return Ok(i);
+    }
+    let k = key(task);
+    let hits: Vec<usize> = (0..list.len())
+        .filter(|&i| key(&list[i].text) == k)
+        .collect();
+    let numbered = |idx: &[usize]| {
+        idx.iter()
+            .take(CAP)
+            .map(|&i| format!("\n{}. {}", i + 1, list[i].text))
+            .collect::<String>()
+    };
+    match hits[..] {
+        [i] => Ok(i),
+        [] if list.is_empty() => Err(format!("unknown task: {task}. The list is empty.")),
+        [] => Err(format!(
+            "unknown task: {task}. Items:{}",
+            numbered(&(0..list.len()).collect::<Vec<_>>())
+        )),
+        _ => Err(format!(
+            "ambiguous task: {task} matches several items; pass one exactly:{}",
+            numbered(&hits)
+        )),
+    }
 }
 
 /// Anything pending or in progress remains (47 §2.1/§3): the predicate behind
@@ -403,6 +465,95 @@ mod tests {
         apply(&mut list, args(Op::Init, &refs, None)).unwrap();
         assert!(apply(&mut list, args(Op::Add, &["33rd"], None)).is_err());
         assert_eq!(list.len(), 32);
+    }
+
+    #[test]
+    fn task_lookup_forgives_padding_quotes_case_and_spacing() {
+        let item = "Map the harness as it stands";
+        for given in [
+            "  Map the harness as it stands \n",
+            "\"Map the harness as it stands\"",
+            "'Map the harness as it stands'",
+            "“Map the harness as it stands”",
+            "‘Map the harness as it stands’",
+            "`Map the harness as it stands`",
+            " \" Map the harness as it stands\" ",
+            "map  the HARNESS\tas it stands",
+            "\"map the harness  as it stands\"",
+        ] {
+            let mut list = Vec::new();
+            apply(&mut list, args(Op::Init, &[item, "Other"], None)).unwrap();
+            apply(&mut list, args(Op::Done, &[], Some(given)))
+                .unwrap_or_else(|e| panic!("{given:?}: {e}"));
+            assert_eq!(list[0].status, Status::Done, "{given:?}");
+        }
+        // One pair only, and only a matching pair.
+        let mut list = Vec::new();
+        apply(&mut list, args(Op::Init, &[item], None)).unwrap();
+        for given in [
+            "\"\"Map the harness as it stands\"\"",
+            "\"Map the harness as it stands'",
+        ] {
+            assert!(
+                apply(&mut list, args(Op::Done, &[], Some(given))).is_err(),
+                "{given:?}"
+            );
+        }
+        // An item whose text really is quoted matches exactly first.
+        apply(&mut list, args(Op::Init, &["\"a\"", "b"], None)).unwrap();
+        apply(&mut list, args(Op::Done, &[], Some("\"a\""))).unwrap();
+        assert_eq!(list[0].status, Status::Done);
+    }
+
+    #[test]
+    fn ambiguous_and_unknown_tasks_list_the_items() {
+        // A list from before the normalised duplicate check can hold two items with one key.
+        let mut list = vec![
+            Todo::pending("Ship it".into()),
+            Todo::pending("ship  it".into()),
+        ];
+        let err = apply(&mut list, args(Op::Done, &[], Some("SHIP IT"))).unwrap_err();
+        assert_eq!(
+            err,
+            "ambiguous task: SHIP IT matches several items; pass one exactly:\n1. Ship it\n2. ship  it"
+        );
+        // Exact still wins over the ambiguity.
+        apply(&mut list, args(Op::Done, &[], Some("ship  it"))).unwrap();
+        assert_eq!(list[1].status, Status::Done);
+
+        let mut list = Vec::new();
+        assert_eq!(
+            apply(&mut list, args(Op::Done, &[], Some("\"x\""))).unwrap_err(),
+            "unknown task: \"x\". The list is empty."
+        );
+        apply(&mut list, args(Op::Init, &["a", "b"], None)).unwrap();
+        assert_eq!(
+            apply(&mut list, args(Op::Done, &[], Some("Map the harness"))).unwrap_err(),
+            "unknown task: Map the harness. Items:\n1. a\n2. b"
+        );
+        let many: Vec<String> = (0..CAP).map(|i| format!("t{i}")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        apply(&mut list, args(Op::Init, &refs, None)).unwrap();
+        let err = apply(&mut list, args(Op::Done, &[], Some("nope"))).unwrap_err();
+        assert!(
+            err.ends_with("\n32. t31") && err.matches('\n').count() == CAP,
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn duplicates_use_the_lookup_key() {
+        let mut list = Vec::new();
+        apply(&mut list, args(Op::Init, &["Ship it"], None)).unwrap();
+        for dup in ["ship  IT", "\"Ship it\"", "‘ship it’"] {
+            assert_eq!(
+                apply(&mut list, args(Op::Add, &[dup], None)).unwrap_err(),
+                format!("duplicate task: {dup}")
+            );
+        }
+        assert!(apply(&mut list, args(Op::Init, &["x", " X "], None)).is_err());
+        apply(&mut list, args(Op::Add, &["Ship it now"], None)).unwrap();
+        assert_eq!(list.len(), 2);
     }
 
     #[test]

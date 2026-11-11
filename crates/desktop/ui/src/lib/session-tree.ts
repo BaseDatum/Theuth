@@ -210,7 +210,8 @@ export function subtrees(sessions: readonly SessionSummary[]): Map<string, Sessi
 export function watchCost(o: Pick<ObservedMeta, 'cost_rule' | 'detail'> | null | undefined, metered: CostBucket | undefined): { text: string; grey: boolean; title: string } {
   const rule = o?.cost_rule
   const reported = detailOf(o).cost
-  const money = metered && (metered.returned.length > 0 || metered.estimated_for_unavailable.length > 0) ? costShort(metered) : undefined
+  const short = metered && costShort(metered)
+  const money = short && short !== '—' ? short : undefined
   if (rule === 'counted') {
     return { text: money ?? (reported !== undefined ? usd(reported) : '—'), grey: false, title: 'counted — not in the harness’s own total' }
   }
