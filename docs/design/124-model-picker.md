@@ -84,7 +84,7 @@ Both surfaces open on the **providers** level; typing enters **search** mode ove
 
 1. **Current** — the session's (or draft's) current model as the first row, marked (desktop: check; TUI: `●`). Never hidden, in every mode (wave 88 rule: the selected model is always on top and cannot be filtered out). Picking it re-selects it (harmless).
 2. **Providers** — one row per distinct `ModelInfo.provider` among the listed models, sorted by provider id (A→Z). Label = the provider id exactly as it appears in `provider/model` (users type it that way); right side = `N models`; the provider of the current model carries the same marker. Desktop: a `ChevronRight` at the right edge.
-3. Desktop only: the current model's **Effort** group (levels + `clear`) under the providers, as today. Shown on this level only.
+3. Desktop only, amended 2026-11-11 (Sky): the selected model's effort levels are a **chip row directly under its row**, wherever that row shows (Favorites, Current, the provider's list, search), plus a `Default` chip unless a level is required. One chip row per picker; no bottom Effort group. Under a cmdk row (favorite, provider list) the chips are cmdk items (↑/↓, Enter); under the Current or a selected `none` row they are plain buttons (Tab, Enter/Space) so the §3 start row stays the first cmdk item. Phone widths / coarse pointers: wrapping, 36 px chips.
 
 The highlight starts on the first provider row (the Current row sits above it).
 
@@ -97,11 +97,11 @@ Entered by picking a provider (Enter/→ in the TUI, click/Enter in the desktop)
 
 ### 3.3 Search mode
 
-Any non-empty search text, on either level: the list becomes the flat §2 result list over **all** models — Current row first (marked, even when it does not match, omitted from the results below so it never appears twice), then results. Each row shows the model name with the provider at the right (desktop) / `id name context vision` (TUI). The highlight starts on the **first result**, not on the Current row, so Enter picks the best match. Empty results show `No model matches.` (desktop) / an empty list under the title (TUI). The desktop hides the Effort group while searching. Clearing the text returns to the remembered level (the provider stays selected).
+Any non-empty search text, on either level: the list becomes the flat §2 result list over **all** models — Current row first (marked, even when it does not match, omitted from the results below so it never appears twice), then results. Each row shows the model name with the provider at the right (desktop) / `id name context vision` (TUI). The highlight starts on the **first result**, not on the Current row, so Enter picks the best match. Empty results show `No model matches.` (desktop) / an empty list under the title (TUI). The desktop keeps the effort chips under the Current row while searching. Clearing the text returns to the remembered level (the provider stays selected).
 
 ### 3.4 Unchanged
 
-`/model <id>` (TUI) and `set_model` semantics, the manual-pick-sets-the-default rule (82 §2), `/model` on an ACP session (harness options, 75 §8) and the desktop `HarnessCommand`/`HarnessGroup` picker for ACP children are untouched.
+`/model <id>` (TUI) and `set_model` semantics, the manual-pick-sets-the-default rule (82 §2) and `/model` on an ACP session (harness options, 75 §8) are untouched. Amended 2026-11-11: the desktop ACP picker is `HarnessPicker`, the standard `ModelPicker` over the harness's model options (rows) and its thought_level option (chips, no `Default`); `HarnessCommand`/`HarnessGroup`/`pinnedFilter` are gone. Every desktop model or effort pick renders `ModelPicker` (`ModelMenu`/`ModelDialog`, `ModelCombobox`, `HarnessPicker`); the agent runtime effort and the session ⋯ menu's Effort › moved into the chips.
 
 ### 3.5 One provider only
 

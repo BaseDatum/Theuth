@@ -1,4 +1,6 @@
-import { createElement } from 'react'
+import '../settings/test-dom'
+import { act, createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
@@ -31,4 +33,18 @@ test('148: the rendered trigger shows the effort passed through `effort.current`
 test('148 R2: a coarse pointer opens the picker in the top-of-band dialog, a fine one in the trigger-anchored popover', () => {
   expect(pickerSurface(true)).toBe('dialog')
   expect(pickerSurface(false)).toBe('popover')
+})
+
+test('2026-11-11: the open picker shows `effort` as chips under the selected model; a chip applies the level and closes, like a model pick', async () => {
+  window.HTMLElement.prototype.scrollIntoView = () => {}
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onSelect = vi.fn()
+  await act(async () => createRoot(host).render(createElement(ModelCombobox, { models: [sonnet], value: sonnet.id, onChange() {}, effort: { levels: sonnet.efforts, current: 'high', onSelect }, 'aria-label': 'New sessions model' })))
+  await act(async () => void host.querySelector('button')!.click())
+  const chips = () => [...document.querySelectorAll<HTMLElement>('[aria-label="Effort"] > *')]
+  expect(chips().map((c) => c.textContent)).toEqual(['Default', 'low', 'medium', 'high'])
+  await act(async () => void chips()[1]!.click())
+  expect(onSelect).toHaveBeenCalledWith('low')
+  expect(chips()).toEqual([])
 })
