@@ -258,8 +258,12 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     /// <summary>153 W153B probe evidence: the bar's content rendered to a PNG (RenderTargetBitmap — independent of the desktop's capture).</summary>
     public async Task<bool> CapturePng(string path)
     {
+        var before = root.Background;
         try
         {
+            // 189w: the acrylic sits behind a transparent tree; for the file only, the theme's solid base goes behind the text.
+            root.Background = Theme.Brush(NativeLook.SolidBackgroundBase, root.ActualTheme);
+            await Task.Delay(80);
             await Ui.XamlPng.Write(root, path);
             return true;
         }
@@ -267,6 +271,10 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         {
             Log.Write($"ask bar: capture {path} failed: {e.GetType().Name}: {e.Message}");
             return false;
+        }
+        finally
+        {
+            root.Background = before;
         }
     }
 
@@ -556,29 +564,6 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         if (replyScroll.Visibility != Visibility.Visible) return;
         replyScroll.Visibility = Visibility.Collapsed;
         replyView.Reset();
-    }
-
-    /// <summary>189w probe: the bar's XAML tree rendered to a PNG (capture exclusion does not blank it; the acrylic is swapped for the theme's solid base for the file).</summary>
-    public async Task<bool> CapturePng(string path)
-    {
-        if (!IsShown) return false;
-        var before = root.Background;
-        try
-        {
-            root.Background = Theme.Brush(NativeLook.SolidBackgroundBase, root.ActualTheme);
-            await Task.Delay(80);
-            await XamlPng.Write(root, path);
-            return true;
-        }
-        catch (Exception e)
-        {
-            Log.Write($"ask bar: capture {path} failed: {e.GetType().Name}: {e.Message}");
-            return false;
-        }
-        finally
-        {
-            root.Background = before;
-        }
     }
 
     // MARK: placement (top-centre of the display under the mouse, ≈ 20 % down, like the Attention panel's `.mouse`)
