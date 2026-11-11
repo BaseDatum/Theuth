@@ -25,7 +25,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { PAIRED_RULE, SHARE_RULE, accessFocus, exportName, fingerprint, focusedContact, names, updateNeeded, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { PAIRED_RULE, SHARE_RULE, accessFocus, exportName, fingerprint, focusedContact, names, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -792,11 +792,10 @@ function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contac
             </div>
           </div>
         ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" disabled={!c.full_capable} onClick={() => setPicking(true)}>
+          <div>
+            <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
               <Plus /> Share with {c.name}…
             </Button>
-            {!c.full_capable && <span className="text-xs text-fg-tertiary">{updateNeeded(c)}</span>}
           </div>
         )}
       </div>
@@ -863,7 +862,7 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
                   <div key={c.name} className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border-subtle py-2.5 last:border-0">
                     <div className="min-w-0 flex-1 basis-40">
                       <div className="text-sm font-medium">{c.name}</div>
-                      <div className="text-[13px] text-fg-secondary">{on || c.full_capable ? c.machine : updateNeeded(c)}</div>
+                      <div className="text-[13px] text-fg-secondary">{c.machine}</div>
                     </div>
                     {on && exp ? (
                       <Button size="sm" variant="outline" className="pointer-coarse:min-h-11" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name, contacts: contacts.data })}>
@@ -874,7 +873,7 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
                         size="sm"
                         variant="outline"
                         className="pointer-coarse:min-h-11"
-                        disabled={busy || !c.full_capable}
+                        disabled={busy}
                         aria-label={`Share this chat with ${c.name}`}
                         onClick={() => grant.mutate({ contact: c, target: { kind: 'chat', session }, title })}
                       >

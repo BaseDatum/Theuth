@@ -414,12 +414,10 @@ test('190 export picker: agents and chats (not archived, with their machine); a 
   expect(api.a2a_export_put).not.toHaveBeenCalled()
 })
 
-test('190 D9: a contact on a build that cannot take a share has Share… off, and says why', async () => {
+test('190: Share… is on for every paired contact, whatever its card says (`full_capable` false: card unread, offline)', async () => {
   await mount(createElement(ContactAccess))
-  const share = (who: string) => button(`Share with ${who}…`) as HTMLButtonElement
-  expect(share('bob').disabled).toBe(false)
-  expect(share('alice').disabled).toBe(true)
-  expect(body()).toContain('update studio to share')
+  for (const who of ['bob', 'alice']) expect((button(`Share with ${who}…`) as HTMLButtonElement).disabled).toBe(false)
+  expect(body()).not.toContain('to share')
 })
 
 test('§12.10 unset: taking an export back updates the grant; the export goes once nobody holds it', async () => {
@@ -447,9 +445,10 @@ test('⋯ Share with contact…: one Share per contact grants this chat (`modes`
   await mount(createElement(ShareDialog, { session: 's-new', title: 'New chat', onClose: vi.fn() }))
   // 186: no share button takes focus on open, so Enter never shares by accident.
   expect(document.activeElement?.tagName).not.toBe('BUTTON')
-  // alice's build cannot take a share (D9): her Share is off, with why.
-  expect((button('Share this chat with alice') as HTMLButtonElement).disabled).toBe(true)
-  expect(body()).toContain('update studio to share')
+  // alice's card says nothing about `full`: her Share is on all the same.
+  expect((button('Share this chat with alice') as HTMLButtonElement).disabled).toBe(false)
+  expect(body()).toContain('studio')
+  expect(body()).not.toContain('to share')
   await click('Share this chat with bob')
   await vi.waitFor(() => expect(api.a2a_export_put).toHaveBeenCalledWith({ name: 'new-chat', target: { kind: 'chat', session: 's-new' }, description: 'New chat', paused: null }))
   expect(api.contact_update).toHaveBeenCalledWith('bob', { name: null, cap: null, exports: ['research', 'new-chat'], blocked: null, modes: { 'new-chat': 'full' } })

@@ -17,9 +17,6 @@ export const SHARE_RULE =
 /** 186: the pairing dialog's line: pairing alone shares nothing. */
 export const PAIRED_RULE = 'A paired contact reaches nothing until you share an agent or chat with them.'
 
-/** 186 D10, 190 D9: why sharing is off for a contact on an older build. */
-export const updateNeeded = (c: Pick<Contact, 'name' | 'machine'>) => `update ${c.machine || c.name} to share`
-
 /** `contact_list()`: this machine's contacts, refreshed by `A2aChanged` and a finished ceremony. */
 export function useContacts(enabled = true) {
   const api = useApi()
