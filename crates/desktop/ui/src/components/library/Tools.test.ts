@@ -1,6 +1,6 @@
 import '@/components/settings/test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, createElement, type ReactNode } from 'react'
+import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test, vi } from 'vitest'
@@ -12,11 +12,6 @@ import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import { Tools } from './Tools'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
-// The page frame reads the router; the rows are what is under test.
-vi.mock('@/components/library/Page', () => ({
-  Page: ({ children }: { children: ReactNode }) => children,
-  Column: ({ children }: { children: ReactNode }) => children,
-}))
 
 // 187: this is xeus; mikrotik was added on 333.
 const mesh = {

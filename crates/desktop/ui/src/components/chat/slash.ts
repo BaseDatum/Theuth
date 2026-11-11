@@ -473,7 +473,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     case '/mcp':
-      if (!arg) return navigate({ to: '/tools', search: session ? { session } : {} })
+      if (!arg) return navigate({ to: '/settings/$tab', params: { tab: 'tools' }, search: session ? { session } : {} })
       if (sub === 'sync') return synced(await api.sync_mcp())
       if (sub === 'add' && rest) {
         if (gitUrl(rest)) {
