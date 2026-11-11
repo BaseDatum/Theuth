@@ -13,7 +13,7 @@
   live-run [S] [text_with_underscores|-]  ask.ps1 run -AskProbe S -CatchUp [-Send text] on that engine (THEUTH_DATA_DIR set; '-' = no send)
   live-engine-stop   end the task, stop that one engine pid, show the engine's desk/turn/focus lines
   tail PATH [N]   the last N lines of any text file (diagnostics)
-  companion-log N today's companion log lines about the Ask (focus, first TextDelta, catch-up, watchdog, finish), last N (default 60)
+  companion-log N [regex]  today's companion log lines about the Ask (focus, first TextDelta, catch-up, watchdog, finish), last N (default 60)
 #>
 param(
     [Parameter(Position = 0)] [string] $Action = 'help',
@@ -145,7 +145,8 @@ $p.WaitForExit()
         $file = Get-ChildItem $dir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'companion*.log' } | Sort-Object LastWriteTime | Select-Object -Last 1
         if (-not $file) { Say "no companion log in $dir"; break }
         Say "log $($file.FullName)"
-        Get-Content $file.FullName | Where-Object { $_ -match 'ask|set_event_focus|catch-up|watchdog|TextDelta|desk' } | Select-Object -Last $n | ForEach-Object { Say $_ }
+        $pat = if ($Rest.Count -ge 2) { $Rest[1] } else { 'ask|set_event_focus|catch-up|watchdog|TextDelta|desk' }
+        Get-Content $file.FullName | Where-Object { $_ -match $pat } | Select-Object -Last $n | ForEach-Object { Say $_ }
     }
     default { Say 'usage: engine | engine-start | engine-errors | live-engine-start | live-run [S] [text] | live-engine-stop | tail PATH [N] | companion-log [N]' }
 }
