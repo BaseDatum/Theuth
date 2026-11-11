@@ -32,7 +32,10 @@ use serde_json::Value;
 use tools::{Invoke, ListTools, Risk, ToolOutput, ToolRegistry, ToolSpec};
 
 use crate::AgentEvent;
-use crate::loop_::{CellPermit, CellRunning};
+use crate::advisor;
+use crate::endless::Endless;
+use crate::loop_::{CellPermit, CellRunning, endless_tools};
+use crate::todo::{self, Todo};
 
 /// Tool name.
 pub const NAME: &str = "python";
@@ -106,7 +109,7 @@ loops, conditions and parsing; use `shell()` to run programs, not to write shell
 Discover a tool's full parameters with `help(name)` - the index below is names and
 signatures only. `bindings()` lists every persisted global with its type and length; a
 cell result only footers the names that cell bound or changed. The tools defined directly
-for you are awaitable here too, by the same name.
+for you are awaitable here too, by the same name, except `python`, `advise` and `consult`.
 
 Runtime functions (NOT direct tools — call each as `r = await name(...)` inside `python`; all `async`):
 ";
@@ -130,6 +133,11 @@ pub fn spec() -> ToolSpec {
     }
 }
 
+/// Direct tools a cell cannot await: the runtime itself, and the advisor's
+/// tools, which run on the loop and wait on another session. Named in
+/// [`RUNTIME_BLOCK`]; the type check's "not defined" for them says so.
+pub const DIRECT_ONLY: [&str; 3] = [NAME, advisor::advise::NAME, advisor::consult::NAME];
+
 /// Everything a cell needs from the turn.
 #[derive(Clone)]
 pub struct RunCx {
@@ -148,6 +156,11 @@ pub struct RunCx {
     /// 50 §8: the turn's execution bound as the cell counts itself; `None`
     /// for a turn that holds no permit (opened by a human or the harness).
     pub(crate) permit: Option<CellPermit>,
+    /// The loop-local direct tools of the turn a cell may await (`todo`,
+    /// the endless tools): not in the registry, answered by [`Repl`] itself.
+    pub(crate) local: Vec<ToolSpec>,
+    /// The endless service behind `zoom`/`recall`/`date` in `local`.
+    pub(crate) endless: Option<Endless>,
 }
 
 // ---------------------------------------------------------------------------
@@ -753,6 +766,22 @@ fn all_unresolved_held(errors: &[(&str, &str, usize)], names: &BTreeMap<String, 
         })
 }
 
+/// A [`DIRECT_ONLY`] tool's "used when not defined" says what it is instead.
+fn name_direct_only(diag: &str) -> String {
+    UNRESOLVED_RE
+        .replace_all(diag, |c: &regex::Captures<'_>| {
+            if DIRECT_ONLY.contains(&&c[1]) {
+                format!(
+                    "`{}` is a direct tool; call it directly, not from python",
+                    &c[1]
+                )
+            } else {
+                c[0].to_owned()
+            }
+        })
+        .into_owned()
+}
+
 /// Shift every `main.py:LINE:` and, in the snippets under a `main.py`
 /// location, every ` N | ` gutter number down by `offset` (the prelude
 /// lines the model did not write); gutter lines inside the prelude are
@@ -942,6 +971,8 @@ struct PendingCall {
     id: String,
     name: String,
     args: Value,
+    /// One of `cx.local`: answered here, not by the registry.
+    local: bool,
 }
 
 /// Output of an inner call the cell created but never awaited.
@@ -1047,6 +1078,9 @@ pub struct Repl {
     unawaited: usize,
     /// The reuse hint went out in a cell footer this turn (one `Repl` = one turn).
     hinted: bool,
+    /// The batch's working copy of the todo list while `todo` is in
+    /// `cx.local`: the loop sets it before a cell and reads it back after.
+    pub(crate) todo: Vec<Todo>,
 }
 
 impl Repl {
@@ -1067,11 +1101,7 @@ impl Repl {
         max_memory: usize,
         soft_bytes: u64,
     ) -> Repl {
-        let specs = cx
-            .registry
-            .ask(ListTools(Some(session)))
-            .await
-            .unwrap_or_default();
+        let specs = specs(&cx).await;
         let cfg = ReplConfig {
             limits: Some(ResourceLimits {
                 max_memory: Some(max_memory),
@@ -1182,6 +1212,7 @@ impl Repl {
             size_warned: false,
             unawaited: 0,
             hinted: false,
+            todo: Vec::new(),
         };
         if let Err(e) = repl.ensure_checkout().await {
             tracing::warn!("python runtime checkout failed: {e}");
@@ -1274,13 +1305,7 @@ impl Repl {
     /// fixed per checkout, so a change means a fresh checkout restored from
     /// the last dump — milliseconds, and the heap is byte-identical.
     async fn refresh_stubs(&mut self) {
-        let specs = self
-            .cx
-            .registry
-            .ask(ListTools(Some(self.cx.session)))
-            .await
-            .unwrap_or_default();
-        let fresh = stubs(&specs);
+        let fresh = stubs(&specs(&self.cx).await);
         if self.cfg.type_check_stubs.as_deref() == Some(fresh.as_str()) {
             return;
         }
@@ -1408,7 +1433,7 @@ impl Repl {
                 return self.finish_output(
                     format!(
                         "type check failed (nothing ran; your variables are intact — resend the cell with the fix):\n{}",
-                        rebase_lines(&diag, offset)
+                        name_direct_only(&rebase_lines(&diag, offset))
                     ),
                     true,
                     files,
@@ -1655,6 +1680,7 @@ impl Repl {
             spill,
             unawaited,
             names,
+            todo: todos,
             ..
         } = self;
         let (cx, spill): (&RunCx, &Path) = (cx, spill);
@@ -1689,7 +1715,7 @@ impl Repl {
                             "tools" | "help" | "bindings" => {
                                 NameLookupResult::Value(MontyObject::function(name, None))
                             }
-                            _ => match find_tool(&cx.registry, cx.session, &name).await {
+                            _ => match find_tool(cx, &name).await {
                                 Some(spec) => NameLookupResult::Value(MontyObject::function(
                                     name,
                                     Some(summary(&spec.description)),
@@ -1708,13 +1734,9 @@ impl Repl {
                         let answer = match function_name.as_str() {
                             "tools" => {
                                 let query = first_arg(&args, "query").and_then(|q| q.as_str());
-                                let specs = cx
-                                    .registry
-                                    .ask(ListTools(Some(cx.session)))
-                                    .await
-                                    .unwrap_or_default();
                                 ResumeValue::Return(MontyObject::list(
-                                    specs
+                                    specs(cx)
+                                        .await
                                         .iter()
                                         .map(signature)
                                         .filter(|line| query.is_none_or(|q| line.contains(q)))
@@ -1728,23 +1750,21 @@ impl Repl {
                                     .map(MontyObject::string),
                             )),
                             "help" => match first_arg(&args, "name").and_then(|q| q.as_str()) {
-                                Some(name) => {
-                                    match find_tool(&cx.registry, cx.session, name).await {
-                                        Some(spec) => {
-                                            ResumeValue::Return(MontyObject::string(help(&spec)))
-                                        }
-                                        None => ResumeValue::Error(MontyException::new(
-                                            ExcType::ValueError,
-                                            Some(format!("help: unknown tool {name:?}")),
-                                        )),
+                                Some(name) => match find_tool(cx, name).await {
+                                    Some(spec) => {
+                                        ResumeValue::Return(MontyObject::string(help(&spec)))
                                     }
-                                }
+                                    None => ResumeValue::Error(MontyException::new(
+                                        ExcType::ValueError,
+                                        Some(format!("help: unknown tool {name:?}")),
+                                    )),
+                                },
                                 _ => ResumeValue::Error(MontyException::new(
                                     ExcType::TypeError,
                                     Some("help(name: str) takes one string argument".into()),
                                 )),
                             },
-                            _ => match find_tool(&cx.registry, cx.session, &function_name).await {
+                            _ => match find_tool(cx, &function_name).await {
                                 Some(spec) => {
                                     n += 1;
                                     let id = format!("{call_id}.{n}");
@@ -1763,6 +1783,7 @@ impl Repl {
                                         PendingCall {
                                             seq: n,
                                             id,
+                                            local: cx.local.iter().any(|s| s.name == spec.name),
                                             name: spec.name,
                                             args,
                                         },
@@ -1790,24 +1811,47 @@ impl Repl {
                         // still running keeps it), and the interpreter resumes only
                         // once a permit is held again.
                         drop(running.take());
+                        // `todo` runs first, in invocation order, on the one
+                        // working copy; the rest run together.
+                        let todo_outs: Vec<Option<ToolOutput>> = calls
+                            .iter()
+                            .map(|(_, c)| {
+                                (c.local && c.name == todo::NAME)
+                                    .then(|| todo::call(todos, c.args.clone()))
+                            })
+                            .collect();
                         // Each result's images are copied as it lands: a sibling
                         // still running may overwrite the same path next.
-                        let outs = join_all(calls.iter().map(|(_, c)| async move {
-                            let mut out = cx
-                                .registry
-                                .ask(Invoke(tools::ToolCall {
-                                    id: c.id.clone(),
-                                    name: c.name.clone(),
-                                    args: c.args.clone(),
-                                    session: cx.session,
-                                    quiet: false,
-                                }))
-                                .send()
-                                .await
-                                .unwrap_or_else(|e| ToolOutput::err(format!("tool registry: {e}")));
-                            snapshot_files(&mut out, spill);
-                            out
-                        }))
+                        let outs = join_all(calls.iter().zip(todo_outs).map(
+                            |((_, c), done)| async move {
+                                let mut out = match (done, &cx.endless) {
+                                    (Some(out), _) => out,
+                                    (None, Some(e)) if c.local => {
+                                        endless_tools::run(e, cx.session, &c.name, &c.args).await
+                                    }
+                                    (None, None) if c.local => ToolOutput::err(format!(
+                                        "{}: not available in this process",
+                                        c.name
+                                    )),
+                                    _ => cx
+                                        .registry
+                                        .ask(Invoke(tools::ToolCall {
+                                            id: c.id.clone(),
+                                            name: c.name.clone(),
+                                            args: c.args.clone(),
+                                            session: cx.session,
+                                            quiet: false,
+                                        }))
+                                        .send()
+                                        .await
+                                        .unwrap_or_else(|e| {
+                                            ToolOutput::err(format!("tool registry: {e}"))
+                                        }),
+                                };
+                                snapshot_files(&mut out, spill);
+                                out
+                            },
+                        ))
                         .await;
                         running = hold(cx.permit.as_ref()).await?;
                         let mut results = Vec::with_capacity(calls.len());
@@ -1892,17 +1936,28 @@ async fn hold(permit: Option<&CellPermit>) -> Result<Option<CellRunning<'_>>, Po
     }
 }
 
-/// Live name resolution: the tool `session` sees whose sanitised name is
-/// `ident` (first by sorted name on a clash).
-async fn find_tool(
-    registry: &ActorRef<ToolRegistry>,
-    session: SessionId,
-    ident: &str,
-) -> Option<ToolSpec> {
-    registry
-        .ask(ListTools(Some(session)))
+/// Every tool a cell may await: the turn's loop-local ones, then the
+/// registry's tools `cx.session` sees (a registry tool a local one shadows is out).
+async fn specs(cx: &RunCx) -> Vec<ToolSpec> {
+    let registry = cx
+        .registry
+        .ask(ListTools(Some(cx.session)))
         .await
-        .ok()?
+        .unwrap_or_default();
+    let mut specs = cx.local.clone();
+    specs.extend(
+        registry
+            .into_iter()
+            .filter(|s| !cx.local.iter().any(|l| l.name == s.name)),
+    );
+    specs
+}
+
+/// Live name resolution: the tool whose sanitised name is `ident` (a local
+/// one first, then first by sorted name on a clash).
+async fn find_tool(cx: &RunCx, ident: &str) -> Option<ToolSpec> {
+    specs(cx)
+        .await
         .into_iter()
         .find(|s| sanitize_ident(&s.name) == ident)
 }
@@ -2458,6 +2513,8 @@ mod tests {
             spill_dir: dir.join("spill"),
             cwd: dir.to_path_buf(),
             permit: None,
+            local: Vec::new(),
+            endless: None,
         }
     }
 
@@ -2507,6 +2564,17 @@ mod tests {
                 && out.content.starts_with(
                     "type check failed (nothing ran; your variables are intact — resend the cell with the fix):\n"
                 ),
+            "{}",
+            out.content
+        );
+        // A direct tool no cell can await says so instead of "not defined".
+        let out = repl.run("c3b", "await consult(question='x')").await;
+        assert!(
+            out.is_error
+                && out
+                    .content
+                    .contains("`consult` is a direct tool; call it directly, not from python")
+                && !out.content.contains("Name `consult` used when not defined"),
             "{}",
             out.content
         );
@@ -2577,9 +2645,10 @@ mod tests {
         let out = repl
             .run("c10", "print(tools('read_file')[0][:19]); help('list_dir')")
             .await;
+        // The help text holds an apostrophe (`session's`), so its repr is double-quoted.
         assert!(
             out.content.starts_with(
-                "async def read_file\n→ 'async def list_dir(path: str) -> str\\n\\nList a directory"
+                "async def read_file\n→ \"async def list_dir(path: str) -> str\\n\\nList a directory"
             ),
             "{}",
             out.content

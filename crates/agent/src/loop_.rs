@@ -3816,6 +3816,12 @@ pub(crate) fn direct_specs(
     specs
 }
 
+/// The loop-local direct tools a python cell can await too (the repl answers
+/// them, 08 §3.1); every other loop-local one is in [`repl::DIRECT_ONLY`].
+pub(crate) fn awaitable_locals() -> impl Iterator<Item = ToolSpec> {
+    std::iter::once(todo::spec()).chain(endless_tools::specs())
+}
+
 /// The plugins' prompt blocks for [`frame::baseline`]; a `toolset` keeps only
 /// its `prompts` plugins (`meetings/06-live-toolset.md` §1.4). An unattended
 /// session (a subagent or a scheduled run: nobody reads it directly) gets
@@ -7059,7 +7065,7 @@ impl Turn {
             } else if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
                 let work = plan.get_or_insert_with(|| self.state.todos.clone());
-                Self::todo(work, call.fn_arguments.clone())
+                todo::call(work, call.fn_arguments.clone())
             } else {
                 // The cell counts itself ([`CellPermit`]): running while the
                 // interpreter executes, not while it awaits its tool calls.
@@ -7069,7 +7075,7 @@ impl Turn {
                         let _ = registry.tell(tools::CancelCalls { session }).await;
                         continue;
                     }
-                    out = self.python(registry, turn, call) => out,
+                    out = self.python(registry, turn, round, call, &mut plan) => out,
                 };
                 if let Some(name) = &bridged[i] {
                     out.content = format!("{}\n{}", repl::bridge_note(name), out.content);
@@ -7397,24 +7403,16 @@ impl Turn {
         Round::Tools
     }
 
-    /// The loop-local `todo` tool (07 §9) against the batch's working copy:
-    /// the rendered list is the output.
-    fn todo(list: &mut Vec<todo::Todo>, args: serde_json::Value) -> ToolOutput {
-        let applied = serde_json::from_value::<todo::TodoArgs>(args)
-            .map_err(|e| format!("bad arguments: {e}"))
-            .and_then(|a| todo::apply(list, a));
-        match applied {
-            Ok(()) => ToolOutput::ok(todo::render(list)),
-            Err(e) => ToolOutput::err(e),
-        }
-    }
-
-    /// The loop-local `python` tool (08 §3.1): one [`Repl`] per turn, opened on first use.
+    /// The loop-local `python` tool (08 §3.1): one [`Repl`] per turn, opened on
+    /// first use. A cell's `todo()` calls work on the batch's plan like direct
+    /// ones; a cancelled cell leaves the plan as it was.
     async fn python(
         &mut self,
         registry: &ActorRef<ToolRegistry>,
         turn: TurnId,
+        round: u32,
         call: &ToolCall,
+        plan: &mut Option<Vec<todo::Todo>>,
     ) -> ToolOutput {
         let Some(pool) = &self.shared.pool else {
             return ToolOutput::err("python runtime is off (worker pool failed to start)");
@@ -7426,6 +7424,9 @@ impl Turn {
         let repl = match self.repl.take() {
             Some(r) => r,
             None => {
+                let offered = |name: &str| self.tools.iter().any(|t| t.name.as_str() == name);
+                let local: Vec<ToolSpec> =
+                    awaitable_locals().filter(|s| offered(&s.name)).collect();
                 let cx = RunCx {
                     session: self.shared.id,
                     turn,
@@ -7434,11 +7435,21 @@ impl Turn {
                     spill_dir: self.shared.spill_dir.clone(),
                     cwd: self.cwd.clone(),
                     permit: self.cell_permit(),
+                    local,
+                    endless: self.shared.endless.clone(),
                 };
                 Repl::open(pool, self.shared.id, &self.shared.resources.root, cx).await
             }
         };
-        self.repl.insert(repl).run(&call.call_id, &code).await
+        let repl = self.repl.insert(repl);
+        let committed = plan.as_ref().unwrap_or(&self.state.todos);
+        repl.todo.clone_from(committed);
+        let out = repl.run(&call.call_id, &code).await;
+        if repl.todo != *plan.as_ref().unwrap_or(&self.state.todos) {
+            *plan = Some(std::mem::take(&mut repl.todo));
+            self.state.todo_touched_round = round;
+        }
+        out
     }
 
     /// `/compact` between turns: same baseline/tools/transport as a turn, then [`Turn::compact`].
@@ -9397,6 +9408,40 @@ mod tests {
         assert_eq!(direct_tool(todo::spec()).eager_input_streaming, None);
     }
 
+    /// The `## Runtime` sentence promises every direct tool in a cell except
+    /// the ones it names: registry tools are in the stubs by construction, so
+    /// each loop-local direct tool is either answered by the repl or named.
+    #[test]
+    fn runtime_sentence_names_exactly_the_unbound_direct_tools() {
+        let loop_local: BTreeSet<String> = [
+            todo::spec(),
+            repl::spec(),
+            advisor::advise::spec(),
+            advisor::consult::spec(),
+        ]
+        .into_iter()
+        .chain(endless_tools::specs())
+        .map(|s| s.name)
+        .collect();
+        let awaitable: BTreeSet<String> = awaitable_locals().map(|s| s.name).collect();
+        let direct_only: BTreeSet<String> = repl::DIRECT_ONLY.map(str::to_owned).into();
+        assert!(awaitable.is_disjoint(&direct_only), "{awaitable:?}");
+        assert_eq!(&awaitable | &direct_only, loop_local);
+        let block = repl::prompt_block(&[], true);
+        let sentence = block
+            .split_once("awaitable here too, by the same name, except ")
+            .and_then(|(_, rest)| rest.split_once('.'))
+            .map(|(names, _)| names)
+            .expect("the sentence names its exceptions");
+        let named: BTreeSet<String> = sentence
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(named, direct_only, "{sentence}");
+    }
+
     /// `meetings/06-live-toolset.md` §1.2–4: a toolset is an allowlist that
     /// bypasses the runtime floor (`brief_search` is not `direct`, yet listed
     /// → present with `runtime_only`); `python`/`todo` only when
@@ -9944,7 +9989,7 @@ mod tests {
             reason: None,
         }];
         let mut work = committed.clone();
-        let out = Turn::todo(&mut work, serde_json::json!({ "op": "done", "task": "a" }));
+        let out = todo::call(&mut work, serde_json::json!({ "op": "done", "task": "a" }));
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(work[0].status, todo::Status::Done);
         assert_eq!(committed[0].status, todo::Status::Pending);
