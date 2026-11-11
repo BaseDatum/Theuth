@@ -115,6 +115,14 @@ const TITLE_TIMEOUT: Duration = Duration::from_secs(45);
 const TOOL_RESULT_FLOOR_CHARS: usize = 1000;
 /// Stored payload bytes one vision consultation batch may carry (52 §5.3).
 const VISION_BATCH_BYTES: usize = 4 * 1024 * 1024;
+/// Wall clock on the fallback's vision call (52 §5.3): the summariser's; short
+/// under test so the timeout path runs in seconds. Expiry is a failed
+/// observation, never a failed turn.
+const VISION_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(3)
+} else {
+    SUMMARISE_TIMEOUT
+};
 
 /// The consumption barrier of 50 §8 (recheck point 3). A peer exchange is
 /// consumed under the read side — generation check and store transaction
@@ -784,6 +792,10 @@ struct Shared {
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
     /// supervisor; snapshotted per consultation, never held across an await.
     vision_model: Arc<RwLock<Option<Resolved>>>,
+    /// Model ids whose provider refused image input in this session
+    /// (`Turn::refuse_images`); `None` until read from the store
+    /// (table `image_refusals`) at the first round. Shared with the turn.
+    image_refusals: Arc<parking_lot::Mutex<Option<HashSet<String>>>>,
     /// Tier-2 model of the decision oracle (57 §0.9); `None` = the title model,
     /// then the session's model. Shared with the supervisor.
     escalate_model: Arc<RwLock<Option<Resolved>>>,
@@ -865,6 +877,9 @@ struct Current {
     error: Option<String>,
     /// Reasoning effort sent with every call; `None` = [`crate::frame::default_effort`].
     effort: Option<ReasoningEffort>,
+    /// The provider refused image input from this model in this session
+    /// ([`Shared::image_refusals`]): it is text-only whatever the catalog says.
+    no_images: bool,
 }
 
 impl Current {
@@ -874,13 +889,15 @@ impl Current {
             model,
             error,
             effort: None,
+            no_images: false,
         }
     }
 
     /// Whether the model takes image parts through its backend (52 §4.1,
-    /// [`crate::backend::supports_images`]): Cursor serialises text only.
+    /// [`crate::backend::supports_images`]): Cursor serialises text only, and
+    /// a model whose provider refused an image is text-only from then on.
     fn vision(&self) -> bool {
-        crate::backend::supports_images(&self.model)
+        !self.no_images && crate::backend::supports_images(&self.model)
     }
 
     /// The reasoning effort a call carries: the session's, else [`crate::frame::default_effort`].
@@ -955,6 +972,7 @@ impl Session {
                 title_pinned: Arc::default(),
                 title_model,
                 vision_model,
+                image_refusals: Arc::default(),
                 escalate_model,
                 polish_model: Arc::default(),
                 subagent_model,
@@ -4027,11 +4045,19 @@ impl Turn {
     }
 
     fn model(&self) -> Current {
-        self.shared
+        let mut current = self
+            .shared
             .model
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone()
+            .clone();
+        current.no_images = self
+            .shared
+            .image_refusals
+            .lock()
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&current.model.id));
+        current
     }
 
     /// Context window of `model`; the catalog's figure, else the projection that
@@ -6253,6 +6279,7 @@ impl Turn {
         if !self.hold_permit().await {
             return Round::Stop("cancelled".into());
         }
+        self.load_image_refusals().await;
         let current = self.model();
         if let Some(e) = &current.error {
             self.error(format!("model: {e}")).await;
@@ -6555,6 +6582,12 @@ impl Turn {
                 return Round::Tools;
             }
             Err(Abort::Model(e)) => {
+                // read-file-images §2: the provider refused the images it was
+                // sent — the model is text-only from here on and the round
+                // retries once, its images going the 52 path.
+                if self.refuse_images(&current, &e).await {
+                    return Round::Retry;
+                }
                 // 137G G5: an endless view that made the request too long is
                 // re-rendered smaller once (window / prompt × 0.85; a shape
                 // without numbers, like Bedrock's, halves it), then the
@@ -7160,7 +7193,7 @@ impl Turn {
             // part's `name` keeps the full path so `load_session` can replay it.
             let mut images = Vec::with_capacity(out.files.len());
             for f in &out.files {
-                match Binary::from_file(f) {
+                match file_part(f) {
                     Ok(b) => images.push(Binary {
                         name: Some(f.to_string_lossy().into_owned()),
                         ..b
@@ -8287,10 +8320,7 @@ impl Turn {
         &self,
         current: &Current,
     ) -> Result<Option<crate::store::VisionFrame>, String> {
-        if current.vision()
-            || !(self.state.head.as_ref().is_some_and(has_images)
-                || self.state.history.iter().any(|(_, m)| has_images(m)))
-        {
+        if current.vision() || !self.frame_has_images() {
             return Ok(None);
         }
         self.shared
@@ -8299,6 +8329,59 @@ impl Turn {
             .await
             .map(Some)
             .map_err(|e| format!("store: {e:#}"))
+    }
+
+    /// The live frame carries an image a text-only model cannot receive.
+    fn frame_has_images(&self) -> bool {
+        self.state.head.as_ref().is_some_and(has_images)
+            || self.state.history.iter().any(|(_, m)| has_images(m))
+    }
+
+    /// [`Shared::image_refusals`] from the store, once per session
+    /// (read-file-images §2). A failed read leaves it empty, logged: the next
+    /// refusal is caught again.
+    async fn load_image_refusals(&self) {
+        if self.shared.image_refusals.lock().is_some() {
+            return;
+        }
+        let ids = self
+            .shared
+            .store
+            .image_refusals(self.shared.id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(session = %self.shared.id, "image_refusals: {e:#}");
+                Vec::new()
+            });
+        self.shared
+            .image_refusals
+            .lock()
+            .get_or_insert_with(HashSet::new)
+            .extend(ids);
+    }
+
+    /// read-file-images §2: whether round error `e` is `current`'s provider
+    /// refusing the images it was sent ([`vision::rejects_images`]). If so the
+    /// model is text-only for this session from now on — in memory and in
+    /// the store's `image_refusals` table, so a reload or resume never sends it an
+    /// image again — and the caller retries the round, whose images then go
+    /// the 52 path (fallback description, else the notice). A marked model is
+    /// never sent an image again, so this fires at most once per model.
+    async fn refuse_images(&self, current: &Current, e: &str) -> bool {
+        if !current.vision() || !vision::rejects_images(e) || !self.frame_has_images() {
+            return false;
+        }
+        let model = &current.model.id;
+        tracing::warn!(session = %self.shared.id, %model, "provider refused image input; text-only for this session from now on: {e}");
+        self.shared
+            .image_refusals
+            .lock()
+            .get_or_insert_with(HashSet::new)
+            .insert(model.clone());
+        if let Err(err) = self.shared.store.refuse_images(self.shared.id, model).await {
+            tracing::warn!(session = %self.shared.id, %model, "refuse_images: {err:#}");
+        }
+        true
     }
 
     /// The image index for a detached harvest (52 §7.2 as built): read as it
@@ -8361,10 +8444,15 @@ impl Turn {
         self.note(
             "vision",
             &format!(
-                "{} is text-only and no vision fallback model is configured, so nobody has looked \
+                "{}{} is text-only and no vision fallback model is configured, so nobody has looked \
                  at image(s) {}. Say so rather than guessing their content; the user can set one \
                  with `/vision <provider/model>`.",
                 current.model.id,
+                if current.no_images {
+                    " (its provider refused image input)"
+                } else {
+                    ""
+                },
                 refs.join(", ")
             ),
         )
@@ -8527,7 +8615,7 @@ impl Turn {
 
     /// A stateless auxiliary call (52 §5.2): `system` plus one user message,
     /// no tools, no live events, under [`aux_conversation`], bounded by
-    /// [`SUMMARISE_TIMEOUT`]; transient retries and cancellation as any call
+    /// [`SUMMARISE_TIMEOUT`] ([`VISION_TIMEOUT`] with `vision`); transient retries and cancellation as any call
     /// (`Err("cancelled")`). `Ok(None)`: the reply carried tool calls or no
     /// text. Its usage counts toward the turn, never the main context meter.
     async fn aux_call(
@@ -8561,9 +8649,14 @@ impl Turn {
             CallKind::Vision,
             &mut thinking,
         );
-        let end = match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
+        let limit = if vision {
+            VISION_TIMEOUT
+        } else {
+            SUMMARISE_TIMEOUT
+        };
+        let end = match tokio::time::timeout(limit, call).await {
             Err(_) => {
-                return Err(format!("timed out after {}s", SUMMARISE_TIMEOUT.as_secs()));
+                return Err(format!("timed out after {}s", limit.as_secs()));
             }
             Ok(Err(Abort::Cancelled | Abort::Interrupted { .. })) => return Err("cancelled".into()),
             Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
@@ -8640,12 +8733,36 @@ fn user_message(
     parts.extend(context.into_iter().map(ContentPart::Text));
     parts.push(ContentPart::Text(text));
     for f in files {
-        parts.push(match Binary::from_file(&f) {
+        parts.push(match file_part(&f) {
             Ok(b) => ContentPart::Binary(b),
             Err(e) => ContentPart::Text(format!("[file {} unreadable: {e}]", f.display())),
         });
     }
     ChatMessage::user(MessageContent::from_parts(parts))
+}
+
+/// The binary part for an attachment or tool file (17 §3.1, 52 §5.3): an
+/// image goes through [`tools::images::for_provider`] — MIME from its bytes,
+/// decoded, scaled into provider limits — so nothing a provider rejects for
+/// size, format or corruption is stored and re-sent every turn; anything
+/// else (a PDF) as before. An image the guard refuses, or a file whose name
+/// says image but whose bytes are not a supported one, is the `Err` the
+/// caller turns into an "unreadable" note.
+fn file_part(f: &Path) -> Result<Binary, String> {
+    let name = f.file_name().map(|n| n.to_string_lossy().into_owned());
+    match tools::images::for_provider(f).map_err(|e| format!("{e:#}"))? {
+        Some((bytes, mime)) => Ok(Binary::from_base64(mime, BASE64.encode(bytes), name)),
+        None => {
+            let b = Binary::from_file(f).map_err(|e| e.to_string())?;
+            if b.is_image() {
+                return Err(format!(
+                    "{} is not a supported image (png, jpeg, gif, webp)",
+                    b.content_type
+                ));
+            }
+            Ok(b)
+        }
+    }
 }
 
 /// The latest `<time …/>` stamp in the frame (74 §3), for resume.

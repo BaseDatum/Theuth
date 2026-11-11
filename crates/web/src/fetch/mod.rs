@@ -873,6 +873,11 @@ impl Fetcher {
         let raw = self.inflate(hop.raw, &mut body_truncated);
         let took = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if ok {
+            // Image bytes under a non-image label (octet-stream, text/plain):
+            // refused as the image they are, never decoded as text.
+            if let Some(f) = tools::images::sniff(&raw) {
+                return Err(unsupported(Some(f.to_mime_type())));
+            }
             // A document body (PDF, Office, …) is rendered with anydoc (20 §2.3);
             // a truncated container is unparseable, so it is refused, not half-read.
             // The sniff runs before `is_binary` for octet-stream/zip (§6.1 w2).

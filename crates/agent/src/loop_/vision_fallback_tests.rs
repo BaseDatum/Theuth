@@ -41,6 +41,9 @@ const LEAKY_QUESTION: &str = "Is the token sk-live-deadbeef42 visible in m0.p1?"
 const QUESTION_USAGE: (u32, u32) = (11, 2);
 const VISION_USAGE: (u32, u32) = (23, 5);
 pub(super) const MAIN_USAGE: (u32, u32) = (37, 7);
+/// What the `rejecting` model's provider answers a request with an image part.
+const IMAGE_REFUSAL: &str =
+    "{\"error\":{\"message\":\"image input is not supported by this model\"}}";
 
 /// The summariser's reply: long enough not to count as degenerate.
 fn summary() -> String {
@@ -157,6 +160,17 @@ impl Respond for Fake {
             };
         }
         if sys == vision::VISION_SYSTEM {
+            // A fallback that errors (deterministic 400) or never answers in time.
+            match model(&b) {
+                "faulty" => {
+                    return ResponseTemplate::new(400)
+                        .set_body_string("{\"error\":{\"message\":\"vision backend exploded\"}}");
+                }
+                "slow" => {
+                    return sse("[]", "stop", VISION_USAGE).set_delay(Duration::from_secs(10));
+                }
+                _ => {}
+            }
             if self.malformed {
                 return sse("I see a square, but this is not JSON", "stop", VISION_USAGE);
             }
@@ -173,6 +187,11 @@ impl Respond for Fake {
         if model(&b) == "broken" {
             return ResponseTemplate::new(500)
                 .set_body_string("{\"error\":{\"message\":\"boom\"}}");
+        }
+        // A model its catalog calls vision-capable whose provider refuses any
+        // image part, with the body of the brief's fake server.
+        if model(&b) == "rejecting" && !image_urls(&b).is_empty() {
+            return ResponseTemplate::new(400).set_body_string(IMAGE_REFUSAL);
         }
         let text = all_text(&b);
         if text.contains(
@@ -362,6 +381,11 @@ impl Harness {
                 "textonly": model("textonly", false),
                 "eyes": model("eyes", true),
                 "broken": model("broken", true),
+                // read-file-images: the catalog says vision; the provider refuses
+                // images (`rejecting`), or the fallback errors / never answers.
+                "rejecting": model("rejecting", true),
+                "faulty": model("faulty", true),
+                "slow": model("slow", true),
                 "tiny": tiny,
                 // 137G R1-10: the endless turn-budget test's own model id, so no
                 // other scenario's learned bytes/token reaches it.
@@ -371,16 +395,6 @@ impl Harness {
         )
         .unwrap();
         // A red and a blue 4x4 PNG: the facts live in pixels only.
-        let square = |rgb: [u8; 3]| {
-            let mut bytes = Vec::new();
-            let mut enc = png::Encoder::new(&mut bytes, 4, 4);
-            enc.set_color(png::ColorType::Rgb);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut w = enc.write_header().unwrap();
-            w.write_image_data(&rgb.repeat(16)).unwrap();
-            drop(w);
-            bytes
-        };
         let png = dir.join("shot.png");
         let bytes = square([255, 0, 0]);
         std::fs::write(&png, &bytes).unwrap();
@@ -829,6 +843,10 @@ async fn vision_scenarios() {
     leaked_secret_in_the_question_is_redacted_before_it_leaves().await;
     cut_compaction_budgets_the_tail_and_folds_tool_results().await;
     empty_reply_is_surfaced_as_an_error().await;
+    read_file_image_takes_the_fallback_path().await;
+    provider_refusing_images_marks_the_model_and_retries_once().await;
+    failing_or_slow_fallback_yields_the_note_and_the_turn_completes().await;
+    switch_to_text_only_with_images_in_history().await;
 }
 
 /// Gate "Main-authored question" / "Privacy and accounting" / "Stable prefix".
@@ -1470,3 +1488,224 @@ async fn leaked_secret_in_the_question_is_redacted_before_it_leaves() {
         "{note}"
     );
 }
+
+// region:    --- read-file-images: every image source, provider refusal
+
+/// A red 4x4 RGB PNG (or any colour): the facts live in pixels only.
+fn square(rgb: [u8; 3]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut enc = png::Encoder::new(&mut bytes, 4, 4);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut w = enc.write_header().unwrap();
+    w.write_image_data(&rgb.repeat(16)).unwrap();
+    drop(w);
+    bytes
+}
+
+/// The red square on disk outside any harness (a fake is built before its
+/// harness), its path, and the base64 a provider must receive for it.
+fn picture() -> (crate::TestDir, PathBuf, String) {
+    let dir = crate::TestDir::new("pics");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("red.png");
+    let bytes = square([255, 0, 0]);
+    std::fs::write(&path, &bytes).unwrap();
+    (dir, path, BASE64.encode(&bytes))
+}
+
+/// Requests that carry at least one `image_url` part.
+fn with_images(reqs: &[Value]) -> usize {
+    reqs.iter().filter(|r| !image_urls(r).is_empty()).count()
+}
+
+/// The text-only path for a `read_file` picture: with a fallback the vision
+/// model gets the very image and the main gets its description; without one
+/// the main gets the marker and the 52 notice. The main never gets an image.
+async fn read_file_image_takes_the_fallback_path() {
+    let (_pics, png, b64) = picture();
+    let read = json!({"path": png.to_string_lossy()});
+    let mut h = Harness::new(Fake::tool_call("read_file", &read)).await;
+    h.set_fallback(Some("openai/eyes"));
+    let events = h.run("openai/textonly", "go", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(
+        reqs.len(),
+        4,
+        "tool call, question, vision, main: {reqs:#?}"
+    );
+    assert_eq!(system(&reqs[1]), vision::QUESTION_SYSTEM);
+    assert_eq!(
+        (system(&reqs[2]), model(&reqs[2])),
+        (vision::VISION_SYSTEM, "eyes")
+    );
+    assert_eq!(
+        image_urls(&reqs[2]),
+        vec![format!("data:image/png;base64,{b64}")]
+    );
+    let main = all_text(&reqs[3]);
+    assert_eq!(
+        with_images(&reqs),
+        1,
+        "only the vision call sees the picture"
+    );
+    assert!(
+        main.contains(&format!(
+            "[read_file {}: image/png 4\u{d7}4, 1 KB]",
+            png.display()
+        )),
+        "{main}"
+    );
+    assert!(
+        main.contains("<vision_observation>") && main.contains(ANSWER),
+        "{main}"
+    );
+
+    // No fallback: the marker and the notice, nobody looks.
+    let mut h = Harness::new(Fake::tool_call("read_file", &read)).await;
+    h.set_fallback(None);
+    let events = h.run("openai/textonly", "go", false).await;
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 2, "{reqs:#?}");
+    assert_eq!(with_images(&reqs), 0);
+    let main = all_text(&reqs[1]);
+    assert!(main.contains(", image/png, fp "), "{main}");
+    assert!(
+        main.contains("no vision fallback model is configured"),
+        "{main}"
+    );
+}
+
+/// A model the catalog calls vision-capable whose provider answers an image
+/// part with 400 "image input is not supported": caught, the model marked
+/// text-only (durably), its images replaced through 52, exactly ONE retry,
+/// and the next turn — a fresh session over the same store, as a resume
+/// builds it — sends no image. With a fallback the retry carries its
+/// description instead of the notice.
+async fn provider_refusing_images_marks_the_model_and_retries_once() {
+    let (_pics, png, _) = picture();
+    let read = json!({"path": png.to_string_lossy()});
+    let mut h = Harness::new(Fake::tool_call("read_file", &read)).await;
+    h.set_fallback(None);
+    let events = h.run("openai/rejecting", "go", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 3, "tool call, refused, retry: {reqs:#?}");
+    assert_eq!(with_images(&reqs), 1, "one refused request, then none");
+    assert!(!image_urls(&reqs[1]).is_empty());
+    let retry = all_text(&reqs[2]);
+    assert!(
+        retry.contains("openai/rejecting (its provider refused image input) is text-only")
+            && retry.contains("no vision fallback model is configured"),
+        "{retry}"
+    );
+    assert_eq!(
+        h.store.image_refusals(h.id).await.unwrap(),
+        ["openai/rejecting"]
+    );
+    let rows = h.store.messages(h.id).await.unwrap();
+    assert_eq!(text_of(&rows.last().unwrap().1.content), FINAL);
+
+    // Next turn, fresh session (resume): no image is sent again.
+    let events = h.run("openai/rejecting", "And the colour?", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 4, "{reqs:#?}");
+    assert_eq!(with_images(&reqs), 1);
+
+    // With a fallback: the retry goes question → vision → main.
+    let mut h = Harness::new(Fake::tool_call("read_file", &read)).await;
+    h.set_fallback(Some("openai/eyes"));
+    let events = h.run("openai/rejecting", "go", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(
+        reqs.len(),
+        5,
+        "tool call, refused, question, vision, main: {reqs:#?}"
+    );
+    assert_eq!(model(&reqs[3]), "eyes");
+    assert!(!image_urls(&reqs[3]).is_empty());
+    assert!(image_urls(&reqs[4]).is_empty());
+    assert!(all_text(&reqs[4]).contains(ANSWER));
+}
+
+/// 52 §5.3 under failure: a fallback that errors or never answers yields the
+/// NOT SEEN note; the turn completes, no error, no loop.
+async fn failing_or_slow_fallback_yields_the_note_and_the_turn_completes() {
+    for (fallback, why) in [
+        ("openai/faulty", "vision backend exploded"),
+        ("openai/slow", "timed out after 3s"),
+    ] {
+        let mut h = Harness::new(fake()).await;
+        h.set_fallback(Some(fallback));
+        let events = h
+            .run("openai/textonly", "What is in the picture?", true)
+            .await;
+        assert_eq!(errors(&events), Vec::<String>::new(), "{fallback}");
+        assert_eq!(stop_reason(&events), "stop", "{fallback}");
+        let reqs = h.requests().await;
+        assert_eq!(reqs.len(), 3, "question, vision, main: {reqs:#?}");
+        let main = all_text(&reqs[2]);
+        assert!(
+            main.contains("m0.p1: NOT SEEN (") && main.contains(why),
+            "{main}"
+        );
+        assert!(image_urls(&reqs[2]).is_empty());
+    }
+}
+
+/// 52 §7.2 model switch: an image the vision model saw natively is, after a
+/// switch to a text-only model, a marker plus the notice — never the image.
+async fn switch_to_text_only_with_images_in_history() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    h.run("openai/eyes", "What is in the picture?", true).await;
+    let events = h.run("openai/textonly", "And now?", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 2, "{reqs:#?}");
+    assert!(!image_urls(&reqs[0]).is_empty());
+    assert!(image_urls(&reqs[1]).is_empty());
+    let text = all_text(&reqs[1]);
+    assert!(
+        text.contains("[image m0.p1: shot.png, image/png, fp "),
+        "{text}"
+    );
+    assert!(
+        text.contains("no vision fallback model is configured"),
+        "{text}"
+    );
+}
+
+/// A picture `read_file` returns inside a python cell reaches the outer
+/// tool result and takes the same 52 path. Run by
+/// [`super::runtime_bridge_tests`], which owns the worker pool (and skips
+/// without one), so a missing or stale worker cannot fail the 52 contract.
+pub(super) async fn python_cell_image_takes_the_same_path(pool: Arc<Pool>) {
+    let (_pics, png, b64) = picture();
+    let code =
+        json!({"code": format!("r = await read_file(path={:?})\n'read'", png.to_string_lossy())});
+    let mut h = Harness::new(Fake::tool_call(repl::NAME, &code)).await;
+    h.pool = Some(pool);
+    h.set_fallback(Some("openai/eyes"));
+    let events = h.run("openai/textonly", "go", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
+    let reqs = h.requests().await;
+    assert_eq!(reqs.len(), 4, "cell, question, vision, main: {reqs:#?}");
+    assert_eq!(model(&reqs[2]), "eyes");
+    assert_eq!(
+        image_urls(&reqs[2]),
+        vec![format!("data:image/png;base64,{b64}")]
+    );
+    assert_eq!(with_images(&reqs), 1);
+    assert!(all_text(&reqs[3]).contains(ANSWER));
+}
+
+// endregion: --- read-file-images

@@ -653,6 +653,47 @@ pub fn note(
 
 // endregion: --- Requests
 
+// region:    --- Provider refusal
+
+/// Words a provider error uses for image input (lowercase, backticks removed).
+const IMAGE_TERMS: [&str; 4] = ["image", "vision", "multimodal", "multi-modal"];
+
+/// Phrases that make an image mention mean "this model takes no images".
+const REFUSAL_TERMS: [&str; 16] = [
+    "not support",
+    "doesn't support",
+    "does not support",
+    "unsupported",
+    "only supported",
+    "not enabled",
+    "not a multimodal",
+    "not multimodal",
+    "unknown variant",
+    "expected text",
+    "at most 0 image",
+    "does not accept",
+    "cannot accept",
+    "incompatible",
+    "invalid content type",
+    "missing data required for image",
+];
+
+/// Whether provider error `err` says the model does not take image input
+/// (read-file-images notes §2). Narrow on purpose: a client status token
+/// (`400`, `415` or `422`, as genai renders `status: 400` / `status code
+/// '400'`) AND an image word AND a refusal phrase. An oversize or corrupt
+/// image ("image exceeds 5 MB maximum", "Invalid image"), a rate limit or
+/// any 5xx is not this: those stay the errors they are.
+pub fn rejects_images(err: &str) -> bool {
+    let e = err.to_lowercase().replace('`', "");
+    e.split(|c: char| !c.is_ascii_digit())
+        .any(|t| matches!(t, "400" | "415" | "422"))
+        && IMAGE_TERMS.iter().any(|t| e.contains(t))
+        && REFUSAL_TERMS.iter().any(|p| e.contains(p))
+}
+
+// endregion: --- Provider refusal
+
 #[cfg(test)]
 mod tests {
     use genai::chat::{ToolCall, ToolResponse};
@@ -1008,5 +1049,110 @@ mod tests {
         );
         assert!(matches!(&parts[1], ContentPart::Text(t) if t == "Image m7.p1:"));
         assert!(matches!(&parts[2], ContentPart::Binary(b) if b.is_image()));
+    }
+
+    /// Provider bodies that mean "this model takes no images", per backend,
+    /// as genai renders them, and the neighbours that must not match.
+    #[test]
+    fn rejects_images_table() {
+        for (backend, err, want) in [
+            (
+                "openai",
+                r#"Web stream error for model 'gpt-3.5-turbo': status 400. Body: {"error":{"message":"Invalid content type. image_url is only supported by certain models.","type":"invalid_request_error","param":"messages.[1].content.[1].type","code":null}}"#,
+                true,
+            ),
+            (
+                "openai-compatible (genai's text, captured from the scratch engine)",
+                "Web stream error for model 'vlm (adapter: OpenAI)'.\nCause: HTTP error.\nStatus: 400 Bad Request Bad Request\nBody: {\"error\":{\"message\":\"image input is not supported by this model\"}}",
+                true,
+            ),
+            (
+                "deepseek",
+                "status 422. Body: Failed to deserialize the JSON body into the target type: messages[1]: unknown variant `image_url`, expected `text` at line 1 column 1830",
+                true,
+            ),
+            (
+                "vllm",
+                r#"status: 400 {"object":"error","message":"At most 0 image(s) may be provided in one request.","type":"BadRequestError","code":400}"#,
+                true,
+            ),
+            (
+                "anthropic",
+                r#"Request failed with status code '400'. Response body: {"type":"error","error":{"type":"invalid_request_error","message":"claude-3-5-haiku-20241022 does not support image input."}}"#,
+                true,
+            ),
+            (
+                "bedrock",
+                "status 400: ValidationException: This model doesn't support the image content block that you provided. Try again with a supported content block.",
+                true,
+            ),
+            (
+                "groq",
+                r#"status: 400 {"error":{"message":"prompting with images is incompatible with system messages","type":"invalid_request_error"}}"#,
+                true,
+            ),
+            (
+                "litellm",
+                r#"status 400. Body: {"error":{"message":"litellm.BadRequestError: OpenAIException - this model is not a multimodal model","code":400}}"#,
+                true,
+            ),
+            (
+                "unsupported media type",
+                "status 415: Unsupported Media Type: image/webp",
+                true,
+            ),
+            // An image format the endpoint refuses counts too: replacing the
+            // image is what keeps the session going (the ingress guard only
+            // lets png/jpeg/gif/webp through, so this is the endpoint's limit).
+            (
+                "openai format",
+                r#"status 400. Body: {"error":{"message":"You uploaded an unsupported image. Please make sure your image is valid.","code":"invalid_image_format"}}"#,
+                true,
+            ),
+            // Size and corruption: the image is wrong, not the model.
+            (
+                "anthropic size",
+                r#"Request failed with status code '400'. Response body: {"type":"error","error":{"type":"invalid_request_error","message":"messages.0.content.1.image.source.base64: image exceeds 5 MB maximum: 6120000 bytes > 5242880 bytes"}}"#,
+                false,
+            ),
+            (
+                "anthropic dimensions",
+                "status code '400': At least one of the image dimensions exceed max allowed size: 8000 pixels",
+                false,
+            ),
+            (
+                "openai invalid",
+                r#"status 400. Body: {"error":{"message":"Invalid image."}}"#,
+                false,
+            ),
+            // Not a client refusal, or not about images.
+            (
+                "5xx",
+                "status 503: vision backend not supported right now",
+                false,
+            ),
+            (
+                "rate limit",
+                "status 429: too many image requests, not supported at this rate",
+                false,
+            ),
+            (
+                "overflow",
+                "status 400: This model's maximum context length is 1000 tokens (context_length_exceeded)",
+                false,
+            ),
+            (
+                "tools",
+                "status 400: tool_choice is not supported by this model",
+                false,
+            ),
+            (
+                "no status",
+                "image input is not supported by this model",
+                false,
+            ),
+        ] {
+            assert_eq!(rejects_images(err), want, "{backend}: {err}");
+        }
     }
 }
