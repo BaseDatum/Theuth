@@ -91,6 +91,14 @@ test('nothing waits for this session: no strip', async () => {
   expect(document.querySelector('[role=region]')).toBeNull()
 })
 
+test('an answered hold goes once the list is refetched (the engine stops listing it)', async () => {
+  await mount()
+  expect(document.querySelector('[role=region]')).not.toBeNull()
+  api.contact_first_waiting.mockImplementation(async () => [])
+  await run(() => client.invalidateQueries())
+  expect(document.querySelector('[role=region]')).toBeNull()
+})
+
 const Q: FirstWaiting = { ...W, contact: 'kim', preview: 'is the build green?', queued: true, position: 1 }
 
 test('190: a queued row (a 186 engine in the mesh still sends them) never shows: alone it draws no strip', async () => {

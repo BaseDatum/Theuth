@@ -394,8 +394,8 @@ export interface Api {
   app_call_status(request_id: string): Promise<AppToolResult>
   /** Close one open app view: stop its reads, drop queued work (46 §7); idempotent. */
   app_close(instance_id: string): Promise<null>
-  /** Abort the in-flight turn; `'tree'` also stops every running descendant (133 §4; default `'root'`). 190 D5: `reason`
-   * is accepted and ignored (a 186 engine refuses `'input'` while a contact's turn runs, so the UI never sends it). */
+  /** Abort the in-flight turn; `'tree'` also stops every running descendant (133 §4; default `'root'`). `reason`:
+   * `'input'` for an interject or flush, `'stop'` (the default) for the owner's Stop; 190 D5: the engine ignores it. */
   cancel(session: SessionId, scope?: CancelScope | null, reason?: CancelReason | null): Promise<null>
   cancel_job(session: SessionId, id: JobId): Promise<null>
   /** Live terminals of `session` (51 §7.2), `descendants` widens to its subtree. */

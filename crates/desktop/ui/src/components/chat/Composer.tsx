@@ -859,7 +859,7 @@ export function Composer({
         reset()
         setSkill(null)
         mode(session)
-        if (running && interject) await api.cancel(session, null)
+        if (running && interject) await api.cancel(session, null, 'input')
         await api.use_skill(session, skill, expand(line, pastes).text)
         return
       }
@@ -880,7 +880,7 @@ export function Composer({
         applyEvents([{ type: 'InputQueued', session, id: clientId, text: body, defer: false, files }])
         mode(session)
         // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
-        if (interject) await api.cancel(session, null)
+        if (interject) await api.cancel(session, null, 'input')
         await deadline(api.steer(session, body, clientId, files))
       } else if (session) {
         markSent(session, body, files)
@@ -990,7 +990,7 @@ export function Composer({
       // `withdraw` answers the text only: the files come from our queue (empty after a reload).
       const inputs: { body: string; files: string[] }[] = []
       for (const q of queued) inputs.push({ body: await api.withdraw(session, q.id), files: q.files ?? [] })
-      await api.cancel(session, null)
+      await api.cancel(session, null, 'input')
       const { applyEvents } = useSessions.getState()
       for (const { body, files } of inputs) {
         const id = crypto.randomUUID()

@@ -13,6 +13,8 @@ import { FRESH } from './slash'
 import { StopButton } from './StopButton'
 import { interrupt, phase } from '@/lib/composer-state'
 import type { WireEvent } from '@/rpc/events'
+import { label as chordLabel } from '@/lib/chord'
+import { useShortcuts } from '@/lib/shortcuts'
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('@/lib/mobile', () => ({ usePointerCoarse: () => false }))
@@ -100,8 +102,8 @@ test('190: during a contact\'s turn (full, or an old cautious `<contact_message>
     const s = useSessions.getState().sessions[S]!
     expect(s.running).toBe(true)
     const chips = render(h(QueuedChips, { session: S, onEdit: () => undefined }))
-    expect(chips).toContain('queued · ')
-    expect(chips).toContain(' to interrupt')
+    // The wording of any chat: the interject chord, never "runs after <contact>'s turn".
+    expect(chips).toContain(`queued · ${chordLabel(useShortcuts.getState().chords.interject)} to interrupt`)
     expect(chips).not.toContain('runs after')
     expect(render(h(StopButton, { count: 0, ring: 0, onStop: () => undefined }))).toContain('aria-label="Stop"')
     expect(interrupt(phase(s.running, s.queued?.length ?? 0), true)).toBe('interject')

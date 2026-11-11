@@ -4,7 +4,7 @@ import type { Contact } from '@/rpc/bindings/Contact'
 import type { Export } from '@/rpc/bindings/Export'
 import type { Risk } from '@/rpc/bindings/Risk'
 
-/** §12.7: the cap as a contact row and a card say it. `destructive` is never offered (§7.6). */
+/** §12.7: a cap in words, for history only (190: no share is capped): old contact wrapper cards say it. */
 export const CAP: Record<Risk, string> = { read_only: 'read only', mutating: 'can change things', destructive: 'destructive' }
 
 /** 183 W-27: what each first-contact answer does, one sentence per button (the Attention screen and the HUD row). */

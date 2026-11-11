@@ -629,8 +629,8 @@ export function AddContact({ onClose, onAccess, tab: initialTab = 'nearby' }: { 
 }
 
 /** Grant `target` to `contact`: its export when one exists, else a new one named from `title` (`a2a_export_put`), then
- * `contact_update(exports, modes)`. 190 D2: every share is full; `modes` names the new export only, so a 186 engine in a
- * mixed mesh (which refuses a new grant without one) accepts it, and a 190 engine ignores it. */
+ * `contact_update(exports, modes)`. 190 D2: every share is full; `modes` names the new export only (the engine keeps
+ * `ContactPatch.modes` until 191 and ignores `full`). */
 export function useGrant() {
   const api = useApi()
   return useAction(
@@ -764,6 +764,7 @@ function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contac
                 Done
               </Button>
             </div>
+            <p className="px-1 text-xs text-fg-secondary">{SHARE_RULE}</p>
             <div className="max-h-64 overflow-y-auto">
               {(['Agents', 'Chats'] as const).map((g) => {
                 const rows = options.filter((p) => p.group === g)
@@ -775,6 +776,7 @@ function Access({ c, all, exports, focused }: { c: Contact; all: readonly Contac
                         key={p.key}
                         type="button"
                         disabled={busy}
+                        aria-label={`Share ${p.title} with ${c.name}`}
                         className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm hover:bg-layer-2 disabled:opacity-50 pointer-coarse:min-h-11"
                         onClick={() => grant.mutate({ contact: c, target: p.target, title: p.title })}
                       >
@@ -846,6 +848,7 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
           <div>
             <DialogTitle className="text-lg font-semibold">Share this chat with a contact</DialogTitle>
             <p className="text-[13px] text-fg-secondary">Their agents can send messages into “{title}”. They see only what this chat's agent sends back: no transcript, no live view, no typing.</p>
+            <p className="mt-1 text-[13px] text-fg-secondary">{SHARE_RULE}</p>
           </div>
           {exp?.paused && <p className="text-[13px] text-warning">Paused ({exp.paused})</p>}
           <div className="flex flex-col">
@@ -863,11 +866,18 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
                       <div className="text-[13px] text-fg-secondary">{on || c.full_capable ? c.machine : updateNeeded(c)}</div>
                     </div>
                     {on && exp ? (
-                      <Button size="sm" variant="outline" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name, contacts: contacts.data })}>
+                      <Button size="sm" variant="outline" className="pointer-coarse:min-h-11" disabled={busy} aria-label={`Stop sharing with ${c.name}`} onClick={() => ungrant.mutate({ contact: c, exp: exp.name, contacts: contacts.data })}>
                         Shared · Stop
                       </Button>
                     ) : (
-                      <Button size="sm" variant="outline" disabled={busy || !c.full_capable} aria-label={`Share this chat with ${c.name}`} onClick={() => grant.mutate({ contact: c, target: { kind: 'chat', session }, title })}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="pointer-coarse:min-h-11"
+                        disabled={busy || !c.full_capable}
+                        aria-label={`Share this chat with ${c.name}`}
+                        onClick={() => grant.mutate({ contact: c, target: { kind: 'chat', session }, title })}
+                      >
                         Share
                       </Button>
                     )}
