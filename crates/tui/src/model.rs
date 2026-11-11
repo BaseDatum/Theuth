@@ -12901,12 +12901,17 @@ fn currency_symbol(code: &str) -> Option<String> {
 /// `$0.123 · €0.010 · CAD 0.500`: one entry per currency, as sorted by the owner.
 fn money_list(list: &[Money], prefix: &str) -> String {
     list.iter()
-        .map(|m| match currency_symbol(&m.currency) {
-            Some(s) => format!("{prefix}{s}{}", money_units(m.nanos)),
-            None => format!("{prefix}{} {}", m.currency, money_units(m.nanos)),
-        })
+        .map(|m| money(m, prefix))
         .collect::<Vec<_>>()
         .join(" · ")
+}
+
+/// `$0.123`, else `CAD 0.500`, after `prefix`.
+fn money(m: &Money, prefix: &str) -> String {
+    match currency_symbol(&m.currency) {
+        Some(s) => format!("{prefix}{s}{}", money_units(m.nanos)),
+        None => format!("{prefix}{} {}", m.currency, money_units(m.nanos)),
+    }
 }
 
 /// The display rules of 51 §6.2 over one bucket: `Returned cost —` when
@@ -12934,15 +12939,24 @@ pub fn cost_lines(b: &CostBucket) -> Vec<String> {
     lines
 }
 
-/// One bucket for a header tag or child row: returned money, else the
-/// estimate as `~$0.123` (the tilde keeps its provenance visible), else `—`.
+/// One bucket for a header tag or child row: returned money, then the
+/// estimate as `~$0.123` (the tilde keeps its provenance visible), joined
+/// ` · `; else `—`. A known-zero returned entry (an omp child's meter before
+/// it reports) is dropped when an estimate or unavailable calls exist, so it
+/// never hides them.
 pub fn cost_short(b: &CostBucket) -> String {
-    if !b.returned.is_empty() {
-        money_list(&b.returned, "")
-    } else if !b.estimated_for_unavailable.is_empty() {
-        money_list(&b.estimated_for_unavailable, "~")
-    } else {
+    let hide_zero = !b.estimated_for_unavailable.is_empty() || b.unavailable > 0;
+    let terms: Vec<String> = b
+        .returned
+        .iter()
+        .filter(|m| !(hide_zero && m.nanos == 0))
+        .map(|m| money(m, ""))
+        .chain(b.estimated_for_unavailable.iter().map(|m| money(m, "~")))
+        .collect();
+    if terms.is_empty() {
         "—".into()
+    } else {
+        terms.join(" · ")
     }
 }
 
@@ -13033,7 +13047,7 @@ impl Model {
         })
     }
 
-    /// `  ·  cost $0.123` (or `~$0.123` when only an estimate exists) for
+    /// `  ·  cost $0.123` (`$0.123 · ~$0.023` with an estimate, `~$0.023` alone) for
     /// the shown session's inclusive total; empty until the owner summary arrived (51 §8.3).
     fn cost_tag(&self) -> String {
         match &self.cost {
@@ -20060,8 +20074,11 @@ mod tests {
             cost_lines(&b),
             ["Returned cost $0.100 · 2 unavailable", "Estimated ~$0.023"]
         );
-        // Header tag and child rows: returned wins, then the estimate keeps its tilde, then a dash.
-        assert_eq!(cost_short(&b), "$0.100");
+        // Header tag and child rows: returned money, then the estimate with its tilde, else a dash.
+        assert_eq!(cost_short(&b), "$0.100 · ~$0.023");
+        // An omp child's known-zero meter rolled into an estimate-only parent never hides the estimate.
+        b.returned = vec![usd(0)];
+        assert_eq!(cost_short(&b), "~$0.023");
         b.returned.clear();
         assert_eq!(cost_short(&b), "~$0.023");
         assert_eq!(
@@ -20070,7 +20087,14 @@ mod tests {
         );
         b.estimated_for_unavailable.clear();
         assert_eq!(cost_short(&b), "—");
+        b.returned = vec![usd(0)];
+        assert_eq!(
+            cost_short(&b),
+            "—",
+            "a zero meter with unpriced calls is no figure"
+        );
         b.unavailable = 0;
+        assert_eq!(cost_short(&b), "$0.000", "a known zero alone");
         b.returned = vec![
             Money {
                 currency: "EUR".into(),
