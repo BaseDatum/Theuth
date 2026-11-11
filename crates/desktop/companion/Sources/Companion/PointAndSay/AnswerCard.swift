@@ -315,11 +315,14 @@ struct AnswerMarkdown: View {
     var animate = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var document = RenderableDocument.empty
+    /// `--probe-markdown-stream` reads the rendered height (the library lays out after the async parse, not with the card).
+    static var contentHeight: ((CGFloat) -> Void)?
 
     var body: some View {
         let config = animate && !reduceMotion ? Self.animated : Self.still
         DocumentView(renderableDocument: document, config: config)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { Self.contentHeight?($0) })
             .task(id: text) {
                 let parsed = await Self.parse(text, config: config)
                 if !Task.isCancelled { document = parsed } // a newer snapshot's task replaced this one
@@ -484,13 +487,15 @@ final class AnswerCard {
     }
 
     private var anchor = NSPoint.zero
+    /// `--probe-markdown-stream`: a fixed (off-screen) origin instead of the island area; the size logic is unchanged.
+    var fixedOrigin: NSPoint?
 
     private func relayout() { if panel.isVisible { place() } }
 
     private func place() {
         hosting.layoutSubtreeIfNeeded()
         let size = NSSize(width: Self.width, height: max(84, hosting.fittingSize.height))
-        let frame = IslandArea.frame(size: size, on: anchor)
+        let frame = fixedOrigin.map { NSRect(origin: $0, size: size) } ?? IslandArea.frame(size: size, on: anchor)
         if panel.isVisible, abs(frame.height - panel.frame.height) > 40 {
             NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.18; panel.animator().setFrame(frame, display: true) }
         } else {
