@@ -376,6 +376,8 @@ final class AnswerCard {
     private var subs = Set<AnyCancellable>()
     var onEscape: (() -> Void)?
     var onOpen: (() -> Void)?
+    /// 189 D1: the card left the screen (the Ask's focus claim ends with it).
+    var onHide: (() -> Void)?
     /// ⌘L: who supplies the last answers.
     var historySource: (() -> [CompanionCore.Receipt])?
     var onStop: (() -> Void)? {
@@ -433,6 +435,7 @@ final class AnswerCard {
         model.history = nil
         if returnKey, let app = previousApp, app != .current { app.activate() }
         previousApp = nil
+        onHide?()
     }
 
     /// §15: ⏎ approve · ⎋ deny while the box is up (they win over expand/dismiss); else ⏎ expand/collapse, ⎋ collapse-or-dismiss,
