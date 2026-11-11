@@ -693,6 +693,8 @@ internal sealed class PointController : IDisposable
             return;
         }
         if (g != gesture) return;
+        await store.ClaimDeltasAsync("point", target, "point-send"); // 189w D1: this desk's deltas join the connection's focus (it used to claim nothing)
+        if (g != gesture) return;
         // §10.2 (W-l): the command profile's marker; after a cap stop the line says "continue" (§10.4).
         var body = sendMode == PointMode.Command
             ? CommandCard.ComposeBody(CommandCard.ContinueText(command, text), durationMs, lines)
@@ -1330,6 +1332,7 @@ internal sealed class PointController : IDisposable
             ThreadCount = card.Thread.Count,
             Request = x.Request.Length > 0 ? x.Request : null,
             Body = body,
+            Streaming = !cmd && !failed && !card.Finished && x.Answer.Length > 0, // 189w D4: the answer is still arriving
             Collapsed = collapsed,
             Status = status,
             Tone = tone,

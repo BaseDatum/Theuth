@@ -25,6 +25,15 @@ internal static class AskFlags
     public static bool Replay { get; } = Args.Contains("--ask-replay");
     public static string? Fixture { get; } = Value("--ask-fixture");
 
+    /// <summary>189w: <c>--ask-catchup</c> (with <c>--ask-probe N</c>) — <c>load_session(desk, 8)</c> against the real engine, the wire shape the catch-up reads, logged.</summary>
+    public static bool CatchUp { get; } = Args.Contains("--ask-catchup");
+
+    /// <summary>189w: <c>--ask-send "text"</c> (with <c>--ask-probe N</c>) — a typed Enter once the desk resolved: the real send path, focus claim first.</summary>
+    public static string? Send { get; } = Value("--ask-send");
+
+    /// <summary>189w: where the Ask replay's PNGs go (<c>w153c-gate.ps1 b64 189w-&lt;name&gt;.png</c> reads them there).</summary>
+    public static string Png189(string name) => Path.Combine(Path.GetTempPath(), $"189w-{name}.png");
+
     /// <summary>153 W153B: <c>--synthetic-speech "…" --ask-press</c> dictates the synthesized speech inside a simulated voice press (the
     /// real engine's shaped text and a spoken "send it" land through the voice path and send).</summary>
     public static bool Press { get; } = Args.Contains("--ask-press");
