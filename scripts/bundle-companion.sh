@@ -1,8 +1,9 @@
 #!/bin/bash
-# Build `Theuth Companion.app` from the SwiftPM package with Xcode's toolchain (189 D5: SwiftStreamingMarkdown's
-# `#Preview` blocks and asset catalogs do not build with the Command Line Tools): `swift build -c release`, a
-# hand-written Info.plist, PkgInfo, theuth's own tray glyph and .icns from crates/desktop/icons, codesign (ad-hoc, or
-# `THEUTH_SIGN_IDENTITY`), `codesign --verify --deep --strict`.
+# Build `Theuth Companion.app` from the SwiftPM package with Xcode (189 D5/F1: SwiftStreamingMarkdown's `#Preview`
+# blocks and asset catalogs do not build with the Command Line Tools, and its `Bundle.module` must find its resources
+# in Contents/Resources): `xcodebuild` on the package's `Companion` scheme, a hand-written Info.plist, PkgInfo,
+# theuth's own tray glyph and .icns from crates/desktop/icons, codesign (ad-hoc, or `THEUTH_SIGN_IDENTITY`),
+# `codesign --verify --deep --strict`. Proof the resources load: `"$APP/Contents/MacOS/Companion" --probe-markdown`.
 # Output: target/release/companion/Theuth Companion.app. Nesting into the Tauri bundle is W1S's.
 set -euo pipefail
 DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
@@ -19,10 +20,18 @@ BUNDLE_ID=io.theuth.mac.companion
 VERSION="$(grep -m1 '^version' "$ROOT/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
 IDENTITY="${THEUTH_SIGN_IDENTITY:--}"
 
-echo "== build (swift build -c release)"
-( cd "$PKG" && swift build -c release )
-BIN_DIR="$PKG/.build/release"
+echo "== build (xcodebuild -scheme $EXE -configuration Release)"
+DERIVED="$PKG/.build/xcode"
+( cd "$PKG" && xcodebuild -scheme "$EXE" -configuration Release -destination 'generic/platform=macOS' \
+    -derivedDataPath "$DERIVED" -skipMacroValidation -skipPackagePluginValidation \
+    ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build )
+BIN_DIR="$DERIVED/Build/Products/Release"
 test -x "$BIN_DIR/$EXE"
+# Every package product links statically today; a dynamic one would need Contents/Frameworks and an rpath, which this
+# script does not do — refuse rather than ship an app that cannot load it.
+if compgen -G "$BIN_DIR/PackageFrameworks/*.framework" > /dev/null; then
+  echo "error: $BIN_DIR/PackageFrameworks holds dynamic frameworks; bundle-companion.sh copies none" >&2; exit 1
+fi
 
 echo "== assemble $APP"
 rm -rf "$APP"
@@ -30,11 +39,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/$EXE" "$APP/Contents/MacOS/$EXE"
 chmod 755 "$APP/Contents/MacOS/$EXE"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
-# SwiftPM resource bundles of dependencies (KeyboardShortcuts' localisations) go to Contents/Resources. The
-# generated `Bundle.module` accessor does NOT look there (only at the .app root and the absolute .build path baked
-# in at compile time — 130 W6 item 1), and a copy or symlink at the .app root fails `codesign --verify --strict`
-# ("unsealed contents present in the bundle root"), so the companion must never call an API that touches
-# `Bundle.module` (our own ShortcutRecorder replaces KeyboardShortcuts.Recorder).
+# The packages' resource bundles (KeyboardShortcuts' localisations; SwiftStreamingMarkdown's asset catalog and strings,
+# HighlightSwift's highlight.js, iosMath's fonts) go to Contents/Resources. `Bundle.module` is safe ONLY because the
+# executable is built with xcodebuild: Xcode's generated accessor searches `Bundle.main.resourceURL` (Contents/Resources)
+# before the bundle root. `swift build`'s accessor looks only at the .app root and the absolute .build path baked in at
+# compile time (130 W6 item 1), and a copy or symlink at the .app root fails `codesign --verify --strict` ("unsealed
+# contents present in the bundle root") — never go back to `swift build` for this bundle.
 for b in "$BIN_DIR"/*.bundle; do [ -d "$b" ] && cp -R "$b" "$APP/Contents/Resources/"; done
 chmod -R u+w "$APP/Contents/Resources"
 

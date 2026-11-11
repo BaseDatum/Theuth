@@ -306,17 +306,22 @@ struct SpeakingGlyph: View {
 /// §12.2 / 189 D4: the answer body, rendered by SwiftStreamingMarkdown's `DocumentView`. Every text change re-parses the
 /// whole answer off the main actor (the library's snapshot model, `StreamedMarkdownView`'s too) with LaTeX off and the
 /// speculative rewrite on (a half-streamed `**bold` or table renders, not its marks). System fonts and label colours,
-/// citations and the "Select more text" sheet off. `shouldAnimateText` stays at the library's default (off): its fade
-/// resolves the library's own palette colour (`Color.Theme`, `Bundle.module`) on every frame of every paragraph.
+/// citations and the "Select more text" sheet off. 189 F3: the library's fade-in of appended text is on (none under
+/// Reduce Motion); it and the bullets, quote bar and code/table chrome read the library's `Bundle.module`, which loads
+/// from Contents/Resources because the app is built with xcodebuild (`scripts/bundle-companion.sh`, `--probe-markdown`).
 struct AnswerMarkdown: View {
     let text: String
+    /// `--probe-markdown` passes `false`: an off-screen window drives no fade, so the text would stay transparent.
+    var animate = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var document = RenderableDocument.empty
 
     var body: some View {
-        DocumentView(renderableDocument: document, config: Self.config)
+        let config = animate && !reduceMotion ? Self.animated : Self.still
+        DocumentView(renderableDocument: document, config: config)
             .frame(maxWidth: .infinity, alignment: .leading)
             .task(id: text) {
-                let parsed = await Self.parse(text, config: Self.config)
+                let parsed = await Self.parse(text, config: config)
                 if !Task.isCancelled { document = parsed } // a newer snapshot's task replaced this one
             }
     }
@@ -326,14 +331,17 @@ struct AnswerMarkdown: View {
         return await RenderableDocument(document: result.document, config: config)
     }
 
+    static let animated = config(animate: true)
+    static let still = config(animate: false)
+
     /// Every style spelled out: the library's defaults are its own palette (`Color.Theme`), not the system's.
-    static let config: MarkdownRenderConfig = {
+    static func config(animate: Bool) -> MarkdownRenderConfig {
         let label = Color(nsColor: .labelColor), secondary = Color(nsColor: .secondaryLabelColor)
         let separator = Color(nsColor: .separatorColor), fill = Color.primary.opacity(0.06)
         let body = fonts(.body), small = fonts(.callout), code = fonts(.body, monospaced: true)
         let text = MarkdownRenderConfig.MarkdownTextStyle(textFonts: body, textColor: label)
         return MarkdownRenderConfig(
-            shouldAnimateText: false,
+            shouldAnimateText: animate,
             blockQuoteStyle: .init(textFonts: body, textColor: secondary),
             headingStyle: .init(h1Font: fonts(.title3, weight: .semibold), h2Font: fonts(.headline), h3Font: fonts(.body, weight: .semibold),
                                 h4Font: fonts(.body, weight: .semibold), h5Font: fonts(.body, weight: .semibold),
@@ -353,7 +361,7 @@ struct AnswerMarkdown: View {
             thematicBreakColor: separator,
             imageConfig: .disabled
         )
-    }()
+    }
 
     /// The system font at `style`'s size, with its bold and italic faces.
     private static func fonts(_ style: NSFont.TextStyle, weight: NSFont.Weight = .regular, monospaced: Bool = false) -> TextFonts {

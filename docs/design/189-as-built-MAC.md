@@ -1,11 +1,12 @@
 # 189 as built: COMPANION-STREAM (macOS companion)
 
-Branch `feat/189-companion-stream` from main `8f879fbd`, two commits:
+Branch `feat/189-companion-stream` from main `8f879fbd`, three commits:
 
 1. `66676055` feat(189): one event-focus owner and transcript catch-up for the Ask and voice-key replies — D1–D3, D6, D7. Built and tested here.
-2. feat(189): SwiftStreamingMarkdown renders the answer card; bundle needs Xcode — D4, D5, this doc. Not compilable here (Command Line Tools only); owed to the release Mac.
+2. `fa4546dc` feat(189): SwiftStreamingMarkdown renders the answer card; bundle needs Xcode — D4, D5, this doc. Not compilable here (Command Line Tools only); owed to the release Mac.
+3. fix(189): the fix round F1–F4 below — xcodebuild bundle, `--probe-markdown`, the streaming fade on, the Swift 6.2 / SDK 26.0 pins.
 
-No engine change. File:line below is the tree after commit 2.
+No engine change. File:line below is the tree after commit 3.
 
 ## D1 One focus owner
 
@@ -37,15 +38,42 @@ No engine change. File:line below is the tree after commit 2.
 
 ## D4 Streaming markdown renderer
 
-- `Package.swift:24`: `SwiftStreamingMarkdown` **v0.7.0** (latest tag; `git ls-remote --tags`: v0.1.0…v0.7.0), pinned by its commit `5f7c04e0558df6146f90d482edb62cb456986bda`. `exact: "0.7.0"` does not resolve: SwiftPM refuses a version-pinned package that pins its own dependencies (highlightswift, iosMath) by revision. Product on the Companion executable only (:35). `Package.resolved` gains the transitive pins (equatable 1.4.1, swift-syntax 603.0.2, swift-markdown 0.7.3, swift-cmark 0.9.0, highlightswift and iosMath by revision, SwiftUI-Shimmer 1.5.1). KeyboardShortcuts stays at 1.10.0.
-- `AnswerCard.swift:311` `AnswerMarkdown` replaces `MarkdownBlocks` (the `AttributedString(markdown:)` inline pass and the block pass, deleted) in the expanded answer body (:130). It drives `DocumentView` directly: each text change re-parses off the main actor with `MarkdownParserImpl` and `MarkdownParseOption(speculativeRewrite: true, latexMatchingRules: [])` — LaTeX off (the convenience `MarkdownView`/`StreamedMarkdownView` parse with every LaTeX rule on and cannot turn it off); a stale parse is dropped (`Task.isCancelled`).
-- `config` (:330): every style spelled out with system fonts (`NSFont.preferredFont(forTextStyle:)` sizes, system and monospaced system faces) and system colours (`labelColor`, `secondaryLabelColor`, `linkColor`, `separatorColor`); code blocks `CodeBlockConfig.Theme.xcode`; citations off; the "Select more text" sheet off; images off; block spacing 8. No shimmer (the streaming shimmer of `MarkdownBlocks` is gone; the command rows' own shimmer is unchanged).
-- `shouldAnimateText` stays off (the library's default). Its fade resolves the library's palette colour from `Bundle.module` on every frame of every paragraph (`ParagraphNSView.swift:286` in the library); see risk 1.
+- `Package.swift:24`: `SwiftStreamingMarkdown` **v0.7.0** (latest tag; `git ls-remote --tags`: v0.1.0…v0.7.0), pinned by its commit `5f7c04e0558df6146f90d482edb62cb456986bda`. `exact: "0.7.0"` does not resolve: SwiftPM refuses a version-pinned package that pins its own dependencies (highlightswift, iosMath) by revision. Product on the Companion executable only (:35). `Package.resolved` gains the transitive pins (equatable 1.4.1, swift-syntax 602.0.0 — F4, see below, swift-markdown 0.7.3, swift-cmark 0.9.0, highlightswift and iosMath by revision, SwiftUI-Shimmer 1.5.1). KeyboardShortcuts stays at 1.10.0.
+- `AnswerCard.swift:312` `AnswerMarkdown` replaces `MarkdownBlocks` (the `AttributedString(markdown:)` inline pass and the block pass, deleted) in the expanded answer body (:130). It drives `DocumentView` directly: each text change re-parses off the main actor with `MarkdownParserImpl` and `MarkdownParseOption(speculativeRewrite: true, latexMatchingRules: [])` — LaTeX off (the convenience `MarkdownView`/`StreamedMarkdownView` parse with every LaTeX rule on and cannot turn it off); a stale parse is dropped (`Task.isCancelled`).
+- `config(animate:)` (:338): every style spelled out with system fonts (`NSFont.preferredFont(forTextStyle:)` sizes, system and monospaced system faces) and system colours (`labelColor`, `secondaryLabelColor`, `linkColor`, `separatorColor`); code blocks `CodeBlockConfig.Theme.xcode`; citations off; the "Select more text" sheet off; images off; block spacing 8. No shimmer (the streaming shimmer of `MarkdownBlocks` is gone; the command rows' own shimmer is unchanged).
+- F3: `shouldAnimateText` is on (`AnswerCard.swift:338` `config(animate:)`, `animated`/`still`), the library's fade-in of appended text; off under Reduce Motion and when the caller passes `animate: false` (:315, only `--probe-markdown`: an off-screen window drives no fade and the text would stay transparent).
 - The collapsed two-line preview and the receipt row stay plain `Text`.
 
 ## D5 Build
 
-`scripts/bundle-companion.sh:8-12`: refuses unless `xcode-select -p` ends in `.app/Contents/Developer`, with "SwiftStreamingMarkdown needs Xcode's toolchain (#Preview macros); run on the release Mac or install Xcode". Run here: exit 1 with that message, before any build.
+`scripts/bundle-companion.sh:9-13`: refuses unless `xcode-select -p` ends in `.app/Contents/Developer`, with "SwiftStreamingMarkdown needs Xcode's toolchain (#Preview macros); run on the release Mac or install Xcode". Run here: exit 1 with that message, before any build.
+
+## F1 xcodebuild
+
+`scripts/bundle-companion.sh:23-34` builds with
+
+```
+xcodebuild -scheme Companion -configuration Release -destination 'generic/platform=macOS' -derivedDataPath "$PKG/.build/xcode" -skipMacroValidation -skipPackagePluginValidation ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build
+```
+
+run in `$PKG`, and takes the executable and every `*.bundle` from `$PKG/.build/xcode/Build/Products/Release` (bundles into Contents/Resources as before). It refuses if `Products/Release/PackageFrameworks` holds a dynamic framework (every package product links statically today; the script copies no frameworks). Info.plist, icons, harness assets, signing and the codesign verify are unchanged. The comment at :42-47 now says what Xcode's accessor searches (`Bundle.main.resourceURL`, i.e. Contents/Resources) and that `Bundle.module` is safe only because of xcodebuild.
+
+## F2 `--probe-markdown`
+
+`Companion/PointAndSay/MarkdownProbe.swift`: `Flags.probeMarkdown` (:6); `main.swift:4` runs it before the single-instance check and the app delegate (activation policy `.prohibited`), so there is no engine connection, no hotkey, no status item. It hosts `AnswerMarkdown` in an `NSHostingView` at the card width inside a borderless window that is never ordered front, runs the main run loop until the size holds for 0.5 s (10 s cap), `cacheDisplay`s it and writes `/tmp/189-probe-markdown.png`. The sample has a heading, bold/italic/inline code/a link, a bullet list, a numbered list, a block quote, fenced Swift, a table and a trailing half-streamed `**bold`. Report lines (companion.log and stderr):
+
+```
+probe-markdown: loaded ‹path›/SwiftStreamingMarkdown_SwiftStreamingMarkdown.bundle (Contents/Resources | outside the app's Contents/Resources)
+probe-markdown: rendered 440×497 pt (440×497 px) → /tmp/189-probe-markdown.png
+probe-markdown: ok
+```
+
+Exit 0 on success. Exit 1 with `probe-markdown: FAILED — …` when the sample did not lay out (height ≤ 200 pt) or SwiftStreamingMarkdown's bundle was never loaded. A bundle the accessor cannot find traps inside the library (exit 133, the accessor's "could not load resource bundle" on stderr). Release-Mac gate: `"$APP/Contents/MacOS/Companion" --probe-markdown` with the build tree moved away; every package bundle must report `Contents/Resources`.
+
+## F4 Release toolchain (Xcode 26.0, Swift 6.2, macOS SDK 26.0)
+
+- `Package.resolved`: swift-syntax pinned to 602.0.0 (`4799286537280063c85a32f09884cfbca301b1a1`), the Swift 6.2 line, instead of 603.0.2; equatable allows `600.0.0..<604.0.0`; `swift package resolve` keeps it.
+- Commits 1–3 use no Swift 6.3 language or stdlib features and no API newer than macOS 15 (`Bundle.allBundles`, `NSHostingView`, `NSFont.preferredFont(forTextStyle:)`, `Color(nsColor:)`, `accessibilityReduceMotion`).
 
 ## D6 Logging (companion.log via `Log.write` / `AskLog.write` / `PointLog.write`)
 
@@ -73,12 +101,14 @@ Here (Swift 6.3.2, Command Line Tools):
 - Commit 1: `nice -n 10 swift build -j 4` → `Build complete!`; `nice -n 10 ./test.sh -j 4` → `✔ Test run with 309 tests in 51 suites passed`. Plain `swift test` cannot run on this Mac at all (`no such module 'Testing'`, any commit): `test.sh` is the package's wrapper that adds the CLT's Swift Testing framework paths.
 - Live engine, read-only (a throwaway client on `TheuthKit`): `load_session(theuth desk, 8)` decodes into `Loaded`; the real page holds `user`/`reasoning`/`tool`/`assistant` rows with interleaved peer-message turns; `TranscriptPick` anchors on the last turn-opening row and returns its 600-char answer.
 - Commit 2's Swift was type-checked against v0.7.0's sources with `#Preview` blocks and `@Entry` stubbed out and resources dropped (a /tmp copy; nothing of it is committed): the whole Companion target builds, no warnings in `AnswerCard.swift`. `AnswerMarkdown` hosted off-screen at the card width renders headings, bold/italic/inline code, ordered lists, a code block, a table and `\(x^2)` as text; a half-streamed `**bold` renders bold; `fittingSize` grows with the content.
-- `bundle-companion.sh` refuses on the CLT.
+- `bundle-companion.sh` refuses on the CLT (`bash -n` clean; the xcodebuild step itself needs Xcode).
+- Commit 3, with the same /tmp stub (now with the library's resources copied raw so its `Bundle.module` is real): the Companion target builds with swift-syntax 602.0.0; `.build/debug/Companion --probe-markdown` → both `HighlightSwift_HighlightSwift.bundle` and `SwiftStreamingMarkdown_SwiftStreamingMarkdown.bundle` loaded (from the build path: a `swift build` binary has no other place to look), `rendered 440×497 pt`, `ok`, exit 0; the PNG shows every block of the sample. With the library's bundle moved away: `Fatal error: could not load resource bundle …`, exit 133 — the crash risk 1 described, now caught by the probe.
 
-Owed to the release Mac (Xcode): compiling commit 2 for real (macros, asset catalogs, xcstrings), `swift test`, `bundle-companion.sh`, and the live card: stream an Ask, open/close the Attention panel mid-reply, confirm the reply keeps streaming and that companion.log shows the union keeping the desk.
+Owed to the release Mac (Xcode 26.0): compiling commits 2–3 for real (macros, asset catalogs, xcstrings), `swift test`, `bundle-companion.sh` (the scheme name `Companion` and `Products/Release` layout are Xcode's for a package executable, unverified here), `--probe-markdown` on the bundled app with `$PKG/.build` moved away (every bundle must report `Contents/Resources`), and the live card: stream an Ask, open/close the Attention panel mid-reply, confirm the reply keeps streaming and fades in, and that companion.log shows the union keeping the desk.
 
 ## Risks
 
-1. **`Bundle.module` in a shipped app.** SwiftPM's generated accessor (see `.build/…/KeyboardShortcuts.build/DerivedSources/resource_bundle_accessor.swift`) looks only at `‹app›/‹Pkg_Target›.bundle` and the absolute build path; `bundle-companion.sh` copies dependency bundles into `Contents/Resources`, which it never searches (the 130 W6 note in the script). SwiftStreamingMarkdown reads its asset catalog through `Bundle.module` in views the config cannot replace: bullet glyphs (`UnorderedListView`), the block-quote bar, code-block and table copy icons, the fade colour; HighlightSwift loads its JS the same way. On the build Mac the absolute path exists, so it works there; on any other Mac the first list, quote, code block or table `fatalError`s. Options: build with `xcodebuild` (Xcode's accessor also searches `Bundle.main.resourceURL`), or vendor the package with a lookup that does. Not changed here: it is a packaging decision.
-2. The bullet glyphs and quote bar keep the library's palette colours (`Color.Theme`); no config reaches them.
-3. Toolchain: swift-syntax 603.0.2 (for `@Equatable`) needs a matching Xcode Swift; `CompanionTests` depends on `Companion`, so `swift test` builds the library too.
+1. **`Bundle.module` in a shipped app — resolved by F1, pending the release-Mac probe.** `swift build`'s accessor looks only at `‹app›/‹Pkg_Target›.bundle` and the absolute build path, so the library's bullets, quote bar, code/table chrome, fade colour and HighlightSwift's JS would `fatalError` on any Mac without the build tree. xcodebuild's accessor also searches Contents/Resources; `--probe-markdown` with the build tree moved away proves it.
+2. **Streaming fade off — resolved by F3** (on, Reduce Motion respected), pending the same proof (the fade reads the library's palette through `Bundle.module`).
+3. Open: the bullet glyphs and quote bar keep the library's palette colours (`Color.Theme`); no config reaches them.
+4. Toolchain: swift-syntax is pinned to 602.0.0 for Swift 6.2; `CompanionTests` depends on `Companion`, so `swift test` builds the library too.
