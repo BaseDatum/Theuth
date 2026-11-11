@@ -98,7 +98,7 @@ export function contextLabel(context: number): string {
 
 /** The selected model's effort levels: the chip row under its row. */
 export type Effort = {
-  levels: string[]
+  levels: readonly string[]
   current: string | null | undefined
   /** `null` is the "Default" chip. */
   onSelect(level: string | null): void
@@ -160,7 +160,7 @@ function SearchInput({ query, setQuery, canGoBack, back, onToggleFavorite }: { q
 const LEAD_ROW = 'flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg:not([class*=text-])]:text-muted-foreground'
 
 /** An effort chip; wraps and grows to a finger's size on phones and coarse pointers. A cmdk chip shows the highlight as a ring. */
-const CHIP = 'inline-flex h-7 items-center gap-1 rounded-full border border-border-subtle px-2.5 py-0 text-xs data-[selected=true]:ring-2 data-[selected=true]:ring-ring max-md:h-9 max-md:px-3 max-md:text-sm pointer-coarse:h-9 pointer-coarse:px-3 pointer-coarse:text-sm'
+const CHIP = 'inline-flex h-7 items-center gap-1 rounded-full border border-border px-2.5 py-0 text-xs data-[selected=true]:ring-2 data-[selected=true]:ring-ring max-md:h-9 max-md:px-3 max-md:text-sm pointer-coarse:h-9 pointer-coarse:px-3 pointer-coarse:text-sm'
 /** The plain-button chip (under the Current lead row). */
 const CHIP_BUTTON = 'cursor-default outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring'
 /** The active level. */
