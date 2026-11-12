@@ -116,7 +116,7 @@ impl Model {
             }
             UiEvent::Refreshed(id, loaded) => {
                 // An inspected page is not the live transcript: no reload stitches over it.
-                if self.session == Some(id) && self.inspect.is_none() {
+                if self.session == Some(id) && !self.historical && self.inspect.is_none() {
                     self.refresh(loaded);
                 }
             }

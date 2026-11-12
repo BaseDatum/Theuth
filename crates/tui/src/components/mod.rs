@@ -570,6 +570,19 @@ impl From<TranscriptCard> for crate::model::Entry {
         }
     }
 }
+/// A core transcript frame built with the authoritative history projection.
+pub struct TranscriptPresentation {
+    /// Selected session for this frame.
+    pub session: SessionId,
+    /// Applied session metadata; history has already been projected into entries.
+    pub loaded: agent::Loaded,
+    /// Owned, already-rendered transcript entries.
+    pub entries: Vec<crate::model::Entry>,
+    /// First visible entry and row.
+    pub anchor: Option<(usize, usize)>,
+    /// Keep live tail stitching and composer input out of this frame.
+    pub read_only: bool,
+}
 /// Core-only presentation operations, applied after registry borrows end.
 pub enum CoreAction {
     /// Append a core notice.
@@ -621,6 +634,8 @@ pub enum CoreAction {
         /// Measured terminal columns.
         width: usize,
     },
+    /// Build after registry mutation ends, present the frame, then deliver its typed receipt.
+    PresentTranscript(Box<dyn FnOnce(&Registry) -> (TranscriptPresentation, LocalReply) + Send>),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
@@ -699,6 +714,16 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
     // Step-11 group t2 Cx helpers: add below, in this block only.
 
     // Step-11 group t3 Cx helpers: add below, in this block only.
+    /// Project through the same registry/history helper as ordinary core reloads.
+    pub fn present_transcript<F>(&mut self, build: F)
+    where F: FnOnce(&Registry) -> (TranscriptPresentation, M) + Send + 'static,
+    {
+        let (to, engine_epoch) = (self.token, self.epoch);
+        self.core(CoreAction::PresentTranscript(Box::new(move |registry| {
+            let (presentation, message) = build(registry);
+            (presentation, LocalReply { to, engine_epoch, body: Box::new(message) })
+        })));
+    }
     /// Keep an error inline after the core's existing generic failure transitions.
     pub fn claim_error(&mut self) { self.out.error_claimed = true; }
     /// Own this event's plain output without bypassing core admission/bookkeeping.

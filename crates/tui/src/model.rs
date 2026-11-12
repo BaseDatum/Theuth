@@ -215,6 +215,8 @@ pub struct Model {
     pub width: usize,
     /// Measured transcript rows for component key handling.
     pub(crate) viewport: usize,
+    /// A read-only historical frame, independent of its feature-owned navigation intent.
+    pub(crate) historical: bool,
     /// Fixed feature registry; feature state never leaks into the core enum.
     pub(crate) components: crate::components::Registry,
     component_commands: Option<UnboundedSender<Command>>,
@@ -381,7 +383,8 @@ pub use events::{UiEvent, Command};
 pub(crate) use components::Output;
 pub(crate) use events::{send};
 pub use harnesses::{AcpRow, harness_options_lines, harness_option_set_line};
-use history::{revision, user_entries, cell_results, FENCE, from_history};
+use history::{revision, user_entries, cell_results, FENCE};
+pub(crate) use history::from_history;
 #[cfg(test)]
 use history::{parent_view};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
