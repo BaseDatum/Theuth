@@ -21164,6 +21164,7 @@ dependencies = [
  "agent",
  "anyhow",
  "async-trait",
+ "base64 0.23.1",
  "jsonrpsee",
  "kameo",
  "markdown",

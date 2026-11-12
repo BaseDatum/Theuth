@@ -33,6 +33,9 @@ use voice::{ModelState, SpeechId, VoiceEvent};
 use policy::{Action, Input, Policy, Timer};
 
 mod policy;
+/// Speech, dictation and live-conversation RPC methods.
+pub mod rpc;
+pub use rpc::rpc_module;
 pub mod rpc_support;
 
 /// Registry name of the [`Talk`] actor.

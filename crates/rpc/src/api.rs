@@ -219,8 +219,8 @@ pub mod boards;
 pub mod artifacts;
 /// Credentials RPC server and client traits.
 pub mod credentials;
-/// Speech RPC server and client traits.
-pub mod speech;
+/// Speech RPC server and client traits during the owner registration cutover.
+pub use talk::rpc as speech;
 /// Kernels RPC server and client traits.
 pub mod kernels;
 /// Dreams RPC server and client traits.

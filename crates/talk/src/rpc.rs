@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use ::talk;
-use ::talk::rpc_support::{dictation, history_store, talk, transcriber, voice};
+use crate as talk;
+use crate::rpc_support::{dictation, history_store, talk, transcriber, voice};
 use agent::{Agents, Polish, PolishReply, Rewrite};
 use agent::rpc_support::RpcServerExt;
 use base64::Engine as _;
