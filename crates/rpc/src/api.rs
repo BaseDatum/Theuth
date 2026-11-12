@@ -3629,6 +3629,33 @@ fn mesh_actor() -> RpcResult<ActorRef<mesh::Mesh>> {
     lookup::<mesh::Mesh>(mesh::MESH_ACTOR)
 }
 
+/// 191 (D8): each contact's `paired_on` engine id by that machine's name, looked up as
+/// `session_move` does: this machine's `self_name`, a mesh peer's name, else the id's first
+/// 8 characters (the machine left the mesh, or the mesh cannot answer). Display only.
+async fn name_paired_on(contacts: &mut [a2a::contacts::Contact]) {
+    if contacts.iter().all(|c| c.paired_on.is_none()) {
+        return;
+    }
+    let status = match mesh_actor() {
+        Ok(m) => m.ask(mesh::Status).await.ok(),
+        Err(_) => None,
+    };
+    for id in contacts.iter_mut().filter_map(|c| c.paired_on.as_mut()) {
+        let name = status.as_ref().and_then(|s| {
+            if s.self_id.0 == *id {
+                return Some(s.self_name.clone());
+            }
+            s.peers
+                .iter()
+                .find(|p| p.id.0 == *id)
+                .map(|p| p.name.clone())
+        });
+        *id = name
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| id.get(..8).unwrap_or(id.as_str()).to_owned());
+    }
+}
+
 /// The roster actor; absent when the plugin is not loaded or its store failed (67 §6).
 fn roster_actor() -> RpcResult<ActorRef<roster::Roster>> {
     lookup::<roster::Roster>(roster::ROSTER_ACTOR)
@@ -9629,7 +9656,9 @@ impl ApiServer for Server {
     }
 
     async fn contact_list(&self) -> RpcResult<Vec<a2a::contacts::Contact>> {
-        contacts(&self.rt, a2a::contacts::ContactsList, Ok(Vec::new())).await
+        let mut out = contacts(&self.rt, a2a::contacts::ContactsList, Ok(Vec::new())).await?;
+        name_paired_on(&mut out).await;
+        Ok(out)
     }
 
     async fn contact_update(
@@ -9638,7 +9667,9 @@ impl ApiServer for Server {
         patch: a2a::contacts::ContactPatch,
     ) -> RpcResult<a2a::contacts::Contact> {
         let msg = a2a::contacts::ContactUpdate { name, patch };
-        contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await
+        let mut c = contacts(&self.rt, msg, Err(failed(a2a::contacts::OFF))).await?;
+        name_paired_on(std::slice::from_mut(&mut c)).await;
+        Ok(c)
     }
 
     async fn contact_remove(&self, name: String, block: bool) -> RpcResult<()> {

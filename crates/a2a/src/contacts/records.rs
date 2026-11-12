@@ -15,9 +15,10 @@ use agent::store::contacts::{
 };
 use uuid::Uuid;
 
+use super::ProblemKind;
 use super::rosters::{self, Copy, Entry, Local, PeerHead};
 use crate::config::{
-    AgentExport, ContactFacts, Export, FirstContact, Peer, PeersFile, Quarantined, Staged,
+    AgentExport, ContactFacts, Export, FirstContact, Peer, PeersFile, Quarantined, Shown, Staged,
     check_alias,
 };
 
@@ -338,6 +339,31 @@ pub fn local_of(r: &Records, record: &str) -> Option<Local> {
             signers: head.signers,
             history,
         })
+}
+
+/// 191 (D8): what `contact_list` shows of `members` (a group's records, root first): the
+/// root's `paired_on`, and the contact's machines from this machine's own roster states:
+/// every current member, then (`left`) those only an accepted history lists; the pins of a
+/// record no roster is based on here, so the list is never empty while a pin exists.
+pub fn shown(r: &Records, members: &[&ContactRow]) -> Shown {
+    let (mut now, mut was) = (BTreeSet::new(), BTreeSet::new());
+    for m in members {
+        match local_of(r, &m.id) {
+            Some(l) => {
+                now.extend(l.head().members.iter().cloned());
+                was.extend(l.history.iter().flat_map(|e| e.members.iter().cloned()));
+            }
+            None => now.extend(pins_of(r, &m.id)),
+        }
+    }
+    let left: Vec<(String, bool)> = was.difference(&now).map(|e| (e.clone(), true)).collect();
+    Shown {
+        paired_on: members
+            .first()
+            .and_then(|c| c.paired_on.clone())
+            .filter(|e| !e.is_empty()),
+        machines: now.into_iter().map(|e| (e, false)).chain(left).collect(),
+    }
 }
 
 /// The `contact_roster_local` row of `l`.
@@ -697,29 +723,43 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
         /// Replication lag or a convergence in flight: endpoints denied, the binding kept
         /// (its inboxes capped) so the record comes back whole once the rows arrive.
         Lag,
+        /// A roster this machine cannot verify or our machines disagree about: denied, the
+        /// binding kept as for [`Kind::Lag`], but replication alone does not mend it (D8:
+        /// shown refused).
+        Unproven,
         /// Removed on another machine: never admitted, its endpoints may pair again.
         Removed,
     }
-    let quarantine =
-        |c: &ContactRow, eids: Vec<String>, problem: String, kind: Kind, s: &mut Staged| {
-            if kind == Kind::Removed {
-                s.removed.extend(eids.iter().cloned());
+    let quarantine = |c: &ContactRow,
+                      members: &[&ContactRow],
+                      eids: Vec<String>,
+                      problem: String,
+                      kind: Kind,
+                      s: &mut Staged| {
+        if kind == Kind::Removed {
+            s.removed.extend(eids.iter().cloned());
+        } else {
+            s.deny.extend(eids.iter().cloned());
+        }
+        s.shown.insert(c.id.clone(), shown(r, members));
+        s.quarantined.push(Quarantined {
+            id: c.id.clone(),
+            alias: c.alias.clone().unwrap_or_default(),
+            eid: eids.first().cloned().unwrap_or_default(),
+            machine: c.machine.clone().unwrap_or_default(),
+            paired_ms: c.paired_ms.unwrap_or_default().max(0) as u64,
+            problem,
+            kind: if kind == Kind::Lag {
+                ProblemKind::Waiting
             } else {
-                s.deny.extend(eids.iter().cloned());
-            }
-            s.quarantined.push(Quarantined {
-                id: c.id.clone(),
-                alias: c.alias.clone().unwrap_or_default(),
-                eid: eids.first().cloned().unwrap_or_default(),
-                machine: c.machine.clone().unwrap_or_default(),
-                paired_ms: c.paired_ms.unwrap_or_default().max(0) as u64,
-                problem,
-                hold: (kind == Kind::Lag)
-                    .then(|| c.binding.as_deref().and_then(binding_id))
-                    .flatten()
-                    .filter(|b| !r.revoked.contains(&b.to_string())),
-            });
-        };
+                ProblemKind::Refused
+            },
+            hold: matches!(kind, Kind::Lag | Kind::Unproven)
+                .then(|| c.binding.as_deref().and_then(binding_id))
+                .flatten()
+                .filter(|b| !r.revoked.contains(&b.to_string())),
+        });
+    };
     for (c, why, lag) in &a.broken {
         let eids = r
             .endpoints
@@ -728,7 +768,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             .filter_map(|e| e.eid.clone())
             .collect();
         let kind = if *lag { Kind::Lag } else { Kind::Hard };
-        quarantine(c, eids, why.clone(), kind, &mut staged);
+        quarantine(c, &[*c], eids, why.clone(), kind, &mut staged);
     }
     // When each endpoint was last removed with a record (the latest removal wins): the
     // record's pins and, from this machine's own state, what its roster listed.
@@ -863,7 +903,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             Some(("an endpoint is in another contact too (merging)", Kind::Lag))
         } else if let Err(p) = &sets[i] {
             // Never the pins alone once a base exists: denied, the binding kept.
-            Some((*p, Kind::Lag))
+            Some((*p, Kind::Unproven))
         } else if sets[i].as_ref().is_ok_and(BTreeSet::is_empty) {
             Some(("none of its machines can be admitted", Kind::Lag))
         } else if c
@@ -876,7 +916,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
             None
         };
         if let Some((p, kind)) = problem {
-            quarantine(c, eids, p.to_owned(), kind, &mut staged);
+            quarantine(c, &g.members, eids, p.to_owned(), kind, &mut staged);
             continue;
         }
         let (Some(alias), Some(binding)) = (c.alias.clone(), binding) else {
@@ -940,6 +980,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>, contact_cap: tools:
                 },
             );
         }
+        staged.shown.insert(c.id.clone(), shown(r, &g.members));
         staged.contacts.insert(
             alias.clone(),
             ContactFacts {
@@ -1983,5 +2024,112 @@ mod tests {
         let s = stage(&r);
         assert_eq!(s.contacts["bob"].eids, vec![n2.clone(), n3.clone()]);
         assert!(s.removed.contains(&n1) && s.removed.contains(&z1) && !s.removed.contains(&n2));
+    }
+
+    /// 191 (D8, P4): what a row shows. Its machines are this machine's roster state of the
+    /// record, current members first, then (`left`) those only its accepted history lists;
+    /// its pins while no roster is based here; `paired_on` is the record's. A quarantine
+    /// that replication mends is `waiting` (a pointer into a record not here, a name taken
+    /// until the rename lands); every other is `refused` (unsound, one of our machines,
+    /// unverified, disagreed about).
+    #[test]
+    fn a_row_shows_its_machines_and_what_its_problem_offers() {
+        let (me, c2) = (eid(40), eid(41));
+        let family = BTreeSet::from([me.clone(), c2.clone()]);
+        let mut r = Records {
+            me: me.clone(),
+            contacts: vec![ContactRow {
+                paired_on: Some(me.clone()),
+                ..contact("c", "bob", 1)
+            }],
+            endpoints: vec![anchor("c", 1, 1)],
+            ..Records::default()
+        };
+        let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+        assert_eq!(
+            s.shown["c"],
+            Shown {
+                paired_on: Some(me.clone()),
+                machines: vec![(eid(1), false)]
+            },
+            "pins while nothing is based"
+        );
+        // Version 1 listed 1, 2 and 3; the current version 2 lists 2 and 4.
+        let mut row = local("c", 2, &[eid(2), eid(4)], &[]);
+        let mut history: Vec<Entry> = serde_json::from_str(&row.history).unwrap();
+        let mut v1 = vec![eid(1), eid(2), eid(3)];
+        v1.sort();
+        history.insert(
+            0,
+            Entry {
+                version: 1,
+                hash: rosters::content_hash("chain-c", 1, &v1),
+                members: v1,
+            },
+        );
+        row.history = serde_json::to_string(&history).unwrap();
+        r.local = vec![row];
+        let s = stage_records(&r, &family, tools::Risk::ReadOnly);
+        assert!(s.contacts.contains_key("bob") && s.quarantined.is_empty());
+        let m = &s.shown["c"].machines;
+        let set = |part: &[(String, bool)]| -> BTreeSet<String> {
+            part.iter().map(|(e, _)| e.clone()).collect()
+        };
+        assert!(m.len() == 4 && m[..2].iter().all(|(_, l)| !l) && m[2..].iter().all(|(_, l)| *l));
+        assert_eq!(
+            set(&m[..2]),
+            BTreeSet::from([eid(2), eid(4)]),
+            "current first"
+        );
+        assert_eq!(
+            set(&m[2..]),
+            BTreeSet::from([eid(1), eid(3)]),
+            "then those that left"
+        );
+        let kinds = |r: &Records| -> BTreeMap<String, (String, ProblemKind)> {
+            stage_records(r, &family, tools::Risk::ReadOnly)
+                .quarantined
+                .into_iter()
+                .map(|q| (q.id, (q.problem, q.kind)))
+                .collect()
+        };
+        // Disagreed about: refused, though its binding is kept.
+        r.heads = vec![head("c", &c2, true, now_ms())];
+        assert_eq!(
+            kinds(&r)["c"],
+            (rosters::DISAGREE.to_owned(), ProblemKind::Refused)
+        );
+        // Based on another machine, not here: refused, and it lists its pin.
+        r.local.clear();
+        r.heads = vec![head("c", &c2, false, 0)];
+        assert_eq!(
+            kinds(&r)["c"],
+            (rosters::NOT_VERIFIED.to_owned(), ProblemKind::Refused)
+        );
+        assert_eq!(
+            stage_records(&r, &family, tools::Risk::ReadOnly).shown["c"].machines,
+            vec![(eid(1), false)]
+        );
+        r.heads.clear();
+        // Waiting: a name taken until the rename lands, a pointer into a record not here.
+        // Refused: one of our machines.
+        r.contacts.extend([
+            contact("d", "bob", 2),
+            ContactRow {
+                merged_into: Some("not-here".into()),
+                ..contact("e", "erin", 3)
+            },
+            contact("f", "fay", 4),
+        ]);
+        r.endpoints
+            .extend([anchor("d", 5, 2), anchor("e", 6, 3), anchor("f", 40, 4)]);
+        let k = kinds(&r);
+        assert_eq!(k["d"].1, ProblemKind::Waiting, "{k:?}");
+        assert_eq!(k["e"].1, ProblemKind::Waiting, "{k:?}");
+        assert_eq!(
+            k["f"],
+            ("now one of your machines".to_owned(), ProblemKind::Refused)
+        );
+        assert!(!k.contains_key("c"));
     }
 }

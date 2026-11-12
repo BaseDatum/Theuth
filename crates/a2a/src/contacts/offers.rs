@@ -44,6 +44,8 @@ pub(crate) struct Cached {
     pub offers: Vec<ContactOffer>,
     /// 186 (D10): the last card advertised [`super::EXT_FULL`].
     pub full: bool,
+    /// 191 (D8): the `machine` of the last card that verified (`""` until one did).
+    pub machine: String,
     /// The last refresh, whatever its outcome (the TTL counts from it).
     pub at: Option<Instant>,
     /// The last refresh failure logged (each distinct one once).
@@ -332,7 +334,11 @@ impl Ctx {
                     .and_then(|card| {
                         super::verify_card(&card, eid)?;
                         members = card_members(&card);
-                        Ok((of_card(&card), super::card_full(&card)))
+                        Ok((
+                            of_card(&card),
+                            super::card_full(&card),
+                            super::card_machine(&card).0,
+                        ))
                     }),
                 Ok((s, _)) => Err(format!("card: HTTP {s}")),
                 Err(e) => Err(e),
@@ -354,10 +360,11 @@ impl Ctx {
                 c.refreshes += 1;
             }
             match outcome {
-                Ok((offers, full)) => {
+                Ok((offers, full, machine)) => {
                     c.error = None;
                     let was = std::mem::replace(&mut c.full, full);
-                    (std::mem::replace(&mut c.offers, offers) != c.offers) || was != full
+                    let named = std::mem::replace(&mut c.machine, machine) != c.machine;
+                    (std::mem::replace(&mut c.offers, offers) != c.offers) || was != full || named
                 }
                 Err(e) => {
                     let e = clip(&e);
@@ -449,6 +456,17 @@ impl Ctx {
     /// 186 (D10): the contact pinned to `eid` last served a card that collaborates in full.
     pub(crate) fn full_of(&self, eid: &str) -> bool {
         self.offers.lock().get(eid).is_some_and(|c| c.full)
+    }
+
+    /// 191 (D8): the machine of `eid`'s last verified card, else the first 8 characters of
+    /// `eid` (in memory: after a restart until its card is fetched again).
+    pub(crate) fn machine_name(&self, eid: &str) -> String {
+        self.offers
+            .lock()
+            .get(eid)
+            .map(|c| c.machine.clone())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| eid.get(..8).unwrap_or(eid).to_owned())
     }
 
     /// Hand the agent every live contact's offers, by today's alias.
