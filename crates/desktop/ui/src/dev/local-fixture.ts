@@ -4,8 +4,11 @@
 // Every other call is the engine's; an omlx provider `mlx` (Sky's setup) is added to its providers and models.
 // 191 D8: Network › Contacts answers from `contacts` below (a sound contact with a machine that left, an alert, a
 // refused and a waiting record); `dev/contacts-fixture.html` renders them with no engine.
+// 194: the new effort RPCs (`*_effort` / `set_*_effort`, `set_advisor_default_model`) answered from `efforts` below, so a
+// chip pick round-trips (the setter stores, the getter returns it); `dev/effort-fixture.html` renders every picker.
 
 import type { Api } from '@/rpc/api'
+import type { AdvisorDefaults } from '@/rpc/bindings/AdvisorDefaults'
 import type { LocalServer } from '@/rpc/bindings/LocalServer'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { ProviderInfo } from '@/rpc/bindings/ProviderInfo'
@@ -116,6 +119,11 @@ const later = <T>(v: T, ms: number) => new Promise<T>((resolve) => setTimeout(()
 /** Remove on `mlx` hides it (and its models) until reload. */
 let removed = false
 
+/** 194: the stored efforts by setting, and the advisor defaults once a setter replaced the engine's `Info.advisor`. */
+const efforts: Record<'title' | 'polish' | 'vision' | 'escalate' | 'subagent' | 'theuth', string | null> = { title: null, polish: null, vision: null, escalate: null, subagent: null, theuth: null }
+let advisor: AdvisorDefaults | null = null
+const keep = <K extends keyof typeof efforts>(k: K) => (e: string | null) => Promise.resolve((efforts[k] = e))
+
 const wrapped = new WeakMap<Api, Api>()
 
 /** The engine's `Api` with the 177 methods answered here when the fixture is on; the same object otherwise. One wrapper per `api`. */
@@ -123,6 +131,7 @@ export function localFixture(api: Api): Api {
   if (!flag()) return api
   const hit = wrapped.get(api)
   if (hit) return hit
+  const advisorNow = (): Promise<AdvisorDefaults> => fixture.info().then((i) => i.advisor ?? Promise.reject(new Error('engine sent no advisor defaults')))
   const fixture: Api = {
     ...api,
     list_providers: () => api.list_providers().then((rows) => [...rows.filter((p) => p.name !== 'mlx'), ...(removed ? [] : [mlx])]),
@@ -143,6 +152,21 @@ export function localFixture(api: Api): Api {
     contact_remove: () => Promise.resolve(null),
     contact_first_waiting: () => Promise.resolve([]),
     a2a_exports: () => Promise.resolve(exports),
+    title_effort: () => Promise.resolve(efforts.title),
+    set_title_effort: keep('title'),
+    polish_effort: () => Promise.resolve(efforts.polish),
+    set_polish_effort: keep('polish'),
+    vision_effort: () => Promise.resolve(efforts.vision),
+    set_vision_effort: keep('vision'),
+    escalate_effort: () => Promise.resolve(efforts.escalate),
+    set_escalate_effort: keep('escalate'),
+    subagent_effort: () => Promise.resolve(efforts.subagent),
+    set_subagent_effort: keep('subagent'),
+    theuth_agent_effort: () => Promise.resolve(efforts.theuth),
+    set_theuth_agent_effort: keep('theuth'),
+    info: () => api.info().then((i) => ({ ...i, advisor: advisor ?? i.advisor })),
+    set_advisor_default_model: (model) => advisorNow().then((a) => (advisor = { ...a, model, effort: model ? a.effort : null })),
+    set_advisor_default_effort: (effort) => advisorNow().then((a) => (advisor = { ...a, effort })),
   }
   wrapped.set(api, fixture)
   return fixture
