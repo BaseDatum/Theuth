@@ -46,6 +46,22 @@ pub fn paste_token(i: usize, p: &Paste) -> String {
 
 impl Model {
 
+    /// Hold `r` for the next submit; returns its [`paste_token`]. Attaching
+    /// the same kind+id twice is a no-op that returns the existing token.
+    pub fn attach_ref(&mut self, r: agent::attach::AttachRef) -> String {
+        if let Some((i, p)) = self
+            .pastes
+            .iter()
+            .enumerate()
+            .find(|(_, p)| matches!(p, Paste::Ref(x) if x.kind == r.kind && x.id == r.id))
+        {
+            return paste_token(i, p);
+        }
+        let p = Paste::Ref(r);
+        let token = paste_token(self.pastes.len(), &p);
+        self.pastes.push(p);
+        token
+    }
     /// Take a paste: small ones come back verbatim for the input box; large
     /// ones are held in `pastes` and a [`paste_token`] comes back instead.
     /// Terminals paste newlines as `\r`; normalise to `\n`.

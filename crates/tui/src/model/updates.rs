@@ -62,11 +62,6 @@ impl Model {
                     self.menu = Some(Menu::Sessions { items, cursor });
                 }
             }
-            UiEvent::Search(generation, reply) => self.search_reply(generation, reply),
-            UiEvent::KnowledgeChanged(_) => {
-                self.search_invalidate(SearchCategory::Knowledge);
-                self.search_invalidate(SearchCategory::KnowledgeHistory);
-            }
             UiEvent::Agents(list) => {
                 // Reseeding keeps what events taught about rows still there.
                 let mut old = std::mem::take(&mut self.agents);
@@ -116,7 +111,7 @@ impl Model {
             }
             UiEvent::Refreshed(id, loaded) => {
                 // An inspected page is not the live transcript: no reload stitches over it.
-                if self.session == Some(id) && !self.historical && self.inspect.is_none() {
+                if self.session == Some(id) && !self.historical {
                     self.refresh(loaded);
                 }
             }
@@ -331,7 +326,6 @@ impl Model {
                 }
             }
             UiEvent::ArtifactShown(ev) => {
-                self.search_invalidate(SearchCategory::Artifacts);
                 if self.session == Some(ev.session) {
                     self.attach_artifact(ev.artifact);
                 }

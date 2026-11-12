@@ -13,7 +13,7 @@ macro_rules! core_view {
             parent: $model.session_parent,
             private_root: $model.private.as_ref().map(|p| p.root),
             project: $model.project.as_deref(),
-            inspecting: $model.historical || $model.inspect.is_some(),
+            inspecting: $model.historical,
             streaming: $model.streaming,
             reasoning: matches!($model.entries.last(), Some(Entry::Reasoning { done: false, .. })),
             agent: $agent,
@@ -307,7 +307,7 @@ impl Model {
             }
             Some("Lagged") => {
                 // Never overwrite an inspected historical page or clear the draft.
-                if !self.historical && self.inspect.is_none() { self.refresh_context = self.session.is_some(); }
+                if !self.historical { self.refresh_context = self.session.is_some(); }
                 if let (Some(session), Some(commands)) = (self.session, &self.component_commands) {
                     let _ = commands.send(Command::ListAgents(session));
                 }
@@ -329,7 +329,9 @@ fn component_plain_output_precedes_core_actions_and_errors_keep_global_effects()
     let token = model.components.register(Counter::new("counter")).unwrap();
     let mut bytes = Vec::new();
     model.receive(UiEvent::Wire(topic("test.counter", 1, json!({"type":"Add","value":4}))), &mut |output| {
-        assert_eq!(crate::print_output(&mut bytes, output), (false, false));
+        let completion_output = matches!(&output, Output::Plain(crate::components::Plain::Finished));
+        assert_eq!(crate::print_output(&mut bytes, output), false);
+        assert_eq!(completion_output, false);
     });
     assert_eq!(bytes, b"counter: 0 -> 4\n");
     assert!(matches!(&model.entries[..], [Entry::Info(text)] if text == "counter=4"));
@@ -338,7 +340,7 @@ fn component_plain_output_precedes_core_actions_and_errors_keep_global_effects()
     model.components.get_mut::<crate::components::link::Link>().unwrap().awaiting = true;
     let mut completed = false;
     model.receive(UiEvent::Component(reply(token, 0, Msg::Fail("request failed".into()))), &mut |output| {
-        completed |= crate::print_output(&mut bytes, output).0;
+        completed |= crate::print_output(&mut bytes, output);
     });
     assert!(completed);
     assert!(!model.compacting && !model.components.get::<crate::components::costs::Costs>().unwrap().pending && !model.components.get::<crate::components::link::Link>().unwrap().awaiting);

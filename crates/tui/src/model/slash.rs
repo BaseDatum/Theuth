@@ -74,16 +74,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/take", "", "continue the open session on this node (68)"),
     (
-        "/search",
-        "[query]",
-        "search sessions, artifacts, knowledge and history (live; fzf syntax)",
-    ),
-    (
-        "/attach",
-        "[query]",
-        "attach a note, concept, artifact, chat or meeting to the next message (66)",
-    ),
-    (
         "/resume",
         "[id]",
         "open a session; on a stopped ACP child, restart its harness in the same context (75 §10)",
