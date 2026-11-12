@@ -854,7 +854,8 @@ impl Message<SetSettings> for Meeting {
     ) -> Self::Reply {
         // 194 D4b–d: the summary effort against the summary model (B2), then
         // `meeting.effort` against the model it goes with (C).
-        let mut m = SetSettings(checked_summary_effort(m.0, self.cfg.summary_model.as_deref()).await?);
+        let mut m =
+            SetSettings(checked_summary_effort(m.0, self.cfg.summary_model.as_deref()).await?);
         let info = agent::lifecycle::effort_model(m.0.model.as_deref()).await;
         m.0.effort = agent::lifecycle::settle_effort(
             m.0.model.as_deref(),

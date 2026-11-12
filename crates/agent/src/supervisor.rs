@@ -110,7 +110,6 @@ use crate::{
     UnloadSession, cost::CallKind, polish,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use crate::{SessionEffort, SetSessionCompactorEffort};
 use crate::{
     EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
     GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetAgentCompactorModel,
@@ -123,6 +122,7 @@ use crate::{
     LocalServer, ProbeLocalServers, ProviderModel, ProviderModels, SetModelLimits, SummaryTest,
     TestSummaryCall,
 };
+use crate::{SessionEffort, SetSessionCompactorEffort};
 use crate::{attach, clock, frame, repl, search, spill};
 use tools::{
     CloseTree, CloseTreeAll, OpenTree, ParticipantsReady, Retention, SessionResources, TreeOpened,
