@@ -36,6 +36,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+pub mod rpc_support;
 pub mod client;
 pub mod config;
 pub mod contacts;

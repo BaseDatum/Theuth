@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Documents: the Yjs authority (yrs) behind every BlockNote editor, the store, the derived-markdown export/import loop and the headless helper client (design doc 59)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }

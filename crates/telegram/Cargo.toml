@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Telegram frontend for the daemon over Bot API long polling (design doc 98)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 agent = { workspace = true }

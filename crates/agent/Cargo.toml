@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Model loop (genai), session store (sqlite), skills, subagents"
 
 [dependencies]
+document = { workspace = true }
+codeindex = { workspace = true }
 rpc-core = { workspace = true }
 jsonrpsee = { workspace = true }
 platform = { workspace = true }

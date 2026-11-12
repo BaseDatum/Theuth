@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
+pub mod rpc_support;
 pub mod api;
 pub mod approvals;
 pub mod asks;

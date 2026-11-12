@@ -26,6 +26,9 @@ use std::sync::Arc;
 use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
+pub mod rpc_session_state;
+pub mod rpc_document;
+pub mod rpc_attachments;
 /// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;
 /// Session-owner forwarding and its immutable startup hooks.

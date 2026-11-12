@@ -677,6 +677,7 @@ fn spawn_ticks(rt: Runtime, me: ActorRef<UpdateActor>, cfg: UpdateConfig, curren
     });
 }
 
+pub mod rpc_support;
 #[cfg(test)]
 mod tests {
     use super::*;
