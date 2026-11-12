@@ -39,7 +39,7 @@ impl Model {
         if let Some(event) = residual {
             emit(Output::Event(self, &event));
             let previous_session = self.session;
-            self.reduce(event);
+            self.reduce(event, out.error_claimed);
             if self.session != previous_session {
                 let changed = self.component_lifecycle(Lifecycle::SessionChanged);
                 self.component_finish(changed, emit);
@@ -189,7 +189,7 @@ impl Model {
                         if let Ok(request) = <ApprovalRequested as serde::Deserialize>::deserialize(row) {
                             let event = UiEvent::Approval(request);
                             emit(Output::Event(self, &event));
-                            self.reduce(event);
+                            self.reduce(event, false);
                         }
                     }
                 }
@@ -199,7 +199,7 @@ impl Model {
                         if let Ok(request) = <AskRequested as serde::Deserialize>::deserialize(row) {
                             let event = UiEvent::Ask(request);
                             emit(Output::Event(self, &event));
-                            self.reduce(event);
+                            self.reduce(event, false);
                         }
                     }
                 }
@@ -209,7 +209,7 @@ impl Model {
                         if let Ok(request) = <secrets::SecretsEvent as serde::Deserialize>::deserialize(row) {
                             let event = UiEvent::SecretsEvent(request);
                             emit(Output::Event(self, &event));
-                            self.reduce(event);
+                            self.reduce(event, false);
                         }
                     }
                 }

@@ -3,7 +3,7 @@ use super::*;
 impl Model {
 
     /// Fold one event into the state.
-    pub(super) fn reduce(&mut self, ev: UiEvent) {
+    pub(super) fn reduce(&mut self, ev: UiEvent, error_claimed: bool) {
         match ev {
             UiEvent::Wire(_) | UiEvent::Component(_) => unreachable!("intake is dispatched before reduction"),
             UiEvent::Agent(ev) => self.apply_agent(ev),
@@ -692,6 +692,7 @@ impl Model {
                     *error = Some(e);
                     return;
                 }
+                if error_claimed { return; }
                 // 139 §9.3: the owner-offline line says when `/take` also resumes a turn.
                 let e = match &self.owner_turn {
                     Some(owner) if e.ends_with("— /take") => format!("{e}{}", owner_turn_suffix(owner)),
