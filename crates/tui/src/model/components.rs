@@ -285,6 +285,12 @@ impl Model {
         self.component_finish(out, &mut |_| {});
         true
     }
+    pub(super) fn component_slash_fallback(&mut self, name: &str, args: &str) -> bool {
+        let core = core_view!(self, None);
+        let Some(out) = self.components.slash_fallback(name, args, &core) else { return false };
+        self.component_finish(out, &mut |_| {});
+        true
+    }
     /// Dispatch the existing entry operation with a stable identity, without copying it.
     pub(crate) fn component_entry_action(&mut self, index: usize, operation: crate::components::EntryOperation) -> bool {
         let Some(key) = self.entries.get(index).and_then(Entry::key) else { return false };

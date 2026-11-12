@@ -168,6 +168,7 @@ impl Model {
             // is message text and takes the arm below.
             // A watch-only child takes neither (141 §10.1): the hint instead.
             _ if self.observed.is_some() => self.watch_swallow(),
+            c if c.starts_with('/') && self.component_slash_fallback(c, arg) => {}
             c if c.starts_with('/') && self.skill_word(&c[1..]) => {
                 self.use_skill(c[1..].to_owned(), arg.to_owned(), tx);
             }
