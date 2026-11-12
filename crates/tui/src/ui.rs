@@ -2065,6 +2065,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
                 CardKind::Link | CardKind::Node => LINK,
+                CardKind::Component { color, .. } => *color,
                 CardKind::Artifact => TOOL,
                 CardKind::Removed => PROMPT,
                 CardKind::Vision => JOB,

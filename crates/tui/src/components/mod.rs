@@ -14,11 +14,14 @@ pub mod computer;
 pub mod sandboxes;
 
 // Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
+pub mod tasks;
+pub mod roster;
+pub mod routines;
+pub mod autoresearch;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 
 // Model-picker panels (after design 194): add modules below, in this block only.
-
 pub use registry::{Registry, builtin};
 
 #[cfg(test)]
@@ -142,6 +145,10 @@ pub struct Editor {
 pub struct CoreView<'a> {
     /// Current selected session; None for an unsent draft.
     pub session: Option<SessionId>,
+    /// Selected session parent and active private-tree root, independent of board state.
+    pub parent: Option<SessionId>,
+    /// Root of the active private lease, when present.
+    pub private_root: Option<SessionId>,
     /// Effective project of the selected root.
     pub project: Option<&'a str>,
     /// Historical inspection must not be overwritten by live recovery.
@@ -155,6 +162,17 @@ pub struct CoreView<'a> {
     /// Accepted transcript entries; components retain only their own projection.
     pub entries: &'a [crate::model::Entry],
 }
+impl CoreView<'_> {
+    /// Only the newest card in a named replacement group may keep updating.
+    pub fn card_current(&self, group: &str, key: uuid::Uuid) -> bool {
+        self.entries.iter().rev().find_map(|entry| match entry {
+            crate::model::Entry::Card {
+                kind: crate::model::CardKind::Component { group: old, key, .. }, ..
+            } if *old == group => Some(*key),
+            _ => None,
+        }) == Some(key)
+    }
+}
 
 /// Notifications borrow accepted core data; retain only the owner's projection.
 #[derive(Clone, Copy)]
@@ -165,6 +183,8 @@ pub enum Lifecycle<'a> {
     EngineChanged,
     /// Clear session-scoped state, not persistent global caches.
     SessionReset,
+    /// Core adopted a different selected session; read the updated session context.
+    SessionChanged,
     /// Release local resources and subscriptions.
     Shutdown,
     /// A lossy stream requires an authoritative re-read, never mutation replay.
@@ -240,6 +260,8 @@ pub enum StatusSlot {
 pub enum Surface<'a> {
     /// Header suffix.
     Header,
+    /// Owner presentation beside one session row, independent of feature DTOs.
+    SessionBadge(SessionId),
     /// A fixed position in the status line, independent of registration order.
     Status(StatusSlot),
     /// Transcript content replacement or append.
@@ -296,6 +318,23 @@ pub enum Plain {
     /// Notice that the requested interaction needs a terminal.
     TtyRequired(String),
 }
+/// Owned transcript presentation, with no feature DTO in core.
+pub struct TranscriptCard {
+    /// Newer cards freeze earlier cards in this replacement group.
+    pub group: &'static str,
+    /// Stable identity within the current transcript, never a Vec index.
+    pub key: uuid::Uuid,
+    /// Header marker.
+    pub glyph: &'static str,
+    /// Header color.
+    pub color: iocraft::Color,
+    /// Card title.
+    pub title: String,
+    /// Markdown body.
+    pub body: String,
+    /// Initial disclosure state.
+    pub expanded: bool,
+}
 /// Core-only presentation operations, applied after registry borrows end.
 pub enum CoreAction {
     /// Append a core notice.
@@ -306,6 +345,24 @@ pub enum CoreAction {
     Reject(String),
     /// Existing generic error semantics, including print-mode completion.
     Error(String),
+    /// Invoke the existing named skill path, including draft-session adoption.
+    UseSkill {
+        /// Catalog skill name.
+        name: String,
+        /// User-supplied arguments.
+        args: String,
+    },
+    /// Append an owner-formatted card; this becomes the group's current card.
+    AppendCard(TranscriptCard),
+    /// Replace only the still-current card, leaving superseded cards frozen.
+    ReplaceCard {
+        /// Named replacement group.
+        group: &'static str,
+        /// Stable card identity.
+        key: uuid::Uuid,
+        /// New markdown body.
+        body: String,
+    },
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.

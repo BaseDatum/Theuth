@@ -13,6 +13,9 @@
 
 /// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;
+/// Boards RPC methods and typed client.
+pub mod rpc;
+pub use rpc::{BoardsApiClient, rpc_module};
 pub mod alert;
 pub mod attention;
 pub mod budget;

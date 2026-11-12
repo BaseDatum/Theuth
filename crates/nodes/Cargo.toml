@@ -7,10 +7,14 @@ description = "Paired remote harnesses: control conns, presence, dial transport 
 
 [dependencies]
 runtime = { workspace = true }
+rpc-core = { workspace = true }
 wire = { workspace = true }
 link = { workspace = true }
 platform = { workspace = true }
 acp = { workspace = true }
+mesh = { workspace = true }
+secrets = { workspace = true }
+uuid = { workspace = true }
 agent = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }

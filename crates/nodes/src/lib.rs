@@ -38,6 +38,11 @@ pub mod conn;
 pub mod dialer;
 pub mod store;
 pub mod types;
+/// Actor lookup shared by the network RPC surface.
+pub mod rpc_support;
+/// Network RPC methods and typed client.
+pub mod rpc;
+pub use rpc::{NetworkApiClient, rpc_module};
 
 pub use types::*;
 

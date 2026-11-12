@@ -21,6 +21,9 @@
 
 /// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;
+/// Credentials RPC methods and typed client.
+pub mod rpc;
+pub use rpc::{CredentialsApiClient, rpc_module};
 mod key;
 pub mod requests;
 pub mod store;

@@ -379,7 +379,7 @@ impl Model {
 
 
 /// Running time: `48s`, `1m32s`, `2h05m`.
-pub(super) fn elapsed(d: chrono::Duration) -> String {
+pub(crate) fn elapsed(d: chrono::Duration) -> String {
     let s = d.num_seconds().max(0);
     match (s / 3600, s / 60 % 60, s % 60) {
         (0, 0, s) => format!("{s}s"),

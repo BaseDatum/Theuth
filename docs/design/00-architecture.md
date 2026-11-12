@@ -225,6 +225,16 @@ shared dictation lookup from `talk::rpc_support`; main registers
 `talk::rpc_module`. Generated clients remain available through
 `rpc::api::clients` without adding consumer dependencies on the owners.
 
+The `nodes` crate owns the network wire methods (link, nodes, mesh and vault
+rotation); main registers `nodes::rpc_module` directly. Its node lookup lives
+in `nodes::rpc_support`.
+The `schedule` crate owns routine RPC methods and exports
+`schedule::rpc_module`; its shared actor lookup stays in `schedule::rpc_support`.
+The `secrets` crate owns credentials RPC methods and exports
+`secrets::rpc_module`; vault lookups remain in `secrets::rpc_support`.
+The `roster` crate owns boards RPC methods and exports `roster::rpc_module`.
+Its `rpc_support::tasks_actor` lookup is shared with the remaining RPC hub.
+
 RPC method ownership includes kernels → `cells` (with `kernel_rpc`,
 `kernel_latest` and the guard adapter), MCP → `mcp-server`, sandboxes →
 `sandbox`, screens → `computer`, and codemap → `codeindex`. Each exports
@@ -663,7 +673,7 @@ Domain RPC traits implement their generated server contracts on
 dreaming-backed sidecar landing. Domains not yet extracted remain in `rpc::api`.
 Handlers use actor lookup plus `ask`/`tell`. They are assembled by the explicit
 `rpc_core::ModuleFactory` supplied by `main`: its `rpc_module` function
-merges the 25 domain factories with `rpc_core::merge`. The TUI uses the generated typed clients over
+merges the domain factories with `rpc_core::merge`. The TUI uses the generated typed clients over
 `rpc::client::Local::new(rt, module)` or a remote WebSocket. Local dispatch
 uses jsonrpsee `Methods` in-process: no loopback socket or bearer token.
 The local `rpc::topics::LocalStream` subscribes before initialization and shares
@@ -693,10 +703,15 @@ The computer component owns `/computer`, its permissions RPC, display DTO and
 identical transcript/plain formatting; no computer event or command remains in core.
 The sandboxes component owns inventory and desktop URL replies; desktop passwords
 remain private inside opaque local replies, never transcript or plain output.
+The routines component owns `/schedules` parsing, sequential history/info reads,
+direct controls and unchanged text tables; it adds no schedule event subscription.
+The autoresearch component owns direct study controls and text rendering; goals
+use the existing named-skill submission path. Injected study cards remain core
+transcript content, with no new study event subscription.
 Focused components may expose an `Editor` port (hint, masking, empty-answer policy)
 on the mounted composer. Secret-class answers retain precedence over ask-user input.
-Component-owned modal rows reuse `ui::menu_view` for the existing frame, selection
-window, colors and width clipping; components retain their own row vocabulary.
+Component cards carry a stable UUID and named replacement group. Only the newest
+card in a group accepts body replacements; other groups remain independent.
 Later panel increments delete their residual cases and use typed local messages,
 borrowed owner serde contracts, neutral core actions/lifecycle and plain-output
 ports. Generic errors retain existing cross-panel pending-state effects.
