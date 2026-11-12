@@ -445,7 +445,7 @@ pub use jobs::{JOB_LINES, JobTail};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
 pub(crate) use network::{PairingCard};
 use network::{tick_card};
-pub use network::{NodesArg, parse_nodes_arg, find_node, link_line, sandbox_line, mesh_device_line};
+pub use network::{NodesArg, parse_nodes_arg, find_node, link_line, mesh_device_line};
 pub use paste::{Paste, paste_token};
 use peers::{on_off, short_uuid, peer_card, contact_row};
 pub(crate) use peers::{clean, outside_card};

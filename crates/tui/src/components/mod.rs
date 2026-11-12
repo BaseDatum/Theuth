@@ -9,6 +9,7 @@ use crate::{model::UiEvent, topics::TopicEvent};
 mod registry;
 pub mod update;
 pub mod computer;
+pub mod sandboxes;
 pub use registry::{Registry, builtin};
 
 #[cfg(test)]
