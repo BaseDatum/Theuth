@@ -53,6 +53,11 @@ pub struct ApprovalRequested {
     pub risk: Risk,
 }
 
+impl wire::WireEvent for ApprovalRequested {
+    const TOPIC: &'static str = "tools.approval-requested";
+    const VERSION: u32 = 1;
+}
+
 /// Event: a request was answered (by a human or by timeout). UIs dismiss
 /// their prompt on this.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
@@ -65,6 +70,11 @@ pub struct ApprovalResolved {
     pub decision: Decision,
     /// True when nobody answered in time.
     pub timed_out: bool,
+}
+
+impl wire::WireEvent for ApprovalResolved {
+    const TOPIC: &'static str = "tools.approval-resolved";
+    const VERSION: u32 = 1;
 }
 
 /// `ask` → `bool`: true if the id was pending and is now resolved. A human

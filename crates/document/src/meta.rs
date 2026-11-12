@@ -496,6 +496,11 @@ pub struct DocumentChanged {
     pub deleted: bool,
 }
 
+impl wire::WireEvent for DocumentChanged {
+    const TOPIC: &'static str = "document.changed";
+    const VERSION: u32 = 1;
+}
+
 impl DocumentChanged {
     /// The event for `meta` as it stands.
     pub fn of(meta: &DocMeta, deleted: bool) -> Self {
@@ -518,6 +523,11 @@ impl DocumentChanged {
 pub struct CellLatestChanged {
     /// Document.
     pub doc: DocId,
+}
+
+impl wire::WireEvent for CellLatestChanged {
+    const TOPIC: &'static str = "document.cell-latest";
+    const VERSION: u32 = 1;
 }
 
 /// One kept snapshot (§4.6).

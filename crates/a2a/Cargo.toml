@@ -7,6 +7,7 @@ description = "A2A network boundary: official SDK client/server behind configure
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 agent = { workspace = true }
 secrets = { workspace = true }
 # 183 §14.4: contacts carry `tools::Risk` caps and `mesh::PeerPath`/`PairCeremony`.

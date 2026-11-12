@@ -76,6 +76,7 @@ libc = { workspace = true }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+wire = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }  # 183 §5.6: `tests/new_chat_elsewhere.rs` reads the WARN

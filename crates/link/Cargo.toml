@@ -8,6 +8,7 @@ description = "Relay uplink, Noise pairing and sessions, replicated paired-devic
 [dependencies]
 platform = { workspace = true }
 runtime = { workspace = true }
+wire = { workspace = true }
 replica = { workspace = true }
 secrets = { workspace = true }
 mesh = { workspace = true }

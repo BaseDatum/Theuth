@@ -581,6 +581,62 @@ impl Policy {
     }
 }
 
+/// Declare contracts before any tool producer starts; repeated calls keep job state.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use std::collections::{HashMap, HashSet};
+    use wire::{EventInput, RuntimeWire as _, WireEvent as _};
+
+    rt.register_wire_event::<ApprovalRequested>().await?;
+    rt.register_wire_event::<ApprovalResolved>().await?;
+    rt.register_wire_event::<AskRequested>().await?;
+    rt.register_wire_event::<AskResolved>().await?;
+    rt.register_wire_event::<McpProgress>().await?;
+    rt.register_wire_event::<ReminderEvent>().await?;
+    // Borrow job ids for lookups: only a kernel Started needs to copy its key.
+    let mut cells: HashMap<SessionId, HashSet<JobId>> = HashMap::new();
+    rt.register_wire_event_with::<JobEvent, _>(move |input| {
+        let decoded;
+        let event = match input {
+            EventInput::Typed(event) => event,
+            EventInput::Json(json) => {
+                decoded = JobEvent::deserialize(json)?;
+                &decoded
+            }
+        };
+        let cell = match event {
+            JobEvent::Started {
+                session, id, name, ..
+            } => {
+                let cell = name
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with(jobs::CELL_PREFIX));
+                if cell {
+                    cells.entry(*session).or_default().insert(id.clone());
+                }
+                cell
+            }
+            JobEvent::Output { session, id, .. }
+            | JobEvent::Screen { session, id, .. }
+            | JobEvent::Idle { session, id, .. } => {
+                cells.get(session).is_some_and(|jobs| jobs.contains(id))
+            }
+            JobEvent::Finished { session, id, .. } => {
+                let cell = cells.get_mut(session).is_some_and(|jobs| jobs.remove(id));
+                if cells.get(session).is_some_and(HashSet::is_empty) {
+                    cells.remove(session);
+                }
+                cell
+            }
+        };
+        if cell {
+            Ok(None)
+        } else {
+            event.to_json().map(Some)
+        }
+    })
+    .await
+}
+
 /// The plugin. Starts [`ToolRegistry`] and [`Approval`], registers builtin
 /// tools, then MCP servers from `<data_dir>/mcp` (natives first so they win
 /// name clashes).
@@ -593,6 +649,7 @@ impl runtime::Plugin for ToolsPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         seat::set_data_dir(&rt.data_dir);
         let registry = registry::start(rt).await?;
         let _ = registry

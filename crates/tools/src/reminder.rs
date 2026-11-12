@@ -31,7 +31,7 @@ pub const MIN_SECS: u64 = 5;
 pub const MAX_MESSAGE_CHARS: usize = 2000;
 
 /// Bus events, observation only (the model is woken through the guard).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub enum ReminderEvent {
@@ -68,6 +68,11 @@ pub enum ReminderEvent {
         /// `r<n>`.
         id: String,
     },
+}
+
+impl wire::WireEvent for ReminderEvent {
+    const TOPIC: &'static str = "tools.reminders";
+    const VERSION: u32 = 1;
 }
 
 /// `remind_me_in`'s reply: the tool's `structured` dict.

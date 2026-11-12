@@ -54,6 +54,12 @@ use state::{Ctx, State};
 /// The plugin.
 pub struct LinkPlugin;
 
+/// Declare wire contracts before starting producers, including disabled services.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<LinkEvent>().await
+}
+
 /// Render `text` as a unicode half-block QR code without quiet zone.
 pub fn qr(text: &str) -> String {
     match qrcode::QrCode::new(text) {
@@ -521,6 +527,7 @@ impl runtime::Plugin for LinkPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: LinkConfig = rt.section("link").unwrap_or_else(|e| {
             tracing::debug!("no [link] config section, using defaults: {e}");
             LinkConfig::default()
