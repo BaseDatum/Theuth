@@ -869,9 +869,9 @@ async fn export_bindings() {
         agent::limits::UsageLimits
     );
 
-    use crate::ApiServer;
+    use crate::into_rpc_module;
     let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
-    let module = crate::api::Server::new(rt).into_rpc();
+    let module = into_rpc_module(crate::api::Server::new(rt));
     let mut names: Vec<&str> = module.method_names().collect();
     names.sort_unstable();
     std::fs::write(

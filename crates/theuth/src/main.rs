@@ -2157,7 +2157,7 @@ async fn update_cli(
 /// refuses unless `--stop-cells`. `Ok(false)` = cancelled. No engine, an unreachable one
 /// or one without cells asks nothing.
 async fn cells_before_update(data_dir: &Path, stop_cells: bool) -> anyhow::Result<bool> {
-    use rpc::api::ApiClient;
+    use rpc::api::KernelsApiClient;
     use std::io::IsTerminal;
     let Some(running) = rpc::engine::discover(data_dir) else {
         return Ok(true);
