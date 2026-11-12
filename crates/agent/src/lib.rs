@@ -911,6 +911,22 @@ pub struct SetSubagentModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetSubagentModel;
 
+/// `ask` → `Result<Option<String>, String>` (194 row 3): persist
+/// `agent.subagents.effort` and use it, live, for every native child spawned
+/// without an explicit `effort`. Validated against the effective subagent
+/// model (`agent.subagents.model`, else `agent.model`) with
+/// `Model::validate_effort`'s message. `None` clears it (children inherit
+/// `agent.effort`). The reply is the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSubagentEffort {
+    /// Effort keyword or token budget; `None` clears.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live subagent default effort, if set.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetSubagentEffort;
+
 /// `ask` → `Result<ModelInfo, String>` (148 R4): resolve `model` through the
 /// catalog AND refuse a provider without credentials, exactly as
 /// [`SetSubagentModel`] validates ("provider `x` has no credentials"). No
@@ -921,6 +937,18 @@ pub struct GetSubagentModel;
 pub struct ResolveModel {
     /// `provider/model` or a bare model id.
     pub model: String,
+}
+
+/// `ask` → `Result<(), String>` (194 D4b): `effort` against what `model`
+/// resolves to — `Model::validate_effort`'s message for a catalog model;
+/// for `None` or an id with no catalog entry, only that the word is a known
+/// effort. No side effects: the roster validates `roster.theuth_effort`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ValidateEffort {
+    /// The setting's effective model, if any.
+    pub model: Option<String>,
+    /// Effort keyword or token budget.
+    pub effort: String,
 }
 
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
@@ -1042,6 +1070,13 @@ pub struct SetDeskModel {
     pub session: SessionId,
     /// Configured model id, or `None` to follow the defaults.
     pub model: Option<String>,
+    /// 194: the agent's configured effort (a hired agent's `effort:`,
+    /// `roster.theuth_effort` for theuth). Native children of the desk spawned
+    /// without `effort` start on it before `agent.subagents.effort`; the desk
+    /// row is put on it now. Dropped when the desk's model does not take it.
+    /// `None` after a configured one puts the desk back on `agent.effort`.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// `ask` → `Option<String>`: the model id stored on `session`'s row (148 R1
@@ -2163,7 +2198,13 @@ pub struct AdvisorStatusOf {
 /// `None` leaves its key alone; `effort: Some(None)` clears it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SetAdvisorDefaults {
-    /// `advisor.effort`.
+    /// `advisor.model` (194 row 6): resolved like the manual pick (an unknown or
+    /// un-keyed id is refused); `Some(None)` clears it and `advisor.effort`, and a
+    /// model that does not take the stored `advisor.effort` drops it (194 D4c/d).
+    #[serde(default)]
+    pub model: Option<Option<String>>,
+    /// `advisor.effort`, validated against `advisor.model` (194 D4b; only the word
+    /// when no model is set).
     pub effort: Option<Option<String>>,
     /// `advisor.max_notes_per_update`.
     pub max_notes_per_update: Option<u8>,
@@ -4155,7 +4196,8 @@ impl AdvisorConfig {
 pub struct SubagentsConfig {
     /// Child model; defaults to `agent.model`.
     pub model: Option<String>,
-    /// Child reasoning effort; defaults to `agent.effort`.
+    /// Child reasoning effort; defaults to `agent.effort`. Boot value of the live
+    /// setting [`SetSubagentEffort`] changes (194 row 3).
     pub effort: Option<String>,
     /// Sessions at depth ≥ this cannot spawn.
     pub max_depth: u8,

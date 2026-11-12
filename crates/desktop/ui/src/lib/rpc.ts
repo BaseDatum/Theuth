@@ -94,8 +94,12 @@ export const queryKeys = {
   titleEffort: ['title-effort'] as const,
   /** `subagent_model()`; Settings › Models › Defaults sets it (148 R2: native subagents' default). */
   subagentModel: ['subagent-model'] as const,
+  /** `subagent_effort()` (194 row 3); the Subagents row's chips set it, a subagent model change refetches it. */
+  subagentEffort: ['subagent-effort'] as const,
   /** `theuth_agent_model()` (148 R3); Settings › Models › Defaults and the Agents page's theuth tab set it. */
   theuthAgentModel: ['theuth-agent-model'] as const,
+  /** `theuth_agent_effort()` (194 rows 4–5); the theuth agent pickers' chips set it, a theuth model change refetches it. */
+  theuthAgentEffort: ['theuth-agent-effort'] as const,
   /** `vision_model()` (52 §3.2); slash setters and the General dropdown invalidate this same key. */
   visionModel: ['vision-model'] as const,
   /** `vision_effort()` (194); refetched with `visionModel`. */

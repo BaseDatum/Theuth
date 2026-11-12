@@ -795,6 +795,9 @@ struct Shared {
     role_efforts: Arc<parking_lot::RwLock<side::RoleEfforts>>,
     /// Subagent default model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
+    /// 194 D4h: subagent default effort (`agent.subagents.effort`); named in the system
+    /// prompt. Shared with the supervisor ([`Session::with_subagent_effort`]).
+    subagent_effort: Arc<RwLock<Option<String>>>,
     /// 136 §2.2: the session's money cap from [`SetBudgetNow`] (persisted on
     /// the session row by the supervisor, loaded by [`Session::with_budget`]
     /// on resume — R-22). `Reserved::open` refuses any call of this owner —
@@ -988,6 +991,7 @@ impl Session {
                 polish_model: Arc::default(),
                 role_efforts: Arc::default(),
                 subagent_model,
+                subagent_effort: Arc::default(),
                 budget: Arc::default(),
                 store,
                 client,
@@ -1070,6 +1074,12 @@ impl Session {
         slot: Arc<parking_lot::RwLock<side::RoleEfforts>>,
     ) -> Self {
         self.shared.role_efforts = slot;
+        self
+    }
+
+    /// 194 D4h: the supervisor's shared `agent.subagents.effort` slot.
+    pub(crate) fn with_subagent_effort(mut self, slot: Arc<RwLock<Option<String>>>) -> Self {
+        self.shared.subagent_effort = slot;
         self
     }
 
@@ -4965,6 +4975,12 @@ impl Turn {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(|r| r.id.clone());
+        let subagent_effort = self
+            .shared
+            .subagent_effort
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let advisor = self.shared.kind == SessionKind::Advisor;
         // 125 R1.3: `consult` is a Chat session's tool while a link serves it
         // — its own (the flag) or an ancestor's (asked once per rebase, so a
@@ -5011,6 +5027,7 @@ impl Turn {
                 &blocks,
                 claude_code,
                 subagent_model.as_deref(),
+                subagent_effort.as_deref(),
                 attended,
                 self.shared.advisor.load(Ordering::Relaxed),
                 self.consult.is_some(),
@@ -10151,7 +10168,9 @@ mod tests {
         let data_dir = scratch.0.clone();
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let bare = frame::baseline(&data_dir, None, "", "", false, None, true, false, false);
+        let bare = frame::baseline(
+            &data_dir, None, "", "", false, None, None, true, false, false,
+        );
         assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 
@@ -10168,6 +10187,7 @@ mod tests {
             "## Peers\npeer text",
             "Plugin block.",
             false,
+            None,
             None,
             true,
             false,

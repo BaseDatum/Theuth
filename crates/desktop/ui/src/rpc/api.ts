@@ -1224,6 +1224,8 @@ export interface Api {
   set_advisor(session: SessionId, model: string | null, effort: string | null): Promise<AdvisorStatus>
   /** Persist `advisor.effort` (`null` clears): the remembered pick's effort (125 §6.5). */
   set_advisor_default_effort(effort: string | null): Promise<AdvisorDefaults>
+  /** Persist `advisor.model` (194 row 6), the default `/advisor on` starts on; `null` clears it and `advisor.effort`, and a model that does not take the stored effort drops it. Unknown or un-keyed ids reject. */
+  set_advisor_default_model(model: string | null): Promise<AdvisorDefaults>
   /** Persist `advisor.immune_turns` (0–10; 0 disables the window after a steer). */
   set_advisor_immune_turns(n: number): Promise<AdvisorDefaults>
   /** Persist `advisor.max_consults` (0–32; 0 removes the `consult` tool) (125 R1). */
@@ -1262,8 +1264,12 @@ export interface Api {
   set_schedule_run_timeout(seconds: number): Promise<null>
   /** Persist `agent.subagents.model`: the model native children get when `spawn_subagent` omits `model` (148 R2); `null` = the default model for new sessions. */
   set_subagent_model(model: string | null): Promise<ModelInfo | null>
+  /** Persist `agent.subagents.effort` (194 row 3): the effort native children get when `spawn_subagent` omits `effort`; `null` = the new-sessions effort. Rejects a level the effective subagent model does not take; returns the stored value. */
+  set_subagent_effort(effort: string | null): Promise<string | null>
   /** Persist `roster.theuth_model` (148 R3): the built-in theuth agent's desk and the desk's direct work children; `null` = same as new sessions. Unknown ids reject like `set_subagent_model`. */
   set_theuth_agent_model(model: string | null): Promise<ModelInfo | null>
+  /** Persist `roster.theuth_effort` (194 rows 4–5): theuth's desk and its work; `null` = same as new sessions. Rejects a level theuth's effective model does not take; returns the stored value. */
+  set_theuth_agent_effort(effort: string | null): Promise<string | null>
   set_title_model(model: string | null): Promise<ModelInfo | null>
   /** Persist `agent.title_effort` (194); rejects a level the title model does not take; a model change drops one it does not take. Returns the stored value. */
   set_title_effort(effort: string | null): Promise<string | null>
@@ -1300,6 +1306,8 @@ export interface Api {
   stop_speaking(id: string | null): Promise<null>
   /** The subagent default model, `null` when unset. */
   subagent_model(): Promise<ModelInfo | null>
+  /** The subagent default effort (`agent.subagents.effort`, 194), `null` when unset. */
+  subagent_effort(): Promise<string | null>
   sync_mcp(): Promise<SyncResult[]>
   sync_skills(): Promise<SyncResult[]>
   title_model(): Promise<ModelInfo | null>
@@ -1307,6 +1315,8 @@ export interface Api {
   title_effort(): Promise<string | null>
   /** The theuth agent's model (`roster.theuth_model`, 148 R3), `null` = same as new sessions. */
   theuth_agent_model(): Promise<ModelInfo | null>
+  /** The theuth agent's effort (`roster.theuth_effort`, 194), `null` = same as new sessions. */
+  theuth_agent_effort(): Promise<string | null>
   /** Start a talk on `session` (76 §5.1). Local peers pass `device`/`null`; a relay peer must pass `client` and its mic rate and streams PCM via `talk_audio`. One per daemon: rejects with `already talking`. */
   talk_start(session: SessionId, sink: Sink, sample_rate: number | null): Promise<TalkId>
   /** Stop talk `id`; `TalkFinished` follows. Idempotent. */
@@ -1888,6 +1898,7 @@ export const METHODS = [
   'sessions_status',
   'set_advisor',
   'set_advisor_default_effort',
+  'set_advisor_default_model',
   'set_advisor_immune_turns',
   'set_advisor_max_consults',
   'set_advisor_notes_per_update',
@@ -1929,8 +1940,10 @@ export const METHODS = [
   'set_session_view_bytes',
   'set_shape',
   'set_stream_idle',
+  'set_subagent_effort',
   'set_subagent_model',
   'set_subagent_timeout',
+  'set_theuth_agent_effort',
   'set_theuth_agent_model',
   'set_title_effort',
   'set_title_model',
@@ -1956,6 +1969,7 @@ export const METHODS = [
   'spend_report',
   'steer',
   'stop_speaking',
+  'subagent_effort',
   'subagent_model',
   'sync_mcp',
   'sync_skills',
@@ -1983,6 +1997,7 @@ export const METHODS = [
   'test_schedule',
   'test_schedule_file',
   'test_summary_call',
+  'theuth_agent_effort',
   'theuth_agent_model',
   'title_effort',
   'title_model',

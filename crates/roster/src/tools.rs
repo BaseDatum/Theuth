@@ -424,10 +424,12 @@ mod tests {
     #[test]
     fn hiring_block_reaches_theuth_and_the_desk_manual_points_at_propose() {
         let dir = std::env::temp_dir();
-        let attended =
-            agent::frame::baseline(&dir, None, "", PROMPT, false, None, true, false, false);
-        let unattended =
-            agent::frame::baseline(&dir, None, "", PROMPT, false, None, false, false, false);
+        let attended = agent::frame::baseline(
+            &dir, None, "", PROMPT, false, None, None, true, false, false,
+        );
+        let unattended = agent::frame::baseline(
+            &dir, None, "", PROMPT, false, None, None, false, false, false,
+        );
         for p in [&attended, &unattended] {
             assert!(p.contains("## Hiring\n"), "{p}");
             assert!(

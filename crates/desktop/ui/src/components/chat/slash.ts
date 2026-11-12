@@ -416,6 +416,8 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!arg) return settings(navigate, 'models')
       const m = await api.set_subagent_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.subagentModel, m)
+      // 194 D4c: the engine may have dropped the subagent effort.
+      void active().qc.invalidateQueries({ queryKey: queryKeys.subagentEffort })
       toast(m ? `subagent model: ${m.id}` : 'subagent model: same as new sessions')
       return
     }

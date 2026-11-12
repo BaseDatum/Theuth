@@ -116,6 +116,7 @@ use crate::{
     SetEndlessSettings, SetSessionCompactorModel, SetSessionMemory, SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
+use crate::{GetSubagentEffort, SetSubagentEffort, ValidateEffort};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::{
     LocalServer, ProbeLocalServers, ProviderModel, ProviderModels, SetModelLimits, SummaryTest,
@@ -168,10 +169,17 @@ pub struct Agents {
     /// Live subagent default model (`agent.subagents.model`); `None` = `agent.model`.
     /// Children spawned without `model` use it; the system prompt names it. Shared with every session.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
+    /// 194 row 3: live subagent default effort (`agent.subagents.effort`); `None` =
+    /// `agent.effort`. Children spawned without `effort` use it; the system prompt names
+    /// it. Shared with every session.
+    subagent_effort: Arc<RwLock<Option<String>>>,
     /// 148 E2: desk session → its agent's configured model ([`SetDeskModel`]);
     /// `None` = the agent has none. A native child of a desk starts on it
     /// before `subagent_model` and `default_model`.
     desk_models: HashMap<SessionId, Option<String>>,
+    /// 194: desk session → its agent's configured effort ([`SetDeskModel`]); a native
+    /// child of the desk spawned without `effort` starts on it before `subagent_effort`.
+    desk_efforts: HashMap<SessionId, String>,
     /// Live vision fallback model (52 §3.1); `None` = no fallback. Shared with
     /// every native session once the loop consults it; snapshot, never hold
     /// the lock across an await.
@@ -1011,7 +1019,11 @@ impl Agents {
                 )
             }
             None => {
-                let sub = &self.cfg.subagents;
+                let sub_effort = self
+                    .subagent_effort
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
                 let preferred = self
                     .subagent_model
                     .read()
@@ -1021,9 +1033,11 @@ impl Agents {
                 let desk_model = parent
                     .and_then(|(p, _)| self.desk_models.get(&p))
                     .and_then(|m| m.as_deref());
+                let desk_effort = parent.and_then(|(p, _)| self.desk_efforts.get(&p));
                 let (model, effort) = match parent {
                     // 148 E2: an explicit pick, then the desk agent's model
                     // when the parent is a desk, then the subagent default.
+                    // 194: the effort follows the same chain.
                     Some(_) => (
                         pick.0
                             .or(desk_model)
@@ -1031,7 +1045,8 @@ impl Agents {
                             .unwrap_or(&self.default_model),
                         pick.1
                             .map(str::to_owned)
-                            .or_else(|| sub.effort.clone())
+                            .or_else(|| desk_effort.cloned())
+                            .or(sub_effort)
                             .or_else(|| self.default_effort.clone()),
                     ),
                     None => (
@@ -1138,6 +1153,7 @@ impl Agents {
         .with_budget(budget)
         .with_polish_model(self.polish_model.clone())
         .with_role_efforts(self.role_efforts.clone())
+        .with_subagent_effort(self.subagent_effort.clone())
         .with_endless(self.endless.clone())
         .with_parent_view(parent_view);
         let actor = Session::spawn_with_mailbox(session, runtime::subscriber_mailbox());
@@ -5118,7 +5134,60 @@ impl Message<SetSubagentModel> for Agents {
         {
             tracing::warn!("config.yaml: {e}");
         }
+        // 194 D4c/d: "Same as new sessions" clears the subagent effort too; a
+        // model that does not take it drops it.
+        if let Some(e) = self.subagent_effort()
+            && info
+                .as_ref()
+                .is_none_or(|i| self.check_effort(Some(&i.id), &e).is_err())
+        {
+            self.store_subagent_effort(None);
+        }
         Ok(info)
+    }
+}
+
+impl Message<SetSubagentEffort> for Agents {
+    type Reply = Result<Option<String>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetSubagentEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<String>, String> {
+        // 194 D4b: checked against the effective subagent model.
+        if let Some(e) = &m.effort {
+            let model = self
+                .subagent_model_id()
+                .unwrap_or_else(|| self.default_model.clone());
+            self.check_effort(Some(&model), e)?;
+        }
+        self.store_subagent_effort(m.effort.clone());
+        Ok(m.effort)
+    }
+}
+
+impl Message<GetSubagentEffort> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(
+        &mut self,
+        _: GetSubagentEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<String> {
+        self.subagent_effort()
+    }
+}
+
+impl Message<ValidateEffort> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: ValidateEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        self.check_effort(m.model.as_deref(), &m.effort)
     }
 }
 
@@ -5146,6 +5215,45 @@ impl Agents {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(|r| r.id.clone())
+    }
+
+    /// The live subagent default effort, if set.
+    fn subagent_effort(&self) -> Option<String> {
+        self.subagent_effort
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// 194 row 3: swap the live subagent effort and persist `agent.subagents.effort`
+    /// (quoted so a bare budget stays a string; `~` clears), best-effort like the model.
+    fn store_subagent_effort(&self, effort: Option<String>) {
+        let value = effort
+            .as_deref()
+            .map_or_else(|| "~".to_owned(), |e| format!("\"{e}\""));
+        *self
+            .subagent_effort
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = effort;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) =
+            runtime::write_nested_config_value(&path, "agent", "subagents", "effort", &value)
+        {
+            tracing::warn!("config.yaml: {e}");
+        }
+    }
+
+    /// 194 D4b: `effort` against what `model` resolves to — the catalog model's
+    /// `validate_effort`; with no model or no catalog entry, only a known word.
+    fn check_effort(&self, model: Option<&str>, effort: &str) -> Result<(), String> {
+        let known = model
+            .and_then(|m| self.catalog.resolve(m, &*self.configured).ok())
+            .and_then(|r| r.model);
+        match known {
+            Some(m) => m.validate_effort(effort),
+            None if effort_of(effort).is_none() => Err(format!("unknown effort {effort}")),
+            None => Ok(()),
+        }
     }
 }
 
@@ -7923,6 +8031,7 @@ impl Message<ShowPrompt> for Agents {
             blocks = prompt_blocks(b, toolset.as_ref(), attended);
         }
         let subagent_model = self.subagent_model_id();
+        let subagent_effort = self.subagent_effort();
         let identity = match m.session {
             Some(s) => self.identity_of(s).await,
             None => None,
@@ -7945,6 +8054,7 @@ impl Message<ShowPrompt> for Agents {
             &blocks,
             self.claude_code(&model),
             subagent_model.as_deref(),
+            subagent_effort.as_deref(),
             attended,
             advised,
             // 125 R1.6: the root's `consult` paragraph while the cap allows the tool.
@@ -9189,6 +9299,7 @@ impl Message<MarkDesk> for Agents {
         // 148 R1 F5: a put-away desk is no desk; its model entry goes with it.
         if m.agent.is_none() {
             self.desk_models.remove(&m.session);
+            self.desk_efforts.remove(&m.session);
         }
         self.store_for(m.session)
             .set_desk(m.session, m.agent.as_deref())
@@ -9218,7 +9329,53 @@ impl Message<SetDeskModel> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: SetDeskModel, _: &mut Context<Self, Self::Reply>) {
+        // 194: the desk's effective model decides whether it takes the effort.
+        let model = m
+            .model
+            .clone()
+            .unwrap_or_else(|| self.default_model.clone());
         self.desk_models.insert(m.session, m.model);
+        let effort = m.effort.filter(|e| {
+            self.check_effort(Some(&model), e)
+                .map_err(|err| tracing::warn!(session = %m.session, "desk effort dropped: {err}"))
+                .is_ok()
+        });
+        let had = match &effort {
+            Some(e) => self.desk_efforts.insert(m.session, e.clone()),
+            None => self.desk_efforts.remove(&m.session),
+        };
+        // A desk whose agent never configured an effort keeps its own (`/effort`);
+        // a cleared one goes back to the default for new sessions.
+        if effort.is_none() && had.is_none() {
+            return;
+        }
+        let effort = effort.or_else(|| {
+            self.default_effort
+                .clone()
+                .filter(|e| self.check_effort(Some(&model), e).is_ok())
+        });
+        self.put_desk_effort(m.session, effort).await;
+    }
+}
+
+impl Agents {
+    /// 194: put the desk row on `effort` — live through [`Self::apply_effort`] when
+    /// its actor runs, else on the row its actor will load. No-op when it already is.
+    async fn put_desk_effort(&self, id: SessionId, effort: Option<String>) {
+        let Ok(Some(row)) = self.store_for(id).session(id).await else {
+            return;
+        };
+        if row.effort == effort || row.agent.is_some() {
+            return;
+        }
+        match self.live(id).and_then(|a| a.native().ok()).cloned() {
+            Some(actor) => self.apply_effort(id, &actor, effort).await,
+            None => {
+                if let Err(e) = self.store_for(id).set_effort(id, effort.as_deref()).await {
+                    tracing::warn!(session = %id, "desk effort: {e:#}");
+                }
+            }
+        }
     }
 }
 
@@ -9309,6 +9466,7 @@ impl Message<DeleteSession> for Agents {
             self.caps.remove(id);
             self.remote_parent.remove(id);
             self.desk_models.remove(id);
+            self.desk_efforts.remove(id);
             self.parked.remove(id);
             self.parking.remove(id);
             if let Some(live) = self.sessions.remove(id) {
@@ -11585,7 +11743,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             title_model: Arc::new(RwLock::new(title_model)),
             polish_model: Arc::new(RwLock::new(polish_model)),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
+            subagent_effort: Arc::new(RwLock::new(cfg.subagents.effort.clone())),
             desk_models: HashMap::new(),
+            desk_efforts: HashMap::new(),
             vision_model: Arc::new(RwLock::new(vision_model)),
             escalate_model: Arc::new(RwLock::new(escalate_model)),
             role_efforts: Arc::new(parking_lot::RwLock::new(role_efforts)),
@@ -12693,6 +12853,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         title_model: Arc::default(),
         polish_model: Arc::default(),
         subagent_model: Arc::default(),
+        subagent_effort: Arc::default(),
         vision_model: Arc::default(),
         escalate_model: Arc::default(),
         role_efforts: Arc::default(),
@@ -12707,6 +12868,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         endless,
         sessions: HashMap::new(),
         desk_models: HashMap::new(),
+        desk_efforts: HashMap::new(),
         running: HashSet::new(),
         boot: None,
         last_boot: None,
@@ -14392,6 +14554,283 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// 194: `testvis/think` takes `off|low|high`, `testvis/blind` no effort.
+    fn effort_catalog(dir: &Path) -> Catalog {
+        let model = |id: &str, efforts: bool| {
+            let mut m = serde_json::json!({
+                "id": id, "name": id,
+                "limit": { "context": 100_000, "output": 4_096 }
+            });
+            if efforts {
+                m["reasoning_options"] =
+                    serde_json::json!([{ "type": "effort", "values": ["low", "high"] }]);
+            }
+            m
+        };
+        let user = serde_json::json!({
+            "testvis": {
+                "id": "testvis", "name": "Test",
+                "models": { "think": model("think", true), "blind": model("blind", false) }
+            }
+        });
+        std::fs::write(dir.join("models.json"), user.to_string()).unwrap();
+        Catalog::load(dir)
+    }
+
+    /// `ask` → the effort stored on a new native child of the parent (test-only spawn
+    /// through the live actor, as `spawn_subagent` without `model`/`effort`).
+    #[derive(Clone, Copy, Debug)]
+    struct SpawnKid(SessionId);
+
+    impl Message<SpawnKid> for Agents {
+        type Reply = Option<String>;
+
+        async fn handle(
+            &mut self,
+            m: SpawnKid,
+            _: &mut Context<Self, Self::Reply>,
+        ) -> Option<String> {
+            let kid = SessionId::new();
+            self.session(Some(kid), Some((m.0, "kid")), None, (None, None))
+                .await
+                .unwrap();
+            self.store.session(kid).await.unwrap().unwrap().effort
+        }
+    }
+
+    /// The effort stored on `id`'s row.
+    async fn row_effort_of(store: &Store, id: SessionId) -> Option<String> {
+        store.session(id).await.unwrap().unwrap().effort
+    }
+
+    /// A new root through the live actor.
+    async fn new_root(agents: &ActorRef<Agents>) -> SessionId {
+        agents
+            .ask(CreateSession {
+                options: CreateSessionOptions::default(),
+                peer: None,
+            })
+            .await
+            .unwrap()
+            .session
+    }
+
+    /// 194 row 3: `SetSubagentEffort` is checked against the effective subagent model
+    /// (D4b), persisted to `agent.subagents.effort` (D4g), and live for the next spawn
+    /// and the system prompt (D4e/f/h); a subagent model that does not take it drops it
+    /// (D4c) and "Same as new sessions" clears it (D4d).
+    #[tokio::test]
+    async fn subagent_effort_is_live_validated_and_persisted() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(effort_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        a.default_model = "testvis/think".into();
+        let store = a.store.clone();
+        let yaml = dir.join("config.yaml");
+        let agents = Agents::spawn(a);
+        let set = |e: &str| SetSubagentEffort {
+            effort: Some(e.into()),
+        };
+        let written = || {
+            agent_section(&std::fs::read_to_string(&yaml).unwrap())
+                .subagents
+                .effort
+        };
+        let model = |m: Option<&str>| SetSubagentModel {
+            model: m.map(Into::into),
+        };
+
+        // D4b: no subagent model, so the default for new sessions decides.
+        let err = agents.ask(set("bogus")).await.unwrap_err().to_string();
+        assert_eq!(err, "think accepts off|low|high");
+        assert!(agents.ask(set("max")).await.is_err());
+        assert!(!yaml.exists(), "a refused effort writes nothing");
+        assert_eq!(
+            agents.ask(set("low")).await.unwrap().as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            agents.ask(GetSubagentEffort).await.unwrap().as_deref(),
+            Some("low")
+        );
+        assert_eq!(written().as_deref(), Some("low"));
+
+        // D4e/f: the next spawn without an effort starts on the live value.
+        let root = new_root(&agents).await;
+        assert_eq!(
+            row_effort_of(&store, root).await,
+            None,
+            "a root keeps agent.effort"
+        );
+        assert_eq!(
+            agents.ask(SpawnKid(root)).await.unwrap().as_deref(),
+            Some("low")
+        );
+        agents.ask(set("high")).await.unwrap();
+        assert_eq!(
+            agents.ask(SpawnKid(root)).await.unwrap().as_deref(),
+            Some("high")
+        );
+        // D4h: the system prompt names it.
+        let prompt = agents.ask(ShowPrompt { session: None }).await.unwrap();
+        assert!(
+            prompt.contains("\nSubagent default effort: high ("),
+            "{prompt}"
+        );
+
+        // D4c: a subagent model without efforts drops it, then decides D4b.
+        agents.ask(model(Some("testvis/blind"))).await.unwrap();
+        assert_eq!(agents.ask(GetSubagentEffort).await.unwrap(), None);
+        assert_eq!(written(), None);
+        let err = agents.ask(set("low")).await.unwrap_err().to_string();
+        assert!(err.contains("no reasoning effort"), "{err}");
+
+        // A model that takes it keeps it; D4d: "Same as new sessions" clears it.
+        agents.ask(model(Some("testvis/think"))).await.unwrap();
+        agents.ask(set("high")).await.unwrap();
+        agents.ask(model(Some("testvis/think"))).await.unwrap();
+        assert_eq!(
+            agents.ask(GetSubagentEffort).await.unwrap().as_deref(),
+            Some("high")
+        );
+        let prompt = agents.ask(ShowPrompt { session: None }).await.unwrap();
+        assert!(
+            prompt.contains("\nSubagent default model: testvis/think, effort high ("),
+            "{prompt}"
+        );
+        agents.ask(model(None)).await.unwrap();
+        assert_eq!(agents.ask(GetSubagentEffort).await.unwrap(), None);
+        assert_eq!(written(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 194 rows 4–5: `SetDeskModel`'s effort puts the desk row on it and is the first
+    /// fallback of the desk's native children (before the subagent effort); one the
+    /// desk's model does not take is dropped; clearing it puts the desk back on
+    /// `agent.effort`; a desk whose agent never set one keeps its own `/effort`.
+    #[tokio::test]
+    async fn a_desk_and_its_children_start_on_the_agents_effort() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(effort_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        a.default_model = "testvis/think".into();
+        let store = a.store.clone();
+        let agents = Agents::spawn(a);
+        agents
+            .ask(SetSubagentEffort {
+                effort: Some("low".into()),
+            })
+            .await
+            .unwrap();
+        let desk = new_root(&agents).await;
+        let set = |model: Option<&str>, effort: Option<&str>| SetDeskModel {
+            session: desk,
+            model: model.map(Into::into),
+            effort: effort.map(Into::into),
+        };
+
+        // An agent without an effort leaves the desk's own pick alone.
+        agents
+            .ask(SetEffort {
+                session: Some(desk),
+                effort: Some("low".into()),
+                manual: true,
+            })
+            .await
+            .unwrap();
+        agents.ask(set(None, None)).await.unwrap();
+        assert_eq!(row_effort_of(&store, desk).await.as_deref(), Some("low"));
+
+        // The agent's effort: on the desk now, and its children's before the subagent one.
+        agents.ask(set(None, Some("high"))).await.unwrap();
+        assert_eq!(row_effort_of(&store, desk).await.as_deref(), Some("high"));
+        assert_eq!(
+            agents.ask(SpawnKid(desk)).await.unwrap().as_deref(),
+            Some("high")
+        );
+
+        // Cleared: the desk is back on agent.effort (unset), children on the subagent one.
+        agents.ask(set(None, None)).await.unwrap();
+        assert_eq!(row_effort_of(&store, desk).await, None);
+        assert_eq!(
+            agents.ask(SpawnKid(desk)).await.unwrap().as_deref(),
+            Some("low")
+        );
+
+        // A desk model without efforts drops a configured one (and F6 the children's).
+        agents.ask(set(None, Some("high"))).await.unwrap();
+        agents
+            .ask(set(Some("testvis/blind"), Some("high")))
+            .await
+            .unwrap();
+        assert_eq!(row_effort_of(&store, desk).await, None);
+        assert_eq!(agents.ask(SpawnKid(desk)).await.unwrap(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 194 row 6: `SetAdvisorDefaults.model` resolves and persists `advisor.model`,
+    /// updates the live defaults `Info.advisor` carries, and owns its effort: D4b
+    /// against it (the word alone with no model), D4c drop, D4d clear.
+    #[tokio::test]
+    async fn the_advisor_default_model_is_persisted_live_and_owns_its_effort() {
+        use crate::{GetAdvisorDefaults, SetAdvisorDefaults};
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(effort_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let yaml = dir.join("config.yaml");
+        let agents = Agents::spawn(a);
+        let model = |m: Option<&str>| SetAdvisorDefaults {
+            model: Some(m.map(Into::into)),
+            ..SetAdvisorDefaults::default()
+        };
+        let effort = |e: &str| SetAdvisorDefaults {
+            effort: Some(Some(e.into())),
+            ..SetAdvisorDefaults::default()
+        };
+        let written = |key: &str| {
+            let v: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&yaml).unwrap()).unwrap();
+            v["advisor"][key].clone()
+        };
+
+        // No model: only the word is checked.
+        assert!(agents.ask(effort("bogus")).await.is_err());
+        agents.ask(effort("high")).await.unwrap();
+        // Resolved (a bare id canonicalises), persisted and live; `think` takes `high`.
+        let d = agents.ask(model(Some("think"))).await.unwrap();
+        assert_eq!(
+            (d.model.as_deref(), d.effort.as_deref()),
+            (Some("testvis/think"), Some("high"))
+        );
+        assert_eq!(agents.ask(GetAdvisorDefaults).await.unwrap(), d);
+        assert_eq!(written("model").as_str(), Some("testvis/think"));
+        assert!(
+            agents.ask(model(Some("nope/none"))).await.is_err(),
+            "un-keyed"
+        );
+        // D4b against the model.
+        let err = agents.ask(effort("max")).await.unwrap_err().to_string();
+        assert_eq!(err, "think accepts off|low|high");
+        // D4c: a model without efforts drops it.
+        let d = agents.ask(model(Some("testvis/blind"))).await.unwrap();
+        assert_eq!(
+            (d.model.as_deref(), d.effort),
+            (Some("testvis/blind"), None)
+        );
+        assert!(written("effort").is_null());
+        // D4d: `None` clears both.
+        agents.ask(model(Some("testvis/think"))).await.unwrap();
+        agents.ask(effort("low")).await.unwrap();
+        let d = agents.ask(model(None)).await.unwrap();
+        assert_eq!((d.model, d.effort), (None, None));
+        assert!(written("model").is_null() && written("effort").is_null());
+        assert_eq!(agents.ask(GetAdvisorDefaults).await.unwrap().model, None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// `ask` → the desk sessions with a model entry (test-only inspection).
     #[derive(Clone, Copy, Debug)]
     struct DeskModelKeys;
@@ -14437,6 +14876,7 @@ pub(crate) mod tests {
                     .ask(SetDeskModel {
                         session: s,
                         model: Some("x/y".into()),
+                        effort: None,
                     })
                     .await
                     .unwrap();

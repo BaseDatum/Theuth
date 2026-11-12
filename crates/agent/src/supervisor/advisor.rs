@@ -286,6 +286,30 @@ impl Message<SetAdvisorDefaults> for Agents {
         {
             return Err("max_consults must be 0–32".into());
         }
+        // 194 row 6: validate everything before the first write.
+        let model = match &m.model {
+            Some(Some(id)) => Some(Some(self.resolve_keyed(id)?.id)),
+            Some(None) => Some(None),
+            None => None,
+        };
+        if let Some(Some(e)) = &m.effort {
+            let target = model.as_ref().unwrap_or(&self.advisor_cfg.model);
+            self.check_effort(target.as_deref(), e)?;
+        }
+        if let Some(id) = model {
+            self.write_advisor_key("model", id.as_deref().unwrap_or("~"));
+            // 194 D4c/d: `None` clears the effort; a model that does not take it drops it.
+            let stale = m.effort.is_none()
+                && self.advisor_cfg.effort.as_deref().is_some_and(|e| {
+                    id.as_deref()
+                        .is_none_or(|i| self.check_effort(Some(i), e).is_err())
+                });
+            if stale {
+                self.write_advisor_key("effort", "~");
+                self.advisor_cfg.effort = None;
+            }
+            self.advisor_cfg.model = id;
+        }
         if let Some(effort) = m.effort {
             self.write_advisor_key(
                 "effort",
