@@ -39,8 +39,6 @@ pub enum UiEvent {
     DraftFailed(String),
     /// Reply to [`Command::PathComplete`]: the generation that asked, `None` when the call failed.
     PathComplete(u64, Option<agent::pathac::PathCompletion>),
-    /// Reply to [`Command::SetAdvisor`] / [`Command::AdvisorStatus`] (125 §7.1).
-    AdvisorStatus(AdvisorStatus),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
     /// Reply to [`Command::ShowPrompt`].
@@ -253,19 +251,6 @@ pub enum Command {
         /// Echoed in the reply so a superseded request is inert.
         generation: u64,
     },
-    /// `set_advisor` (125 §7.1): `model: None` turns the advisor off.
-    SetAdvisor {
-        /// The advised session.
-        session: SessionId,
-        /// `provider/model` of the advisor; `None` = off.
-        model: Option<String>,
-        /// Its effort.
-        effort: Option<String>,
-    },
-    /// `advisor_status` (125 §7.3).
-    AdvisorStatus(SessionId),
-    /// `set_advisor_max_consults` (R1.2): the per-turn `consult` cap, 0-32.
-    SetAdvisorMaxConsults(u8),
     /// `resume_child` on the open ACP session (75 §10).
     ResumeChild(SessionId),
     /// `set_approvals`.

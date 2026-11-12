@@ -1,5 +1,4 @@
 use super::*;
-use crate::components::costs::cost_short;
 
 /// Unix ms now.
 pub(crate) fn now_ms() -> u64 {
@@ -49,7 +48,6 @@ impl Model {
             || self.streaming
             || self.compacting
             || self.vision.is_some()
-            || self.advisor.state == AdvisorState::Reviewing
             || self.agents.values().any(AgentRow::live)
             || self.components.wake().is_some()
             || self.components.animating()
@@ -277,7 +275,7 @@ impl Model {
         for slot in HeaderSlot::ALL {
             match slot {
                 HeaderSlot::Costs => {}
-                HeaderSlot::Advisor => text.push_str(&self.advisor_tag()),
+                HeaderSlot::Advisor => {}
                 HeaderSlot::Approvals => text.push_str(self.approvals_tag()),
                 HeaderSlot::Communication => {}
                 HeaderSlot::Link => {}
@@ -289,27 +287,6 @@ impl Model {
         text
     }
 
-    /// `  ·  advisor $0.012` (125 §7.5): the advisor session's spend from the
-    /// last `AdvisorStatus`; empty while off or before it was priced.
-    fn advisor_tag(&self) -> String {
-        match (&self.advisor.state, &self.advisor.cost) {
-            (AdvisorState::Off, _) | (_, None) => String::new(),
-            (_, Some(c)) => format!("  ·  advisor {}", cost_short(c)),
-        }
-    }
-
-    /// The status line's advisor segment (125 §7.5): `  ·  ◎ advisor: idle` /
-    /// `⠋ reviewing…` / `paused` / `halted` with the state that colours it;
-    /// `None` while off.
-    pub fn advisor_segment(&self) -> Option<(String, AdvisorState)> {
-        let state = self.advisor.state;
-        let word = match state {
-            AdvisorState::Off => return None,
-            AdvisorState::Reviewing => format!("{} reviewing…", self.spinner()),
-            s => advisor_state_name(s).to_owned(),
-        };
-        Some((format!("  ·  {ADVISOR_GLYPH} advisor: {word}"), state))
-    }
 
     fn approvals_tag(&self) -> &'static str {
         if !self.approvals_global || self.approvals_off {

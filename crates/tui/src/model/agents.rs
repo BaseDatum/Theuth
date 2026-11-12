@@ -49,33 +49,8 @@ impl Model {
         };
         // Roster bookkeeping for the subtree, independent of what is shown.
         match &ev {
-            // 125 §7.5: the advisor is session chrome (status segment, header
-            // tag), never a transcript row — it must not finish a streaming
-            // tail below. `set_advisor_status` prints the one change line.
-            AgentEvent::AdvisorChanged { session, status } => {
-                if self.session == Some(*session) {
-                    self.set_advisor_status(status.clone());
-                }
-                return;
-            }
-            // 125 §7.4: the card goes above a streaming tail; a steer's row
-            // may also open a turn, whose `TurnStarted` must not echo it.
-            AgentEvent::AdvisoryAdded {
-                session,
-                seq,
-                advisory,
-            } => {
-                if self.session == Some(*session) && self.advisory_seqs.insert(*seq) {
-                    self.interject(Entry::Advisory {
-                        advisory: advisory.clone(),
-                        expanded: false,
-                    });
-                }
-                return;
-            }
-            // 125 §7.5: the hidden advisor child never reaches the board (the
-            // event carries no `kind`; the link's id is the guard).
-            AgentEvent::SubagentSpawned { child, .. } if self.components.session_hidden(*child) || self.advisor.advisor == Some(*child) => {
+            // Owner-linked sessions stay out of ordinary child admission.
+            AgentEvent::SubagentSpawned { child, .. } if self.components.session_hidden(*child) => {
                 return;
             }
             AgentEvent::SubagentSpawned {
@@ -339,12 +314,25 @@ impl Model {
         if ev.session().is_none_or(|s| self.session != Some(s)) || self.historical {
             return;
         }
-        if !matches!(ev, AgentEvent::ReasoningDelta { .. })
+        // Only accepted transcript progress closes a streamed tail; owner chrome and
+        // future unhandled events cannot truncate it.
+        let progress = matches!(ev,
+            AgentEvent::TurnStarted { .. } | AgentEvent::InputInjected { .. }
+            | AgentEvent::TextDelta { .. } | AgentEvent::ReasoningDelta { .. } | AgentEvent::ReasoningDone { .. }
+            | AgentEvent::ToolCallPending { .. } | AgentEvent::ToolCallProgress { .. }
+            | AgentEvent::ToolCallStarted { .. } | AgentEvent::ToolCallFinished { .. }
+            | AgentEvent::TurnFinished { .. } | AgentEvent::ContextUsed { .. }
+            | AgentEvent::ModelChanged { .. } | AgentEvent::HarnessModelChanged { .. }
+            | AgentEvent::HarnessCommandsChanged { .. } | AgentEvent::EffortChanged { .. }
+            | AgentEvent::Compacting { .. } | AgentEvent::Compacted { .. } | AgentEvent::Error { .. }
+            | AgentEvent::VisionProgress { .. } | AgentEvent::ResumePending { .. }
+            | AgentEvent::TurnResumed { .. } | AgentEvent::ResumeReport { .. } | AgentEvent::TurnSuspended { .. });
+        if progress && !matches!(ev, AgentEvent::ReasoningDelta { .. })
             && let Some(Entry::Reasoning { done, .. }) = self.entries.last_mut()
         {
             *done = true;
         }
-        if !matches!(ev, AgentEvent::TextDelta { .. })
+        if progress && !matches!(ev, AgentEvent::TextDelta { .. })
             && let Some(Entry::Assistant(t)) = self.entries.last_mut()
         {
             t.finish();
@@ -363,9 +351,8 @@ impl Model {
             } => {
                 self.model_id = model;
                 self.turn_seq = Some(turn_seq);
-                // 125 §7.4: a steer's row is already its card (by seq, or by
-                // the `<advisory>` wrapper when the card has not landed yet).
-                if self.components.turn_hidden(turn_seq) || self.advisory_seqs.contains(&turn_seq)
+                // An owner may already have presented the input, by sequence or wrapper.
+                if self.components.turn_hidden(turn_seq)
                     || injected(&text, |row| self.components.wrapper(row)).is_some()
                     || matches!(self.components.wrapper(crate::components::Wrapper {
                         tag: "user", open: "", body: &text, sender: None, origin: None, live: true,
@@ -611,11 +598,8 @@ impl Model {
                     "taken from {chip} while a turn was running — not resumed"
                 ));
             }
-            // 125: handled before the streaming-tail bookkeeping above.
             // 145 §0.3: parked harness inputs are the talk's business; no transcript row.
-            AgentEvent::AdvisorChanged { .. }
-            | AgentEvent::AdvisoryAdded { .. }
-            | AgentEvent::InputsParked { .. } => {}
+            AgentEvent::InputsParked { .. } => {}
             // 109 §10.3 / 139 §9.3: the divider and the status-line note, with
             // the previous owner after a transfer / takeover.
             AgentEvent::TurnResumed {

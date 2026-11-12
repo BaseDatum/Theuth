@@ -1,7 +1,7 @@
 //! Pure UI state: bus events in, commands out. Shared by the fullscreen
 //! renderer and the non-TTY line printer; no I/O here.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -11,7 +11,6 @@ use acp::EntryInfo;
 use acp::registry::RegistryAgent;
 use agent::durability::{ResumeCause, ResumeKind};
 use agent::{
-    AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
     AgentEvent, AgentInfo, AgentState,
     CompactStyle, ContextAttachment, ContextEntry, ContextRemoval,
     ContextTarget, HistoryEntry, Loaded, ObservedMeta, ObservedSource,
@@ -220,19 +219,6 @@ pub struct Model {
     /// session and its subtree from the new one (63 §2.3).
     pub reselect: bool,
 
-    /// The shown session's advisor (125 §7.5): the status segment, the
-    /// header tag, the picker's `●`. `state: Off` until a reply or event says otherwise.
-    pub advisor: AdvisorStatus,
-    /// `Info.advisor` (125 §6.5): the last remembered pick, served by `/advisor on`;
-    /// follows every `AdvisorChanged` with a model.
-    pub advisor_default: AdvisorDefaults,
-    /// What the next `UiEvent::AdvisorStatus` reply is for; `None` installs it silently.
-    advisor_reply: Option<AdvisorReply>,
-    /// Seqs of the Advisory rows `AdvisoryAdded` carded: a `TurnStarted`
-    /// opened by one is not echoed as `◆ you`.
-    advisory_seqs: BTreeSet<i64>,
-    /// A transcript was loaded: the event loop re-asks `advisor_status`.
-    pub refresh_advisor: bool,
     /// Effective project of the shown session's root (`Loaded.project`).
     pub project: Option<String>,
     /// A `/sessions` menu is open and session metadata
@@ -251,7 +237,6 @@ pub struct Model {
     esc_taps: Vec<std::time::Instant>,
 }
 
-mod advisor;
 mod agents;
 mod approvals;
 mod boards;
@@ -274,8 +259,6 @@ mod submission;
 mod transcript;
 mod updates;
 
-pub use advisor::{ADVISORY_COLLAPSED, ADVISOR_GLYPH, severity_name, advisory_severity, advisory_title, advisory_rows, advisory_row_count, advisory_lines, advisor_changed_line, advisor_state_name, advisor_status_lines};
-pub(crate) use advisor::{AdvisorReply};
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
 pub use approvals::Ask;

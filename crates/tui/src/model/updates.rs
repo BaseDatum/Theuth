@@ -141,20 +141,6 @@ impl Model {
                 }
             }
             UiEvent::PathComplete(generation, reply) => self.path.reply(generation, reply),
-            // The reply of `/advisor …` or a load's refresh (125 §7.1): installed
-            // silently; `status` prints its lines.
-            UiEvent::AdvisorStatus(status) => {
-                if status.session != self.session.unwrap_or(status.session) {
-                    return;
-                }
-                let why = self.advisor_reply.take();
-                self.set_advisor_status(status);
-                if why == Some(AdvisorReply::Status) {
-                    for line in advisor_status_lines(&self.advisor) {
-                        self.entries.push(Entry::Info(line));
-                    }
-                }
-            }
             UiEvent::Acp(list) => match &mut self.menu {
                 Some(Menu::Acp { entries, .. }) => *entries = list,
                 _ if self.awaiting_acp => {

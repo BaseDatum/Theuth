@@ -31,7 +31,6 @@ impl Model {
             components: std::mem::replace(&mut self.components, crate::components::Registry::empty()),
             component_commands: self.component_commands.take(),
 
-            advisor_default: std::mem::take(&mut self.advisor_default),
             private: self.private.take(),
             private_warned: self.private_warned,
             attached: self.attached.take(),
@@ -118,8 +117,6 @@ impl Model {
             .resume
             .filter(|r| !r.here)
             .map(|r| r.owner.unwrap_or_default());
-        // The link survives a restart (125 §3): re-read it with the transcript.
-        self.refresh_advisor = true;
         if let Some(n) = loaded.context_estimate {
             self.context = n;
             self.context_estimated = true;

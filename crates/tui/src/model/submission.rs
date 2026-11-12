@@ -87,7 +87,6 @@ impl Model {
                 self.entries.push(Entry::Info("new session".into()));
             }
             "/approvals" => self.approvals_cmd(arg, tx),
-            "/advisor" => self.advisor_cmd(arg, tx),
 
             "/acp" if arg.is_empty() => {
                 self.awaiting_acp = true;
