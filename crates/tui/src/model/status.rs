@@ -205,8 +205,13 @@ impl Model {
         let watch = self
             .watch_hint()
             .map_or_else(String::new, |h| format!("  ·  {h}"));
+        use crate::components::{StatusSlot, Surface};
+        let work = self.component_text(Surface::Status(StatusSlot::Work));
+        let catalog = self.component_text(Surface::Status(StatusSlot::Catalog));
+        let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
+        let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{talk}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{queued}{jobs}{work}{skills}{catalog}{editing}{scrolled}{todos}{pinned}{talk}{spoken}{attached}{resumed}"
         )
     }
 

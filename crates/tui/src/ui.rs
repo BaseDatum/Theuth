@@ -932,7 +932,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             #(path_box(&m, width))
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 View() {
-                    Text(content: format!("{}{}", m.status(), m.component_text(Surface::Status)), color: SAND)
+                    Text(content: m.status(), color: SAND)
                     #(m.advisor_segment().map(|(text, state)| element!(Text(content: text, color: advisor_color(state)))))
                 }
                 Text(content: m.mcp_status(), color: SAND)
