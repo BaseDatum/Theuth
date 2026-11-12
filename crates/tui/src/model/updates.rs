@@ -536,14 +536,6 @@ impl Model {
                     self.attach_artifact(ev.artifact);
                 }
             }
-            UiEvent::ScrapeProgress(ev) if self.session == Some(ev.session) => {
-                if let Some(Entry::Tool { name, scrape, .. }) = self.entries.iter_mut().rev().find(
-                    |e| matches!(e, Entry::Tool { call_id, result: None, .. } if *call_id == ev.call_id),
-                ) {
-                    *scrape = Some(scrape_line(name, &ev));
-                }
-            }
-            UiEvent::ScrapeProgress(_) => {}
             UiEvent::Artifacts {
                 items,
                 pick,

@@ -2,11 +2,18 @@
 use rpc::api::clients::BoardsApiClient;
 use super::*;
 
+/// Project-scoped task listing.
 #[derive(Default)]
 pub struct Tasks;
+/// Typed task owner request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Request { List(Option<String>) }
+pub enum Request {
+    /// List the selected root project, including ungrouped.
+    List(Option<String>),
+}
+/// Completion of a task owner request.
 pub enum Msg {
+    /// Project and its returned rows or owner error.
     Loaded(Option<String>, Result<Vec<::tasks::Task>, String>),
 }
 impl Component for Tasks {

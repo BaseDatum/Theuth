@@ -468,7 +468,6 @@ impl Model {
                     expanded: None,
                     job: None,
                     artifact: None,
-                    scrape: None,
                 };
                 match self
                     .entries
@@ -488,9 +487,8 @@ impl Model {
                 match self.entries.iter_mut().rev().find(
                     |e| matches!(e, Entry::Tool { call_id: c, result: None, .. } if *c == call_id),
                 ) {
-                    Some(Entry::Tool { result, scrape, .. }) => {
+                    Some(Entry::Tool { result, .. }) => {
                         *result = Some((output, is_error));
-                        *scrape = None;
                     }
                     _ => self.entries.push(Entry::Info(format!(
                         "{} {}",

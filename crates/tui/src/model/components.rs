@@ -151,6 +151,12 @@ impl Model {
         self.component_finish(out, &mut |_| {});
         true
     }
+    /// One owner summary at the raw transcript entry's existing row.
+    pub(crate) fn entry_summary(&self, entry: &Entry) -> Option<String> {
+        let key = match entry { Entry::Tool { call_id, .. } | Entry::Pending { call_id, .. } => call_id, _ => return None };
+        let text = self.component_text(Surface::EntrySummary { key });
+        (!text.is_empty()).then_some(text)
+    }
     pub(crate) fn component_views(&self, surface: Surface<'_>, width: usize, height: usize) -> Vec<View> {
         let cx = ViewCx {
             core: CoreView { interactive: self.components.interactive(), session: self.session, parent: self.session_parent, private_root: self.private.as_ref().map(|p| p.root), project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries },
