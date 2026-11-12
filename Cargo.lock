@@ -17629,13 +17629,32 @@ dependencies = [
  "jsonrpsee",
  "kameo",
  "parking_lot",
+ "percent-encoding",
  "rand 0.10.3",
  "runtime",
+ "schemars 1.2.3",
  "serde_json",
  "tokio",
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",
  "wire",
+]
+
+[[package]]
+name = "rpc-core-macros"
+version = "2.19.5"
+dependencies = [
+ "heck 0.5.0",
+ "jsonrpsee",
+ "proc-macro2",
+ "quote",
+ "rpc-core",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
+ "tokio",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
