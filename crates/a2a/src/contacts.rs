@@ -2332,7 +2332,10 @@ impl crate::Ctx {
     /// only that export's standing default (§9.4): `ask`, `allow`, `block`, each stored, so an
     /// owner's explicit Ask first survives taking the share back and giving it again (F2,
     /// review 1; an absent entry also reads Ask first, and a new grant writes Always allow).
-    /// 191: the answer is a record write, seen by every machine.
+    /// 191: the answer is a record write, seen by every machine. 191 (D4): a hold on another
+    /// machine of the mesh is released only by its owner, on a grant change: Always and Block
+    /// are such writes (the owner's reconcile releases or fails it); Allow once writes
+    /// nothing, so it is refused here.
     async fn first_answer(&self, m: ContactFirstAnswer) -> Result<(), String> {
         let ContactFirstAnswer {
             contact,
@@ -2349,7 +2352,28 @@ impl crate::Ctx {
             Err(_) => false,
         };
         if !waiting {
-            return self.write_answer(&contact, &export, answer).await;
+            let elsewhere = self
+                .first_waiting()
+                .await
+                .iter()
+                .any(|w| w.contact == contact && w.export == export);
+            match answer {
+                FirstContact::Ask if elsewhere => {
+                    return Err(format!(
+                        "the message from {contact} waits on the machine that holds the chat: \
+                         answer Allow once there, or Always here"
+                    ));
+                }
+                FirstContact::Block if elsewhere => {
+                    return self
+                        .remove_contact(ContactRemove {
+                            name: contact,
+                            block: true,
+                        })
+                        .await;
+                }
+                _ => return self.write_answer(&contact, &export, answer).await,
+            }
         }
         match answer {
             FirstContact::Ask => {}
@@ -2467,6 +2491,82 @@ impl crate::Ctx {
             }
         }
     }
+
+    /// 191 (D2 step 5, D4): release the holds whose answer is now a grant, wherever it was
+    /// written. Only this machine's own holds (the agent's memory: it holds the tasks), and
+    /// only on their grant: `first_contact: allow` on an export still granted starts them
+    /// (`start_held` checks the owner first), `block` fails them. Anything else waits.
+    pub(crate) async fn release_answered(&self, agents: &kameo::actor::ActorRef<agent::Agents>) {
+        let held = match agents
+            .ask(agent::communication::network::ContactsHeld)
+            .await
+        {
+            Ok(held) => held,
+            Err(e) => {
+                tracing::warn!("a2a: first-contact holds: {e}");
+                return;
+            }
+        };
+        let live = self.shared.read().clone();
+        for h in held {
+            let Some(f) = live.staged.contacts.get(&h.contact).filter(|f| !f.blocked) else {
+                continue;
+            };
+            let granted = live
+                .staged
+                .peers
+                .get(&h.contact)
+                .is_some_and(|p| p.exports.contains(&h.export));
+            let allow = match f.first_contact.get(&h.export) {
+                Some(FirstContact::Allow) if granted => true,
+                Some(FirstContact::Block) => false,
+                _ => continue,
+            };
+            tracing::info!(contact = %h.contact, export = %h.export, allow, "191: a held first message's answer arrived as a grant");
+            if let Err(e) = self
+                .ask(
+                    agents,
+                    agent::communication::network::ContactRelease {
+                        contact: h.contact.clone(),
+                        export: Some(h.export.clone()),
+                        allow,
+                    },
+                )
+                .await
+            {
+                tracing::warn!(contact = %h.contact, "a2a: release held tasks: {e}");
+            }
+        }
+    }
+
+    /// 191 (D4): `contact_holds` changed (a row of any machine arrived, changed or went; the
+    /// record replica publishes nothing for it here): every surface refetches (`A2aChanged`)
+    /// and Attention derives again. Returns whether it changed.
+    pub(crate) async fn holds_tick(&self) -> bool {
+        use std::hash::{Hash, Hasher};
+        let Ok(agents) = self.agents() else {
+            return false;
+        };
+        let rows = match self
+            .ask(&agents, agent::communication::network::ContactHolds)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::debug!("a2a: contact_holds: {e}");
+                return false;
+            }
+        };
+        let mut h = std::hash::DefaultHasher::new();
+        rows.hash(&mut h);
+        let hash = h.finish();
+        if std::mem::replace(&mut self.state.lock().holds_hash, Some(hash)) == Some(hash) {
+            return false;
+        }
+        nudge_attention();
+        self.rt.publish(crate::A2aChanged {}).await;
+        true
+    }
 }
 
 /// 183 W-27: a first-contact hold began or ended: the inbox derives again now (its alert
@@ -2485,19 +2585,38 @@ impl crate::Ctx {
     /// 183 W-27, F3: the (contact, export) pairs whose first message waits for the owner,
     /// from the agent's holds and the contacts' facts. The one source of the Attention item,
     /// `contact_first_waiting`, the Communication window, the Contacts row and the strip.
-    /// 190: holds only (no queued rows).
+    /// 190: holds only (no queued rows). 191 (D4): every machine's: this machine's own holds
+    /// from the agent, then the other machines' `contact_holds` rows, cleaned and cut
+    /// ([`held_row`]). A row of this machine's own hold is the hold itself (same task id).
     pub(crate) async fn first_waiting(&self) -> Vec<FirstWaiting> {
         let Ok(agents) = self.agents() else {
             return Vec::new();
         };
-        let Ok(held) = agents
+        let held = match agents
             .ask(agent::communication::network::ContactsHeld)
             .await
-        else {
-            return Vec::new();
+        {
+            Ok(held) => held,
+            Err(e) => {
+                tracing::warn!("a2a: first-contact holds: {e}");
+                Vec::new()
+            }
+        };
+        let rows = match self
+            .ask(&agents, agent::communication::network::ContactHolds)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("a2a: contact_holds: {e}");
+                Vec::new()
+            }
         };
         let live = self.shared.read().clone();
-        held.into_iter()
+        let mine: std::collections::BTreeSet<String> =
+            held.iter().map(|h| h.task.clone()).collect();
+        let mut out: Vec<FirstWaiting> = held
+            .into_iter()
             .map(|h| FirstWaiting {
                 machine: live
                     .staged
@@ -2510,12 +2629,76 @@ impl crate::Ctx {
                 session: h.session,
                 since_ms: h.since_ms,
                 waiting: h.waiting as u32,
-                preview: h.preview,
+                preview: clean_preview(&h.preview),
                 queued: false,
                 position: 0,
             })
-            .collect()
+            .collect();
+        let now = mesh::identity::now_ms() as i64;
+        out.extend(
+            rows.into_iter()
+                .filter(|r| !mine.contains(&r.id))
+                .filter_map(|r| {
+                    held_row(r, now, |c, e| {
+                        live.staged.contacts.get(c).is_some_and(|f| !f.blocked)
+                            && live.staged.export_ids.contains_key(e)
+                    })
+                }),
+        );
+        out.sort_by(|a, b| {
+            (&a.contact, &a.export, a.since_ms).cmp(&(&b.contact, &b.export, b.since_ms))
+        });
+        out
     }
+}
+
+/// 191 (D4): a hold row's cut (as the agent's `preview_of`): control characters dropped,
+/// at most 200 bytes, on a character boundary.
+fn clean_preview(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars().filter(|c| !c.is_control()) {
+        if out.len() + c.len_utf8() > 200 {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// 191 (D4): another machine's `contact_holds` row is data. Cleaned and cut on read: control
+/// characters dropped, `machine` to 64 characters (as `held_line`), `preview` to 200 bytes.
+/// Dropped when past its `until_ms` (an offline owner's row lives until then), when a field
+/// is missing or malformed, or unless `admits(contact, export)`: a contact this machine
+/// admits (not blocked, quarantined or unknown) and an export it knows.
+fn held_row(
+    r: agent::store::contacts::HoldRow,
+    now_ms: i64,
+    admits: impl Fn(&str, &str) -> bool,
+) -> Option<FirstWaiting> {
+    if r.until_ms? <= now_ms {
+        return None;
+    }
+    let (contact, export) = (r.contact?, r.export?);
+    if !admits(&contact, &export) {
+        return None;
+    }
+    Some(FirstWaiting {
+        contact,
+        machine: r
+            .machine
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(64)
+            .collect(),
+        export,
+        session: r.session?.parse().ok()?,
+        since_ms: u64::try_from(r.since_ms?).ok()?,
+        waiting: u32::try_from(r.waiting?).ok().filter(|n| *n > 0)?,
+        preview: clean_preview(r.preview.as_deref().unwrap_or_default()),
+        queued: false,
+        position: 0,
+    })
 }
 
 /// `ask` → `Vec<FirstWaiting>`: `contact_first_waiting`.
@@ -2762,5 +2945,61 @@ mod tests {
                 .unwrap_err()
                 .contains("does not verify")
         );
+    }
+
+    /// 191 (D4): another machine's hold row is cleaned and cut on read (no control
+    /// characters; `machine` to 64 characters, `preview` to 200 bytes on a character
+    /// boundary); a row past `until_ms` goes, an offline owner's row before it stays, and a
+    /// row for a contact or export this machine does not admit, or with a malformed field,
+    /// is dropped.
+    #[test]
+    fn another_machines_hold_rows_are_cleaned_cut_and_kept_until_their_end() {
+        let session = SessionId::new();
+        let row = agent::store::contacts::HoldRow {
+            id: "task-1".into(),
+            contact: Some("bob".into()),
+            machine: Some(format!("33\n3\u{1b}[31m{}", "x".repeat(4096))),
+            export: Some("research".into()),
+            session: Some(session.to_string()),
+            owner: Some("n2-engine".into()),
+            since_ms: Some(1_000),
+            waiting: Some(2),
+            preview: Some(format!("a\u{7}b{}", "é".repeat(300))),
+            until_ms: Some(5_000),
+        };
+        let admits = |c: &str, e: &str| c == "bob" && e == "research";
+        let w = held_row(row.clone(), 4_999, admits).expect("before its end");
+        assert!(!w.machine.chars().any(char::is_control), "{:?}", w.machine);
+        assert_eq!(w.machine.chars().count(), 64);
+        assert!(w.machine.starts_with("333[31mxxx"), "{}", w.machine);
+        assert!(!w.preview.chars().any(char::is_control));
+        assert!(w.preview.len() <= 200 && w.preview.starts_with("abé"));
+        assert_eq!(w.preview.len(), 2 + 99 * 2, "cut on a character boundary");
+        assert_eq!((w.session, w.since_ms, w.waiting), (session, 1_000, 2));
+        assert_eq!((w.queued, w.position), (false, 0));
+
+        assert!(
+            held_row(row.clone(), 5_000, admits).is_none(),
+            "past until_ms"
+        );
+        let no_end = agent::store::contacts::HoldRow {
+            until_ms: None,
+            ..row.clone()
+        };
+        assert!(held_row(no_end, 0, admits).is_none(), "no end: dropped");
+        assert!(
+            held_row(row.clone(), 0, |_, _| false).is_none(),
+            "a contact or export not admitted here"
+        );
+        let bad = agent::store::contacts::HoldRow {
+            session: Some("not a session".into()),
+            ..row.clone()
+        };
+        assert!(held_row(bad, 0, admits).is_none());
+        let none_waiting = agent::store::contacts::HoldRow {
+            waiting: Some(0),
+            ..row
+        };
+        assert!(held_row(none_waiting, 0, admits).is_none());
     }
 }
