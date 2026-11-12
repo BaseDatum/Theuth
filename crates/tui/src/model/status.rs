@@ -285,7 +285,7 @@ impl Model {
                         self.communication_tag(),
                         self.link_tag(),
                         self.nodes_tag(),
-                        self.update_tag()
+                        self.component_text(crate::components::Surface::Header)
                     ),
                     level,
                 )
@@ -299,7 +299,7 @@ impl Model {
                     self.communication_tag(),
                     self.link_tag(),
                     self.nodes_tag(),
-                    self.update_tag()
+                    self.component_text(crate::components::Surface::Header)
                 ),
                 Level::Normal,
             ),
@@ -370,48 +370,8 @@ impl Model {
         }
     }
 
-    /// `  ·  0.2.0 ready` once a newer binary is installed, `  ·  0.2.0
-    /// available` when only staged; empty otherwise (39 §4.1).
-    fn update_tag(&self) -> String {
-        match &self.update {
-            Some(u) if u.applied => format!("  ·  {} ready", u.version),
-            Some(u) => format!("  ·  {} available", u.version),
-            None => String::new(),
-        }
-    }
 }
 
-/// The `/computer` reply: permission ticks and the attached displays on one
-/// line, then the status note on a second line when there is one.
-pub fn computer_line(s: &computer::PermissionStatus) -> String {
-    let tick = |ok: bool| if ok { "✓" } else { "✗" };
-    let displays: Vec<String> = s
-        .displays
-        .iter()
-        .map(|d| {
-            format!(
-                "{}{} {}×{} @{}×",
-                d.index,
-                if d.main { " main" } else { "" },
-                d.width,
-                d.height,
-                d.scale
-            )
-        })
-        .collect();
-    let mut line = format!(
-        "accessibility {} · screen recording {} · {} displays: {}",
-        tick(s.accessibility),
-        tick(s.screen_recording),
-        s.displays.len(),
-        displays.join(", ")
-    );
-    if !s.note.is_empty() {
-        line.push('\n');
-        line.push_str(&s.note);
-    }
-    line
-}
 
 /// Running time: `48s`, `1m32s`, `2h05m`.
 pub(super) fn elapsed(d: chrono::Duration) -> String {

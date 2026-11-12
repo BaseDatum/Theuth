@@ -3,8 +3,12 @@ use crate::{Agents, NewRootSession, PeerScope, Authorize, Authorized};
 use crate::rpc_forward as forward;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::RpcResult;
+use jsonrpsee::types::ErrorObjectOwned;
 use runtime::SessionId;
 use rpc_core::{ask, peer, Server};
+use kameo::error::SendError;
+use rpc_core::{failed, lookup};
+use tools::{JOBS_ACTOR, JobId, Jobs, PtyAttach};
 
 /// The owner console's root: `NewRootSession { scope: Owner }`, trusted
 /// because the caller authenticated as the owner over the socket or is the
@@ -113,3 +117,57 @@ impl RpcServerExt for Server {
 
 }
 
+/// `PtyAttach` as an RPC result; `size` resizes a running job first.
+pub async fn attach_pty(
+    session: SessionId,
+    job: &JobId,
+    size: Option<(u16, u16)>,
+) -> RpcResult<tools::PtyAttached> {
+    let attached = lookup::<Jobs>(JOBS_ACTOR)?
+        .ask(PtyAttach {
+            session,
+            id: job.clone(),
+            size,
+        })
+        .await
+        .map_err(|e| match e {
+            SendError::HandlerError(msg) => failed(msg),
+            other => failed(other.to_string()),
+        });
+    // 183 §10.3 (W-2): a job of a session owned elsewhere streams there only.
+    if attached.is_err()
+        && let Some(owner) = forward::owner_peer(session).await
+    {
+        return Err(forward::runs_elsewhere(owner.0));
+    }
+    attached
+}
+/// 139 §6.1 (D16): the supervisor refuses an input to a session mid-release-drain
+/// with a handler error whose `Display` form is `SessionDraining:<reason>[:<next owner>]`
+/// (`agent::supervisor::transfer::DRAINING_PREFIX`, the `DocError::NotHub` convention).
+/// Mapped here to the retryable [`forward::SESSION_DRAINING`] with the typed payload;
+/// the composer retries once. Anything else passes through.
+pub fn session_draining(session: SessionId, e: ErrorObjectOwned) -> ErrorObjectOwned {
+    let Some(rest) = e.message().strip_prefix("SessionDraining:") else {
+        return e;
+    };
+    let (reason, next_owner) = match rest.split_once(':') {
+        Some((r, o)) if !o.is_empty() => (r.to_owned(), Some(o.to_owned())),
+        Some((r, _)) => (r.to_owned(), None),
+        None => (rest.to_owned(), None),
+    };
+    let msg = match (reason.as_str(), &next_owner) {
+        ("release", Some(to)) => format!("{session} is moving to {to} — retry in a moment"),
+        ("release", None) => format!("{session} is moving to another engine — retry in a moment"),
+        (r, _) => format!("{session} is pausing for {r} — resumes on the next start"),
+    };
+    ErrorObjectOwned::owned(
+        forward::SESSION_DRAINING,
+        msg,
+        Some(forward::FrontDoorError::SessionDraining {
+            session,
+            reason,
+            next_owner,
+        }),
+    )
+}

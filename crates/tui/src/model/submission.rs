@@ -17,7 +17,10 @@ impl Model {
     fn submit_with(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
         let line = line.trim();
         // An empty note is an answer (keep / none); every other step waits for text.
-        if line.is_empty() && !matches!(self.prompt, Some(Prompt::SecretNote { .. })) {
+        if line.is_empty()
+            && !matches!(self.prompt, Some(Prompt::SecretNote { .. }))
+            && !self.components.editor().is_some_and(|(_, editor)| editor.submit_empty)
+        {
             return;
         }
         // Anything you send is what you want to see land.
@@ -26,6 +29,8 @@ impl Model {
             self.prompt_submit(line, tx);
             return;
         }
+        if self.component_submit(line) { return; }
+        self.component_notify(crate::components::Lifecycle::ComposerSubmitted(line));
         // `/edit` in progress: a plain line replaces the turn being edited
         // (slash commands still run and leave the edit pending).
         if let Some((idx, turn)) = self.editing.filter(|_| !line.starts_with('/')) {
@@ -51,6 +56,7 @@ impl Model {
         let (cmd, arg) = line
             .split_once(' ')
             .map_or((line, ""), |(c, a)| (c, a.trim()));
+        if self.component_slash(cmd, arg) { return; }
         match cmd {
             "/quit" | "/exit" => {
                 // Leaving the process leaves the owned private tree (51 §4.3).
@@ -317,7 +323,6 @@ impl Model {
             },
             "/tasks" => send(tx, Command::ListTasks(self.project.clone())),
             "/roster" => send(tx, Command::ListRoster),
-            "/computer" => send(tx, Command::ComputerStatus),
             "/compact" => self.compact_cmd(arg, tx),
             "/endless" => self.endless_cmd(arg, tx),
             "/shake" => self.shake_cmd(arg, tx),
@@ -349,7 +354,6 @@ impl Model {
             "/provider" => self.provider_cmd(arg, tx),
             "/secrets" => self.secrets_cmd(arg, tx),
             "/mesh" => self.mesh_cmd(arg, tx),
-            "/sandbox" => self.sandbox_cmd(arg, tx),
             "/link" => self.link_cmd(arg, tx),
             "/nodes" => self.nodes_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —

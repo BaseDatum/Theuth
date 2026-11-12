@@ -3,8 +3,9 @@ use super::*;
 impl Model {
 
     /// Fold one event into the state.
-    pub fn apply(&mut self, ev: UiEvent) {
+    pub(super) fn reduce(&mut self, ev: UiEvent) {
         match ev {
+            UiEvent::Wire(_) | UiEvent::Component(_) => unreachable!("intake is dispatched before reduction"),
             UiEvent::Agent(ev) => self.apply_agent(ev),
             UiEvent::Approval(req) => {
                 if let Some(row) = self.agents.get_mut(&req.session) {
@@ -17,7 +18,9 @@ impl Model {
                         describe(&req.tool, &req.args).join(" ")
                     ));
                 }
-                if self.session == Some(req.session) || self.agents.contains_key(&req.session) {
+                if !self.approvals.iter().any(|pending| pending.id == req.id)
+                    && (self.session == Some(req.session) || self.agents.contains_key(&req.session))
+                {
                     self.approvals.push_back(req);
                 }
             }
@@ -31,6 +34,7 @@ impl Model {
             }
             UiEvent::Ask(req) => {
                 if !req.questions.is_empty()
+                    && !self.asks.iter().any(|pending| pending.req.id == req.id)
                     && (self.session == Some(req.session) || self.agents.contains_key(&req.session))
                 {
                     self.asks.push_back(Ask::new(req));
@@ -535,7 +539,6 @@ impl Model {
             UiEvent::ScheduleHistory(name, info, rows) => self
                 .entries
                 .push(Entry::Info(schedule_history_table(&name, info.as_ref(), &rows))),
-            UiEvent::Computer(status) => self.entries.push(Entry::Info(computer_line(&status))),
             UiEvent::ArtifactShown(ev) => {
                 self.search_invalidate(SearchCategory::Artifacts);
                 if self.session == Some(ev.session) {
@@ -723,24 +726,6 @@ impl Model {
                 self.pairing = Some(card);
             }
             UiEvent::LinkEvent(ev) => self.apply_link(ev),
-            UiEvent::UpdateReady(ev) => {
-                // Once per version: the actor may re-emit the same fact.
-                if self.update.as_ref() != Some(&ev) {
-                    let text = if ev.applied {
-                        format!(
-                            "theuth {} is installed; it runs the next time you start theuth.",
-                            ev.version
-                        )
-                    } else {
-                        format!(
-                            "theuth {} is available; `t --update` installs it (the binary's directory is not writable).",
-                            ev.version
-                        )
-                    };
-                    self.update = Some(ev);
-                    self.interject(Entry::Info(text));
-                }
-            }
             UiEvent::Nodes(list) => {
                 // Never a transcript line: every node event refetches, and a
                 // presence flip is not worth a row. The verbs report themselves.
@@ -770,20 +755,6 @@ impl Model {
                 for d in list {
                     self.entries.push(Entry::Info(mesh_device_line(&d, now)));
                 }
-            }
-            UiEvent::Sandboxes(list) => {
-                if list.is_empty() {
-                    self.entries.push(Entry::Info("sandboxes: none".into()));
-                }
-                for i in list {
-                    self.entries.push(Entry::Info(sandbox_line(&i)));
-                }
-            }
-            UiEvent::SandboxDesktop(name, d) => {
-                self.entries.push(Entry::Info(format!(
-                    "{name} desktop: {} (password in the vault as sandbox/{name}/vnc; `t sandbox desktop {name}` prints it)",
-                    d.http_url
-                )));
             }
             UiEvent::MeshDevicePairing(p) => {
                 // The QR any engine may show; the hub accepts (69 decision 4). Shares the

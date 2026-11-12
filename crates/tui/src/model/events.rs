@@ -2,6 +2,10 @@ use super::*;
 /// Everything the UI can receive: bus events plus replies to its own commands.
 #[derive(Debug)]
 pub enum UiEvent {
+    /// Local/remote topic intake (no typed bus replay).
+    Wire(crate::topics::TopicEvent),
+    /// Typed owner reply erased only at the registry boundary.
+    Component(crate::components::LocalReply),
     /// Agent progress.
     Agent(AgentEvent),
     /// Where the calls go now (63 §0.3): `Some("attached · pid N · host")`
@@ -184,8 +188,6 @@ pub enum UiEvent {
     Tasks(Option<String>, Vec<tasks::Task>),
     /// Reply to [`Command::ListRoster`] (67 §12).
     Roster(Vec<roster::AgentSummary>),
-    /// Reply to [`Command::ComputerStatus`].
-    Computer(computer::PermissionStatus),
     /// Reply to [`Command::LinkStatus`] and the link commands that change it.
     Link(link::LinkStatus),
     /// Reply to [`Command::LinkPair`]: the string the QR card encodes.
@@ -196,12 +198,6 @@ pub enum UiEvent {
     MeshDevices(Vec<link::DeviceInfo>),
     /// Reply to [`Command::MeshDevicesAdd`]: the 4-part string a device scans and its pending id (69 decision 4).
     MeshDevicePairing(link::PairingPayload),
-    /// Reply to [`Command::SandboxList`]: every sandbox record (79 §8).
-    Sandboxes(Vec<sandbox::SandboxInfo>),
-    /// Reply to [`Command::SandboxDesktop`]: the noVNC URL for a browser (the password stays out of the transcript).
-    SandboxDesktop(String, sandbox::types::DesktopAccess),
-    /// The self-updater staged a newer version (39 §4.1).
-    UpdateReady(update::UpdateReady),
     /// Reply to [`Command::ListNodes`] and the node commands that change the list.
     Nodes(Vec<nodes::Node>),
     /// Reply to [`Command::InviteNode`]: the node's name and the string its QR card encodes.
@@ -294,6 +290,8 @@ pub enum UiEvent {
 /// these into `rpc::Api` calls and their replies into [`UiEvent`]s.
 #[derive(Debug)]
 pub enum Command {
+    /// Generic owner effect; new panels do not add command cases.
+    Component(crate::components::Effect),
     /// `send_input`.
     Send {
         /// `None` creates a session.
@@ -387,8 +385,6 @@ pub enum Command {
     ListRoster,
     /// `session_take(id, "user")`: `/take` continues the open session on this engine (68 §10).
     TakeSession(SessionId),
-    /// `computer_permissions`.
-    ComputerStatus,
     /// `compact`.
     Compact {
         /// Target.
@@ -714,10 +710,6 @@ pub enum Command {
     LinkRevoke(String),
     /// `devices_list` (69 §3).
     MeshDevicesList,
-    /// `sandboxes_list` (79 §8).
-    SandboxList,
-    /// `sandbox_desktop_access(name)`: the URL to open in a browser.
-    SandboxDesktop(String),
     /// `device_pair_start(name)`: the mesh pairing QR.
     MeshDevicesAdd(Option<String>),
     /// `device_revoke(id)`, then `devices_list`.
@@ -872,6 +864,8 @@ pub enum Command {
     DictationStart {
         /// When Ctrl+D was pressed (153 §8.7).
         pressed: std::time::Instant,
+        /// One completion/help vocabulary, including component commands.
+        commands: Vec<String>,
     },
     /// `dictation_stop(id)`: close the mic; `DictationFinished` follows on the bus.
     DictationStop(voice::DictationId),

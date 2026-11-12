@@ -1,5 +1,5 @@
 //! The `dreaming.*` RPC methods (design doc 136 §9.5, contract §2.7) as
-//! plain async fns the `rpc` crate's `DreamsApiServer` delegates to: each asks the
+//! plain async fns [`crate::DreamsApiServer`] delegates to: each asks the
 //! [`Night`] actor; absent actor → `Err("dreaming is not running")`.
 
 use kameo::actor::ActorRef;

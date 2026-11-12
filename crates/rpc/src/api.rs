@@ -12,48 +12,40 @@ use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
 use agent::SetModelFavorite;
 use agent::context::save_blob;
 use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
-use agent::todo::TodoSnapshot;
 use agent::{
-    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentInfo, Agents, AnswerPeerRequest,
-    ArchiveSession, Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
-    BroadcastTargets, Cancel, CancelScope, CommunicationState, Compact, CompactStyle,
-    ContextBreakdown, ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession,
-    Delivery, EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle,
-    GetEscalateModel, GetPeerMessage, GetSubagentModel, GetTitleModel, GetTodos, GetVisionModel,
-    Harvest, ListAcp, ListActivity, ListAgents, ListLogins, ListModels, ListPeerMessages,
-    ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, PeerMessagePage,
-    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
-    RefreshProviderModels, RefreshedModels, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, RenameSession, SendInput, SessionContextBreakdown,
+    AddAcp, AddProvider, AgentInfo, Agents, AnswerPeerRequest,
+    ArchiveSession,
+    CommunicationState, CompactStyle,
+    DeleteSession,
+    EscalateModel, GetCommunication, GetCompactStyle,
+    GetEscalateModel, GetPeerMessage, GetSubagentModel, GetTitleModel, GetVisionModel,
+    Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListPeerMessages,
+    ListPeers, ListProviders, ListRegistry, ListSessions, LoadSession,
+    Loaded, Login, LoginInfo, Logout, ModelInfo, PeerMessagePage,
+    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo,
+    RefreshProviderModels, RefreshedModels, RemoveAcp, RemoveProvider,
+    RenameSession,
     SessionSummary, SetCommunication, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages,
     SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle, SetSubagentModel, SetSubagentTimeout,
-    SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    UseSkill, Withdraw,
+    SetTitleModel, SetVisionModel, ShowPrompt,
 };
 use agent::{
     AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
 };
 use agent::{
     CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
-    ListProjectStyles, PeerDeliver, PeerEnvelope, PrivateTrees, ProjectStyle, ResumePrivate,
+    ListProjectStyles, PrivateTrees, ProjectStyle, ResumePrivate,
     SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject, SpendReport,
     SpendReportQuery,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
+use agent::EndlessConfig;
 use agent::{GetPolishModel, SetPolishModel};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
-use browser::{BROWSER_ACTOR, Browsers, Screenshot};
-use codeindex::{
-    CODEINDEX_ACTOR, ChangeLens, CodeindexActor, FitLens, HereLens, IndexStats, LensMeta,
-    LocateAnchor, Located, MapElement, MapExport, MapHit, MapIndex, MapJob,
-};
-use computer::{COMPUTER_ACTOR, Computer, Permissions, ScreenContext};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -71,7 +63,7 @@ use knowledge::{
 };
 use link::{LinkConfig, LinkStatus};
 
-use runtime::{InputId, Runtime, SessionId};
+use runtime::{Runtime, SessionId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sessionsync::types::{SessionOrphan, SessionOwner, SessionsStatus};
@@ -80,27 +72,24 @@ use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use telegram::{PairingLink, TelegramStatus};
 use tokio::sync::broadcast;
 use tokio::time::Instant;
-use tools::git::SyncResult;
 use tools::{
-    AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
-    AskRequested, CancelJob, CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
-    JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpHomeAction, McpLogin,
-    McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals,
-    SetGate, SetHidden, SetMcpHome, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
+    Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
+    AskRequested, Decision, GetApprovals, GetPtyIdle, JOBS_ACTOR,
+    Jobs, ListTools, Resolve, SetApprovals, SetHidden, SetPtyIdle, ToolRegistry, ToolSpec,
 };
 use tools::{
-    Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
-    PtyScreenReply, PtyViewport, Retention, TerminalSummary,
+    ListTerminals, Retention, TerminalSummary,
 };
-use tools::{LiveCounts, LiveCountsRow};
 use uuid::Uuid;
 
+#[cfg(test)]
+use agent::rpc_support::session_draining;
 #[cfg(test)]
 use rpc_core::{FocusMap, BACKLOG};
 use agent::rpc_forward as forward;
 use crate::pathac::PathCompletion;
 use crate::search::SearchResponse;
-use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, lookup, failed, peer, owner, dreaming_err, stub_err, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
+use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, lookup, failed, peer, owner, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
 use agent::rpc_support::{owner_root, RpcServerExt};
 use link::rpc_support::{link, mint_as_holder};
 use mesh::rpc_support::mesh_actor;
@@ -181,76 +170,48 @@ pub struct Info {
 pub mod hub;
 /// Sessions RPC server and client traits.
 pub mod sessions;
-/// Turns RPC server and client traits.
-pub mod turns;
 /// Settings RPC server and client traits.
 pub mod settings;
-/// Jobs RPC server and client traits.
-pub mod jobs;
 /// Tooling RPC server and client traits.
 pub mod tooling;
-/// Skills RPC server and client traits.
-pub mod skills;
-/// Screens RPC server and client traits.
-pub mod screens;
-/// Mcp RPC server and client traits.
-pub mod mcp;
+
 /// Concepts RPC server and client traits.
 pub mod concepts;
 /// Documents RPC server and client traits.
 pub mod documents;
 /// Notebooks RPC server and client traits.
 pub mod notebooks;
-/// Codemap RPC server and client traits.
-pub mod codemap;
 /// Messaging RPC server and client traits.
 pub mod messaging;
 /// Artifacts RPC server and client traits.
 pub mod artifacts;
-/// Kernels RPC server and client traits.
-pub mod kernels;
-/// Dreams RPC server and client traits.
-pub mod dreams;
-/// Research RPC server and client traits.
-pub mod research;
-/// Sandboxes RPC server and client traits.
-pub mod sandboxes;
 
 pub use hub::{CoreApiClient, CoreApiServer};
 pub use sessions::{SessionsApiClient, SessionsApiServer};
-pub use turns::{TurnsApiClient, TurnsApiServer};
 pub use settings::{SettingsApiClient, SettingsApiServer};
-pub use jobs::{JobsApiClient, JobsApiServer};
 pub use tooling::{SESSION_TOOLS, ToolingApiClient, ToolingApiServer};
-pub use skills::{SkillsApiClient, SkillsApiServer};
-pub use screens::{ScreensApiClient, ScreensApiServer};
-pub use mcp::{McpApiClient, McpApiServer};
+
 pub use concepts::{ConceptsApiClient, ConceptsApiServer};
 pub use documents::{DocumentsApiClient, DocumentsApiServer};
 pub use notebooks::{NotebooksApiClient, NotebooksApiServer};
-pub use codemap::{CodemapApiClient, CodemapApiServer};
 pub use messaging::{MessagingApiClient, MessagingApiServer};
 pub use artifacts::{ArtifactsApiClient, ArtifactsApiServer};
-pub use kernels::{KernelsApiClient, KernelsApiServer};
-pub use dreams::{DreamsApiClient, DreamsApiServer};
-pub use research::{ResearchApiClient, ResearchApiServer};
-pub use sandboxes::{SandboxesApiClient, SandboxesApiServer};
 
 /// All domain client traits for typed methods on any jsonrpsee client.
 pub mod clients {
+    pub use agent::rpc_jobs::JobsApiClient;
     pub use super::hub::CoreApiClient;
     pub use super::sessions::SessionsApiClient;
-    pub use super::turns::TurnsApiClient;
+    pub use agent::rpc_turns::TurnsApiClient;
     pub use super::settings::SettingsApiClient;
-    pub use super::jobs::JobsApiClient;
     pub use super::tooling::ToolingApiClient;
-    pub use super::skills::SkillsApiClient;
-    pub use super::screens::ScreensApiClient;
-    pub use super::mcp::McpApiClient;
+    pub use agent::rpc_skills::SkillsApiClient;
+    pub use computer::rpc::ScreensApiClient;
+    pub use mcp_server::rpc::McpApiClient;
     pub use super::concepts::ConceptsApiClient;
     pub use super::documents::DocumentsApiClient;
     pub use super::notebooks::NotebooksApiClient;
-    pub use super::codemap::CodemapApiClient;
+    pub use ::codeindex::rpc::CodemapApiClient;
     pub use super::messaging::MessagingApiClient;
     pub use nodes::NetworkApiClient;
     pub use schedule::RoutinesApiClient;
@@ -259,10 +220,10 @@ pub mod clients {
     pub use secrets::CredentialsApiClient;
     pub use talk::SpeechApiClient;
     pub use meeting::MeetingsApiClient;
-    pub use super::kernels::KernelsApiClient;
-    pub use super::dreams::DreamsApiClient;
-    pub use super::research::ResearchApiClient;
-    pub use super::sandboxes::SandboxesApiClient;
+    pub use ::cells::rpc::KernelsApiClient;
+    pub use dreaming::DreamsApiClient;
+    pub use autoresearch::ResearchApiClient;
+    pub use ::sandbox::rpc::SandboxesApiClient;
 }
 
 /// Unit-test/export composition only; production assembly belongs to main.
@@ -271,16 +232,14 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
     rpc_core::merge([
         hub::rpc_module(server.clone()),
         sessions::rpc_module(server.clone()),
-        turns::rpc_module(server.clone()),
-        jobs::rpc_module(server.clone()),
-        skills::rpc_module(server.clone()),
+        agent::rpc_module(server.clone()),
         tooling::rpc_module(server.clone()),
-        screens::rpc_module(server.clone()),
-        mcp::rpc_module(server.clone()),
+        computer::rpc_module(server.clone()),
+        mcp_server::rpc_module(server.clone()),
         concepts::rpc_module(server.clone()),
         documents::rpc_module(server.clone()),
         notebooks::rpc_module(server.clone()),
-        codemap::rpc_module(server.clone()),
+        ::codeindex::rpc_module(server.clone()),
         messaging::rpc_module(server.clone()),
         nodes::rpc_module(server.clone()),
         schedule::rpc_module(server.clone()),
@@ -289,10 +248,10 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         secrets::rpc_module(server.clone()),
         talk::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
-        dreams::rpc_module(server.clone()),
-        research::rpc_module(server.clone()),
-        kernels::rpc_module(server.clone()),
-        sandboxes::rpc_module(server.clone()),
+        dreaming::rpc_module(server.clone()),
+        autoresearch::rpc_module(server.clone()),
+        ::cells::rpc_module(server.clone()),
+        ::sandbox::rpc_module(server.clone()),
         settings::rpc_module(server),
     ])
 }
@@ -482,52 +441,8 @@ use rpc_core::{Server, PrivateMap};
 
 
 
-/// 185 R1 A5: the hub's refusal of a forwarded Dream now, said as the hub's —
-/// "Dream now runs on the hub, which …" — with the code and data kept (a
-/// `-32010` still carries `OwnerUnreachable`). Nothing runs here instead: the
-/// hub may have started the night.
-fn hub_said(e: ErrorObjectOwned) -> ErrorObjectOwned {
-    let msg = if e.code() == forward::OWNER_UNREACHABLE {
-        format!(
-            "Dream now runs on the hub, which did not answer ({}); try again when it is back",
-            e.message()
-        )
-    } else {
-        format!("Dream now runs on the hub, which said: {}", e.message())
-    };
-    ErrorObjectOwned::owned(e.code(), msg, e.data().map(|d| d.to_owned()))
-}
 
 
-/// 139 §6.1 (D16): the supervisor refuses an input to a session mid-release-drain
-/// with a handler error whose `Display` form is `SessionDraining:<reason>[:<next owner>]`
-/// (`agent::supervisor::transfer::DRAINING_PREFIX`, the `DocError::NotHub` convention).
-/// Mapped here to the retryable [`forward::SESSION_DRAINING`] with the typed payload;
-/// the composer retries once. Anything else passes through.
-fn session_draining(session: SessionId, e: ErrorObjectOwned) -> ErrorObjectOwned {
-    let Some(rest) = e.message().strip_prefix("SessionDraining:") else {
-        return e;
-    };
-    let (reason, next_owner) = match rest.split_once(':') {
-        Some((r, o)) if !o.is_empty() => (r.to_owned(), Some(o.to_owned())),
-        Some((r, _)) => (r.to_owned(), None),
-        None => (rest.to_owned(), None),
-    };
-    let msg = match (reason.as_str(), &next_owner) {
-        ("release", Some(to)) => format!("{session} is moving to {to} — retry in a moment"),
-        ("release", None) => format!("{session} is moving to another engine — retry in a moment"),
-        (r, _) => format!("{session} is pausing for {r} — resumes on the next start"),
-    };
-    ErrorObjectOwned::owned(
-        forward::SESSION_DRAINING,
-        msg,
-        Some(forward::FrontDoorError::SessionDraining {
-            session,
-            reason,
-            next_owner,
-        }),
-    )
-}
 
 /// 139 §9.2 (D18): the engine owning a question's session, when it is another
 /// one — read from the replicated `questions` row, so an answer typed on any
@@ -628,13 +543,6 @@ async fn name_paired_on(contacts: &mut [a2a::contacts::Contact]) {
 
 
 
-/// The sandbox actor; absent when `sandbox.enabled: false` or the plugin is not loaded (79).
-fn sandbox() -> RpcResult<ActorRef<sandbox::SandboxActor>> {
-    lookup::<sandbox::SandboxActor>(sandbox::SANDBOX_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "sandbox is disabled", None::<()>),
-        _ => e,
-    })
-}
 
 /// The update actor; absent when `update.enabled: false` or the plugin is not loaded.
 fn update_actor() -> RpcResult<ActorRef<update::UpdateActor>> {
@@ -1053,13 +961,6 @@ fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
     })
 }
 
-/// The codeindex actor; `codeindex.enabled: false` means it was never spawned (60 §10).
-fn codeindex() -> RpcResult<ActorRef<CodeindexActor>> {
-    lookup::<CodeindexActor>(CODEINDEX_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "codeindex is disabled", None::<()>),
-        _ => e,
-    })
-}
 
 /// The A2A actor, or `None` for the one silent case: `a2a.enabled: false`
 /// (or no `a2a` section) and nothing registered. A malformed section, or
@@ -1165,31 +1066,6 @@ fn decode_attachment(bytes: String, ext: &str) -> RpcResult<Vec<u8>> {
     Ok(bytes)
 }
 
-/// `PtyAttach` as an RPC result; `size` resizes a running job first.
-async fn attach_pty(
-    session: SessionId,
-    job: &JobId,
-    size: Option<(u16, u16)>,
-) -> RpcResult<tools::PtyAttached> {
-    let attached = lookup::<Jobs>(JOBS_ACTOR)?
-        .ask(PtyAttach {
-            session,
-            id: job.clone(),
-            size,
-        })
-        .await
-        .map_err(|e| match e {
-            SendError::HandlerError(msg) => failed(msg),
-            other => failed(other.to_string()),
-        });
-    // 183 §10.3 (W-2): a job of a session owned elsewhere streams there only.
-    if attached.is_err()
-        && let Some(owner) = forward::owner_peer(session).await
-    {
-        return Err(forward::runs_elsewhere(owner.0));
-    }
-    attached
-}
 
 
 
@@ -1768,40 +1644,6 @@ mod tests {
         }
     }
 
-    /// 185 R1 A5: a hub that refuses or does not answer is named as the hub;
-    /// the code and the `OwnerUnreachable` payload stay for the UI.
-    #[test]
-    fn the_hubs_refusal_of_dream_now_is_said_as_the_hubs() {
-        let off = hub_said(ErrorObjectOwned::owned(
-            ASK_FAILED,
-            "dreaming is off in config (dreaming.enabled: false)",
-            None::<()>,
-        ));
-        assert_eq!(off.code(), ASK_FAILED);
-        assert_eq!(
-            off.message(),
-            "Dream now runs on the hub, which said: dreaming is off in config (dreaming.enabled: false)"
-        );
-        let gone = hub_said(ErrorObjectOwned::owned(
-            forward::OWNER_UNREACHABLE,
-            "no answer within 30s",
-            Some(forward::FrontDoorError::OwnerUnreachable {
-                owner: "hub".into(),
-                last_seen: None,
-            }),
-        ));
-        assert_eq!(gone.code(), forward::OWNER_UNREACHABLE);
-        assert!(
-            gone.message()
-                .starts_with("Dream now runs on the hub, which did not answer"),
-            "{}",
-            gone.message()
-        );
-        assert!(
-            gone.data()
-                .is_some_and(|d| d.get().contains("OwnerUnreachable"))
-        );
-    }
 
     /// 139 §9.2 (D18), R1 §8.11: an answer to a question whose replicated row
     /// names a session owned elsewhere goes to that owner — forward, never take

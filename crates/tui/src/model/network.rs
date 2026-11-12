@@ -183,21 +183,6 @@ impl Model {
         }
     }
 
-    /// `/sandbox` lists the sandbox VMs; `/sandbox desktop NAME` prints the noVNC URL (79 §8).
-    pub(super) fn sandbox_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
-        let (sub, rest) = arg
-            .split_once(char::is_whitespace)
-            .map_or((arg, ""), |(s, r)| (s, r.trim()));
-        match (sub, rest) {
-            ("" | "ls" | "list", _) => send(tx, Command::SandboxList),
-            ("desktop", name) if !name.is_empty() => {
-                send(tx, Command::SandboxDesktop(name.to_owned()))
-            }
-            _ => self
-                .entries
-                .push(Entry::Error("usage: /sandbox [desktop <name>]".into())),
-        }
-    }
 
     /// `/mesh devices [list|add [name]|rm <id>|name <id> <name…>]` (69 §7), the CLI's `t mesh devices`.
     pub(super) fn mesh_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
@@ -508,32 +493,6 @@ pub fn link_line(s: &link::LinkStatus) -> String {
     )
 }
 
-/// One `/sandbox` line: name, backend, state, engine, size.
-pub fn sandbox_line(i: &sandbox::SandboxInfo) -> String {
-    let state = serde_json::to_value(&i.state)
-        .ok()
-        .and_then(|v| v.get("state").and_then(|s| s.as_str()).map(str::to_owned))
-        .unwrap_or_default();
-    let mut s = format!(
-        "{} {} {} engine={}",
-        i.name,
-        i.backend,
-        state,
-        i.engine.as_deref().unwrap_or("-")
-    );
-    if let Some(vm) = &i.vm {
-        let r = vm.resources;
-        s.push_str(&format!(
-            " cpus={} memory={}M disk={}M shares={} desktop={}",
-            r.cpus,
-            r.memory_mib,
-            r.root_disk_mib,
-            vm.shares.len(),
-            if vm.desktop.is_some() { "yes" } else { "no" }
-        ));
-    }
-    s
-}
 
 /// One `/mesh devices` row: `<id>  <name>  <platform>  paired 2d ago · seen 3h ago | never seen | revoked`.
 pub fn mesh_device_line(d: &link::DeviceInfo, now: u64) -> String {

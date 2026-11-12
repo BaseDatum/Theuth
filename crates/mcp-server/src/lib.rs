@@ -23,6 +23,9 @@ use tokio_util::sync::CancellationToken;
 pub mod audit;
 pub mod catalog;
 pub mod http;
+/// MCP RPC server and client traits.
+pub mod rpc;
+pub use rpc::rpc_module;
 
 pub use audit::Audit;
 pub use catalog::{Bridge, Catalog, McpCallResult};

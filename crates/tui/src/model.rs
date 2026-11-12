@@ -228,8 +228,9 @@ pub struct Model {
     pub width: usize,
     /// Latest `link_status` (badge and `/link` menu); `None` until fetched.
     pub link: Option<link::LinkStatus>,
-    /// Latest [`update::UpdateReady`]; header tag and one transcript line (39 §4.1).
-    pub update: Option<update::UpdateReady>,
+    /// Fixed feature registry; feature state never leaks into the core enum.
+    pub(crate) components: crate::components::Registry,
+    component_commands: Option<UnboundedSender<Command>>,
     /// `/link` was typed (or a flow that reopens it ran); the next
     /// `UiEvent::Link` opens the menu (same rule as `awaiting_mcp`).
     awaiting_link: bool,
@@ -391,6 +392,7 @@ mod catalog;
 mod concepts;
 mod costs;
 mod credentials;
+mod components;
 mod events;
 mod harnesses;
 mod history;
@@ -433,6 +435,7 @@ pub use costs::{money_units, cost_lines, cost_short};
 pub use credentials::{LoginRow, SecretRequest};
 use credentials::{bad_secret_name};
 pub use events::{UiEvent, Command};
+pub(crate) use components::Output;
 pub(crate) use events::{send};
 pub use harnesses::{AcpRow, harness_options_lines, harness_option_set_line};
 use history::{revision, user_entries, cell_results, FENCE, from_history};
@@ -442,7 +445,7 @@ pub use jobs::{JOB_LINES, JobTail};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
 pub(crate) use network::{PairingCard};
 use network::{tick_card};
-pub use network::{NodesArg, parse_nodes_arg, find_node, link_line, sandbox_line, mesh_device_line};
+pub use network::{NodesArg, parse_nodes_arg, find_node, link_line, mesh_device_line};
 pub use paste::{Paste, paste_token};
 use peers::{on_off, short_uuid, peer_card, contact_row};
 pub(crate) use peers::{clean, outside_card};
@@ -455,7 +458,7 @@ pub use shake::{ShakeCategory, ShakeStage, Shake, ReviewRow, kind_name, expand, 
 pub use slash::{COMMANDS, slash_matches, SlashRow};
 pub use speech::{voice_cmd, voice_line};
 pub(crate) use status::{now_ms, when};
-pub use status::{Level, k, computer_line};
+pub use status::{Level, k};
 use status::{elapsed, ago};
 pub use terminal::{TERMINAL_POLL_MS, TERMINAL_INTERACTIVE_POLL_MS, TerminalView, terminal_row};
 #[cfg(test)]

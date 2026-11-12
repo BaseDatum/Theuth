@@ -1,22 +1,13 @@
-//! Terminal UI plugin. Subscribes to `agent::AgentEvent`,
-//! `tools::ApprovalRequested`, `secrets::SecretsEvent` and the rest of the
-//! bus; every command is an [`rpc::api::clients`] call on an
-//! [`rpc::client::Engine`]: in-process (this process is the engine) or over a
-//! WebSocket to a running engine the TUI attached to (63 §2.3), whose events
-//! [`rpc::client::mirror`] republishes on the local bus. Cancels
-//! `rt.shutdown` on quit. See design doc §8.
-//!
-//! Shape: a bridge actor forwards bus events into an mpsc channel; the UI
-//! (fullscreen iocraft, or a line printer when stdout is not a TTY or `-p`
-//! was given) is pure over [`model::Model`]; one task turns
-//! [`model::Command`]s into `rpc::Api` calls and feeds replies back as
-//! [`model::UiEvent`]s.
+//! Terminal UI: one topic intake, in-process or attached, feeding the same
+//! synchronous model/component loop. Commands use the current RPC engine.
+//! Only local jobs retain a typed subscriber, preserving kernel visibility.
 
 use std::io::{IsTerminal, Write};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use std::time::Duration;
 
-use agent::{AgentConfig, AgentEvent, CompactStyle, LoginFinished};
+use agent::{AgentConfig, AgentEvent, CompactStyle};
 use futures::future::BoxFuture;
 use jsonrpsee::core::client::Error as ClientError;
 use jsonrpsee::ws_client::WsClient;
@@ -29,14 +20,14 @@ use rpc::engine::{Host, Running};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{
-    ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, Decision, JobEvent, McpAuth,
-    McpProgress,
-};
+use tools::{Decision, JobEvent, McpAuth};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod attach;
 pub mod broadcast;
 mod clip;
+pub mod components;
+pub mod topics;
 pub mod dictation;
 pub mod model;
 pub mod pathac;
@@ -89,42 +80,17 @@ impl runtime::Plugin for TuiPlugin {
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         let (events_tx, events_rx) = unbounded_channel();
         let (commands_tx, commands_rx) = unbounded_channel();
-        let bridge = Bridge::spawn_with_mailbox(
-            Bridge {
-                tx: events_tx.clone(),
-            },
+        // Take the ring cursor before any asynchronous initialization.
+        let local_stream = self.attached.is_none().then(|| rpc::topics::local_stream(rt));
+        let local_jobs = Arc::new(AtomicBool::new(self.attached.is_none()));
+        let bridge = JobsBridge::spawn_with_mailbox(
+            JobsBridge { tx: events_tx.clone(), local: local_jobs.clone() },
             runtime::subscriber_mailbox(),
         );
-        rt.subscribe::<Bridge, AgentEvent>(&bridge).await;
-        rt.subscribe::<Bridge, ApprovalRequested>(&bridge).await;
-        rt.subscribe::<Bridge, ApprovalResolved>(&bridge).await;
-        rt.subscribe::<Bridge, AskRequested>(&bridge).await;
-        rt.subscribe::<Bridge, AskResolved>(&bridge).await;
-        rt.subscribe::<Bridge, double::DoublePredicted>(&bridge)
-            .await;
-        rt.subscribe::<Bridge, double::DoubleAnswered>(&bridge)
-            .await;
-        rt.subscribe::<Bridge, McpProgress>(&bridge).await;
-        rt.subscribe::<Bridge, LoginFinished>(&bridge).await;
-        rt.subscribe::<Bridge, JobEvent>(&bridge).await;
-        rt.subscribe::<Bridge, link::LinkEvent>(&bridge).await;
-        rt.subscribe::<Bridge, nodes::NodeEvent>(&bridge).await;
-        rt.subscribe::<Bridge, artifact::ArtifactShown>(&bridge)
-            .await;
-        rt.subscribe::<Bridge, secrets::SecretsEvent>(&bridge).await;
-        rt.subscribe::<Bridge, knowledge::KnowledgeChanged>(&bridge)
-            .await;
-        rt.subscribe::<Bridge, web::progress::ScrapeProgress>(&bridge)
-            .await;
-        rt.subscribe::<Bridge, update::UpdateReady>(&bridge).await;
-        rt.subscribe::<Bridge, agent::CommunicationChanged>(&bridge)
-            .await;
-        rt.subscribe::<Bridge, agent::PeerMessageChanged>(&bridge)
-            .await;
-        rt.subscribe::<Bridge, agent::PeerDelivered>(&bridge).await;
-        rt.subscribe::<Bridge, a2a::A2aChanged>(&bridge).await;
-        rt.subscribe::<Bridge, voice::VoiceEvent>(&bridge).await;
-        rt.subscribe::<Bridge, ::talk::TalkEvent>(&bridge).await;
+        rt.subscribe::<JobsBridge, JobEvent>(&bridge).await;
+        if let Some(stream) = local_stream {
+            tokio::spawn(topics::local(rt.clone(), stream, events_tx.clone()));
+        }
         let api: Api = Arc::new(RwLock::new(Arc::new(match &self.attached {
             Some(a) => Engine::Remote(a.client.clone()),
             None => Engine::Local(Local::new(rt.clone(), self.module)),
@@ -137,12 +103,13 @@ impl runtime::Plugin for TuiPlugin {
                 events_tx.clone(),
                 attached,
                 self.module,
+                local_jobs,
             ));
         }
         // Startup facts the runtime does not hand out as config sections: whether
         // the app plugin runs (46 §9) and the engine's live default model and effort
         // (82 §3, 83 §3; config.yaml as read at launch is the fallback when `info` fails).
-        let engine = api.read().unwrap().clone();
+        let engine = api.read().clone();
         let info = engine.info().await.ok();
         let app_enabled = info.as_ref().is_some_and(|i| i.app_enabled);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
@@ -217,61 +184,36 @@ impl runtime::Plugin for TuiPlugin {
     }
 }
 
-/// Bus subscriber: forwards every event into the UI channel.
+/// The only typed intake exception: the external wire projector hides kernels.
 #[derive(Actor)]
-struct Bridge {
+struct JobsBridge {
     tx: UnboundedSender<UiEvent>,
+    local: Arc<AtomicBool>,
 }
 
-macro_rules! forward {
-    ($($ty:ty => $variant:ident),* $(,)?) => {$(
-        impl Message<$ty> for Bridge {
-            type Reply = ();
-            async fn handle(&mut self, m: $ty, _: &mut Context<Self, ()>) {
-                let _ = self.tx.send(UiEvent::$variant(m));
-            }
+impl Message<JobEvent> for JobsBridge {
+    type Reply = ();
+    async fn handle(&mut self, event: JobEvent, _: &mut Context<Self, ()>) {
+        if self.local.load(Ordering::Acquire) {
+            let _ = self.tx.send(UiEvent::Job(event));
         }
-    )*};
+    }
 }
-forward!(
-    AgentEvent => Agent,
-    ApprovalRequested => Approval,
-    ApprovalResolved => Resolved,
-    AskRequested => Ask,
-    AskResolved => AskResolved,
-    double::DoublePredicted => DoublePredicted,
-    double::DoubleAnswered => DoubleAnswered,
-    McpProgress => McpProgress,
-    LoginFinished => LoginFinished,
-    JobEvent => Job,
-    link::LinkEvent => LinkEvent,
-    nodes::NodeEvent => NodeEvent,
-    artifact::ArtifactShown => ArtifactShown,
-    secrets::SecretsEvent => SecretsEvent,
-    knowledge::KnowledgeChanged => KnowledgeChanged,
-    web::progress::ScrapeProgress => ScrapeProgress,
-    update::UpdateReady => UpdateReady,
-    agent::CommunicationChanged => CommunicationChanged,
-    agent::PeerMessageChanged => PeerMessageChanged,
-    agent::PeerDelivered => PeerDelivered,
-    a2a::A2aChanged => A2aChanged,
-    voice::VoiceEvent => Voice,
-    ::talk::TalkEvent => Talk,
-);
 
 /// Attached mode's supervisor (63 §2.3 Disconnect): when the socket closes,
 /// take the lock and start the engine here, or — another client won — attach
 /// to the winner; three attempts, then a plain error. Every switch tells the
 /// UI (`Engine`), which re-selects its session on the new end.
-async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached: Attached, module: rpc_core::ModuleFactory) {
+async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached: Attached, module: rpc_core::ModuleFactory, local_jobs: Arc<AtomicBool>) {
     // The record's listen until the implicit server binds (63 §6.4).
     let listen = rpc::configured_listen(&rt);
     let mut client = attached.client;
     let mut start_engine = Some(attached.start_engine);
     for attempt in 1..=3 {
-        if let Err(e) = rpc::client::mirror(&rt, &client).await {
+        if let Err(e) = topics::remote(&rt, &client, &tx).await {
             tracing::warn!(error = %e, "engine event stream");
         }
+        if rt.shutdown.is_cancelled() || tx.is_closed() { return; }
         let _ = tx.send(UiEvent::Info("node process gone — starting one…".into()));
         let running = match rpc::engine::acquire(&rt.data_dir, Host::Tui, listen.clone()) {
             Ok(lease) => {
@@ -279,10 +221,13 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
                 let Some(start) = start_engine.take() else {
                     return;
                 };
+                let stream = rpc::topics::local_stream(&rt);
+                local_jobs.store(true, Ordering::Release);
                 match start(rt.clone()).await {
                     Ok(()) => {
-                        *api.write().unwrap() = Arc::new(Engine::Local(Local::new(rt.clone(), module)));
+                        *api.write() = Arc::new(Engine::Local(Local::new(rt.clone(), module)));
                         let _ = tx.send(UiEvent::Engine(None));
+                        tokio::spawn(topics::local(rt.clone(), stream, tx.clone()));
                     }
                     Err(e) => {
                         rpc::engine::release();
@@ -317,7 +262,7 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
             return;
         };
         client = Arc::new(c);
-        *api.write().unwrap() = Arc::new(Engine::Remote(client.clone()));
+        *api.write() = Arc::new(Engine::Remote(client.clone()));
         let _ = tx.send(UiEvent::Engine(Some(attached_label(&running))));
     }
     let _ = tx.send(UiEvent::Error(
@@ -335,30 +280,43 @@ async fn run_commands(api: Api, mut rx: UnboundedReceiver<Command>, tx: Unbounde
         let (api, tx) = (api.clone(), tx.clone());
         async move {
             while let Some(cmd) = keys_rx.recv().await {
-                let api = api.read().unwrap().clone();
-                if let Err(e) = execute(&api, cmd, &tx).await {
+                if let Err(e) = execute_current(&api, cmd, &tx).await {
                     let _ = tx.send(UiEvent::Error(format!("{e:#}")));
                 }
             }
         }
     });
     while let Some(cmd) = rx.recv().await {
-        if matches!(cmd, Command::PtyInput { .. }) {
+        if matches!(&cmd, Command::PtyInput { .. })
+            || matches!(&cmd, Command::Component(effect) if effect.lane == components::Lane::OrderedInput)
+        {
             let _ = keys_tx.send(cmd);
             continue;
         }
         let tx = tx.clone();
-        let api = api.read().unwrap().clone();
+        let api = api.clone();
         tokio::spawn(async move {
-            if let Err(e) = execute(&api, cmd, &tx).await {
+            if let Err(e) = execute_current(&api, cmd, &tx).await {
                 let _ = tx.send(UiEvent::Error(format!("{e:#}")));
             }
         });
     }
 }
 
+async fn execute_current(api: &Api, cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<()> {
+    let engine = api.read().clone();
+    if let Command::Component(effect) = cmd {
+        let reply = components::execute(effect, engine).await;
+        let _ = tx.send(reply);
+        Ok(())
+    } else {
+        execute(&engine, cmd, tx).await
+    }
+}
+
 async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<()> {
     let reply = match cmd {
+        Command::Component(_) => unreachable!("component effects use the generic executor"),
         Command::Resolve { id, decision } => {
             if !msg(api.resolve_approval(id, decision).await)? {
                 anyhow::bail!("approval {} was no longer pending", id.0);
@@ -630,7 +588,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 "steer #{id} queued: the next experiment of `{slug}` reads it; the loop does not pause"
             ))
         }
-        Command::ComputerStatus => UiEvent::Computer(msg(api.computer_permissions().await)?),
         Command::CancelJob { session, id } => {
             msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
             UiEvent::Info(format!("killed {id}"))
@@ -1052,10 +1009,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::Link(msg(api.link_status().await)?)
         }
         Command::MeshDevicesList => UiEvent::MeshDevices(msg(api.devices_list().await)?),
-        Command::SandboxList => UiEvent::Sandboxes(msg(api.sandboxes_list().await)?),
-        Command::SandboxDesktop(name) => {
-            UiEvent::SandboxDesktop(name.clone(), msg(api.sandbox_desktop_access(name).await)?)
-        }
         Command::MeshDevicesAdd(name) => {
             UiEvent::MeshDevicePairing(msg(api.device_pair_start(name).await)?)
         }
@@ -1187,16 +1140,13 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::DictationPrewarm => UiEvent::Voice(voice::VoiceEvent::DictationModel {
             state: msg(api.dictation_prewarm().await)?,
         }),
-        Command::DictationStart { pressed } => {
+        Command::DictationStart { pressed, commands } => {
             // 153 §14.1: the TUI's surface and its slash commands (shaping stage 4), the press age for §8.7.
             let opts = voice::DictationOpts {
                 surface: Some(voice::Surface::Tui),
                 destination: Some(voice::Destination::AgentPrompt),
                 app: None,
-                commands: model::COMMANDS
-                    .iter()
-                    .map(|(c, _, _)| (*c).to_owned())
-                    .collect(),
+                commands,
                 press_ago_ms: u32::try_from(pressed.elapsed().as_millis()).ok(),
             };
             match api.dictation_start(None, Some(opts)).await {
@@ -1450,6 +1400,7 @@ async fn line_printer(
 ) {
     let mut model = Model::new(String::new(), approvals);
     model.app_enabled = app_enabled;
+    model.mount_components(&commands);
     if let Some(id) = resume {
         model.resume(id, &commands);
     }
@@ -1461,17 +1412,17 @@ async fn line_printer(
     let mut stdin_open = true;
     let mut out = std::io::stdout();
     loop {
+        let wake = [model.search_wake(), model.components.wake()].into_iter().flatten().min();
         tokio::select! {
             ev = events.recv() => {
                 let Some(ev) = ev else { break };
-                print_event(&mut out, &model, &ev);
-                let search_reply = matches!(ev, UiEvent::Search(..));
-                let done = print_mode && match &ev {
-                    UiEvent::Agent(AgentEvent::TurnFinished { session, .. }) => model.session == Some(*session),
-                    UiEvent::Error(_) => true,
-                    _ => false,
-                };
-                model.apply(ev);
+                let mut done = false;
+                let mut search_reply = false;
+                model.receive(ev, &mut |output| {
+                    let (finished, search) = print_output(&mut out, output);
+                    done |= print_mode && finished;
+                    search_reply |= search;
+                });
                 if std::mem::take(&mut model.reselect)
                     && let Some(session) = model.session
                 {
@@ -1479,6 +1430,11 @@ async fn line_printer(
                         session,
                         settled_only: false,
                     });
+                }
+                if std::mem::take(&mut model.refresh_context)
+                    && let Some(session) = model.session
+                {
+                    let _ = commands.send(Command::Load { session, settled_only: true });
                 }
                 model.search_tick(model::now_ms(), &commands);
                 // `-p "/search …"` ends once every selected group has settled
@@ -1489,12 +1445,17 @@ async fn line_printer(
                     model.decide(Decision::Deny, &commands);
                 }
             }
-            // A due search request (the `/search` debounce or indexing poll)
-            // fires here too: this loop has no render ticks.
+            // Search and component deadlines share the existing loop, without a scheduler.
             _ = tokio::time::sleep(std::time::Duration::from_millis(
-                model.search_wake().map_or(0, |t| t.saturating_sub(model::now_ms())).max(1),
-            )), if model.search_wake().is_some() => {
-                model.search_tick(model::now_ms(), &commands);
+                wake.map_or(0, |t| t.saturating_sub(model::now_ms())).max(1),
+            )), if wake.is_some() => {
+                let now = model::now_ms();
+                model.search_tick(now, &commands);
+                let mut done = false;
+                model.component_tick_with(now, &mut |output| {
+                    done |= print_mode && print_output(&mut out, output).0;
+                });
+                if done { break; }
             }
             line = lines.next_line(), if stdin_open => {
                 let Ok(Some(line)) = line else {
@@ -1510,6 +1471,28 @@ async fn line_printer(
             }
         }
     }
+    model.component_notify(components::Lifecycle::Shutdown);
+}
+
+fn print_output(out: &mut impl Write, output: model::Output<'_>) -> (bool, bool) {
+    match output {
+        model::Output::Event(model, event) => {
+            print_event(out, model, event);
+            let finished = match event {
+                UiEvent::Agent(AgentEvent::TurnFinished { session, .. }) => model.session == Some(*session),
+                UiEvent::Error(_) => true,
+                _ => false,
+            };
+            return (finished, matches!(event, UiEvent::Search(..)));
+        }
+        model::Output::Plain(components::Plain::Text(text)) => {
+            let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+        }
+        model::Output::Plain(components::Plain::Line(text) | components::Plain::TtyRequired(text)) => {
+            let _ = writeln!(out, "{text}");
+        }
+    }
+    (false, false)
 }
 
 /// A loaded transcript as lines. A row removed from context (48 §2.2)
@@ -1618,6 +1601,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         let _ = writeln!(out, "\x1b[0m");
     }
     let _ = match ev {
+        UiEvent::Wire(_) | UiEvent::Component(_) => unreachable!("intake is dispatched before printing"),
         UiEvent::Agent(AgentEvent::ReasoningDelta { text, .. }) => {
             let head = if thinking { "" } else { "\x1b[2m┆ " };
             write!(out, "{head}{text}").and_then(|()| out.flush())
@@ -1799,7 +1783,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 model::schedule_history_table(name, info.as_ref(), rows)
             )
         }
-        UiEvent::Computer(status) => writeln!(out, "{}", model::computer_line(status)),
         UiEvent::Job(_) => Ok(()),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         // The `Error` line that follows names the failure; there is no editor to refill.
@@ -2013,7 +1996,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             writeln!(out, "paired: {}", device.name)
         }
         UiEvent::LinkEvent(_) => Ok(()),
-        UiEvent::UpdateReady(_) => Ok(()),
         UiEvent::Nodes(list) => list.iter().try_for_each(|n| {
             writeln!(
                 out,
@@ -2034,11 +2016,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::NodeInvite(name, p) => {
             writeln!(out, "node invite · {name}\n{}\n{}", link::qr(&p.key), p.key)
         }
-        UiEvent::Sandboxes(list) if list.is_empty() => writeln!(out, "sandboxes: none"),
-        UiEvent::Sandboxes(list) => list
-            .iter()
-            .try_for_each(|i| writeln!(out, "{}", model::sandbox_line(i))),
-        UiEvent::SandboxDesktop(name, d) => writeln!(out, "{name} desktop: {}", d.http_url),
         UiEvent::MeshDevices(list) if list.is_empty() => writeln!(out, "mesh devices: none paired"),
         UiEvent::MeshDevices(list) => {
             let now = model::now_ms();

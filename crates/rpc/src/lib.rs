@@ -51,16 +51,15 @@ pub mod acp;
 // `confirmed` and the extensions.
 #[allow(clippy::too_many_arguments)]
 pub mod api;
-mod cells; // 171:C (E1 owns the file)
-mod cells_latest; // 171:C (E2 owns the file)
+
 pub mod client;
 pub mod engine;
 use agent::rpc_forward as forward;
 #[cfg(test)]
 mod forward_tests;
-pub mod landing;
 pub mod pathac;
 pub mod search;
+pub mod topics;
 
 mod diag;
 mod wslog;

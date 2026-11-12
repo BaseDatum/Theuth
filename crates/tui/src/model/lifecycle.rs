@@ -7,12 +7,14 @@ impl Model {
             model_id: default_model.clone(),
             default_model,
             approvals_global: approvals,
+            components: crate::components::builtin(),
             ..Self::default()
         }
     }
 
     /// `Self::new` on the engine's default model and effort, keeping catalog and skill index: `/new` and `/resume`.
     pub(super) fn reset(&mut self) {
+        self.component_notify(crate::components::Lifecycle::SessionReset);
         *self = Self {
             effort: self.default_effort.clone(),
             default_effort: self.default_effort.take(),
@@ -22,7 +24,8 @@ impl Model {
             secrets: self.secrets.take(),
             link: self.link.take(),
             nodes: self.nodes.take(),
-            update: self.update.take(),
+            components: std::mem::replace(&mut self.components, crate::components::Registry::empty()),
+            component_commands: self.component_commands.take(),
             todo_open: std::mem::take(&mut self.todo_open),
             // Per session: the switch view belongs to whatever is shown next
             // (the global default after `/new`).
@@ -38,15 +41,17 @@ impl Model {
             dictation_pending: self.dictation_pending.take(),
             dictation_model: self.dictation_model.clone(),
             attached: self.attached.take(),
-            ..Self::new(
-                std::mem::take(&mut self.default_model),
-                self.approvals_global,
-            )
+            model_id: self.default_model.clone(),
+            default_model: std::mem::take(&mut self.default_model),
+            approvals_global: self.approvals_global,
+            ..Self::default()
         };
     }
 
     /// Show a loaded transcript: `UiEvent::History` and `UiEvent::Forked`.
     pub(super) fn load(&mut self, loaded: Loaded) {
+        self.component_notify(crate::components::Lifecycle::TranscriptReplaced);
+        self.component_notify(crate::components::Lifecycle::History(&loaded));
         let opts = self.assistant_options();
         self.entries = loaded
             .history

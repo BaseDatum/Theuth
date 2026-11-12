@@ -112,11 +112,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "the agent roster: name, status, open tasks (67)",
     ),
-    (
-        "/computer",
-        "",
-        "computer control: permissions and displays",
-    ),
     ("/parent", "", "open the parent session (from a subagent)"),
     (
         "/sessions",
@@ -243,11 +238,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "machines this harness can run sessions on",
     ),
     (
-        "/sandbox",
-        "[desktop <name>]",
-        "sandbox VMs on this engine (design doc 79); `desktop` prints the noVNC URL",
-    ),
-    (
         "/artifacts",
         "",
         "files the agent showed (picker: ⏎ opens, s shows inline, e exports to ~/Downloads)",
@@ -345,6 +335,7 @@ impl Model {
     pub fn slash_rows(&self, word: &str) -> Vec<SlashRow> {
         let mut rows: Vec<SlashRow> = slash_matches(word, self.app_enabled)
             .into_iter()
+            .chain(self.components.slash_specs().filter(|spec| spec.0.starts_with(word)))
             .map(|(name, hint, desc)| SlashRow {
                 name: (*name).to_owned(),
                 hint: (*hint).to_owned(),

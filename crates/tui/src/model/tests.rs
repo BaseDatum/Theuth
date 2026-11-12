@@ -1918,8 +1918,8 @@
             version: "0.2.0".into(),
             applied: true,
         };
-        m.apply(UiEvent::UpdateReady(ev.clone()));
-        m.apply(UiEvent::UpdateReady(ev));
+        m.apply(UiEvent::Wire(crate::topics::TopicEvent::Remote(Arc::new(crate::topics::TopicNotification { topic: "update.ready".into(), version: 1, event: serde_json::to_value(ev.clone()).unwrap() }))));
+        m.apply(UiEvent::Wire(crate::topics::TopicEvent::Remote(Arc::new(crate::topics::TopicNotification { topic: "update.ready".into(), version: 1, event: serde_json::to_value(ev).unwrap() }))));
         assert!(m.header(&catalog).0.ends_with("  ·  0.2.0 ready"));
         let lines = m
             .entries
@@ -2966,10 +2966,13 @@
 
     #[test]
     fn computer_slash_submits_status_and_renders() {
+        use crate::components::computer::{Msg, Request, computer_line};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         m.submit("/computer", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ComputerStatus)));
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("computer effect") };
+        assert!(matches!(effect.request::<Request>(), Some(Request::Status)));
 
         let status = computer::PermissionStatus {
             accessibility: true,
@@ -2998,7 +3001,11 @@
             computer_line(&status),
             "accessibility ✓ · screen recording ✗ · 2 displays: 1 main 1512×982 @2×, 2 2560×1440 @1×\ngrant screen recording"
         );
-        m.apply(UiEvent::Computer(status));
+        m.apply(UiEvent::Component(crate::components::LocalReply {
+            to: m.components.token("computer"),
+            engine_epoch: 0,
+            body: Box::new(Msg::Status(Ok(status))),
+        }));
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("accessibility ✓"))
         );

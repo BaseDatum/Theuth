@@ -2,13 +2,30 @@
 //! (NO-EMOJI; the desktop's own tree is scanned by `crates/desktop/ui/src/lib/no-emoji.test.ts`). Glyphs in
 //! terminal text — the TUI, and `surface`'s text lowerings for the TUI, Signal and export — are allowed
 //! (Sky, 2026-10-07: "glyphs in the tui are acceptable, just no emojis in desktop"), so only the crates whose
-//! strings reach the desktop as chrome are scanned: `agent`, `rpc`, `rpc-core`, `meeting`, `talk`, `nodes`, `schedule`, `secrets` and `roster`. Each offender is named as `file:line`;
+//! strings reach the desktop as chrome are scanned: see `CRATES`. Each offender is named as `file:line`;
 //! a line that legitimately needs one ends with `// no-emoji: allow`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const CRATES: &[&str] = &["agent", "rpc", "rpc-core", "meeting", "talk", "nodes", "schedule", "secrets", "roster"];
+const CRATES: &[&str] = &[
+    "agent",
+    "rpc",
+    "rpc-core",
+    "cells",
+    "mcp-server",
+    "sandbox",
+    "computer",
+    "codeindex",
+    "dreaming",
+    "meeting",
+    "talk",
+    "autoresearch",
+    "nodes",
+    "schedule",
+    "secrets",
+    "roster",
+];
 
 /// `Extended_Pictographic` ∪ `Emoji_Presentation` (Unicode 16) minus the arrows block and ™, which are
 /// typography; plus the emoji variation selector and the keycap combiner.

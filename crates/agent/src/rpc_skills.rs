@@ -1,4 +1,16 @@
-use super::*;
+use crate as agent;
+use crate::rpc_forward as forward;
+use crate::rpc_support::{owner_root, RpcServerExt};
+use crate::{
+    AddSkill, AddSkillRepo, Agents, ListSkills, LoadSkill, RemoveSkill, RemoveSkillRepo,
+    SkillBody, SkillMeta, SyncSkills, UseSkill,
+};
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use rpc_core::{Server, ask};
+use runtime::SessionId;
+use tools::git::SyncResult;
 
 #[rpc(server, client)]
 pub trait SkillsApi {

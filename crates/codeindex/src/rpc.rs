@@ -1,4 +1,14 @@
-use super::*;
+use std::path::PathBuf;
+use crate as codeindex;
+use codeindex::{
+    ChangeLens, FitLens, HereLens, IndexStats, LensMeta, LocateAnchor, Located,
+    MapElement, MapExport, MapHit, MapIndex, MapJob,
+};
+use codeindex::rpc_support::codeindex;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use rpc_core::{Server, send};
+use runtime::SessionId;
 
 #[rpc(server, client)]
 pub trait CodemapApi {

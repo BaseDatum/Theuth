@@ -1242,9 +1242,7 @@ async fn subscribe(
             return Ok(());
         }
         // 126 §4.4: the chips and countdowns of pending cards follow the snapshot.
-        if let Ok(Some(d)) = ActorRef::<double::actor::Double>::lookup(double::DOUBLE_ACTOR) {
-            let _ = d.tell(double::actor::Republish).await;
-        }
+        crate::topics::republish().await;
         // 129 §3.1: the ring is read by one task and the sink written by
         // another, joined by `Stream`: a client that stops reading never makes
         // `rx.recv()` fall behind; what waits merges (deltas) or queues
@@ -1314,19 +1312,18 @@ async fn subscribe(
                     Next::Lagged(n) => {
                         // Dropped events may include a `*Resolved`: the snapshot after
                         // `Lagged` puts the client's pending set right again.
-                        let lagged = StreamControl::Lagged(Lagged { count: n });
+                        let lagged = crate::topics::lagged(n);
                         if let Ok(message) = mode.control(&lagged)
                             && sink.send(message).await.is_err()
                         {
                             return;
                         }
                         // Do not hold the tree lock across snapshot actor requests.
-                        let snapshot = PendingPrompts::collect(|v| {
+                        let snapshot = crate::topics::pending(|v| {
                             let policy = EventPolicy::legacy_fields(v);
                             let pass = wanted(&policy, session.as_deref(), state.lock().tree.as_mut());
                             pass && admitted(&policy, peer, &private)
-                        }).await;
-                        let snapshot = mode.prompts(snapshot);
+                        }, |topic| mode.topic(topic)).await;
                         if let Ok(message) = mode.control(&snapshot)
                             && sink.send(message).await.is_err()
                         {
@@ -1404,15 +1401,8 @@ impl EventSink {
         self.message(topic, version, &frame.event)
     }
 
-    fn control(&self, control: &StreamControl) -> serde_json::Result<SubscriptionMessage> {
+    fn control(&self, control: &serde_json::Value) -> serde_json::Result<SubscriptionMessage> {
         self.message(StreamControl::TOPIC, StreamControl::VERSION, control)
-    }
-
-    fn prompts(&self, mut prompts: PendingPrompts) -> StreamControl {
-        if !self.topic("tools.approval-requested") { prompts.approvals.clear(); }
-        if !self.topic("tools.ask-requested") { prompts.asks.clear(); }
-        if !self.topic("secrets.events") { prompts.secrets.clear(); }
-        StreamControl::PendingPrompts(prompts)
     }
 
     async fn snapshot(
@@ -1421,11 +1411,10 @@ impl EventSink {
         private: &PrivateMap,
         session: Option<&str>,
         mut tree: Option<&mut HashSet<String>>,
-    ) -> StreamControl {
-        let prompts = PendingPrompts::collect(|v| {
+    ) -> serde_json::Value {
+        crate::topics::pending(|v| {
             let policy = EventPolicy::legacy_fields(v);
             wanted(&policy, session, tree.as_deref_mut()) && admitted(&policy, peer, private)
-        }).await;
-        self.prompts(prompts)
+        }, |topic| self.topic(topic)).await
     }
 }
