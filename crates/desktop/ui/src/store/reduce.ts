@@ -657,8 +657,11 @@ export function adopt(old: readonly Entry[], fresh: Entry[]): Entry[] {
   });
 }
 
-/** Anything but its own delta finishes a streaming tail: text before and after a tool call are separate entries. */
+/** Deltas and in-place tool results keep a streaming tail open; new transcript entries close it. */
 function closeTail(s: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice {
+  // Background results patch an earlier card; they are not the model moving on.
+  if (e.type === "ToolCallFinished" && s.entries.some((t) => t.kind === "tool" && t.callId === e.call_id))
+    return s;
   const at = s.entries.length - 1;
   const last = s.entries[at];
   if (last?.kind === "reasoning" && !last.done && e.type !== "ReasoningDelta") {
@@ -1183,6 +1186,11 @@ function turn(
       }));
     }
     case "ToolCallFinished": {
+      // A repeated finish neither replaces the first result nor appends a fallback info line.
+      const tool = s.entries.findLast((t): t is Tool => t.kind === "tool" && t.callId === e.call_id);
+      if (tool?.result) return undefined;
+      const last = s.entries.at(-1);
+      const streaming = (last?.kind === "reasoning" && !last.done) || (last?.kind === "assistant" && last.open);
       // 183 §12.4: a resumed batch's first result (relayed from its new owner, or here) opens with `<engine_restart/>`.
       const split = e.output.startsWith("<engine_restart ") ? splitRestart(e.output) : { text: e.output };
       const result = {
@@ -1192,7 +1200,7 @@ function turn(
       };
       const next = patchTool(
         s,
-        (t) => t.callId === e.call_id && !t.result,
+        (t) => t.callId === e.call_id,
         (t) => ({ ...t, result, finishedAt: Date.now(), ...(split.restart ? { restart: split.restart } : {}) }),
       );
       // 183 R1: followed mid-turn, a replica sees the result of a call it never saw start (the follow stream is live
@@ -1216,7 +1224,7 @@ function turn(
           entries,
           scrape: without(s.scrape, e.call_id),
           sandbox: without(s.sandbox, e.call_id),
-          activity: "thinking",
+          activity: streaming ? s.activity : "thinking",
         },
         e.call_id,
         (d) =>
