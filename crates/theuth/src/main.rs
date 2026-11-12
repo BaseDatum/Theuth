@@ -2014,7 +2014,7 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::api::dreams::rpc_module(server.clone()),
         rpc::api::research::rpc_module(server.clone()),
         cells::rpc_module(server.clone()),
-        rpc::api::sandboxes::rpc_module(server.clone()),
+        sandbox::rpc_module(server.clone()),
         rpc::api::settings::rpc_module(server),
     ])
 }

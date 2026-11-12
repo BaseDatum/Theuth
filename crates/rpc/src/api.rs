@@ -225,8 +225,6 @@ pub mod meetings;
 pub mod dreams;
 /// Research RPC server and client traits.
 pub mod research;
-/// Sandboxes RPC server and client traits.
-pub use ::sandbox::rpc as sandboxes;
 
 pub use hub::{CoreApiClient, CoreApiServer};
 pub use sessions::{SessionsApiClient, SessionsApiServer};
@@ -250,7 +248,6 @@ pub use speech::{SpeechApiClient, SpeechApiServer};
 pub use meetings::{MeetingsApiClient, MeetingsApiServer};
 pub use dreams::{DreamsApiClient, DreamsApiServer};
 pub use research::{ResearchApiClient, ResearchApiServer};
-pub use sandboxes::{SandboxesApiClient, SandboxesApiServer};
 
 /// All domain client traits for typed methods on any jsonrpsee client.
 pub mod clients {
@@ -278,7 +275,7 @@ pub mod clients {
     pub use ::cells::rpc::KernelsApiClient;
     pub use super::dreams::DreamsApiClient;
     pub use super::research::ResearchApiClient;
-    pub use super::sandboxes::SandboxesApiClient;
+    pub use ::sandbox::rpc::SandboxesApiClient;
 }
 
 /// Unit-test/export composition only; production assembly belongs to main.
@@ -308,7 +305,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         dreams::rpc_module(server.clone()),
         research::rpc_module(server.clone()),
         ::cells::rpc_module(server.clone()),
-        sandboxes::rpc_module(server.clone()),
+        ::sandbox::rpc_module(server.clone()),
         settings::rpc_module(server),
     ])
 }
