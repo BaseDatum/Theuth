@@ -363,6 +363,7 @@ mod events;
 mod harnesses;
 mod history;
 mod lifecycle;
+pub(crate) use lifecycle::markdown_options;
 mod menus;
 mod navigation;
 mod network;

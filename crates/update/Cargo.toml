@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Self-update: check the release manifest, verify, replace the running binary on disk; never ask (design doc 39)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 platform = { workspace = true }

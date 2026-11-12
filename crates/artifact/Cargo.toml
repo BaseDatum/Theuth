@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Files the agent makes for the user, shown in chat: `show` tool, content-addressed store, Typst PDF compile, SVG raster (design doc 35)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }

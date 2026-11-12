@@ -12,6 +12,7 @@
 //! - events: [`AppCallChanged`]
 //! - [`skill`] (the bundled `apps` skill), [`HASH`] (library compatibility hash)
 
+pub mod rpc_support;
 pub mod actor;
 pub mod agent_draft;
 pub mod draft;
