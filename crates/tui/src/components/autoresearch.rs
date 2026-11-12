@@ -54,7 +54,7 @@ impl Component for Autoresearch {
     fn update(&mut self, input: Input<'_, Msg>, cx: &mut Cx<'_, '_, Msg>) {
         match input {
             Input::Slash { args, .. } => match request(args) {
-                Request::Goal(args) => cx.core(CoreAction::UseSkill { name: "autoresearch".into(), args }),
+                Request::Goal(args) => cx.send_to::<skills_prompt::SkillsPrompt>(skills_prompt::Msg::Use { name: "autoresearch".into(), args }),
                 request => cx.spawn_request(Lane::Concurrent, request, |api, request| async move {
                     Msg::Loaded(run(&api, request).await)
                 }),
@@ -121,5 +121,5 @@ fn autoresearch_control_vs_goal_uses_existing_skill_path() {
     let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("control effect") };
     assert!(matches!(effect.request::<Request>(), Some(Request::Control(slug, ::autoresearch::ControlOp::Pause)) if slug == "study-a"));
     model.submit("/autoresearch Improve the search ranking", &tx);
-    assert!(matches!(rx.try_recv(), Ok(Command::UseSkill { name, args, session: None, .. }) if name == "autoresearch" && args == "Improve the search ranking"));
+    assert!(matches!(crate::model::tests::component_request::<skills_prompt::Request>(&mut rx), Ok(skills_prompt::Request::UseSkill { name, args, session: None, .. }) if name == "autoresearch" && args == "Improve the search ranking"));
 }

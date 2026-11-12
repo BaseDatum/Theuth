@@ -32,16 +32,14 @@ impl Model {
                         summary: Some(_),
                         ..
                     }
-            ) || matches!(e, Entry::Advisory { advisory, .. } if advisory_row_count(advisory) > ADVISORY_COLLAPSED)
+            )
         }) else {
             return;
         };
         if self.component_entry_action(index, crate::components::EntryOperation::Toggle) { return; }
         let e = &mut self.entries[index];
         match e {
-            Entry::Card { expanded, .. }
-            | Entry::Compacted { expanded, .. }
-            | Entry::Advisory { expanded, .. } => {
+            Entry::Card { expanded, .. } | Entry::Compacted { expanded, .. } => {
                 *expanded = !*expanded;
             }
             Entry::Tool {
@@ -128,14 +126,6 @@ pub enum Entry {
     /// 109 §10.3: a plain divider in the `Compacted` shape (`── resumed after
     /// restart ──`); nothing to expand.
     Divider(String),
-    /// 125 §7.4: one Advisory card — every note the advisor raised at one
-    /// step boundary. Three notes until Ctrl+O (`ADVISORY_COLLAPSED`).
-    Advisory {
-        /// The typed metadata of the row.
-        advisory: Advisory,
-        /// Show every note.
-        expanded: bool,
-    },
     /// Informational line (session lists, notices).
     Info(String),
     /// Error line.
@@ -145,10 +135,8 @@ pub enum Entry {
 /// What an [`Entry::Card`] holds; picks its glyph and colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardKind {
-    /// A skill body (`/skills`) or a knowledge card (`/knowledge`).
+    /// Canonical skill input injected into the accepted conversation.
     Skill,
-    /// The assembled system prompt (`/prompt`).
-    Prompt,
     /// A `<job_result>` the harness injected when a background job ended.
     Job,
     /// A `<schedule>` fire the harness injected (34 §1.5).
@@ -190,7 +178,6 @@ impl CardKind {
     pub fn glyph(self) -> &'static str {
         match self {
             CardKind::Skill => "◇",
-            CardKind::Prompt => "§",
             CardKind::Job => "▸",
             CardKind::Schedule => "◷",
             CardKind::Removed => "⊘",
@@ -295,15 +282,6 @@ impl Entry {
                     (false, _) => 0,
                     (true, true) => text_rows(&clean(text.raw()), inner),
                     (true, false) => md(text, inner),
-                }
-            }
-            // 125 §7.4: border + title + margin, one row per note shown, the `… +N more` row.
-            Entry::Advisory { advisory, expanded } => {
-                let n = advisory_row_count(advisory);
-                if *expanded {
-                    4 + n
-                } else {
-                    4 + n.min(ADVISORY_COLLAPSED) + usize::from(n > ADVISORY_COLLAPSED)
                 }
             }
             Entry::Reasoning { done: true, .. } => 1,

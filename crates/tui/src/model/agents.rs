@@ -560,8 +560,8 @@ impl Model {
             | AgentEvent::TodoChanged { .. }
             | AgentEvent::DefaultModelChanged { .. }
             | AgentEvent::DefaultEffortChanged { .. }
-            | AgentEvent::FavoriteModelsChanged { .. } => {}
-            AgentEvent::SkillsChanged { skills, .. } => self.loaded_skills = skills,
+            | AgentEvent::FavoriteModelsChanged { .. }
+            | AgentEvent::SkillsChanged { .. } => {}
             // The consultation's steps in the status line; the settled note
             // is one collapsed card naming the sources (52 §6). Its body text
             // arrives with the reloaded transcript, not on the wire.

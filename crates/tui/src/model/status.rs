@@ -140,17 +140,6 @@ impl Model {
             0 => String::new(),
             n => format!("  ·  {n} queued"),
         };
-        let harness_skills: Vec<&str> = self
-            .harness_commands
-            .iter()
-            .filter_map(|c| c.name.strip_prefix("skill:"))
-            .collect();
-        let skills = match (self.harness_commands.len(), self.loaded_skills.len()) {
-            (0, 0) => String::new(),
-            (0, _) => format!("  ·  skills: {}", self.loaded_skills.join(", ")),
-            (n, _) if harness_skills.is_empty() => format!("  ·  harness commands: {n}"),
-            _ => format!("  ·  harness skills: {}", harness_skills.join(", ")),
-        };
         let scrolled = if self.anchor.is_some() {
             "  ·  ↑ history · PgDn follows"
         } else {
@@ -182,7 +171,7 @@ impl Model {
         let pinned = self.component_text(Surface::Status(StatusSlot::Pinned));
         let spoken = self.component_text(Surface::Status(StatusSlot::Spoken));
         format!(
-            "{session}  {state}{watch}{usage}{agents}{queued}{work}{skills}{before_catalog}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
+            "{session}  {state}{watch}{usage}{agents}{queued}{work}{before_catalog}{catalog}{editing}{scrolled}{pinned}{spoken}{attached}{resumed}"
         )
     }
 

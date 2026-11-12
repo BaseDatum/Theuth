@@ -3,8 +3,34 @@
         ModelRow, rank_models, providers, provider_models, search_terms, harness_options_lines};
     use crate::components::advisor::{Advisor, Msg as AdvisorMsg, Request as AdvisorRequest, Card as AdvisoryCard,
         advisory_title, advisory_lines, advisory_severity, severity_name, severity_color};
-    use agent::{AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind};
+    use agent::{AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind, SkillMeta};
     use std::collections::BTreeSet;
+    use crate::components::skills_prompt::{SkillsPrompt, Msg as SkillsMsg, Request as SkillsRequest};
+
+    fn skills(m: &Model) -> &SkillsPrompt { m.components.get::<SkillsPrompt>().unwrap() }
+
+    #[test]
+    fn pending_skill_draft_continuation_is_canceled_by_session_switch() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), false);
+        m.submit("/model openai/gpt-5.4", &tx);
+        m.submit("/caveman lite", &tx);
+        let SkillsRequest::UseSkill { name, args, draft: Some(_), .. } =
+            component_request::<SkillsRequest>(&mut rx).unwrap() else { panic!("draft invocation") };
+        m.submit("/new", &tx);
+        let selected = SessionId::new();
+        m.apply(UiEvent::SessionCreated(selected));
+        let created = SessionId::new();
+        component_reply(&mut m, "skills-prompt", SkillsMsg::Created {
+            session: created, generation: 0,
+            request: SkillsRequest::UseSkill { session: Some(created), name, args, draft: None },
+        });
+        assert_eq!(m.session, Some(selected));
+        assert!(rx.try_recv().is_err(), "canceled invocation must not inject after switching");
+        m.submit("/caveman fresh", &tx);
+        assert!(matches!(component_request::<SkillsRequest>(&mut rx),
+            Ok(SkillsRequest::UseSkill { session: Some(id), args, .. }) if id == selected && args == "fresh"));
+    }
 
     fn advisor(m: &Model) -> &Advisor { m.components.get::<Advisor>().unwrap() }
     fn advisor_mut(m: &mut Model) -> &mut Advisor { m.components.get_mut::<Advisor>().unwrap() }
@@ -233,7 +259,7 @@
         })
     }
 
-    fn component_request<R: Clone + 'static>(
+    pub(crate) fn component_request<R: Clone + 'static>(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
     ) -> Result<R, tokio::sync::mpsc::error::TryRecvError> {
         rx.try_recv().map(|command| match command {
@@ -4451,7 +4477,7 @@
                 hidden: false,
             }],
         };
-        m.apply(UiEvent::Skills(vec![SkillMeta {
+        component_reply(&mut m, "skills-prompt", SkillsMsg::Skills(vec![SkillMeta {
             name: "caveman".into(),
             description: "caveman skill".into(),
             path: "/skills/caveman.md".into(),
@@ -4466,7 +4492,7 @@
         m.submit("/model anthropic/claude-sonnet-4-5", &tx);
         m.submit("/effort high", &tx);
         assert!(rx.try_recv().is_err());
-
+    
         // `/talk` with no session: the created session starts on the picks.
         m.submit("/talk", &tx);
         assert!(matches!(
@@ -4486,14 +4512,14 @@
         // `/<skill>` with no session.
         m.submit("/caveman lite", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::UseSkill { session: None, name, draft, .. }) if name == "caveman" && picked(&draft)
+            component_request::<SkillsRequest>(&mut rx),
+            Ok(SkillsRequest::UseSkill { session: None, name, draft, .. }) if name == "caveman" && picked(&draft)
         ));
         let s = SessionId::new();
         m.apply(UiEvent::SessionCreated(s));
         assert_eq!(m.session, Some(s));
         assert!(m.draft.is_none());
-
+    
         // A fresh draft with no pick: the same entries create on the engine side.
         m.submit("/new", &tx);
         assert!(m.draft.is_none());
@@ -4516,8 +4542,8 @@
         ));
         m.submit("/caveman lite", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::UseSkill {
+            component_request::<SkillsRequest>(&mut rx),
+            Ok(SkillsRequest::UseSkill {
                 session: None,
                 draft: None,
                 ..
@@ -5104,7 +5130,7 @@
         let mut m = Model::new("nobody/nothing".into(), true);
         let s = SessionId::new();
         m.session = Some(s);
-        m.loaded_skills = vec!["native".into()];
+        m.components.get_mut::<SkillsPrompt>().unwrap().loaded_skills = vec!["native".into()];
         assert!(m.status().ends_with("skills: native"), "{}", m.status());
         let infos = m.entries.len();
         m.apply_agent(AgentEvent::HarnessCommandsChanged {
@@ -5545,12 +5571,12 @@
             repo: None,
         };
         // The index arrives at start without opening the picker; names now resolve.
-        m.apply(UiEvent::Skills(vec![meta("caveman"), meta("ponytail")]));
-        assert!(m.menu.is_none());
+        component_reply(&mut m, "skills-prompt", SkillsMsg::Skills(vec![meta("caveman"), meta("ponytail")]));
+        assert!(skills(&m).menu.is_none());
         m.submit("/caveman lite", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::UseSkill { session: Some(id), name, args, .. }) if id == s && name == "caveman" && args == "lite"
+            component_request::<SkillsRequest>(&mut rx),
+            Ok(SkillsRequest::UseSkill { session: Some(id), name, args, .. }) if id == s && name == "caveman" && args == "lite"
         ));
         // An unknown word is message text, not an error — as is a path even before the index arrives.
         m.submit("/nonesuch", &tx);
@@ -5570,53 +5596,53 @@
         assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/"));
         fresh.submit("/maybe lite", &tx);
         assert!(
-            matches!(rx.try_recv(), Ok(Command::UseSkill { name, args, .. }) if name == "maybe" && args == "lite")
+            matches!(component_request::<SkillsRequest>(&mut rx), Ok(SkillsRequest::UseSkill { name, args, .. }) if name == "maybe" && args == "lite")
         );
-
+    
         // `/skills` opens the picker; Enter uses, `s` shows.
         m.submit("/skills", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListSkills)));
-        m.apply(UiEvent::Skills(vec![meta("caveman"), meta("ponytail")]));
-        assert!(matches!(m.menu, Some(Menu::Skills { .. })));
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Char('s'), "", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::LoadSkill(n)) if n == "ponytail"));
-        assert!(m.menu.is_none());
+        assert!(matches!(component_request::<SkillsRequest>(&mut rx), Ok(SkillsRequest::ListSkills)));
+        component_reply(&mut m, "skills-prompt", SkillsMsg::Skills(vec![meta("caveman"), meta("ponytail")]));
+        assert!(matches!(skills(&m).menu, Some(_)));
+        component_menu_key(&mut m, "skills-prompt", KeyCode::Down);
+        component_menu_key(&mut m, "skills-prompt", KeyCode::Char('s'));
+        assert!(matches!(component_request::<SkillsRequest>(&mut rx), Ok(SkillsRequest::LoadSkill(n)) if n == "ponytail"));
+        assert!(skills(&m).menu.is_none());
         m.submit("/skills", &tx);
         rx.try_recv().unwrap();
-        m.apply(UiEvent::Skills(vec![meta("caveman")]));
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_reply(&mut m, "skills-prompt", SkillsMsg::Skills(vec![meta("caveman")]));
+        component_menu_key(&mut m, "skills-prompt", KeyCode::Enter);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::UseSkill { name, args, .. }) if name == "caveman" && args.is_empty()
+            component_request::<SkillsRequest>(&mut rx),
+            Ok(SkillsRequest::UseSkill { name, args, .. }) if name == "caveman" && args.is_empty()
         ));
-
+    
         // The injected turn renders as a skill card plus the user's words.
         let text = agent::skills::inject_text("caveman", "# Caveman\nGrunt.", "lite");
-        m.apply_agent(AgentEvent::TurnStarted {
+        m.apply(wire_event("agent.events", AgentEvent::TurnStarted {
             session: s,
             turn: TurnId::new(),
             turn_seq: 1,
             text,
             model: "m".into(),
             channel: None,
-        });
+        }));
         let n = m.entries.len();
         assert!(
             matches!(&m.entries[n - 2], Entry::Card { kind: CardKind::Skill, title, .. } if title == "caveman")
         );
         assert!(matches!(&m.entries[n - 1], Entry::User { text: t, turn: Some(1) } if t == "lite"));
-
+    
         // The badge follows the agent's set: grows on load, empties on compaction.
-        m.apply_agent(AgentEvent::SkillsChanged {
+        m.apply(wire_event("agent.events", AgentEvent::SkillsChanged {
             session: s,
             skills: vec!["caveman".into(), "ponytail".into()],
-        });
+        }));
         assert!(m.status().ends_with("skills: caveman, ponytail"));
-        m.apply_agent(AgentEvent::SkillsChanged {
+        m.apply(wire_event("agent.events", AgentEvent::SkillsChanged {
             session: s,
             skills: Vec::new(),
-        });
+        }));
         assert!(!m.status().contains("skills:"));
     }
 

@@ -15,7 +15,7 @@ use agent::{
     CompactStyle, ContextAttachment, ContextEntry, ContextRemoval,
     ContextTarget, HistoryEntry, Loaded, ObservedMeta, ObservedSource,
     ObservedState, ProviderInfo, QueuedInput, SessionKind,
-    SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage, VisionStatus,
+    SessionSummary, Usage, VisionNote, VisionStage, VisionStatus,
 };
 use agent::{
     CleanupStatus, CloseResult,
@@ -26,7 +26,6 @@ use iocraft::KeyCode;
 use models::Catalog;
 use runtime::{InputId, SessionId, TurnId};
 use tokio::sync::mpsc::UnboundedSender;
-use tools::git::SyncResult;
 use tools::{
     Answer, ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, AskId, AskRequested,
     AskResolved, Decision,
@@ -168,14 +167,6 @@ pub struct Model {
     pub vision: Option<String>,
     /// The user asked to leave.
     pub quit: bool,
-    /// Skill index (`list_skills`), fetched at start and by `/skills`: names
-    /// resolve `/<skill> [args]`.
-    pub skills: Vec<SkillMeta>,
-    /// `/skills` was typed: the next index reply opens the picker.
-    skills_picker_pending: bool,
-    /// Skills whose body is in the shown session's frame (`SkillsChanged`,
-    /// `Loaded.skills`): the status-line badge.
-    pub loaded_skills: Vec<String>,
     /// First visible transcript row while scrolled up: `(entry, rows into
     /// it)`. `None` follows the tail. Anchored to an entry rather than to a
     /// row count from the bottom so what you are reading stays put while a

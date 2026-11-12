@@ -82,7 +82,7 @@ const PEER: Color = FAIENCE;
 const HEADING: Color = OCHRE;
 /// Skill body cards.
 const SKILL: Color = OCHRE;
-/// System prompt cards.
+/// Core context and lifecycle cards.
 const PROMPT: Color = SAND;
 /// Finished background job cards.
 const JOB: Color = MALACHITE;
@@ -162,8 +162,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             if let Some(id) = resume {
                 model.write().resume(id, &commands);
             }
-            // Skill names so `/<skill> [args]` resolves before `/skills` was ever opened.
-            let _ = commands.send(Command::ListSkills);
             let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
             frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut pending = Vec::new();
@@ -884,27 +882,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Skills { items, cursor } => (
-            "skills  ⏎ use  s show  esc close   ● in context".to_owned(),
-            items
-                .iter()
-                .map(|s| {
-                    // ponytail: fixed 48-char description; pass the terminal width if it grates.
-                    let desc: String = s.description.chars().take(48).collect();
-                    format!(
-                        "{} {:<20} {:<48} {:<16} {}",
-                        if m.loaded_skills.contains(&s.name) { "●" } else { " " },
-                        s.name,
-                        desc,
-                        s.repo
-                            .as_deref()
-                            .map_or_else(String::new, |r| format!("[{r}]")),
-                        if s.always { "always" } else { "" }
-                    )
-                })
-                .collect(),
-            *cursor,
-        ),
         Menu::Logins { items, cursor } => (
             "login  ⏎ log in  esc close".to_owned(),
             items
@@ -1107,7 +1084,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
         } => {
             let color = match kind {
                 CardKind::Skill => SKILL,
-                CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
                 CardKind::Component { color, .. } => *color,
                 CardKind::Removed => PROMPT,
