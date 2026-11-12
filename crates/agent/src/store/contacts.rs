@@ -25,6 +25,17 @@ pub const RECORD_TABLES: [&str; 7] = [
     "contact_roster_heads",
 ];
 
+/// 191 (D3): whose a session is, as the contact paths read it ([`Store::owner_strict`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Owner {
+    /// This engine.
+    Here,
+    /// Another machine of the mesh: its engine id.
+    Elsewhere(String),
+    /// Neither: no row here, or an empty owner on a mesh engine.
+    Unknown,
+}
+
 /// One `contacts` row. Every column may be NULL: a replicated row can arrive a column at a
 /// time, and validity is the reconcile's.
 #[allow(missing_docs)]
@@ -444,22 +455,81 @@ impl Store {
         Ok(())
     }
 
-    /// 191 (D3, S4): `session`'s row exists and reads here and this engine owns it, strictly:
-    /// an unknown row, another engine's, or (on a mesh engine) an empty owner is not ours,
-    /// unlike [`super::Store`]'s `here`, which reads empty as local. A lone engine (no mesh
-    /// id: `me` is `""`) owns its own `''` rows. An unreadable row is `Err`. The predicate of
-    /// every contact path.
-    pub async fn owned_here(&self, session: SessionId) -> anyhow::Result<bool> {
-        Ok(self
-            .session(session)
-            .await?
-            .is_some_and(|row| row.owner == *self.me))
+    /// 191 (D3, S4): whose `session` is, strictly: this engine's when its row exists and reads
+    /// here and this engine owns it; another machine's when the row names one; else unknown
+    /// (no row, or an empty owner on a mesh engine), unlike [`super::Store`]'s `here`, which
+    /// reads empty as local. A lone engine (no mesh id: `me` is `""`) owns its own `''` rows.
+    /// An unreadable row is `Err`. The predicate of every contact path.
+    pub async fn owner_strict(&self, session: SessionId) -> anyhow::Result<Owner> {
+        Ok(match self.session(session).await? {
+            Some(row) if row.owner == *self.me => Owner::Here,
+            Some(row) if !row.owner.is_empty() => Owner::Elsewhere(row.owner),
+            _ => Owner::Unknown,
+        })
+    }
+
+    /// 191 (D4): the local inbox rows of `(principal, export)` (`a2a_contexts`): each session
+    /// once, oldest first, with its owner and its marker.
+    pub async fn inbox_rows(
+        &self,
+        principal: &str,
+        export: &str,
+    ) -> anyhow::Result<Vec<(SessionId, String, Option<String>)>> {
+        let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT c.session, s.owner, s.contact_inbox FROM a2a_contexts c \
+             JOIN sessions s ON s.id = c.session WHERE c.principal = ? AND c.export = ? \
+             GROUP BY c.session ORDER BY MIN(c.created_at), c.session",
+        )
+        .bind(principal)
+        .bind(export)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(id, owner, marker)| {
+                let id = id
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("a2a_contexts.session {id}: {e}"))?;
+                Ok((id, owner, marker))
+            })
+            .collect()
+    }
+
+    /// 191 (D4): the sessions whose inbox marker is `marker`, with their owners, oldest first.
+    pub async fn marked_inboxes(&self, marker: &str) -> anyhow::Result<Vec<(SessionId, String)>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, owner FROM sessions WHERE contact_inbox = ? ORDER BY created_at, id",
+        )
+        .bind(marker)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(id, owner)| {
+                let id = id
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("sessions.id {id}: {e}"))?;
+                Ok((id, owner))
+            })
+            .collect()
+    }
+
+    /// 191 (D4): `session` is a marked inbox: its marker (`<principal>|<export id>`) is set,
+    /// reads, and names a live `a2a_exports` row by id. A name-valued marker, one naming a
+    /// tombstoned or unknown export, and no marker are not.
+    pub async fn inbox_marked(&self, session: SessionId) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sessions s JOIN a2a_exports x \
+             ON x.id = substr(s.contact_inbox, instr(s.contact_inbox, '|') + 1) \
+             WHERE s.id = ? AND instr(s.contact_inbox, '|') > 0 AND x.removed_ms IS NULL)",
+        )
+        .bind(session.to_string())
+        .fetch_one(&self.read)
+        .await?)
     }
 
     /// Tests: `session` is owned by `owner`, as the session log applies another machine's
     /// take (off the capture connection).
-    #[cfg(test)]
-    pub(crate) async fn owned_elsewhere(&self, session: SessionId, owner: &str) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn owned_elsewhere(&self, session: SessionId, owner: &str) {
         sqlx::query("UPDATE sessions SET owner = ? WHERE id = ?")
             .bind(owner)
             .bind(session.to_string())
@@ -618,9 +688,9 @@ mod tests {
     }
 
     /// 191 (D3, S4): the contact paths' owner predicate is strict: this engine's row is ours;
-    /// an unknown row, an empty owner on a mesh engine (where `here` reads it as local) and
-    /// another engine's are not, and an unreadable row is an error (refused). A lone engine
-    /// (no mesh id) owns its own `''` rows.
+    /// an unknown row and an empty owner on a mesh engine (where `here` reads it as local) are
+    /// unknown, another engine's names it, and an unreadable row is an error (refused). A lone
+    /// engine (no mesh id) owns its own `''` rows.
     #[tokio::test]
     async fn only_a_row_this_engine_owns_is_owned_here() {
         let scratch = crate::TestDir::new("contacts");
@@ -635,30 +705,94 @@ mod tests {
             .create_session(id, "m", None, None, None)
             .await
             .unwrap();
-        assert!(store.owned_here(id).await.unwrap());
-        assert!(
-            !store.owned_here(SessionId::new()).await.unwrap(),
-            "unknown"
+        assert_eq!(store.owner_strict(id).await.unwrap(), Owner::Here);
+        assert_eq!(
+            store.owner_strict(SessionId::new()).await.unwrap(),
+            Owner::Unknown
         );
         store.owned_elsewhere(id, "").await;
         assert!(
             store.session(id).await.unwrap().unwrap().here,
             "`here` reads it as local"
         );
-        assert!(
-            !store.owned_here(id).await.unwrap(),
+        assert_eq!(
+            store.owner_strict(id).await.unwrap(),
+            Owner::Unknown,
             "empty, on a mesh engine"
         );
         store.owned_elsewhere(id, "other-engine").await;
-        assert!(!store.owned_here(id).await.unwrap(), "another engine's");
+        assert_eq!(
+            store.owner_strict(id).await.unwrap(),
+            Owner::Elsewhere("other-engine".into())
+        );
         store.owned_elsewhere(id, "me-engine").await;
         store.break_session_for_test(id).await;
-        assert!(store.owned_here(id).await.is_err(), "unreadable");
+        assert!(store.owner_strict(id).await.is_err(), "unreadable");
         // A lone engine: its rows are `''` and so is its id.
         let (lone, mine, _dir) = fresh().await;
-        assert!(lone.owned_here(mine).await.unwrap());
+        assert_eq!(lone.owner_strict(mine).await.unwrap(), Owner::Here);
         lone.owned_elsewhere(mine, "other-engine").await;
-        assert!(!lone.owned_here(mine).await.unwrap());
+        assert_eq!(
+            lone.owner_strict(mine).await.unwrap(),
+            Owner::Elsewhere("other-engine".into())
+        );
+    }
+
+    /// 191 (D4): an inbox is marked only by a marker naming a live export by id: a
+    /// name-valued marker, a tombstoned export's and no marker are not; the marker lookup finds
+    /// every session carrying it.
+    #[tokio::test]
+    async fn an_inbox_is_marked_only_by_a_live_export_id() {
+        let (store, mine, _dir) = fresh().await;
+        let other = SessionId::new();
+        store
+            .create_session(other, "m", None, None, None)
+            .await
+            .unwrap();
+        assert!(!store.inbox_marked(mine).await.unwrap(), "no marker");
+        store
+            .write_contact_records(&[
+                RecordWrite::new(
+                    RecordTable::Exports,
+                    "x-live",
+                    vec![("name", Cell::Text("research".into()))],
+                ),
+                RecordWrite::new(
+                    RecordTable::Exports,
+                    "x-gone",
+                    vec![("removed_ms", Cell::Int(1))],
+                ),
+            ])
+            .await
+            .unwrap();
+        for (marker, marked) in [
+            ("peer:b|research", false),
+            ("peer:b|x-gone", false),
+            ("peer:b|x-unknown", false),
+            ("peer:b|x-live", true),
+        ] {
+            store.set_contact_inbox(mine, marker).await.unwrap();
+            assert_eq!(store.inbox_marked(mine).await.unwrap(), marked, "{marker}");
+        }
+        store
+            .set_contact_inbox(other, "peer:b|x-live")
+            .await
+            .unwrap();
+        let found = store.marked_inboxes("peer:b|x-live").await.unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|(s, _)| *s)
+                .collect::<std::collections::HashSet<_>>(),
+            std::collections::HashSet::from([mine, other])
+        );
+        assert!(
+            store
+                .marked_inboxes("peer:b|research")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// 191 (D4): every local inbox of a session this machine owns gets

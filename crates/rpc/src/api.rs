@@ -243,6 +243,19 @@ pub trait Api {
         session: SessionId,
         envelope: PeerEnvelope,
     ) -> RpcResult<PeerReceipt>;
+    /// 191 (D3): a contact's unary call (`POST path` with the JSON-RPC `body`) that another
+    /// machine of the mesh received for a session owned here: this machine checks `caller`
+    /// itself and answers it in its own a2a router. Mesh-internal like `peer_deliver`: a call
+    /// without the `Forwarded` marker is `-32002`. `NOT_OWNER` (-32013) when the session is
+    /// not owned here either, `OWNER_UNREACHABLE` (-32010) before `contacts_ready`; every
+    /// outcome of the router is `{status, body}`.
+    #[method(name = "a2a_forward", with_extensions)]
+    async fn a2a_forward(
+        &self,
+        caller: String,
+        path: String,
+        body: String,
+    ) -> RpcResult<agent::communication::mesh::A2aAnswer>;
     /// One message to many sessions (62 §0.1): the selector is resolved on
     /// the harness, each row is authorized like `send_input`, and the reply
     /// carries one outcome per session. `dry_run: true` previews the rows.
@@ -4507,6 +4520,39 @@ impl ApiServer for Server {
                     ErrorObjectOwned::owned(UNAUTHORIZED, r.to_string(), None::<()>)
                 }
                 other => ErrorObjectOwned::owned(ASK_FAILED, other.to_string(), None::<()>),
+            })
+    }
+
+    async fn a2a_forward(
+        &self,
+        ext: &Extensions,
+        caller: String,
+        path: String,
+        body: String,
+    ) -> RpcResult<agent::communication::mesh::A2aAnswer> {
+        use agent::communication::mesh::ForwardFailure;
+        if ext.get::<forward::Forwarded>().is_none() {
+            return Err(ErrorObjectOwned::owned(
+                UNAUTHORIZED,
+                "a2a_forward is mesh-internal",
+                None::<()>,
+            ));
+        }
+        // Off the a2a mailbox: the plugin's published context, never an actor ask.
+        a2a::contacts::forward::serve(&caller, &path, body)
+            .await
+            .map_err(|e| match e {
+                ForwardFailure::NotOwner => ErrorObjectOwned::owned(
+                    forward::NOT_OWNER,
+                    agent::communication::network::NOT_OWNER_TEXT,
+                    None::<()>,
+                ),
+                ForwardFailure::Offline(why) => {
+                    ErrorObjectOwned::owned(forward::OWNER_UNREACHABLE, why, None::<()>)
+                }
+                ForwardFailure::Refused(why) => {
+                    ErrorObjectOwned::owned(ASK_FAILED, why, None::<()>)
+                }
             })
     }
 

@@ -678,6 +678,9 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
                         agent: agent.trim().to_owned(),
                         title,
                         description,
+                        // 191 (D4): its home while it is this machine or a live one of the
+                        // mesh; a home that left (or none) opens no new inbox.
+                        home: e.home.clone().filter(|h| *h == r.me || family.contains(h)),
                     },
                 );
             }

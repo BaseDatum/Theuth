@@ -1371,6 +1371,8 @@ impl runtime::Plugin for A2aPlugin {
             #[cfg(test)]
             mid_pass: Mutex::default(),
         });
+        // 191 (D3): `rpc`'s `a2a_forward` reaches the owner side through this, off the mailbox.
+        contacts::forward::publish(&ctx);
         let actor = A2aActor::spawn_with_mailbox(
             A2aActor { ctx: ctx.clone() },
             runtime::subscriber_mailbox(),

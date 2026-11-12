@@ -4,6 +4,7 @@ import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
 import type { SetOptionResult } from '@/rpc/bindings/SetOptionResult'
 import type { ChildResumed } from '@/rpc/bindings/ChildResumed'
 import type { EntryInfo } from '@/rpc/bindings/EntryInfo'
+import type { A2aAnswer } from '@/rpc/bindings/A2aAnswer'
 import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
@@ -1082,6 +1083,8 @@ export interface Api {
   new_session(): Promise<SessionId>
   /** PATH-AC: candidates for the path token under `cursor` (a UTF-8 byte offset) in `input`, listed by `session`'s engine (183 W-12: else `engine`'s); empty, never an error, when nothing applies. */
   path_complete(session: SessionId | null, input: string, cursor: number, engine?: string | null): Promise<PathCompletion>
+  /** Mesh-internal (191 D3): a contact's unary call carried to the machine that owns its session; anything but a mesh peer is `UNAUTHORIZED`. */
+  a2a_forward(caller: string, path: string, body: string): Promise<A2aAnswer>
   /** Mesh-internal (62 §0.1): a peer's envelope delivered to `session`; anything but a mesh peer is `UNAUTHORIZED`. */
   peer_deliver(session: SessionId, envelope: PeerEnvelope): Promise<PeerReceipt>
   /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
@@ -1423,6 +1426,7 @@ export const METHODS = [
   'a2a_export_put',
   'a2a_export_remove',
   'a2a_exports',
+  'a2a_forward',
   'a2a_status',
   'activity_list',
   'add_acp',

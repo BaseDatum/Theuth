@@ -242,7 +242,7 @@ impl Live {
             .chain(staged.agents.values().map(|a| {
                 (
                     &a.name,
-                    Target::Agent(a.agent.clone()),
+                    Target::Agent(a.agent.clone(), a.home.clone()),
                     &a.title,
                     &a.description,
                 )
@@ -324,6 +324,12 @@ impl Live {
             .clone()
             .try_acquire_owned()
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+    }
+
+    /// 183 §7.7: the export a contact's `POST /rpc` reaches: the first one granted to the
+    /// contact pinned to `eid` (as [`dispatch`] maps it).
+    pub(crate) fn first_export(&self, eid: &str) -> Option<String> {
+        self.contacts.get(eid)?.exports.iter().min().cloned()
     }
 
     /// The export exists and its session is effectively enabled right now; an agent export
@@ -495,6 +501,19 @@ fn card(rpc_url: &str, title: &str, description: &str) -> AgentCard {
     }
 }
 
+/// [`check_version`] of a request by its headers (191: the receiving machine checks it before
+/// it forwards a call the owner then serves as this version).
+pub(crate) fn check_version_of(headers: &axum::http::HeaderMap) -> Result<(), A2AError> {
+    let v = headers
+        .get(VERSION_PARAM)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    check_version(&ServiceParams::from([(
+        VERSION_PARAM.to_owned(),
+        v.into_iter().collect(),
+    )]))
+}
+
 /// Version negotiation (§3.3), the handler's duty on every method: the
 /// released router never reads `A2A-Version`. Absent/empty means 0.3 per
 /// spec 3.6.2, which this profile does not serve. Patch versions tolerated.
@@ -577,8 +596,9 @@ fn accepts_text(mode: &str) -> bool {
 enum Target {
     /// One exact session (an HTTP peer's export, or an exported chat, D9).
     Chat(SessionId),
-    /// 183 §7.6: an agent: each contact gets its own inbox.
-    Agent(String),
+    /// 183 §7.6: an agent: each contact gets its own inbox. 191 (D4): and its home, the only
+    /// machine that opens one.
+    Agent(String, Option<String>),
     /// 186 (D5): the return route: a contact's answers in conversations this engine opened.
     Return,
 }
@@ -644,16 +664,17 @@ impl Handler {
         };
         let session = match (&self.target, &contact) {
             (Target::Chat(s), _) => *s,
-            (Target::Agent(agent), Some(origin)) => {
+            (Target::Agent(agent, home), Some(origin)) => {
                 self.ask(agent::communication::network::ContactInbox {
                     binding,
                     agent: agent.clone(),
                     origin: origin.clone(),
                     export_id: self.export_id.clone(),
+                    home: home.clone(),
                 })
                 .await?
             }
-            (Target::Agent(_), None) => {
+            (Target::Agent(..), None) => {
                 return Err(A2AError::unsupported_operation(
                     "export unavailable: only contacts reach agent exports",
                 ));

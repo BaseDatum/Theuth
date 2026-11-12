@@ -23,6 +23,7 @@ pub mod ceremony;
 pub mod discovery;
 #[cfg(test)]
 pub(crate) mod e2e_tests;
+pub mod forward;
 pub mod members;
 pub mod offers;
 pub mod reach;
@@ -2041,6 +2042,8 @@ impl Message<ExportsList> for A2aActor {
 /// 191: [`crate::Ctx::exports`]'s pause for a chat export whose session this machine does
 /// not hold (yet: it may still be replicating).
 pub const PAUSED_ELSEWHERE: &str = "chat not on this machine";
+/// 191 (D4): an agent export whose home machine left the mesh: it opens no new inbox.
+pub const PAUSED_HOME_LEFT: &str = "its machine left the mesh";
 
 impl crate::Ctx {
     /// `a2a_exports`: every export of the mesh; a chat's pause is read now (W-41), and a
@@ -2089,7 +2092,8 @@ impl crate::Ctx {
                 agent: a.agent.clone(),
             },
             description: a.description.clone(),
-            paused: None,
+            // 191 (D4): its home left the mesh: no new inbox (the UI offers to rehome it).
+            paused: a.home.is_none().then(|| PAUSED_HOME_LEFT.to_owned()),
         }));
         out.sort_by(|a, b| a.name.cmp(&b.name));
         if !gone.is_empty() {
