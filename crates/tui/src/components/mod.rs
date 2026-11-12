@@ -260,6 +260,13 @@ pub enum CoreAction {
     Interject(String),
     /// Existing generic error semantics, including print-mode completion.
     Error(String),
+    /// Invoke the existing named skill path, including draft-session adoption.
+    UseSkill {
+        /// Catalog skill name.
+        name: String,
+        /// User-supplied arguments.
+        args: String,
+    },
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
