@@ -7159,12 +7159,11 @@ impl Turn {
                     self.note_skill(name.to_owned()).await;
                 }
                 // 36 §6.3: paths this epoch wrote, for the compaction head.
-                // ponytail: only write_file is tracked; edits through python or a shell redirect are not.
-                if call.fn_name == "write_file"
-                    && self.state.files_written.len() < 40
-                    && let Some(path) = call.fn_arguments.get("path").and_then(|v| v.as_str())
-                {
-                    self.state.files_written.insert(path.to_owned());
+                // ponytail: only the text-file tools are tracked; edits through python or a shell redirect are not.
+                for path in written_paths(&call.fn_name, &call.fn_arguments) {
+                    if self.state.files_written.len() < 40 {
+                        self.state.files_written.insert(path.to_owned());
+                    }
                 }
                 content
             };
@@ -8839,6 +8838,31 @@ async fn mark_images(shared: &Shared, model: &str, refused: bool) {
     }
 }
 
+/// Paths a successful tool call wrote: `write_file`/`indent` → `path`; `move_text` → its `src`
+/// and target ref paths; `copy_text` → its target ref path (`clip:` refs have no path). A
+/// ref's path is everything before its last `#`.
+fn written_paths<'a>(tool: &str, args: &'a serde_json::Value) -> Vec<&'a str> {
+    let get = |k: &str| args.get(k).and_then(|v| v.as_str());
+    let ref_path =
+        |s: &'a str| (!s.starts_with("clip:")).then(|| s.rsplit_once('#').map_or(s, |(p, _)| p));
+    let target = || {
+        ["before", "after", "at"]
+            .into_iter()
+            .find_map(get)
+            .and_then(ref_path)
+    };
+    match tool {
+        "write_file" | "indent" => get("path").into_iter().collect(),
+        "move_text" => get("src")
+            .and_then(ref_path)
+            .into_iter()
+            .chain(target())
+            .collect(),
+        "copy_text" => target().into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Whether `m` carries an image a text-only model cannot receive (user
 /// binary or tool-response image; PDFs have their own path, 52 §4.2).
 fn has_images(m: &ChatMessage) -> bool {
@@ -9275,6 +9299,18 @@ mod tests {
     use super::*;
     use crate::ModelRole;
     use crate::skills;
+
+    #[test]
+    fn written_paths_cover_text_ref_tools() {
+        let mv = serde_json::json!({ "src": "a/x.rs#L1-L2@1a2b3c4d", "before": "b/y.rs#Sym" });
+        assert_eq!(written_paths("move_text", &mv), ["a/x.rs", "b/y.rs"]);
+        let cp = serde_json::json!({ "src": "clip:c", "at": "b/y.rs#end" });
+        assert_eq!(written_paths("copy_text", &cp), ["b/y.rs"]);
+        let p = serde_json::json!({ "path": "z.rs" });
+        assert_eq!(written_paths("indent", &p), ["z.rs"]);
+        assert_eq!(written_paths("write_file", &p), ["z.rs"]);
+        assert!(written_paths("read_file", &p).is_empty());
+    }
 
     /// 183 §11.2: a transfer/takeover note names where the turn landed and
     /// `from` as given; a crash note is unchanged.

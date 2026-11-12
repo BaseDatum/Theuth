@@ -24,7 +24,8 @@ const MAX_LINE_CHARS: usize = 2000;
 // The marker literals are split with `concat!` so this source file does not
 // itself contain them: `write_file`/`edit` refuse content that does.
 /// First line of every `read_file` result:
-/// `[read_file <path>: N lines, B bytes; showing lines a–b]`.
+/// `[read_file <path>: N lines, B bytes, @<id>; showing lines a–b]` (193 §2:
+/// `, @<id>` only for UTF-8 text up to 4 MiB that is not a rendered document).
 pub const READ_HEADER_PREFIX: &str = concat!("[read_", "file ");
 /// The header's range clause; together with [`READ_HEADER_PREFIX`] on one
 /// line it identifies a pasted header.
@@ -123,7 +124,7 @@ impl Tool for ReadFile {
     type Args = ReadFileArgs;
 
     fn description(&self) -> String {
-        "Read a text file, an image (returned as a picture you can see) or a document (PDF, Office, ODF, RTF, EPUB) as Markdown. Paths are relative to the working directory, `~` is not expanded. An image (PNG, JPEG, GIF or WebP, detected from its bytes) comes back as a picture you can look at, with the one-line header `[read_file <path>: image/png W×H, N KB]` (`; scaled to W×H` when it was downscaled to fit); `offset`/`limit`/`tail`/`ranges`/`outline` are refused for an image. A text-only model gets a description from the vision fallback model instead, or a note that nobody has looked at it. A document is rendered from PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB. For text, line 1 is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
+        "Read a text file, an image (returned as a picture you can see) or a document (PDF, Office, ODF, RTF, EPUB) as Markdown. Paths are relative to the working directory, `~` is not expanded. An image (PNG, JPEG, GIF or WebP, detected from its bytes) comes back as a picture you can look at, with the one-line header `[read_file <path>: image/png W×H, N KB]` (`; scaled to W×H` when it was downscaled to fit); `offset`/`limit`/`tail`/`ranges`/`outline` are refused for an image. A text-only model gets a description from the vision fallback model instead, or a note that nobody has looked at it. A document is rendered from PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB. For text, line 1 is always a header `[read_file <path>: N lines, B bytes, @<id>; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. `@<id>` names this read's snapshot: line refs take it (`path#L40-L52@<id>` in move_text, copy_text, clip; `L40-L52@<id>` in edit's `range` and indent), and they keep pointing at the same lines after your own later edits elsewhere in the file (documents and files over 4 MiB get no id). By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
     }
 
     async fn call(&self, a: ReadFileArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -141,6 +142,12 @@ impl Tool for ReadFile {
                 "{shown}: {kind} images aren't supported (png, jpeg, gif, webp are); convert it to PNG and read that"
             );
         }
+        // 193 §2: a plain UTF-8 text read is a snapshot line refs can name.
+        let snap = if crate::doc::format(&bytes).is_none() {
+            crate::textref::record_bytes(cx.session, &path, &bytes)
+        } else {
+            None
+        };
         let (note, text) = text_of(bytes, &shown).await?;
         let mut notes = Vec::new();
         if a.outline {
@@ -159,13 +166,14 @@ impl Tool for ReadFile {
                 None => notes.push("no outline for this language, showing text".into()),
             }
         }
-        Ok(ToolOutput::ok(paginate(
+        Ok(ToolOutput::ok(page(
             "read_file",
             &shown,
             note.as_deref(),
             &text,
             &a,
             notes,
+            snap.as_deref(),
         )?))
     }
 }
@@ -233,7 +241,20 @@ pub fn paginate(
     note: Option<&str>,
     text: &str,
     a: &ReadFileArgs,
+    notes: Vec<String>,
+) -> anyhow::Result<String> {
+    page(tool, shown, note, text, a, notes, None)
+}
+
+/// [`paginate`] with `, @<snap>` after the byte count (193 §2).
+fn page(
+    tool: &str,
+    shown: &str,
+    note: Option<&str>,
+    text: &str,
+    a: &ReadFileArgs,
     mut notes: Vec<String>,
+    snap: Option<&str>,
 ) -> anyhow::Result<String> {
     let all: Vec<&str> = text.lines().collect();
     let total = all.len();
@@ -282,6 +303,9 @@ pub fn paginate(
         count = body.matches('\n').count() + 1 - seps.iter().filter(|&&s| s < at).count();
     }
     let mut out = format!("[{tool} {shown}: {total} lines, {} bytes", text.len());
+    if let Some(id) = snap {
+        out.push_str(&format!(", @{id}"));
+    }
     let first = sel.windows.first().map_or(1, |w| w.0);
     let last = first + count - count.min(1);
     if sel.ranged {
@@ -491,7 +515,7 @@ impl Tool for WriteFile {
     const RETURNS: &'static str = "dict";
 
     fn description(&self) -> String {
-        "Create or overwrite a file with the given content; parent directories are created and the write is atomic. Overwriting an existing text file returns a unified diff of the change; identical content is a no-op. Content carrying a read_file truncation marker is refused. Paths are relative to the working directory; `~` is not expanded.".into()
+        "Create or overwrite a file with the given content; parent directories are created and the write is atomic. Overwriting an existing text file returns a unified diff of the change; identical content is a no-op. The answer ends with `<path> @<id>`, the file's new snapshot id, which line refs (`path#L<n>-L<m>@<id>`) take without another read_file. Content carrying a read_file truncation marker is refused. Paths are relative to the working directory; `~` is not expanded.".into()
     }
 
     async fn call(&self, a: WriteFileArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -510,6 +534,7 @@ impl Tool for WriteFile {
             Some(old) if old.as_slice() == a.content.as_bytes() => {
                 let mut out = ToolOutput::ok(format!("{shown} unchanged ({bytes} bytes)"));
                 out.structured = Some(write_structured(&shown, bytes, false, &diff));
+                crate::textref::stamp(&mut out, cx.session, &path, &shown, old);
                 return Ok(out);
             }
             Some(old) => match std::str::from_utf8(old) {
@@ -545,6 +570,7 @@ impl Tool for WriteFile {
         crate::edit::write_atomic(&path, a.content.as_bytes()).await?;
         let mut out = ToolOutput::ok(head);
         out.structured = Some(write_structured(&shown, bytes, !replaced, &diff));
+        crate::textref::stamp(&mut out, cx.session, &path, &shown, a.content.as_bytes());
         Ok(out)
     }
 }
@@ -818,9 +844,11 @@ mod tests {
         }
     }
 
+    /// The header of a plain text read of `p`, `, @<id>` from its bytes (193 §2).
     fn header(p: &Path, total_lines: usize, bytes: usize, rest: &str) -> String {
+        let id = crate::textref::snapshot_id(&std::fs::read(p).unwrap());
         format!(
-            "{READ_HEADER_PREFIX}{}: {total_lines} lines, {bytes} bytes{READ_HEADER_SHOWING} {rest}]",
+            "{READ_HEADER_PREFIX}{}: {total_lines} lines, {bytes} bytes, @{id}{READ_HEADER_SHOWING} {rest}]",
             p.display()
         )
     }
@@ -924,6 +952,7 @@ mod tests {
             crate::edit::EditArgs {
                 path: elsewhere.clone(),
                 old: Some("out".into()),
+                range: None,
                 new: Some("x".into()),
                 edits: None,
                 all: false,
@@ -1406,7 +1435,11 @@ mod tests {
         let dir = guard.0.clone();
         let p = dir.join("a/b/new.txt");
         let out = write(&p, "hello\n").await.unwrap();
-        assert_eq!(out.content, format!("created {} (6 bytes)", p.display()));
+        let id = crate::textref::snapshot_id(b"hello\n");
+        assert_eq!(
+            out.content,
+            format!("created {0} (6 bytes)\n{0} @{id}", p.display())
+        );
         let s = out.structured.unwrap();
         assert_eq!(
             (s["created"].as_bool(), s["bytes"].as_u64()),
@@ -1422,10 +1455,11 @@ mod tests {
         let (_g, p) = scratch("one\ntwo\n");
         let out = write(&p, "one\n2\nthree\n").await.unwrap();
         let shown = p.display().to_string();
+        let id = crate::textref::snapshot_id(b"one\n2\nthree\n");
         assert_eq!(
             out.content,
             format!(
-                "wrote 12 bytes to {shown} (replaced 8 bytes, +2 −1 lines)\n--- a/{shown}\n+++ b/{shown}\n@@ -1,2 +1,3 @@\n one\n-two\n+2\n+three\n"
+                "wrote 12 bytes to {shown} (replaced 8 bytes, +2 −1 lines)\n--- a/{shown}\n+++ b/{shown}\n@@ -1,2 +1,3 @@\n one\n-two\n+2\n+three\n{shown} @{id}"
             )
         );
         let s = out.structured.unwrap();
@@ -1436,7 +1470,10 @@ mod tests {
         );
         let before = std::fs::metadata(&p).unwrap().modified().unwrap();
         let out = write(&p, "one\n2\nthree\n").await.unwrap();
-        assert_eq!(out.content, format!("{shown} unchanged (12 bytes)"));
+        assert_eq!(
+            out.content,
+            format!("{shown} unchanged (12 bytes)\n{shown} @{id}")
+        );
         assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), before);
         assert!(no_tmp_left(&p));
     }

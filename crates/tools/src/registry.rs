@@ -871,6 +871,7 @@ impl Message<Forget> for ToolRegistry {
             self.turn_allow_only.remove(s);
             self.no_lan.remove(s);
             crate::seat::forget(*s);
+            crate::textref::forget_clips(*s);
         }
     }
 }
@@ -2193,7 +2194,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     let shell = shell::ShellTool::new(jobs.clone(), cfg.login_path);
     let shells = shell.shells();
     let pty_idle = Arc::new(AtomicU64::new(cfg.pty_idle_secs));
-    let builtins: [DynTool; 16] = [
+    let builtins: [DynTool; 20] = [
         Arc::new(shell),
         Arc::new(pty::StartTool::new(
             jobs.clone(),
@@ -2218,6 +2219,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Arc::new(fs::Grep),
         Arc::new(glob::Glob),
         Arc::new(edit::Edit),
+        Arc::new(crate::text::MoveText),
+        Arc::new(crate::text::CopyText),
+        Arc::new(crate::text::Indent),
+        Arc::new(crate::text::ClipTool),
         Arc::new(AskUserTool(ask)),
     ];
     let registry = ToolRegistry::spawn_with_mailbox(

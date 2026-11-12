@@ -37,6 +37,7 @@ pub mod resolve;
 pub mod root;
 pub mod skill;
 pub mod store;
+pub mod syntax_hook;
 pub mod tools;
 pub mod walk;
 
@@ -297,6 +298,8 @@ impl runtime::Plugin for CodeindexPlugin {
             tracing::debug!("no [codeindex] config section, using defaults: {e}");
             CodeindexConfig::default()
         });
+        // The hook needs no index: text-ref symbols work even when codeindex is off.
+        syntax_hook::register();
         if !cfg.enabled {
             tracing::info!("codeindex disabled by config");
             return Ok(());

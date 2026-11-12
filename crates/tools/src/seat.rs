@@ -143,7 +143,7 @@ pub fn writable(session: SessionId, path: &Path) -> anyhow::Result<PathBuf> {
 /// `path` with its longest existing prefix canonicalised and the rest (a
 /// file about to be created) appended; `None` when the rest holds `..` or
 /// nothing of the path exists.
-fn real(path: &Path) -> Option<PathBuf> {
+pub(crate) fn real(path: &Path) -> Option<PathBuf> {
     let mut tail = Vec::new();
     let mut cur = path;
     loop {
