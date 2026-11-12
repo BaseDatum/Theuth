@@ -167,16 +167,42 @@ pub struct CoreView<'a> {
     pub entries: &'a [crate::model::Entry],
 
     // Step-11 group t1 CoreView fields: add below, in this block only.
-    /// Accepted descendant-session rows; borrowed without rebuilding a membership set.
-    pub session_tree: &'a std::collections::HashMap<SessionId, crate::model::AgentRow>,
 
     // Step-11 group t2 CoreView fields: add below, in this block only.
     /// Whether this registry is mounted on an interactive terminal surface.
     pub interactive: bool,
+    /// Selected session's presentation label, not a feature-owned row.
+    pub session_name: Option<&'a str>,
+    /// Current terminal width used when new markdown text starts.
+    pub width: usize,
+    /// Observed members of the active private lease, independent of visible rows.
+    pub private_members: Option<&'a std::collections::HashSet<SessionId>>,
+    /// Borrowed neutral identity metadata; no board DTO crosses this contract.
+    pub members: &'a dyn SessionMembers,
+
 
     // Step-11 group t3 CoreView fields: add below, in this block only.
 }
+/// Read-only identity metadata shared by core session membership.
+pub struct SessionMember<'a> {
+    /// Agent/session label.
+    pub name: &'a str,
+    /// Effective project when known.
+    pub project: Option<&'a str>,
+}
+/// Borrowed lookup avoids allocating a second membership projection per dispatch.
+pub trait SessionMembers: Sync {
+    /// Find one known identity, independent of board visibility.
+    fn member(&self, id: SessionId) -> Option<SessionMember<'_>>;
+}
 impl CoreView<'_> {
+    /// Whether this view owns the session's private export capability.
+    pub fn private_member(&self, id: SessionId) -> bool {
+        self.private_root == Some(id) || self.private_members.is_some_and(|members| members.contains(&id))
+    }
+    /// Core markdown width and fence hook, computed only when requested by an owner.
+    pub fn markdown_options(&self) -> markdown::Options { crate::model::markdown_options(self.width) }
+
     /// Only the newest card in a named replacement group may keep updating.
     pub fn card_current(&self, group: &str, key: uuid::Uuid) -> bool {
         self.entries.iter().rev().find_map(|entry| match entry {
@@ -188,7 +214,7 @@ impl CoreView<'_> {
     }
     /// Match the selected root or one of its accepted descendants.
     pub fn owns_session(&self, session: SessionId) -> bool {
-        self.session == Some(session) || self.session_tree.contains_key(&session)
+        self.session == Some(session) || self.members.member(session).is_some()
     }
 }
 
