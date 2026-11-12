@@ -51,9 +51,17 @@ pub struct Effect {
     pub lane: Lane,
     /// Takes the current engine when execution begins.
     pub work: Box<dyn FnOnce(Arc<Engine>) -> BoxFuture<'static, LocalReply> + Send>,
+    #[cfg(test)]
+    request: Option<Box<dyn Any + Send>>,
 }
 impl std::fmt::Debug for Effect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("Effect { .. }") }
+}
+#[cfg(test)]
+impl Effect {
+    pub(crate) fn request<R: 'static>(&self) -> Option<&R> {
+        self.request.as_ref()?.downcast_ref()
+    }
 }
 
 /// Ordered at the existing imperative key-handler boundaries, not by visibility.
@@ -298,9 +306,25 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
           Fut: Future<Output = M> + Send + 'static,
     {
         let (to, engine_epoch) = (self.token, self.epoch);
-        self.out.effects.push(Effect { lane, work: Box::new(move |engine| Box::pin(async move {
-            LocalReply { to, engine_epoch, body: Box::new(work(engine).await) }
-        })) });
+        self.out.effects.push(Effect {
+            #[cfg(test)]
+            request: None,
+            lane, work: Box::new(move |engine| Box::pin(async move {
+                LocalReply { to, engine_epoch, body: Box::new(work(engine).await) }
+            }))
+        });
+    }
+    /// Carry an owner-typed request into its effect; tests can inspect the same value.
+    pub fn spawn_request<R, F, Fut>(&mut self, lane: Lane, request: R, work: F)
+    where R: Clone + Send + 'static,
+          F: FnOnce(Arc<Engine>, R) -> Fut + Send + 'static,
+          Fut: Future<Output = M> + Send + 'static,
+    {
+        #[cfg(test)]
+        let observed = request.clone();
+        self.spawn(lane, move |engine| work(engine, request));
+        #[cfg(test)]
+        { self.out.effects.last_mut().unwrap().request = Some(Box::new(observed)); }
     }
     /// Stop propagation of this key/paste/submit.
     pub fn consume_key(&mut self) { self.out.consumed = true; }
