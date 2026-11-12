@@ -365,6 +365,8 @@ pub enum Surface<'a> {
     },
 
     // Step-11 group t1 Surface variants: add below, in this block only.
+    /// Intrinsic prompt at an explicit input-precedence boundary, without displacing focus.
+    Prompt(FocusClass),
 
     // Step-11 group t2 Surface variants: add below, in this block only.
     /// Owner text for an existing pending/running transcript summary row; no spinner or extra rows.
