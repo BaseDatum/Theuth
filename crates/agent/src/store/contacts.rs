@@ -870,13 +870,13 @@ mod tests {
             .unwrap();
         sqlx::query(
             "INSERT INTO contact_holds (id, contact, owner, since_ms, waiting, until_ms, preview) \
-             VALUES ('bad', x'00ff', 'n2', 'soon', '3', 'never', ?)",
+             VALUES ('bad', x'00ff', 'n2', 'soon', 'many', 'never', ?)",
         )
         .bind("p".repeat(100_000))
         .execute(&store.write)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO contact_holds (id, contact) VALUES (7, 'bob')")
+        sqlx::query("INSERT INTO contact_holds (id, contact) VALUES (x'07', 'bob')")
             .execute(&store.write)
             .await
             .unwrap();
@@ -884,7 +884,7 @@ mod tests {
         assert_eq!(
             rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
             ["bad", "good"],
-            "the integer id is skipped"
+            "the blob id is skipped"
         );
         let bad = &rows[0];
         assert_eq!(

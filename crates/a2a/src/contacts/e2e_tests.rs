@@ -2228,7 +2228,9 @@ async fn a_broken_peers_yaml_never_stops_a_block() {
 /// 191 (D4): what the record replica does with `contact_holds` between two machines: every
 /// row of `from` on `to`, and the rows `from` deleted gone from `to` (the store's
 /// `a_hold_row_and_its_deletion_ride_the_record_replica` proves the replica carries them;
-/// this harness runs no replica between its engines).
+/// this harness runs no replica between its engines). The harness's agents have no mesh id
+/// (every store's engine is `""`), so a row arrives owned by `from`'s endpoint id, as a
+/// mesh machine's would.
 async fn replicate_holds(from: &Engine, to: &Engine) {
     use agent::communication::network::{ContactHoldRowsForTest, WriteContactRecords};
     use agent::store::contacts::{Cell, RecordTable, RecordWrite};
@@ -2248,8 +2250,10 @@ async fn replicate_holds(from: &Engine, to: &Engine) {
         .unwrap();
     let t = |v: &Option<String>| v.clone().map_or(Cell::Null, Cell::Text);
     let i = |v: &Option<i64>| v.map_or(Cell::Null, Cell::Int);
+    let owner = from.eid();
     let mut w: Vec<RecordWrite> = dst
         .iter()
+        .filter(|d| d.owner.as_deref() == Some(owner.as_str()))
         .filter(|d| !src.iter().any(|s| s.id == d.id))
         .map(|d| RecordWrite::delete(RecordTable::Holds, d.id.clone()))
         .collect();
@@ -2262,7 +2266,7 @@ async fn replicate_holds(from: &Engine, to: &Engine) {
                 ("machine", t(&r.machine)),
                 ("export", t(&r.export)),
                 ("session", t(&r.session)),
-                ("owner", t(&r.owner)),
+                ("owner", Cell::Text(owner.clone())),
                 ("since_ms", i(&r.since_ms)),
                 ("waiting", i(&r.waiting)),
                 ("preview", t(&r.preview)),
@@ -2609,10 +2613,11 @@ async fn a_hold_fails_on_a_block_wherever_it_is_written() {
         .unwrap();
     assert!(n2.ctx.tick().await, "the grant changed: a reconcile");
     assert!(held().await.is_empty(), "failed");
+    // A blocked export answers the contact nothing: its task reads again once it is asked.
+    ask().await;
     failed(&t1).await;
 
     // A block of that export alone.
-    ask().await;
     let t2 = send("m-2").await;
     n2.ctx
         .write_answer(&alias, "research", FirstContact::Block)
@@ -2620,11 +2625,11 @@ async fn a_hold_fails_on_a_block_wherever_it_is_written() {
         .unwrap();
     let _ = n2.ctx.tick().await;
     assert!(held().await.is_empty(), "failed");
+    ask().await;
     failed(&t2).await;
 
     // A block of the whole contact on n1, which holds nothing: written there, replicated,
     // and failed here.
-    ask().await;
     let t3 = send("m-3").await;
     replicate(&n2, &n1).await;
     let _ = n1.ctx.tick().await;
@@ -2646,7 +2651,17 @@ async fn a_hold_fails_on_a_block_wherever_it_is_written() {
     replicate(&n1, &n2).await;
     let _ = n2.ctx.tick().await;
     assert!(held().await.is_empty(), "failed by its owner");
-    failed(&t3).await;
+    assert!(
+        client
+            .get_task(&a2a_types::GetTaskRequest {
+                id: t3,
+                history_length: Some(0),
+                tenant: None,
+            })
+            .await
+            .is_err(),
+        "a blocked contact reads nothing"
+    );
 }
 
 mod owners;
