@@ -84,13 +84,6 @@ impl Model {
             }
             "/approvals" => self.approvals_cmd(arg, tx),
 
-            "/agents" => match self.session {
-                Some(session) => {
-                    self.agents_picker_pending = true;
-                    send(tx, Command::ListAgents(session));
-                }
-                None => self.entries.push(Entry::Info("no session".into())),
-            },
             "/parent" => match self.session_parent {
                 Some(parent) => self.resume(parent, tx),
                 None => self

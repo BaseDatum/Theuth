@@ -124,7 +124,6 @@ impl Model {
                 settled_only: false,
             },
         );
-        send(tx, Command::ListAgents(id));
         self.component_notify(crate::components::Lifecycle::SessionRefreshRequested);
     }
 
@@ -161,7 +160,7 @@ impl Model {
         let n = self
             .agents
             .values()
-            .filter(|r| r.info.id != session && r.live())
+            .filter(|info| info.id != session && matches!(info.state, AgentState::Running | AgentState::Awaiting { .. } | AgentState::Approval { .. }))
             .count();
         self.entries.push(Entry::Info(format!(
             "stopped {n} agent{}",

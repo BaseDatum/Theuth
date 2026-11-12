@@ -58,7 +58,7 @@ impl Component for Counter {
     fn captures(&self, class: FocusClass) -> bool { self.capture == Some(class) }
 }
 pub(crate) fn core() -> CoreView<'static> {
-    static MEMBERS: std::sync::LazyLock<std::collections::HashMap<SessionId, crate::model::AgentRow>> = std::sync::LazyLock::new(std::collections::HashMap::new);
+    static MEMBERS: std::sync::LazyLock<std::collections::HashMap<SessionId, agent::AgentInfo>> = std::sync::LazyLock::new(std::collections::HashMap::new);
     CoreView { model_id: "", effort: None, default_effort: None, draft_options: None, harness: None, harness_model: None, harness_commands: &[], catalog: None, composer_read_only: false, frame: 0, modal_open: false, terminal_height: 0, editor: None, commands: &[], input_focused: true, menu_open: false, secret_editor: false, approval: false, awaiting_session: false, viewport: 0, prompts: &(), prompt: None, session_name: None, parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, descendant_event: false, entries: &[], width: 0, private_members: None, members: &*MEMBERS, interactive: true, session: None }
 }
 pub(crate) fn topic(name: &str, version: u32, event: serde_json::Value) -> TopicEvent {

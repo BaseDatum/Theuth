@@ -743,21 +743,6 @@ pub fn attachment_label(a: &ContextAttachment) -> String {
     }
 }
 
-/// The first string argument of a tool call, cut to 40 chars: the `running
-/// read_file crates/…` detail of a row.
-pub(super) fn first_arg(args: &serde_json::Value) -> Option<String> {
-    args.as_object()?
-        .values()
-        .find_map(|v| v.as_str())
-        .map(|s| {
-            s.lines()
-                .next()
-                .unwrap_or_default()
-                .chars()
-                .take(40)
-                .collect()
-        })
-}
 
 /// Rows occupied by the existing markdown view at a terminal width.
 pub(crate) fn markdown_rows(text: &markdown::Text, width: usize) -> usize {

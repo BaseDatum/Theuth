@@ -43,12 +43,8 @@ pub struct Model {
     pub session_name: Option<String>,
     /// Parent when the current session is a subagent (`Loaded.parent`): where `/parent` goes.
     pub session_parent: Option<SessionId>,
-    /// The current session's subtree, seeded by `list_agents` on open and
-    /// kept live by every event of a session in it (design doc 19 §3.3).
-    pub agents: HashMap<SessionId, AgentRow>,
-    /// `/agents` was typed; the next `UiEvent::Agents` opens the picker
-    /// (seeding replies on open only fill the map).
-    agents_picker_pending: bool,
+    /// Canonical descendant membership and turn state, independent of presentation.
+    pub agents: HashMap<SessionId, AgentInfo>,
     /// A `Send { session: None }` is in flight; adopt the next `TurnStarted`.
     awaiting_session: bool,
     /// FIFO owner continuations waiting for the one in-flight session creation.
@@ -224,7 +220,6 @@ pub struct Model {
 
 mod agents;
 mod approvals;
-mod boards;
 mod catalog;
 mod components;
 mod events;
@@ -241,8 +236,8 @@ mod submission;
 mod transcript;
 mod updates;
 
-pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
-use agents::{rank, harness_word};
+pub use agents::observed_word;
+use agents::harness_word;
 pub use approvals::Ask;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;
@@ -264,7 +259,7 @@ pub(crate) use status::elapsed;
 
 pub(crate) use transcript::{markdown_rows, clean, attr, unescape};
 pub use transcript::{Entry, CardKind, moved_title, injected, describe, output_markdown, result_line, Window, vision_line, note_title, attachment_label};
-use transcript::{split_engine_restart, card, attachment_labels, first_arg, wrapper_kind};
+use transcript::{split_engine_restart, card, attachment_labels, wrapper_kind};
 
 #[cfg(test)]
 pub(crate) mod tests;

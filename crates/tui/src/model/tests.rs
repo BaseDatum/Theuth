@@ -10,6 +10,95 @@
     use acp::{EntryInfo, registry::RegistryAgent};
     use crate::components::providers_login::{ProvidersLogin, Prompt as ProviderPrompt, Request as ProviderRequest};
 
+    use crate::components::agents_board::{AgentsBoard, AgentRow, Msg as BoardMsg, Request as BoardRequest, agent_row};
+
+    fn agents_board(m: &Model) -> &AgentsBoard { m.components.get::<AgentsBoard>().unwrap() }
+    fn board_rows(m: &Model) -> Vec<AgentRow<'_>> { agents_board(m).board(&m.agents) }
+    fn board_line(m: &Model, info: &AgentInfo, width: u16) -> String {
+        crate::components::agents_board::board_row(agents_board(m).row(info), m.spinner(), width,
+            m.component_text(crate::components::Surface::SessionBadge(info.id)))
+    }
+
+    #[test]
+    fn unmounted_board_keeps_child_approvals_private_admission_and_tree_cancel() {
+        for mounted_first in [false, true] {
+            let (tx, mut rx) = unbounded_channel();
+            let mut m = Model::default();
+            if mounted_first { m.components.register(AgentsBoard::default()).unwrap(); }
+            let root = SessionId::new();
+            m.apply(UiEvent::SessionOpened(SessionOpen {
+                session: root, root, retention: Retention::Private, lease_secret: Some("owned".into()),
+            }));
+            if mounted_first {
+                let token = m.components.token("agents-board");
+                m.components.unmount(token);
+            }
+            assert!(m.components.get::<AgentsBoard>().is_none());
+            let (child, grandchild) = (SessionId::new(), SessionId::new());
+            for (parent, child) in [(root, child), (child, grandchild)] {
+                m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
+                    parent, child, name: "worker".into(), cap: None,
+                }));
+            }
+            assert_eq!(m.agents[&grandchild].depth, 2);
+            assert!(m.private.as_ref().unwrap().member(child) && m.private.as_ref().unwrap().member(grandchild));
+            let approval = ApprovalId(uuid::Uuid::now_v7());
+            let request = |id, session| ApprovalRequested {
+                id, session, tool: "shell".into(), args: serde_json::json!({"command":"echo ok"}), risk: tools::Risk::ReadOnly,
+            };
+            m.apply(wire_event("tools.approval-requested", request(approval, grandchild)));
+            m.apply(wire_event("tools.approval-requested", request(ApprovalId(uuid::Uuid::now_v7()), SessionId::new())));
+            assert_eq!(m.approvals.len(), 1);
+            assert_eq!(m.approval().map(|request| request.id), Some(approval));
+            assert!(matches!(m.agents[&grandchild].state, AgentState::Approval { .. }));
+            m.decide(Decision::Allow, &tx);
+            assert!(matches!(rx.try_recv(), Ok(Command::Resolve { id, decision: Decision::Allow }) if id == approval));
+            assert_eq!(m.agents[&grandchild].state, AgentState::Running);
+            m.streaming = true;
+            let now = std::time::Instant::now();
+            for millis in [0, 300, 600] { m.cancel_at(now + std::time::Duration::from_millis(millis), &tx); }
+            assert!(matches!(rx.try_recv(), Ok(Command::Cancel(session)) if session == root));
+            assert!(matches!(rx.try_recv(), Ok(Command::Cancel(session)) if session == root));
+            assert!(matches!(rx.try_recv(), Ok(Command::CancelTree(session)) if session == root));
+            assert!(matches!(m.entries.last(), Some(Entry::Info(text)) if text == "stopped 2 agents"));
+            m.resume(grandchild, &tx);
+            assert!(m.private.as_ref().unwrap().member(grandchild));
+            assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == grandchild));
+            assert!(rx.try_recv().is_err(), "no owner RPC and no private-tree leave");
+        }
+    }
+
+    #[test]
+    fn ignored_descendant_events_keep_existing_row_presentation() {
+        let mut m = Model::new("m".into(), false);
+        let (root, child) = (SessionId::new(), SessionId::new());
+        let turn = TurnId::new();
+        m.session = Some(root);
+        m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
+            parent: root, child, name: "worker".into(), cap: None,
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallStarted {
+            session: child, turn, call_id: "c".into(), name: "read_file".into(), args: serde_json::json!({"path":"kept"}),
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::Error {
+            session: child, turn: Some(turn), message: "kept".into(),
+        }));
+        let mut status = advisor_status(root, AdvisorState::Idle, "openai/o3-pro");
+        status.advisor = Some(child);
+        m.apply(wire_event("agent.events", AgentEvent::AdvisorChanged { session: root, status }));
+        m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
+            parent: root, child, name: "ignored".into(), cap: None,
+        }));
+        assert_eq!(m.agents[&child].name, "worker");
+        assert_eq!(agents_board(&m).rows[&child].error.as_deref(), Some("kept"));
+        assert_eq!(info_lines(&m).into_iter().filter(|line| line.starts_with("↳ spawned")).collect::<Vec<_>>(), ["↳ spawned worker"]);
+        m.apply(wire_event("agent.events", AgentEvent::ObservedChildChanged {
+            parent: SessionId::new(), child, name: "ignored".into(), model: None,
+            observed: observed(ObservedSource::OmpTask, ObservedState::Failed, false, None),
+        }));
+        assert!(m.agents[&child].observed.is_none());
+        assert!(agent_row(agents_board(&m).row(&m.agents[&child]), "⠹", 100).contains("running read_file kept"));
+    }
     fn providers_login(m: &Model) -> &ProvidersLogin { m.components.get::<ProvidersLogin>().unwrap() }
 
     #[test]
@@ -110,7 +199,7 @@
         }));
         m.apply(wire_event("agent.events", AgentEvent::TextDelta { session, turn, text: "after".into() }));
         assert_eq!(m.session, Some(session));
-        assert!(m.agents.is_empty() && m.board().is_empty());
+        assert!(m.agents.is_empty() && board_rows(&m).is_empty());
         assert!(!info_lines(&m).iter().any(|line| line.starts_with("↳ spawned")));
         let tails: Vec<_> = m.entries.iter().filter_map(|entry| match entry { Entry::Assistant(tail) => Some(tail), _ => None }).collect();
         assert_eq!(tails.len(), 1);
@@ -297,7 +386,7 @@
 
 
 
-    fn wire_event(topic: &str, event: impl serde::Serialize) -> UiEvent {
+    pub(crate) fn wire_event(topic: &str, event: impl serde::Serialize) -> UiEvent {
         UiEvent::Wire(crate::components::tests::topic(topic, 1, serde_json::to_value(event).unwrap()))
     }
 
@@ -1827,7 +1916,7 @@
     #[test]
     fn agents_picker_sorts_opens_and_parent_climbs() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let root = SessionId::new();
         m.session = Some(root);
         let info = |name: &str, state: AgentState, finished: Option<i64>| AgentInfo {
@@ -1861,24 +1950,24 @@
             info("run", AgentState::Running, None),
         ];
         // A seeding reply (open/resume) only fills the map.
-        m.apply(UiEvent::Agents(list.clone()));
-        assert!(m.menu.is_none() && m.agents.len() == 4);
+        component_reply(&mut m, "agents-board", BoardMsg::Listed(Ok(list.clone())));
+        assert!(agents_board(&m).menu.is_none() && m.agents.len() == 4);
         // `/agents` opens the picker: running, awaiting, then newest-finished first.
         m.submit("/agents", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListAgents(s)) if s == root));
-        m.apply(UiEvent::Agents(list));
-        let Some(Menu::Agents { items, .. }) = &m.menu else {
+        assert!(matches!(component_request::<BoardRequest>(&mut rx), Ok(BoardRequest::ListAgents(s)) if s == root));
+        component_reply(&mut m, "agents-board", BoardMsg::Listed(Ok(list)));
+        let Some((items, _)) = &agents_board(&m).menu else {
             panic!("picker open");
         };
         let names: Vec<&str> = items.iter().map(|a| a.info.name.as_str()).collect();
         assert_eq!(names, ["run", "ask", "new", "old"]);
         let run = items[0].info.id;
-        assert!(agent_row(&items[2], "⠹", 80).starts_with("✗ new            error"));
+        assert!(agent_row(items[2].view(), "⠹", 80).starts_with("✗ new            error"));
         // Enter is a session switch: load + reseed.
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_menu_key(&mut m, "agents-board", KeyCode::Enter);
         assert_eq!(m.session, Some(run));
         assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == run));
-        assert!(matches!(rx.try_recv(), Ok(Command::ListAgents(s)) if s == run));
+        assert!(matches!(component_request::<BoardRequest>(&mut rx), Ok(BoardRequest::ListAgents(s)) if s == run));
         // `/parent` goes where `Loaded.parent` says; at the top it says so.
         m.apply(UiEvent::History(
             run,
@@ -1907,19 +1996,19 @@
 
     #[test]
     fn board_tracks_child_events_and_interjects() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let root = SessionId::new();
         m.session = Some(root);
         let (a, b) = (SessionId::new(), SessionId::new());
         for (child, parent, name) in [(a, root, "a"), (b, a, "b")] {
-            m.apply_agent(AgentEvent::SubagentSpawned {
+            m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
                 parent,
                 child,
                 name: name.into(),
                 cap: None,
-            });
+            }));
         }
-        assert!(m.animating() && m.board().len() == 2 && !m.status().contains("agents:"));
+        assert!(m.animating() && board_rows(&m).len() == 2 && !m.status().contains("agents:"));
         let turn = TurnId::new();
         let call = |name: &str, args: serde_json::Value| AgentEvent::ToolCallStarted {
             session: a,
@@ -1928,39 +2017,39 @@
             name: name.into(),
             args,
         };
-        m.apply_agent(call(
+        m.apply(wire_event("agent.events", call(
             "read_file",
             serde_json::json!({ "path": "crates/agent/src/lib.rs" }),
-        ));
+        )));
         assert!(
-            agent_row(&m.agents[&a], "⠹", 80).contains("running   running read_file crates/agent")
+            agent_row(agents_board(&m).row(&m.agents[&a]), "⠹", 80).contains("running   running read_file crates/agent")
         );
         // A blocking `send_message` is the `awaiting` state, question attached.
-        m.apply_agent(call(
+        m.apply(wire_event("agent.events", call(
             "send_message",
             serde_json::json!({ "to": "parent", "message": "which colour?\nteal or blue", "await_reply": true }),
-        ));
+        )));
         assert!(
-            matches!(&m.agents[&a].info.state, AgentState::Awaiting { from } if from == "parent")
+            matches!(&m.agents[&a].state, AgentState::Awaiting { from } if from == "parent")
         );
-        assert!(agent_row(&m.agents[&a], "⠹", 80).contains("awaiting  parent: \"which colour?\""));
-        m.apply_agent(AgentEvent::ToolCallFinished {
+        assert!(agent_row(agents_board(&m).row(&m.agents[&a]), "⠹", 80).contains("awaiting  parent: \"which colour?\""));
+        m.apply(wire_event("agent.events", AgentEvent::ToolCallFinished {
             session: a,
             turn,
             call_id: "c1".into(),
             output: "teal".into(),
             is_error: false,
             files: Vec::new(),
-        });
-        assert_eq!(m.agents[&a].info.state, AgentState::Running);
-        assert!(agent_row(&m.agents[&a], "⠹", 80).contains("streaming"));
+        }));
+        assert_eq!(m.agents[&a].state, AgentState::Running);
+        assert!(agent_row(agents_board(&m).row(&m.agents[&a]), "⠹", 80).contains("streaming"));
         // A direct child's error interjects; a grandchild's only marks its row.
         for (s, msg) in [(a, "429 rate limited"), (b, "deep")] {
-            m.apply_agent(AgentEvent::Error {
+            m.apply(wire_event("agent.events", AgentEvent::Error {
                 session: s,
                 turn: Some(turn),
                 message: msg.into(),
-            });
+            }));
         }
         let errors: Vec<&str> = m
             .entries
@@ -1971,24 +2060,23 @@
             })
             .collect();
         assert_eq!(errors, ["↳ a error: 429 rate limited"]);
-        assert_eq!(m.agents[&b].error.as_deref(), Some("deep"));
+        assert_eq!(agents_board(&m).rows[&b].error.as_deref(), Some("deep"));
         // Cancelled: interject, stays on the board until the picker shows it.
-        m.apply_agent(AgentEvent::TurnFinished {
+        m.apply(wire_event("agent.events", AgentEvent::TurnFinished {
             session: a,
             turn,
             stop_reason: "cancelled".into(),
             usage: Usage::default(),
             context: 0,
-        });
-        assert_eq!(m.agents[&a].info.state, AgentState::Cancelled);
+        }));
+        assert_eq!(m.agents[&a].state, AgentState::Cancelled);
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "↳ a cancelled"));
-        assert!(m.board().iter().any(|r| r.info.id == a));
-        m.agents_picker_pending = true;
-        m.apply(UiEvent::Agents(
-            m.agents.values().map(|r| r.info.clone()).collect(),
-        ));
-        assert!(matches!(m.menu, Some(Menu::Agents { .. })));
-        assert!(m.board().iter().all(|r| r.info.id != a) && m.agents[&b].error.is_some());
+        assert!(board_rows(&m).iter().any(|r| r.info.id == a));
+        m.components.get_mut::<AgentsBoard>().unwrap().picker_pending = true;
+        let list = m.agents.values().cloned().collect();
+        component_reply(&mut m, "agents-board", BoardMsg::Listed(Ok(list)));
+        assert!(matches!(agents_board(&m).menu, Some((_, _))));
+        assert!(board_rows(&m).iter().all(|r| r.info.id != a) && agents_board(&m).rows[&b].error.is_some());
     }
 
     /// 141 §10.1: a watch-only child is a `◎` row keyed by its observed
@@ -2009,17 +2097,17 @@
             observed: observed(ObservedSource::OmpTask, state, false, intent),
         };
         let before = m.entries.len();
-        m.apply_agent(ev(ObservedState::Pending, None));
+        m.apply(wire_event("agent.events", ev(ObservedState::Pending, None)));
         assert_eq!(
             m.entries.len(),
             before,
             "no ↳ spawned line: {:?}",
             m.entries
         );
-        assert!(m.board().is_empty(), "pending is not live");
-        assert_eq!(m.agents[&child].info.kind, SessionKind::Observed);
-        m.apply_agent(ev(ObservedState::Running, Some("Reading first line")));
-        let row = agent_row(&m.agents[&child], "⠹", 100);
+        assert!(board_rows(&m).is_empty(), "pending is not live");
+        assert_eq!(m.agents[&child].kind, SessionKind::Observed);
+        m.apply(wire_event("agent.events", ev(ObservedState::Running, Some("Reading first line"))));
+        let row = agent_row(agents_board(&m).row(&m.agents[&child]), "⠹", 100);
         assert!(
             row.starts_with("◎ ReadA")
                 && row.contains("running   watch · omp task · Reading first line"),
@@ -2028,12 +2116,12 @@
         // 141 R3 T13: the model joins the detail where the column has room; the
         // child's cost tag rides the board/picker line once `session_cost` lists it.
         assert!(!row.contains("claude-fable"), "no room at 100 cols: {row}");
-        let wide = agent_row(&m.agents[&child], "⠹", 140);
+        let wide = agent_row(agents_board(&m).row(&m.agents[&child]), "⠹", 140);
         assert!(
             wide.contains("Reading first line · anthropic/claude-fable-5-1"),
             "{wide}"
         );
-        assert_eq!(m.board_row(&m.agents[&child], 100), row, "no cost yet");
+        assert_eq!(board_line(&m, &m.agents[&child], 100), row, "no cost yet");
         let total = CostBucket {
             calls: 1,
             dispatched: 1,
@@ -2066,37 +2154,37 @@
             },
         ));
         assert!(
-            m.board_row(&m.agents[&child], 100).ends_with("  ·  $0.121"),
+            board_line(&m, &m.agents[&child], 100).ends_with("  ·  $0.121"),
             "{}",
-            m.board_row(&m.agents[&child], 100)
+            board_line(&m, &m.agents[&child], 100)
         );
-        assert_eq!(m.board().len(), 1);
-        m.apply_agent(AgentEvent::TurnFinished {
+        assert_eq!(board_rows(&m).len(), 1);
+        m.apply(wire_event("agent.events", AgentEvent::TurnFinished {
             session: child,
             turn: TurnId::new(),
             stop_reason: "end_turn".into(),
             usage: Usage::default(),
             context: 0,
-        });
-        assert_eq!(m.agents[&child].info.state, AgentState::Idle);
-        m.apply_agent(ev(ObservedState::Failed, None));
-        assert_eq!(m.agents[&child].info.state, AgentState::Error);
+        }));
+        assert_eq!(m.agents[&child].state, AgentState::Idle);
+        m.apply(wire_event("agent.events", ev(ObservedState::Failed, None)));
+        assert_eq!(m.agents[&child].state, AgentState::Error);
         assert!(
-            m.board().iter().any(|r| r.info.id == child),
+            board_rows(&m).iter().any(|r| r.info.id == child),
             "failed lingers"
         );
-        assert!(agent_row(&m.agents[&child], "⠹", 100).contains("failed    watch · omp task"));
-        m.apply_agent(ev(ObservedState::Unknown, None));
-        assert!(agent_row(&m.agents[&child], "⠹", 100).contains("lost contact"));
+        assert!(agent_row(agents_board(&m).row(&m.agents[&child]), "⠹", 100).contains("failed    watch · omp task"));
+        m.apply(wire_event("agent.events", ev(ObservedState::Unknown, None)));
+        assert!(agent_row(agents_board(&m).row(&m.agents[&child]), "⠹", 100).contains("lost contact"));
         assert!(
-            m.board().iter().any(|r| r.info.id == child),
+            board_rows(&m).iter().any(|r| r.info.id == child),
             "lost contact lingers"
         );
-        m.apply_agent(ev(ObservedState::Completed, None));
-        assert!(m.board().is_empty(), "done leaves the board");
-        assert!(agent_row(&m.agents[&child], "⠹", 100).contains("done      watch · omp task"));
+        m.apply(wire_event("agent.events", ev(ObservedState::Completed, None)));
+        assert!(board_rows(&m).is_empty(), "done leaves the board");
+        assert!(agent_row(agents_board(&m).row(&m.agents[&child]), "⠹", 100).contains("done      watch · omp task"));
         let grand = SessionId::new();
-        m.apply_agent(AgentEvent::ObservedChildChanged {
+        m.apply(wire_event("agent.events", AgentEvent::ObservedChildChanged {
             parent: child,
             child: grand,
             name: "ReadA.b".into(),
@@ -2107,9 +2195,9 @@
                 false,
                 None,
             ),
-        });
-        assert_eq!(m.agents[&grand].info.depth, 2);
-        let row = agent_row(&m.agents[&grand], "⠹", 100);
+        }));
+        assert_eq!(m.agents[&grand].depth, 2);
+        let row = agent_row(agents_board(&m).row(&m.agents[&grand]), "⠹", 100);
         assert!(
             row.starts_with("◎   ↳ ReadA.b") && row.contains("watch · opencode"),
             "{row}"
@@ -2125,7 +2213,7 @@
         let root = SessionId::new();
         m.session = Some(root);
         let (child, native) = (SessionId::new(), SessionId::new());
-        m.apply_agent(AgentEvent::ObservedChildChanged {
+        m.apply(wire_event("agent.events", AgentEvent::ObservedChildChanged {
             parent: root,
             child,
             name: "NapA".into(),
@@ -2136,18 +2224,18 @@
                 false,
                 Some("Reading first line"),
             ),
-        });
-        m.apply_agent(AgentEvent::SubagentSpawned {
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::SubagentSpawned {
             parent: root,
             child: native,
             name: "worker".into(),
             cap: None,
-        });
+        }));
         let now = chrono::Utc::now();
         for id in [child, native] {
             let a = m.agents.get_mut(&id).unwrap();
-            a.info.started_at = Some(now - chrono::Duration::seconds(92));
-            a.info.activity.last_active = Some(now - chrono::Duration::seconds(5));
+            a.started_at = Some(now - chrono::Duration::seconds(92));
+            a.activity.last_active = Some(now - chrono::Duration::seconds(5));
         }
         let child_cost = |nanos| agent::ChildCost {
             session: child,
@@ -2181,7 +2269,7 @@
             },
         ));
         for width in [80u16, 140, 200] {
-            let row = m.board_row(&m.agents[&child], width);
+            let row = board_line(&m, &m.agents[&child], width);
             // Whole tag, and the row fits inside the picker frame (border, padding, cursor).
             assert!(row.ends_with("  ·  $0.265"), "{width}: {row}");
             assert!(
@@ -2193,8 +2281,8 @@
             // The model joins the detail only when there is room after the tag.
             assert_eq!(row.contains("claude-fable"), width >= 140, "{width}: {row}");
             assert_eq!(row.contains('…'), width == 80, "{width}: {row}");
-            let plain = m.board_row(&m.agents[&native], width);
-            assert_eq!(plain, agent_row(&m.agents[&native], m.spinner(), width));
+            let plain = board_line(&m, &m.agents[&native], width);
+            assert_eq!(plain, agent_row(agents_board(&m).row(&m.agents[&native]), m.spinner(), width));
             assert!(!plain.contains('$'), "{width}: {plain}");
         }
     }
@@ -3747,7 +3835,7 @@
         };
         for state in [AgentState::Running, AgentState::Running, AgentState::Idle] {
             let i = info(state);
-            m.agents.insert(i.id, AgentRow::new(i));
+            m.agents.insert(i.id, i);
         }
         let t0 = std::time::Instant::now();
         let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
@@ -5013,7 +5101,7 @@
         assert!(!m.input_focused());
         m.submit("/parent", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == root));
-        assert!(matches!(rx.try_recv(), Ok(Command::ListAgents(id)) if id == root));
+        assert!(matches!(component_request::<BoardRequest>(&mut rx), Ok(BoardRequest::ListAgents(id)) if id == root));
         // A state change on the shown child is one line; the same state again is silent.
         m.session = Some(s);
         m.apply(UiEvent::History(s, loaded(true)));
@@ -8720,7 +8808,7 @@
                 "advisor: reviewing  ·  anthropic/claude-opus-4-1  ·  high",
                 "notes: 2 nit · 1 concern · 0 blocker  ·  step 14  ·  backlog 0",
                 // `k()` drops the decimal from 100k up (`120k`, not the design's illustrative `120.4k`).
-                "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost .412",
+                "context: 38.2k / 200k (19%)  ·  in 120k · out 3.1k  ·  cost $0.412",
                 "last: [concern] cite the loop_.rs line before claiming drain_steer runs after every batch",
                 "consults: 2 this turn · 7 total · cap 6",
             ]
@@ -9043,7 +9131,7 @@
             session: s,
             status: status.clone(),
         }));
-        assert!(m.header(&catalog).0.contains("  ·  advisor .012"));
+        assert!(m.header(&catalog).0.contains("  ·  advisor $0.012"));
         let (segment, state) = advisor(&m).segment(m.frame).unwrap();
         assert!(segment.starts_with("  ·  ◎ advisor: ") && segment.ends_with(" reviewing…"));
         assert_eq!(state, AdvisorState::Reviewing);
@@ -9100,7 +9188,7 @@
             name: "advisor".into(),
             cap: None,
         }));
-        assert!(m.agents.is_empty() && m.board().is_empty());
+        assert!(m.agents.is_empty() && board_rows(&m).is_empty());
         assert!(!info_lines(&m).iter().any(|l| l.starts_with("↳ spawned")));
         let info = |id: SessionId, kind: SessionKind| AgentInfo {
             id,
@@ -9121,10 +9209,10 @@
             observed: None,
         };
         let worker = SessionId::new();
-        m.apply(UiEvent::Agents(vec![
+        component_reply(&mut m, "agents-board", BoardMsg::Listed(Ok(vec![
             info(advisor, SessionKind::Advisor),
             info(worker, SessionKind::Chat),
-        ]));
+        ])));
         assert_eq!(m.agents.keys().copied().collect::<Vec<_>>(), [worker]);
     }
 

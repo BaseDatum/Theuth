@@ -62,10 +62,9 @@ impl Model {
     /// A pending approval was answered (here or elsewhere): its row runs again.
     pub(super) fn approval_done(&mut self, session: SessionId) {
         if let Some(row) = self.agents.get_mut(&session)
-            && matches!(row.info.state, AgentState::Approval { .. })
+            && matches!(row.state, AgentState::Approval { .. })
         {
-            row.info.state = AgentState::Running;
-            row.tool = None;
+            row.state = AgentState::Running;
         }
     }
 }
