@@ -641,6 +641,8 @@ export interface Api {
   session_cost(session: SessionId): Promise<SessionCost>
   /** Where the frame's tokens go (70 COMPACT-SIZE): head images/text, tail, system, the calibrated `≈` estimate and the provider's last context. */
   session_context_breakdown(session: SessionId): Promise<ContextBreakdown>
+  /** 193 §7: run `read_file`, `edit`, `move_text`, `copy_text`, `indent` or `clip` in `session` (the `t mcp --session` shim's path). */
+  session_call_tool(session: SessionId, name: string, args: unknown): Promise<{ content: string; is_error: boolean; structured: unknown; files: string[] }>
   /** Take `session` here (68 §4.2): `user` at once, `orphan` for a resumed checkout, `write` after `takeover_secs`. `SessionOwnerChanged` follows. */
   session_take(session: SessionId, reason: 'user' | 'orphan' | 'write'): Promise<SessionOwner>
   /** 181: send `session`, owned here, to the paired engine `to` (mesh id); a running turn resumes there. Errors are plain words (`xeus is offline`). */
@@ -1856,6 +1858,7 @@ export const METHODS = [
   'secret_requests_list',
   'send_input',
   'send_message',
+  'session_call_tool',
   'session_context_breakdown',
   'session_cost',
   'session_memory',

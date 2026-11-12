@@ -175,9 +175,10 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SandboxCmd,
     },
-    /// An MCP server on stdio. With `--session` (75 §9): the three-tool shim
-    /// an ACP child gets in `session/new.mcpServers` (`list_skills`,
-    /// `load_skill`, `send_message`). Without (158 §12.3): theuth's data
+    /// An MCP server on stdio. With `--session` (75 §9): the shim an ACP
+    /// child gets in `session/new.mcpServers` (`list_skills`, `load_skill`,
+    /// `send_message`, and 193 §7's `read_file`, `edit`, `move_text`,
+    /// `copy_text`, `indent`, `clip`). Without (158 §12.3): theuth's data
     /// catalogue — the same tools the engine serves over HTTP — for any MCP
     /// client's `mcpServers` entry. Both need a running engine.
     Mcp {
@@ -1320,7 +1321,7 @@ const DEFAULT_AGENTS: &str =
 #   description: OpenCode, local install (1.18 or 2.x; model/effort set via session/set_config_option, design doc 06 §8.4)
 #   skills: true               # default; false: no theuth skills written into the child's cwd (design doc 75 §4)
 #   skills_dir: .agents/skills # default, relative to the child's cwd; .claude/skills for Claude Code
-#   mcp: true                  # default; false opts out of the theuth MCP shim (list_skills/load_skill/send_message) in session/new (75 §9)
+#   mcp: true                  # default; false opts out of the theuth MCP shim (list_skills/load_skill/send_message, read_file/edit/move_text/copy_text/indent/clip) in session/new (75 §9)
 # codex-acp:
 #   command: npx
 #   args: [-y, \"@agentclientprotocol/codex-acp\"]

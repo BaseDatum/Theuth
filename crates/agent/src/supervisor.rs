@@ -1403,6 +1403,16 @@ impl Agents {
         };
         self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
             .await;
+        // 193 B1: the child's tools (its MCP shim's `session_call_tool`) resolve relative paths
+        // where the harness runs, keeping the parent's write_root. The registry's `SetParent` is
+        // a `tell` and `inherit_approvals` may already have seated the child from its row (an
+        // entry `seat::inherit` would not touch), so copy the write_root here, then the cwd.
+        if let Some((p, _)) = &parent
+            && tools::seat::seat_of(id).write_root.is_none()
+        {
+            tools::seat::set_write_root(id, tools::seat::seat_of(*p).write_root);
+        }
+        tools::seat::set_cwd(id, Some(cwd_path.clone()));
         self.mirror(id).await;
         // 176 A2: a child parked idle is back. Like `relaunch_acp_child`,
         // a cancelled last turn is not to be picked up from the replay.
@@ -2862,7 +2872,9 @@ impl Agents {
 
 /// The theuth MCP shim for an ACP child's `session/new.mcpServers` (75 §9):
 /// this binary as `--data-dir <dir> mcp --session <id>`, a stdio MCP server
-/// proxying `load_skill` / `list_skills` / `send_message` to this engine.
+/// proxying `load_skill` / `list_skills` / `send_message` and (193 §7) the
+/// registry's `read_file` / `edit` / `move_text` / `copy_text` / `indent` /
+/// `clip` to this engine.
 fn mcp_shim(
     data_dir: &Path,
     session: SessionId,
@@ -18542,6 +18554,31 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(timed && permit_free, "timed, permit-free follow-up turn");
+    }
+
+    /// 193 B1: an ACP child's seat cwd is its own spawn cwd, its write_root the parent's.
+    /// (This also covers a relative path in the shim's `session_call_tool` resolving in the
+    /// child's cwd: the registry resolves through this seat.)
+    #[tokio::test]
+    async fn acp_child_seat_is_its_spawn_cwd_with_the_parents_write_root() {
+        let (_scratch, a) = agents().await;
+        let mut fake = node(&a, "box");
+        let (da, db) = (crate::TestDir::new("seat-a"), crate::TestDir::new("seat-b"));
+        let (agents, p) = rooted(a).await;
+        tools::seat::set_cwd(p, Some(da.0.clone()));
+        tools::seat::set_write_root(p, Some(da.0.clone()));
+        let (_, c, _) = agents
+            .ask(SpawnChild {
+                cwd: Some(db.0.clone()),
+                ..spawn_on(p, "box", "seated", "go")
+            })
+            .await
+            .unwrap();
+        fake.handshake(Vec::new(), None).await;
+        // `ask` returned: `acp_session` (which seats the child) ran before the spawn answered.
+        let seat = tools::seat::seat_of(c);
+        assert_eq!(seat.cwd, Some(db.0.clone()));
+        assert_eq!(seat.write_root, Some(da.0.clone()));
     }
 
     /// 109 LIVE: a child whose open turn is resumed after a restart
