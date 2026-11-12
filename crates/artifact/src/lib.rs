@@ -779,6 +779,9 @@ impl runtime::Plugin for ArtifactPlugin {
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         declare_wire(rt).await?;
+        use wire::RuntimeWire as _;
+        let feed_rt = rt.clone();
+        preview::watch_feed(std::sync::Arc::new(move || feed_rt.wire_external_stream_count()));
         let cfg: ArtifactConfig = rt.section("artifact").unwrap_or_else(|e| {
             tracing::debug!("no [artifact] config section, using defaults: {e}");
             ArtifactConfig::default()

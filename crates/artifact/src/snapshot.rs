@@ -599,7 +599,6 @@ mod tests {
 
     use kameo::actor::Spawn;
     use kameo::message::{Context, Message};
-    use tokio::sync::broadcast;
 
     use super::*;
 
@@ -668,10 +667,7 @@ mod tests {
 
     impl Harness {
         async fn new(mode: Mode) -> Self {
-            // The feed is process-wide and set once; a forgotten receiver keeps it live.
-            let (tx, rx) = broadcast::channel::<Arc<serde_json::Value>>(4);
-            crate::preview::watch_feed(tx);
-            std::mem::forget(rx);
+            crate::preview::watch_feed(Arc::new(|| 1));
             let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
             let h = Self {
                 rt,

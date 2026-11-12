@@ -1993,7 +1993,6 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
     rpc_core::merge([
         rpc::api::hub::rpc_module(server.clone()),
         rpc::api::sessions::rpc_module(server.clone()),
-        rpc::api::turns::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
         rpc::api::tooling::rpc_module(server.clone()),
         rpc::api::screens::rpc_module(server.clone()),
@@ -2008,8 +2007,8 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::api::boards::rpc_module(server.clone()),
         rpc::api::artifacts::rpc_module(server.clone()),
         rpc::api::credentials::rpc_module(server.clone()),
-        rpc::api::speech::rpc_module(server.clone()),
-        rpc::api::meetings::rpc_module(server.clone()),
+        talk::rpc_module(server.clone()),
+        meeting::rpc_module(server.clone()),
         rpc::api::dreams::rpc_module(server.clone()),
         rpc::api::research::rpc_module(server.clone()),
         rpc::api::kernels::rpc_module(server.clone()),

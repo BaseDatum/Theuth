@@ -41,7 +41,8 @@ pub mod rpc_turns;
 pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
     rpc_core::merge([
         rpc_jobs::rpc_module(server.clone()),
-        rpc_skills::rpc_module(server),
+        rpc_skills::rpc_module(server.clone()),
+        rpc_turns::rpc_module(server),
     ])
 }
 

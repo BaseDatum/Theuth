@@ -2,7 +2,7 @@
 //! never ask (design doc 39).
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the [`UPDATE_ACTOR`] actor ([`UpdateActor`]): [`Status`], [`SetAttached`]
+//! - commands on the [`UPDATE_ACTOR`] actor ([`UpdateActor`]): [`Status`]
 //! - events: [`UpdateReady`]
 //! - [`run_once`] for `t --update`
 
@@ -98,10 +98,6 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Status;
 
-/// `tell` from the rpc plugin at start: how many frontends are attached, so
-/// a service-managed daemon only restarts itself when nobody is listening
-/// (39 §3.4). A downward edge like `link`'s `SetDispatch`.
-pub struct SetAttached(pub Arc<dyn Fn() -> usize + Send + Sync>);
 
 /// `ask` (internal, from the tick task) → `true` when the process should exit
 /// for restart (39 §3.4). Carries what this tick found; the actor publishes
@@ -126,12 +122,6 @@ impl Message<Status> for UpdateActor {
     }
 }
 
-impl Message<SetAttached> for UpdateActor {
-    type Reply = ();
-    async fn handle(&mut self, m: SetAttached, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.attached = Some(m.0);
-    }
-}
 
 impl Message<agent::AgentEvent> for UpdateActor {
     type Reply = ();
@@ -608,11 +598,13 @@ impl runtime::Plugin for UpdatePlugin {
             tracing::info!("update disabled by config");
             return Ok(());
         }
+        use wire::RuntimeWire as _;
+        let feed_rt = rt.clone();
         let actor = UpdateActor::spawn_with_mailbox(
             UpdateActor {
                 rt: rt.clone(),
                 ready: None,
-                attached: None,
+                attached: Some(Arc::new(move || feed_rt.wire_external_stream_count())),
                 last_turn: Instant::now(),
             },
             runtime::subscriber_mailbox(),

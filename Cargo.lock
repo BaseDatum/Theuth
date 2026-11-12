@@ -11991,6 +11991,7 @@ dependencies = [
  "gray_matter",
  "hex",
  "hound",
+ "jsonrpsee",
  "kameo",
  "knf-rs",
  "libc",
@@ -12006,6 +12007,7 @@ dependencies = [
  "realfft",
  "regex",
  "reqwest 0.13.5",
+ "rpc-core",
  "rtrb",
  "rubato 5.0.1",
  "runtime",
@@ -17625,6 +17627,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",
+ "wire",
 ]
 
 [[package]]
@@ -21162,9 +21165,12 @@ dependencies = [
  "agent",
  "anyhow",
  "async-trait",
+ "base64 0.23.1",
+ "jsonrpsee",
  "kameo",
  "markdown",
  "pulldown-cmark",
+ "rpc-core",
  "runtime",
  "schemars 1.2.3",
  "serde",

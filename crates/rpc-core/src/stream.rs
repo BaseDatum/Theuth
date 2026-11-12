@@ -1,15 +1,12 @@
-//! Shared legacy JSON event backlog; policy changes belong to the wire-frame cutover.
-use crate::Event;
+//! Shared wire-frame backlog; admission and transport envelopes stay outside it.
+use wire::{Delta, WireFrame};
 use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::time::Instant;
 
 /// 129 §3.1: the event types a connection's focus filters and a stream merges
 /// while they wait. Everything else passes untouched.
-pub fn is_delta(ev: &serde_json::Value) -> bool {
-    matches!(
-        ev.get("type").and_then(|t| t.as_str()),
-        Some("TextDelta" | "ReasoningDelta" | "ToolCallProgress" | "VisionProgress")
-    )
+pub fn is_delta(ev: &WireFrame) -> bool {
+    ev.policy.delta != Delta::Control
 }
 
 /// Pending deltas go out at least this often when the sink has room (129 §3.1).
@@ -36,7 +33,7 @@ pub struct Stream {
 /// a delta batch waits up to `FLUSH_MS` unless a non-delta is queued behind it.
 #[derive(Default)]
 pub struct Backlog {
-    frames: std::collections::VecDeque<Event>,
+    frames: std::collections::VecDeque<Arc<WireFrame>>,
     /// Non-delta frames in `frames`, at most `BACKLOG`.
     control: usize,
     /// Delta frames in `frames`.
@@ -52,7 +49,7 @@ pub struct Backlog {
 /// What the sink writer does next.
 pub enum Next {
     /// Emit one shared frame.
-    Frame(Event),
+    Frame(Arc<WireFrame>),
     /// Emit the number of discarded non-delta frames.
     Lagged(u64),
     /// Nothing due: wake on the next push, or at the instant.
@@ -61,7 +58,7 @@ pub enum Next {
 
 impl Backlog {
     /// Enqueue a frame, preserving per-session order and bounded controls.
-    pub fn push(&mut self, ev: Event, now: Instant) {
+    pub fn push(&mut self, ev: Arc<WireFrame>, now: Instant) {
         if !is_delta(&ev) {
             if self.control == BACKLOG {
                 // ponytail: O(n) scan from the front; the oldest non-delta is near it.
@@ -77,17 +74,24 @@ impl Backlog {
         }
         let same = |a: &serde_json::Value, b: &serde_json::Value, k: &str| a.get(k) == b.get(k);
         for f in self.frames.iter_mut().rev() {
-            if !same(f, &ev, "session") {
+            if !same(&f.event, &ev.event, "session") {
                 continue;
             }
             if !is_delta(f) {
                 break;
             }
-            if same(f, &ev, "type") && same(f, &ev, "turn") && same(f, &ev, "call_id") {
-                // Text concatenates; `ToolCallProgress.args` and `VisionProgress`
-                // are cumulative, so the latest replaces.
-                if let Some(add) = ev.get("text").and_then(|t| t.as_str()) {
-                    if let Some(serde_json::Value::String(acc)) = Arc::make_mut(f).get_mut("text") {
+            if f.descriptor.as_ref().map(|d| (d.topic, d.version))
+                == ev.descriptor.as_ref().map(|d| (d.topic, d.version))
+                && same(&f.event, &ev.event, "type")
+                && same(&f.event, &ev.event, "turn")
+                && same(&f.event, &ev.event, "call_id")
+            {
+                // Text concatenates; cumulative progress keeps the latest frame.
+                if ev.policy.delta == Delta::AppendText {
+                    if let Some(add) = ev.event.get("text").and_then(|t| t.as_str())
+                        && let Some(serde_json::Value::String(acc)) =
+                            Arc::make_mut(f).event.get_mut("text")
+                    {
                         acc.push_str(add);
                     }
                 } else {
