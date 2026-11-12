@@ -228,14 +228,6 @@ pub struct Model {
     /// A loaded transcript holds `show` cards: the event loop asks
     /// `list_artifacts` to join their artifacts back (35 §0.3).
     pub refresh_artifacts: bool,
-    /// Latest `list_secrets` (the `/secrets` menu, the `replaces vN` hint); `None` until fetched.
-    pub secrets: Option<secrets::SecretsList>,
-    /// `/secrets` was typed; the next `UiEvent::Secrets` opens the menu.
-    awaiting_secrets: bool,
-    /// The vault changed while a list is held: the event loop re-asks `list_secrets`.
-    pub refresh_secrets: bool,
-    /// Pending `secret_request`s for the current session or its subtree, oldest first; the front is shown.
-    pub secret_requests: VecDeque<SecretRequest>,
     /// Context revision of the shown transcript (`Loaded.context_revision`,
     /// 48 §3.1); empty until loaded. A `ContextChanged` with a newer one
     /// sets `refresh_context`; an older settled reload is dropped.
@@ -389,8 +381,7 @@ pub use catalog::{PickTarget, ModelRow, rank_models, providers, provider_models,
 #[cfg(test)]
 use catalog::{search_terms};
 pub use concepts::{meta_line, HISTORY_PAGE, revision_rows};
-pub use credentials::{LoginRow, SecretRequest};
-use credentials::{bad_secret_name};
+pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;
 pub(crate) use events::{send};

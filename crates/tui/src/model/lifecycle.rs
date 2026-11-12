@@ -21,7 +21,6 @@ impl Model {
             catalog: self.catalog.take(),
             skills: std::mem::take(&mut self.skills),
             width: self.width,
-            secrets: self.secrets.take(),
             components: std::mem::replace(&mut self.components, crate::components::Registry::empty()),
             component_commands: self.component_commands.take(),
             todo_open: std::mem::take(&mut self.todo_open),

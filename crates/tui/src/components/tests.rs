@@ -230,12 +230,12 @@ fn empty_pending_replaces_categories_and_loss_resync_preserves_inspection() {
     model.apply(UiEvent::Ask(ask.clone()));
     assert_eq!(model.approvals.iter().map(|r| r.id).collect::<Vec<_>>(), [request.id]);
     assert_eq!(model.asks.iter().map(|r| r.req.id).collect::<Vec<_>>(), [ask.id]);
-    assert_eq!(model.secret_requests.front().unwrap().name, "token");
+    assert_eq!(model.components.get::<super::secrets::Secrets>().unwrap().requests.front().unwrap().name, "token");
     model.apply(UiEvent::Wire(TopicEvent::control(json!({"type":"PendingPrompts","approvals":[]}))));
     assert!(model.approvals.is_empty());
     assert_eq!(model.asks.front().unwrap().req.id, ask.id);
     model.apply(UiEvent::Wire(TopicEvent::control(json!({"type":"PendingPrompts","approvals":[],"asks":[],"secrets":[]}))));
-    assert!(model.asks.is_empty() && model.secret_requests.is_empty());
+    assert!(model.asks.is_empty() && model.components.get::<super::secrets::Secrets>().unwrap().requests.is_empty());
     model.inspect = Some(crate::search::Inspect { session, seq: 12, found: true });
     model.pending_input = Some(("unsent draft".into(), 12));
     model.entries.push(Entry::Info("historical page".into()));

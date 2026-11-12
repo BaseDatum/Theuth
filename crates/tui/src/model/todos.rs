@@ -109,7 +109,7 @@ impl Model {
     pub fn todo_focused(&self) -> bool {
         self.todo_focus
             && self.approval().is_none()
-            && self.secret_request().is_none()
+            && !self.components.editor().is_some_and(|(class, _)| class == crate::components::FocusClass::Secret)
             && self.ask().is_none()
             && !self.modal_menu()
     }

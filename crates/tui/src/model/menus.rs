@@ -116,14 +116,6 @@ pub enum Menu {
         /// Rows are apps: the title says so and where they run.
         apps: bool,
     },
-    /// `/secrets`: the vault's names over [`Model::secrets`] (37 §5).
-    Secrets {
-        /// Highlighted secret.
-        cursor: usize,
-        /// History of the highlighted secret is open: the highlighted
-        /// version row (0 = current). `None` shows the names.
-        history: Option<usize>,
-    },
     /// `/knowledge [query]` picker (10 §6).
     Knowledge {
         /// The list or search reply.
@@ -245,7 +237,6 @@ impl Model {
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
-            Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
             Some(Menu::Shake(_)) => self.shake_key(code, tx),
             Some(Menu::Peers { .. }) => self.peers_key(code, tx),
