@@ -309,13 +309,21 @@ impl Model {
         }
     }
 
+    /// Builtin vocabulary in its original presentation order, before harness rows.
+    pub(crate) fn command_specs(&self, word: &str) -> Vec<&'static crate::components::SlashSpec> {
+        let mut specs: Vec<_> = COMMANDS.iter().chain(self.components.slash_specs())
+            .filter(|spec| spec.0.starts_with(word) && (self.app_enabled || spec.0 != "/apps"))
+            .collect();
+        specs.sort_unstable_by_key(|spec| (command_rank(spec.0), spec.0));
+        specs
+    }
+
     /// Slash popup rows for the typed `word`: theuth's commands, then the
     /// harness's own (141 D15 c) labelled with the harness name — those are
     /// sent raw when picked (`raw`), never through `use_skill`.
     pub fn slash_rows(&self, word: &str) -> Vec<SlashRow> {
-        let mut rows: Vec<SlashRow> = slash_matches(word, self.app_enabled)
+        let mut rows: Vec<SlashRow> = self.command_specs(word)
             .into_iter()
-            .chain(self.components.slash_specs().filter(|spec| spec.0.starts_with(word)))
             .map(|(name, hint, desc)| SlashRow {
                 name: (*name).to_owned(),
                 hint: (*hint).to_owned(),
@@ -436,4 +444,35 @@ impl Model {
             },
         );
     }
+}
+
+// Presentation metadata only: routing and command declarations remain with owners.
+fn command_rank(name: &str) -> usize {
+    match name {
+        "/model" => 0, "/title" => 1, "/vision" => 2, "/effort" => 3,
+        "/advisor" => 4, "/aws" => 5, "/mcp" => 6, "/acp" => 7,
+        "/skills" => 8, "/knowledge" => 9, "/login" => 10, "/logout" => 11,
+        "/prompt" => 12, "/agents" => 13, "/todos" => 14, "/dictate" => 15,
+        "/voice" => 16, "/talk" => 17, "/jobs" => 18, "/terminals" => 19,
+        "/cost" => 20, "/project" => 21, "/schedules" => 22, "/autoresearch" => 23,
+        "/tasks" => 24, "/roster" => 25, "/computer" => 26, "/parent" => 27,
+        "/sessions" => 28, "/take" => 29, "/broadcast" => 30, "/search" => 31,
+        "/attach" => 32, "/resume" => 33, "/new" => 34, "/clear" => 35,
+        "/approvals" => 36, "/communication" => 37, "/peers" => 38, "/a2a" => 39,
+        "/double" => 40, "/cancel" => 41, "/compact" => 42, "/endless" => 43,
+        "/shake" => 44, "/undo" => 45, "/redo" => 46, "/edit" => 47,
+        "/regen" => 48, "/fork" => 49, "/quit" => 50, "/provider" => 51,
+        "/secrets" => 52, "/link" => 53, "/mesh" => 54, "/nodes" => 55,
+        "/sandbox" => 56, "/artifacts" => 57, "/apps" => 58, "/tools" => 59,
+        "/exit" => 60, _ => usize::MAX,
+    }
+}
+
+#[test]
+fn completion_preserves_builtin_order_across_component_owners() {
+    let model = Model::new(String::new(), true);
+    let selected = ["/mcp", "/jobs", "/computer", "/broadcast", "/sandbox", "/tools"];
+    let names: Vec<_> = model.command_specs("/").into_iter()
+        .map(|spec| spec.0).filter(|name| selected.contains(name)).collect();
+    assert_eq!(names, selected);
 }
