@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use agent::rpc_forward as forward;
-use agent::rpc_support::{owner_root, session_draining, RpcServerExt};
-use agent::todo::TodoSnapshot;
-use agent::{
+use crate as agent;
+use crate::rpc_forward as forward;
+use crate::rpc_support::{owner_root, session_draining, RpcServerExt};
+use crate::todo::TodoSnapshot;
+use crate::{
     AgentInfo, Agents, Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
     BroadcastTargets, Cancel, CancelScope, Compact, CompactStyle, ContextBreakdown,
     ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, Delivery, EditTurn,

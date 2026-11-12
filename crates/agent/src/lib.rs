@@ -34,6 +34,8 @@ pub mod rpc_forward;
 pub mod rpc_jobs;
 /// Skill RPC server and client methods.
 pub mod rpc_skills;
+/// Turn RPC server and client methods.
+pub mod rpc_turns;
 
 /// Assemble agent-owned RPC domains.
 pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {

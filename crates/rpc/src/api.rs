@@ -185,7 +185,7 @@ pub mod hub;
 /// Sessions RPC server and client traits.
 pub mod sessions;
 /// Turns RPC server and client traits.
-pub mod turns;
+pub use agent::rpc_turns as turns;
 /// Settings RPC server and client traits.
 pub mod settings;
 /// Tooling RPC server and client traits.
