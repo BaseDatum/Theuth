@@ -226,8 +226,6 @@ pub mod speech;
 pub mod meetings;
 /// Kernels RPC server and client traits.
 pub mod kernels;
-/// Dreams RPC server and client traits.
-pub use dreaming::rpc_api as dreams;
 /// Research RPC server and client traits.
 pub mod research;
 /// Sandboxes RPC server and client traits.
@@ -255,7 +253,6 @@ pub use credentials::{CredentialsApiClient, CredentialsApiServer};
 pub use speech::{SpeechApiClient, SpeechApiServer};
 pub use meetings::{MeetingsApiClient, MeetingsApiServer};
 pub use kernels::{KernelsApiClient, KernelsApiServer};
-pub use dreams::{DreamsApiClient, DreamsApiServer};
 pub use research::{ResearchApiClient, ResearchApiServer};
 pub use sandboxes::{SandboxesApiClient, SandboxesApiServer};
 
@@ -283,7 +280,7 @@ pub mod clients {
     pub use super::speech::SpeechApiClient;
     pub use super::meetings::MeetingsApiClient;
     pub use super::kernels::KernelsApiClient;
-    pub use super::dreams::DreamsApiClient;
+    pub use dreaming::DreamsApiClient;
     pub use super::research::ResearchApiClient;
     pub use super::sandboxes::SandboxesApiClient;
 }
@@ -312,7 +309,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         credentials::rpc_module(server.clone()),
         speech::rpc_module(server.clone()),
         meetings::rpc_module(server.clone()),
-        dreams::rpc_module(server.clone()),
+        dreaming::rpc_module(server.clone()),
         research::rpc_module(server.clone()),
         kernels::rpc_module(server.clone()),
         sandboxes::rpc_module(server.clone()),

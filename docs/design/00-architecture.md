@@ -624,8 +624,9 @@ the oh-my-pi rendering approach.
 The TUI is a control plane over the same actor commands RPC exposes. It
 subscribes to bus events for the transcript, approvals, MCP progress and
 logins (its own subscription, so `TextDelta` never serializes), and for
-everything else calls the harness commands. The 25 domain RPC traits in
-`rpc::api` implement their generated server contracts on `rpc_core::Server`,
+everything else calls the harness commands. Domain RPC traits implement their
+generated server contracts on `rpc_core::Server`; dreaming owns its dreams domain,
+while domains not yet extracted remain in `rpc::api`,
 using actor lookup plus `ask`/`tell`. They are assembled by the explicit
 `rpc_core::ModuleFactory` supplied by `main`: its `rpc_module` function
 merges the 25 domain factories with `rpc_core::merge`. The TUI uses the generated typed clients over
