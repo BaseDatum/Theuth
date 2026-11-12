@@ -58,6 +58,10 @@ pub struct DreamNightStarted {
     pub night: NightId,
 }
 
+impl wire::WireEvent for DreamNightStarted {
+    const TOPIC: &'static str = "dreaming.started";
+}
+
 /// Event: a night ended (136 §9.3); the attention digest and the HUD ring listen.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -73,6 +77,10 @@ pub struct DreamNightFinished {
     pub proposals: Vec<Proposal>,
 }
 
+impl wire::WireEvent for DreamNightFinished {
+    const TOPIC: &'static str = "dreaming.finished";
+}
+
 /// Event: a night or a group was undone (136 §9.3).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -82,6 +90,18 @@ pub struct DreamUndone {
     pub night: NightId,
     /// The group, or `None` for the whole night.
     pub group: Option<String>,
+}
+
+impl wire::WireEvent for DreamUndone {
+    const TOPIC: &'static str = "dreaming.undone";
+}
+
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<DreamNightStarted>().await?;
+    rt.register_wire_event::<DreamNightFinished>().await?;
+    rt.register_wire_event::<DreamUndone>().await
 }
 
 /// `budget_usd` as the routine's `budget:` value: rendered from nanos
@@ -250,6 +270,7 @@ impl runtime::Plugin for DreamingPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: DreamConfig = rt.section("dreaming").unwrap_or_else(|e| {
             tracing::debug!("no [dreaming] config section, using defaults: {e}");
             DreamConfig::default()

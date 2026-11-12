@@ -165,6 +165,16 @@ pub enum SlackEvent {
     DaemonOnly,
 }
 
+impl wire::WireEvent for SlackEvent {
+    const TOPIC: &'static str = "slack.events";
+}
+
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<SlackEvent>().await
+}
+
 /// Per-method call counters.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -393,6 +403,7 @@ impl runtime::Plugin for SlackPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: SlackConfig = rt.section("slack").unwrap_or_else(|e| {
             tracing::debug!("no [slack] config section, using defaults: {e}");
             SlackConfig::default()

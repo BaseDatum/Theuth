@@ -49,6 +49,10 @@ pub struct DoublePredicted {
     pub explain: Explain,
 }
 
+impl wire::WireEvent for DoublePredicted {
+    const TOPIC: &'static str = "double.predicted";
+}
+
 /// Why the double predicted what it did (the chip popover, §10).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -108,6 +112,10 @@ pub struct DoubleAnswered {
     pub undo_until: Option<String>,
 }
 
+impl wire::WireEvent for DoubleAnswered {
+    const TOPIC: &'static str = "double.answered";
+}
+
 /// A training run changed state (§8.1); Settings shows it live.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -129,6 +137,10 @@ pub struct DoubleTrainingState {
     pub message: String,
 }
 
+impl wire::WireEvent for DoubleTrainingState {
+    const TOPIC: &'static str = "double.training";
+}
+
 /// A candidate passed the gate (or `double_rollback` ran) and is now active (§8.5).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -142,6 +154,10 @@ pub struct DoubleVersionActivated {
     pub previous: Option<String>,
     /// The version's `metrics` JSON.
     pub metrics: serde_json::Value,
+}
+
+impl wire::WireEvent for DoubleVersionActivated {
+    const TOPIC: &'static str = "double.version";
 }
 
 #[cfg(test)]

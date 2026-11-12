@@ -3273,6 +3273,12 @@ impl knowledge::Scoper for Desks {
     }
 }
 
+/// Declare wire contracts before starting producers.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<attention::AttentionChanged>().await
+}
+
 /// The plugin: reads `roster`, creates `agents/`, opens the store, spawns
 /// [`Roster`] as [`ROSTER_ACTOR`], watches the directory, registers
 /// [`Desks`] with the tasks actor and the two tools with the registry once
@@ -3286,6 +3292,7 @@ impl runtime::Plugin for RosterPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: RosterConfig = rt.section("roster").unwrap_or_else(|e| {
             tracing::debug!("no [roster] config section, using defaults: {e}");
             RosterConfig::default()

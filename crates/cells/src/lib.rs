@@ -43,6 +43,12 @@ pub const DIR: &str = "cells";
 /// Where the bundled skill is written, root-relative (A1; only when [`prompt::SKILL`] is non-empty).
 pub const SKILL_PATH: &str = "skills/cells.md";
 
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<CellEvent>().await
+}
+
 /// The plugin. Reads `cells:`; when enabled spawns the (idle) [`CellsActor`] and hands its
 /// handle to the A1 registration line.
 pub struct CellsPlugin;
@@ -54,6 +60,7 @@ impl runtime::Plugin for CellsPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg = CellsConfig::from_runtime(rt);
         if !cfg.enabled {
             tracing::info!("cells disabled by config; no actor");

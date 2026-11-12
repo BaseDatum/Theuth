@@ -100,6 +100,16 @@ pub enum SignalEvent {
     DaemonOnly,
 }
 
+impl wire::WireEvent for SignalEvent {
+    const TOPIC: &'static str = "signal.events";
+}
+
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<SignalEvent>().await
+}
+
 /// `ask` → [`SignalStatus`]: the last [`SignalEvent`] plus trust and threads.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Status;
@@ -313,6 +323,7 @@ impl runtime::Plugin for SignalPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: SignalConfig = rt.section("signal").unwrap_or_else(|e| {
             tracing::debug!("no [signal] config section, using defaults: {e}");
             SignalConfig::default()

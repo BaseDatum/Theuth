@@ -512,6 +512,10 @@ pub enum MeetingEvent {
     },
 }
 
+impl wire::WireEvent for MeetingEvent {
+    const TOPIC: &'static str = "meeting.events";
+}
+
 /// Why a topic button disappeared (phase 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -604,6 +608,18 @@ pub enum BriefEvent {
         /// Deleted.
         removed: bool,
     },
+}
+
+impl wire::WireEvent for BriefEvent {
+    const TOPIC: &'static str = "meeting.briefs";
+}
+
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<MeetingEvent>().await?;
+    rt.register_wire_event::<BriefEvent>().await?;
+    rt.register_wire_event::<CalendarEvent>().await
 }
 
 /// One closed utterance of the live transcript: a `live.jsonl` line and the
@@ -4393,6 +4409,7 @@ impl runtime::Plugin for MeetingPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: MeetingConfig = rt.section("meeting").unwrap_or_else(|e| {
             tracing::debug!("no [meeting] config section, using defaults: {e}");
             MeetingConfig::default()

@@ -8,6 +8,7 @@ description = "Tree-sitter tags → sqlite symbol/reference index per repository
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 tools = { workspace = true }
 # 147 §6.5: `GraphProps` for map diagrams and `graph::from_mermaid`; one edge, 00 §10 order kept.
 surface = { workspace = true }
