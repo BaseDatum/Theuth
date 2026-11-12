@@ -136,6 +136,12 @@ pub type Shared = Arc<RwLock<Arc<Live>>>;
 #[derive(Clone, Debug)]
 pub struct ContactCaller(pub String);
 
+/// 191 (D3): `forward::route` charged this contact call already (`Live::admit_contact`: one
+/// rate token, and the concurrency permit it holds across its router run and every forward);
+/// [`dispatch`] charges it nothing again. A request extension, so no HTTP client can set it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Charged;
+
 /// 183 §7.6: what a contact principal carries into admission.
 #[derive(Clone, Debug)]
 struct ContactGrant {
@@ -419,15 +425,20 @@ async fn dispatch(State(shared): State<Shared>, mut req: Request) -> Response {
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if !principal.admit_rate() {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
-    }
-    let Ok(_permit) = principal.concurrent.clone().try_acquire_owned() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(header::RETRY_AFTER, HeaderValue::from_static("1"))],
-        )
-            .into_response();
+    let _permit = if req.extensions().get::<Charged>().is_some() {
+        None
+    } else {
+        if !principal.admit_rate() {
+            return StatusCode::TOO_MANY_REQUESTS.into_response();
+        }
+        let Ok(permit) = principal.concurrent.clone().try_acquire_owned() else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, HeaderValue::from_static("1"))],
+            )
+                .into_response();
+        };
+        Some(permit)
     };
     let Ok(v) = HeaderValue::from_str(&principal.binding.to_string()) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();

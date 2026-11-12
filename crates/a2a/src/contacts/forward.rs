@@ -13,12 +13,12 @@
 //! through [`route`]), and the receiving machine resolves at most twice: a second `not owner`
 //! goes back to the contact, whose client tries its next member.
 
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Weak};
 
 use a2a_types::error_code;
 use agent::communication::ContactRefusal;
 use agent::communication::mesh::{self, A2aAnswer, FORWARD_BODY_MAX, ForwardFailure};
-use agent::communication::network::{NOT_OWNER_CODE, NOT_OWNER_TEXT, OWNER_DETAIL};
+use agent::communication::network::{NOT_OWNER_CODE, NOT_OWNER_TEXT, OWNER_DETAIL, RETURN_ROUTE};
 use axum::body::Body;
 use axum::response::{IntoResponse as _, Response};
 use bytes::Bytes;
@@ -26,9 +26,10 @@ use http_body_util::BodyExt as _;
 use hyper::StatusCode;
 use hyper::header::CONTENT_TYPE;
 use tower::ServiceExt as _;
+use tracing::Instrument as _;
 
 use crate::Ctx;
-use crate::server::{BODY_LIMIT, ContactCaller, IrohGate};
+use crate::server::{BODY_LIMIT, Charged, ContactCaller, IrohGate};
 
 /// The unary methods `a2a_forward` carries (D3).
 const CARRIED: [&str; 3] = ["SendMessage", "GetTask", "CancelTask"];
@@ -44,35 +45,41 @@ const RESOLVES: usize = 2;
 /// The version the receiving machine checked before it forwarded (`server::check_version`).
 const VERSION: &str = "1.0";
 
-/// The plugin's context for the owner side, published once at start (as `reach::Gate` holds a
-/// `Weak<Ctx>`): `rpc`'s `a2a_forward` reaches the gate and the router through it, never
-/// through the a2a actor's mailbox.
-static OWNER_SIDE: OnceLock<Weak<Ctx>> = OnceLock::new();
+/// The plugin's context for the owner side, published at each start (as `reach::Gate` holds a
+/// `Weak<Ctx>`; a restarted plugin replaces it): `rpc`'s `a2a_forward` reaches the gate and the
+/// router through it, never through the a2a actor's mailbox.
+static OWNER_SIDE: parking_lot::Mutex<Weak<Ctx>> = parking_lot::const_mutex(Weak::new());
 
-/// Publish `c` as the owner side of `a2a_forward` (the plugin, once).
+/// Publish `c` as the owner side of `a2a_forward` (the plugin, at start).
 pub(crate) fn publish(c: &Arc<Ctx>) {
-    let _ = OWNER_SIDE.set(Arc::downgrade(c));
+    *OWNER_SIDE.lock() = Arc::downgrade(c);
 }
 
 /// The owner side of `a2a_forward` (`rpc` serves it, mesh-internal): `caller`'s request,
-/// carried here by the machine that received it.
-pub async fn serve(caller: &str, path: &str, body: String) -> Result<A2aAnswer, ForwardFailure> {
-    let Some(c) = OWNER_SIDE.get().and_then(Weak::upgrade) else {
+/// carried here by `forwarder`, the machine of our mesh that received it (logged with it).
+pub async fn serve(
+    forwarder: &str,
+    caller: &str,
+    path: &str,
+    body: String,
+) -> Result<A2aAnswer, ForwardFailure> {
+    let Some(c) = OWNER_SIDE.lock().upgrade() else {
         return Err(ForwardFailure::Offline(
             "the a2a plugin is not running here".into(),
         ));
     };
-    c.forwarded(caller, path, body).await
+    let span = tracing::info_span!("a2a_forward", forwarder = %short(forwarder));
+    c.forwarded(caller, path, body).instrument(span).await
 }
 
-/// `path` and `method` are a unary call `a2a_forward` carries: a JSON-RPC route (`/rpc`,
-/// `/agents/<export>/rpc`, `/agents/~return/rpc`) and one of [`CARRIED`].
+/// `path` and `method` are a unary call `a2a_forward` carries: an export's JSON-RPC route
+/// (`/agents/<export>/rpc`, the export a name of `[a-z0-9_-]`, or `~return`; never the bare
+/// `/rpc`, which the receiving machine resolves first) and one of [`CARRIED`].
 fn carried(path: &str, method: &str) -> bool {
-    let route = path == "/rpc"
-        || path
-            .strip_prefix("/agents/")
-            .and_then(|r| r.strip_suffix("/rpc"))
-            .is_some_and(|e| !e.is_empty() && !e.contains('/'));
+    let route = path
+        .strip_prefix("/agents/")
+        .and_then(|r| r.strip_suffix("/rpc"))
+        .is_some_and(|e| e == RETURN_ROUTE || crate::config::check_alias(e).is_ok());
     route && CARRIED.contains(&method)
 }
 
@@ -122,7 +129,16 @@ pub(crate) async fn route(
     remote: &str,
     req: hyper::Request<hyper::body::Incoming>,
 ) -> Response {
+    // 191 (D3): the contact is charged once for the whole call (one rate token), and the
+    // permit is held across this machine's router run and every forward (`Charged`: its
+    // `dispatch` charges nothing again).
+    let admitted = c.shared.read().admit_contact(remote);
+    let _permit = match admitted {
+        Ok(p) => p,
+        Err(status) => return status.into_response(),
+    };
     let (mut parts, body) = req.into_parts();
+    parts.extensions.insert(Charged);
     let Ok(body) = http_body_util::Limited::new(body, BODY_LIMIT)
         .collect()
         .await
@@ -131,14 +147,13 @@ pub(crate) async fn route(
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     };
     // `/rpc` reaches the first export granted to the caller: resolved here, so a forward carries
-    // the export this machine resolved, never the bare `/rpc`.
-    if parts.uri.path() == "/rpc"
-        && let Some(uri) = c
-            .shared
-            .read()
-            .first_export(remote)
-            .and_then(|e| format!("/agents/{e}/rpc").parse().ok())
-    {
+    // the export this machine resolved, never the bare `/rpc`; none granted is 404, as the
+    // router answers it.
+    if parts.uri.path() == "/rpc" {
+        let first = c.shared.read().first_export(remote);
+        let Some(uri) = first.and_then(|e| format!("/agents/{e}/rpc").parse().ok()) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
         parts.uri = uri;
     }
     let head: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
@@ -149,11 +164,20 @@ pub(crate) async fn route(
         .unwrap_or_default()
         .to_owned();
     let path = parts.uri.path().to_owned();
-    // A task id names the machine that admitted it.
-    let mut owner = head
-        .pointer("/params/id")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|t| task_engine(c, t));
+    // A task id names the machine that admitted it: read for `GetTask` and `CancelTask` only
+    // (a `SendMessage` resolves its session). A prefix naming no machine of this mesh answers
+    // as an offline one does, so a crafted id tells nothing of which machines are connected.
+    let task = match method.as_str() {
+        "GetTask" | "CancelTask" => head
+            .pointer("/params/id")
+            .and_then(serde_json::Value::as_str),
+        _ => None,
+    };
+    let mut owner = match task.map(|t| task_engine(c, t)) {
+        Some(TaskHome::At(o)) => Some(o),
+        Some(TaskHome::Unknown) => return offline(&id, "a task id naming no machine of this mesh"),
+        Some(TaskHome::Here) | None => None,
+    };
     for _ in 0..RESOLVES {
         let to = match owner.take() {
             Some(o) => o,
@@ -267,22 +291,35 @@ async fn local(
     }
 }
 
-/// 191 (D3): the machine of our mesh a task id names (`<first 16 hex of its engine id>-<uuid>`),
-/// when it is not this one. An id without that prefix (one minted before 191), this machine's
-/// own, or one naming no machine of our mesh is served here.
-fn task_engine(c: &Ctx, task: &str) -> Option<String> {
-    let (prefix, _) = task.split_once('-')?;
+/// Where a task id says its task is (`<first 16 hex of its engine id>-<uuid>`).
+enum TaskHome {
+    /// No such prefix (an id minted before 191), this machine's own, or no mesh here.
+    Here,
+    /// Another machine of our mesh.
+    At(String),
+    /// A well-formed prefix naming no machine of our mesh (one removed from it, or crafted).
+    Unknown,
+}
+
+/// 191 (D3): the machine a task id names.
+fn task_engine(c: &Ctx, task: &str) -> TaskHome {
+    let Some((prefix, _)) = task.split_once('-') else {
+        return TaskHome::Here;
+    };
     if prefix.len() != 16 || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
+        return TaskHome::Here;
     }
-    let net = c.net.get()?;
+    let Some(net) = c.net.get() else {
+        return TaskHome::Here;
+    };
     if net.id.0.starts_with(prefix) {
-        return None;
+        return TaskHome::Here;
     }
     net.paired_ids()
         .into_iter()
         .map(|e| e.to_string())
         .find(|e| e.starts_with(prefix))
+        .map_or(TaskHome::Unknown, TaskHome::At)
 }
 
 impl Ctx {
@@ -293,7 +330,9 @@ impl Ctx {
     /// or an unlisted caller: 401). Its router then applies the contact's rate and concurrency
     /// bounds (`admit_contact`'s, on the same principal) and serves the request as the
     /// contact's own stream would be. A `not owner` there is `NOT_OWNER`: a forward is never
-    /// forwarded again. An answer over [`FORWARD_BODY_MAX`] fails, never cut.
+    /// forwarded again. An answer over [`FORWARD_BODY_MAX`] fails, never cut. The whole run has
+    /// the forward's own deadline ([`mesh::FORWARD_TIMEOUT`], where the receiving machine gives
+    /// up too), so a blocking call never holds the caller's permit past it.
     pub(crate) async fn forwarded(
         self: &Arc<Self>,
         caller: &str,
@@ -328,16 +367,20 @@ impl Ctx {
             .map_err(|e| ForwardFailure::Refused(e.to_string()))?;
         req.extensions_mut()
             .insert(ContactCaller(caller.to_owned()));
-        let resp = match crate::server::app(self.shared.clone()).oneshot(req).await {
-            Ok(r) => r,
-            Err(never) => match never {},
+        let served = async {
+            let resp = match crate::server::app(self.shared.clone()).oneshot(req).await {
+                Ok(r) => r,
+                Err(never) => match never {},
+            };
+            let status = resp.status();
+            Ok::<_, ForwardFailure>((status, capped(resp.into_body()).await?))
         };
-        let status = resp.status();
-        let bytes = http_body_util::Limited::new(resp.into_body(), FORWARD_BODY_MAX)
-            .collect()
+        let (status, bytes) = tokio::time::timeout(mesh::FORWARD_TIMEOUT, served)
             .await
-            .map_err(|_| ForwardFailure::Refused("the answer is larger than 2 MiB".into()))?
-            .to_bytes();
+            .map_err(|_| {
+                tracing::info!(caller = %short(caller), %path, "191: a2a_forward: no answer within the forward's deadline");
+                ForwardFailure::Offline("no answer within the forward's deadline".into())
+            })??;
         if status == StatusCode::OK && not_owner(&bytes).is_some() {
             tracing::info!(caller = %short(caller), %path, "191: a2a_forward: not owner here either");
             return Err(ForwardFailure::NotOwner);
@@ -351,17 +394,26 @@ impl Ctx {
     }
 }
 
+/// The owner's answer body, up to [`FORWARD_BODY_MAX`]; a larger one fails, never cut.
+async fn capped(body: Body) -> Result<Bytes, ForwardFailure> {
+    http_body_util::Limited::new(body, FORWARD_BODY_MAX)
+        .collect()
+        .await
+        .map(|b| b.to_bytes())
+        .map_err(|_| ForwardFailure::Refused("the answer is larger than 2 MiB".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// D3: only a unary JSON-RPC call of a route is carried.
+    /// D3: only a unary JSON-RPC call of an export's route is carried: never the bare `/rpc`,
+    /// and an export segment only of `[a-z0-9_-]` (no query, no escape, no other route).
     #[test]
     fn only_unary_calls_of_a_route_are_carried() {
         for m in CARRIED {
             assert!(carried("/agents/proj/rpc", m), "{m}");
             assert!(carried("/agents/~return/rpc", m), "{m}");
-            assert!(carried("/rpc", m), "{m}");
         }
         for m in [
             "SendStreamingMessage",
@@ -380,9 +432,31 @@ mod tests {
             "/agents//rpc",
             "/agents/a/b/rpc",
             "/rpc/x",
+            "/rpc",
+            "/agents/proj?x=1/rpc",
+            "/agents/pro%6a/rpc",
+            "/agents/Proj/rpc",
+            "/agents/../rpc",
         ] {
             assert!(!carried(p, "SendMessage"), "{p}");
         }
+    }
+
+    /// D3: an owner's answer over 2 MiB fails, never cut; one of exactly 2 MiB is carried whole.
+    #[tokio::test]
+    async fn an_answer_over_two_mib_fails_never_cut() {
+        let at = vec![b'a'; FORWARD_BODY_MAX];
+        assert_eq!(
+            capped(Body::from(at)).await.unwrap().len(),
+            FORWARD_BODY_MAX
+        );
+        let over = vec![b'a'; FORWARD_BODY_MAX + 1];
+        assert_eq!(
+            capped(Body::from(over)).await,
+            Err(ForwardFailure::Refused(
+                "the answer is larger than 2 MiB".into()
+            ))
+        );
     }
 
     /// The owner a `not owner` names is read from its own detail only; any other error is not

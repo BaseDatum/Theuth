@@ -916,25 +916,6 @@ impl Net {
             .map_or(crate::PeerPath::Offline, |c| path_of(c).0)
     }
 
-    /// 191 (D3): `eid`'s gate refused this machine: a `theuth/a2a/1` connection to it was
-    /// closed by that side as "not a contact" (its roster of us does not list this machine
-    /// yet, or it blocked or removed us; the dialer cannot tell them apart). Nothing was served
-    /// on such a connection.
-    pub fn a2a_refused(&self, eid: &str) -> bool {
-        let Ok(id) = EndpointId::from_str(eid) else {
-            return false;
-        };
-        Self::lock(&self.a2a_conns).get(&id).is_some_and(|l| {
-            l.iter().any(|c| {
-                matches!(
-                    c.close_reason(),
-                    Some(iroh::endpoint::ConnectionError::ApplicationClosed(a))
-                        if a.reason.as_ref() == b"not a contact"
-                )
-            })
-        })
-    }
-
     /// 183 §7.2: the direct addresses `eid` answers on over its live `theuth/a2a/1`
     /// connections (either direction; relay paths left out), to remember for the next dial.
     pub fn a2a_direct_addrs(&self, eid: &str) -> Vec<std::net::SocketAddr> {

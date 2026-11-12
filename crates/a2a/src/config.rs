@@ -400,7 +400,9 @@ impl Staged {
     /// Whether `alias` is authorized identically in both sets: same
     /// credentials, roots and granted exports, and every granted export still
     /// publishes the same session. Anything else is a new authorization epoch
-    /// (§6.1): what an already-admitted caller holds must not carry over.
+    /// (§6.1): what an already-admitted caller holds must not carry over. 191 (D4): an agent
+    /// export's home moving between other machines (`At` ↔ `Left`, a mesh membership change)
+    /// is the same grant; a move to or from this machine (`Here`) is not.
     pub fn same_grant(&self, other: &Staged, alias: &str) -> bool {
         let (Some(a), Some(b)) = (self.peers.get(alias), other.peers.get(alias)) else {
             return false;
@@ -408,7 +410,7 @@ impl Staged {
         a == b
             && a.exports.iter().all(|e| {
                 self.exports.get(e) == other.exports.get(e)
-                    && self.agents.get(e) == other.agents.get(e)
+                    && same_agent(self.agents.get(e), other.agents.get(e))
             })
     }
 
@@ -444,6 +446,20 @@ impl Staged {
             .iter()
             .find(|(_, c)| c.eid == eid || c.eids.iter().any(|e| e == eid))
             .map(|(alias, _)| alias.as_str())
+    }
+}
+
+/// [`Staged::same_grant`] of one agent export: equal but for a home that is elsewhere in both.
+fn same_agent(a: Option<&AgentExport>, b: Option<&AgentExport>) -> bool {
+    use agent::communication::network::InboxHome;
+    match (a, b) {
+        (Some(a), Some(b)) if a.home != InboxHome::Here && b.home != InboxHome::Here => {
+            AgentExport {
+                home: b.home.clone(),
+                ..a.clone()
+            } == *b
+        }
+        _ => a == b,
     }
 }
 
@@ -1326,6 +1342,34 @@ exports:
             assert!(base.same_grant(&next, "reader"));
         }
         assert!(!base.same_grant(&Staged::default(), "lab"));
+    }
+
+    /// 191 (D4): an agent export's home moving between other machines keeps the grant; a move
+    /// to or from this machine, or any other change, retires it.
+    #[test]
+    fn an_agent_exports_home_moving_elsewhere_is_the_same_grant() {
+        use agent::communication::network::InboxHome;
+        let e = |home| AgentExport {
+            name: "e".into(),
+            agent: "theuth".into(),
+            title: "E".into(),
+            description: String::new(),
+            home,
+        };
+        let at = e(InboxHome::At("n2".into()));
+        assert!(same_agent(Some(&at), Some(&e(InboxHome::Left))));
+        assert!(same_agent(Some(&at), Some(&e(InboxHome::At("n3".into())))));
+        assert!(!same_agent(Some(&at), Some(&e(InboxHome::Here))));
+        assert!(!same_agent(
+            Some(&e(InboxHome::Here)),
+            Some(&e(InboxHome::Left))
+        ));
+        let other = AgentExport {
+            agent: "research".into(),
+            ..e(InboxHome::Left)
+        };
+        assert!(!same_agent(Some(&at), Some(&other)));
+        assert!(same_agent(None, None) && !same_agent(Some(&at), None));
     }
 
     #[test]

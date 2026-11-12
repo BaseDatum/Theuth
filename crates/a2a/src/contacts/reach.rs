@@ -422,22 +422,27 @@ impl IrohTransport {
         } else {
             Vec::new()
         };
-        // 191 (D3): a gate that refused this machine closed the connection "not a contact";
+        // 191 (D3): a gate that refused this machine closed the connection "not a contact"
+        // ([`gate_refused`], read from this call's own error, never from another connection);
         // nothing was served on it, so another member may be tried.
-        let gone = |e: String| {
-            if net.a2a_refused(eid) {
-                (true, refused(NOT_ACCEPTED))
-            } else {
-                (true, refused(e))
-            }
+        let gone = |at_gate: bool, e: String| {
+            (
+                true,
+                refused(if at_gate { NOT_ACCEPTED.to_owned() } else { e }),
+            )
         };
         let stream = net
             .a2a_stream(eid, &hints, self.hints.relay.as_deref())
             .await
-            .map_err(|e| gone(format!("contact unreachable: {e:#}")))?;
+            .map_err(|e| {
+                gone(
+                    e.chain().any(gate_refused),
+                    format!("contact unreachable: {e:#}"),
+                )
+            })?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
-            .map_err(|e| gone(e.to_string()))?;
+            .map_err(|e| gone(gate_refused(&e), e.to_string()))?;
         tokio::spawn(async move {
             let _ = conn.await;
         });
@@ -464,7 +469,7 @@ impl IrohTransport {
         // of us does not list this machine yet, or it blocked or removed us): the request never
         // reached its router (nothing admitted there), so the next is tried.
         let resp = sender.send_request(req).await.map_err(|e| {
-            if gate_refused(&e) || net.a2a_refused(eid) {
+            if gate_refused(&e) {
                 (true, refused(NOT_ACCEPTED))
             } else {
                 after(A2AError::internal(format!("contact request: {e}")))

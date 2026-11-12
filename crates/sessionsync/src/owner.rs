@@ -1558,6 +1558,36 @@ mod tests {
                 "the turn stays open on the owner"
             );
         }
+        // 191 (D4): a name-valued marker (`peer:bob|ops`, the export's name) or an unreadable
+        // one (no `|`) is not a marked inbox: the owner refuses a Write take too, nothing drained.
+        set_marker(&a.store, id, "ops").await;
+        for marker in [None, Some("unreadable")] {
+            if let Some(m) = marker {
+                assert!(a.store.set_contact_inbox(id, m).await.unwrap());
+            }
+            let shipper =
+                crate::ship::Shipper::new(a.store.clone(), None, &SessionsConfig::default());
+            let la2 = la.clone();
+            let served = tokio::spawn(async move {
+                let (peer, stream) = la2.accept(ALPN_SESSIONS).await.unwrap();
+                crate::SessionSync::serve(shipper, peer, stream)
+                    .await
+                    .unwrap();
+            });
+            let e = b
+                .take(Some(lb.clone()), vec![a.id()], vec![])
+                .run(id, TakeReason::Write)
+                .await
+                .unwrap_err();
+            served.await.unwrap();
+            assert_eq!(e, INBOX_STAYS, "{marker:?}");
+            assert_eq!(a.store.owner(id).await.unwrap(), Some(("a".into(), 1)));
+            assert_eq!(
+                a.store.open_turn(id).await.unwrap().map(|(t, _)| t),
+                Some(turn),
+                "{marker:?}: the turn stays open on the owner"
+            );
+        }
         // 191 (D4): marked, it is released to the taker.
         set_marker(&a.store, id, "x-live").await;
         let shipper = crate::ship::Shipper::new(a.store.clone(), None, &SessionsConfig::default());

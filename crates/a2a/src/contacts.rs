@@ -2227,7 +2227,9 @@ impl Message<ExportPut> for A2aActor {
 impl crate::Ctx {
     /// [`ExportPut`]: 191 (D2): by its id, else by its name (create or replace); a new one
     /// gets a fresh id and this machine as its home. A name another live export holds is
-    /// refused.
+    /// refused. 191 (D4): re-sharing an agent export whose home left the mesh (a home that is
+    /// neither this machine nor one of the mesh, or none) moves its home here; a home that is
+    /// a machine of the mesh stays, and without a mesh endpoint here nothing is rehomed.
     pub(crate) async fn put_export(&self, exp: Export) -> Result<(), String> {
         use agent::store::contacts::{Cell, RecordTable, RecordWrite};
         let Export {
@@ -2261,6 +2263,7 @@ impl crate::Ctx {
         }) {
             return Err(format!("an export named {name} already exists"));
         }
+        let agent_target = matches!(target, ExportTarget::Agent { .. });
         let (session, agent) = match target {
             ExportTarget::Chat { session } => (Cell::Text(session.to_string()), Cell::Null),
             ExportTarget::Agent { agent } => (Cell::Null, Cell::Text(agent)),
@@ -2275,7 +2278,13 @@ impl crate::Ctx {
             ("description", Cell::Text(description)),
         ];
         let id = match existing {
-            Some(x) => x.id.clone(),
+            Some(x) => {
+                if agent_target && self.home_left(x.home.as_deref(), &r.me) {
+                    tracing::info!(export = %x.id, from = ?x.home, "191: agent export rehomed here (its home left the mesh)");
+                    set.push(("home", Cell::Text(r.me.clone())));
+                }
+                x.id.clone()
+            }
             None => {
                 set.push(("home", Cell::Text(r.me.clone())));
                 Uuid::now_v7().to_string()
@@ -2283,6 +2292,17 @@ impl crate::Ctx {
         };
         self.commit_records(vec![RecordWrite::new(RecordTable::Exports, id, set)])
             .await
+    }
+
+    /// 191 (D4): `home` left the mesh, read as [`records::stage_records`] stages
+    /// `InboxHome::Left` (neither `me` nor a machine of the mesh, or none). Without a mesh
+    /// endpoint here the mesh cannot be read: not left (fail closed: nothing is rehomed).
+    fn home_left(&self, home: Option<&str>, me: &str) -> bool {
+        let Some(net) = self.net() else {
+            return false;
+        };
+        let family = members::family(Some(net.as_ref()));
+        home.is_none_or(|h| h != me && !family.contains(h))
     }
 }
 

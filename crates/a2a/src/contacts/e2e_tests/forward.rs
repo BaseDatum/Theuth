@@ -206,6 +206,23 @@ async fn a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner() {
         )
     );
 
+    // An owner's answer over 2 MiB fails, never cut.
+    *answers.lock() = VecDeque::from([Answer::Router(
+        200,
+        serde_json::Value::String("a".repeat(agent::communication::mesh::FORWARD_BODY_MAX)),
+    )]);
+    let e = to_n1(Some("xchat"))
+        .call(&v1, "SendMessage", send_request("big"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (
+            a2a_types::error_code::UNSUPPORTED_OPERATION,
+            "the answer is larger than 2 MiB"
+        )
+    );
+
     // An owner that is not `contacts_ready` (OWNER_UNREACHABLE): offline.
     *answers.lock() =
         VecDeque::from([Answer::Error(agent::communication::mesh::OWNER_UNREACHABLE)]);
@@ -244,6 +261,29 @@ async fn a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner() {
             .unwrap()["method"],
         "GetTask"
     );
+    // Only `GetTask` and `CancelTask` read the id: a `SendMessage` carrying a crafted
+    // `params.id` naming n2 resolves its own session (owned here now), never forwarded by it.
+    owned_by(String::new()).await;
+    seen.lock().clear();
+    let mut crafted = send_request("crafted");
+    crafted["id"] = serde_json::Value::String(task.clone());
+    let _ = to_n1(Some("xchat")).call(&v1, "SendMessage", crafted).await;
+    assert!(
+        seen.lock().is_empty(),
+        "a SendMessage is never routed by an id"
+    );
+    owned_by(n2_id.clone()).await;
+    // A well-formed prefix naming no machine of this mesh answers as an offline machine does.
+    let stray = format!("{}-{}", "f".repeat(16), uuid::Uuid::now_v7());
+    let e = to_n1(Some("xchat"))
+        .call(&v1, "GetTask", serde_json::json!({"id": stray}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.message,
+        agent::communication::ContactRefusal::OwnerOffline.to_string()
+    );
+    assert!(seen.lock().is_empty(), "never carried");
 
     // An owner that never answers: offline at the forward's deadline, before C's own 30 s.
     *answers.lock() = VecDeque::from([Answer::Silent]);
@@ -362,4 +402,101 @@ async fn a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner() {
     assert_eq!(served.status, 200);
     let answer: serde_json::Value = serde_json::from_str(&served.body).unwrap();
     assert!(answer.get("result").is_some(), "{answer}");
+    // The same messageId again (the contact's retry after the receiving machine's deadline,
+    // while the first one was still admitted here): the task the first one made, once.
+    let again = n1
+        .ctx
+        .forwarded(&c.eid(), path, body.clone())
+        .await
+        .unwrap();
+    let again: serde_json::Value = serde_json::from_str(&again.body).unwrap();
+    let task_of = |v: &serde_json::Value| v.pointer("/result/task/id").cloned();
+    assert!(task_of(&answer).is_some(), "{answer}");
+    assert_eq!(task_of(&again), task_of(&answer), "{again}");
+    // A caller the owner blocked: 401 there (the transient refusal on the receiving machine).
+    n1.ctx
+        .update_contact(ContactUpdate {
+            name: alias.clone(),
+            patch: ContactPatch {
+                blocked: Some(true),
+                ..ContactPatch::default()
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        n1.ctx
+            .forwarded(&c.eid(), path, body.clone())
+            .await
+            .map(|a| a.status),
+        Ok(401)
+    );
+}
+
+/// 191 (D4): re-sharing an agent export whose home left the mesh moves its home here, and it
+/// is no longer paused; a home that is a machine of the mesh stays where it is.
+#[tokio::test]
+async fn re_sharing_an_agent_export_whose_home_left_rehomes_it_here() {
+    use agent::store::contacts::{Cell, RecordTable, RecordWrite};
+    let lan = Lan::default();
+    let n1 = engine("n1", &lan, true, cfg(600)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let n2 = node("n2", dir.path()).await;
+    let mut events = n1.net.subscribe_peers();
+    n1.net.add_peer(&n2.pairing_string().await).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let agent = ExportTarget::Agent {
+        agent: "theuth".into(),
+    };
+    publish(&n1, "eagent", agent.clone(), "E").await;
+    let row = || async {
+        let r = n1.ctx.records().await.unwrap();
+        let x = r
+            .exports
+            .into_iter()
+            .find(|x| x.name.as_deref() == Some("eagent"))
+            .unwrap();
+        (x.id, x.home, r.me)
+    };
+    let (id, home, me) = row().await;
+    assert_eq!(
+        home.as_deref(),
+        Some(me.as_str()),
+        "a new export's home is here"
+    );
+    let set_home = |h: String| {
+        n1.ctx.commit_records(vec![RecordWrite::new(
+            RecordTable::Exports,
+            id.clone(),
+            vec![("home", Cell::Text(h))],
+        )])
+    };
+    let paused = || async {
+        n1.ctx
+            .exports()
+            .await
+            .into_iter()
+            .find(|e| e.name == "eagent")
+            .unwrap()
+            .paused
+    };
+    // A home that is a machine of the mesh stays.
+    set_home(n2.id.0.clone()).await.unwrap();
+    publish(&n1, "eagent", agent.clone(), "E").await;
+    assert_eq!(row().await.1, Some(n2.id.0.clone()));
+    assert_eq!(paused().await, None);
+    // A home that left: paused; a re-share moves it here.
+    set_home(iroh::SecretKey::generate().public().to_string())
+        .await
+        .unwrap();
+    assert_eq!(
+        paused().await.as_deref(),
+        Some(crate::contacts::PAUSED_HOME_LEFT)
+    );
+    publish(&n1, "eagent", agent, "E").await;
+    assert_eq!(row().await.1, Some(me));
+    assert_eq!(paused().await, None);
 }

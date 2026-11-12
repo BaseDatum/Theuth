@@ -3310,7 +3310,8 @@ impl Agents {
         };
         if marked.len() > 1 {
             tracing::warn!(sessions = ?marked.iter().map(|(s, _)| s.to_string()).collect::<Vec<_>>(), export = %m.origin.export, "191: two sessions carry one inbox marker; refused, never chosen between");
-            for (s, _) in marked.iter().filter(|(_, o)| *o == me) {
+            // A read refuses too, but writes nothing (no unmark, no cap): only a send does.
+            for (s, _) in marked.iter().filter(|(_, o)| m.send && *o == me) {
                 if let Err(e) = self.store.unmark_a2a_inbox_full(*s).await {
                     tracing::error!(session = %s, "a2a: inbox mode not reset: {e:#}");
                 }
@@ -5350,6 +5351,64 @@ mod tests {
         let now = a.store.a2a_task(s, &waiting.id).await.unwrap().unwrap();
         assert_eq!(now.status, A2aTaskStatus::Failed);
         assert_eq!(now.error.as_deref(), Some("peer:bob: not a contact"));
+    }
+
+    /// 183 W-41, §13 row 55, 191: a contact's message into an exported chat that is archived,
+    /// takes no agent messages, or is gone is refused at admission (`admit_principal`, which
+    /// every chat owned on this machine relies on, whichever machine received the message).
+    #[tokio::test]
+    async fn a_contacts_message_into_an_archived_silenced_or_deleted_chat_is_refused() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        let p = A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research")),
+            ask_first: false,
+        };
+        let refused = |r: Result<Admitted, A2AError>| {
+            let e = r.err().expect("refused");
+            assert_eq!(e.code, a2a_types::error_code::UNSUPPORTED_OPERATION);
+            e.message
+        };
+        a.store.set_archived(session, true).await.unwrap();
+        assert_eq!(
+            refused(a.admit_send(&p, &send("m-archived")).await),
+            super::super::ContactRefusal::Paused {
+                reason: PAUSED_ARCHIVED.into()
+            }
+            .to_string()
+        );
+        a.store.set_archived(session, false).await.unwrap();
+        a.store
+            .set_session_communication(session, Some(false))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(a.admit_send(&p, &send("m-silenced")).await),
+            super::super::ContactRefusal::NoAgentMessages.to_string()
+        );
+        a.store
+            .set_session_communication(session, None)
+            .await
+            .unwrap();
+        assert!(
+            a.admit_send(&p, &send("m-open")).await.is_ok(),
+            "admitted once neither holds"
+        );
+        a.store.delete_session(session).await.unwrap();
+        assert_eq!(
+            refused(a.admit_send(&p, &send("m-deleted")).await),
+            "export unavailable: export session missing"
+        );
     }
 
     /// 183 F5: a held first message the owner never answers fails "the owner did not
@@ -7595,8 +7654,30 @@ mod full_inbox_tests {
             .set_contact_inbox(named_one, &format!("peer:{}|research", binding.id))
             .await
             .unwrap();
+        // Not the home: nothing to mint, so only an adoption could serve it; there is none.
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        let e = a
+            .handle_inbox(ContactInbox {
+                home: InboxHome::At("home-engine".into()),
+                ..ask(Some("x1"))
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (e.code, named(&e).as_deref()),
+            (NOT_OWNER_CODE, Some("home-engine")),
+            "a name-valued marker is never adopted"
+        );
+        assert!(
+            a.store
+                .a2a_inbox_identity(named_one)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
         let fresh = a.handle_inbox(ask(Some("x1"))).await.unwrap();
-        assert_ne!(fresh, named_one, "a name-valued marker is never adopted");
+        assert_ne!(fresh, named_one, "the home opens a new one");
         assert_eq!(
             a.store.contact_inbox(fresh).await.unwrap().as_deref(),
             Some(marker.as_str())
@@ -7633,5 +7714,100 @@ mod full_inbox_tests {
             sessions,
             "none opened"
         );
+    }
+
+    /// 191 (D4): a marked inbox that moved here is adopted only under the agent's live persona:
+    /// `theuth` before the roster joins (no persona) is refused, nothing is adopted and it
+    /// stays capped.
+    #[tokio::test]
+    async fn a_moved_inbox_is_never_adopted_without_a_live_persona() {
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        assert!(a.identity.is_none(), "the roster has not joined");
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let moved = SessionId::new();
+        a.store
+            .create_session(moved, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .set_contact_inbox(moved, &format!("peer:{}|x1", binding.id))
+            .await
+            .unwrap();
+        a.reinstall_contact_limits(moved).await.unwrap();
+        let e = a
+            .handle_inbox(ContactInbox {
+                binding: binding.id,
+                agent: "theuth@sky-mac".into(),
+                origin: full_bob(),
+                export_id: Some("x1".into()),
+                home: InboxHome::At("home-engine".into()),
+                send: true,
+            })
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("is not available"), "{}", e.message);
+        assert!(a.store.a2a_inbox_identity(moved).await.unwrap().is_none());
+        assert!(capped(&a, moved), "still capped");
+    }
+
+    /// 191 (D4, S4): on a mesh engine an empty owner is unknown, never this engine: a local
+    /// inbox row, or the one session carrying the marker, whose owner reads `''` is a plain
+    /// `not owner` (naming no one), and nothing is opened or adopted. (A lone engine reads its
+    /// own rows as `''`, so this needs a mesh engine.)
+    #[tokio::test]
+    async fn an_empty_owner_on_a_mesh_engine_is_never_here() {
+        let setup = || async {
+            let scratch = crate::TestDir::new("agents");
+            let mut a =
+                crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true)
+                    .await;
+            assert_eq!(a.store.engine(), "me-engine");
+            a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+            let binding = a
+                .store
+                .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+                .await
+                .unwrap();
+            route(&mut a, binding.id);
+            (scratch, a, binding.id)
+        };
+        let ask = |binding: Uuid, export_id: Option<&str>| ContactInbox {
+            binding,
+            agent: "research@sky-mac".into(),
+            origin: full_bob(),
+            export_id: export_id.map(str::to_owned),
+            home: InboxHome::Here,
+            send: true,
+        };
+        // The local row.
+        let (_scratch, mut a, binding) = setup().await;
+        let opened = a.handle_inbox(ask(binding, None)).await.unwrap();
+        a.store.owned_elsewhere(opened, "").await;
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        let e = a.handle_inbox(ask(binding, None)).await.unwrap_err();
+        assert_eq!((e.code, named(&e)), (NOT_OWNER_CODE, None), "local row");
+        assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
+        // The marker, with no local row.
+        let (_scratch, mut a, binding) = setup().await;
+        let moved = SessionId::new();
+        a.store
+            .create_session(moved, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .set_contact_inbox(moved, &format!("peer:{binding}|x1"))
+            .await
+            .unwrap();
+        a.store.owned_elsewhere(moved, "").await;
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        let e = a.handle_inbox(ask(binding, Some("x1"))).await.unwrap_err();
+        assert_eq!((e.code, named(&e)), (NOT_OWNER_CODE, None), "marker");
+        assert!(a.store.a2a_inbox_identity(moved).await.unwrap().is_none());
+        assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
     }
 }

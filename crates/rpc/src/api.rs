@@ -113,6 +113,9 @@ pub(crate) const ASK_FAILED: i32 = -32000;
 pub(crate) const NOT_RUNNING: i32 = -32001;
 /// The call reached the method without an authenticated connection behind it.
 pub(crate) const UNAUTHORIZED: i32 = -32002;
+/// 191: `a2a_forward` from a machine `mesh.messaging_off` lists: the words the contact hears
+/// (through the receiving machine), naming no machine.
+const A2A_FORWARD_MESSAGING_OFF: &str = "export unavailable: messages are off between our machines";
 
 /// Reply to `info`: what a client needs before its first session (25 §7);
 /// the in-process TUI reads the same things off the [`Runtime`] directly.
@@ -4558,15 +4561,25 @@ impl ApiServer for Server {
         body: String,
     ) -> RpcResult<agent::communication::mesh::A2aAnswer> {
         use agent::communication::mesh::ForwardFailure;
-        if ext.get::<forward::Forwarded>().is_none() {
+        let Some(forward::Forwarded(peer)) = ext.get::<forward::Forwarded>() else {
             return Err(ErrorObjectOwned::owned(
                 UNAUTHORIZED,
                 "a2a_forward is mesh-internal",
                 None::<()>,
             ));
+        };
+        // 183 §6.2 (W-14), 191: `mesh.messaging_off` refuses the forwarder's carried calls as
+        // it refused its deliveries; the contact hears words that name no machine.
+        if mesh::messaging_off(&peer.0) {
+            tracing::info!(forwarder = %peer.0, "191: a2a_forward refused: messaging with this machine is off");
+            return Err(ErrorObjectOwned::owned(
+                ASK_FAILED,
+                A2A_FORWARD_MESSAGING_OFF,
+                None::<()>,
+            ));
         }
         // Off the a2a mailbox: the plugin's published context, never an actor ask.
-        a2a::contacts::forward::serve(&caller, &path, body)
+        a2a::contacts::forward::serve(&peer.0, &caller, &path, body)
             .await
             .map_err(|e| match e {
                 ForwardFailure::NotOwner => ErrorObjectOwned::owned(
@@ -11310,6 +11323,49 @@ mod tests {
                 "{req} → {v}"
             );
         }
+    }
+
+    /// 191 (D3): `a2a_forward` is mesh-internal (no `Forwarded` marker: `UNAUTHORIZED`, even
+    /// on an internal connection); a forwarder `mesh.messaging_off` lists is refused in words
+    /// that name no machine; any other forwarder reaches the owner side (no a2a plugin here:
+    /// `OWNER_UNREACHABLE`, which the receiving machine reads as offline).
+    #[tokio::test]
+    async fn a2a_forward_needs_the_forwarded_marker_and_messaging_on() {
+        let call = |forwarder: Option<&str>| {
+            let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+            let mut methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+            methods.extensions_mut().insert(link::RpcPeer::internal());
+            if let Some(f) = forwarder {
+                methods
+                    .extensions_mut()
+                    .insert(forward::Forwarded(replica::PeerId(f.into())));
+            }
+            async move {
+                let req = r#"{"jsonrpc":"2.0","method":"a2a_forward","params":["caller-eid","/agents/x/rpc","{}"],"id":1}"#;
+                let (resp, _) = methods.raw_json_request(req, 1).await.unwrap();
+                let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+                (
+                    v["error"]["code"].as_i64(),
+                    v["error"]["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            }
+        };
+        assert_eq!(call(None).await.0, Some(i64::from(UNAUTHORIZED)));
+        mesh::set_messaging_off(vec!["fwd-off-engine".into()]);
+        let off = call(Some("fwd-off-engine")).await;
+        let on = call(Some("fwd-on-engine")).await;
+        mesh::set_messaging_off(Vec::new());
+        assert_eq!(
+            off,
+            (
+                Some(i64::from(ASK_FAILED)),
+                A2A_FORWARD_MESSAGING_OFF.to_owned()
+            )
+        );
+        assert_eq!(on.0, Some(i64::from(forward::OWNER_UNREACHABLE)), "{on:?}");
     }
 
     /// 185 R1 A5: the hub side of a forwarded Dream now — the positional
