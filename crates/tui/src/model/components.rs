@@ -37,6 +37,7 @@ macro_rules! core_view {
             awaiting_session: $model.awaiting_session,
             frame: $model.frame,
             composer_read_only: $model.components.composer_read_only(),
+            draft_options: Model::draft_options_ref($model.draft.as_ref(), $model.session),
         }
     };
 }
@@ -110,6 +111,8 @@ impl Model {
         }
         for action in out.actions {
             match action {
+                CoreAction::SessionCreated(session) => self.receive(UiEvent::SessionCreated(session), emit),
+                CoreAction::SessionOpened(open) => self.receive(UiEvent::SessionOpened(open), emit),
                 CoreAction::ReplaceEditor { value, caret } => self.pending_input = Some((value, caret)),
                 CoreAction::SubmitEditor(value) => self.pending_send = Some(value),
                 CoreAction::CancelSession(session) => {

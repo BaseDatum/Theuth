@@ -250,6 +250,8 @@ pub struct CoreView<'a> {
     pub frame: usize,
     /// A mounted owner currently requests a read-only composer region.
     pub composer_read_only: bool,
+    /// Borrowed pending core session picks, filtered by the existing draft policy.
+    pub draft_options: Option<&'a agent::CreateSessionOptions>,
 }
 /// Read-only identity metadata shared by core session membership.
 pub struct SessionMember<'a> {
@@ -735,6 +737,10 @@ pub enum CoreAction {
     SubmitEditor(String),
     /// Cancel the existing agent turn without changing owner state.
     CancelSession(SessionId),
+    /// Adopt an independently created session through the existing draft reducer.
+    SessionCreated(SessionId),
+    /// Adopt an independently opened session through the existing session reducer.
+    SessionOpened(agent::SessionOpen),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
