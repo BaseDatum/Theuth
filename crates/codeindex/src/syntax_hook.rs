@@ -27,15 +27,9 @@ impl Syntax for SyntaxHook {
         let cfg = lang.tags()?;
         let src = text.as_bytes();
         let mut parsers = Parsers::default();
-        // One tree: the one `parse_tree` already built for the import query.
+        // One tree for widening and string interiors (see `parse_tree` for the
+        // second, tags-internal parse).
         let (parsed, tree) = parse::parse_tree(&mut parsers, cfg, lang, src)?;
-        let tree = match tree {
-            Some(t) => t,
-            None => {
-                parsers.tree.set_language(&cfg.language).ok()?;
-                parsers.tree.parse(text, None)?
-            }
-        };
         let root = tree.root_node();
 
         let mut names: Vec<String> = Vec::with_capacity(parsed.symbols.len());
