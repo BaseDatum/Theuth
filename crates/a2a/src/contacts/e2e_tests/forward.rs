@@ -129,8 +129,18 @@ async fn a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner() {
         })
         .await
         .unwrap();
-    let store = agents.ask(agent::DurableStore).await.unwrap();
-    store.owned_elsewhere(x, &n2_id).await;
+    let owned_by = |owner: String| {
+        let agents = agents.clone();
+        async move {
+            agents
+                .ask(agent::communication::network::OwnedElsewhereForTest(
+                    x, owner,
+                ))
+                .await
+                .unwrap();
+        }
+    };
+    owned_by(n2_id.clone()).await;
 
     let to_n1 = |export: Option<&str>| reach::IrohTransport {
         net: c.net.clone(),
@@ -252,14 +262,32 @@ async fn a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner() {
         "{took:?}"
     );
 
-    // An owner not connected (a machine of the row no longer in the mesh): offline at once.
+    // A row naming no machine of this mesh: plain `not owner` (C's client moves on), never
+    // carried.
     seen.lock().clear();
-    store
-        .owned_elsewhere(x, &iroh::SecretKey::generate().public().to_string())
-        .await;
-    let at = std::time::Instant::now();
+    owned_by(iroh::SecretKey::generate().public().to_string()).await;
     let e = to_n1(Some("xchat"))
         .call(&v1, "SendMessage", send_request("seven"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (
+            agent::communication::network::NOT_OWNER_CODE,
+            agent::communication::network::NOT_OWNER_TEXT
+        )
+    );
+    // A machine of the mesh that is not connected (n2 stopped): offline at once.
+    owned_by(n2_id.clone()).await;
+    n2.shutdown().await;
+    until("n1 sees n2 gone", || {
+        (!replica::Transport::peers(n1.net.as_ref()).contains(&replica::PeerId(n2_id.clone())))
+            .then_some(())
+    })
+    .await;
+    let at = std::time::Instant::now();
+    let e = to_n1(Some("xchat"))
+        .call(&v1, "SendMessage", send_request("seven-b"))
         .await
         .unwrap_err();
     assert_eq!(
@@ -270,7 +298,7 @@ async fn a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner() {
     assert!(seen.lock().is_empty());
 
     // The owner side, on n1 (X owned by n2 again): a forward is never forwarded again.
-    store.owned_elsewhere(x, &n2_id).await;
+    owned_by(n2_id.clone()).await;
     let body = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "SendMessage",
         "params": send_request("eight")})
     .to_string();
@@ -321,7 +349,7 @@ async fn a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner() {
         .ready
         .store(true, std::sync::atomic::Ordering::SeqCst);
     // Owned here: served in n1's own router, while the a2a pass is held.
-    store.owned_elsewhere(x, "").await;
+    owned_by(String::new()).await;
     let pass = n1.ctx.reload_lock.lock().await;
     let served = tokio::time::timeout(
         Duration::from_secs(10),

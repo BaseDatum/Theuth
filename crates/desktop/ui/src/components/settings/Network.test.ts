@@ -343,6 +343,16 @@ test('unpair dialog: the secret names, sign in again, the lines that apply, the 
   expect(none).toContain('resetting phone and iPad pairing is not built yet')
 })
 
+test('191 D8 unpair dialog: with contacts, they are told this machine left, and a lost or stolen one needs them to remove you too; none, no lines', () => {
+  const html = unpair({ contacts: [{ name: 'bob' }, { name: 'alice' }] })
+  expect(html).toContain('Your contacts are told this machine left. A contact that is offline learns it when it comes back.')
+  expect(html).toContain('If xeus was lost or stolen: Ask bob and alice to remove you too, then pair again. Until they do, the removed machine may still reach them.')
+  for (const none of [unpair(), unpair({ contacts: [] })]) {
+    expect(none).not.toContain('Your contacts are told')
+    expect(none).not.toContain('lost or stolen')
+  }
+})
+
 test('unpair confirm is disabled until the preview resolved; the device-reset box is always there', () => {
   const confirm = /<button disabled="">Unpair and rotate key/
   expect(unpair({ preview: undefined })).toMatch(confirm)

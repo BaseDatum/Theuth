@@ -17,6 +17,12 @@ export const SHARE_RULE =
 /** 186: the pairing dialog's line: pairing alone shares nothing. */
 export const PAIRED_RULE = 'A paired contact reaches nothing until you share an agent or chat with them.'
 
+/** 191 D8 (D1): the remedy for a rogue machine of ours needs both sides — the Remove confirm and the unpair dialog. */
+export const rogueLine = (contact: string) => `Ask ${contact} to remove you too, then pair again. Until they do, the removed machine may still reach them.`
+
+/** 191 D8: the unpair dialog's line on what contacts learn. */
+export const UNPAIR_CONTACTS = 'Your contacts are told this machine left. A contact that is offline learns it when it comes back.'
+
 /** `contact_list()`: this machine's contacts, refreshed by `A2aChanged` and a finished ceremony. */
 export function useContacts(enabled = true) {
   const api = useApi()

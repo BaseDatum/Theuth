@@ -172,6 +172,13 @@ pub(crate) async fn route(
         let Some(net) = c.net.get() else {
             return offline(&id, "no mesh endpoint");
         };
+        // A row naming no machine of this mesh (one removed from it): nothing to carry it to;
+        // `not owner`, so the contact's client tries its next member. A machine of the mesh
+        // that is not connected is offline (`mesh::a2a_forward`).
+        if !net.paired_ids().iter().any(|e| e.to_string() == to) {
+            tracing::info!(owner = %short(&to), "191: a2a_forward: the owner is no machine of this mesh; not owner");
+            return rpc_error(&id, NOT_OWNER_CODE, NOT_OWNER_TEXT);
+        }
         tracing::info!(%remote, owner = %short(&to), %method, %path, "191: a2a_forward to the owner");
         let sent = mesh::a2a_forward(
             net.as_ref(),

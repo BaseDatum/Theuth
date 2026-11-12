@@ -38,8 +38,17 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
   const vms = [...new Set([...(sandboxes.data ?? []).filter((s) => s.backend === 'vm').map((s) => s.name), ...(pinned ? [pinned] : [])])].sort()
   return (
     <div className="grid gap-4 sm:grid-cols-2">
-      <Field label="Model" id="rt-model" hint="Every session this agent opens; default = the node's model.">
-        <ModelCombobox id="rt-model" size="sm" className="w-full" models={models.data ?? []} value={d.model} none={{ label: 'Node default' }} onChange={(v) => set('model', v)} />
+      <Field label="Model" id="rt-model" hint="Every session this agent opens, and its thinking effort; default = the node's model.">
+        <ModelCombobox
+          id="rt-model"
+          size="sm"
+          className="w-full"
+          models={models.data ?? []}
+          value={d.model}
+          none={{ label: 'Node default' }}
+          onChange={(v) => set('model', v)}
+          effort={{ levels: efforts, current: d.effort, onSelect: (level) => set('effort', level) }}
+        />
       </Field>
       <Field label="Memory summary model" id="rt-memory-model" hint="Writes the endless memory summaries of its desk; a chat's own pick wins. Default = Settings › Memory.">
         <ModelCombobox
@@ -52,21 +61,6 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
           none={{ label: 'Use default' }}
           onChange={(v) => set('memory_model', v ?? undefined)}
         />
-      </Field>
-      <Field label="Thinking effort" id="rt-effort" hint="Reasoning depth for its sessions.">
-        <Select value={d.effort ?? NONE} onValueChange={(v) => set('effort', v === NONE ? null : v)}>
-          <SelectTrigger id="rt-effort" size="sm" className="w-full">
-            <SelectValue placeholder="Default" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>Default</SelectItem>
-            {efforts.map((e) => (
-              <SelectItem key={e} value={e}>
-                {e}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
       </Field>
       <Field label="Tools ceiling" id="rt-tools" hint="The riskiest tool class it and its children may call; inherited downwards.">
         <Select value={d.tools ?? NONE} onValueChange={(v) => set('tools', v === NONE ? null : v)}>

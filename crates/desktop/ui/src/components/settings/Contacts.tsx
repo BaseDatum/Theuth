@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, CircleCheck, Copy, MessageSquare, MoreHorizontal, Plus, ShieldAlert, X } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
-import { type ReactNode, type Ref, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, type ReactNode, type Ref, useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { type PairView, pairView, spaced } from '@/components/settings/PairDialog'
 import { Empty, RenameInput, Section, errorText, useAction } from '@/components/settings/shared'
@@ -25,11 +25,12 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { chatName } from '@/lib/attach'
-import { PAIRED_RULE, SHARE_RULE, accessFocus, exportName, fingerprint, focusedContact, names, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
+import { PAIRED_RULE, SHARE_RULE, accessFocus, exportName, fingerprint, focusedContact, names, rogueLine, useContacts, useExports, useFirstWaiting, useSharing } from '@/lib/contacts'
 import { engineLabel } from '@/lib/owner'
 import { putPair, queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { Contact } from '@/rpc/bindings/Contact'
+import type { ContactMachine } from '@/rpc/bindings/ContactMachine'
 import type { ContactPatch } from '@/rpc/bindings/ContactPatch'
 import type { ContactTarget } from '@/rpc/bindings/ContactTarget'
 import type { ContactWindow } from '@/rpc/bindings/ContactWindow'
@@ -50,6 +51,58 @@ const FIRST: [FirstContact, string][] = [
 ]
 /** 188: Settings › Network › Contacts, scrolled to `contact`'s Access row when one is named. */
 const toContacts = (contact?: string) => ({ to: '/settings/$tab', params: { tab: 'contacts' }, search: contact ? { focus: accessFocus(contact) } : {} }) as const
+/** 191 D8: the alert's way out may be to unpair one of ours. */
+const toMachines = { to: '/settings/$tab', params: { tab: 'machines' } } as const
+/** 191 D8: a quarantined record (refused or waiting) is not admitted: no menu, no shares, not in Access or Share…; Remove names it by record id, since a waiting rename shares its alias with a live contact. */
+const held = (c: Contact) => c.problem_kind === 'refused' || c.problem_kind === 'waiting'
+
+/** 191 D8: `Their machines: laptop · studio`, this machine's accepted roster of the contact; one its history lists but its roster no longer does is struck through, labelled left. */
+export function TheirMachines({ machines }: { machines: readonly ContactMachine[] }) {
+  if (machines.length === 0) return null
+  return (
+    <p className="break-words text-[13px] text-fg-secondary">
+      Their machines:{' '}
+      {machines.map((m, i) => (
+        <Fragment key={m.eid}>
+          {i > 0 && ' · '}
+          {m.left ? (
+            <span className="text-muted-foreground">
+              <s title={m.eid}>{m.name}</s> left
+            </span>
+          ) : (
+            <span title={m.eid}>{m.name}</span>
+          )}
+        </Fragment>
+      ))}
+    </p>
+  )
+}
+
+/** 191 D8: a row's problem and what `problem_kind` offers: refused → Remove; waiting → nothing (it clears by itself); alert → Remove and Network › Machines. */
+function Problem({ c, onRemove, onMachines }: { c: Contact; onRemove: () => void; onMachines: () => void }) {
+  if (!c.problem || !c.problem_kind) return null
+  const kind = c.problem_kind
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      <p role="status" className={cn('min-w-0 flex-1 basis-56 break-words text-[13px]', kind === 'waiting' ? 'text-muted-foreground' : 'text-destructive')}>
+        {c.problem}
+        {kind === 'waiting' && ' · this clears by itself'}
+      </p>
+      {kind !== 'waiting' && (
+        <span className="flex shrink-0 items-center gap-2">
+          {kind === 'alert' && (
+            <Button variant="ghost" size="sm" className="pointer-coarse:min-h-11" onClick={onMachines}>
+              Network › Machines
+            </Button>
+          )}
+          <Button variant="outline" size="sm" className="pointer-coarse:min-h-11" onClick={onRemove}>
+            Remove…
+          </Button>
+        </span>
+      )}
+    </div>
+  )
+}
 
 function PathChip({ path }: { path: PeerPath }) {
   const [text, dot] = PATH[path]
@@ -142,7 +195,8 @@ export function ContactsTab({ focus }: TabProps) {
 
 /**
  * 183 §12.7: the contacts list — each contact with its machine (from its card), path, fingerprint and the exports it
- * may reach; ⋯ Rename · Choose what it may reach · Block · Remove. Add contact… opens the window.
+ * may reach; ⋯ Rename · Choose what it may reach · Block · Remove. Add contact… opens the window. 191 D8: every machine
+ * of the mesh lists the same contacts; their machines and the problem are this machine's own view.
  */
 export function Contacts({ adding: initial = false }: { adding?: boolean }) {
   const api = useApi()
@@ -170,7 +224,7 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
       {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
       {contacts.data?.length === 0 && <Empty>No contacts yet.</Empty>}
       {contacts.data?.map((c) => (
-        <div key={c.name} className={cn('flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-border-subtle py-3 last:border-0', c.blocked && 'text-fg-secondary')}>
+        <div key={c.id || c.name} className={cn('flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-border-subtle py-3 last:border-0', c.blocked && 'text-fg-secondary')}>
           <div className="min-w-0 flex-1 basis-56">
             <div className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
               {renaming === c.name ? <RenameInput value={c.name} label="Contact name" onSave={(name) => update.mutate({ name: c.name, patch: { name } })} onDone={() => setRenaming(null)} /> : c.name}
@@ -182,13 +236,18 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
                 {c.fingerprint || fingerprint(c.endpoint)}
               </span>
             </div>
-            <div className="mt-1.5 flex flex-wrap gap-1">
-              {c.exports.length === 0 ? (
-                <span className="text-[13px] text-fg-tertiary">Nothing shared yet</span>
-              ) : (
-                c.exports.map((n) => <ExportChip key={n} name={n} exp={exports.data?.find((x) => x.name === n)} />)
-              )}
-            </div>
+            <TheirMachines machines={c.machines} />
+            {c.paired_on && <p className="text-[13px] text-fg-secondary">Paired on {c.paired_on}</p>}
+            <Problem c={c} onRemove={() => setConfirm({ c, block: false })} onMachines={() => void navigate(toMachines)} />
+            {!held(c) && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {c.exports.length === 0 ? (
+                  <span className="text-[13px] text-fg-tertiary">Nothing shared yet</span>
+                ) : (
+                  c.exports.map((n) => <ExportChip key={n} name={n} exp={exports.data?.find((x) => x.name === n)} />)
+                )}
+              </div>
+            )}
             {c.shared.length > 0 && (
               <p className="mt-1 break-words text-[13px] text-fg-secondary">
                 Shared with you: {c.shared.map((o) => `${o.title}${o.state === 'ask_first' ? ' (asks first)' : o.state === 'unavailable' ? ' (paused)' : ''}`).join(', ')}
@@ -204,25 +263,27 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <PathChip path={c.path} />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon-sm" aria-label={`${c.name}: Rename · Block · Remove`}>
-                  <MoreHorizontal />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => setRenaming(c.name)}>Rename</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => void navigate(toContacts(c.name))}>Choose what {c.name} may reach…</DropdownMenuItem>
-                {c.blocked ? (
-                  <DropdownMenuItem onSelect={() => update.mutate({ name: c.name, patch: { blocked: false } })}>Unblock</DropdownMenuItem>
-                ) : (
-                  <DropdownMenuItem onSelect={() => setConfirm({ c, block: true })}>Block…</DropdownMenuItem>
-                )}
-                <DropdownMenuItem variant="destructive" onSelect={() => setConfirm({ c, block: false })}>
-                  Remove…
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {!held(c) && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" aria-label={`${c.name}: Rename · Block · Remove`}>
+                    <MoreHorizontal />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => setRenaming(c.name)}>Rename</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void navigate(toContacts(c.name))}>Choose what {c.name} may reach…</DropdownMenuItem>
+                  {c.blocked ? (
+                    <DropdownMenuItem onSelect={() => update.mutate({ name: c.name, patch: { blocked: false } })}>Unblock</DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem onSelect={() => setConfirm({ c, block: true })}>Block…</DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem variant="destructive" onSelect={() => setConfirm({ c, block: false })}>
+                    Remove…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
         </div>
       ))}
@@ -235,15 +296,16 @@ export function Contacts({ adding: initial = false }: { adding?: boolean }) {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirm?.block
-                ? `${confirm.c.name} is refused from now on and its open tasks close. Unblock it later from this list.`
-                : `${confirm?.c.name} is forgotten and its open tasks close. Adding it again needs a new code check.`}
+                ? `${confirm.c.name} is refused on all your machines from now on and its open tasks close. Unblock it later from this list.`
+                : `${confirm?.c.name} is forgotten on all your machines and its open tasks close. Adding it again needs a new code check.`}
             </AlertDialogDescription>
+            {confirm && !confirm.block && <p className="text-sm text-fg-secondary">{rogueLine(confirm.c.name)}</p>}
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (confirm) remove.mutate({ name: confirm.c.name, block: confirm.block })
+                if (confirm) remove.mutate({ name: held(confirm.c) && confirm.c.id ? confirm.c.id : confirm.c.name, block: confirm.block })
                 setConfirm(null)
               }}
             >
@@ -694,7 +756,9 @@ export function ContactAccess({ focus = null }: { focus?: string | null }) {
       {contacts.isPending && <Empty>Loading…</Empty>}
       {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
       {contacts.data?.length === 0 && <Empty>Add a contact above to choose what it may reach.</Empty>}
-      {contacts.data?.map((c) => <Access key={c.name} c={c} all={contacts.data} exports={exports.data ?? []} focused={c.name === focus} />)}
+      {contacts.data
+        ?.filter((c) => !held(c))
+        .map((c) => <Access key={c.name} c={c} all={contacts.data} exports={exports.data ?? []} focused={c.name === focus} />)}
     </Section>
   )
 }
@@ -854,7 +918,7 @@ export function ShareDialog({ session, title, onClose }: { session: string; titl
             {contacts.isError && <Empty>{errorText(contacts.error)}</Empty>}
             {contacts.data?.length === 0 && <Empty>No contacts yet.</Empty>}
             {contacts.data
-              ?.filter((c) => !c.blocked)
+              ?.filter((c) => !c.blocked && !held(c))
               .map((c) => {
                 const on = !!exp && c.exports.includes(exp.name)
                 return (

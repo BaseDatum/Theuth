@@ -403,7 +403,7 @@ impl Agents {
     /// 186 (D4, D5): one full message into its local recipient as a mesh peer's (unscoped,
     /// shown as `from`). An answer to a message whose `send_message` awaits it completes that
     /// call instead (`Ok(true)`: consumed directly, no turn).
-    async fn full_intake(
+    pub(super) async fn full_intake(
         &mut self,
         mut record: PeerRecord,
         from: String,

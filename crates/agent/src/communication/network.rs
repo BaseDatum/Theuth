@@ -136,8 +136,23 @@ impl Message<ContactOwned> for Agents {
     }
 }
 
+/// Tests (`test-support`): `session`'s row now names `owner` (another machine took it), as the
+/// session log would apply it, so a dependent crate's test reaches a non-owner.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Debug)]
+pub struct OwnedElsewhereForTest(pub SessionId, pub String);
+
+#[cfg(feature = "test-support")]
+impl Message<OwnedElsewhereForTest> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: OwnedElsewhereForTest, _: &mut Context<Self, ()>) {
+        self.store.owned_elsewhere(m.0, &m.1).await;
+    }
+}
+
 /// `ask` → `Result<SessionId, A2AError>` (183 §7.6): the capped inbox of (contact
-/// `binding`, `origin.export`), an agent export: created on the first request (an isolated
+/// `binding`, `origin.export`), an agent export: created on the first send (an isolated
 /// root titled `<contact> · <export>`, recorded in `a2a_contexts`), reused after, and its
 /// limits installed on every resolve so they hold after a restart.
 #[derive(Clone, Debug)]
@@ -153,6 +168,9 @@ pub struct ContactInbox {
     /// 191 (D4): the export's home (`a2a_exports.home`), the only machine that opens a new
     /// inbox.
     pub home: InboxHome,
+    /// 191 (S4): a send (`SendMessage`, the streaming send); else a read (a task's get, list,
+    /// cancel or subscribe), which never opens an inbox.
+    pub send: bool,
 }
 
 /// 191 (D4): an agent export's home as the a2a plugin staged it from `a2a_exports.home`.
@@ -3119,6 +3137,20 @@ impl Agents {
             principal: &key,
             export: &m.origin.export,
         };
+        // 191 (S4, P2 review SHOULD 1): the strict owner check, before any side effect (an
+        // inbox opened, its row marked, its limits installed): an inbox here whose session is
+        // not strictly this engine's (moved, unknown, unreadable) is `not owner` to a send (191
+        // P3: naming its owner when that is another machine, which the receiving machine
+        // forwards to) and TASK_NOT_FOUND to a read, as an unknown task is; a read never opens
+        // or adopts an inbox. P3 (D4): the resolve is [`Agents::inbox_of`] (the marker, then
+        // the local row, then the marker's session, then the home).
+        let read_refused = || A2AError::task_not_found("task");
+        let inbox = match self.inbox_of(&m, scope).await {
+            Ok(Inbox::Here(id)) => Inbox::Here(id),
+            Ok(_) | Err(_) if !m.send => return Err(read_refused()),
+            Ok(other) => other,
+            Err(e) => return Err(e),
+        };
         // W-25: the exported agent's persona, charter, model and ceiling (`<agent>@<engine>`
         // names the agent of this engine).
         let bare = m.agent.split('@').next().unwrap_or(&m.agent);
@@ -3147,7 +3179,7 @@ impl Agents {
             full::Live::Known(p) => Some(p.clone()),
             _ => None,
         };
-        let id = match self.inbox_of(&m, scope).await? {
+        let id = match inbox {
             Inbox::Here(id) => id,
             // 191 (D4): a marked inbox owned here with no local row (it moved here): the
             // local row is the whole re-admission; the inbox runs full from here on.
@@ -3259,13 +3291,13 @@ enum Inbox {
 impl Agents {
     /// 191 (D4): [`Inbox`] for `m`, or the refusal. Two or more sessions carrying the marker
     /// are refused (`export unavailable`), never chosen between, and capped here. Then the
-    /// local row: owned here is the inbox; owned elsewhere and carrying this marker, the inbox
-    /// moved (`NOT_OWNER` naming its owner); owned elsewhere without it, an inbox that moved
-    /// before it was marked, which never gets contact input again (its full mark goes). Then
-    /// the marker (a name-valued marker never matches: the lookup is by export id): owned here
-    /// is adopted, elsewhere is `NOT_OWNER` naming the owner. With none, only the export's home
-    /// opens an inbox; any other machine answers `NOT_OWNER` naming the home. An empty owner
-    /// (a mesh engine's unknown) is neither here nor elsewhere: refused.
+    /// strict owner check of the local row (P2 review, before any side effect): owned here is
+    /// the inbox; owned elsewhere is `NOT_OWNER` naming its owner (the inbox moved; the
+    /// receiving machine forwards there); an empty owner (a mesh engine's unknown) is neither
+    /// here nor elsewhere: refused. Then the marker (a name-valued marker never matches: the
+    /// lookup is by export id): owned here is adopted, elsewhere is `NOT_OWNER` naming the
+    /// owner. With none, only the export's home opens an inbox; any other machine answers
+    /// `NOT_OWNER` naming the home.
     async fn inbox_of(&mut self, m: &ContactInbox, scope: A2aScope<'_>) -> Result<Inbox, A2AError> {
         let me = self.store.engine().to_owned();
         let marker = m
@@ -3299,23 +3331,15 @@ impl Agents {
             .inbox_rows(scope.principal, scope.export)
             .await
             .map_err(internal)?;
-        for (s, owner, mark) in rows {
-            if owner == me {
-                return Ok(Inbox::Here(s));
-            }
-            if owner.is_empty() {
+        if let Some((s, owner, _)) = rows.into_iter().next() {
+            return if owner == me {
+                Ok(Inbox::Here(s))
+            } else if owner.is_empty() {
                 tracing::info!(session = %s, "191: contact inbox refused: its owner is unknown here");
-                return Err(full::not_owner());
-            }
-            if marker.is_some() && mark == marker {
-                return Err(full::not_owner_at(&owner));
-            }
-            // Moved before it was marked: it runs there as that machine's own session and
-            // never receives contact input again; its row here runs nothing full.
-            tracing::info!(session = %s, "191: an unmarked contact inbox moved away; it gets no contact input");
-            if let Err(e) = self.store.unmark_a2a_inbox_full(s).await {
-                tracing::error!(session = %s, "a2a: inbox mode not reset: {e:#}");
-            }
+                Err(full::not_owner())
+            } else {
+                Err(full::not_owner_at(&owner))
+            };
         }
         if let Some((s, owner)) = marked.first() {
             return if *owner == me {
@@ -5592,6 +5616,7 @@ mod tests {
                 origin,
                 export_id: None,
                 home: InboxHome::Here,
+                send: true,
             })
             .await
             .unwrap();
@@ -5691,6 +5716,7 @@ mod tests {
                 origin: bob("research"),
                 export_id: None,
                 home: InboxHome::Here,
+                send: true,
             })
             .await
             .unwrap();
@@ -5977,6 +6003,7 @@ mod tests {
                 origin: bob("research"),
                 export_id: None,
                 home: InboxHome::Here,
+                send: true,
             })
             .await
             .unwrap();
@@ -6046,6 +6073,7 @@ mod tests {
                 origin: bob("research"),
                 export_id: None,
                 home: InboxHome::Here,
+                send: true,
             })
             .await
             .unwrap();
@@ -6077,6 +6105,7 @@ mod tests {
             origin: bob(export),
             export_id: None,
             home: InboxHome::Here,
+            send: true,
         };
         let first = a.handle_inbox(ask("research")).await.unwrap();
         let row = a.store.session(first).await.unwrap().unwrap();
@@ -6161,6 +6190,7 @@ mod tests {
                 origin: bob("research"),
                 export_id: None,
                 home: InboxHome::Here,
+                send: true,
             })
             .await
             .unwrap();
@@ -6183,6 +6213,7 @@ mod tests {
                 origin: bob("ops"),
                 export_id: None,
                 home: InboxHome::Here,
+                send: true,
             })
             .await
             .unwrap();
@@ -6824,6 +6855,68 @@ mod tests {
         assert_eq!(task.status, A2aTaskStatus::AuthRequired, "{task:?}");
         assert!(a.network.full_inbound.is_empty(), "never delivered full");
     }
+
+    /// 191 (D3, S4, P2 review MUST 1): an unreadable session row proves no owner. A contact's
+    /// message is refused at admission (fixed text, never the store's), `full_intake` refuses
+    /// on its own, and a task held before the row broke is never delivered (`deliver_full`),
+    /// even for a session in the insert-only `inboxes` set.
+    #[tokio::test]
+    async fn an_unreadable_owner_refuses_every_contact_path() {
+        let scratch = crate::TestDir::new("agents");
+        let mut a =
+            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        let principal = format!("peer:{}", binding.id);
+        let (session, _, _) = exported_task(&mut a, &principal).await;
+        let p = |ask_first| A2aPrincipal {
+            binding: binding.id,
+            export: "research".into(),
+            session,
+            route: CancellationToken::new(),
+            contact: Some(bob("research")),
+            ask_first,
+        };
+        let held = a.admit_send(&p(true), &send("m-1")).await.unwrap().task;
+        assert_eq!(held.status, A2aTaskStatus::AuthRequired);
+        let generation = a.admit_principal(&p(false)).await.unwrap();
+        let h = a
+            .network
+            .held
+            .remove(&("bob".into(), "research".into()))
+            .unwrap()
+            .remove(0);
+        h.watch.abort();
+        let record = a
+            .store
+            .exchange_record(h.task.dedup_exchange.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        a.store.break_session_for_test(session).await;
+        let refused = a.admit_send(&p(false), &send("m-2")).await.err().unwrap();
+        assert_eq!(
+            (refused.code, refused.message.as_str()),
+            (a2a_types::error_code::INTERNAL_ERROR, "internal error")
+        );
+        assert_eq!(
+            a.full_intake(record, "peer:bob".into(), generation.clone(), 0)
+                .await,
+            Err(NOT_OWNER_TEXT.to_owned())
+        );
+        a.network.inboxes.insert(session);
+        let task = a.start_or_queue(h.task, generation, h.route).await;
+        assert!(
+            task.status == A2aTaskStatus::AuthRequired
+                || (task.status == A2aTaskStatus::Failed
+                    && task.error.as_deref() == Some(NOT_OWNER_TEXT)),
+            "{task:?}"
+        );
+        assert!(a.network.full_inbound.is_empty(), "never delivered full");
+    }
 }
 
 #[cfg(test)]
@@ -6878,6 +6971,7 @@ mod full_inbox_tests {
             origin: full_bob(),
             export_id: None,
             home: InboxHome::Here,
+            send: true,
         })
         .await
     }
@@ -6932,6 +7026,7 @@ mod full_inbox_tests {
                 },
                 export_id: None,
                 home: InboxHome::Here,
+                send: true,
             })
             .await
             .unwrap();
@@ -7096,6 +7191,87 @@ mod full_inbox_tests {
         forget(&mut a, inbox);
         a.reinstall_contact_limits(inbox).await.unwrap();
         assert!(capped(&a, inbox), "default-deny again");
+    }
+
+    /// 191 (S4, P2 review SHOULD 1): at a machine whose inbox's session is no longer its own
+    /// (moved), the router's resolve answers a read (`GetTask`, `CancelTask`: `send` unset)
+    /// TASK_NOT_FOUND and a send `not owner`, before any side effect: no inbox opened, the row
+    /// not marked (its stored ceiling kept though the live one is higher), no limits installed
+    /// (no cap lifted). A read from a contact with no inbox here opens none.
+    #[tokio::test]
+    async fn a_non_owner_inbox_resolve_changes_nothing() {
+        use a2a_types::error_code::TASK_NOT_FOUND;
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        let roster = Roster::research(Some(tools::Risk::ReadOnly));
+        a.identity = Some(Arc::new(roster.clone()));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let inbox = admit(&mut a, binding.id).await.unwrap();
+        forget(&mut a, inbox);
+        a.store.owned_elsewhere(inbox, "other-engine").await;
+        roster.set(Some(Some(tools::Risk::Mutating)));
+        let ask = |binding, send| ContactInbox {
+            binding,
+            agent: "research@sky-mac".into(),
+            origin: full_bob(),
+            export_id: Some("x-research".into()),
+            home: InboxHome::Here,
+            send,
+        };
+        let key = format!("peer:{}", binding.id);
+        let scope = A2aScope {
+            principal: &key,
+            export: "research",
+        };
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        for (what, send, code) in [
+            ("GetTask", false, TASK_NOT_FOUND),
+            ("CancelTask", false, TASK_NOT_FOUND),
+            ("SendMessage", true, NOT_OWNER_CODE),
+        ] {
+            let r = a.handle_inbox(ask(binding.id, send)).await;
+            assert_eq!(r.err().map(|e| e.code), Some(code), "{what}");
+            assert_eq!(a.store.a2a_context_count_for_test(scope).await, 1, "{what}");
+            assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
+            assert_eq!(
+                a.store
+                    .a2a_inbox_full(inbox)
+                    .await
+                    .unwrap()
+                    .map(|r| r.ceiling),
+                Some(Some(Some(tools::Risk::ReadOnly))),
+                "{what}: not marked"
+            );
+            assert!(
+                !a.caps.contains_key(&inbox) && !a.network.inbox_personas.contains_key(&inbox),
+                "{what}: no limits installed"
+            );
+        }
+        // A read from a contact with no inbox here: none opened.
+        let carol = a
+            .store
+            .bind_peer("carol", &contact_endpoint("carol-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, carol.id);
+        let r = a.handle_inbox(ask(carol.id, false)).await;
+        assert_eq!(r.err().map(|e| e.code), Some(TASK_NOT_FOUND));
+        let key = format!("peer:{}", carol.id);
+        let scope = A2aScope {
+            principal: &key,
+            export: "research",
+        };
+        assert_eq!(a.store.a2a_context_count_for_test(scope).await, 0);
+        assert_eq!(a.store.list_sessions().await.unwrap().len(), sessions);
+        // An unreadable row proves nothing either.
+        a.store.break_session_for_test(inbox).await;
+        let r = a.handle_inbox(ask(binding.id, true)).await;
+        assert_eq!(r.err().map(|e| e.code), Some(NOT_OWNER_CODE));
+        assert!(!a.caps.contains_key(&inbox));
     }
 
     /// 186 review 2: with no live persona (the roster not joined, the agent missing) a full
@@ -7322,6 +7498,7 @@ mod full_inbox_tests {
             origin: full_bob(),
             export_id: Some("x1".into()),
             home,
+            send: true,
         };
         let marker = format!("peer:{}|x1", binding.id);
         let e = a
@@ -7386,8 +7563,9 @@ mod full_inbox_tests {
     }
 
     /// 191 (D4): a name-valued marker is never adopted (the home opens a new, marked inbox and
-    /// the named one stays capped); an inbox that moved before it was marked never gets
-    /// contact input again: its home drops its full mark and opens a new, marked inbox.
+    /// the named one stays capped). After the P2 review's owner check, a local row whose
+    /// session another machine owns refuses before anything happens here, marked or not (an
+    /// inbox that moved before it was marked included): `not owner` naming that machine.
     #[tokio::test]
     async fn a_name_valued_or_unmarked_moved_inbox_is_never_reached_again() {
         let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
@@ -7404,27 +7582,9 @@ mod full_inbox_tests {
             origin: full_bob(),
             export_id: export_id.map(str::to_owned),
             home: InboxHome::Here,
+            send: true,
         };
         let marker = format!("peer:{}|x1", binding.id);
-        // Before 191: an unmarked inbox (no export id at its admission) that moved away.
-        let old = a.handle_inbox(ask(None)).await.unwrap();
-        assert_eq!(a.store.contact_inbox(old).await.unwrap(), None);
-        a.store.owned_elsewhere(old, "n2-engine").await;
-        let new = a.handle_inbox(ask(Some("x1"))).await.unwrap();
-        assert_ne!(new, old);
-        assert_eq!(
-            a.store.contact_inbox(new).await.unwrap().as_deref(),
-            Some(marker.as_str())
-        );
-        assert!(
-            a.store.a2a_inbox_full(old).await.unwrap().is_none(),
-            "the moved one runs nothing full"
-        );
-        assert_eq!(
-            a.handle_inbox(ask(Some("x1"))).await.unwrap(),
-            new,
-            "and the next message stays on the new one"
-        );
         // A name-valued marker (an export no longer known by name) on a session owned here.
         let named_one = SessionId::new();
         a.store
@@ -7435,12 +7595,43 @@ mod full_inbox_tests {
             .set_contact_inbox(named_one, &format!("peer:{}|research", binding.id))
             .await
             .unwrap();
+        let fresh = a.handle_inbox(ask(Some("x1"))).await.unwrap();
+        assert_ne!(fresh, named_one, "a name-valued marker is never adopted");
         assert_eq!(
-            a.handle_inbox(ask(Some("x1"))).await.unwrap(),
-            new,
-            "a name-valued marker is never adopted"
+            a.store.contact_inbox(fresh).await.unwrap().as_deref(),
+            Some(marker.as_str())
         );
         a.reinstall_contact_limits(named_one).await.unwrap();
         assert!(capped(&a, named_one), "and it still caps");
+        // Before 191: an unmarked inbox (no export id at its admission) that moved away.
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
+        a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
+        let binding = a
+            .store
+            .bind_peer("bob", &contact_endpoint("bob-endpoint"))
+            .await
+            .unwrap();
+        route(&mut a, binding.id);
+        let ask = |export_id: Option<&str>| ContactInbox {
+            binding: binding.id,
+            agent: "research@sky-mac".into(),
+            origin: full_bob(),
+            export_id: export_id.map(str::to_owned),
+            home: InboxHome::Here,
+            send: true,
+        };
+        let old = a.handle_inbox(ask(None)).await.unwrap();
+        a.store.owned_elsewhere(old, "n2-engine").await;
+        let sessions = a.store.list_sessions().await.unwrap().len();
+        let e = a.handle_inbox(ask(Some("x1"))).await.unwrap_err();
+        assert_eq!(
+            (e.code, named(&e).as_deref()),
+            (NOT_OWNER_CODE, Some("n2-engine"))
+        );
+        assert_eq!(
+            a.store.list_sessions().await.unwrap().len(),
+            sessions,
+            "none opened"
+        );
     }
 }

@@ -16,9 +16,10 @@ use agent::store::contacts::{
 };
 use uuid::Uuid;
 
+use super::ProblemKind;
 use super::rosters::{self, Copy, Entry, Local, PeerHead};
 use crate::config::{
-    AgentExport, ContactFacts, Export, FirstContact, Peer, PeersFile, Quarantined, Staged,
+    AgentExport, ContactFacts, Export, FirstContact, Peer, PeersFile, Quarantined, Shown, Staged,
     check_alias,
 };
 
@@ -265,10 +266,37 @@ pub fn our_pins(r: &Records, c: &ContactRow) -> BTreeSet<String> {
     r.endpoints
         .iter()
         .filter(|e| e.contact.as_deref() == Some(c.id.as_str()))
-        .filter_map(|e| e.pinned_by.clone())
+        .flat_map(pinners)
         .chain(c.paired_on.clone())
         .filter(|e| !e.is_empty())
         .collect()
+}
+
+/// The machines of ours whose ceremonies wrote endpoint row `e` (`pinned_by`: a JSON array;
+/// a bare id, as P2's first builds wrote it, is one). A value that does not parse names none:
+/// that pin's proof paths are then refused (403), never served to a stranger.
+pub fn pinners(e: &EndpointRow) -> BTreeSet<String> {
+    match e.pinned_by.as_deref() {
+        None => BTreeSet::new(),
+        Some(v) if v.starts_with('[') => serde_json::from_str(v).unwrap_or_else(|err| {
+            tracing::warn!(row = %e.id, "191: pinned_by does not read: {err}");
+            BTreeSet::new()
+        }),
+        Some(v) => BTreeSet::from([v.to_owned()]),
+    }
+}
+
+/// The `pinned_by` cell of endpoint row `id` after this machine (`me`) pins it: the row's
+/// set plus `me`, so a later ceremony never forgets an earlier machine.
+pub fn pinned_by_with(r: &Records, id: &str, me: &str) -> Cell {
+    let mut set = r
+        .endpoints
+        .iter()
+        .find(|e| e.id == id)
+        .map(pinners)
+        .unwrap_or_default();
+    set.insert(me.to_owned());
+    Cell::Text(serde_json::to_string(&set).unwrap_or_default())
 }
 
 /// The `contact_rosters` id of a copy.
@@ -296,6 +324,13 @@ pub fn chain_copies(r: &Records, chain: &str) -> Vec<Copy> {
     )
 }
 
+/// A version as its column holds it. Every verified copy is at most
+/// [`rosters::VERSION_MAX`], so this never saturates; if it did, the row would disagree with
+/// its copy and be left out ([`chain_copies`], [`local_of`]), never wrap.
+fn version_cell(v: u64) -> Cell {
+    Cell::Int(i64::try_from(v).unwrap_or(i64::MAX))
+}
+
 /// The `contact_rosters` row of a copy we signed.
 pub fn roster_row(c: &Copy) -> RecordWrite {
     RecordWrite::new(
@@ -304,7 +339,7 @@ pub fn roster_row(c: &Copy) -> RecordWrite {
         vec![
             ("contact", Cell::Text(c.chain.clone())),
             ("chain", Cell::Text(c.chain.clone())),
-            ("version", Cell::Int(c.version as i64)),
+            ("version", version_cell(c.version)),
             ("signer", Cell::Text(c.signer.clone())),
             ("hash", Cell::Text(c.hash())),
             (
@@ -341,6 +376,31 @@ pub fn local_of(r: &Records, record: &str) -> Option<Local> {
         })
 }
 
+/// 191 (D8): what `contact_list` shows of `members` (a group's records, root first): the
+/// root's `paired_on`, and the contact's machines from this machine's own roster states:
+/// every current member, then (`left`) those only an accepted history lists; the pins of a
+/// record no roster is based on here, so the list is never empty while a pin exists.
+pub fn shown(r: &Records, members: &[&ContactRow]) -> Shown {
+    let (mut now, mut was) = (BTreeSet::new(), BTreeSet::new());
+    for m in members {
+        match local_of(r, &m.id) {
+            Some(l) => {
+                now.extend(l.head().members.iter().cloned());
+                was.extend(l.history.iter().flat_map(|e| e.members.iter().cloned()));
+            }
+            None => now.extend(pins_of(r, &m.id)),
+        }
+    }
+    let left: Vec<(String, bool)> = was.difference(&now).map(|e| (e.clone(), true)).collect();
+    Shown {
+        paired_on: members
+            .first()
+            .and_then(|c| c.paired_on.clone())
+            .filter(|e| !e.is_empty()),
+        machines: now.into_iter().map(|e| (e, false)).chain(left).collect(),
+    }
+}
+
 /// The `contact_roster_local` row of `l`.
 pub fn local_row(record: &str, l: &Local) -> RecordWrite {
     let h = l.head();
@@ -354,7 +414,7 @@ pub fn local_row(record: &str, l: &Local) -> RecordWrite {
         record,
         vec![
             ("chain", Cell::Text(l.chain.clone())),
-            ("version", Cell::Int(h.version as i64)),
+            ("version", version_cell(h.version)),
             ("hash", Cell::Text(h.hash.clone())),
             (
                 "roster",
@@ -379,7 +439,7 @@ pub fn head_row(record: &str, me: &str, l: &Local, conflict: bool) -> RecordWrit
             ("record", Cell::Text(record.to_owned())),
             ("machine", Cell::Text(me.to_owned())),
             ("chain", Cell::Text(l.chain.clone())),
-            ("version", Cell::Int(h.version as i64)),
+            ("version", version_cell(h.version)),
             ("hash", Cell::Text(h.hash.clone())),
             (
                 "history",
@@ -424,7 +484,6 @@ pub fn heads_of(
                     .and_then(|x| serde_json::from_str(x).ok())
                     .unwrap_or_default(),
                 conflict: h.conflict == Some(1),
-                at_ms: h.at_ms.unwrap_or(0),
                 members: h
                     .members
                     .as_deref()
@@ -437,11 +496,47 @@ pub fn heads_of(
         .collect()
 }
 
-/// A conflict flag counts while it was written within [`rosters::CONFLICT_REFRESHES`]
-/// refreshes.
-pub fn flag_live(h: &PeerHead, now: i64) -> bool {
-    h.conflict
-        && now - h.at_ms <= rosters::CONFLICT_REFRESHES as i64 * rosters::ROUND.as_millis() as i64
+/// A conflict flag counts unless `expired` holds its row (`<record>|<machine>`): another
+/// machine's flag this machine saw unchanged for [`rosters::CONFLICT_REFRESHES`] of its own
+/// rounds ([`age_flags`]). No other machine's wall clock is ever compared.
+pub fn flag_live(record: &str, h: &PeerHead, expired: &BTreeSet<String>) -> bool {
+    h.conflict && !expired.contains(&format!("{record}|{}", h.machine))
+}
+
+/// 191 (D1): ages the other live machines' conflict flags in this machine's own rounds. A
+/// flagged row whose `at_ms` (an opaque stamp here, NULL included) changed since the last
+/// round is fresh again; one unchanged for [`rosters::CONFLICT_REFRESHES`] rounds expires. A
+/// flag first seen (at boot too) counts as fresh, so no deny lifts before that many rounds.
+/// This machine's own flag never expires: it clears it itself. `seen` is row id → (stamp,
+/// the round it last changed). Returns the expired rows.
+pub fn age_flags(
+    seen: &mut HashMap<String, (Option<i64>, u64)>,
+    r: &Records,
+    family: &BTreeSet<String>,
+    round: u64,
+) -> BTreeSet<String> {
+    let flagged: BTreeMap<&str, Option<i64>> = r
+        .heads
+        .iter()
+        .filter(|h| h.conflict == Some(1))
+        .filter(|h| match (h.record.as_deref(), h.machine.as_deref()) {
+            (Some(rec), Some(m)) => m != r.me && family.contains(m) && h.id == format!("{rec}|{m}"),
+            _ => false,
+        })
+        .map(|h| (h.id.as_str(), h.at_ms))
+        .collect();
+    seen.retain(|id, _| flagged.contains_key(id.as_str()));
+    let mut out = BTreeSet::new();
+    for (id, at) in flagged {
+        let e = seen.entry(id.to_owned()).or_insert((at, round));
+        if e.0 != at {
+            *e = (at, round);
+        }
+        if round.saturating_sub(e.1) >= rosters::CONFLICT_REFRESHES {
+            out.insert(id.to_owned());
+        }
+    }
+    out
 }
 
 /// How one record admits the other side's machines on this machine (D1).
@@ -457,11 +552,17 @@ pub enum Admit {
     Disagree,
 }
 
-/// [`Admit`] for `record`; `family` is this mesh's live machines (this one included).
-pub fn admit_of(r: &Records, record: &str, family: &BTreeSet<String>, now: i64) -> Admit {
+/// [`Admit`] for `record`; `family` is this mesh's live machines (this one included),
+/// `expired` the flags [`age_flags`] expired.
+pub fn admit_of(
+    r: &Records,
+    record: &str,
+    family: &BTreeSet<String>,
+    expired: &BTreeSet<String>,
+) -> Admit {
     if heads_of(r, record, &r.me, family, true)
         .iter()
-        .any(|h| flag_live(h, now))
+        .any(|h| flag_live(record, h, expired))
     {
         return Admit::Disagree;
     }
@@ -636,8 +737,9 @@ fn effective(rows: &[&GrantRow]) -> (Option<bool>, Option<FirstContact>) {
 
 /// Stage the records (D2): exports by name, the live groups as contacts (blocked ones
 /// included, without a route), and every record that cannot be proven sound quarantined
-/// with its endpoints denied. `family` is this mesh's own machines' endpoint ids.
-pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
+/// with its endpoints denied. `family` is this mesh's own machines' endpoint ids, `expired`
+/// the other machines' conflict flags [`age_flags`] expired.
+pub fn stage_records(r: &Records, family: &BTreeSet<String>, expired: &BTreeSet<String>) -> Staged {
     let mut staged = Staged {
         addrs: r
             .addrs
@@ -705,29 +807,43 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
         /// Replication lag or a convergence in flight: endpoints denied, the binding kept
         /// (its inboxes capped) so the record comes back whole once the rows arrive.
         Lag,
+        /// A roster this machine cannot verify or our machines disagree about: denied, the
+        /// binding kept as for [`Kind::Lag`], but replication alone does not mend it (D8:
+        /// shown refused).
+        Unproven,
         /// Removed on another machine: never admitted, its endpoints may pair again.
         Removed,
     }
-    let quarantine =
-        |c: &ContactRow, eids: Vec<String>, problem: String, kind: Kind, s: &mut Staged| {
-            if kind == Kind::Removed {
-                s.removed.extend(eids.iter().cloned());
+    let quarantine = |c: &ContactRow,
+                      members: &[&ContactRow],
+                      eids: Vec<String>,
+                      problem: String,
+                      kind: Kind,
+                      s: &mut Staged| {
+        if kind == Kind::Removed {
+            s.removed.extend(eids.iter().cloned());
+        } else {
+            s.deny.extend(eids.iter().cloned());
+        }
+        s.shown.insert(c.id.clone(), shown(r, members));
+        s.quarantined.push(Quarantined {
+            id: c.id.clone(),
+            alias: c.alias.clone().unwrap_or_default(),
+            eid: eids.first().cloned().unwrap_or_default(),
+            machine: c.machine.clone().unwrap_or_default(),
+            paired_ms: c.paired_ms.unwrap_or_default().max(0) as u64,
+            problem,
+            kind: if kind == Kind::Lag {
+                ProblemKind::Waiting
             } else {
-                s.deny.extend(eids.iter().cloned());
-            }
-            s.quarantined.push(Quarantined {
-                id: c.id.clone(),
-                alias: c.alias.clone().unwrap_or_default(),
-                eid: eids.first().cloned().unwrap_or_default(),
-                machine: c.machine.clone().unwrap_or_default(),
-                paired_ms: c.paired_ms.unwrap_or_default().max(0) as u64,
-                problem,
-                hold: (kind == Kind::Lag)
-                    .then(|| c.binding.as_deref().and_then(binding_id))
-                    .flatten()
-                    .filter(|b| !r.revoked.contains(&b.to_string())),
-            });
-        };
+                ProblemKind::Refused
+            },
+            hold: matches!(kind, Kind::Lag | Kind::Unproven)
+                .then(|| c.binding.as_deref().and_then(binding_id))
+                .flatten()
+                .filter(|b| !r.revoked.contains(&b.to_string())),
+        });
+    };
     for (c, why, lag) in &a.broken {
         let eids = r
             .endpoints
@@ -736,7 +852,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
             .filter_map(|e| e.eid.clone())
             .collect();
         let kind = if *lag { Kind::Lag } else { Kind::Hard };
-        quarantine(c, eids, why.clone(), kind, &mut staged);
+        quarantine(c, &[*c], eids, why.clone(), kind, &mut staged);
     }
     // When each endpoint was last removed with a record (the latest removal wins): the
     // record's pins and, from this machine's own state, what its roster listed.
@@ -777,13 +893,12 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
     // 191 (D1, P2): what each live group admits of the other side: the union of its
     // records' current rosters, this machine's own state (a record no machine here has based
     // yet: its pins); none while a record is unverified here or disagreed about.
-    let now = now_ms();
     let mut sets: Vec<Result<BTreeSet<String>, &'static str>> = Vec::new();
     let mut signed: Vec<BTreeSet<String>> = Vec::new();
     for g in &a.groups {
         let (mut set, mut sig, mut bad) = (BTreeSet::new(), BTreeSet::new(), None);
         for m in &g.members {
-            match admit_of(r, &m.id, family, now) {
+            match admit_of(r, &m.id, family, expired) {
                 Admit::Pins => set.extend(pins_of(r, &m.id)),
                 Admit::Roster(l) => {
                     set.extend(
@@ -871,7 +986,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
             Some(("an endpoint is in another contact too (merging)", Kind::Lag))
         } else if let Err(p) = &sets[i] {
             // Never the pins alone once a base exists: denied, the binding kept.
-            Some((*p, Kind::Lag))
+            Some((*p, Kind::Unproven))
         } else if sets[i].as_ref().is_ok_and(BTreeSet::is_empty) {
             Some(("none of its machines can be admitted", Kind::Lag))
         } else if c
@@ -884,7 +999,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
             None
         };
         if let Some((p, kind)) = problem {
-            quarantine(c, eids, p.to_owned(), kind, &mut staged);
+            quarantine(c, &g.members, eids, p.to_owned(), kind, &mut staged);
             continue;
         }
         let (Some(alias), Some(binding)) = (c.alias.clone(), binding) else {
@@ -948,6 +1063,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
                 },
             );
         }
+        staged.shown.insert(c.id.clone(), shown(r, &g.members));
         staged.contacts.insert(
             alias.clone(),
             ContactFacts {
@@ -984,7 +1100,7 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
             if newer.is_empty() {
                 continue;
             }
-            match admit_of(r, m, family, now) {
+            match admit_of(r, m, family, expired) {
                 Admit::Roster(l) => {
                     lifted.extend(set.iter().filter(|e| l.head().members.contains(e)));
                 }
@@ -1244,7 +1360,7 @@ mod tests {
     }
 
     fn stage(r: &Records) -> Staged {
-        stage_records(r, &BTreeSet::new())
+        stage_records(r, &BTreeSet::new(), &BTreeSet::new())
     }
 
     /// Apply `writes` to `r` as the store would (column by column, inserting new rows).
@@ -1485,7 +1601,7 @@ mod tests {
         assert!(s.contacts["carol"].blocked && s.deny.contains(&eid(2)));
         assert!(s.peers.contains_key("dave") && !s.deny.contains(&eid(3)));
         // One of our own machines is never a contact.
-        let s = stage_records(&r, &BTreeSet::from([eid(3)]));
+        let s = stage_records(&r, &BTreeSet::from([eid(3)]), &BTreeSet::new());
         assert!(!s.contacts.contains_key("dave") && s.deny.contains(&eid(3)));
     }
 
@@ -1808,7 +1924,7 @@ mod tests {
         }
     }
 
-    fn head(record: &str, machine: &str, conflict: bool, at_ms: i64) -> HeadRow {
+    fn head(record: &str, machine: &str, conflict: bool, at_ms: Option<i64>) -> HeadRow {
         HeadRow {
             id: format!("{record}|{machine}"),
             record: Some(record.into()),
@@ -1819,32 +1935,34 @@ mod tests {
             history: Some("[]".into()),
             members: Some("[]".into()),
             conflict: Some(i64::from(conflict)),
-            at_ms: Some(at_ms),
+            at_ms,
         }
     }
 
     /// 191 (D1): a record admits its pins only while no machine has based it; then its own
     /// verified roster (never the pins alone); based elsewhere but not here, nothing ("cannot
-    /// verify", a retired machine's row included); a live conflict denies it until the flag
-    /// expires, and a conflict from a machine no longer in the mesh is ignored.
+    /// verify", a retired machine's row included); a live conflict denies it until the rounds
+    /// expire the flag, and a conflict from a machine no longer in the mesh is ignored.
     #[test]
     fn a_record_admits_its_roster_and_never_its_pins_alone_once_based() {
         let (me, c2, gone) = (eid(40), eid(41), eid(42));
         let family = BTreeSet::from([me.clone(), c2.clone()]);
+        let none = BTreeSet::new();
+        let stage = |r: &Records, expired: &BTreeSet<String>| stage_records(r, &family, expired);
         let mut r = Records {
             me: me.clone(),
             contacts: vec![contact("c", "bob", 1)],
             endpoints: vec![anchor("c", 1, 1)],
             ..Records::default()
         };
-        let s = stage_records(&r, &family);
+        let s = stage(&r, &none);
         assert_eq!(
             s.contacts["bob"].eids,
             vec![eid(1)],
             "pins, nothing based yet"
         );
         r.local = vec![local("c", 2, &[eid(2), eid(3)], &[])];
-        let s = stage_records(&r, &family);
+        let s = stage(&r, &none);
         assert_eq!(
             s.contacts["bob"].eids.iter().collect::<BTreeSet<_>>(),
             BTreeSet::from([&eid(2), &eid(3)])
@@ -1852,25 +1970,95 @@ mod tests {
         assert_eq!(s.contact_by_eid(&eid(1)), None, "the pin left the roster");
         // Based on another machine, not here: denied, the binding kept, never the pin.
         r.local.clear();
-        for row in [head("c", &c2, false, 0), head("c", &gone, false, 0)] {
+        for row in [
+            head("c", &c2, false, Some(0)),
+            head("c", &gone, false, None),
+        ] {
             r.heads = vec![row];
-            let s = stage_records(&r, &family);
+            let s = stage(&r, &none);
             assert!(!s.contacts.contains_key("bob"));
             let q = &s.quarantined[0];
             assert_eq!(q.problem, rosters::NOT_VERIFIED);
             assert!(q.hold.is_some() && s.deny.contains(&eid(1)));
         }
-        // A live conflict denies; an expired one or one from a retired machine does not.
+        // A live conflict denies, whatever its stamp; an expired one or one from a retired
+        // machine does not.
         r.local = vec![local("c", 2, &[eid(2)], &[])];
-        let now = now_ms();
-        r.heads = vec![head("c", &c2, true, now)];
-        let s = stage_records(&r, &family);
-        assert_eq!(s.quarantined[0].problem, rosters::DISAGREE);
-        let old = now - 4 * rosters::ROUND.as_millis() as i64;
-        r.heads = vec![head("c", &c2, true, old)];
-        assert!(stage_records(&r, &family).contacts.contains_key("bob"));
-        r.heads = vec![head("c", &gone, true, now)];
-        assert!(stage_records(&r, &family).contacts.contains_key("bob"));
+        for at in [Some(now_ms()), Some(0), None] {
+            r.heads = vec![head("c", &c2, true, at)];
+            assert_eq!(stage(&r, &none).quarantined[0].problem, rosters::DISAGREE);
+        }
+        let expired = BTreeSet::from([format!("c|{c2}")]);
+        assert!(stage(&r, &expired).contacts.contains_key("bob"));
+        r.heads = vec![head("c", &gone, true, Some(now_ms()))];
+        assert!(stage(&r, &none).contacts.contains_key("bob"));
+    }
+
+    /// 191 (D1, review MUST 2): another machine's flag ages in this machine's own rounds,
+    /// never by comparing clocks. One re-stamped every round never expires, whatever its
+    /// stamps say (a clock an hour behind, going backwards); one with no stamp at all counts
+    /// for three rounds after it is first seen, then expires; our own never expires; a fresh
+    /// stamp makes a flag live again, and a cleared flag is forgotten.
+    #[test]
+    fn a_conflict_flag_expires_by_rounds_never_by_clocks() {
+        let (me, c2, c3) = (eid(40), eid(41), eid(43));
+        let family = BTreeSet::from([me.clone(), c2.clone(), c3.clone()]);
+        let mut r = Records {
+            me: me.clone(),
+            ..Records::default()
+        };
+        let mut seen = HashMap::new();
+        let skewed = now_ms() - 3_600_000;
+        for round in 1..=6u64 {
+            r.heads = vec![
+                head("c", &c2, true, Some(skewed - round as i64)),
+                head("c", &c3, true, None),
+                head("c", &me, true, Some(0)),
+            ];
+            let expired = age_flags(&mut seen, &r, &family, round);
+            assert!(!expired.contains(&format!("c|{c2}")), "round {round}");
+            assert!(!expired.contains(&format!("c|{me}")), "round {round}");
+            assert_eq!(
+                expired.contains(&format!("c|{c3}")),
+                round > rosters::CONFLICT_REFRESHES,
+                "round {round}"
+            );
+        }
+        r.heads = vec![head("c", &c3, true, Some(5))];
+        assert!(age_flags(&mut seen, &r, &family, 7).is_empty());
+        r.heads = vec![head("c", &c3, false, Some(5))];
+        assert!(age_flags(&mut seen, &r, &family, 8).is_empty() && seen.is_empty());
+    }
+
+    /// 191 (D1, review SHOULD 6): three of our machines pair with the same endpoint of a
+    /// contact, one after another: the row's `pinned_by` holds all three, so none is
+    /// forgotten (its hop chain kept, its proof path served). A bare id (P2's first builds)
+    /// is one machine; a value that does not parse is none.
+    #[test]
+    fn three_ceremonies_into_one_endpoint_keep_every_pin() {
+        let (a, b, c) = (eid(50), eid(51), eid(52));
+        let mut rec = contact("r", "bob", 1);
+        rec.paired_on = Some(a.clone());
+        let mut r = Records {
+            contacts: vec![rec.clone()],
+            endpoints: vec![anchor("r", 1, 1)],
+            ..Records::default()
+        };
+        let id = r.endpoints[0].id.clone();
+        for me in [&a, &b, &c] {
+            let Cell::Text(v) = pinned_by_with(&r, &id, me) else {
+                panic!("text")
+            };
+            r.endpoints[0].pinned_by = Some(v);
+        }
+        assert_eq!(
+            our_pins(&r, &rec),
+            BTreeSet::from([a.clone(), b.clone(), c.clone()])
+        );
+        r.endpoints[0].pinned_by = Some(b.clone());
+        assert_eq!(pinners(&r.endpoints[0]), BTreeSet::from([b.clone()]));
+        r.endpoints[0].pinned_by = Some("[nope".into());
+        assert!(pinners(&r.endpoints[0]).is_empty());
     }
 
     /// 191 (D1 attribution): an endpoint two unmerged contacts' rosters list is admitted only
@@ -1982,5 +2170,111 @@ mod tests {
         let s = stage(&r);
         assert_eq!(s.contacts["bob"].eids, vec![n2.clone(), n3.clone()]);
         assert!(s.removed.contains(&n1) && s.removed.contains(&z1) && !s.removed.contains(&n2));
+    }
+
+    /// 191 (D8, P4): what a row shows. Its machines are this machine's roster state of the
+    /// record, current members first, then (`left`) those only its accepted history lists;
+    /// its pins while no roster is based here; `paired_on` is the record's. A quarantine
+    /// that replication mends is `waiting` (a pointer into a record not here, a name taken
+    /// until the rename lands); every other is `refused` (unsound, one of our machines,
+    /// unverified, disagreed about).
+    #[test]
+    fn a_row_shows_its_machines_and_what_its_problem_offers() {
+        let (me, c2) = (eid(40), eid(41));
+        let family = BTreeSet::from([me.clone(), c2.clone()]);
+        let none = BTreeSet::new();
+        let staged = |r: &Records| stage_records(r, &family, &none);
+        let mut r = Records {
+            me: me.clone(),
+            contacts: vec![ContactRow {
+                paired_on: Some(me.clone()),
+                ..contact("c", "bob", 1)
+            }],
+            endpoints: vec![anchor("c", 1, 1)],
+            ..Records::default()
+        };
+        let s = staged(&r);
+        assert_eq!(
+            s.shown["c"],
+            Shown {
+                paired_on: Some(me.clone()),
+                machines: vec![(eid(1), false)]
+            },
+            "pins while nothing is based"
+        );
+        // Version 1 listed 1, 2 and 3; the current version 2 lists 2 and 4.
+        let mut row = local("c", 2, &[eid(2), eid(4)], &[]);
+        let mut history: Vec<Entry> = serde_json::from_str(&row.history).unwrap();
+        let mut v1 = vec![eid(1), eid(2), eid(3)];
+        v1.sort();
+        history.insert(
+            0,
+            Entry {
+                version: 1,
+                hash: rosters::content_hash("chain-c", 1, &v1),
+                members: v1,
+            },
+        );
+        row.history = serde_json::to_string(&history).unwrap();
+        r.local = vec![row];
+        let s = staged(&r);
+        assert!(s.contacts.contains_key("bob") && s.quarantined.is_empty());
+        let m = &s.shown["c"].machines;
+        let set = |part: &[(String, bool)]| -> BTreeSet<String> {
+            part.iter().map(|(e, _)| e.clone()).collect()
+        };
+        assert!(m.len() == 4 && m[..2].iter().all(|(_, l)| !l) && m[2..].iter().all(|(_, l)| *l));
+        assert_eq!(
+            set(&m[..2]),
+            BTreeSet::from([eid(2), eid(4)]),
+            "current first"
+        );
+        assert_eq!(
+            set(&m[2..]),
+            BTreeSet::from([eid(1), eid(3)]),
+            "then those that left"
+        );
+        let kinds = |r: &Records| -> BTreeMap<String, (String, ProblemKind)> {
+            staged(r)
+                .quarantined
+                .into_iter()
+                .map(|q| (q.id, (q.problem, q.kind)))
+                .collect()
+        };
+        // Disagreed about: refused, though its binding is kept.
+        r.heads = vec![head("c", &c2, true, Some(now_ms()))];
+        assert_eq!(
+            kinds(&r)["c"],
+            (rosters::DISAGREE.to_owned(), ProblemKind::Refused)
+        );
+        // Based on another machine, not here: refused, and it lists its pin.
+        r.local.clear();
+        r.heads = vec![head("c", &c2, false, Some(0))];
+        assert_eq!(
+            kinds(&r)["c"],
+            (rosters::NOT_VERIFIED.to_owned(), ProblemKind::Refused)
+        );
+        assert_eq!(staged(&r).shown["c"].machines, vec![(eid(1), false)]);
+        r.heads.clear();
+        // Waiting: a name taken until the rename lands, a pointer into a record not here.
+        // Refused: one of our machines.
+        r.contacts.extend([
+            contact("d", "bob", 2),
+            ContactRow {
+                merged_into: Some("not-here".into()),
+                ..contact("e", "erin", 3)
+            },
+            contact("f", "fay", 4),
+        ]);
+        r.endpoints
+            .extend([anchor("d", 5, 2), anchor("e", 6, 3), anchor("f", 40, 4)]);
+        let k = kinds(&r);
+        assert_eq!(k["d"].1, ProblemKind::Waiting, "{k:?}");
+        assert_eq!(k["e"].1, ProblemKind::Waiting, "{k:?}");
+        assert_eq!(
+            k["f"],
+            ("now one of your machines".to_owned(), ProblemKind::Refused)
+        );
+        assert!(!k.contains_key("c"));
     }
 }

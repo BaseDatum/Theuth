@@ -640,7 +640,8 @@ impl Handler {
         Ok((binding, route))
     }
 
-    async fn admit(&self, params: &ServiceParams) -> Result<A2aPrincipal, A2AError> {
+    /// `send`: a `SendMessage` or the streaming send (191 S4: a read never opens an inbox).
+    async fn admit(&self, params: &ServiceParams, send: bool) -> Result<A2aPrincipal, A2AError> {
         let (binding, route) = self.caller(params)?;
         // 183 §7.6: a contact's origin rides with every admission (the first-contact hold).
         // 190 (D1): every share is full.
@@ -671,6 +672,7 @@ impl Handler {
                     origin: origin.clone(),
                     export_id: self.export_id.clone(),
                     home: home.clone(),
+                    send,
                 })
                 .await?
             }
@@ -792,7 +794,7 @@ impl RequestHandler for Handler {
                 })
                 .await;
         }
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, true).await?;
         self.owned(&principal).await?;
         validate_send(&req)?;
         let history_length = req.configuration.as_ref().and_then(|c| c.history_length);
@@ -813,7 +815,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SendMessageRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, true).await?;
         self.owned(&principal).await?;
         validate_send(&req)?;
         let stream = self
@@ -830,7 +832,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: GetTaskRequest,
     ) -> Result<Task, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, false).await?;
         let history_length = req.history_length;
         let mut task = self
             .ask(A2aGet {
@@ -847,7 +849,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: ListTasksRequest,
     ) -> Result<ListTasksResponse, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, false).await?;
         let history_length = req.history_length;
         let include_artifacts = req.include_artifacts == Some(true);
         let mut page = self
@@ -870,7 +872,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: CancelTaskRequest,
     ) -> Result<Task, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, false).await?;
         self.ask(A2aCancel {
             principal,
             request: req,
@@ -883,7 +885,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         req: SubscribeToTaskRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
-        let principal = self.admit(params).await?;
+        let principal = self.admit(params, false).await?;
         let stream = self
             .ask(A2aSubscribe {
                 principal: principal.clone(),
@@ -898,7 +900,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: TaskPushNotificationConfig,
     ) -> Result<TaskPushNotificationConfig, A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -907,7 +909,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: GetTaskPushNotificationConfigRequest,
     ) -> Result<TaskPushNotificationConfig, A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -916,7 +918,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: ListTaskPushNotificationConfigsRequest,
     ) -> Result<ListTaskPushNotificationConfigsResponse, A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -925,7 +927,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: DeleteTaskPushNotificationConfigRequest,
     ) -> Result<(), A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::push_notification_not_supported())
     }
 
@@ -934,7 +936,7 @@ impl RequestHandler for Handler {
         params: &ServiceParams,
         _req: GetExtendedAgentCardRequest,
     ) -> Result<AgentCard, A2AError> {
-        self.admit(params).await?;
+        self.admit(params, false).await?;
         Err(A2AError::unsupported_operation(
             "extended agent card not supported",
         ))

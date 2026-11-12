@@ -319,9 +319,22 @@ pub struct Quarantined {
     pub paired_ms: u64,
     /// Why it is quarantined.
     pub problem: String,
+    /// 191 (D8): what its row offers (refused, or waiting while replication catches up).
+    pub kind: crate::contacts::ProblemKind,
     /// A quarantine of replication lag or of a convergence in flight (a merge, a rename):
     /// the binding to keep live (unrouted, its inboxes capped) so it is not revoked for good.
     pub hold: Option<uuid::Uuid>,
+}
+
+/// 191 (D8): what `contact_list` shows of a record beyond its facts, this machine's own view.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shown {
+    /// The engine id of our machine whose ceremony paired it (`None` when not recorded).
+    pub paired_on: Option<String>,
+    /// The contact's machines: (endpoint id, left), from this machine's roster states of the
+    /// records (current members first, then those only an accepted history lists), the
+    /// pins of a record no roster is based on here.
+    pub machines: Vec<(String, bool)>,
 }
 
 /// 183 §7.6: a validated agent export (contacts only): each (contact, export) gets its own
@@ -379,6 +392,8 @@ pub struct Staged {
     pub quarantined: Vec<Quarantined>,
     /// 191 (D2): export name → its replicated id (chat and agent exports).
     pub export_ids: BTreeMap<String, String>,
+    /// 191 (D8): by record id (a live group's root, a quarantined record): what its row shows.
+    pub shown: BTreeMap<String, Shown>,
 }
 
 impl Staged {

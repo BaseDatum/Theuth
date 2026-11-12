@@ -62,6 +62,9 @@ const BOB: Contact = {
   shared: [],
   blocked: false,
   paired_ms: NOW,
+  problem_kind: null,
+  paired_on: null,
+  machines: [],
 }
 const ALICE: Contact = { ...BOB, name: 'alice', machine: 'studio', path: 'lan', exports: ['ops-chat'], first_contact: {}, fingerprint: 'AAAA BBBB CCCC DDDD EEEE', full_capable: false }
 const EXPORTS: Export[] = [
@@ -226,6 +229,82 @@ test('⋯ Rename → contact_update(name), Block… and Remove… confirm → co
   await vi.waitFor(() => expect(api.contact_update).toHaveBeenCalledWith('alice', { name: null, exports: null, blocked: false }))
   await click('Choose what bob may reach…')
   expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'contacts' }, search: { focus: 'access:bob' } })
+})
+
+// 191 D8: one of each row — sound (a machine of theirs left), alert, refused, and waiting (a rename in flight: a second `bob`).
+const ROWS: Contact[] = [
+  {
+    ...BOB,
+    id: 'r-bob',
+    paired_on: 'studio',
+    machines: [
+      { eid: 'e-laptop', name: 'laptop', left: false },
+      { eid: 'e-studio', name: 'studio', left: false },
+      { eid: 'e-old', name: 'old-imac', left: true },
+    ],
+  },
+  { ...ALICE, name: 'carol', id: 'r-carol', problem: 'a machine of carol follows a roster we never signed; one of ours may be compromised', problem_kind: 'alert', machines: [{ eid: 'e-tp', name: 'thinkpad', left: false }] },
+  { ...ALICE, name: 'dave', id: 'r-dave', exports: [], problem: "cannot verify this contact's machines", problem_kind: 'refused', machines: [{ eid: 'd4v3q2m4xyz', name: 'd4v3q2m4', left: false }] },
+  { ...BOB, id: 'r-bob-2', exports: [], problem: 'its name is taken by another contact (renaming)', problem_kind: 'waiting', machines: [{ eid: 'b0b2q2m4xyz', name: 'b0b2q2m4', left: false }] },
+]
+const rowOf = (text: string) => [...document.querySelectorAll<HTMLElement>('div.border-b')].find((d) => d.textContent?.includes(text))!
+const buttonsIn = (row: HTMLElement) => [...row.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim())
+
+test('191 D8 Contacts: their machines (one that left struck through, muted), Paired on, and each problem with its own action', async () => {
+  api.contact_list.mockImplementation(async () => ROWS)
+  await mount(createElement(Contacts))
+  const bob = rowOf('Paired on studio')
+  expect(bob.textContent).toContain('Their machines: laptop · studio · old-imac left')
+  const left = bob.querySelector('s')!
+  expect(left.textContent).toBe('old-imac')
+  expect(left.parentElement!.className).toContain('text-muted-foreground')
+  expect(bob.querySelector('[role=status]')).toBeNull()
+  expect(buttonsIn(bob)).toEqual(['bob: Rename · Block · Remove', 'Rename', 'Choose what bob may reach…', 'Block…', 'Remove…'])
+  // Alert: the contact still works (its menu stays), Remove and the way to unpair one of ours.
+  const carol = rowOf('roster we never signed')
+  expect(carol.querySelector('[role=status]')!.className).toContain('text-destructive')
+  expect(buttonsIn(carol)).toEqual(['Network › Machines', 'Remove…', 'carol: Rename · Block · Remove', 'Rename', 'Choose what carol may reach…', 'Block…', 'Remove…'])
+  // Refused: Remove only; nothing shared is offered.
+  const dave = rowOf("cannot verify this contact's machines")
+  expect(dave.querySelector('[role=status]')!.className).toContain('text-destructive')
+  expect(buttonsIn(dave)).toEqual(['Remove…'])
+  expect(dave.textContent).not.toContain('Nothing shared yet')
+  expect(dave.textContent).toContain('Their machines: d4v3q2m4')
+  // Waiting: muted, no action at all (Remove would delete a sound record).
+  const waiting = rowOf('its name is taken')
+  expect(waiting.querySelector('[role=status]')!.className).toContain('text-muted-foreground')
+  expect(waiting.textContent).toContain('this clears by itself')
+  expect(buttonsIn(waiting)).toEqual([])
+  // Every contact once: the two `bob` records are two rows.
+  expect(document.querySelectorAll('div.border-b')).toHaveLength(4)
+})
+
+test('191 D8 Contacts: Remove on a refused row names its record, on all your machines, with the rogue-machine line; the alert links to Machines; Block is on all your machines', async () => {
+  api.contact_list.mockImplementation(async () => ROWS)
+  await mount(createElement(Contacts))
+  await run(() => rowOf("cannot verify this contact's machines").querySelector('button')!.click())
+  const dialog = () => document.querySelector('[role=alertdialog]')?.textContent ?? ''
+  expect(dialog()).toContain('Remove dave?')
+  expect(dialog()).toContain('dave is forgotten on all your machines and its open tasks close.')
+  expect(dialog()).toContain('Ask dave to remove you too, then pair again. Until they do, the removed machine may still reach them.')
+  await click('Remove')
+  await vi.waitFor(() => expect(api.contact_remove).toHaveBeenCalledWith('r-dave', false))
+  await click('Network › Machines')
+  expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'machines' } })
+  await run(() => [...rowOf('Paired on studio').querySelectorAll('button')].find((b) => b.textContent === 'Block…')!.click())
+  expect(dialog()).toContain('bob is refused on all your machines from now on')
+  expect(dialog()).not.toContain('Ask bob to remove you too')
+})
+
+test('191 D8 Access and Share… offer only admitted contacts: never a refused or waiting record', async () => {
+  api.contact_list.mockImplementation(async () => ROWS)
+  await mount(createElement(ContactAccess))
+  const shown = [...document.querySelectorAll('div.border-b > div > div.text-sm')].map((d) => d.textContent)
+  expect(shown).toEqual(['bob', 'carol'])
+  await reset()
+  await mount(createElement(ShareDialog, { session: 's-ops', title: 'Ops chat', onClose: vi.fn() }))
+  const labels = [...document.querySelectorAll('button[aria-label]')].map((b) => b.getAttribute('aria-label') ?? '')
+  expect(labels.filter((l) => / with /.test(l))).toEqual(['Stop sharing with bob', 'Stop sharing with carol'])
 })
 
 test('Add contact: opens the window, Nearby lists theuth agents first and other vendors as A2A · HTTPS; closing closes the window', async () => {

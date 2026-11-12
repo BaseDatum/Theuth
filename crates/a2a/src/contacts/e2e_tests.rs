@@ -2215,4 +2215,5 @@ async fn a_broken_peers_yaml_never_stops_a_block() {
 }
 
 mod forward;
+mod owners;
 mod rosters;
