@@ -15,7 +15,9 @@ use jsonrpsee::core::RpcResult;
 use parking_lot::Mutex;
 use replica::{ALPN_RPC, ByteStream, PeerEvent, PeerId, Transport};
 use agent::rpc_turns as turns;
-use rpc::api::{hub, sessions, mcp, kernels};
+use rpc::api::{hub, sessions};
+use mcp_server as mcp;
+use cells as kernels;
 
 use runtime::{Plugin as _, Runtime, SessionId};
 use tokio::sync::{broadcast, mpsc};

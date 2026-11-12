@@ -40,6 +40,10 @@ pub mod store;
 pub mod syntax_hook;
 pub mod tools;
 pub mod walk;
+pub mod rpc_support;
+/// Code map RPC server and client traits.
+pub mod rpc;
+pub use rpc::rpc_module;
 
 pub use event::{CodeToolSummary, CodeindexEvent, SummaryDefinition, SummaryImpact, SummaryRange};
 pub use index::{Codeindex, Reconciled, RootIndex};
