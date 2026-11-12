@@ -226,7 +226,7 @@ pub mod dreams;
 /// Research RPC server and client traits.
 pub mod research;
 /// Sandboxes RPC server and client traits.
-pub mod sandboxes;
+pub use ::sandbox::rpc as sandboxes;
 
 pub use hub::{CoreApiClient, CoreApiServer};
 pub use sessions::{SessionsApiClient, SessionsApiServer};

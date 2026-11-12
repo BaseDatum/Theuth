@@ -31,6 +31,9 @@ pub mod tools;
 pub mod types;
 pub mod vm;
 pub mod rpc_support;
+/// Sandbox RPC server and client traits.
+pub mod rpc;
+pub use rpc::rpc_module;
 
 use std::path::PathBuf;
 use std::sync::Arc;

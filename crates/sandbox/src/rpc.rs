@@ -1,3 +1,4 @@
+use crate as sandbox;
 use agent::rpc_support::{RpcServerExt, owner_root};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
