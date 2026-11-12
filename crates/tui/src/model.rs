@@ -7,8 +7,6 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use acp::EntryInfo;
-use acp::registry::RegistryAgent;
 use agent::durability::{ResumeCause, ResumeKind};
 use agent::{
     AgentEvent, AgentInfo, AgentState,
@@ -61,8 +59,6 @@ pub struct Model {
     /// before `SessionCreated` named the session: shown once it does, if the
     /// ids agree; another session's error is dropped.
     send_error: Option<(SessionId, String)>,
-    /// `/acp` was typed; the next reply opens the menu rather than only refreshing it.
-    awaiting_acp: bool,
     /// Transcript of the shown session.
     pub entries: Vec<Entry>,
     /// The current session has a turn in flight.
@@ -235,7 +231,6 @@ mod catalog;
 mod credentials;
 mod components;
 mod events;
-mod harnesses;
 mod history;
 mod lifecycle;
 pub(crate) use lifecycle::markdown_options;
@@ -257,7 +252,6 @@ pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;
 pub(crate) use events::{send};
-pub use harnesses::AcpRow;
 use history::{revision, user_entries, cell_results, FENCE};
 pub(crate) use history::from_history;
 #[cfg(test)]

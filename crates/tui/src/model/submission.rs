@@ -88,20 +88,6 @@ impl Model {
             }
             "/approvals" => self.approvals_cmd(arg, tx),
 
-            "/acp" if arg.is_empty() => {
-                self.awaiting_acp = true;
-                send(tx, Command::ListAcp { probe: false });
-                send(tx, Command::ListAcpRegistry);
-            }
-            "/acp" => match arg.split_once(' ').map(|(s, r)| (s, r.trim())) {
-                Some(("add", id)) if !id.is_empty() => send(tx, Command::AddAcp(id.to_owned())),
-                Some(("remove", name)) if !name.is_empty() => {
-                    send(tx, Command::RemoveAcp(name.to_owned()));
-                }
-                _ => self.entries.push(Entry::Error(
-                    "usage: /acp [add <registry-id> | remove <name>]".into(),
-                )),
-            },
             "/login" if arg.is_empty() => send(tx, Command::ListLogins),
             "/login" => send(tx, Command::Login(arg.to_owned())),
             "/logout" if arg.is_empty() => self

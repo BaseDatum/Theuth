@@ -6,6 +6,10 @@
     use agent::{AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind, SkillMeta};
     use std::collections::BTreeSet;
     use crate::components::skills_prompt::{SkillsPrompt, Msg as SkillsMsg, Request as SkillsRequest};
+    use crate::components::acp::{Acp, Menu as AcpMenu, Msg as AcpMsg, Request as AcpRequest};
+    use acp::{EntryInfo, registry::RegistryAgent};
+
+    fn acp(m: &Model) -> &Acp { m.components.get::<Acp>().unwrap() }
 
     fn skills(m: &Model) -> &SkillsPrompt { m.components.get::<SkillsPrompt>().unwrap() }
 
@@ -2982,7 +2986,7 @@
     #[test]
     fn acp_menu_lists_probes_adds_and_removes() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let entry = EntryInfo {
             name: "codex".into(),
             command: "codex-acp".into(),
@@ -2999,41 +3003,41 @@
             distribution: serde_json::Value::Null,
         };
         // A refresh with no menu open and no `/acp` typed must not open one.
-        m.apply(UiEvent::Acp(vec![]));
-        assert!(m.menu.is_none());
+        component_reply(&mut m, "acp", AcpMsg::Acp(vec![]));
+        assert!(acp(&m).menu.is_none());
         m.submit("/acp", &tx);
-        assert!(m.awaiting_acp);
+        assert!(acp(&m).awaiting);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::ListAcp { probe: false })
+            component_request::<AcpRequest>(&mut rx),
+            Ok(AcpRequest::ListAcp { probe: false })
         ));
-        assert!(matches!(rx.try_recv(), Ok(Command::ListAcpRegistry)));
-        m.apply(UiEvent::Acp(vec![entry]));
-        m.apply(UiEvent::AcpRegistry(vec![reg]));
-        assert_eq!(m.acp_rows().len(), 3, "entry, separator, registry row");
-        m.menu_key(KeyCode::Char('p'), "", &tx);
+        assert!(matches!(component_request::<AcpRequest>(&mut rx), Ok(AcpRequest::ListAcpRegistry)));
+        component_reply(&mut m, "acp", AcpMsg::Acp(vec![entry]));
+        component_reply(&mut m, "acp", AcpMsg::AcpRegistry(vec![reg]));
+        assert_eq!(acp(&m).rows().len(), 3, "entry, separator, registry row");
+        component_menu_key(&mut m, "acp", KeyCode::Char('p'));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::ListAcp { probe: true })
+            component_request::<AcpRequest>(&mut rx),
+            Ok(AcpRequest::ListAcp { probe: true })
         ));
         assert!(matches!(
-            &m.menu,
-            Some(Menu::Acp { entries, .. }) if entries[0].status.as_deref() == Some("probing…")
+            &acp(&m).menu,
+            Some(AcpMenu { entries, .. }) if entries[0].status.as_deref() == Some("probing…")
         ));
         // Down skips the separator and lands on the registry row.
-        m.menu_key(KeyCode::Down, "", &tx);
-        assert!(matches!(m.menu, Some(Menu::Acp { cursor: 2, .. })));
-        m.menu_key(KeyCode::Enter, "", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::AddAcp(id)) if id == "codex-acp"));
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Char('d'), "", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::RemoveAcp(n)) if n == "codex"));
-        m.menu_key(KeyCode::Esc, "", &tx);
-        assert!(m.menu.is_none());
+        component_menu_key(&mut m, "acp", KeyCode::Down);
+        assert!(matches!(acp(&m).menu, Some(AcpMenu { cursor: 2, .. })));
+        component_menu_key(&mut m, "acp", KeyCode::Enter);
+        assert!(matches!(component_request::<AcpRequest>(&mut rx), Ok(AcpRequest::AddAcp(id)) if id == "codex-acp"));
+        component_menu_key(&mut m, "acp", KeyCode::Up);
+        component_menu_key(&mut m, "acp", KeyCode::Char('d'));
+        assert!(matches!(component_request::<AcpRequest>(&mut rx), Ok(AcpRequest::RemoveAcp(n)) if n == "codex"));
+        component_menu_key(&mut m, "acp", KeyCode::Esc);
+        assert!(acp(&m).menu.is_none());
         m.submit("/acp add codex-acp", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::AddAcp(id)) if id == "codex-acp"));
+        assert!(matches!(component_request::<AcpRequest>(&mut rx), Ok(AcpRequest::AddAcp(id)) if id == "codex-acp"));
         m.submit("/acp remove codex", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::RemoveAcp(n)) if n == "codex"));
+        assert!(matches!(component_request::<AcpRequest>(&mut rx), Ok(AcpRequest::RemoveAcp(n)) if n == "codex"));
         m.submit("/acp bogus", &tx);
         assert!(rx.try_recv().is_err());
         assert!(matches!(m.entries.last(), Some(Entry::Error(_))));

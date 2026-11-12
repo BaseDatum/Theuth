@@ -141,29 +141,6 @@ impl Model {
                 }
             }
             UiEvent::PathComplete(generation, reply) => self.path.reply(generation, reply),
-            UiEvent::Acp(list) => match &mut self.menu {
-                Some(Menu::Acp { entries, .. }) => *entries = list,
-                _ if self.awaiting_acp => {
-                    self.awaiting_acp = false;
-                    self.menu = Some(Menu::Acp {
-                        entries: list,
-                        registry: Vec::new(),
-                        cursor: 0,
-                    });
-                }
-                _ => {}
-            },
-            UiEvent::AcpRegistry(list) => {
-                if let Some(Menu::Acp { registry, .. }) = &mut self.menu {
-                    *registry = list;
-                }
-            }
-            UiEvent::AcpAdded(e) => self.entries.push(Entry::Info(format!(
-                "acp: added `{}` ({} {})",
-                e.name,
-                e.command,
-                e.args.join(" ")
-            ))),
             UiEvent::Approvals(s) => {
                 self.approvals_global = s.global;
                 self.entries.push(Entry::Info(format!(

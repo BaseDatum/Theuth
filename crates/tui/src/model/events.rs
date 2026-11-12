@@ -41,12 +41,6 @@ pub enum UiEvent {
     PathComplete(u64, Option<agent::pathac::PathCompletion>),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
-    /// Reply to [`Command::ListAcp`] (also sent after [`Command::RemoveAcp`]).
-    Acp(Vec<EntryInfo>),
-    /// Reply to [`Command::ListAcpRegistry`].
-    AcpRegistry(Vec<RegistryAgent>),
-    /// Reply to [`Command::AddAcp`].
-    AcpAdded(EntryInfo),
     /// A command succeeded with nothing to show but a notice.
     Info(String),
     /// Reply to [`Command::GetCompactStyle`].
@@ -252,17 +246,6 @@ pub enum Command {
     },
     /// `list_logins` plus OAuth servers from `list_mcp`.
     ListLogins,
-    /// `list_acp`.
-    ListAcp {
-        /// Run an `initialize` probe per entry (slow: spawns each harness).
-        probe: bool,
-    },
-    /// `add_acp` from the registry, then re-list.
-    AddAcp(String),
-    /// `remove_acp`, then `list_acp`.
-    RemoveAcp(String),
-    /// `list_acp_registry`.
-    ListAcpRegistry,
     /// `login` (provider name) or `mcp_login` (server name).
     Login(String),
     /// `logout` (provider name) or `mcp_logout` (server name).

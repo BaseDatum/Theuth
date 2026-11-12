@@ -142,10 +142,10 @@ pub enum Msg {
         /// Original effort-picker mode.
         chips: bool,
         /// Harness select options.
-        options: Vec<acp::ConfigOption>,
+        options: Vec<::acp::ConfigOption>,
     },
     /// Harness mutation readback.
-    HarnessOptionSet(String, String, acp::SetOptionResult),
+    HarnessOptionSet(String, String, ::acp::SetOptionResult),
     /// Completed harness picker.
     HarnessPick {
         /// Original session.
@@ -773,7 +773,7 @@ fn effort_chips_row(c: &EffortChips, chip: Option<usize>, room: usize) -> String
 /// option — `model: anthropic/claude-opus-4-8  (has: a, b, c)` — the current
 /// value first, then its values verbatim; the `thought_level` option is
 /// labelled `effort` so `/effort <value>` reads back.
-pub fn harness_options_lines(options: &[acp::ConfigOption]) -> Vec<String> {
+pub fn harness_options_lines(options: &[::acp::ConfigOption]) -> Vec<String> {
     if options.is_empty() {
         return vec!["harness offers no options".into()];
     }
@@ -793,8 +793,8 @@ pub fn harness_options_lines(options: &[acp::ConfigOption]) -> Vec<String> {
 /// The harness's `model` select and `thought_level` option, when offered
 /// (the desktop's `harnessGroups`).
 pub(crate) fn harness_groups(
-    options: &[acp::ConfigOption],
-) -> (Option<&acp::ConfigOption>, Option<&acp::ConfigOption>) {
+    options: &[::acp::ConfigOption],
+) -> (Option<&::acp::ConfigOption>, Option<&::acp::ConfigOption>) {
     let named = |s: &str| s.to_lowercase().contains("model");
     let model = options
         .iter()
@@ -811,7 +811,7 @@ pub(crate) fn harness_groups(
 /// without a model select one row for what it runs (`running`, else
 /// `agent`). Every row carries the `thought_level` values as its efforts.
 pub(crate) fn harness_models(
-    options: &[acp::ConfigOption],
+    options: &[::acp::ConfigOption],
     agent: &str,
     running: &str,
 ) -> Vec<ModelInfo> {
@@ -842,7 +842,7 @@ pub(crate) fn harness_models(
 
 /// The announcement after `set_harness_option` (75 §8): `model → x`, or
 /// `model → x after this turn` when the change waits for the turn in flight.
-pub fn harness_option_set_line(key: &str, value: &str, r: &acp::SetOptionResult) -> String {
+pub fn harness_option_set_line(key: &str, value: &str, r: &::acp::SetOptionResult) -> String {
     if r.pending {
         format!("{key} → {value} after this turn")
     } else {

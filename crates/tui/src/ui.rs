@@ -15,7 +15,7 @@ use crate::model::{
     Grouped, session_row,
 };
 use crate::model::{
-    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt,
+    CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt,
     TurnAction, UiEvent, describe,
     now_ms, result_line, window,
 };
@@ -847,38 +847,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             items
                 .iter()
                 .map(|a| m.board_row(a, width))
-                .collect(),
-            *cursor,
-        ),
-        Menu::Acp { cursor, .. } => (
-            "acp  p probe  ⏎ add from registry  d remove".to_owned(),
-            m.acp_rows()
-                .iter()
-                .map(|r| match r {
-                    AcpRow::Entry(e) => {
-                        // ponytail: fixed 40-char command; pass the terminal width if it grates.
-                        let cmd: String = format!("{} {}", e.command, e.args.join(" "))
-                            .chars()
-                            .take(40)
-                            .collect();
-                        format!(
-                            "{:<16} {:<40} {}",
-                            e.name,
-                            cmd,
-                            e.status.as_deref().unwrap_or_default()
-                        )
-                    }
-                    AcpRow::Sep => String::new(),
-                    AcpRow::Registry(a) => {
-                        let desc: String = a.description.chars().take(50).collect();
-                        format!(
-                            "+ {:<16} {:<20} {}",
-                            a.id,
-                            format!("{} {}", a.name, a.version),
-                            desc
-                        )
-                    }
-                })
                 .collect(),
             *cursor,
         ),

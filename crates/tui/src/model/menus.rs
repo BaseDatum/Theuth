@@ -38,15 +38,6 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
-    /// `/acp`: configured harnesses, then the registry.
-    Acp {
-        /// Latest `ListAcp` reply.
-        entries: Vec<EntryInfo>,
-        /// Latest `ListAcpRegistry` reply; empty until it arrives.
-        registry: Vec<RegistryAgent>,
-        /// Highlighted row: entries first, then registry rows.
-        cursor: usize,
-    },
     /// `/edit`, `/regen`, `/fork` picker over the transcript's turns (29 §6.2).
     Turns {
         /// `(entry index, turn seq, first line of the opener)`, oldest first.
@@ -123,7 +114,6 @@ impl Model {
             Some(Menu::Slash { .. }) => self.slash_key(code, input, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
-            Some(Menu::Acp { .. }) => self.acp_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
 

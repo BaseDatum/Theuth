@@ -46,6 +46,7 @@ pub mod aws;
 pub mod vision_settings;
 pub mod advisor;
 pub mod skills_prompt;
+pub mod acp;
 pub use registry::{Registry, builtin, builtin_with, configured};
 
 #[cfg(test)]
