@@ -28,7 +28,6 @@ use agent::{
 };
 use double::{DoubleAnswered, DoublePredicted};
 use iocraft::KeyCode;
-use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use models::Catalog;
 use runtime::{InputId, SessionId, TurnId};
 use tokio::sync::mpsc::UnboundedSender;
@@ -196,10 +195,6 @@ pub struct Model {
     /// not this one (`Loaded.resume.owner` with `here = false`); the
     /// owner-offline line's `/take` then also resumes it.
     owner_turn: Option<String>,
-    /// The shown session's harvest is in flight (`Harvesting` … `Harvested`).
-    /// Detached from the turn (10 §5.2 as built): survives `TurnFinished`,
-    /// shown only while nothing else is.
-    pub harvesting: bool,
     /// The shown session's vision consultation step in flight
     /// (`VisionProgress`, 52 §6): the status-line text until it settles.
     pub vision: Option<String>,
@@ -346,7 +341,6 @@ mod approvals;
 mod artifacts;
 mod boards;
 mod catalog;
-mod concepts;
 mod credentials;
 mod components;
 mod events;
@@ -380,7 +374,6 @@ use artifacts::{SHOW, APP};
 pub use catalog::{PickTarget, ModelRow, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};
 #[cfg(test)]
 use catalog::{search_terms};
-pub use concepts::{meta_line, HISTORY_PAGE, revision_rows};
 pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;

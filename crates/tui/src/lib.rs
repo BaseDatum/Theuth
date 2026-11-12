@@ -713,32 +713,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             }
         }
         Command::SyncSkills => UiEvent::Synced(msg(api.sync_skills().await)?),
-        Command::KnowledgeList => {
-            UiEvent::Knowledge(msg(api.knowledge_list(None, None, None, Some(50)).await)?)
-        }
-        Command::KnowledgeSearch(query) => UiEvent::Knowledge(
-            msg(api.knowledge_search(query, None).await)?
-                .into_iter()
-                .map(|h| h.meta)
-                .collect(),
-        ),
-        Command::KnowledgeHistory { id, limit } => {
-            let fetch = u32::try_from(limit + 1).unwrap_or(u32::MAX);
-            UiEvent::KnowledgeHistory {
-                history: msg(api.knowledge_history(id.clone(), Some(fetch)).await)?,
-                id,
-                limit,
-            }
-        }
-        Command::KnowledgeRevision { commit, id, card } => UiEvent::KnowledgeRevision {
-            revision: msg(api.knowledge_revision(commit, id.clone()).await)?,
-            id,
-            card,
-        },
-        Command::KnowledgeRestore { id, commit } => {
-            UiEvent::KnowledgeRestored(msg(api.knowledge_restore(id, commit).await)?)
-        }
-        Command::Harvest(session) => UiEvent::Harvested(msg(api.knowledge_harvest(session).await)?),
         Command::AddMcp { name, entry } => {
             UiEvent::McpAdded(msg(api.add_mcp_server(name, entry).await)?)
         }
@@ -1471,9 +1445,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             interrupted.len(),
             lost_jobs.len()
         ),
-        UiEvent::Agent(AgentEvent::Harvested { added, updated, .. }) => {
-            writeln!(out, "knowledge +{added} ~{updated}")
-        }
         UiEvent::Agent(AgentEvent::Error { message, .. }) | UiEvent::Error(message) => {
             writeln!(out, "error: {message}")
         }
@@ -1592,28 +1563,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             e.args.join(" ")
         ),
         UiEvent::RepoAdded(r) => writeln!(out, "cloned {} → {}\n{}", r.name, r.path, r.readme),
-        UiEvent::Knowledge(metas) => metas
-            .iter()
-            .try_for_each(|m| writeln!(out, "{}", model::meta_line(m))),
-        UiEvent::KnowledgeHistory { history: h, .. } => h
-            .changes
-            .iter()
-            .try_for_each(|c| writeln!(out, "{}  {}  {}", c.commit, c.time, c.message))
-            .and_then(|()| match &h.diff {
-                Some(d) => writeln!(out, "{d}"),
-                None => Ok(()),
-            }),
-        UiEvent::KnowledgeRevision { revision: r, .. } => writeln!(
-            out,
-            "{}  {}  {}  parent {}\n{}",
-            r.change.commit,
-            r.change.time,
-            r.change.message,
-            r.parent.as_deref().unwrap_or("none"),
-            model::revision_rows(r).join("\n")
-        ),
-        UiEvent::KnowledgeRestored(c) => writeln!(out, "{}  {}", c.commit, c.message),
-        UiEvent::Harvested(r) => writeln!(out, "knowledge +{} ~{}", r.added, r.updated),
         UiEvent::Approvals(s) => writeln!(
             out,
             "approvals: {} (this session), {} (default)",

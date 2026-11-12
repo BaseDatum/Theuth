@@ -49,11 +49,11 @@ impl Model {
             || self.streaming
             || self.mcp_connecting()
             || self.compacting
-            || self.harvesting
             || self.vision.is_some()
             || self.advisor.state == AdvisorState::Reviewing
             || self.agents.values().any(AgentRow::live)
             || self.components.wake().is_some()
+            || self.components.animating()
             || self.double_counting_down()
             || self.dictation.is_some()
             || self.talk_view
@@ -73,7 +73,8 @@ impl Model {
             return Some(v.clone());
         }
         if !self.streaming {
-            return self.harvesting.then(|| "harvesting…".into());
+            let activity = self.component_text(crate::components::Surface::Activity);
+            return (!activity.is_empty()).then_some(activity);
         }
         // Parallel calls: a running card need not be the last entry.
         let busy = self.entries.iter().rev().find_map(|e| match e {
