@@ -132,8 +132,12 @@ export function useFirstAnswer() {
   })
 }
 
-/** Allow once · Always · Block for `contact`'s held first message to `exp`; one answer per row (a second click would only set the standing default). */
-export function FirstButtons({ contact, exp }: { contact: string; exp: string }) {
+/**
+ * Allow once · Always · Block for `contact`'s held first message to `exp`; one answer per row (a second click would only
+ * set the standing default). 191: a message another machine holds (`elsewhere`) offers no Allow once (that is the
+ * holder's); Always and Block reach it from any machine.
+ */
+export function FirstButtons({ contact, exp, elsewhere = false }: { contact: string; exp: string; elsewhere?: boolean }) {
   const answer = useFirstAnswer()
   return (
     <span className="flex shrink-0 items-center gap-2">
@@ -143,7 +147,9 @@ export function FirstButtons({ contact, exp }: { contact: string; exp: string })
           ['allow', 'Always'],
           ['block', 'Block'],
         ] as const
-      ).map(([v, label]) => (
+      )
+        .filter(([v]) => !(elsewhere && v === 'ask'))
+        .map(([v, label]) => (
         <Button
           key={v}
           variant={v === 'block' ? 'ghost' : 'outline'}
@@ -164,7 +170,7 @@ export function WaitingRow({ w }: { w: FirstWaiting }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg bg-layer-2 px-2.5 py-1.5 text-[13px]">
       <span className="min-w-0 flex-1 basis-56 break-words">{waitingLine(w)}</span>
-      <FirstButtons contact={w.contact} exp={w.export} />
+      <FirstButtons contact={w.contact} exp={w.export} elsewhere={w.elsewhere} />
     </div>
   )
 }

@@ -178,6 +178,10 @@ pub struct HoldRow {
     pub preview: Option<String>,
     /// When the newest held task expires (ms since epoch).
     pub until_ms: Option<i64>,
+    /// Read only, never written: `session`'s row here, by its `contact_inbox` marker
+    /// (`<principal>|<export id>`): `None` when no such row is here, `""` for a session that
+    /// is no inbox. The reader checks an agent export's row names that export's inbox.
+    pub inbox: Option<String>,
 }
 
 /// Everything the a2a reconcile stages, read in one snapshot. Its content (never a row's
@@ -492,11 +496,28 @@ impl Store {
             .is_some_and(|row| row.owner == *self.me))
     }
 
-    /// 191 (D4, P3): every `contact_holds` row (every machine's), by id.
+    /// 191 (D4, P3): every `contact_holds` row (every machine's), by id, with its session's
+    /// `contact_inbox` here. Replicated cells keep whatever type another machine wrote, so
+    /// the cells are typed in SQL: a cell of another type reads NULL (the reader drops the
+    /// row), never failing the read of every other row; text is cut to 256 characters, a
+    /// row whose id is not text of at most 256 is skipped, and at most 512 rows are read
+    /// (one per held (contact, export) on each machine).
     pub async fn contact_holds(&self) -> anyhow::Result<Vec<HoldRow>> {
         Ok(sqlx::query_as(
-            "SELECT id, contact, machine, export, session, owner, since_ms, waiting, preview, \
-             until_ms FROM contact_holds ORDER BY id",
+            "SELECT h.id, \
+             CASE WHEN typeof(h.contact) = 'text' THEN substr(h.contact, 1, 256) END AS contact, \
+             CASE WHEN typeof(h.machine) = 'text' THEN substr(h.machine, 1, 256) END AS machine, \
+             CASE WHEN typeof(h.export) = 'text' THEN substr(h.export, 1, 256) END AS export, \
+             CASE WHEN typeof(h.session) = 'text' THEN substr(h.session, 1, 256) END AS session, \
+             CASE WHEN typeof(h.owner) = 'text' THEN substr(h.owner, 1, 256) END AS owner, \
+             CASE WHEN typeof(h.since_ms) = 'integer' THEN h.since_ms END AS since_ms, \
+             CASE WHEN typeof(h.waiting) = 'integer' THEN h.waiting END AS waiting, \
+             CASE WHEN typeof(h.preview) = 'text' THEN substr(h.preview, 1, 256) END AS preview, \
+             CASE WHEN typeof(h.until_ms) = 'integer' THEN h.until_ms END AS until_ms, \
+             CASE WHEN s.id IS NULL THEN NULL WHEN typeof(s.contact_inbox) = 'text' \
+             THEN substr(s.contact_inbox, 1, 256) ELSE '' END AS inbox \
+             FROM contact_holds h LEFT JOIN sessions s ON s.id = h.session \
+             WHERE typeof(h.id) = 'text' AND length(h.id) <= 256 ORDER BY h.id LIMIT 512",
         )
         .fetch_all(&self.read)
         .await?)
@@ -817,6 +838,139 @@ mod tests {
             store.backfill_contact_inboxes(&ids).await.unwrap(),
             0,
             "marked once"
+        );
+    }
+
+    /// `contact_holds` row `id` with every column `owner` mirrors.
+    fn hold(id: &str, owner: &str) -> RecordWrite {
+        RecordWrite::new(
+            RecordTable::Holds,
+            id,
+            vec![
+                ("contact", Cell::Text("bob".into())),
+                ("export", Cell::Text("research".into())),
+                ("owner", Cell::Text(owner.into())),
+                ("since_ms", Cell::Int(1)),
+                ("waiting", Cell::Int(1)),
+                ("until_ms", Cell::Int(2)),
+            ],
+        )
+    }
+
+    /// 191 (P3 review M1): replicated cells keep the type another machine wrote. A row with
+    /// text in an integer column or a blob in a text column reads those cells NULL (the
+    /// reader then drops it) and never fails the read of the good rows; a row whose id is
+    /// not text is skipped; long text is cut to 256 characters; at most 512 rows are read.
+    #[tokio::test]
+    async fn a_bad_typed_hold_row_never_hides_the_others() {
+        let (store, _, _dir) = fresh().await;
+        store
+            .write_contact_records(&[hold("good", "n2")])
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO contact_holds (id, contact, owner, since_ms, waiting, until_ms, preview) \
+             VALUES ('bad', x'00ff', 'n2', 'soon', '3', 'never', ?)",
+        )
+        .bind("p".repeat(100_000))
+        .execute(&store.write)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO contact_holds (id, contact) VALUES (7, 'bob')")
+            .execute(&store.write)
+            .await
+            .unwrap();
+        let rows = store.contact_holds().await.unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["bad", "good"],
+            "the integer id is skipped"
+        );
+        let bad = &rows[0];
+        assert_eq!(
+            (
+                bad.contact.as_deref(),
+                bad.since_ms,
+                bad.waiting,
+                bad.until_ms
+            ),
+            (None, None, None, None)
+        );
+        assert_eq!(bad.owner.as_deref(), Some("n2"));
+        assert_eq!(bad.preview.as_deref().map(str::len), Some(256));
+        assert_eq!(rows[1].until_ms, Some(2));
+        let many: Vec<RecordWrite> = (0..600).map(|i| hold(&format!("h{i:03}"), "n2")).collect();
+        store.write_contact_records(&many).await.unwrap();
+        assert_eq!(store.contact_holds().await.unwrap().len(), 512);
+    }
+
+    /// 191 (P3 review M2): at boot only this engine's own hold rows go; another machine's
+    /// stay (it still holds them).
+    #[tokio::test]
+    async fn boot_clears_only_this_engines_hold_rows() {
+        let scratch = crate::TestDir::new("contacts");
+        let store = Store::open(
+            &scratch.0.join("sessions.sqlite"),
+            Some(mesh::EngineId("me-engine".into())),
+        )
+        .await
+        .unwrap();
+        store
+            .write_contact_records(&[
+                hold("a", "me-engine"),
+                hold("b", "other-engine"),
+                hold("c", "me-engine"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(store.clear_own_contact_holds().await.unwrap(), 2);
+        let left: Vec<String> = store
+            .contact_holds()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(left, ["b"]);
+    }
+
+    /// 191 (P3 review S4): `contact_holds` rides the real record replica: a row written on
+    /// one machine is captured and applied on another, and its deletion follows.
+    #[tokio::test]
+    async fn a_hold_row_and_its_deletion_ride_the_record_replica() {
+        let open = |name: &'static str| async move {
+            let dir = crate::TestDir::new(name);
+            let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+                .await
+                .unwrap();
+            let engine = replica::Engine::open(&dir.0.join("replica.sqlite"))
+                .await
+                .unwrap();
+            let handle = engine.attach(&store.write, &RECORD_TABLES).await.unwrap();
+            (store, engine, handle, dir)
+        };
+        let (a, ea, ha, _da) = open("holds-rep-a").await;
+        let (b, eb, _hb, _db) = open("holds-rep-b").await;
+        let mut feed = ea.subscribe();
+        a.write_contact_records(&[hold("t-1", "n2")]).await.unwrap();
+        ha.flush().await.unwrap();
+        while let Ok(batch) = feed.try_recv() {
+            eb.apply(&batch).await.unwrap();
+        }
+        let on_b = b.contact_holds().await.unwrap();
+        assert_eq!(on_b, a.contact_holds().await.unwrap());
+        assert_eq!(on_b.len(), 1);
+        assert_eq!(on_b[0].owner.as_deref(), Some("n2"));
+        a.write_contact_records(&[RecordWrite::delete(RecordTable::Holds, "t-1")])
+            .await
+            .unwrap();
+        ha.flush().await.unwrap();
+        while let Ok(batch) = feed.try_recv() {
+            eb.apply(&batch).await.unwrap();
+        }
+        assert!(
+            b.contact_holds().await.unwrap().is_empty(),
+            "deleted there too"
         );
     }
 }

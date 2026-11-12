@@ -14,7 +14,7 @@ function Row({ w, detail }: { w: FirstWaiting; detail: boolean }) {
         <span className="min-w-0 flex-1 basis-48 truncate text-fg-secondary" title={waitingLine(w)}>
           {who(w)} wants to message this chat{waitingCount(w)}
         </span>
-        <FirstButtons contact={w.contact} exp={w.export} />
+        <FirstButtons contact={w.contact} exp={w.export} elsewhere={w.elsewhere} />
       </div>
       {detail && w.preview && <p className="line-clamp-3 break-words text-xs text-fg-secondary">“{w.preview}”</p>}
     </div>
