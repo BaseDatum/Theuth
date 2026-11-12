@@ -270,6 +270,10 @@ impl Registry {
     pub fn entry_openable(&self, key: &str) -> bool {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.entry_openable(key))
     }
+    /// The last entry owner may override the core disclosure eligibility.
+    pub fn entry_toggleable(&self, key: &str) -> Option<bool> {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).filter_map(|component| component.entry_toggleable(key)).last()
+    }
     /// Last replacement and following append rows, matching entry-view composition exactly.
     pub fn entry_layout(&self, key: &str, width: usize) -> (Option<usize>, usize) {
         let mut replacement = None;

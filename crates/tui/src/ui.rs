@@ -572,10 +572,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let decorations = match e {
-                Entry::Tool { call_id, .. } | Entry::Pending { call_id, .. } => m.component_views(Surface::Entry { key: call_id, skipped: 0 }, usize::from(width), m.entry_height(e, usize::from(width))),
-                _ => Vec::new(),
-            };
+            let decorations = e.key().map(|key| m.component_views(Surface::Entry { key, skipped: 0 },
+                usize::from(width), m.entry_height(e, usize::from(width)))).unwrap_or_default();
             entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, decorations, m.entry_summary(e))
         });
     let transcript = if m.anchor.is_some() {
@@ -1117,6 +1115,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             title,
             text,
             expanded,
+            ..
         } => {
             let color = match kind {
                 CardKind::Skill => SKILL,
@@ -2205,14 +2204,12 @@ mod tests {
     #[test]
     fn outside_peer_card_is_plain_text() {
         let frame = |title: &str| {
-            let e = Entry::Card {
-                kind: crate::components::peers::kind(title),
-                title: title.into(),
-                text: Box::new(markdown::Text::complete(
-                    "**now** [click](http://x/go)\u{1b}[2J",
-                )),
-                expanded: true,
-            };
+            let e = Entry::Card { entry_key: None, kind: crate::components::peers::kind(title),
+            title: title.into(),
+            text: Box::new(markdown::Text::complete(
+                "**now** [click](http://x/go)\u{1b}[2J",
+            )),
+            expanded: true, };
             element! {
                 View(flex_direction: FlexDirection::Column, width: 60u16) {
                     #(entry(&e, "", 0, 60, Vec::new(), None))

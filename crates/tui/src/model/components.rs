@@ -522,10 +522,8 @@ fn component_cards_interject_without_rebuilding_rendered_text_or_splitting_strea
     body.reveal_all();
     model.apply(crate::model::UiEvent::Component(LocalReply {
         to: token, engine_epoch: 0,
-        body: Box::new(CoreAction::InterjectCard(TranscriptCard {
-            group: "test", key: uuid::Uuid::new_v4(), glyph: "▣", color: iocraft::Color::Cyan,
-            title: "rendered".into(), body, expanded: true, plain: false,
-        })),
+        body: Box::new(CoreAction::InterjectCard(TranscriptCard { entry_key: None, group: "test", key: uuid::Uuid::new_v4(), glyph: "▣", color: iocraft::Color::Cyan,
+        title: "rendered".into(), body, expanded: true, plain: false, })),
     }));
     model.apply(crate::model::UiEvent::Agent(agent::AgentEvent::TextDelta { session, turn, text: "after".into() }));
     let Entry::Card { text, .. } = &model.entries[0] else { panic!("interjected card") };
@@ -533,11 +531,9 @@ fn component_cards_interject_without_rebuilding_rendered_text_or_splitting_strea
     assert_eq!(rendered, "diagram@31");
     assert!(matches!(&model.entries[1], Entry::Assistant(text) if text.raw() == "before after" && !text.is_done()));
     assert_eq!(model.entries.len(), 2);
-    let literal: Entry = TranscriptCard {
-        group: "literal", key: uuid::Uuid::new_v4(), glyph: "⟵", color: iocraft::Color::Cyan,
-        title: "remote".into(), body: markdown::Text::complete("**now**\n# head\nmore"),
-        expanded: true, plain: true,
-    }.into();
+    let literal: Entry = TranscriptCard { entry_key: None, group: "literal", key: uuid::Uuid::new_v4(), glyph: "⟵", color: iocraft::Color::Cyan,
+    title: "remote".into(), body: markdown::Text::complete("**now**\n# head\nmore"),
+    expanded: true, plain: true, }.into();
     assert_eq!(literal.height(80), 7);
 }
 
