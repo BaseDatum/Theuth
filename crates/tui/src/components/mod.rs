@@ -63,6 +63,13 @@ pub struct LocalReply {
     /// Only Mounted<C> downcasts this to C::Msg.
     pub body: Box<dyn Any + Send>,
 }
+
+/// Opaque typed delivery to another mounted owner in the current engine epoch.
+pub struct AddressedMessage {
+    owner: std::any::TypeId,
+    engine_epoch: u64,
+    body: Box<dyn Any + Send>,
+}
 impl std::fmt::Debug for LocalReply {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalReply").field("to", &self.to).field("engine_epoch", &self.engine_epoch).finish_non_exhaustive()
@@ -246,6 +253,22 @@ pub struct CoreView<'a> {
     pub approval: bool,
     /// Core session creation or a first send is awaiting adoption.
     pub awaiting_session: bool,
+
+    // Model-picker context: borrowed applied settings, never picker state.
+    /// Applied session model, or the model selected for the next draft.
+    pub model_id: &'a str,
+    /// Applied session effort.
+    pub effort: Option<&'a str>,
+    /// Engine default effort used when a draft clears its selection.
+    pub default_effort: Option<&'a str>,
+    /// Pending draft options before the first session is adopted.
+    pub draft_options: Option<&'a agent::CreateSessionOptions>,
+    /// External harness identity, when the selected session uses one.
+    pub harness: Option<&'a str>,
+    /// Model reported by the external harness.
+    pub harness_model: Option<&'a str>,
+    /// Existing read-only model capability catalog.
+    pub catalog: Option<&'a models::Catalog>,
 }
 /// Read-only identity metadata shared by core session membership.
 pub struct SessionMember<'a> {
@@ -731,6 +754,20 @@ pub enum CoreAction {
     SubmitEditor(String),
     /// Cancel the existing agent turn without changing owner state.
     CancelSession(SessionId),
+
+    // Model-picker actions: applied settings remain core session state.
+    /// Apply a draft model through the existing draft selection policy.
+    PickModel(String),
+    /// Apply a draft effort through the existing draft selection policy.
+    SetEffort(Option<String>),
+    /// Install the authoritative model returned by a session mutation.
+    ModelApplied(String),
+    /// Install and announce the authoritative effort returned by a mutation.
+    EffortApplied(Option<String>),
+    /// Suppress the existing effort-change echo while its mutation is pending.
+    AwaitingEffort(bool),
+    /// Deliver one opaque typed message to another mounted owner.
+    PostTo(AddressedMessage),
 }
 
 /// Owned effects and actions emitted during one deterministic dispatch.
@@ -823,6 +860,12 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
     pub fn post(&mut self, message: M) {
         self.core(CoreAction::Post(LocalReply {
             to: self.token, engine_epoch: self.epoch, body: Box::new(message),
+        }));
+    }
+    /// Send a typed message to another registered owner without exposing mutable peers.
+    pub fn send_to<C: Component>(&mut self, message: C::Msg) {
+        self.core(CoreAction::PostTo(AddressedMessage {
+            owner: std::any::TypeId::of::<C>(), engine_epoch: self.epoch, body: Box::new(message),
         }));
     }
     /// Keep an error inline after the core's existing generic failure transitions.
