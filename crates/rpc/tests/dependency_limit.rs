@@ -1,5 +1,5 @@
-//! Ratchet the wire layer's workspace dependencies; tighten these lists on removal.
-//! Wire-layer refactor plan, step 13: rpc ends up depending only on rpc-core and runtime.
+//! Final workspace boundary: exactly rpc-core and runtime, with no workspace dev dependencies.
+//! Normal/build dependencies on every target are checked even behind disabled features.
 
 use std::{collections::BTreeSet, fs, path::Path};
 use toml::Value;
