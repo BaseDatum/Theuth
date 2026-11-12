@@ -258,7 +258,10 @@ impl Registry {
                 && (focused_class == FocusClass::Modal || self.editor().is_some())
                 && !matches!(class, FocusClass::Interactive | FocusClass::Spoken)
         });
-        'delivery: for pass in 0..3 {
+        'delivery: for (pass, mode) in [
+            (0, ComposerMode::Hidden), (0, ComposerMode::ReadOnly), (0, ComposerMode::Default),
+            (1, ComposerMode::Default), (2, ComposerMode::Default),
+        ] {
             if pass == 1 && blocked { break; }
             for (index, slot) in self.slots.iter_mut().enumerate() {
                 let token = ComponentToken { slot: index, generation: slot.generation };
@@ -266,7 +269,7 @@ impl Registry {
                     let capture = component.captures(class);
                     let focused = self.focus == Some((token, class));
                     let selected = match pass {
-                        0 => capture,
+                        0 => capture && component.composer_mode() == mode,
                         1 => !capture && focused,
                         _ => !capture && !focused && component.declaration().bindings.iter().any(|binding|
                             binding.class == class && binding.code == key.code && binding.modifiers == key.modifiers
@@ -315,15 +318,26 @@ impl Registry {
             component.declaration().slash.iter().filter(move |spec| component.slash_visible(spec.0))
         })
     }
-    /// Render in registration order; elements own all retained presentation data.
+    /// Render in registration order, except explicit composer-heading priority.
     pub fn views<'a>(&'a self, at: Surface<'a>, cx: &'a ViewCx<'a>) -> impl Iterator<Item = View> + 'a {
-        self.slots.iter().enumerate().filter_map(move |(index, slot)| {
+        let modes: &[ComposerMode] = if matches!(at, Surface::ComposerHeader) {
+            &[ComposerMode::Hidden, ComposerMode::ReadOnly, ComposerMode::Default]
+        } else { &[ComposerMode::Default] };
+        modes.iter().copied().flat_map(move |mode| self.slots.iter().enumerate().filter_map(move |(index, slot)| {
+            let component = slot.component.as_ref()?;
+            if matches!(at, Surface::ComposerHeader) {
+                if component.composer_mode() != mode { return None; }
+            }
             if matches!(at, Surface::Modal)
                 && !self.focus.is_some_and(|(token, _)| token.slot == index)
             { return None; }
             let cx = ViewCx { endpoint: Some((ComponentToken { slot: index, generation: slot.generation }, self.epoch)), ..*cx };
-            slot.component.as_ref()?.view(at, &cx)
-        })
+            component.view(at, &cx)
+        }))
+    }
+    /// Highest-priority mounted composer presentation.
+    pub fn composer_mode(&self) -> ComposerMode {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).map(|component| component.composer_mode()).max().unwrap_or_default()
     }
     /// Earliest deadline, without a second scheduler or per-component task.
     pub fn wake(&self) -> Option<u64> {

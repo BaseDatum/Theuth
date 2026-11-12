@@ -158,6 +158,18 @@ pub struct Declaration {
     pub bindings: &'static [Binding],
 }
 
+/// Mounted composer presentation, with explicit priority independent of registration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ComposerMode {
+    /// Ordinary mounted editor and border.
+    #[default]
+    Default,
+    /// Keep the mounted editor hidden behind owner content and an accent border.
+    ReadOnly,
+    /// Hide the mounted editor and remove its border and minimum height.
+    Hidden,
+}
+
 /// A focused component may borrow the still-mounted composer instead of capturing it.
 pub struct Editor {
     /// Prompt line above the composer.
@@ -460,6 +472,8 @@ pub enum Surface<'a> {
     // Step-11 group t3 Surface variants: add below, in this block only.
     /// Owner activity while core streaming/compaction/vision has no priority.
     Activity,
+    /// Replacement for the existing one-row composer heading.
+    ComposerHeader,
 }
 /// Read-only layout context; no iocraft Hooks or editor handles.
 #[derive(Clone, Copy)]
@@ -887,6 +901,8 @@ pub trait Component: Send + Sync + 'static {
     fn animating(&self) -> bool { false }
     /// The focused view owns a separate widget, not the composer-backed Editor.
     fn separate_editor(&self) -> bool { false }
+    /// Presentation of the still-mounted shell editor.
+    fn composer_mode(&self) -> ComposerMode { ComposerMode::Default }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -901,6 +917,7 @@ trait ErasedComponent: Send + Sync {
     fn wake(&self) -> Option<u64>;
     fn animating(&self) -> bool;
     fn separate_editor(&self) -> bool;
+    fn composer_mode(&self) -> ComposerMode;
     fn entry_rows(&self, key: &str) -> usize;
     fn entry_height(&self, key: &str, width: usize) -> Option<usize>;
     fn entry_openable(&self, key: &str) -> bool;
@@ -934,6 +951,7 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn wake(&self) -> Option<u64> { self.0.wake() }
     fn animating(&self) -> bool { self.0.animating() }
     fn separate_editor(&self) -> bool { self.0.separate_editor() }
+    fn composer_mode(&self) -> ComposerMode { self.0.composer_mode() }
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
     fn entry_height(&self, key: &str, width: usize) -> Option<usize> { self.0.entry_height(key, width) }
     fn entry_openable(&self, key: &str) -> bool { self.0.entry_openable(key) }

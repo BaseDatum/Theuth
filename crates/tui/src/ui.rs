@@ -695,6 +695,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let (width, height) = terminal_size;
     let pinned = component_slot(&m, Surface::Pinned, width, height, None);
     let composer = component_slot(&m, Surface::Composer, width, height, None);
+    let composer_header = component_slot(&m, Surface::ComposerHeader, width, height, None);
+    let composer_mode = m.components.composer_mode();
     let hint = component_slot(&m, Surface::Hint, width, height, None);
     let badge = component_slot(&m, Surface::PromptBadge, width, height, None);
     let extra_rows = pinned.rows + composer.rows + hint.rows + badge.rows;
@@ -808,11 +810,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
             )))
             View(height: 1, padding_left: 1) {
-                #(match (&m.dictation, m.talk_view) {
+                #(composer_header.element().unwrap_or_else(|| match (&m.dictation, m.talk_view) {
                     (Some(d), _) => element!(MixedText(contents: dictation_header(d, m.frame), wrap: TextWrap::NoWrap)).into_any(),
                     (None, true) => element!(Text(content: "● talk  (Esc cancels / leaves · Ctrl+T stops)", color: SAND)).into_any(),
                     (None, false) => element!(Text(content: header, color: header_color)).into_any(),
-                })
+                }))
             }
             // `flex_shrink: 0`: once the transcript fills the screen the box
             // would otherwise be squeezed back to `min_height` as it grows.
@@ -822,8 +824,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // talk pane (76) drops the border and the editor the same way —
             // never `display: None` on a bordered view: iocraft draws a border
             // of width 0 - 2 and panics.
-            View(border_style: if m.talk_view { BorderStyle::None } else { BorderStyle::Round }, border_color: if m.dictation.is_some() { FAIENCE } else { OCHRE }, min_height: if m.talk_view { 0 } else { 3 }, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
-                View(width: 100pct, display: if m.dictation.is_some() || m.talk_view { Display::None } else { Display::Flex }) {
+            View(border_style: if m.talk_view || composer_mode == crate::components::ComposerMode::Hidden { BorderStyle::None } else { BorderStyle::Round }, border_color: if m.dictation.is_some() || composer_mode == crate::components::ComposerMode::ReadOnly { FAIENCE } else { OCHRE }, min_height: if m.talk_view || composer_mode == crate::components::ComposerMode::Hidden { 0 } else { 3 }, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
+                View(width: 100pct, display: if m.dictation.is_some() || m.talk_view || composer_mode != crate::components::ComposerMode::Default { Display::None } else { Display::Flex }) {
                     TextInput(
                         handle,
                         has_focus,
@@ -852,8 +854,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     )
                 }
                 #(m.dictation.as_ref().map(|d| element!(MixedText(contents: dictation_region(d), wrap: TextWrap::Wrap))))
+                #(composer.element())
             }
-            #(composer.element())
             #(hint.element())
             // The dictionary suggestion (153 §6.4): one line under the composer.
             #(m.suggestion.as_ref().map(|s| {
