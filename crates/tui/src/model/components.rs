@@ -35,6 +35,8 @@ macro_rules! core_view {
             secret_editor: $model.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret),
             approval: $model.approval().is_some(),
             awaiting_session: $model.awaiting_session,
+            frame: $model.frame,
+            composer_read_only: $model.components.composer_read_only(),
         }
     };
 }

@@ -246,6 +246,10 @@ pub struct CoreView<'a> {
     pub approval: bool,
     /// Core session creation or a first send is awaiting adoption.
     pub awaiting_session: bool,
+    /// Current shared animation frame before this dispatch.
+    pub frame: usize,
+    /// A mounted owner currently requests a read-only composer region.
+    pub composer_read_only: bool,
 }
 /// Read-only identity metadata shared by core session membership.
 pub struct SessionMember<'a> {
