@@ -116,8 +116,6 @@ pub enum Menu {
         /// Rows are apps: the title says so and where they run.
         apps: bool,
     },
-    /// `/shake` picker and review (48 §2.4).
-    Shake(Box<Shake>),
 }
 
 /// A picker row that may be a heading: the cursor skips headings.
@@ -195,7 +193,6 @@ impl Model {
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
-            Some(Menu::Shake(_)) => self.shake_key(code, tx),
         }
     }
 }

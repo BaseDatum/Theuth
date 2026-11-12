@@ -1,4 +1,15 @@
+//! Active context category picker/review; core retains mutation and reload transactions.
+use std::collections::BTreeSet;
+use agent::{ContextItem, ContextKind, ContextSnapshot, ContextTarget};
+use rpc_compose::api::clients::TurnsApiClient;
 use super::*;
+
+#[derive(Default)]
+pub(crate) struct ShakePanel { pub menu: Option<Box<Shake>> }
+#[derive(Clone)]
+pub(crate) enum Request { ContextItems { session: SessionId, category: Option<ShakeCategory> } }
+pub(crate) enum Msg { Loaded { session: SessionId, category: Option<ShakeCategory>, result: Result<ContextSnapshot, String> } }
+
 
 /// The `/shake` argument: which kind of context item the picker lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,26 +276,28 @@ impl Shake {
         }
     }
 }
-
-impl Model {
+impl ShakePanel {
 
     /// `/shake [images|documents|messages|tools|summary]` (48 §2.1): ask the
     /// server for the whole active inventory; the reply opens the picker.
     /// An unknown word is usage, never chat input or a skill.
-    pub(super) fn shake_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+    fn shake_cmd(&mut self, arg: &str, cx: &mut Cx<'_, '_, Msg>) {
         let category = match arg {
             "" => None,
             a => match ShakeCategory::parse(a) {
                 Some(c) => Some(c),
                 None => {
-                    self.entries.push(Entry::Error(SHAKE_USAGE.into()));
+                    cx.core(CoreAction::Reject(SHAKE_USAGE.into()));
                     return;
                 }
             },
         };
-        match self.session {
-            Some(session) => send(tx, Command::ContextItems { session, category }),
-            None => self.entries.push(Entry::Info("no session".into())),
+        match cx.core.session {
+            Some(session) => cx.spawn_request(Lane::Concurrent, Request::ContextItems { session, category },
+                |api, Request::ContextItems { session, category }| async move {
+                    Msg::Loaded { session, category, result: api.context_items(session).await.map_err(crate::reason) }
+                }),
+            None => cx.core(CoreAction::Notice("no session".into())),
         }
     }
 
@@ -292,20 +305,20 @@ impl Model {
     /// command and `messages` with nothing ticked; a category's items ticked
     /// and straight into review otherwise. A refusal (busy, external
     /// harness) and an empty match are one notice each; nothing is written.
-    pub(super) fn open_shake(
+    fn open_shake(
         &mut self,
         session: SessionId,
         category: Option<ShakeCategory>,
         snapshot: ContextSnapshot,
+        cx: &mut Cx<'_, '_, Msg>,
     ) {
-        if self.session != Some(session) {
+        if cx.core.session != Some(session) || cx.core.inspecting {
             return;
         }
-        self.context_revision = snapshot.revision.clone();
-        self.context_editable = snapshot.editable;
+        cx.core(CoreAction::ContextState { session, revision: snapshot.revision.clone(), editable: snapshot.editable,
+            reason: if snapshot.editable { None } else { snapshot.reason.clone() } });
         if !snapshot.editable {
-            self.context_reason = snapshot.reason.clone();
-            self.entries.push(Entry::Info(format!(
+            cx.core(CoreAction::Notice(format!(
                 "shake: {}",
                 snapshot
                     .reason
@@ -318,7 +331,7 @@ impl Model {
             .filter(|&i| category.is_none_or(|c| snapshot.items[i].kind == c.kind()))
             .collect();
         if shown.is_empty() {
-            self.entries.push(Entry::Info(match category {
+            cx.core(CoreAction::Notice(match category {
                 Some(c) => format!("no {} in current context", c.noun()),
                 None => "nothing in current context".into(),
             }));
@@ -341,15 +354,16 @@ impl Model {
         if !shake.selected.is_empty() {
             shake.open_review();
         }
-        self.menu = Some(Menu::Shake(Box::new(shake)));
+        self.menu = Some(Box::new(shake));
+        cx.focus(FocusClass::Modal);
     }
 
     /// `/shake` keys: ↑↓ move, space ticks a picker row, ⏎ reviews then
     /// removes, esc backs out of review then closes. Nothing is sent
     /// before the review's ⏎.
-    pub(super) fn shake_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Shake(s)) = &mut self.menu else {
-            return MenuKey::Consumed;
+    fn shake_key(&mut self, code: KeyCode, cx: &mut Cx<'_, '_, Msg>) {
+        let Some(s) = &mut self.menu else {
+            return;
         };
         let len = match s.stage {
             ShakeStage::Pick => s.shown.len(),
@@ -368,45 +382,61 @@ impl Model {
                 s.stage = ShakeStage::Pick;
                 s.cursor = 0;
             }
-            (KeyCode::Esc, ShakeStage::Pick) => self.menu = None,
+            (KeyCode::Esc, ShakeStage::Pick) => { self.menu = None; cx.close(); },
             (KeyCode::Enter, ShakeStage::Review) => {
-                let cmd = Command::RemoveContext {
+                let cmd = CoreAction::EditContext {
                     session: s.session,
                     expected_revision: s.revision.clone(),
                     targets: s.review.iter().map(|r| r.target).collect(),
                 };
                 self.menu = None;
-                send(tx, cmd);
+                cx.close();
+                cx.core(cmd);
             }
             _ => {}
         }
-        MenuKey::Consumed
     }
 }
 
 /// The `/shake` usage line, shown on an unknown argument (48 §2.1).
 pub const SHAKE_USAGE: &str = "usage: /shake [images|documents|messages|tools|summary]";
-
-/// The notice after `remove_context`: what left the context and the new
-/// estimate — an estimate, not provider usage (48 §3.2).
-pub fn removal_line(r: &ContextRemoval) -> String {
-    let mut parts = Vec::new();
-    for (n, noun) in [
-        (r.messages, "message(s)"),
-        (r.images, "image(s)"),
-        (r.documents, "document(s)"),
-        (r.heads, "summary head(s)"),
-    ] {
-        if n > 0 {
-            parts.push(format!("{n} {noun}"));
+impl Component for ShakePanel {
+    type Msg = Msg;
+    fn declaration(&self) -> Declaration {
+        Declaration { id: "shake", interests: &[], bindings: &[],
+            slash: &[("/shake", "[images|documents|messages|tools|summary]", "remove images, messages or the summary from the model's context")] }
+    }
+    fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<Msg> { None }
+    fn update(&mut self, input: Input<'_, Msg>, cx: &mut Cx<'_, '_, Msg>) {
+        match input {
+            Input::Slash { args, .. } if !cx.core.inspecting => self.shake_cmd(args, cx),
+            Input::Message(Msg::Loaded { session, category, result }) => match result {
+                Err(error) => cx.error(error),
+                Ok(snapshot) => {
+                    use std::fmt::Write;
+                    let mut text = if cx.core.reasoning { "\x1b[0m\nmenus need a TTY\n".into() } else { "menus need a TTY\n".to_owned() };
+                    for item in &snapshot.items {
+                        let _ = writeln!(text, "{:<8} {}{}", kind_name(item.kind), item.label,
+                            match item.remove_with.len() { 0 => String::new(), n => format!(" · +{n} message(s)") });
+                    }
+                    cx.plain(Plain::Text(text));
+                    self.open_shake(session, category, snapshot, cx);
+                }
+            },
+            Input::Key(key) if self.menu.is_some() && !cx.core.inspecting => { self.shake_key(key.code, cx); cx.consume_key(); }
+            Input::Lifecycle(Lifecycle::SessionReset | Lifecycle::FocusLost) => { self.menu = None; cx.close(); }
+            Input::Lifecycle(Lifecycle::History(_)) if self.menu.take().is_some() => {
+                cx.close();
+                cx.core(CoreAction::Notice("context changed — /shake again to review".into()));
+            }
+            _ => {}
         }
     }
-    if parts.is_empty() {
-        return "nothing removed: already outside the context".into();
+    fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> {
+        if !matches!(at, Surface::Modal) || cx.core.inspecting { return None; }
+        let menu = self.menu.as_ref()?;
+        let rows = menu.rows();
+        Some(View::Element { rows: rows.len().min(10) + 3, replace: false,
+            element: crate::ui::menu_view(menu.title(), rows, menu.cursor, cx.width as u16, cx.height as u16, false) })
     }
-    format!(
-        "removed from context: {} · ~{} tokens now · originals stay in history",
-        parts.join(", "),
-        k(r.estimated_tokens)
-    )
 }

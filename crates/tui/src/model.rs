@@ -14,8 +14,8 @@ use agent::durability::{ResumeCause, ResumeKind};
 use agent::{
     AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
     AgentEvent, AgentInfo, AgentState, AwsProfiles,
-    CompactStyle, ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval,
-    ContextSnapshot, ContextTarget, HistoryEntry, Loaded, ModelInfo, ObservedMeta, ObservedSource,
+    CompactStyle, ContextAttachment, ContextEntry, ContextRemoval,
+    ContextTarget, HistoryEntry, Loaded, ModelInfo, ObservedMeta, ObservedSource,
     ObservedState, ProviderInfo, QueuedInput, SessionKind,
     SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage, VisionStatus,
 };
@@ -330,7 +330,6 @@ mod navigation;
 mod paste;
 mod prompts;
 mod sessions;
-mod shake;
 mod slash;
 mod speech;
 mod status;
@@ -363,7 +362,7 @@ pub use paste::{Paste, paste_token};
 pub use prompts::{Prompt};
 pub use sessions::{Private, session_rows, TurnAction, ESC_TAPS_WINDOW, engine_chip, session_row, owner_offline_line, owner_turn_suffix, owner_unreachable, short, PRIVATE_WARNING};
 use sessions::{project_heading, project_order};
-pub use shake::{ShakeCategory, ShakeStage, Shake, ReviewRow, kind_name, expand, SHAKE_USAGE, removal_line};
+pub use lifecycle::removal_line;
 pub use slash::{COMMANDS, slash_matches, SlashRow};
 pub use speech::{voice_cmd, voice_line};
 pub(crate) use status::{now_ms, when, ago, on_off};

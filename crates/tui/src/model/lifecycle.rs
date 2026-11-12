@@ -173,13 +173,6 @@ impl Model {
             }
             return;
         }
-        // A picker over the old inventory would be refused as stale anyway.
-        if matches!(self.menu, Some(Menu::Shake(_))) {
-            self.menu = None;
-            self.entries.push(Entry::Info(
-                "context changed — /shake again to review".into(),
-            ));
-        }
         self.load(loaded);
     }
 
@@ -193,4 +186,28 @@ impl Model {
 /// Assistant/card markdown options at the accepted terminal width.
 pub(crate) fn markdown_options(width: usize) -> markdown::Options {
     markdown::Options { width: if width == 0 { 0 } else { width.saturating_sub(2).max(20) }, fence: Some(FENCE.clone()) }
+}
+
+/// The notice after `remove_context`: what left the context and the new
+/// estimate — an estimate, not provider usage (48 §3.2).
+pub fn removal_line(r: &ContextRemoval) -> String {
+    let mut parts = Vec::new();
+    for (n, noun) in [
+        (r.messages, "message(s)"),
+        (r.images, "image(s)"),
+        (r.documents, "document(s)"),
+        (r.heads, "summary head(s)"),
+    ] {
+        if n > 0 {
+            parts.push(format!("{n} {noun}"));
+        }
+    }
+    if parts.is_empty() {
+        return "nothing removed: already outside the context".into();
+    }
+    format!(
+        "removed from context: {} · ~{} tokens now · originals stay in history",
+        parts.join(", "),
+        k(r.estimated_tokens)
+    )
 }

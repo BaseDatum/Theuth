@@ -123,11 +123,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[on|off|fold|pause|resume|model <id>|model clear]",
         "endless memory: switch it, fold the unsummarized backlog, pause/resume settling, pick this chat's compactor, or show the view state",
     ),
-    (
-        "/shake",
-        "[images|documents|messages|tools|summary]",
-        "remove images, messages or the summary from the model's context",
-    ),
     ("/undo", "", "drop the last turn (redo restores)"),
     ("/redo", "", "restore the last undone turn"),
     (

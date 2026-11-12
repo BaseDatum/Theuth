@@ -381,7 +381,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         // Same shape as undo: the notice, then the settled transcript (48
         // §5). A refusal or a lost reply also reloads, so the screen never
         // keeps showing content whose removal is unknown.
-        Command::RemoveContext {
+        Command::EditContext {
             session,
             expected_revision,
             targets,
@@ -402,11 +402,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 msg(api.load_session(session, None, None, Some(true)).await)?,
             )
         }
-        Command::ContextItems { session, category } => UiEvent::ContextItems {
-            session,
-            category,
-            snapshot: msg(api.context_items(session).await)?,
-        },
         // The UI already truncated its transcript at the turn (29 §3); the
         // new turn streams back through ordinary events. On refusal, the
         // error lands first, then the transcript reloads to undo the cut.
@@ -1543,23 +1538,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 .unwrap_or("session is busy")
         ),
         UiEvent::Refreshed(_, loaded) => print_history(out, loaded),
-        // Interactive selection needs a TTY; the inventory itself still prints.
-        UiEvent::ContextItems { snapshot, .. } => {
-            writeln!(out, "menus need a TTY").and_then(|()| {
-                snapshot.items.iter().try_for_each(|i| {
-                    writeln!(
-                        out,
-                        "{:<8} {}{}",
-                        model::kind_name(i.kind),
-                        i.label,
-                        match i.remove_with.len() {
-                            0 => String::new(),
-                            n => format!(" · +{n} message(s)"),
-                        }
-                    )
-                })
-            })
-        }
         UiEvent::ContextRemoved(_, r) => writeln!(out, "{}", model::removal_line(r)),
         UiEvent::SessionCreated(id) => writeln!(out, "session {id}"),
         UiEvent::Providers(list) => list

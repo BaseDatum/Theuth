@@ -33,16 +33,7 @@ pub enum UiEvent {
     /// Reply to [`Command::Load`] with `settled_only: true` (48 §5): shown
     /// only when it is settled and not older than what is on screen.
     Refreshed(SessionId, Loaded),
-    /// Reply to [`Command::ContextItems`]: the `/shake` inventory.
-    ContextItems {
-        /// Session the inventory describes.
-        session: SessionId,
-        /// The `/shake` argument that asked for it.
-        category: Option<ShakeCategory>,
-        /// The inventory.
-        snapshot: ContextSnapshot,
-    },
-    /// Reply to [`Command::RemoveContext`]: what was removed; the transcript reload follows.
+    /// Reply to [`Command::EditContext`]: what was removed; the transcript reload follows.
     ContextRemoved(SessionId, ContextRemoval),
     /// Reply to [`Command::Fork`]: the new session, already loaded.
     Forked(SessionId, Loaded),
@@ -307,15 +298,8 @@ pub enum Command {
         /// Refuse a busy session's half-persisted transcript.
         settled_only: bool,
     },
-    /// `context_items`: the `/shake` inventory (48 §3.2).
-    ContextItems {
-        /// Session.
-        session: SessionId,
-        /// The `/shake` argument, echoed in the reply.
-        category: Option<ShakeCategory>,
-    },
     /// `remove_context`, then `load_session(settled_only: true)`.
-    RemoveContext {
+    EditContext {
         /// Session.
         session: SessionId,
         /// The inventory revision the review was made from.

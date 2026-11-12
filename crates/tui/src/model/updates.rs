@@ -120,11 +120,6 @@ impl Model {
                     self.refresh(loaded);
                 }
             }
-            UiEvent::ContextItems {
-                session,
-                category,
-                snapshot,
-            } => self.open_shake(session, category, snapshot),
             // The transcript reload that follows pushes the notice (`Refreshed`).
             UiEvent::ContextRemoved(id, r) => {
                 if self.session == Some(id) {

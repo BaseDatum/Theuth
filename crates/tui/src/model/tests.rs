@@ -1,4 +1,6 @@
     use super::*;
+    use agent::{ContextItem, ContextKind, ContextSnapshot};
+    use crate::components::shake::{ShakePanel, ShakeCategory, ShakeStage, expand, SHAKE_USAGE, Msg as ShakeMsg, Request as ShakeRequest};
     use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
     use crate::components::todos::{Todos, TodoCard, TODO_ROWS, Msg as TodosMsg, Request as TodosRequest};
 
@@ -682,19 +684,19 @@
         assert!(rx.try_recv().is_err());
         m.submit("/shake images", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::ContextItems {
+            component_request::<ShakeRequest>(&mut rx),
+            Ok(ShakeRequest::ContextItems {
                 category: Some(ShakeCategory::Images),
                 ..
             })
         ));
-        m.apply(UiEvent::ContextItems {
+        component_reply(&mut m, "shake", ShakeMsg::Loaded {
             session,
             category: Some(ShakeCategory::Images),
-            snapshot: snapshot(shake_inventory()),
+            result: Ok(snapshot(shake_inventory())),
         });
         // Every image ticked (the tool screenshot too, the PDF not), straight into review.
-        let Some(Menu::Shake(s)) = &m.menu else {
+        let Some(s) = &m.components.get::<ShakePanel>().unwrap().menu else {
             panic!("picker open");
         };
         assert_eq!(s.stage, ShakeStage::Review);
@@ -702,19 +704,19 @@
         assert!(s.review.iter().all(|r| r.kind == ContextKind::Image));
         assert!(!m.input_focused(), "the picker is modal");
         // Esc backs into the picker (images only listed); a second Esc closes it.
-        m.menu_key(KeyCode::Esc, "", &tx);
-        let Some(Menu::Shake(s)) = &m.menu else {
+        component_menu_key(&mut m, "shake", KeyCode::Esc);
+        let Some(s) = &m.components.get::<ShakePanel>().unwrap().menu else {
             panic!("picker open");
         };
         assert_eq!(s.stage, ShakeStage::Pick);
         assert_eq!(s.shown.len(), 3);
         // Space unticks the highlighted row; ⏎ reviews the rest, ⏎ removes exactly those.
-        m.menu_key(KeyCode::Char(' '), "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_menu_key(&mut m, "shake", KeyCode::Char(' '));
+        component_menu_key(&mut m, "shake", KeyCode::Enter);
         assert!(rx.try_recv().is_err(), "review is not a removal");
-        m.menu_key(KeyCode::Enter, "", &tx);
-        assert!(m.menu.is_none());
-        let Ok(Command::RemoveContext {
+        component_menu_key(&mut m, "shake", KeyCode::Enter);
+        assert!(m.components.get::<ShakePanel>().unwrap().menu.is_none());
+        let Ok(Command::EditContext {
             expected_revision,
             targets,
             ..
@@ -735,14 +737,15 @@
     fn shake_bare_and_messages_tick_nothing_and_zero_matches_write_nothing() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.component_commands = Some(tx.clone());
         let session = SessionId::new();
         m.session = Some(session);
-        m.apply(UiEvent::ContextItems {
+        component_reply(&mut m, "shake", ShakeMsg::Loaded {
             session,
             category: None,
-            snapshot: snapshot(shake_inventory()),
+            result: Ok(snapshot(shake_inventory())),
         });
-        let Some(Menu::Shake(s)) = &m.menu else {
+        let Some(s) = &m.components.get::<ShakePanel>().unwrap().menu else {
             panic!("picker open");
         };
         assert_eq!(
@@ -750,16 +753,16 @@
             (ShakeStage::Pick, 8, 0)
         );
         // ⏎ with nothing ticked stays put; esc closes without a request.
-        m.menu_key(KeyCode::Enter, "", &tx);
-        assert!(matches!(&m.menu, Some(Menu::Shake(s)) if s.stage == ShakeStage::Pick));
-        m.menu_key(KeyCode::Esc, "", &tx);
-        assert!(m.menu.is_none() && rx.try_recv().is_err());
-        m.apply(UiEvent::ContextItems {
+        component_menu_key(&mut m, "shake", KeyCode::Enter);
+        assert!(matches!(&m.components.get::<ShakePanel>().unwrap().menu, Some(s) if s.stage == ShakeStage::Pick));
+        component_menu_key(&mut m, "shake", KeyCode::Esc);
+        assert!(m.components.get::<ShakePanel>().unwrap().menu.is_none() && rx.try_recv().is_err());
+        component_reply(&mut m, "shake", ShakeMsg::Loaded {
             session,
             category: Some(ShakeCategory::Messages),
-            snapshot: snapshot(shake_inventory()),
+            result: Ok(snapshot(shake_inventory())),
         });
-        let Some(Menu::Shake(s)) = &m.menu else {
+        let Some(s) = &m.components.get::<ShakePanel>().unwrap().menu else {
             panic!("picker open");
         };
         assert!(s.selected.is_empty());
@@ -768,32 +771,32 @@
                 .iter()
                 .all(|&i| s.items[i].kind == ContextKind::Message)
         );
-        m.menu = None;
+        m.component_notify(crate::components::Lifecycle::FocusLost);
         // No documents in an image-only context: a notice, no picker.
         let images: Vec<_> = shake_inventory()
             .into_iter()
             .filter(|i| i.kind == ContextKind::Image)
             .collect();
-        m.apply(UiEvent::ContextItems {
+        component_reply(&mut m, "shake", ShakeMsg::Loaded {
             session,
             category: Some(ShakeCategory::Documents),
-            snapshot: snapshot(images),
+            result: Ok(snapshot(images)),
         });
-        assert!(m.menu.is_none());
+        assert!(m.components.get::<ShakePanel>().unwrap().menu.is_none());
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no documents in current context")
         );
         // A busy session: the reason, no picker.
-        m.apply(UiEvent::ContextItems {
+        component_reply(&mut m, "shake", ShakeMsg::Loaded {
             session,
             category: None,
-            snapshot: ContextSnapshot {
+            result: Ok(ContextSnapshot {
                 editable: false,
                 reason: Some("Session is busy; wait or stop it, then retry.".into()),
                 ..snapshot(shake_inventory())
-            },
+            }),
         });
-        assert!(m.menu.is_none());
+        assert!(m.components.get::<ShakePanel>().unwrap().menu.is_none());
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t.contains("busy")));
         assert!(rx.try_recv().is_err());
     }
