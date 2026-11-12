@@ -258,3 +258,8 @@ impl KernelsApiServer for Server {
         kernel_rpc::reply_note_set(self, ext, session, entry, doc).await
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    KernelsApiServer::into_rpc(server)
+}

@@ -259,3 +259,8 @@ impl SandboxesApiServer for Server {
         Ok(serde_json::json!({ "job": job, "session": session }))
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    SandboxesApiServer::into_rpc(server)
+}

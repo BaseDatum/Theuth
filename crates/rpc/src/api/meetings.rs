@@ -661,3 +661,8 @@ impl MeetingsApiServer for Server {
         send(&meeting()?, meeting::BriefDelete { id }).await
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    MeetingsApiServer::into_rpc(server)
+}

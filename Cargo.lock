@@ -22005,6 +22005,7 @@ dependencies = [
  "routes",
  "rpassword",
  "rpc",
+ "rpc-core",
  "runtime",
  "rustls",
  "sandbox",
