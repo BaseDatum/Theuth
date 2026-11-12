@@ -254,7 +254,17 @@ impl Backend {
         match self {
             Backend::Cursor { oauth: store } => {
                 let t = store.access(&oauth::CURSOR).await?;
-                chat_stream(&t.access_token, slug(resolved), req, &session.to_string()).await
+                // 194: the request's explicit effort (no default is set for
+                // Cursor, `frame::default_effort`) replaces the slug's reasoning.
+                let effort = opts.reasoning_effort.as_ref();
+                chat_stream(
+                    &t.access_token,
+                    slug(resolved),
+                    effort,
+                    req,
+                    &session.to_string(),
+                )
+                .await
             }
             Backend::Genai { client, auth } => {
                 // 160 §5.4: `limit_auth` names the provider row the response headers feed.

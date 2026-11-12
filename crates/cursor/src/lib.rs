@@ -11,7 +11,7 @@
 
 use std::sync::LazyLock;
 
-use genai::chat::ChatRequest;
+use genai::chat::{ChatRequest, ReasoningEffort};
 use prost::Message as _;
 use reqwest::header::{HeaderMap, HeaderValue};
 
@@ -23,6 +23,7 @@ mod proto {
     include!(concat!(env!("OUT_DIR"), "/agent.v1.rs"));
 }
 
+pub use history::takes_reasoning;
 pub use run::EventStream;
 
 /// Production backend.
@@ -88,17 +89,20 @@ pub async fn models_at(base: &str, token: &str) -> Result<Vec<Model>, String> {
 }
 
 /// Run one assistant step on `model` for `req`; `conversation` is a stable
-/// per-session UUID. Yields `Start`, `Chunk`/`ReasoningChunk` deltas, one
+/// per-session UUID. `effort` is the caller's explicit reasoning pick (194):
+/// on the OpenAI family it replaces the reasoning the slug's suffix implies;
+/// `None` keeps the slug's. Yields `Start`, `Chunk`/`ReasoningChunk` deltas, one
 /// `ToolCallChunk` per tool call as soon as it is named, then exactly one `End`
 /// with the full content (text + tool calls with parsed args), stop reason and
 /// usage when reported. Errors are `Err(String)` items; the stream then ends.
 pub async fn chat_stream(
     token: &str,
     model: &str,
+    effort: Option<&ReasoningEffort>,
     req: ChatRequest,
     conversation: &str,
 ) -> Result<EventStream, String> {
-    run::start(BASE_URL, token, model, &req, conversation).await
+    run::start(BASE_URL, token, model, effort, &req, conversation).await
 }
 
 /// [`chat_stream`] against another base URL (tests, local bridges).
@@ -106,10 +110,11 @@ pub async fn chat_stream_at(
     base: &str,
     token: &str,
     model: &str,
+    effort: Option<&ReasoningEffort>,
     req: ChatRequest,
     conversation: &str,
 ) -> Result<EventStream, String> {
-    run::start(base, token, model, &req, conversation).await
+    run::start(base, token, model, effort, &req, conversation).await
 }
 
 /// HTTP/2-only client (ALPN `h2`, prior knowledge on plain `http://`).

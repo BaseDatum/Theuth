@@ -185,15 +185,19 @@ impl Side {
             strip_reasoning: false,
             max_tokens: (reply > 0).then_some(reply),
         };
-        let (req, opts) = frame.request(transport, self.session, self.effort.clone());
         // 177 E2 / R2-6: a title (a short summary-style call) to a local
-        // OpenAI-protocol server thinks not — unless its setting picked an
-        // effort (194); consult, advisor, notebook insights, ask, polish and
-        // escalate keep the model's thinking.
-        let opts = if self.short
-            && self.effort.is_none()
-            && current.backend.local_openai(&current.model)
-        {
+        // OpenAI-protocol server thinks not, and so does any side call there
+        // whose setting picked `off` (194): no effort keyword — genai's omlx
+        // adapter turns even `Zero` into `enable_thinking: true` — and the
+        // thinking-off kwargs. A picked level is sent as is; consult, advisor,
+        // notebook insights, ask, polish and escalate otherwise keep the
+        // model's thinking.
+        let off = matches!(self.effort, Some(ReasoningEffort::Zero));
+        let quiet = (off || (self.short && self.effort.is_none()))
+            && current.backend.local_openai(&current.model);
+        let effort = if quiet { None } else { self.effort.clone() };
+        let (req, opts) = frame.request(transport, self.session, effort);
+        let opts = if quiet {
             crate::backend::thinking_off(opts)
         } else {
             opts

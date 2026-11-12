@@ -1053,29 +1053,58 @@ async fn text_only_main_asks_fallback_looks_main_answers() {
 }
 
 /// 194 row 8: `agent.vision_effort` (the live role-effort slot, read per
-/// consultation) rides the vision call as its reasoning effort.
+/// consultation) rides the vision call as its reasoning effort. R1: on a
+/// local server (genai's omlx adapter, which turns any effort keyword into
+/// `enable_thinking: true`) Default and `off` send the thinking-off request —
+/// no effort keyword, `enable_thinking: false` — and a level is sent as is.
 async fn vision_effort_rides_the_vision_call() {
-    let mut h = Harness::new(fake()).await;
-    let mut eyes = h.resolve("openai/eyes");
-    eyes.model.as_mut().unwrap().reasoning_options = vec![models::ReasoningOption::Effort {
-        values: vec!["low".into(), "high".into()],
-    }];
-    *h.vision_model.write().unwrap_or_else(|p| p.into_inner()) = Some(eyes);
-    let (turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
-    turn.shared.role_efforts.write().vision = Some("high".into());
-    turn.run(
-        tid,
-        vec![h.input("Please look at the attached screenshot.", true)],
-    )
-    .await;
-    let events = h.drain().await;
-    assert_eq!(errors(&events), Vec::<String>::new());
-    let reqs = h.requests().await;
-    let [_question, vision_req, _main] = reqs.as_slice() else {
-        panic!("question, vision, main: {reqs:#?}")
-    };
-    assert_eq!(model(vision_req), "eyes");
-    assert_eq!(vision_req["reasoning_effort"], "high", "{vision_req}");
+    for (local, effort) in [
+        (false, Some("high")),
+        (true, None),
+        (true, Some("off")),
+        (true, Some("high")),
+    ] {
+        let mut h = Harness::new(fake()).await;
+        let mut eyes = h.resolve("openai/eyes");
+        eyes.model.as_mut().unwrap().reasoning_options = vec![models::ReasoningOption::Effort {
+            values: vec!["low".into(), "high".into()],
+        }];
+        if local {
+            eyes.id = "omlx/eyes".into();
+            eyes.genai = "omlx::eyes".into();
+            eyes.provider = Some("omlx".into());
+        }
+        *h.vision_model.write().unwrap_or_else(|p| p.into_inner()) = Some(eyes);
+        let (turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
+        turn.shared.role_efforts.write().vision = effort.map(str::to_owned);
+        turn.run(
+            tid,
+            vec![h.input("Please look at the attached screenshot.", true)],
+        )
+        .await;
+        let events = h.drain().await;
+        assert_eq!(errors(&events), Vec::<String>::new(), "{effort:?}");
+        let reqs = h.requests().await;
+        let [_question, vision_req, _main] = reqs.as_slice() else {
+            panic!("question, vision, main: {reqs:#?}")
+        };
+        assert_eq!(model(vision_req), "eyes");
+        let kwargs = vision_req.get("chat_template_kwargs");
+        if effort == Some("high") {
+            assert_eq!(vision_req["reasoning_effort"], "high", "{vision_req}");
+            assert!(local || kwargs.is_none(), "{vision_req}");
+        } else {
+            assert!(
+                vision_req.get("reasoning_effort").is_none(),
+                "{effort:?}: {vision_req}"
+            );
+            assert_eq!(
+                kwargs,
+                Some(&json!({"enable_thinking": false})),
+                "{effort:?}: {vision_req}"
+            );
+        }
+    }
 }
 
 /// Gate "Native bypass": an image-capable main gets the image itself; a

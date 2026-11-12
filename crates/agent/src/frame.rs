@@ -177,12 +177,14 @@ impl Transport {
 /// THINKING-TRACES). genai turns `Medium` into `thinking: adaptive` +
 /// `output_config.effort` where the model supports it, else an 8k budget.
 /// Every other provider keeps its own default; `off` still maps to `Zero`
-/// upstream, so this never overrides an explicit choice.
+/// upstream, so this never overrides an explicit choice. Cursor gets none: its
+/// thinking is the model id's, and an effort it carries is an explicit pick (194).
 pub fn default_effort(resolved: &models::Resolved) -> Option<ReasoningEffort> {
     let (ns, slug) = resolved.genai.split_once("::")?;
     let model = resolved.model.as_ref()?;
     let anthropic = match ns {
         "anthropic" => true,
+        "cursor" => false,
         "bedrock_sigv4" => slug.split('.').any(|seg| seg == "anthropic"),
         _ => {
             slug.starts_with("claude-")

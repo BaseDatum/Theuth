@@ -5355,8 +5355,13 @@ impl Turn {
     ) -> Result<StreamEnd, Abort> {
         // 177 E2: an aux (vision) call to a local OpenAI-protocol server asks
         // for no thinking and sends no effort keyword — unless it is the
-        // image call and `agent.vision_effort` picked one (194); turns are unchanged.
-        let picked = frame.vision && current.effort.is_some();
+        // image call and `agent.vision_effort` picked a level (194); a picked
+        // `off` is that same thinking-off request. Turns are unchanged.
+        let picked = frame.vision
+            && current
+                .effort
+                .as_ref()
+                .is_some_and(|e| !matches!(e, ReasoningEffort::Zero));
         let quiet =
             kind == CallKind::Vision && !picked && current.backend.local_openai(&current.model);
         let effort = if quiet { None } else { current.effort() };
@@ -11358,20 +11363,14 @@ mod tests {
         (base_url, hits, bodies)
     }
 
-    /// A turn of session `id` on `store` whose model is the OpenAI-compatible
-    /// gateway at `base_url`; with its resolved model and transport and the
-    /// runtime's event stream.
-    async fn gateway_turn(
+    /// Session `id` on `store` whose model is the OpenAI-compatible gateway
+    /// at `base_url` (loopback: a local server), with the runtime's event stream.
+    async fn gateway_session(
         dir: &Path,
         store: Store,
         id: SessionId,
         base_url: String,
-    ) -> (
-        Turn,
-        Current,
-        Transport,
-        tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    ) {
+    ) -> (Session, tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) {
         let auth = Auth::stub(dir);
         auth.gateways
             .write()
@@ -11394,7 +11393,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let sink = kameo::actor::Spawn::spawn(Sink(tx));
         rt.subscribe::<Sink, AgentEvent>(&sink).await;
-        let mut session = Session::new(
+        let session = Session::new(
             id,
             0,
             (model, None),
@@ -11415,6 +11414,23 @@ mod tests {
             Arc::new(Semaphore::new(1)),
             SessionResources::durable_arc(dir),
         );
+        (session, rx)
+    }
+
+    /// A turn of [`gateway_session`]; with its resolved model and transport
+    /// and the runtime's event stream.
+    async fn gateway_turn(
+        dir: &Path,
+        store: Store,
+        id: SessionId,
+        base_url: String,
+    ) -> (
+        Turn,
+        Current,
+        Transport,
+        tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    ) {
+        let (mut session, rx) = gateway_session(dir, store, id, base_url).await;
         let mut turn = Turn::new(
             session.shared.clone(),
             Some(TurnId::new()),
@@ -12072,8 +12088,9 @@ mod tests {
     }
 
     /// 194 S1: `NamedWithEffort` resolves like `Named` and its effort rides
-    /// the request as `reasoning_effort`; `effort: None` is `Named` exactly;
-    /// an effort the model does not take is dropped, not sent.
+    /// the request as `reasoning_effort` — a `SideCall` sent to the session
+    /// actor; `effort: None` is `Named` exactly; an effort the model does not
+    /// take is dropped, not sent.
     #[tokio::test]
     async fn named_with_effort_carries_its_effort() {
         let scratch = crate::TestDir::new("side-effort");
@@ -12085,9 +12102,9 @@ mod tests {
             .await
             .unwrap();
         let usage = r#"{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}"#;
-        let (base_url, _, bodies) = fake_openai(vec![sse(usage), sse(usage), sse(usage)]).await;
-        let (turn, _, _, _events) = gateway_turn(&dir, store, id, base_url).await;
-        let shared = &turn.shared;
+        let (base_url, _, bodies) = fake_openai(vec![sse(usage), sse(usage)]).await;
+        let (session, _events) = gateway_session(&dir, store, id, base_url).await;
+        let shared = session.shared.clone();
         let with = |effort: Option<&str>| ModelRole::NamedWithEffort {
             model: "fake/m".into(),
             effort: effort.map(str::to_owned),
@@ -12103,25 +12120,18 @@ mod tests {
         };
         assert_eq!(key(with(None)), key(ModelRole::Named("fake/m".into())));
 
-        let send = |model: Resolved, effort: Option<String>| {
-            let side = shared.side(turn.turn).effort(&model, effort.as_deref());
-            async move {
-                side.call(
-                    model,
-                    "s",
-                    "q".into(),
-                    Duration::from_secs(5),
-                    CallKind::Escalate,
-                )
-                .await
-                .unwrap();
-            }
-        };
+        let actor = <Session as kameo::actor::Spawn>::spawn(session);
         let wire =
             |i: usize| -> serde_json::Value { serde_json::from_str(&bodies.lock()[i]).unwrap() };
-        send(model.clone(), effort).await;
+        actor
+            .ask(side_call(id, with(Some("high")), CallKind::Escalate))
+            .await
+            .unwrap();
         assert_eq!(wire(0)["reasoning_effort"], "high", "{}", wire(0));
-        send(model.clone(), None).await;
+        actor
+            .ask(side_call(id, with(None), CallKind::Escalate))
+            .await
+            .unwrap();
         assert!(wire(1).get("reasoning_effort").is_none(), "{}", wire(1));
         // The model lists only `low`: `high` is dropped with a warning.
         let low_only = Resolved {
@@ -12135,8 +12145,8 @@ mod tests {
             ),
             ..model
         };
-        send(low_only, Some("high".into())).await;
-        assert!(wire(2).get("reasoning_effort").is_none(), "{}", wire(2));
+        assert!(side::checked_effort(&low_only, Some("high")).is_none());
+        assert!(side::checked_effort(&low_only, Some("low")).is_some());
     }
 
     /// 194 rows 7–10: the effort follows the setting whose model answered —
@@ -12183,10 +12193,25 @@ mod tests {
         assert_eq!(pick(ModelRole::Escalate), at("cheap/e", None));
     }
 
-    /// 194 D4e: a role's side call — resolved and sent the way the `SideCall`
-    /// handler and the title turn do — carries that role's effort on the wire.
+    /// A `SideCall` of `role` for session `id`, as another plugin sends it.
+    fn side_call(id: SessionId, role: ModelRole, kind: CallKind) -> crate::SideCall {
+        crate::SideCall {
+            session: id,
+            role,
+            system: "s".into(),
+            user: "q".into(),
+            budget: Duration::from_secs(5),
+            kind,
+        }
+    }
+
+    /// 194 D4e through the production handoff: a `SideCall` sent to the
+    /// session actor carries its role's effort on the wire — Title (a title
+    /// call, local server: a level beats the thinking-off), Escalate (the
+    /// title fallback, at the title's effort), Polish. A picked `off` on a
+    /// local server is the thinking-off request (no effort keyword).
     #[tokio::test]
-    async fn role_side_calls_carry_their_effort() {
+    async fn side_calls_through_the_actor_carry_their_effort() {
         let scratch = crate::TestDir::new("role-wire");
         let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
@@ -12196,41 +12221,92 @@ mod tests {
             .await
             .unwrap();
         let usage = r#"{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}"#;
-        let (base_url, _, bodies) = fake_openai(vec![sse(usage), sse(usage), sse(usage)]).await;
-        let (turn, current, _, _events) = gateway_turn(&dir, store, id, base_url).await;
-        let shared = &turn.shared;
-        *shared.title_model.write().unwrap() = Some(current.model.clone());
-        *shared.polish_model.write().unwrap() = Some(current.model.clone());
+        let (base_url, _, bodies) = fake_openai(vec![sse(usage); 4]).await;
+        let (session, _events) = gateway_session(&dir, store, id, base_url).await;
+        let shared = session.shared.clone();
+        let model = shared.model.lock().unwrap().model.clone();
+        *shared.title_model.write().unwrap() = Some(model.clone());
+        *shared.polish_model.write().unwrap() = Some(model);
         *shared.role_efforts.write() = RoleEfforts {
             title: Some("high".into()),
             polish: Some("low".into()),
             escalate: Some("medium".into()),
             vision: None,
         };
-        for (i, (role, want)) in [
-            (ModelRole::Title, "high"),
+        let actor = <Session as kameo::actor::Spawn>::spawn(session);
+        let body =
+            |i: usize| -> serde_json::Value { serde_json::from_str(&bodies.lock()[i]).unwrap() };
+        for (i, (role, kind, want)) in [
+            (ModelRole::Title, CallKind::Title, "high"),
             // No escalation model: the title model answers, at the title's effort.
-            (ModelRole::Escalate, "high"),
-            (ModelRole::Polish, "low"),
+            (ModelRole::Escalate, CallKind::Escalate, "high"),
+            (ModelRole::Polish, CallKind::Polish, "low"),
         ]
         .into_iter()
         .enumerate()
         {
-            let (model, effort) = shared.role_model(&role).unwrap();
-            shared
-                .side(turn.turn)
-                .effort(&model, effort.as_deref())
-                .call(
-                    model,
-                    "s",
-                    "q".into(),
-                    Duration::from_secs(5),
-                    CallKind::Escalate,
-                )
+            actor.ask(side_call(id, role.clone(), kind)).await.unwrap();
+            assert_eq!(body(i)["reasoning_effort"], want, "{role:?}: {}", body(i));
+            assert!(
+                body(i).get("chat_template_kwargs").is_none(),
+                "{role:?}: {}",
+                body(i)
+            );
+        }
+        shared.role_efforts.write().polish = Some("off".into());
+        actor
+            .ask(side_call(id, ModelRole::Polish, CallKind::Polish))
+            .await
+            .unwrap();
+        assert!(body(3).get("reasoning_effort").is_none(), "{}", body(3));
+        assert_eq!(
+            body(3)["chat_template_kwargs"],
+            serde_json::json!({"enable_thinking": false})
+        );
+    }
+
+    /// 194 R1 / 177 R2-6: the session's own title turn (`maybe_title`, as a
+    /// turn's end runs it) on a local server, `agent.title_effort` read live
+    /// per title: Default and `off` send the thinking-off request — no effort
+    /// keyword, `enable_thinking: false` — and a level rides as `reasoning_effort`.
+    #[tokio::test]
+    async fn title_turn_carries_the_title_effort_and_off_stays_thinking_off() {
+        let scratch = crate::TestDir::new("title-effort");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let usage = r#"{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}"#;
+        let (base_url, _, bodies) = fake_openai(vec![sse(usage); 3]).await;
+        let (mut turn, current, _, _events) = gateway_turn(&dir, store, id, base_url).await;
+        *turn.shared.title_model.write().unwrap() = Some(current.model.clone());
+        for (i, effort) in [None, Some("off"), Some("high")].into_iter().enumerate() {
+            turn.shared.role_efforts.write().title = effort.map(str::to_owned);
+            turn.state.title_model = false;
+            turn.state.title_chars = 10;
+            turn.maybe_title().await;
+            turn.state
+                .title_task
+                .take()
+                .expect("a title call")
                 .await
                 .unwrap();
             let body: serde_json::Value = serde_json::from_str(&bodies.lock()[i]).unwrap();
-            assert_eq!(body["reasoning_effort"], want, "{role:?}: {body}");
+            let kwargs = body.get("chat_template_kwargs");
+            if effort == Some("high") {
+                assert_eq!(body["reasoning_effort"], "high", "{body}");
+                assert!(kwargs.is_none(), "{body}");
+            } else {
+                assert!(body.get("reasoning_effort").is_none(), "{effort:?}: {body}");
+                assert_eq!(
+                    kwargs,
+                    Some(&serde_json::json!({"enable_thinking": false})),
+                    "{effort:?}: {body}"
+                );
+            }
         }
     }
 }
