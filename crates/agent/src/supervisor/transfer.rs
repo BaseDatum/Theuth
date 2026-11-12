@@ -271,12 +271,33 @@ impl Message<ClearDraining> for Agents {
     }
 }
 
+/// `tell` from [`demoted`]: another machine's take of `session` landed, a release's or a
+/// forced one's.
+pub(crate) struct SessionMoved(pub SessionId);
+
+impl Message<SessionMoved> for Agents {
+    type Reply = ();
+
+    /// 191 (P3 final review N3): a forced take has no drain, so its holds and waiting full
+    /// contact tasks fail here "the chat moved; send again", as a release drain's do (after a
+    /// release they are already gone: nothing is left to fail). Then the input refusal ends.
+    async fn handle(
+        &mut self,
+        SessionMoved(session): SessionMoved,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        self.network_session_drained(session).await;
+        self.draining_sessions.remove(&session);
+    }
+}
+
 /// `sessionsync::owner::demote` → the taker's row landed: inputs for
 /// `session` are no longer ours to refuse (they forward to the new owner),
+/// its contact holds and waiting full contact tasks fail ([`SessionMoved`]),
 /// and its reminder timers stop here (139 R2 D4; a takeover had no drain).
 pub async fn demoted(session: SessionId) {
     if let Ok(Some(agents)) = ActorRef::<Agents>::lookup(crate::AGENT_ACTOR) {
-        let _ = agents.tell(ClearDraining(session)).await;
+        let _ = agents.tell(SessionMoved(session)).await;
     }
     if let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
         let _ = jobs.tell(tools::CancelReminders { session }).await;

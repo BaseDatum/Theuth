@@ -2778,7 +2778,10 @@ impl crate::Ctx {
 /// 191 (D4, P3 review M1, N2): a hold row lives until its `until_ms`, which no real hold
 /// sets past now + [`HOLD_TTL`](agent::communication::network::HOLD_TTL) (its newest task
 /// arrived by now), give or take ten minutes of clock skew between machines: a row past
-/// that (`i64::MAX`, say) is malformed and never shown.
+/// that (`i64::MAX`, say) is malformed and never shown. Known limit (P3 final review N4):
+/// both bounds read the owner's wall clock against ours, so every hold of a machine whose
+/// clock runs more than ten minutes ahead is hidden here (and one running behind shows its
+/// holds that much shorter); the owner still lists and releases its own.
 fn hold_live(until_ms: Option<i64>, now_ms: i64) -> bool {
     const SKEW_MS: i64 = 10 * 60 * 1000;
     let ttl = agent::communication::network::HOLD_TTL.as_millis() as i64;
