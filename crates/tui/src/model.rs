@@ -14,11 +14,10 @@ use agent::durability::{ResumeCause, ResumeKind};
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
     AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
-    AgentEvent, AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState,
+    AgentEvent, AgentInfo, AgentState, AwsProfiles,
     CompactStyle, ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval,
     ContextSnapshot, ContextTarget, HistoryEntry, Loaded, ModelInfo, ObservedMeta, ObservedSource,
-    ObservedState, PeerDelivered, PeerInfo, PeerMessageChanged, PeerMessagePage, PeerOrigin,
-    PeerPage, PeerReceipt, PeerRecord, PeerScope, ProviderInfo, QueuedInput, SessionKind,
+    ObservedState, ProviderInfo, QueuedInput, SessionKind,
     SessionSummary, SkillBody, SkillMeta, Usage, VisionNote, VisionStage, VisionStatus,
 };
 use agent::{
@@ -259,21 +258,6 @@ pub struct Model {
     pub todo_focus: bool,
     /// First wrapped body row shown while expanded.
     pub todo_scroll: usize,
-    /// Latest `get_communication` of the shown session (the global default
-    /// without one): the header tag and the `/communication` lines (50 §10).
-    /// `None` until fetched; never guessed.
-    pub communication: Option<CommunicationState>,
-    /// `/communication` (or a switch) was typed: the next state reply prints its lines.
-    awaiting_communication: bool,
-    /// The switches, a scope or the network changed: the event loop re-asks
-    /// `get_communication` for the shown session.
-    pub refresh_communication: bool,
-    /// The `/peers` menu is open and its inputs changed: the event loop
-    /// re-asks `list_peers` and `list_peer_messages`.
-    pub refresh_peers: bool,
-    /// Bodies `PeerDelivered` already carded: the legacy `MessageDelivered`
-    /// for the same input (50 §10) is not shown twice.
-    peer_shown: VecDeque<String>,
     /// `/search` state (49 §6.1): query, chips, request identity, groups,
     /// cursor, previews. Kept across session switches so chips survive and
     /// **Back to results** restores the last view; `menu == Menu::Search`
@@ -353,7 +337,6 @@ pub(crate) use lifecycle::markdown_options;
 mod menus;
 mod navigation;
 mod paste;
-mod peers;
 mod prompts;
 mod sessions;
 mod shake;
@@ -386,24 +369,21 @@ use history::{revision, user_entries, cell_results, FENCE, from_history};
 use history::{parent_view};
 pub use menus::{window, Menu, Grouped, grouped_step, grouped_first, MenuKey};
 pub use paste::{Paste, paste_token};
-use peers::{on_off, short_uuid, peer_card, contact_row};
-pub(crate) use peers::{clean, outside_card};
-pub use peers::{communication_lines, a2a_lines, PeerRow};
 pub use prompts::{Prompt};
 pub use sessions::{Private, session_rows, TurnAction, ESC_TAPS_WINDOW, engine_chip, session_row, owner_offline_line, owner_turn_suffix, owner_unreachable, short, PRIVATE_WARNING};
 use sessions::{project_heading, project_order};
 pub use shake::{ShakeCategory, ShakeStage, Shake, ReviewRow, kind_name, expand, SHAKE_USAGE, removal_line};
 pub use slash::{COMMANDS, slash_matches, SlashRow};
 pub use speech::{voice_cmd, voice_line};
-pub(crate) use status::{now_ms, when, ago};
+pub(crate) use status::{now_ms, when, ago, on_off};
 pub use status::{Level, k};
 pub(crate) use status::elapsed;
 
 pub use todos::{TODO_ROWS, TodoCard, status_label};
 pub use tooling::{Row, Target, Switch, action_name, gate_name, git_url, mcp_entry};
-pub(crate) use transcript::markdown_rows;
+pub(crate) use transcript::{markdown_rows, clean, attr, unescape};
 pub use transcript::{Entry, CardKind, moved_title, injected, describe, output_markdown, result_line, Window, vision_line, note_title, attachment_label};
-use transcript::{split_engine_restart, card, unescape, attr, attachment_labels, first_arg};
+use transcript::{split_engine_restart, card, attachment_labels, first_arg, wrapper_kind};
 
 #[cfg(test)]
 mod tests;

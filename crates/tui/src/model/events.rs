@@ -154,28 +154,6 @@ pub enum UiEvent {
         /// group under (51 §3); empty otherwise.
         sessions: Vec<SessionSummary>,
     },
-    /// Reply to [`Command::GetCommunication`], [`Command::SetCommunication`]
-    /// and [`Command::SetPeerScope`]: the authoritative switches (50 §10);
-    /// `state.session` says whose, so a reply for a session left behind is dropped.
-    Communication(CommunicationState),
-    /// Reply to [`Command::ListPeers`]: the permitted directory of `session`,
-    /// or why there is none (communication off is an `Err`, not an empty page).
-    Peers(SessionId, Result<PeerPage, String>),
-    /// Reply to [`Command::ListPeerRequests`]: the requests a human may
-    /// resolve for `session` right now, by exact id.
-    PeerRequests(SessionId, PeerMessagePage),
-    /// Reply to [`Command::AnswerPeerRequest`].
-    PeerAnswered(PeerReceipt),
-    /// Reply to [`Command::A2aStatus`] / [`Command::ReloadA2a`].
-    A2a(a2a::A2aStatus),
-    /// Communication switches or a root's scope changed (bus event): reload the state.
-    CommunicationChanged(CommunicationChanged),
-    /// A peer receipt changed state (bus event): reload the pending requests.
-    PeerMessageChanged(PeerMessageChanged),
-    /// A peer exchange entered a transcript (bus event): typed provenance, never parsed from text.
-    PeerDelivered(PeerDelivered),
-    /// Network configuration or listener state changed (bus event).
-    A2aChanged(a2a::A2aChanged),
     /// Reply to [`Command::CreateSession`].
     SessionOpened(SessionOpen),
     /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
@@ -559,45 +537,6 @@ pub enum Command {
     },
     /// Open a local file with the OS default handler ([`platform::open::open_path`], detached).
     OpenPath(PathBuf),
-    /// `get_communication`; `None` reads the global default alone.
-    GetCommunication(Option<SessionId>),
-    /// `set_communication`, then `get_communication(view)`: the reply is the
-    /// shown session's state, whichever switch moved (a global flip changes
-    /// what this session may do; a session flip under global-off changes nothing).
-    SetCommunication {
-        /// `None` = the persisted global switch (`always`).
-        session: Option<SessionId>,
-        /// On or off.
-        enabled: bool,
-        /// The shown session, whose state the reply carries.
-        view: Option<SessionId>,
-    },
-    /// `set_peer_scope`: owner-only root scope and alias (50 §2.3).
-    SetPeerScope {
-        /// The root.
-        root: SessionId,
-        /// New scope.
-        scope: PeerScope,
-        /// New alias; `None` keeps it.
-        alias: Option<String>,
-    },
-    /// `list_peers(session)`: the directory `session` may address.
-    ListPeers(SessionId),
-    /// `list_peer_messages(session, pending_only: true)`: requests a human may resolve.
-    ListPeerRequests(SessionId),
-    /// `answer_peer_request`: resolve one exact pending request for `session`.
-    AnswerPeerRequest {
-        /// The request's recipient, or its blocked sender.
-        session: SessionId,
-        /// The request.
-        reply_to: Uuid,
-        /// The answer.
-        text: String,
-    },
-    /// `a2a_status`.
-    A2aStatus,
-    /// `reload_a2a`: validate and swap the peer/export configuration.
-    ReloadA2a,
     /// `set_session_project`: label or clear the root's project (51 §3).
     SetSessionProject {
         /// Any session of the tree.

@@ -182,8 +182,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let _ = commands.send(Command::McpStatus);
             // Skill names so `/<skill> [args]` resolves before `/skills` was ever opened.
             let _ = commands.send(Command::ListSkills);
-            // The global communication default, before any session is shown (50 §10).
-            let _ = commands.send(Command::GetCommunication(None));
             // The harness-wide vision fallback, so attaching an image to a
             // text-only model can say who will look at it (52 §3.2).
             let _ = commands.send(Command::GetVisionModel);
@@ -271,9 +269,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         settled_only: true,
                     });
                 }
-                if std::mem::take(&mut m.refresh_communication) {
-                    let _ = commands.send(Command::GetCommunication(m.session));
-                }
                 // The engine behind the calls changed (63 §2.3): the shown
                 // session and its subtree, loaded from the new one.
                 if std::mem::take(&mut m.reselect)
@@ -284,13 +279,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         settled_only: false,
                     });
                     let _ = commands.send(Command::ListAgents(session));
-                }
-                // Only the open `/peers` menu sets this; a stale flag after it closed is dropped.
-                if std::mem::take(&mut m.refresh_peers)
-                    && let Some(Menu::Peers { session, .. }) = &m.menu
-                {
-                    let _ = commands.send(Command::ListPeers(*session));
-                    let _ = commands.send(Command::ListPeerRequests(*session));
                 }
                 // 125 §3: the link survives a restart; re-read it with every load.
                 if std::mem::take(&mut m.refresh_advisor)
@@ -1419,11 +1407,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             *cursor,
         ),
         Menu::Shake(s) => (s.title(), s.rows(), s.cursor),
-        Menu::Peers { cursor, .. } => (
-            m.peers_title(),
-            m.peers_rows().iter().map(|r| r.line()).collect(),
-            *cursor,
-        ),
     };
     Some(menu_view(title, rows, cursor, width, height, false))
 }
@@ -1857,7 +1840,6 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             expanded,
         } => {
             let color = match kind {
-                CardKind::Peer => PEER,
                 CardKind::Skill => SKILL,
                 CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
@@ -1870,7 +1852,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<cr
             };
             let v = text.view();
             // 183: an outside agent's words are plain text: no Markdown, no OSC 8 links, no control characters.
-            let outside = (kind.plain() || crate::model::outside_card(*kind, title)).then(|| crate::model::clean(text.raw()));
+            let outside = kind.plain().then(|| crate::model::clean(text.raw()));
             let lines = outside.as_ref().map_or_else(|| v.lines().count(), |t| t.lines().count());
             let glyph = kind.glyph();
             let header = if *expanded {
@@ -2738,7 +2720,7 @@ mod tests {
     fn outside_peer_card_is_plain_text() {
         let frame = |title: &str| {
             let e = Entry::Card {
-                kind: CardKind::Peer,
+                kind: crate::components::peers::kind(title),
                 title: title.into(),
                 text: Box::new(markdown::Text::complete(
                     "**now** [click](http://x/go)\u{1b}[2J",

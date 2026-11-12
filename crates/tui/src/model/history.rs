@@ -157,18 +157,7 @@ pub(super) fn from_history(h: HistoryEntry, opts: &markdown::Options, registry: 
             let mut out = match projection {
                 Some(WrapperView::Card { kind, title, body }) => vec![card(kind, title, &body)],
                 Some(WrapperView::Hidden) => Vec::new(),
-                Some(WrapperView::Fallback) | None => match peer {
-                Some(origin) => match contact_row(&text) {
-                    Some((facts, words)) => vec![peer_card(&origin, words, &facts)],
-                    None => {
-                        let body = injected(&text, |row| registry.wrapper(row))
-                            .and_then(|cards| cards.into_iter().next())
-                            .map_or(text, |(_, _, body)| body);
-                        vec![peer_card(&origin, body, "")]
-                    }
-                },
-                None => user_entries(text, turn, registry),
-                },
+                Some(WrapperView::Fallback) | None => user_entries(text, turn, registry),
             };
             // One row each: `Entry::height` counts an `Info` as one line.
             out.extend(attachment_labels(&context).into_iter().map(Entry::Info));

@@ -110,21 +110,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "tool approval prompts; `always` persists to config.yaml",
     ),
     (
-        "/communication",
-        "[on|off] [always]",
-        "agent-to-agent communication: status with its exact blocker; `always` persists the global switch",
-    ),
-    (
-        "/peers",
-        "[scope owner|isolated [alias]]",
-        "peers this session may address and requests awaiting a human (picker: ⏎ opens, i inspects, a answers)",
-    ),
-    (
-        "/a2a",
-        "[reload]",
-        "network (A2A) status: listener, configured peers and exports; reload swaps peers.yaml",
-    ),
-    (
         "/cancel",
         "",
         "abort the in-flight turn (Esc; Esc x3 within 1 s stops its subagents too)",

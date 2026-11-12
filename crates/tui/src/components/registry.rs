@@ -15,6 +15,7 @@ pub fn builtin() -> Registry {
     registry.register(nodes::Nodes::default()).expect("built-in component registration");
     registry.register(mesh_devices::MeshDevices::default()).expect("built-in component registration");
     registry.register(secrets::Secrets::default()).expect("built-in component registration");
+    registry.register(peers::Peers::default()).expect("built-in component registration");
 
     // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
     registry.register(tasks::Tasks).expect("built-in component registration");

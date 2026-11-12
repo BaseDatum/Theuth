@@ -222,18 +222,7 @@ impl Model {
                         Some(crate::components::WrapperView::Hidden) => return,
                         Some(crate::components::WrapperView::Fallback) | None => {}
                     }
-                    let kind = if from.starts_with("job ") {
-                        CardKind::Job
-                    } else {
-                        CardKind::Peer
-                    };
-                    // The typed `PeerDelivered` already carded this body (50 §10).
-                    if kind == CardKind::Peer
-                        && let Some(at) = self.peer_shown.iter().position(|t| t == text)
-                    {
-                        self.peer_shown.remove(at);
-                        return;
-                    }
+                    let kind = if from.starts_with("job ") { CardKind::Job } else { wrapper_kind(from) };
                     self.interject(card(kind, from.clone(), text));
                 }
                 return;
@@ -387,10 +376,8 @@ impl Model {
                 self.turn_seq = Some(turn_seq);
                 // 125 §7.4: a steer's row is already its card (by seq, or by
                 // the `<advisory>` wrapper when the card has not landed yet).
-                // 183 §11.6: a contact's row is the `PeerDelivered` card.
                 if self.advisory_seqs.contains(&turn_seq)
                     || injected(&text, |row| self.components.wrapper(row)).is_some()
-                    || contact_row(&text).is_some()
                     || matches!(self.components.wrapper(crate::components::Wrapper {
                         tag: "user", open: "", body: &text, sender: None, origin: None, live: true,
                     }), Some(crate::components::WrapperView::Hidden))
@@ -995,5 +982,13 @@ fn observed_state(o: &ObservedMeta) -> AgentState {
         | ObservedState::Idle
         | ObservedState::Completed
         | ObservedState::Unknown => AgentState::Idle,
+    }
+}
+impl Model {
+
+    /// Peer name of a subagent in the current session's subtree; `None`
+    /// for the session itself or strangers.
+    pub fn peer_name(&self, id: SessionId) -> Option<&str> {
+        self.agents.get(&id).map(|a| a.info.name.as_str())
     }
 }

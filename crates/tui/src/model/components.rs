@@ -241,7 +241,6 @@ impl Model {
                 }
                 self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
-                self.refresh_communication = true;
                 self.component_notify(Lifecycle::Resync);
             }
             _ => {}
@@ -490,7 +489,7 @@ fn wrapper_projection_is_tag_owned_and_shared_by_history_and_live_rows() {
         [("owner:parsed", "one"), ("j4 idle 5s", "screen")]);
     let history = from_history(HistoryEntry::User {
         text: "history body".into(), turn: Some(1), context: None, vision: None, channel: None,
-        peer: Some(PeerOrigin { id: Uuid::nil(), from: "history".into(), reply_to: None, scope: None, contact_mode: None }),
+        peer: Some(agent::PeerOrigin { id: Uuid::nil(), from: "history".into(), reply_to: None, scope: None, contact_mode: None }),
     }, &markdown::Options::default(), &model.components);
     assert!(matches!(&history[0], Entry::Card { title, text, .. } if title == "owner:history" && text.raw() == "history body"));
     let session = SessionId::new();
