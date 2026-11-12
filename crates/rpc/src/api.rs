@@ -88,16 +88,14 @@ use tokio::time::Instant;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
-    AskRequested, CancelJob, CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
-    JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpHomeAction, McpLogin,
+    AskRequested, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
+    Jobs, ListServers, ListTools, Mcp, McpHomeAction, McpLogin,
     McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals,
     SetGate, SetHidden, SetMcpHome, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
 };
 use tools::{
-    Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
-    PtyScreenReply, PtyViewport, Retention, TerminalSummary,
+    ListTerminals, PtyChunk, Retention, TerminalSummary,
 };
-use tools::{LiveCounts, LiveCountsRow};
 use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
 
@@ -1232,31 +1230,6 @@ fn decode_attachment(bytes: String, ext: &str) -> RpcResult<Vec<u8>> {
     Ok(bytes)
 }
 
-/// `PtyAttach` as an RPC result; `size` resizes a running job first.
-async fn attach_pty(
-    session: SessionId,
-    job: &JobId,
-    size: Option<(u16, u16)>,
-) -> RpcResult<tools::PtyAttached> {
-    let attached = lookup::<Jobs>(JOBS_ACTOR)?
-        .ask(PtyAttach {
-            session,
-            id: job.clone(),
-            size,
-        })
-        .await
-        .map_err(|e| match e {
-            SendError::HandlerError(msg) => failed(msg),
-            other => failed(other.to_string()),
-        });
-    // 183 §10.3 (W-2): a job of a session owned elsewhere streams there only.
-    if attached.is_err()
-        && let Some(owner) = forward::owner_peer(session).await
-    {
-        return Err(forward::runs_elsewhere(owner.0));
-    }
-    attached
-}
 
 
 

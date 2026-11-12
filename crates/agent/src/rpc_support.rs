@@ -5,6 +5,9 @@ use jsonrpsee::Extensions;
 use jsonrpsee::core::RpcResult;
 use runtime::SessionId;
 use rpc_core::{ask, peer, Server};
+use kameo::error::SendError;
+use rpc_core::{failed, lookup};
+use tools::{JOBS_ACTOR, JobId, Jobs, PtyAttach};
 
 /// The owner console's root: `NewRootSession { scope: Owner }`, trusted
 /// because the caller authenticated as the owner over the socket or is the
@@ -113,3 +116,28 @@ impl RpcServerExt for Server {
 
 }
 
+/// `PtyAttach` as an RPC result; `size` resizes a running job first.
+pub async fn attach_pty(
+    session: SessionId,
+    job: &JobId,
+    size: Option<(u16, u16)>,
+) -> RpcResult<tools::PtyAttached> {
+    let attached = lookup::<Jobs>(JOBS_ACTOR)?
+        .ask(PtyAttach {
+            session,
+            id: job.clone(),
+            size,
+        })
+        .await
+        .map_err(|e| match e {
+            SendError::HandlerError(msg) => failed(msg),
+            other => failed(other.to_string()),
+        });
+    // 183 §10.3 (W-2): a job of a session owned elsewhere streams there only.
+    if attached.is_err()
+        && let Some(owner) = forward::owner_peer(session).await
+    {
+        return Err(forward::runs_elsewhere(owner.0));
+    }
+    attached
+}
