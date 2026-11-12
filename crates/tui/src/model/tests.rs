@@ -2757,8 +2757,6 @@
             })
         ));
         component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
-        assert!(matches!(rx.try_recv(), Ok(Command::CreateDraft(_))));
-        m.apply(UiEvent::SessionCreated(SessionId::new()));
         assert!(matches!(
             component_request::<McpRequest>(&mut rx),
             Ok(McpRequest::SetHidden {
@@ -4322,8 +4320,8 @@
         component_menu_key(&mut m, "mcp", KeyCode::Enter);
         component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::CreateDraft(draft)) if picked(&Some(draft.clone()))
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetHidden { session: None, draft, .. }) if picked(&draft)
         ));
         // `/<skill>` with no session.
         m.submit("/caveman lite", &tx);
@@ -4335,8 +4333,6 @@
         m.apply(UiEvent::SessionCreated(s));
         assert_eq!(m.session, Some(s));
         assert!(m.draft.is_none());
-        assert!(matches!(component_request::<McpRequest>(&mut rx),
-            Ok(McpRequest::SetHidden { session: None, hidden: true, .. })));
 
         // A fresh draft with no pick: the same entries create on the engine side.
         m.submit("/new", &tx);
@@ -4355,8 +4351,8 @@
         component_menu_key(&mut m, "mcp", KeyCode::Enter);
         component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::CreateDraft(CreateSessionOptions { model: None, effort: None, .. }))
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetHidden { session: None, draft: None, .. })
         ));
         m.submit("/caveman lite", &tx);
         assert!(matches!(
@@ -4367,9 +4363,6 @@
                 ..
             })
         ));
-        m.apply(UiEvent::SessionCreated(SessionId::new()));
-        assert!(matches!(component_request::<McpRequest>(&mut rx),
-            Ok(McpRequest::SetHidden { session: None, hidden: true, .. })));
     }
 
     /// 75 §8: on an ACP session `/model` lists the harness's options,
