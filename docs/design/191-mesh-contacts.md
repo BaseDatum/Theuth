@@ -1,6 +1,6 @@
 # 191 — MESH-CONTACTS: a contact is a contact for every machine of the mesh
 
-Status: contract, review round 1. Written at main d10feaa8, after 190 landed. Recon: `/tmp/d191/recon.md` (written at 57840336). Every path:line below was re-read at d10feaa8.
+Status: contract. D1 is final after nine review rounds; D3 to D8 and the phases were revised after review p34. Written at main d10feaa8, after 190 landed. Recon: `/tmp/d191/recon.md` (written at 57840336). D1 and D2 were re-read at d10feaa8. D3 to D8, the Contract, the Phases and the tests were re-read at main 3de3b590, and at the P1 head a4915b97 for what P1 built. Their line numbers are hints: P1 and P2 move them, so a builder re-finds each by symbol. "P1 notes #N" below are the numbered entries of P1's as-built notes (`docs/design/191-notes.md` on branch `feat/191-p1`).
 
 Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crates/replica/src`, **N** = `crates/agent/src/communication/network.rs`, **F** = `crates/agent/src/communication/network/full.rs`, **S** = `crates/agent/src/store/communication.rs`, **UI** = `crates/desktop/ui/src`.
 
@@ -182,9 +182,9 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
 ### D2. Replication: last-writer-wins tables in `sessions.sqlite`
 - **Mechanism.** `replica::attach`: per-column LWW under HLC, tombstones, version-vector catch-up (R/lib.rs:1-14, :104-121; R/sync.rs:1-14). The record tables are appended to `replicate_records` beside `projects` and `cost_owners` (`crates/agent/src/store.rs:903-915`, attach at :913).
 - **No floor gate is needed.** A machine without these tables parks their batches: up to 65,536 change sets for up to 7 days, replayed at attach (R/apply.rs:27, :29, :75-93).
-- **`SESSIONS_WIRE_SCHEMA` is set to the number of 191's own migration**, for the inbox marker (D4). That is 59 today: the rule is "set this to a new migration's number" (`crates/agent/src/store.rs:659-670`; test text at :4249-4253).
+- **`SESSIONS_WIRE_SCHEMA` is set to the number of 191's own migration**, for the inbox marker (D4). Main has 53 (`crates/agent/src/store.rs:670`) and P1 sets 59: the rule is "set this to a new migration's number" (the bump rule is the doc comment on the constant, :659-669; the snapshot test `sessions_wire_schema_tracks_the_replicated_columns` is at :4258-4305).
   - Any other value is wrong. With 54, an unrelated 0058 bump would read as newer, and this build would ship `contact_inbox` rows to a peer that lacks the column. `sqlite3changeset_apply` would skip the table while the cursor advances (`crates/sessionsync/src/apply.rs:80-109`): silent loss.
-  - Another branch adds `0058_image_refusals` and lands first. 191's migrations are 0059, 0060 and 0061; if that changes at landing, the bump follows the number of the migration that adds `sessions.contact_inbox`.
+  - `0058_image_refusals.sql` has landed on main. 191's migrations are 0059, 0060 and 0061 only if those are still the next free numbers when 191 lands: check `crates/agent/migrations` then. If they are not, the bump follows the number of the migration that adds `sessions.contact_inbox`.
   - Mixed versions are not a concern (standing rule). `store::tests::sessions_wire_schema_tracks_the_replicated_columns` snapshots the 20 tables of `capture.rs:19-40`.
 - **Rules the schema obeys (verified).**
   - Each table has one primary-key column plus `hlc TEXT`. Composite keys are refused (R/engine.rs:617-646, :636).
@@ -203,7 +203,7 @@ Short names: **A** = `crates/a2a/src`, **M** = `crates/mesh/src`, **R** = `crate
 | `contact_grants` | `<contact>\|<export id>` | `contact`, `export`, `granted` (0/1), `first_contact` (`ask`/`allow`/`block`; NULL = ask) | contact_update, contact_first_answer |
 | `a2a_exports` | `id`: UUIDv7 minted when the export is made | `name` (the card skill and the `/agents/<name>` path; made unique by the reconcile), `session`, `agent`, `title`, `description`, `home` (engine id), `removed_ms` | a2a_export_put and a2a_export_remove, import |
 | `contact_threads` (rebuilt) | `<binding>\|<context_id>` | the 0056 columns: `binding`, `context_id`, `session`, `export`, `outbound`, `last_ms` | as today (S:1591-1676) |
-| `contact_holds` (P3) | the A2A task id | `contact`, `machine`, `export`, `session`, `owner` (engine id), `since_ms`, `waiting`, `preview` (clipped to 200 characters), `until_ms` | the owner only. The row is deleted when the hold ends (D4). |
+| `contact_holds` (P3) | the A2A task id | `contact`, `machine`, `export`, `session`, `owner` (engine id), `since_ms`, `waiting`, `preview` (cut to 200 bytes), `until_ms` | the owner only. The row is deleted when the hold ends (D4). |
 
 Local and not attached (P2, 0060): `contact_roster_local(record PK, version, hash, roster, history)`, which is each C-side machine's own verified roster state (D1).
 
@@ -242,7 +242,7 @@ Local and not attached (P2, 0060): `contact_roster_local(record PK, version, has
     2. Compute membership (D1).
     3. Commit routes (`CommitPeerConfig`, A/lib.rs:553-556 → N:2843-2916).
     4. Revoke every binding outside the set, and cap its inboxes (`drop_unrouted` → `revoke_peer_bindings_except`, F:507-518, S:1134-1162).
-    5. Release holds whose grant changed: allow → start; block or removal → deny (N:3497-3528).
+    5. Release holds whose grant changed: allow → start; block or removal → deny (N:3497-3527). The release checks the owner predicate first: a session this machine no longer owns fails the task (D3).
     6. Close the connections of every endpoint that is no longer admitted.
 - **Per-row quarantine.** A bad row never freezes `stage()`, and a block always applies.
   - Today `stage` is all-or-nothing (A/config.rs:625-809; `Err` at :804-808; caller A/lib.rs:388-389).
@@ -302,119 +302,158 @@ Local and not attached (P2, 0060): `contact_roster_local(record PK, version, has
 
 ### D3. Routing
 - **Inbound: any machine accepts, and the owner serves.** The gate admits a stream from any live member of an admitted contact. The router resolves the owner:
-  - chat export → `a2a_exports.session` → `sessions.owner` (`session_owner`, `crates/agent/src/supervisor.rs:5937-5952`);
-  - agent export → the session whose `contact_inbox = <binding>|<export id>` → its owner; with no inbox, the export's home (D4);
+  - chat export → `a2a_exports.session` → `sessions.owner`;
+  - agent export → the session whose `contact_inbox = <binding>|<export id>` → its owner; with no marked session, the export's home (D4). Two marked sessions for one key are refused, never chosen between (D4);
   - `~return` → `contextId` → `contact_threads` → session → owner;
   - `GetTask` and `CancelTask` → the engine named by the task id prefix (see below).
-- **Serving.** When the owner is this machine, the request is served as today. When the owner is elsewhere, **`a2a_forward`** (see Contract) carries it over `theuth/rpc/1`, the way `peer_deliver` travels (`crates/agent/src/communication/mesh.rs:94-118`; marker `Forwarded(peer)`, `crates/rpc/src/forward.rs:126`, set by `serve` at :485-505).
+  - The owner is read with the strict predicate below. A missing row, an unreadable row and an empty owner are neither "here" nor "elsewhere": they refuse.
+- **Serving.** When the owner is this machine, the request is served as today. When the owner is elsewhere, **`a2a_forward`** (see Contract) carries it over `theuth/rpc/1`, the way `peer_deliver` travels (`crates/agent/src/communication/mesh.rs`, `forward` :94-119; marker `Forwarded(peer)`, `crates/rpc/src/forward.rs:126`, set by `serve` at :495).
+- **What `a2a_forward` carries.** One request line and one answer line: it is unary.
+  - **Methods and paths.** A JSON-RPC `POST` to `/rpc`, `/agents/<export>/rpc` or `/agents/~return/rpc` (`RETURN_ROUTE`, F:27), whose method is `SendMessage`, `GetTask` or `CancelTask`. The receiving machine reads the method and the ids it routes by (`params.id`, the message's `contextId`) and sends the body on unchanged. `ListTasks` is answered by the receiving machine, for its own tasks (below).
+  - **Answered locally, never forwarded.** The card (`GET CARD_PATH`), the notice (`POST NOTICE_PATH`) and the proof path (`GET ROSTER_PATH`, D1). Each runs on the receiving machine from its own state, under the contact's bounds.
+  - **Streams are refused at the forwarder.** The router still serves SSE (`send_streaming_message` and `subscribe_to_task`, A/server.rs). Only our own client refuses it (`no_streams`, A/contacts/reach.rs:370-372), so a contact of modified code can ask for a stream, and a unary call cannot carry one. The receiving machine answers `SendStreamingMessage`, `SubscribeToTask`, the push-config methods and every other method with `UNSUPPORTED_OPERATION` and our client's own words for streams ("streaming is not carried to contacts yet; poll GetTask").
+  - **The owner's check is the one `serve` makes.** `gate(caller)` must be `IrohGate::Contact` (A/contacts/reach.rs:161) and `admit_contact` must give a permit (rate and concurrency). `ContactAlpn::admit` is only `!= Refuse` (reach.rs:116-121): it also admits a stranger inside an open Add contact window, so a forward never rests on it. Both run on the owner's own tables, after its `contacts_ready` (D2). An owner that is not ready answers `OWNER_UNREACHABLE`, which the receiving machine reads as an offline owner.
+  - **Which failure is which.** RPC errors of the forward call: `NOT_OWNER` (-32013) and `OWNER_UNREACHABLE` (-32010). A transport failure of the call (not connected, a stream error, the deadline, a malformed line) is `OwnerOffline`. Everything the owner's router decides is the answer, `{status, body}`: 401, 404, 429, 503, or a JSON-RPC error inside a 200. The receiving machine sends `{status, body}` on unchanged, except a 401 (below). Any other RPC error becomes a refusal that carries the owner's words.
+  - **Deadline.** The forward ends after 10 s, a new constant. The contact's own `CALL_TIMEOUT` is 30 s for dial, request and answer (reach.rs:39), and `mesh::TIMEOUT` is 30 s too (mesh.rs:32): with it, the contact would time out first and know nothing. At the deadline the receiving machine answers `OwnerOffline` itself. The request may have reached the owner; the contact's retry carries the same `messageId`, which admission dedups (it answers from the first message's task). Our own client never blocks (`returnImmediately: true`, A/client.rs:794), so an ordinary `SendMessage` is answered as soon as the owner has admitted it; a caller that does block on a busy chat meets the deadline.
+  - **Size.** The answer body is capped where the contact's own client caps it, `a2a_client::MAX_RESPONSE_BYTES` (2 MiB, A/client.rs:13); a larger one is a failed forward, never a cut one. `mesh::call` parses its answer as a `PeerReceipt` and caps a line at 1 MiB (`MAX_LINE`, mesh.rs:35; `call`, :166-217). P3 makes it generic over the result type and gives `a2a_forward` a line cap above the body cap.
+  - **Off the a2a mailbox.** The handler runs beside the network leg, like `peer_deliver`. It reaches the a2a context (gate, router) through a handle the plugin publishes once, as `Gate` holds a `Weak<Ctx>` (reach.rs:114). It never asks the a2a actor per call, which is what the contact RPCs do (`contacts()`, `crates/rpc/src/api.rs:4204`): that mailbox runs the reconcile, which hashes the tables and asks the agents (D2), and a forward queued behind it would spend its deadline waiting.
 - **What the owner does with a forward.**
-  - It refuses a call without the marker, as `contact_deliver` does (`crates/rpc/src/api.rs:4492-4498`).
-  - It checks `caller_eid` again against **its own** gate, including `contacts_ready`.
+  - It refuses a call without the marker, as `contact_deliver` does (`crates/rpc/src/api.rs:4524-4530`).
+  - It runs the check above on `caller`, against **its own** tables.
   - It serves the request in its own router with `ContactCaller(eid)` (A/contacts/reach.rs:178-209).
   - Admission, the first-contact hold, the A2A task, `deliver_full`, inbox limits and receipts all run on the machine that holds the session. There is no envelope, no capped turn and no clamp.
+  - **A caller the owner has not learned yet.** The receiving machine can know a new machine of the contact before the owner does (a push or a card fetch reached it first, D1). The owner's gate then answers 401. The receiving machine does not pass that on as "not a contact there": it answers a transient refusal, "the chat's machine has not accepted this machine of yours yet; try again shortly" (`UNSUPPORTED_OPERATION`, so the contact records it as refused, and its retry works once the owner has the roster). Nothing ran and nothing is stored. The same answer covers a caller the owner has already dropped: whichever machine is behind catches up (D1).
 - **Owner offline: refused at once (answer 4).**
-  - The receiving machine checks `transport.peers()`, the live control connections (M/net.rs:980-986). If the owner is not among them, the contact gets `ContactRefusal::OwnerOffline`, "the chat's machine is offline" (`crates/agent/src/communication.rs:1100`), with no wait (mesh.rs:176-178).
-  - An owner that is still listed but dead gives the same text within the RPC timeout of 30 s (mesh.rs:32, :206-215).
-  - If the chat moved meanwhile, the owner answers `NOT_OWNER` (-32013, mesh.rs:126), and the receiving machine resolves again, once.
+  - The receiving machine checks `transport.peers()`, the live control connections (M/net.rs:978-986). If the owner is not among them, the contact gets `ContactRefusal::OwnerOffline`, "the chat's machine is offline" (`crates/agent/src/communication.rs:1100`), with no wait (mesh.rs:176-178).
+  - An owner that is still listed but dead (a frozen process, a half-open connection) gives the same text when the forward deadline passes: 10 s, below the contact's 30 s (above).
+  - If the chat moved meanwhile, the owner answers `NOT_OWNER` (-32013, mesh.rs:126), and the receiving machine resolves again, once. **A second `NOT_OWNER` goes back to the contact**, whose client tries its next member (below). A call the owner received as a forward is never forwarded again (as `rpc::forward::route`: a `Forwarded` call is served here or refused `NOT_OWNER`, forward.rs:327-330), so a stale view costs one extra hop and never a loop.
   - `OwnerOld` goes, under the standing rule.
 - **Outbound: from a session on any machine.**
   - Every machine commits a route for every admitted contact, so "unknown peer" (N:4035) goes for contacts.
-  - The sender dials with **its own** key. `PeerClient::contact` (A/lib.rs:479-500) and `IrohTransport::call` (A/contacts/reach.rs:277-289) take the contact's live member set. They try first a member with a live connection, then the last one that answered, then the rest, all within `CALL_TIMEOUT` of 30 s (reach.rs:39).
+  - The sender dials with **its own** key. `PeerClient::contact` (A/client.rs:388, built in the a2a reconcile pass, A/lib.rs `pass`) and `IrohTransport::call` (A/contacts/reach.rs:277-289) take the live members of **this machine's own accepted roster** of the contact (D1: local state, never replicated). They try first a member with a live connection, then the last one that answered, then the rest, all within `CALL_TIMEOUT` of 30 s (reach.rs:39).
   - A `NOT_OWNER` answer moves on to the next member.
-  - Each machine keeps its own card cache (`full_shape` needs the offer, F:226-238) and its own hints (`contact_addrs` behind `ContactAlpn::hints`, reach.rs:137-149).
+  - Each machine keeps its own card cache (`full_shape` needs the offer, F:226-238) and its own hints (`contact_addrs` behind `ContactAlpn::hints`, reach.rs:137-148).
+  - **A machine of ours the contact has not accepted yet.** A new machine X of our mesh can dial before the contact's roster of us lists it (D1: seconds while the contact is online). The contact's gate refuses X and closes the connection with the reason `not a contact` (`A2aGate::accept`, M/net.rs:2038-2041), which X's dial sees as a refusal, not as an unreachable machine. When every member of the contact that answered refused, the send's receipt is `failed` with "<contact> has not accepted this machine yet". There is no relay through the pairing machine (standing rule), and no retry beyond the contact's own members. The text goes away on the first send after the contact's next card fetch or push lists X. It reads the same when the contact has blocked or removed us: the dialer cannot tell the causes apart, and is not told.
   - **No relay**, under the standing rule. A machine that reaches no member reads "cannot reach <contact> from <machine>". With the default relay (`crates/mesh/src/config.rs:62`) that only happens with `mesh.relay: none` and no shared LAN (M/net.rs:65-67).
 - **The return route, and `contextId` across machines.**
-  - The sender mints `contextId` for a fresh conversation (F:241-258). Its `contact_threads` row (outbound = 1) replicates.
+  - The sender mints `contextId` for a fresh conversation (F:239-257). Its `contact_threads` row (outbound = 1) replicates.
   - The contact answers on `~return` at whichever of our members it dials. That machine resolves `(binding, contextId)` and forwards to the session's owner.
-  - The owner runs `full_return` against its own thread row, binding and offers (F:621-742). `full_intake` enqueues locally (F:366-399), which is correct because the owner holds the session.
+  - The owner runs `full_return` against its own thread row, binding and offers (F:621-742). `full_intake` enqueues locally (F:366-399), which is correct because the owner holds the session and the predicate below has said so.
   - Inbound conversations (outbound = 0) work the same way.
   - A thread row that has not replicated yet reads `TASK_NOT_FOUND`, which fails closed. The replica polls every 200 ms (R/engine.rs:30), and an answer follows a model turn.
-- **The owner check on the contact paths (needed from P2 on).** `enqueue_peer` (`crates/agent/src/supervisor.rs:2228-2322`) does not check the owner, and `Agents::session` (:925-1105) loads actors without one.
-  - So `full_return`, `full_intake` and `deliver_full` refuse a session whose `sessions.owner` is another machine, answering `NOT_OWNER`.
-  - Before P3, the contact's client moves on to its next member. From P3 on, the receiving machine forwards.
+- **The owner predicate on the contact paths (strict; from P2 on).** `enqueue_peer` (`crates/agent/src/supervisor.rs:2228-2322`) does not check the owner, and `Agents::session` (:925-1105) loads actors without one. So a contact path serves a session only when **its row exists and `sessions.owner` is this engine** (`Store::engine()`, which is `''` on a lone engine and so matches that engine's own `''` rows). Anything else is `NOT_OWNER`.
+  - **Where.** In `deliver_full`, `full_intake` and `full_return` themselves (F:272, :366, :621), not in a caller: no route to a session can skip it.
+  - **Today's helpers all read "unknown" as "here", so none of them is this check.**
+    - `Agents::session_owner` answers `Ok(None)` for a missing row and for an empty owner (supervisor.rs:5947-5954).
+    - `rpc::forward::admit_forwarded` ends in `_ => Ok(())`, so an unknown row passes (forward.rs:300-309).
+    - `SessionSummary.here` is `owner.is_empty() || owner == me` (store.rs:502).
+    - `start_or_queue` takes membership of `NetworkState.inboxes` as proof of locality (N:1640). That set is insert-only: inserted in `handle_inbox`, `install_contact_limits` and `clear_contact_limits`, never removed, so an inbox that was drained still reads as local.
+  - **Unknown and unreadable refuse.** A missing row, a store error and an empty owner on a mesh engine are all `NOT_OWNER` (a store error is logged as well). Nothing is read as local on a guess.
+  - **No second hop.** A call that arrived as a forward is served here or answered `NOT_OWNER`; it is never forwarded again. A second `NOT_OWNER` goes back to the contact (above).
+  - Before P3, the contact's client moves on to its next member on `NOT_OWNER`. From P3 on, the receiving machine forwards first.
   - A session is never run here on a contact's behalf without this check.
 - **Task ids name their machine.**
-  - Today A2A task ids are UUIDv7 (N:1532), and `GetTask` reads the local `a2a_tasks` (N:2561-2580).
+  - Today A2A task ids are UUIDv7 (N:1532), and `GetTask` reads the local `a2a_tasks` (N:2560-2581).
   - New ids take the form `<first 16 hex of the admitting engine id>-<uuidv7>`. `GetTask` and `CancelTask` are forwarded to the engine the prefix names.
   - An id with no matching prefix (one minted before 191) is served locally.
   - `ListTasks` answers this machine's tasks only. No theuth code calls it (no `.list_tasks(` caller in `crates/`).
-- **A session taken away completes its waiting full tasks.** Nothing in the agent network reacts to an owner change today (`SessionDrained`, `crates/agent/src/supervisor/transfer.rs:223-244`).
+- **A session taken away: its waiting tasks and its holds.** Nothing in the agent network reacts to an owner change today (`SessionDrained`, `crates/agent/src/supervisor/transfer.rs:223-243`).
   - On drain, the old owner completes the session's `full_inbound` tasks (N:625) as receipts: the message already sits in the queue that moved.
-  - Held first-contact tasks are released through `start_or_queue` (N:3530-3575), which forwards them.
+  - **A drain never releases a first-contact hold.** A hold waits for the user's Allow, and the message was never admitted into the chat, so there is nothing to forward: no `a2a_forward`, no `peer_deliver`, and a delivery from here would skip the Allow. On drain the session's holds **fail** with "the chat moved; send again", and their `contact_holds` rows go. The contact's resend reaches the new owner, which holds it afresh if the answer is still open (D4).
+  - **A hold is released only by a grant change** (D2 reconcile, step 5: allow → start, block or removal → deny). `start_held` (N:3531-3574) checks the owner predicate first: a release whose session is no longer owned here **fails the task** with "the chat moved; send again" instead of starting it. This also covers a session taken without a drain: a Write take from an unreachable owner reaches only `demoted`, which clears the draining mark and drops no hold (`transfer.rs:264-271`). `HOLD_TTL` (24 h) ends whatever is left.
 
 ### D4. The agent-export inbox: one home, a marker that travels with the session
 - **Home.** An agent export names its machine as `<agent>@<engine>` (N:3043-3045), stored as `a2a_exports.home`. For `theuth`, the home is the machine whose UI made the export; on import, it is the importing machine.
-- **Only the home creates inboxes** (`handle_inbox`, N:3037-3140), so creation never races. A message for an agent export without an inbox is forwarded to the home. If the home is offline, the message is refused at once.
+- **Only the home creates inboxes** (`handle_inbox`, N:3037-3140), so creation never races. A message for an agent export with no marked session is forwarded to the home. If the home is offline, the message is refused at once.
 - **Marker: `sessions.contact_inbox TEXT NULL`** (`<binding>|<export id>`). The home sets it when it creates the inbox session. `sessions` is a session-log table (capture.rs:19-40), so the marker reaches every machine in the same changeset as the session row. A record-replica map would arrive on a different stream than the session and could lose a race with a take.
-  - Routing reads the marker; there is no separate map table.
+  - Routing reads the marker; there is no separate map table. P3 adds an index for that lookup (`sessions(contact_inbox)`, partial, in 0061).
   - A deleted inbox takes its marker with it. The next message goes to the home, which makes a new inbox.
+  - **The marker is best-effort, so it is trusted only where it is there.** P1's `handle_inbox` writes it only when the export's id is known and only logs a failed write. The backfill (`backfill_contact_inboxes`) runs only in a pass after the latch, up to 150 s after boot (D2). So an inbox can exist unmarked, and a marker can hold the export's name instead of its id (an inbox imported for an export no longer known by name keeps the name, P1 notes #8). A name-valued marker caps a moved inbox and is never routed by or adopted. The rest of this section treats "set, readable and names a live `a2a_exports` row by id" as marked.
 - **The moved-inbox fail-open.**
-  - Today inbox caps live only in the local `a2a_contexts` (capture.rs:4-5). On a machine that took the inbox, `a2a_inbox_identity` finds nothing and `reinstall_contact_limits` returns `Ok(())` with no limits (N:3192-3195). `ContactScoped` then says false (`crates/agent/src/loop_.rs:4949-4964`).
-  - The separate fix on main (`INBOX_STAYS`, landed in 4bc0dddd) makes `sessionsync::owner::move_to` and `answer_release` refuse inbox sessions, so an inbox cannot move by a user action. **P3 lifts that refusal, together with forwarding, and not earlier.** Before P2's `NOT_OWNER` check and P3's forward, a moved inbox's contact messages would be delivered to a machine that no longer owns it.
-  - The case left is a Write take from an unreachable owner. P1's marker closes it: a session with `contact_inbox` set and no local `a2a_contexts` row runs **capped** (`INBOX_FAIL_CLOSED` and an empty allowlist, N:3146), with the contact prompt.
-  - The owner re-admits the inbox full on the contact's next message. `handle_inbox` adopts the marked session, reads the live persona there (S6) and marks its local row (S:2030-2061).
-  - **An inbox that moved before 191**, by a take, cannot be marked: only its owner writes its row. Its home still holds the old `a2a_contexts` row. When the contact's next message reaches the home and finds that row's session owned elsewhere, the home unmarks it and caps it there (`unmark_a2a_inbox_full`, S:2080-2088). It then opens a new, marked inbox locally, so contact messages never reach the moved session again.
-  - The moved session itself is the residual caveat. It is now the taker's own isolated session and receives no contact input; until 191 lands, it runs as today.
-- **Home removed.** An export whose `home` is tombstoned in the mesh `peers` table is quarantined with `problem: "its machine left the mesh"`.
+  - Today inbox caps live only in the local `a2a_contexts` (capture.rs:4-5). On a machine that took the inbox, `a2a_inbox_identity` finds nothing and `reinstall_contact_limits` returns `Ok(())` with no limits (N:3192-3195). `ContactScoped` then says false (`crates/agent/src/loop_.rs:5036-5049`).
+  - The separate fix on main (`INBOX_STAYS`, landed in 4bc0dddd) makes `sessionsync::owner::move_to` and `answer_release` refuse inbox sessions, so an inbox cannot move by a user action.
+  - The case left is a Write take from an unreachable owner, which the owner cannot refuse. P1's marker closes it for a marked inbox: a session with `contact_inbox` set and no local `a2a_contexts` row runs **capped** (`INBOX_FAIL_CLOSED`, N:3146, and an empty allowlist), with the contact prompt. An unmarked inbox cannot be told from any chat by its taker: that is the residual window in Risks.
+- **P3 lifts `INBOX_STAYS` last, and only for a marked inbox.**
+  - **Why not for every inbox.** The marker is best-effort (above). An unmarked inbox that moved would reach its taker with no row and no marker, and `reinstall_contact_limits` returns `Ok(())` there (`Ok(None) => return Ok(())` when `contact_inbox` is unset, in P1): it would run with no limits at all. That is the moved-inbox fail-open again, so the lift cannot be unconditional.
+  - **The rule.** `move_to` and `answer_release` keep refusing with `INBOX_STAYS` unless the session's marker is set, readable and names a live export by id. An unmarked inbox, a name-valued marker and a failed marker read all stay home. The lookup error arm of `answer_release` stays as it is. `INBOX_STAYS` (`owner.rs:40`), the wire frame `Msg::Refused` (`crates/sessionsync/src/types.rs:184`, kept generic) and the two checks (`owner.rs:556-563`, :676-688) all stay; only their condition narrows.
+  - **Order.** The lift is the **last commit of P3**. Forwarding, `NOT_OWNER`, adoption (next) and the capped-then-full path are in, and tested, before it, so no commit of P3 lets an inbox move before they hold.
+  - **Proof.** A marked inbox is moved: its next contact message finds it capped, then full. An unmarked one still cannot move (unit tests and rig case 15). The two tests that pin the refusal today, `move_of_a_contact_inbox_is_refused` and `take_of_a_contact_inbox_is_refused_by_its_owner` (`owner.rs:1408-1494`, helper `mark_inbox` :1393), keep their unmarked case and gain a marked one.
+- **Adopt by marker (P3).** Today `handle_inbox` finds an inbox only through the node-local `a2a_contexts` row, keyed `(principal, export name)` (`a2a_inbox`, S:2015-2029), and otherwise mints one (`new_root`). On a machine that took a marked inbox there is no such row. Without adoption the taker would mint a second session with the same marker, and the marker lookup of D3 would become ambiguous. So `handle_inbox` runs, in order:
+  1. **The local row**, as today. If it names a session whose row says another machine owns it, the answer is `NOT_OWNER` when that session carries this marker (the inbox simply moved), and the home-only case below when it does not.
+  2. **The marker.** Otherwise it reads `sessions` by `contact_inbox = <binding>|<export id>`:
+     - exactly one session, and its owner is this engine: **adopt** it. The live persona must be known (S6, as for a fresh inbox; otherwise `export unavailable`). Then the local `a2a_contexts` row is written (`create_a2a_context`, then `mark_a2a_inbox` with the live persona and ceiling), the limits are re-read, and the inbox runs full. This machine need not be the home.
+     - exactly one session owned by another machine: `NOT_OWNER`, and the router resolves again (D3).
+     - **more than one session**: refused with `export unavailable`, logged with both ids, **never chosen between**. Each keeps running capped (marker, no local row) until the user deletes the extra one.
+     - none: only the home mints (`new_root`, then the marker). Any other machine answers `NOT_OWNER`, which sends the router to the home.
+  3. A name-valued marker is never a match (above).
+  The adoption write is the whole re-admission. Until it, the moved inbox is capped, and a message that arrives while `contacts_ready` is false is refused as for any inbox (D7).
+- **Residual: an inbox that moved before 191.** A session moved by a take in a build without `INBOX_STAYS` cannot be marked, because only its owner writes its row (`set_contact_inbox` touches only rows this engine owns). Its home still holds the old `a2a_contexts` row. When the contact's next message reaches the home and finds that row's session owned elsewhere and unmarked, the home unmarks its own row (`unmark_a2a_inbox_full`, S:2080-2088) and opens a new, marked inbox locally, so contact messages never reach the moved session again. **191 never caps the moved session.** It has no marker and no local row on its taker, so it runs there as the taker's own ordinary session, and it receives no contact input.
+- **Home removed.** An export whose `home` is tombstoned in the mesh `peers` table is listed paused, `Export.paused` = "its machine left the mesh" (`Export` has no `problem` field; P1's `a2a_exports` already uses `paused` for "chat not on this machine").
   - It gets no new inboxes.
   - Existing inbox sessions that were moved elsewhere keep working through their owner.
   - The UI offers to rehome the export: `a2a_export_put` with `home` set to this machine.
 - **First-contact Attention (P3).**
-  - Holds stay on the machine that admitted the message: the owner (N:3406-3587, in memory).
+  - Holds stay on the machine that admitted the message: the owner (`hold_task` and `release_held`, N:3403-3527, in memory). They are holds on a *task*. P1's `CommitPeerConfig.hold` keeps the *binding* of a record that is quarantined for replication lag. The two share a word and nothing else.
   - The owner mirrors each hold as a `contact_holds` row, carrying the `FirstWaiting` fields (A/contacts.rs:107-134). It deletes the row when the hold ends, and deletes all its own rows at boot.
-  - `contact_first_waiting` and the `contact_first` Attention source (A/contacts.rs:2088-2122, :2141-2196) read that table. They drop rows past `until_ms` (`HOLD_TTL` is 24 h, N:632).
-  - An answer from any machine is a grant write. `contact_first_answer` already writes `first_contact` or `blocked` (A/contacts.rs:1927-1988). The owner's reconcile releases the hold.
+  - `contact_first_waiting` and the `contact_first` Attention source (`Ctx::first_waiting` and `FirstContactItems`, A/contacts.rs:2087-2191) read that table, not the agent's in-memory holds. They drop rows past `until_ms` (`HOLD_TTL` is 24 h, N:632).
+  - **Rows from another machine are data.** Their `machine` and `preview` are cleaned on read before they reach the strip or Attention: control characters dropped, `machine` cut to 64 characters (as `held_line` does, communication.rs:1123-1133), `preview` to 200 bytes (as `preview_of` does, N:3635-3643). A row whose owner is offline stays until its `until_ms`; its Allow still writes the grant, so the contact's resend passes at once.
+  - **Other machines refresh.** A replicated `contact_holds` row fires no `ContactsHeldChanged` here (the agent publishes it only for the holds it owns), and `A2aChanged` comes only from that event (A/lib.rs:956-970). So on another machine the strip (`ContactAllowStrip`) and Attention would never refetch. The reconcile already hashes `contact_holds` (D2): when that hash changes it publishes `A2aChanged` and nudges Attention (`nudge_attention`, A/contacts.rs:2077), whoever wrote the rows.
+  - An answer from any machine is a grant write. `contact_first_answer` already writes `first_contact` or `blocked` (A/contacts.rs:1927-1988). **Only the owner releases the hold, and only on that grant change** (D2 step 5): the owner checks the owner predicate first, and a session no longer owned here fails the task (D3). A drain never releases a hold (D3). P1 left this release for P3 (P1 notes #13).
   - Until P3, an unanswered hold on another machine just waits, which fails closed.
 
 ### D5. W-40 is deleted (P3)
-`grep -rn "W-40 only; removed by design 191" crates` lists 11 markers. They and the unmarked W-40 code go:
+`grep -rn "W-40 only; removed by design 191" crates` lists 11 markers (main 3de3b590). They and the unmarked W-40 code go. After P3, that grep lists nothing, and `grep -rn "W-40" crates` finds no live branch: only comments that name the removal, if any. Line numbers are main 3de3b590 and only a hint: P1 and P2 move them, so the builder **re-finds each row by symbol**.
 
 | Goes | Where |
 |---|---|
-| `default_contact_tools` and its users | A/config.rs:219-223; A/server.rs:610; `A/contacts/e2e_tests.rs:443`, :670, :719 |
-| `ContactOrigin.cap` and `.tools` stamping; `ContactOrigin.holder`, which only W-40 reads | A/server.rs:601-612; fields at `crates/agent/src/communication.rs:701-726` |
-| `PeerMeta.cap` and `.tools`, `ContactFrame`, the turn-cap install for a new contact turn, the PeerInput frame branch, `contact_message()` | `crates/agent/src/loop_.rs:203-209`, :215-231, :1278-1291, :1784-1798, :8744-8757 |
-| `network_contact_frame` (a contact task that is not local is forwarded, never run here) | N:3326-3351; called at `crates/agent/src/supervisor.rs:2287` |
-| `CONTACT_GRANTABLE`, `contact_grantable` and their filter | `crates/tools/src/registry.rs:622-656` |
-| `CONTACT_NOT_OWNER`, `ContactForwarded`, `Message<ContactDeliver>`, `Message<ContactForwarded>`, `forward_contact`, `contact_deliver` and its owner clamp, `contact_turn_finished` | N:3680-3964 |
-| the W-40 fall-through in `start_or_queue` (a message that is not local is now forwarded) | N:1632-1654 |
+| `default_contact_tools` and its users | A/config.rs:219-223; A/server.rs:609-610; `A/contacts/e2e_tests.rs:443`, :670, :719 |
+| `ContactOrigin.cap` and `.tools` stamping; `ContactOrigin.holder`, which only W-40 reads; `ContactFacts.cap`, which P1's `stage_records` fills from `contact_cap` | A/server.rs:601-612; fields at `crates/agent/src/communication.rs:701-726`; `contacts/records.rs` (P1) |
+| `PeerMeta.cap` and `.tools`, `ContactFrame` and `PeerInput.contact`, the turn-cap install for a new contact turn (and its clear when the message was refused), the PeerInput frame branch, `contact_message()` | `crates/agent/src/loop_.rs:220-226`, :232-245, :272-273, :1334-1348, :1381-1388, :1846-1862, :9099-9114 |
+| `network_contact_frame` (a contact task is served here or refused, never run here for another machine) | N:3325-3351; called at `crates/agent/src/supervisor.rs:2287` |
+| `CONTACT_GRANTABLE`, `contact_grantable`, their filter in the `SetAllowOnly` handler, and `grant_key`, which reads the same list (`MCP_GRANT` with it, if nothing else reads it). The guard below stays | `crates/tools/src/registry.rs:619-659`, :684-699, :1079-1089 (read by `allowlist_admits`, :1053-1077) |
+| `CONTACT_NOT_OWNER`, `ContactForwarded`, `Message<ContactDeliver>`, `Message<ContactForwarded>`, `forward_contact`, `contact_deliver` and its owner clamp, `contact_turn_finished` | N:3680-3965 |
+| the W-40 test in `start_or_queue` (the `local` test over `NetworkState.inboxes` and `session_owner`). A contact's message always goes to `deliver_full`, whose owner predicate decides (D3) | N:1632-1654 |
 | the W-40 branch of `start_task` | N:1729-1750 |
-| the W-40 branch of `network_turn_finished`; `resumed_contact_envelope` | N:2310-2323; N:2346-2375 |
-| `NetworkState.contact_waits` and `contact_replies`, with their test helpers | N:611, :614, :875-891 |
-| `CONTACT_METHOD`, `ContactFailure`, `contact_forward` (the refusal mapping moves to `a2a_forward`) | `crates/agent/src/communication/mesh.rs:121-163` |
-| `ContactEnvelope` and `ContactDeliver`, with their re-exports; `ContactRefusal::OwnerOld` | `crates/agent/src/communication.rs:728-758`; `crates/agent/src/lib.rs:163`; communication.rs:1086 |
-| RPC `contact_deliver` | `crates/rpc/src/api.rs:247-251`, impl at :4487-4514; UI `rpc/api.ts:1085-1086` |
-| `a2a.contact_cap`, the `PeerEntry.cap` readers, the `stage` parameter, the config template line | A/config.rs:43, :161-164; A/lib.rs:170, :388; `crates/theuth/src/main.rs:1259-1267` |
-| W-40 words in comments | `crates/agent/src/frame.rs:500`, :519-520 |
-| Tests | `serve_contact_deliver` and `an_exported_chat_elsewhere_runs_one_capped_turn_and_answers_only_it` (`crates/agent/src/supervisor.rs:16305-16591`); the W-40 halves of the tests at `loop_.rs:9948` and `registry.rs:3495` |
+| the W-40 branch of `network_turn_finished`; `resumed_contact_envelope` | N:2310-2323; N:2346-2378 |
+| `NetworkState.contact_waits` and `contact_replies`, with their test helpers | N:608-614, :875-891 |
+| `CONTACT_METHOD`, `METHOD_NOT_FOUND`, `ContactFailure`, `contact_forward` (the refusal mapping moves to `a2a_forward`). `NOT_OWNER` and `OWNER_UNREACHABLE` stay | `crates/agent/src/communication/mesh.rs:121-124`, :128-163 |
+| `ContactEnvelope` and `ContactDeliver`, with their re-exports; `ContactRefusal::OwnerOld` | `crates/agent/src/communication.rs:728-758`; `crates/agent/src/lib.rs:163`; communication.rs:1086, :1101 |
+| RPC `contact_deliver` | `crates/rpc/src/api.rs:46`, :247-251, impl at :4519-4550; `crates/rpc/src/export.rs:87`; UI `rpc/api.ts` :273, :1088-1089 and the `'contact_deliver'` entry at :1537 |
+| `a2a.contact_cap`, the `PeerEntry.cap` readers, the `contact_cap` parameter of `stage` and `stage_records`, the config template line | A/config.rs:43, :57, :161-164, :554-583, :629, :711; A/lib.rs:170, :388; `contacts/records.rs` (P1); `crates/theuth/src/main.rs:1270` |
+| `Contact.cap`, `ContactPatch.cap` and `ContactPatch.modes` (P1 left them for P3, P1 notes #13), **with the UI one-liner in the same commit**: `NO_PATCH` and `useGrant` in `Contacts.tsx` still name them, so `tsc` would break until P4 | P1 `crates/a2a/src/contacts.rs:88`, :156, :165; UI `components/settings/Contacts.tsx:43`, :645 |
+| W-40 words in comments | `crates/agent/src/frame.rs:503`, :522; `crates/agent/src/communication.rs:677`; `crates/agent/src/supervisor.rs:5832`, :5940; `crates/a2a/src/config.rs:162` |
+| Tests | `serve_contact_deliver` and `an_exported_chat_elsewhere_runs_one_capped_turn_and_answers_only_it` (`crates/agent/src/supervisor.rs:16307-16593`); the W-40 halves of the tests at `loop_.rs:10308-10360` and of `contact_sessions_see_only_their_allowlist` and `an_allowlist_from_a_peer_holds_only_grantable_tools` (`registry.rs:3384`, :3621), which move to the empty list |
 
 - **What stays.** The fail-closed states use these, so they are kept:
   - `SetCap`, `SetAllowOnly`, `SetTurnCap`;
   - `install_contact_limits`, `reinstall_contact_limits`, `clear_contact_limits`;
   - the Resume cap and the journal source `contact`: old journals and "unsure" still cap;
-  - `contact_baseline` (`crates/agent/src/frame.rs:503-516`).
+  - `contact_baseline` (`crates/agent/src/frame.rs:502-518`);
+  - `INBOX_STAYS`, `Msg::Refused` (`crates/sessionsync/src/types.rs:184`, generic) and the two refusals in `move_to` and `answer_release`: only their condition narrows (D4);
+  - the UI's parse and cards for `<contact_message>` rows (`lib/injected.ts`, `HarnessCards.tsx`): transcripts the previous build wrote still hold them, and that data must still load.
+- **`SetAllowOnly` keeps a guard when `contact_grantable` goes.** The filter in its handler keeps a list that came from another engine from granting more than the public web, and `grant_key` reads the same list. After W-40 every caller passes the empty list: the inbox callers of `install_contact_limits` (F:475, :496; N:3313) pass `Vec::new()`, and `reinstall_contact_limits` re-installs only what they stored. So the handler installs **only an empty allowlist**. A non-empty one is installed as the empty list and logged. It is never skipped, because a session with no allowlist entry drops out of `contact_scoped`, which the contact prompt and the LAN rule read (`registry.rs:1093`, `lan_allowed` :1114), and never installed as given. Under an empty list nothing is admitted whatever its key, so `grant_key` has no reason left.
 - **Size.** About 600–650 production lines and 360 test lines, not the recon's 420.
 - **What replaces W-40.** `a2a_forward` (D3) carries the request itself, not a capped turn. D4 covers agent exports.
 
 ### D6. Mesh to mesh
-- **Both sides run the same code.** Each side's record of the other holds the other's member set.
+- **Both sides run the same code.** Each side's record of the other replicates the other's pins. Each machine keeps its own accepted roster of the other side as local state (D1), so two machines of one side can differ for a moment.
 - **Any machine can dial any machine.** The receiving machine forwards to the owner (D3).
-- **Bounds.** The rate and concurrency bounds are per principal (`admit_contact`, A/server.rs:290-302), so all members share them. Connection and stream budgets stay per endpoint (M/net.rs:47-49).
+- **Bounds.** The rate and concurrency bounds are per principal **on each machine** (`admit_contact`, A/server.rs:290-302: 10 requests a second and 8 at once, `RATE_PER_SEC` and `CONCURRENT_PER_PEER`, :56-58). They are not shared: a contact that reaches N of our machines has N times the budget. A forwarded call spends a permit on the receiving machine and again on the owner (the owner re-admits it, D3), so the owner's own bound holds however many machines relay for it. Connection and stream budgets stay per endpoint (M/net.rs:47-49).
 - **Pairing.** One ceremony runs between one machine on each side. Each side signs its record's roster at version 1, which covers every other machine of its mesh, and its other machines co-sign it. Both humans press Accept once. A side that is a single engine has a roster of one.
 - **Family.** A machine of our own mesh is still refused, both ways (dial: M/net.rs:839-844; gate: M/net.rs:2029-2032).
-- **A contact that joins our mesh.** Its record shows `problem: "now one of your machines"` and stays denied until it is removed.
+- **A contact that joins our mesh.** Its record shows `problem: "now one of your machines"` (`problem_kind` `refused`, D8) and stays denied until it is removed.
 
 ### D7. Fail-closed, path by path
-These hold as built (190 D6):
+These hold as built (190 D6). Lines are main 3de3b590; re-find by symbol:
 - S1: the `reinstall_contact_limits` fallback (N:3192-3237);
-- S2 and S10: `full_ceiling` (F:575-592; S:283-302);
+- S2 and S10: `full_ceiling` (F:575-591; S:283-302);
 - S3: a revoked binding at actor start;
 - S4: `apply_contact_limits` (N:3296-3320);
 - S5: `drop_unrouted` (F:507-518);
 - S6: the persona refusal (N:3047-3066);
-- S7: the resume cap (`crates/agent/src/loop_.rs:1701-1771`; `crates/agent/src/store/durability.rs:1085-1112`);
-- S8: no actor without limits (`crates/agent/src/supervisor.rs:1104-1109`);
-- S9: the contact prompt (`loop_.rs:4949-4964`).
+- S7: the resume cap (`crates/agent/src/loop_.rs:1764-1832`; `crates/agent/src/store/durability.rs:1085-1110`);
+- S8: no actor without limits (`crates/agent/src/supervisor.rs:1100-1105`);
+- S9: the contact prompt (`loop_.rs:5034-5049`).
 
 The new paths:
 
@@ -425,11 +464,18 @@ The new paths:
 | Boot before the roster joins (agent inbox) | S6 is unchanged, on the inbox's owner. |
 | Missing or invalid agent file | S6 and S2 are unchanged, read on the owner. |
 | Revoked binding | Revoked on every machine by the reconcile. An unknown binding resolves as missing, which caps (S3). It is never un-revoked. |
-| Removal or block while this machine was down | The first reconcile after the latch runs `revoke_peer_bindings_except` (S:1134-1162) over whatever has synced. A change that did not sync, because every other machine was off, is the accepted cost under Risks. |
-| Receiving machine and owner disagree on a removal | Both check: the receiving gate first, then the owner's own gate on `a2a_forward`. |
-| `a2a_forward` from outside the mesh | Refused without `Forwarded(peer)`, which only paired engines get (`crates/rpc/src/forward.rs:485-505`). |
-| Owner offline, or unreadable | Refused at once (D3). An error from `session_owner` refuses (N:1641-1650). |
-| Contact paths reach a session that is not owned here (from P2 on) | Refused with `NOT_OWNER` (D3). |
+| Removal or block while this machine was down | The first reconcile after the latch runs `revoke_peer_bindings_except` (S:1134-1158) over whatever has synced. A change that did not sync, because every other machine was off, is the accepted cost under Risks. |
+| Receiving machine and owner disagree on a removal | Both check: the receiving gate first, then the owner's own check on `a2a_forward` (`IrohGate::Contact`, a permit, `contacts_ready`, D3). A caller the owner does not list answers 401, which the receiving machine turns into a transient refusal; nothing runs (D3). |
+| `a2a_forward` from outside the mesh | Refused without `Forwarded(peer)`, which only paired engines get (`crates/rpc/src/forward.rs:485-508`). |
+| Owner offline | Refused at once (D3). A listed owner that never answers is refused when the 10 s forward deadline passes, below the contact's 30 s (D3). |
+| Owner unknown or unreadable (missing row, store error, empty owner on a mesh engine) | Refused: the strict predicate reads none of them as local (D3). `session_owner`, `admit_forwarded`, `SessionSummary.here` and the `inboxes` set are not trust checks. |
+| Contact paths reach a session that is not owned here (from P2 on) | `deliver_full`, `full_intake` and `full_return` serve a session only when its row exists and its owner is this engine, else `NOT_OWNER`. A forwarded call is never forwarded again, and a second `NOT_OWNER` goes back to the contact (D3). |
+| A forward that is not a unary method of a JSON-RPC path (a stream, a push-config call, the card, the notice, the proof path) | Refused at the forwarder; the card, the notice and the proof path are answered on the receiving machine and never carried (D3). |
+| A forward that outlives the contact's own timeout | The forward deadline (10 s) is below the contact's `CALL_TIMEOUT` (30 s), so the contact hears our answer. Its retry carries the same `messageId`, which admission dedups (D3). |
+| One of our machines the contact has not accepted yet | Refused at the contact's gate (`not a contact`); the receipt is `failed` with "<contact> has not accepted this machine yet"; no relay, no retry beyond the contact's members (D3). |
+| A drain, a take or a grant change while a first-contact hold is open | A drain fails the hold ("the chat moved; send again") and never releases it. A hold is released only by a grant change, and a release whose session is no longer owned here fails the task. Nothing is delivered from a machine that does not own the session: no `a2a_forward`, no `peer_deliver` (D3). |
+| A replicated hold row | Cleaned and cut on read; the rows of an offline owner live until `until_ms`; other machines refresh when the holds hash changes (D4). |
+| `SetAllowOnly` after `contact_grantable` goes | It installs only the empty list. A non-empty one is installed empty and logged, never skipped and never installed as given (D5). |
 | Invalid or conflicting replicated row | That row is quarantined and its endpoints denied; the rest stage (D2). |
 | A removed member | Dropped by the next version any remaining member signs. C accepts the lowest newer version of the record's `chain` that carries a valid copy signed by a member of its current roster (D1). |
 | A replayed or forged roster | Refused if it has an equal or older version, another record's `chain`, a signer outside the current roster, a bad signature (domain-separated: `theuth/a2a/roster/v1`), or more than 256 members (D1). |
@@ -451,63 +497,69 @@ The new paths:
 | A merged-away record, or a broken chain | The binding is revoked and its inboxes capped; a broken chain quarantines the group. |
 | Export name collision | Exports are keyed by id; the reconcile makes the name unique; a grant names the id (D2). |
 | Import of a stale `peers.yaml` | Never revives a removed record, never writes `blocked` on reuse (D2). |
-| Inbox moved, by a take or a Write | `sessions.contact_inbox` travels with the row, so the inbox runs capped until it is re-admitted (D4). |
+| Inbox moved, by a take or a Write | A marked inbox: `sessions.contact_inbox` travels with the row, so it runs capped (marker, no local row) until adoption re-admits it (D4). An unmarked inbox, a name-valued marker or an unreadable one never moves by a user action: `INBOX_STAYS` still refuses it. A Write take of an inbox inside the window before its marker is written is the stated residual (Risks). |
+| Two sessions carry one marker | Refused with `export unavailable`, never chosen between; both stay capped until the user deletes the extra one (D4). |
 | Inbox deleted and re-created | The marker goes with the deleted session; the next message goes to the home. |
-| Export home removed | Quarantined; no new inbox (D4). |
-| Resumed turn after a take | The journal travels (`turn_steps`, capture.rs:28); an empty one caps (durability.rs:1103-1105). |
-| A grant change still replicating | Bounded by replication lag. The receiving and the owning machine each check their own copy; only the owner releases a hold. |
+| Export home removed | Listed paused ("its machine left the mesh"); no new inbox (D4). |
+| Resumed turn after a take | The journal travels (`turn_steps`, capture.rs:29); an empty one caps (durability.rs:1103-1105). |
+| A grant change still replicating | Bounded by replication lag. The receiving and the owning machine each check their own copy; only the owner releases a hold, and only on that grant change (D3, D4). |
 
 ### D8. UI (P4)
-- **Every machine shows the same contacts,** because every RPC reads the replicated tables.
-- **Styling:** theme palette only, from the tokens in `UI/styles.css` (light :14-38, dark :69-93, Tailwind :232-256). No emojis.
-- **Network › Contacts list** (`UI/components/settings/Contacts.tsx`: `ContactsTab` :134, `Contacts` :147, each row :175-232):
-  - A `Paired on <machine>` line.
-  - `Their machines: laptop · studio`, from the contact's current roster. A machine that a newer roster dropped is shown struck through, labelled "left", in `text-muted-foreground`.
+- **Every machine lists the same contacts,** because every RPC reads the replicated tables. Three fields are this machine's own view and not replicated state: `path` (its live connections), `machines` (its accepted roster of the contact, `contact_roster_local`, D1: never replicated) and `problem` with `problem_kind` (its own reconcile). Two machines of ours can show different `machines` for a moment while a roster reaches them.
+- **Styling:** theme palette only, from the tokens in `UI/styles.css` (light `:root` :11-62, dark `.dark` :64-113, Tailwind `@theme inline` :205-269). No emojis.
+- **Network › Contacts list** (`UI/components/settings/Contacts.tsx`: `ContactsTab` :134, `Contacts` :147, each row :172-228):
+  - A `Paired on <machine>` line, from the record's `paired_on` (an engine id, shown by the machine's name; its short id when that machine has left the mesh).
+  - `Their machines: laptop · studio`, from `Contact.machines` (Contract): this machine's accepted roster of the contact. Names come from this machine's card cache, which is in memory (D2), so after a restart a name fills in as its card is fetched, and the short endpoint id shows until then. A record with no roster yet (a pin-only record) lists its pins, so the line is never empty. A machine that this machine's accepted history lists but its current roster does not is shown struck through, labelled "left", in `text-muted-foreground`.
   - The `PathChip` (:54-62) shows this machine's path.
-  - A row with a `problem` shows it in `text-destructive`, with **Remove** as its only action.
+  - **A row with a `problem`** shows it, and `problem_kind` says what the row offers:
+    - `refused`: this machine refuses the record and it will not mend itself (an unsound record, one removed on another machine, a roster conflict, "cannot verify this contact's machines", "now one of your machines"). The text is in `text-destructive`, and **Remove** is the action.
+    - `waiting`: the record is held while replication catches up (P1 notes #3: a name taken until the rename lands, a pointer into a record not here yet). The text is in `text-muted-foreground`, with no action. It clears by itself, and Remove would delete a sound record.
+    - `alert`: D1's inflation alert; the contact still works. The text is in `text-destructive`, with **Remove** and a link to Network › Machines, because the fix may be to unpair one of ours. Remove is not the only way out.
 - **Remove and Block confirms:** "… on all your machines".
 - **Removing a contact because of a rogue machine.** The Remove confirm on a contact, and the unpair dialog when Unpair is chosen for a lost or stolen machine, show: "Ask <contact> to remove you too, then pair again. Until they do, the removed machine may still reach them." The remedy needs both sides (D1).
 - **Network › Machines, the unpair dialog:** adds "Your contacts are told this machine left. A contact that is offline learns it when it comes back."
-- **Access** (`ContactAccess` :688): no change. The picker already lists chats on other machines (`useShareable` :679).
-- **Export names:** made unique per mesh. A second `Notes` export reads `Notes-2` (names come from chat titles, :631-643).
-- **Share dialog** (`ShareDialog` :828; `SharingItems` :808-822): no change, except that `useGrant` stops sending `modes`.
-- **First-contact surfaces:** `ContactAllowStrip` (`UI/components/chat/ContactAllowStrip.tsx:28-31`), `ContactFirstScreen` (`UI/components/attention/PlainScreens.tsx:152-168`) and the HUD (`UI/components/hud/Hud.tsx:179`) keep their components. From P3 their data covers the whole mesh.
+- **Access** (`ContactAccess` :688): no change. The picker already lists chats on other machines (`useShareable` :667).
+- **Export names:** made unique per mesh. A second `Notes` export reads `Notes-2` (names come from chat titles, `useGrant` :634-651).
+- **Share dialog** (`ShareDialog` :828; `SharingItems` :808-822): no change. `useGrant` stopped sending `modes` in P3, in the commit that removes `ContactPatch.modes` and `.cap` (D5).
+- **First-contact surfaces:** `ContactAllowStrip` (`UI/components/chat/ContactAllowStrip.tsx:28-31`), `ContactFirstScreen` (`UI/components/attention/PlainScreens.tsx:152-168`) and the HUD (`UI/components/hud/Hud.tsx:179`) keep their components. From P3 their data covers the whole mesh, and they refetch when another machine's hold row arrives (D4).
 - **TUI, Slack, Signal, Telegram:** these have `/a2a` status only (`crates/tui/src/model.rs:7189-7193`). Nothing new.
 
 ## Contract
 | Item | 191 |
 |---|---|
-| `Contact` (ts) | + `id`, + `paired_on: string \| null` (the machine name, looked up through `mesh::Status` as `session_move` does, `crates/rpc/src/api.rs:5400-5414`), + `machines: ContactMachine[]`, + `problem: string \| null`; − `cap`. `path` stays, for this machine. |
-| `ContactMachine` (new ts) | `{ eid: string, name: string, left: boolean }` |
-| `Export` (ts) | + `id`; `name` stays the card name |
-| `ContactPatch` | − `modes` (190 kept it "until 191"), − `cap` |
-| `FirstWaiting` | same shape; from P3 it is read from `contact_holds` |
+| `Contact` (ts) | P1 (built): + `id`, + `problem: string \| null`. P3: − `cap`, in the commit that also changes the UI's `NO_PATCH` (`Contacts.tsx`), or `tsc` breaks until P4. P4: + `paired_on: string \| null` (the machine's name, looked up through `mesh::Status` as `session_move` does, `crates/rpc/src/api.rs:5433-5446`; this machine's own name from `self_name`; the first 8 characters of the id when that machine has left), + `machines: ContactMachine[]`, + `problem_kind: 'refused' \| 'waiting' \| 'alert' \| null`. `path` stays, for this machine. `path`, `machines` and `problem` are this machine's own view (D8). |
+| `ContactMachine` (new ts, P4) | `{ eid: string, name: string, left: boolean }`. Its source is this machine's local state, never a replicated row (a roster carries endpoint ids and nothing else, D1): the accepted roster in `contact_roster_local` gives the `eid`s, an `eid` that is in its accepted history but not in the current roster is `left`, and `name` is the `machine` of that endpoint's card in this machine's in-memory card cache, else the short endpoint id. A record with no roster yet lists its pins (`contact_endpoints`). |
+| `Export` (ts) | P1 (built): + `id`; `name` stays the card name. There is no `problem` field: an export's state is its existing `paused` text (D4). |
+| `ContactPatch` | P3: − `modes` (190 kept it "until 191"), − `cap`, with the UI one-liner (`NO_PATCH`, `useGrant`) in the same commit |
+| `FirstWaiting` | same shape; from P3 it is read from `contact_holds` (D4) |
 | `ContactEnvelope`; `ContactOrigin.{cap,tools,holder}` | removed (the ts row for `ContactEnvelope` at `crates/rpc/src/export.rs:87` goes) |
 | RPC `contact_deliver` | removed |
-| RPC `a2a_forward` (mesh-internal; `Forwarded` only) | `{ caller: eid, method: "GET"\|"POST", path, body } → { status, body }`; the owner re-checks the caller at its own gate |
-| RPCs `contact_list`, `contact_update`, `contact_remove`, `a2a_exports`, `a2a_export_put`, `a2a_export_remove`, `contact_first_answer`, `contact_first_waiting` (`crates/rpc/src/api.rs:2648-2696`; impls :9547-9625) | same names; they read and write the tables, so they answer for the whole mesh. A write to a merged contact writes every record of the group. Export RPCs take the export id. |
+| RPC `a2a_forward` (mesh-internal; `Forwarded` only) | `{ caller: eid, path, body } → { status, body }`, always a `POST`. Unary: `path` is `/rpc`, `/agents/<export>/rpc` or `/agents/~return/rpc`, and the JSON-RPC method is `SendMessage`, `GetTask` or `CancelTask`. Streams, push config, the card, the notice and the proof path are never carried (D3). The owner re-checks `caller` itself: `IrohGate::Contact` (not `ContactAlpn::admit`), `admit_contact` and `contacts_ready`. RPC errors: `NOT_OWNER` (-32013) and `OWNER_UNREACHABLE` (-32010); every HTTP outcome of the owner's router is `{status, body}`. The forward ends after 10 s, below the contact's 30 s; an answer body is at most 2 MiB; `mesh::call` becomes generic over its result. It is served off the a2a mailbox. |
+| RPCs `contact_list`, `contact_update`, `contact_remove`, `a2a_exports`, `a2a_export_put`, `a2a_export_remove`, `contact_first_answer`, `contact_first_waiting` (`crates/rpc/src/api.rs:2678-2710`; impls :9631-9679) | same names; they read and write the tables, so they answer for the whole mesh. A write to a merged contact writes every record of the group. Export RPCs take the export id. |
 | Card | + extension `https://theuth.io/a2a/ext/members/v1` `{chains: [{chain, versions: [{version, members, sigs: [{signer, sig}]}]}]}`: for each record that lists the caller, the last 8 versions, each with up to 16 signatures (members of the previous version first, oldest first, then pinned signers). Omitted while no chain exists. The same payload is the body of a `NOTICE_PATH` push, which is now read up to 192 KiB (today the body is ignored and the route answers 204, `A/contacts/reach.rs:241-243`). |
 | Contact-only route `GET ROSTER_PATH?chain=<id>&pin=<eid>&from=<version>` | The proof path: the signed copies from the pin's first signed version to the latest, in greedy hops, with every content at each hop version. At most 64 hops and 256 KiB per answer; `from` continues. It serves only the caller's own records, and `pin` must be one of that record's pins. It runs under the contact's rate and concurrency bounds (D1). |
 | A2A task id | `<16 hex engine prefix>-<uuidv7>` |
-| Migration | **`0059_mesh_contacts.sql`** (P1): `contacts`, `contact_endpoints`, `contact_grants`, `a2a_exports`, `contact_addrs`, `sessions.contact_inbox`, and `contact_threads` rebuilt (new table, copy with the new `id`, drop, rename; index kept). **`0060_contact_rosters.sql`** (P2): `contact_rosters`, `contact_roster_heads`, and `contact_roster_local` (local); it drops `contact_votes` if 0059 created it. **`0061`** (P3): `contact_holds`. 0058 is skipped: another branch holds it for `image_refusals`. The highest today is `0057_inbox_ceiling.sql`. |
+| Migration | **`0059_mesh_contacts.sql`** (P1): `contacts`, `contact_endpoints`, `contact_grants`, `a2a_exports`, `contact_addrs`, `sessions.contact_inbox`, and `contact_threads` rebuilt (new table, copy with the new `id`, drop, rename; index kept). **`0060_contact_rosters.sql`** (P2): `contact_rosters`, `contact_roster_heads`, and `contact_roster_local` (local); it drops `contact_votes` if 0059 created it. **`0061`** (P3): `contact_holds`, and a partial index `sessions(contact_inbox) WHERE contact_inbox IS NOT NULL` for the marker lookup (an index adds no column, so `SESSIONS_WIRE_SCHEMA` does not move for it). `0058_image_refusals.sql` has landed on main, so 0059 to 0061 are the next free numbers **at landing**: check `crates/agent/migrations` then, and renumber together with `SESSIONS_WIRE_SCHEMA` (D2). |
 | Attach | `replicate_records` (`crates/agent/src/store.rs:913`) + `contacts`, `contact_endpoints`, `contact_grants`, `a2a_exports`, `contact_threads`; + `contact_rosters` and `contact_roster_heads` in P2; + `contact_holds` in P3. `contact_roster_local` is never attached. |
 | `SESSIONS_WIRE_SCHEMA` | 53 → **59**, the number of 191's migration that adds `sessions.contact_inbox`. At landing it follows that migration's number (D2). |
 | `peers.yaml` | after import: HTTP peers only. The structs are unchanged, so an old file still loads. |
-| Config | − `a2a.contact_cap`. `A2aConfig` is not `deny_unknown_fields` (A/config.rs:27-28), so an old `config.yaml` still loads. No new key. Constants: a roster holds at most 256 members; a card carries 8 versions per chain and 16 signatures per version; the roster signature's domain prefix is `theuth/a2a/roster/v1`; the notice body is capped at 192 KiB; pushes back off up to 10 minutes. |
+| Config | − `a2a.contact_cap`. `A2aConfig` is not `deny_unknown_fields` (A/config.rs:27-28), so an old `config.yaml` still loads. No new key. Constants: a roster holds at most 256 members; a card carries 8 versions per chain and 16 signatures per version; the roster signature's domain prefix is `theuth/a2a/roster/v1`; the notice body is capped at 192 KiB; pushes back off up to 10 minutes; the forward ends after 10 s; a forwarded answer body is at most 2 MiB. |
 
 ## Phases
 - **The order differs from the recon's** (there: P2 routing, P3 endpoint sets). Here endpoint sets come first (P2), and routing follows (P3). With sets first, a session on any machine dials with its own key. Routing first would need an outbound relay through the pairing machine, which the standing rule rules out, and P3 would only delete it again.
-- **Every phase is safe on its own.** P2 adds the owner check of D3, so a reply that lands on the wrong machine is refused and the client tries the next member.
+- **P1 and P2 land on main together; P3 and P4 each land alone.** P1 alone is not safe: it has no owner check, yet it replicates `contact_threads` and admits every machine a contact pinned (P1's rig case 6 pins two). A `~return` can then reach a machine that does not own the session, and `full_return`, `full_intake` and `deliver_full` would run it there. P2 carries the strict owner predicate of D3 (a contact path serves a session only when its row exists and its owner is this engine, else `NOT_OWNER`), so a reply that lands on the wrong machine is refused and the client tries the next member. P1 plus P2 is the first unit that is safe on its own. P3 forwards where P2 refuses, and its last commit lifts `INBOX_STAYS` (D4). P4 is UI only.
 - **Attention from every machine moves to P3.** Before P3, a hold on another machine waits; it is not released.
 - **Why not three phases:** one phase would grow to about 2,000 production lines, too much for one review round.
 
 | Phase | What | Prod | Tests | Proof |
 |---|---|---|---|---|
-| **P1 RECORDS** | 0059 and the attach; import and pointer merge; staging from the tables with per-row quarantine; reconcile on the content hash; `contacts_ready`, including the actor-start cap; the replicated binding id, never un-revoked; contact RPCs write the tables; export ids; `sessions.contact_inbox` | 1,200–1,500 | 1,000–1,200 | Rig cases 5 and 6; a contact paired on n1 is listed on n2 |
-| **P2 ROSTERS** | 0060. Per-record chains: signing and co-signing in the reconcile; `contact_rosters` keeping the hop chain plus the last 8 versions. Per-machine C-side state (`contact_roster_local`): the jump-and-replay accept rule with the equal-version switch; bootstrap from the pin through the proof path (`ROSTER_PATH`), using untrusted hints and at least two sources. Divergence detection through `contact_roster_heads`, recomputed at every refresh. The card extension and the `NOTICE_PATH` push, with its body cap and backoff. Refresh from every trusted member. Gate and dialing over the group's union, with per-endpoint hints. Merge proof and attribution. The ceremony-only deny lift. The `contacts_ready` check before a ceremony. Owner refusal on contact paths. | 850–1,050 | 700–900 | Rig cases 2, 4a, 4b and 7–12 |
-| **P3 ROUTING** | `a2a_forward`; owner resolution; offline refusal; forwarding of `~return` and task ids; inbox home; lifting the main-branch `INBOX_STAYS` refusal (4bc0dddd) together with forwarding (D4); `contact_holds` (0061) and Attention from every machine; completing tasks on drain; **W-40 deleted** | +900–1,100, −600–650 | +850–1,050, −360 | Rig cases 1 and 3 |
-| **P4 UI and docs** | D8; site docs; as-built | 400–600 | 400–500 | Vite fixture screenshots; the whole rig |
-| Total | | ≈ 3,350–4,250 gross; ≈ 2,750–3,600 net | ≈ 2,950–3,650 gross | |
+| **P1 RECORDS** (lands with P2) | 0059 and the attach; import and pointer merge; staging from the tables with per-row quarantine; reconcile on the content hash; `contacts_ready`, including the actor-start cap; the replicated binding id, never un-revoked; contact RPCs write the tables; export ids; `sessions.contact_inbox` | 1,200–1,500 | 1,000–1,200 | Rig cases 5 and 6; a contact paired on n1 is listed on n2 |
+| **P2 ROSTERS** | 0060. Per-record chains: signing and co-signing in the reconcile; `contact_rosters` keeping the hop chain plus the last 8 versions. Per-machine C-side state (`contact_roster_local`): the jump-and-replay accept rule with the equal-version switch; bootstrap from the pin through the proof path (`ROSTER_PATH`), using untrusted hints and at least two sources. Divergence detection through `contact_roster_heads`, recomputed at every refresh. The card extension and the `NOTICE_PATH` push, with its body cap and backoff. Refresh from every trusted member. Gate and dialing over the group's union, with per-endpoint hints. Merge proof and attribution. The ceremony-only deny lift. The `contacts_ready` check before a ceremony. The strict owner predicate on the contact paths: `deliver_full`, `full_intake` and `full_return` serve a session only when its row exists and its owner is this engine, else `NOT_OWNER`; no helper that reads an unknown or empty owner as local (D3, D7). | 850–1,050 | 700–900 | Rig cases 2, 4a, 4b and 7–12 |
+| **P3 ROUTING** | `a2a_forward`: unary, `SendMessage`, `GetTask` and `CancelTask` only, the owner's own contact check, a 10 s deadline below the contact's 30 s, a generic `mesh::call`, off the a2a mailbox; strict owner resolution; offline refusal; forwarding of `~return` and task ids; the not-accepted-yet receipt and the transient refusal; inbox home and **adopt by marker**; `contact_holds` and the `sessions(contact_inbox)` index (0061); Attention from every machine (`A2aChanged` on a holds-hash change, rows cleaned on read); hold release only on a grant change (P1 left it), holds failed on drain; completing tasks on drain; `Contact.cap`, `ContactPatch.cap` and `.modes` and the `SetAllowOnly` grantable filter removed with the UI one-liner, the empty-only guard kept; **W-40 deleted**; **last commit: the `INBOX_STAYS` lift, for marked inboxes only** (D4) | +1,200–1,450, −600–650 | +1,250–1,550, −360 | Rig cases 1, 3 and 15–18; `grep -rn 'W-40 only' crates` lists nothing |
+| **P4 UI and docs** | D8, with `Contact.paired_on`, `.machines` (this machine's local roster state) and `.problem_kind`; site docs; as-built | 450–650 | 450–550 | Vite fixture screenshots; the whole rig |
+| Total | | ≈ 3,700–4,650 gross; ≈ 3,100–4,000 net | ≈ 3,400–4,200 gross | |
+
+The P3 and P4 rows grew after review p34: adoption by marker, the hardened forward, the holds refresh, the `SetAllowOnly` guard and `problem_kind`.
 
 ## Tests and proof
 **Rig.** Three scratch engines on loopback, discovery off, with a fake model server (the 186 rig `/tmp/d186/rig`, if present).
@@ -517,12 +569,14 @@ The new paths:
 
 The cases:
 1. **A chat on n2 answers a contact paired on n1.** n2 owns chat X, and X is shared to C from n1's UI.
+   - **Force C to dial n1.** C tries a member with a live connection first, then the last one that answered (D3). So C and n1 first exchange one message about a chat Y that n1 owns: n1 is then C's live and last-answered member, and C has no connection to n2. Assert in n1's log that the `a2a_forward` to n2 happened, so the case cannot pass by C dialing n2 directly.
    - C sends `PING 1` to n1, which forwards it to n2.
    - X shows `<message from="peer:…">` and no `<contact_message>`.
    - C gets `PONG 1`.
-   - The task id's prefix names n2, and C's `GetTask` reaches n2.
+   - The task id's prefix names n2, and C's `GetTask`, sent to n1, reaches n2.
 2. **Sending from n2.** A session on n2 calls `send_message(peer:c/<export>)`. n2 dials C with n2's key, and C admits n2 because n2 is in our roster. The answer returns through `~return` to the session on n2.
 3. **n2 off.** Stop n2. C's message to X reads "the chat's machine is offline" in under 1 s, and nothing is queued.
+   - **Listed but dead.** Freeze n2 (`kill -STOP`) instead of stopping it, so that n1 still lists it. C's message to X reads "the chat's machine is offline" when n1's forward deadline passes (10 s), before C's own 30 s `CALL_TIMEOUT`: assert that C's error is n1's refusal and not "no answer from the contact in time". Thaw n2 and resend with the same `messageId`: one task, not two.
 4. **A machine removed.**
    - **(a) Honest removal of the pairing machine n1.**
      - `mesh_remove(n1)` on n2. n2 signs a roster without n1 and pushes it.
@@ -581,6 +635,24 @@ The cases:
     - With c1 present at our real head, a fresh machine c4 adopts nothing. It denies with "cannot verify this contact's machines".
     - The synced n2 raises the inflation alert within two refreshes and denies nothing.
     - With no peer present, c4 follows the verified path: the limit class.
+15. **A moved inbox.** n1 is the home of agent export E, shared with C, and holds its marked inbox S (`sessions.contact_inbox` set, a local row, running full) after C's first message. C dials n1, as in case 1.
+    - **An unmarked inbox cannot move.** Clear S's marker (a data edit that stands in for an inbox no pass has marked yet) and try to move S to n2: refused with "This chat is a contact's inbox, so it stays on this machine.", and so is a take from n2. Put the marker back.
+    - **A marked inbox moves.** Move S to n2. On n2, S has the marker and no local row, so its actor starts capped (log: `contact inbox starts capped`, an empty tool list).
+    - **Capped, then full.** A turn started in S on n2 before any contact message runs capped. Then C messages E: n1 finds S by its marker, sees that n2 owns it and forwards. n2 adopts S (persona known, local row written) and S runs full: its next turn lists the agent's own tools. Assert that exactly one session carries the marker, and that the answer comes from S.
+    - **A message before `contacts_ready` is refused** on n2 (boot it as in case 6): S stays capped.
+    - **Ambiguity.** Copy S's marker onto a second session on n2 (a data edit). C's next message is refused with `export unavailable`, nothing runs, and both sessions stay capped.
+16. **An answer to a session that moved.** A session on n1 messages C (`send_message(peer:c/<export>)`), and C's fake model holds its `PONG` behind a latch. Move the session to n2, then release the latch: C answers on `~return` at n1 (forced as in case 1). n1 resolves `(binding, contextId)` through the replicated thread to the session and forwards to its owner, n2. n2 runs `full_return`, and the answer reaches the session as `<message from="peer:c/…">`. Assert that n1 started nothing for the session.
+    - **Stale view.** Move the session back to n1 before C answers a second message. n1's copy still says n2, n2 answers `NOT_OWNER`, and n1 resolves again, once, and serves it itself.
+    - **Never run where it is not owned.** Make n1 and n2 each read the other as the owner (a data edit). n1 forwards, n2 answers `NOT_OWNER`, n1 resolves once more and the second `NOT_OWNER` goes back to C. C tries its next member and is refused the same way. Assert that neither machine started an actor for the session.
+17. **A hold answered on another machine.** n2 owns chat X, shared to C with first contact `ask`. C's first message to X is held on n2: n2 writes a `contact_holds` row, and C's task is `auth_required`.
+    - **Attention refreshes on n1.** n1 shows the strip for X and the Attention item within one reconcile tick, with no other event: a fresh `contact_first_waiting` on n1 lists the hold, and an `A2aChanged` reached its UI.
+    - **Allow on n1** is a grant write. It replicates, and n2's reconcile releases the hold: X shows the message, C's task completes with its receipt, the row is deleted and the strip goes on both machines. Nothing was delivered from n1.
+    - **Drain.** Hold a new message, then move X to n1 before anyone answers. On n2 the hold fails with "the chat moved; send again", its row goes, and n1's strip clears. C's resend reaches n1 and is held there afresh, since the answer is still open.
+    - **Release after a move.** Hold a message, freeze n2 (`kill -STOP`), take X from n1 with `Write`, thaw n2, then answer Allow. The release finds that n2 no longer owns X and fails the task. Nothing is delivered from n2.
+18. **n2 before C has accepted it.** n2 is a machine of our mesh that C's roster of us does not list yet.
+    - Stop C. Add n2 to our mesh: n1 signs the version that lists it, and its push to C fails. Freeze n1 (`kill -STOP`), then start C: C's boot fetch from n1 gets no answer, so C's roster of us still lacks n2.
+    - A session on n2 calls `send_message(peer:c/<export>)`. C's gate refuses n2 (C's log: `not a contact`), and the receipt on n2 is `failed` with "<C> has not accepted this machine yet". Nothing is relayed through n1, and nothing is retried.
+    - Thaw n1 (`kill -CONT`). Its push retry reaches C within the backoff, and n2's next send is accepted.
 
 **Unit tests**, one for each plausible regression:
 - **P1**
@@ -627,19 +699,43 @@ The cases:
   - **Re-check on arrival:** a roster row that arrives by replica triggers the signing check, as well as a `peers_gen` bump does.
   - `NOT_OWNER` on `~return` makes the client try the next member (S4).
 - **P3**
-  - `a2a_forward` without the marker is refused.
-  - The owner refuses a caller that its own copy blocks.
-  - An owner that is not connected is refused at once.
-  - `~return` is forwarded by its thread.
-  - On drain, waiting full tasks complete.
-  - An answer from n1 releases a hold on n2.
-  - An export whose home was removed opens no inbox (S5).
+  - **`a2a_forward`:**
+    - without the `Forwarded` marker it is refused;
+    - a stream method (`SendStreamingMessage`, `SubscribeToTask`), a push-config method, any other method and any path outside `/rpc`, `/agents/<export>/rpc` and `/agents/~return/rpc` are refused at the forwarder, and the card, the notice and the proof path are answered on the receiving machine and never carried;
+    - the owner refuses a caller that its own copy blocks, and one that is only `IrohGate::Pair` (a stranger inside an open Add contact window, whom `ContactAlpn::admit` would let through);
+    - a caller the owner does not list yet (an unlisted sender) gets a 401 from the owner and the transient refusal from the receiving machine, and nothing runs;
+    - an owner that is not `contacts_ready` answers `OWNER_UNREACHABLE`, which the contact reads as an offline owner;
+    - the forward's deadline is below the contact's `CALL_TIMEOUT`: with a listed owner that never answers, the contact hears `OwnerOffline` first, and its retry with the same `messageId` makes one task;
+    - an answer body over 2 MiB fails the forward and is never cut;
+    - the handler answers while the a2a actor's mailbox is held (it never asks the actor).
+  - **Owner resolution:**
+    - an owner that is not connected is refused at once;
+    - an unknown row, an unreadable row and an empty owner on a mesh engine all refuse, and none is read as local; an inbox that was drained is still in `NetworkState.inboxes` and is still refused;
+    - the first `NOT_OWNER` resolves again, once; the **second `NOT_OWNER` goes back to the contact**, with no third resolve;
+    - a call that arrived as a forward and whose owner is elsewhere answers `NOT_OWNER` and is **not forwarded again** (no second hop);
+    - `~return` is forwarded by its thread.
+  - **Outbound:** a machine the contact has not accepted gets the `failed` receipt "<contact> has not accepted this machine yet", with no relay and no retry; a `NOT_OWNER` answer moves the client to its next member.
+  - **Drain and holds:**
+    - on drain, waiting full tasks complete as receipts;
+    - on drain, a hold fails with "the chat moved; send again" and its `contact_holds` row is deleted; it is never started and never forwarded (no `a2a_forward`, no `peer_deliver`);
+    - an answer from n1 releases a hold on n2 only through a grant change; a release whose session is no longer owned here fails the task; a drain or a take with no grant change releases nothing;
+    - a `contact_holds` row written by another machine makes `A2aChanged` fire here and the Attention item appear; its `machine` and `preview` are cleaned and cut on read; a row past `until_ms` is dropped, and an offline owner's row stays until then.
+  - **Inbox:**
+    - an export whose home was removed opens no inbox and lists `paused` (S5);
+    - **adoption:** a marked inbox owned here with no local row is adopted (the row is written, the persona re-read, the inbox runs full); one marked session owned elsewhere is `NOT_OWNER`; **two marked sessions refuse** and both stay capped; a name-valued marker is never adopted and still caps; with no match, the home mints and any other machine answers `NOT_OWNER`;
+    - **a moved inbox's message is capped, then full:** before the adoption write the inbox runs capped (marker, no row), after it full; a message while `contacts_ready` is false is refused;
+    - **`INBOX_STAYS` after the lift:** an **unmarked inbox still refuses to move**, and so do a name-valued marker and an unreadable marker, in `move_to` and in `answer_release` (the `Msg::Refused` path); a marked inbox moves;
+    - the home that finds an unmarked pre-191 session owned elsewhere unmarks its own row and mints a new marked inbox.
+  - **Guard and removals:**
+    - `SetAllowOnly` installs only the empty list: a non-empty one is installed empty and logged, never skipped, so `contact_scoped` stays true and no tool is grantable;
+    - `ContactPatch` has no `cap` or `modes`, and the UI builds with the `NO_PATCH` change (`tsc`, `Contacts.test.ts`);
+    - `grep -rn 'W-40 only' crates` lists nothing.
 
 The S1–S10 tests stay.
 
 ## The recon's "Not verified" list, resolved
-- **The journal after a take:** it travels. `turn_steps` is a session-log table (capture.rs:28), and resume reads it on the new owner (`crates/agent/src/supervisor/resume.rs:165-171`, :198-216). S7 holds.
-- **`contact_card`'s pause check for a remote chat:** it already answers from the replicated row (N:3004-3024; `crates/agent/src/supervisor.rs:1206-1219`; A/contacts/offers.rs:211-237).
+- **The journal after a take:** it travels. `turn_steps` is a session-log table (capture.rs:29), and resume reads it on the new owner (`crates/agent/src/supervisor/resume.rs:160-170`, :195-216). S7 holds.
+- **`contact_card`'s pause check for a remote chat:** it already answers from the replicated row (N:3004-3024; `crates/agent/src/supervisor.rs:1206-1219`; A/contacts/offers.rs:211-236).
 - **One key on two machines:** discovery would flap (D1).
 - **TUI, Slack, Signal, Telegram:** `/a2a` only (D8).
 - **Where the tables live:** `sessions.sqlite` (D2).
@@ -665,5 +761,6 @@ The S1–S10 tests stay.
   
   Sky's answer 1 is automatic for lost, retired or honest-code machines.
 - **Residuals of the roster (D1).** A legacy record whose pinned machine was lost before it ever signed, or a contact for which every trusted member was removed, needs the contact removed and paired fresh.
+- **An inbox with no marker (D4).** The marker is best-effort: written at every admission and by every pass after the latch, never before it (up to 150 s after boot), and not at all when the export's id is unknown or the write fails. A taker cannot tell such an inbox from a plain chat, so a Write take from an unreachable owner inside that window would run it with no limits. A user's move or take never moves it (`INBOX_STAYS` still refuses it, D4). This window is the stated residual.
 - **A merge ends conversations, once.** The next message starts fresh.
 - **Write contention.** Replica apply takes `BEGIN IMMEDIATE` on the single `sessions.sqlite` write connection (R/apply.rs:454). The rows are tiny and the writes rare. Watch it in the P1 rig.
