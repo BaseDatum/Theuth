@@ -194,7 +194,7 @@ pub mod tooling;
 /// Skills RPC server and client traits.
 pub mod skills;
 /// Screens RPC server and client traits.
-pub mod screens;
+pub use computer::rpc as screens;
 /// Concepts RPC server and client traits.
 pub mod concepts;
 /// Documents RPC server and client traits.

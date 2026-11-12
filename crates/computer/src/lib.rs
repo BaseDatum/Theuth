@@ -24,6 +24,9 @@ pub mod pointer;
 pub mod screen;
 pub mod tools;
 mod worker;
+/// Screens RPC server and client traits.
+pub mod rpc;
+pub use rpc::rpc_module;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

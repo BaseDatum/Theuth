@@ -1,3 +1,4 @@
+use crate as computer;
 use agent::rpc_support::RpcServerExt;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use computer::{COMPUTER_ACTOR, Computer, Permissions, ScreenContext};
