@@ -1,4 +1,25 @@
     use super::*;
+    use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
+    use crate::components::todos::{Todos, TodoCard, TODO_ROWS, Msg as TodosMsg, Request as TodosRequest};
+
+    fn todos(m: &Model) -> &Todos { m.components.get::<Todos>().unwrap() }
+    fn todos_mut(m: &mut Model) -> &mut Todos { m.components.get_mut::<Todos>().unwrap() }
+    fn todo_blocked(m: &Model) -> bool {
+        m.prompt_id().is_some() || m.modal_menu() || m.components.captures(crate::components::FocusClass::Secret)
+    }
+    fn todo_focused(m: &Model) -> bool { todos(m).focused(todo_blocked(m)) }
+    fn todo_card(m: &Model, width: usize, height: usize) -> Option<TodoCard> {
+        todos(m).todo_card(width, height, todo_blocked(m))
+    }
+    fn set_todos(m: &mut Model, snapshot: TodoSnapshot) {
+        m.component_notify(crate::components::Lifecycle::SessionChanged);
+        todos_mut(m).set_todos(snapshot);
+    }
+    fn toggle_todos(m: &mut Model, tx: &UnboundedSender<Command>) {
+        m.mount_components(tx);
+        m.component_slash("/todos", "");
+    }
+
     use crate::components::double::{Double, DoubleCmd, double_chip};
     use agent::{CostBucket, CostScope, Coverage, Money, SessionCost};
     use crate::components::costs::{cost_lines, cost_short, money_units};
@@ -6388,7 +6409,7 @@
         let (a, b) = (SessionId::new(), SessionId::new());
         m.session = Some(a);
         // Nothing loaded: no card. A load carries the plan.
-        assert!(m.todo_card(80, 40).is_none());
+        assert!(todo_card(&m, 80, 40).is_none());
         m.apply(UiEvent::History(
             a,
             Loaded {
@@ -6396,7 +6417,7 @@
                 ..Loaded::default()
             },
         ));
-        let header = m.todo_card(80, 40).unwrap().header;
+        let header = todo_card(&m, 80, 40).unwrap().header;
         assert!(
             header.starts_with("> Todos · 1/3 done · 1 blocked"),
             "{header}"
@@ -6406,20 +6427,20 @@
             "{header}"
         );
         // Older and foreign snapshots are dropped; a newer one replaces.
-        m.apply_agent(AgentEvent::TodoChanged {
+        m.apply(wire_event("agent.events", AgentEvent::TodoChanged {
             session: a,
             snapshot: plan(1, 9),
-        });
-        m.apply_agent(AgentEvent::TodoChanged {
+        }));
+        m.apply(wire_event("agent.events", AgentEvent::TodoChanged {
             session: b,
             snapshot: plan(9, 9),
-        });
-        assert_eq!(m.todos.as_ref().unwrap().version, 2);
-        m.apply_agent(AgentEvent::TodoChanged {
+        }));
+        assert_eq!(todos(&m).todos.as_ref().unwrap().version, 2);
+        m.apply(wire_event("agent.events", AgentEvent::TodoChanged {
             session: a,
             snapshot: plan(3, 4),
-        });
-        assert_eq!(m.todos.as_ref().unwrap().items.len(), 4);
+        }));
+        assert_eq!(todos(&m).todos.as_ref().unwrap().items.len(), 4);
         // A refused settled reload without a snapshot marks the plan stale,
         // never empty; the same version back from `get_todos` clears it.
         m.apply(UiEvent::Refreshed(
@@ -6429,41 +6450,41 @@
                 ..Loaded::default()
             },
         ));
-        assert!(m.todos_stale && m.todos.as_ref().unwrap().items.len() == 4);
-        assert!(m.todo_card(80, 40).unwrap().header.contains("stale"));
-        m.apply(UiEvent::Todos(a, Some(plan(3, 4))));
-        assert!(!m.todos_stale);
+        assert!(todos(&m).todos_stale && todos(&m).todos.as_ref().unwrap().items.len() == 4);
+        assert!(todo_card(&m, 80, 40).unwrap().header.contains("stale"));
+        component_reply(&mut m, "todos", TodosMsg::Loaded(a, Ok(Some(plan(3, 4)))));
+        assert!(!todos(&m).todos_stale);
         // A failed `get_todos` marks the plan stale; it never looks current.
-        m.apply(UiEvent::Todos(a, None));
-        assert!(m.todos_stale && m.todos.as_ref().unwrap().items.len() == 4);
-        m.apply(UiEvent::Todos(a, Some(plan(3, 4))));
-        assert!(!m.todos_stale);
+        component_reply(&mut m, "todos", TodosMsg::Loaded(a, Ok(None)));
+        assert!(todos(&m).todos_stale && todos(&m).todos.as_ref().unwrap().items.len() == 4);
+        component_reply(&mut m, "todos", TodosMsg::Loaded(a, Ok(Some(plan(3, 4)))));
+        assert!(!todos(&m).todos_stale);
         // An explicit clear hides the card even while it is open and focused,
         // and the editor gets the keys back. A later F2 opens it again.
-        m.toggle_todos(&tx);
+        toggle_todos(&mut m, &tx);
         rx.try_recv().unwrap();
-        assert!(m.todo_expanded() && m.todo_focused());
-        m.apply_agent(AgentEvent::TodoChanged {
+        assert!(todos(&m).todo_expanded() && todo_focused(&m));
+        m.apply(wire_event("agent.events", AgentEvent::TodoChanged {
             session: a,
             snapshot: plan(4, 0),
-        });
-        assert!(m.todo_card(80, 40).is_none() && !m.todo_focus && m.input_focused());
-        m.toggle_todos(&tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::GetTodos(s)) if s == a));
+        }));
+        assert!(todo_card(&m, 80, 40).is_none() && !todos(&m).focus && m.input_focused());
+        toggle_todos(&mut m, &tx);
+        assert!(matches!(component_request::<TodosRequest>(&mut rx), Ok(TodosRequest::GetTodos(s)) if s == a));
         assert!(
-            m.todo_card(80, 40)
+            todo_card(&m, 80, 40)
                 .unwrap()
                 .header
                 .starts_with("v Todos · none")
         );
         // The same empty version back from that read is not a second clear.
-        m.apply(UiEvent::Todos(a, Some(plan(4, 0))));
-        assert!(m.todo_expanded() && m.todo_focused());
+        component_reply(&mut m, "todos", TodosMsg::Loaded(a, Ok(Some(plan(4, 0)))));
+        assert!(todos(&m).todo_expanded() && todo_focused(&m));
         // The choice is per session: B opens collapsed, A is still open on return.
         m.resume(b, &tx);
-        assert!(m.todos.is_none() && !m.todo_expanded() && !m.todo_focus);
+        assert!(todos(&m).todos.is_none() && !todos(&m).todo_expanded() && !todos(&m).focus);
         m.resume(a, &tx);
-        assert!(m.todo_expanded());
+        assert!(todos(&m).todo_expanded());
     }
 
     #[test]
@@ -6473,64 +6494,64 @@
         let mut m = Model::default();
         let s = SessionId::new();
         m.session = Some(s);
-        m.set_todos(plan(1, 8));
+        set_todos(&mut m, plan(1, 8));
         // F2: open and focused; the editor loses the keys, the draft is not touched.
-        m.toggle_todos(&tx);
-        assert!(m.todo_focused() && !m.input_focused());
+        toggle_todos(&mut m, &tx);
+        assert!(todo_focused(&m) && !m.input_focused());
         let (w, h) = (40, 40);
-        let total = m.todo_lines(w).len();
-        let card = m.todo_card(w, h).unwrap();
+        let total = todos(&m).todo_lines(w).len();
+        let card = todo_card(&m, w, h).unwrap();
         assert!(total > TODO_ROWS, "narrow terminal wraps: {total} rows");
         assert_eq!(card.rows.len(), TODO_ROWS);
         assert_eq!(card.height(), 3 + TODO_ROWS + 1);
         assert!(card.overflow.as_deref().unwrap().starts_with("↕ 1–6"));
         // Down one, then PageDown to the end: the last row is reachable and
         // the window never runs past it.
-        m.todo_key(KeyCode::Down, w, h);
-        assert_eq!(m.todo_scroll, 1);
+        todos_mut(&mut m).todo_key(KeyCode::Down, w, h);
+        assert_eq!(todos(&m).scroll, 1);
         for _ in 0..10 {
-            m.todo_key(KeyCode::PageDown, w, h);
+            todos_mut(&mut m).todo_key(KeyCode::PageDown, w, h);
         }
-        assert_eq!(m.todo_scroll, total - TODO_ROWS);
-        let last = m.todo_card(w, h).unwrap().rows.last().unwrap().1.clone();
-        assert_eq!(last, m.todo_lines(w).last().unwrap().1);
-        m.todo_key(KeyCode::PageUp, w, h);
-        m.todo_key(KeyCode::Up, w, h);
-        assert_eq!(m.todo_scroll, total - 2 * TODO_ROWS - 1);
+        assert_eq!(todos(&m).scroll, total - TODO_ROWS);
+        let last = todo_card(&m, w, h).unwrap().rows.last().unwrap().1.clone();
+        assert_eq!(last, todos(&m).todo_lines(w).last().unwrap().1);
+        todos_mut(&mut m).todo_key(KeyCode::PageUp, w, h);
+        todos_mut(&mut m).todo_key(KeyCode::Up, w, h);
+        assert_eq!(todos(&m).scroll, total - 2 * TODO_ROWS - 1);
         // A short terminal keeps the trigger and shrinks the body.
-        assert_eq!(m.todo_card(w, 17).unwrap().rows.len(), 3);
-        assert_eq!(m.todo_card(w, 10).unwrap().height(), 4);
+        assert_eq!(todo_card(&m, w, 17).unwrap().rows.len(), 3);
+        assert_eq!(todo_card(&m, w, 10).unwrap().height(), 4);
         // Widening the terminal leaves fewer rows than the scroll position:
         // the card clamps to the end, and ↑ steps from that drawn end.
         for _ in 0..10 {
-            m.todo_key(KeyCode::PageDown, w, h);
+            todos_mut(&mut m).todo_key(KeyCode::PageDown, w, h);
         }
-        let wide = m.todo_lines(200).len();
-        assert!(wide < m.todo_scroll, "{wide} rows at 200 columns");
-        let card = m.todo_card(200, h).unwrap();
+        let wide = todos(&m).todo_lines(200).len();
+        assert!(wide < todos(&m).scroll, "{wide} rows at 200 columns");
+        let card = todo_card(&m, 200, h).unwrap();
         assert_eq!(
             card.rows.last().unwrap().1,
-            m.todo_lines(200).last().unwrap().1
+            todos(&m).todo_lines(200).last().unwrap().1
         );
-        m.todo_key(KeyCode::Up, 200, h);
-        assert_eq!(m.todo_scroll, wide - TODO_ROWS - 1);
+        todos_mut(&mut m).todo_key(KeyCode::Up, 200, h);
+        assert_eq!(todos(&m).scroll, wide - TODO_ROWS - 1);
         // ⏎ is swallowed (the draft is not submitted); a typed char is not:
         // it hands the editor back so it lands in the draft.
-        assert!(m.todo_key(KeyCode::Enter, w, h) && m.todo_focused());
-        assert!(!m.todo_key(KeyCode::Char('x'), w, h));
-        assert!(!m.todo_focus && m.todo_expanded() && m.input_focused());
+        assert!(todos_mut(&mut m).todo_key(KeyCode::Enter, w, h) && todo_focused(&m));
+        assert!(!todos_mut(&mut m).todo_key(KeyCode::Char('x'), w, h));
+        assert!(!todos(&m).focus && todos(&m).todo_expanded() && m.input_focused());
         // Tab: editor back, card stays open. F2 again closes it.
-        m.todo_focus = true;
-        m.todo_key(KeyCode::Tab, w, h);
-        assert!(!m.todo_focus && m.todo_expanded() && m.input_focused());
-        m.toggle_todos(&tx);
-        assert!(!m.todo_expanded() && m.todo_card(w, h).unwrap().rows.is_empty());
+        todos_mut(&mut m).focus = true;
+        todos_mut(&mut m).todo_key(KeyCode::Tab, w, h);
+        assert!(!todos(&m).focus && todos(&m).todo_expanded() && m.input_focused());
+        toggle_todos(&mut m, &tx);
+        assert!(!todos(&m).todo_expanded() && todo_card(&m, w, h).unwrap().rows.is_empty());
         // Esc while focused collapses and frees the editor.
-        m.toggle_todos(&tx);
-        m.todo_key(KeyCode::Esc, w, h);
-        assert!(!m.todo_expanded() && !m.todo_focus);
+        toggle_todos(&mut m, &tx);
+        todos_mut(&mut m).todo_key(KeyCode::Esc, w, h);
+        assert!(!todos(&m).todo_expanded() && !todos(&m).focus);
         // A modal takes precedence: the focused card yields its keys.
-        m.toggle_todos(&tx);
+        toggle_todos(&mut m, &tx);
         m.apply(UiEvent::Ask(AskRequested {
             id: AskId(Default::default()),
             session: s,
@@ -6541,11 +6562,11 @@
                 recommended: None,
             }],
         }));
-        assert!(!m.todo_focused());
+        assert!(!todo_focused(&m));
         m.asks.clear();
-        assert!(m.todo_focused());
+        assert!(todo_focused(&m));
         m.menu = Some(Menu::Slash { cursor: 0 });
-        assert!(m.todo_focused(), "the slash popup is not modal");
+        assert!(todo_focused(&m), "the slash popup is not modal");
     }
 
     #[test]
@@ -6560,7 +6581,7 @@
             status,
             reason: reason.map(str::to_owned),
         };
-        m.set_todos(TodoSnapshot {
+        set_todos(&mut m, TodoSnapshot {
             version: 1,
             source: TodoSource::Acp,
             items: vec![
@@ -6570,10 +6591,10 @@
             ],
         });
         assert_eq!(
-            m.todo_card(0, 40).unwrap().header,
+            todo_card(&m, 0, 40).unwrap().header,
             "> Todos (external plan) · 2 done, 1 dropped  [F2]"
         );
-        m.set_todos(TodoSnapshot {
+        set_todos(&mut m, TodoSnapshot {
             version: 2,
             source: TodoSource::Native,
             items: vec![
@@ -6582,10 +6603,10 @@
             ],
         });
         assert_eq!(
-            m.todo_card(0, 40).unwrap().header,
+            todo_card(&m, 0, 40).unwrap().header,
             "> Todos · 1/2 done · 1 blocked   Waiting: 1 blocked  [F2]"
         );
-        let lines = m.todo_lines(0);
+        let lines = todos(&m).todo_lines(0);
         assert_eq!(lines[1].1, "[blocked]     t");
         assert_eq!(lines[2], (None, format!("{}owner", " ".repeat(14))));
     }

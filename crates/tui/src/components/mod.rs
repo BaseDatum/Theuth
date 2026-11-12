@@ -27,6 +27,7 @@ pub mod costs;
 pub mod web_progress;
 pub mod artifacts_apps;
 pub mod double;
+pub mod todos;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 pub mod jobs;
