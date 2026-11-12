@@ -13449,6 +13449,7 @@ dependencies = [
  "link",
  "platform",
  "rand 0.10.3",
+ "rpc-core",
  "runtime",
  "schemars 1.2.3",
  "serde",

@@ -71,10 +71,7 @@ use knowledge::{
     KnowledgeActor, List, Meta, Put, PutConcept, Restore, Revision, RevisionOf, Search, Source,
     SyncNow, Write,
 };
-use link::{
-    CancelPair, Enable, LinkConfig, LinkStatus, Pair, Pairing, Rename,
-    RenameDevice, Revoke,
-};
+use link::{LinkConfig, LinkStatus};
 
 use runtime::{InputId, Runtime, SessionId};
 use serde::de::DeserializeOwned;
@@ -594,13 +591,6 @@ async fn route_question_via<T: DeserializeOwned>(
     }
 }
 
-/// The nodes actor; absent when `nodes.enabled: false` or the plugin is not loaded.
-fn nodes() -> RpcResult<ActorRef<nodes::NodesActor>> {
-    lookup::<nodes::NodesActor>(nodes::NODES_ACTOR).map_err(|e| match e.code() {
-        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "nodes is disabled", None::<()>),
-        _ => e,
-    })
-}
 
 
 
