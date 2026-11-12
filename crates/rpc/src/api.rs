@@ -191,7 +191,7 @@ pub mod settings;
 /// Tooling RPC server and client traits.
 pub mod tooling;
 /// Skills RPC server and client traits.
-pub mod skills;
+pub use agent::rpc_skills as skills;
 /// Screens RPC server and client traits.
 pub mod screens;
 /// Mcp RPC server and client traits.

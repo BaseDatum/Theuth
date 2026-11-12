@@ -1,6 +1,7 @@
-use agent::rpc_forward as forward;
-use agent::rpc_support::{owner_root, RpcServerExt};
-use agent::{
+use crate as agent;
+use crate::rpc_forward as forward;
+use crate::rpc_support::{owner_root, RpcServerExt};
+use crate::{
     AddSkill, AddSkillRepo, Agents, ListSkills, LoadSkill, RemoveSkill, RemoveSkillRepo,
     SkillBody, SkillMeta, SyncSkills, UseSkill,
 };
