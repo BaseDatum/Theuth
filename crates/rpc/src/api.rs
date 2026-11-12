@@ -630,10 +630,6 @@ async fn name_paired_on(contacts: &mut [a2a::contacts::Contact]) {
 }
 
 
-/// The tasks actor; absent when the plugin is not loaded or its store failed (67 §7).
-fn tasks_actor() -> RpcResult<ActorRef<tasks::Tasks>> {
-    lookup::<tasks::Tasks>(tasks::TASKS_ACTOR)
-}
 
 
 /// The sandbox actor; absent when `sandbox.enabled: false` or the plugin is not loaded (79).
