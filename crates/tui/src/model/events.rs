@@ -204,6 +204,8 @@ pub enum UiEvent {
 pub enum Command {
     /// Generic owner effect; new panels do not add command cases.
     Component(crate::components::Effect),
+    /// Ordered widget input addressed to its registered owner, without an RPC task.
+    ComponentInput(crate::components::LocalReply),
     /// `send_input`.
     Send {
         /// `None` creates a session.
