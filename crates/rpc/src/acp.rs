@@ -176,7 +176,7 @@ pub async fn serve_mesh(rt: Runtime) {
         return;
     };
     // 68 §5: forwarded session RPCs from other front doors, on `theuth/rpc/1`.
-    tokio::spawn(crate::forward::serve(
+    tokio::spawn(agent::rpc_forward::serve(
         rt.clone(),
         transport.clone(),
         crate::methods(rt.clone()).await,

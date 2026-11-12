@@ -5,6 +5,8 @@ mod follow;
 mod helpers;
 mod state;
 mod peer;
+mod stream;
+pub use stream::{is_delta, Stream, Backlog, Next, BACKLOG};
 
 #[cfg(test)]
 pub mod stream_tests;

@@ -93,7 +93,7 @@ async fn route_scope<T: DeserializeOwned>(
     match scope {
         Scope::Session(s) => {
             server.authorize_fwd(ext, *s).await?;
-            crate::forward::route(ext, *s, method, params).await
+            agent::rpc_forward::route(ext, *s, method, params).await
         }
         Scope::Doc(_) => Ok(None),
     }
@@ -115,7 +115,7 @@ async fn read_scope<T: DeserializeOwned>(
         return route_scope(server, ext, scope, method, params).await;
     };
     server.authorize_fwd(ext, *s).await?;
-    if let Some(r) = crate::forward::to_creator(ext, *s, method, &params).await? {
+    if let Some(r) = agent::rpc_forward::to_creator(ext, *s, method, &params).await? {
         return Ok(Some(r));
     }
     let Ok(store) =
@@ -137,7 +137,7 @@ async fn read_via<T: DeserializeOwned>(
 ) -> RpcResult<Option<T>> {
     match store.owner(s).await {
         Ok(Some((owner, _))) if !owner.is_empty() && owner != store.engine() => {
-            crate::forward::to_peer(ext, &replica::PeerId(owner), method, params).await
+            agent::rpc_forward::to_peer(ext, &replica::PeerId(owner), method, params).await
         }
         _ => Ok(None),
     }
@@ -304,8 +304,8 @@ pub(crate) async fn attach(
         let Some(scope) = cells.run_scope(&run).await else {
             // 183 §4.3 (W-1): a run forwarded to the chat's owner streams there only.
             if let Some(Scope::Session(s)) = forwarded_scope(&run) {
-                let owner = crate::forward::owner_peer(s).await.map(|p| p.0);
-                return Err(crate::forward::runs_elsewhere(owner.unwrap_or_default()));
+                let owner = agent::rpc_forward::owner_peer(s).await.map(|p| p.0);
+                return Err(agent::rpc_forward::runs_elsewhere(owner.unwrap_or_default()));
             }
             return Err(cells_err(CellsError::NotFound(run.0.clone())));
         };
@@ -502,7 +502,7 @@ pub(crate) async fn interpreters(
     cells_guard::read(ext)?;
     if let Some(e) = engine {
         let peer = replica::PeerId(e.clone());
-        return match crate::forward::to_peer(
+        return match agent::rpc_forward::to_peer(
             ext,
             &peer,
             "cell_interpreters",
@@ -785,7 +785,7 @@ mod tests {
     async fn forwarded_internal_peer_passes_the_guard() {
         let server = server();
         let mut ext = with(rpc_core::RpcPeer::internal());
-        ext.insert(crate::forward::Forwarded(replica::PeerId(
+        ext.insert(agent::rpc_forward::Forwarded(replica::PeerId(
             "engine-b".into(),
         )));
         assert!(cells_guard::press(&ext).is_ok());
@@ -827,7 +827,7 @@ mod tests {
         assert!(cells_guard::pressed_by(&ext, &local).starts_with("desktop · "));
 
         let mut fwd = with(rpc_core::RpcPeer::internal());
-        fwd.insert(crate::forward::Forwarded(replica::PeerId(
+        fwd.insert(agent::rpc_forward::Forwarded(replica::PeerId(
             "engine-b".into(),
         )));
         assert_eq!(

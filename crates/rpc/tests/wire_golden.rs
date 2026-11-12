@@ -238,7 +238,7 @@ async fn relay(rt: &Runtime, stream: &mut Stream) {
 /// bridge ring by exactly two frames, without timing a stalled network client.
 async fn lagged_then_pending_snapshot(
     methods: &jsonrpsee::Methods,
-    events: &tokio::sync::broadcast::Sender<rpc::bridge::Event>,
+    events: &tokio::sync::broadcast::Sender<rpc_core::Event>,
 ) {
     let mut stream = Stream::open(methods).await;
     let initial = stream.next().await;

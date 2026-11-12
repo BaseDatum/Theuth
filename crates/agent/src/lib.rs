@@ -28,6 +28,8 @@ use serde::{Deserialize, Serialize};
 
 /// Provider-owned helpers used by RPC method owners.
 pub mod rpc_support;
+/// Session-owner forwarding and its immutable startup hooks.
+pub mod rpc_forward;
 pub mod acp_child;
 pub mod activity;
 pub mod advisor;

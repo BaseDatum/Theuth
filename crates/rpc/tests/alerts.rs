@@ -22,7 +22,7 @@ struct Conn {
 impl Conn {
     fn new(
         rt: &Runtime,
-        events: &tokio::sync::broadcast::Sender<rpc::bridge::Event>,
+        events: &tokio::sync::broadcast::Sender<rpc_core::Event>,
         focus: &FocusMap,
         seen: &SeenMap,
     ) -> Self {
