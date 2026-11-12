@@ -94,7 +94,7 @@ impl Model {
         self.component_finish(out, &mut |_| {});
         consumed
     }
-    pub(super) fn component_submit(&mut self, text: &str) -> bool {
+    pub(crate) fn component_submit(&mut self, text: &str) -> bool {
         let core = CoreView { session: self.session, project: self.project.as_deref(), inspecting: self.inspect.is_some(), streaming: self.streaming, reasoning: matches!(self.entries.last(), Some(Entry::Reasoning { done: false, .. })), agent: None, entries: &self.entries };
         let out = self.components.submit(text, &core);
         let consumed = out.consumed();

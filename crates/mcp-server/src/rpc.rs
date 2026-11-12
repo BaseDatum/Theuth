@@ -1,4 +1,17 @@
-use super::*;
+use crate as mcp_server;
+use agent::rpc_forward as forward;
+use agent::rpc_support::RpcServerExt;
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::types::ErrorObjectOwned;
+use rpc_core::{Server, ask, stub_err};
+use runtime::SessionId;
+use tools::git::SyncResult;
+use tools::{
+    AddRepo, AddServer, Gate, ListServers, Mcp, McpHomeAction, McpLogin, McpLogout,
+    McpProgress, McpServer, Progress, RemoveServer, RepoInfo, SetGate, SetMcpHome, SyncMcp,
+};
 
 #[rpc(server, client)]
 pub trait McpApi {

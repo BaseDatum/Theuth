@@ -198,10 +198,6 @@ pub enum UiEvent {
     MeshDevices(Vec<link::DeviceInfo>),
     /// Reply to [`Command::MeshDevicesAdd`]: the 4-part string a device scans and its pending id (69 decision 4).
     MeshDevicePairing(link::PairingPayload),
-    /// Reply to [`Command::SandboxList`]: every sandbox record (79 §8).
-    Sandboxes(Vec<sandbox::SandboxInfo>),
-    /// Reply to [`Command::SandboxDesktop`]: the noVNC URL for a browser (the password stays out of the transcript).
-    SandboxDesktop(String, sandbox::types::DesktopAccess),
     /// Reply to [`Command::ListNodes`] and the node commands that change the list.
     Nodes(Vec<nodes::Node>),
     /// Reply to [`Command::InviteNode`]: the node's name and the string its QR card encodes.
@@ -714,10 +710,6 @@ pub enum Command {
     LinkRevoke(String),
     /// `devices_list` (69 §3).
     MeshDevicesList,
-    /// `sandboxes_list` (79 §8).
-    SandboxList,
-    /// `sandbox_desktop_access(name)`: the URL to open in a browser.
-    SandboxDesktop(String),
     /// `device_pair_start(name)`: the mesh pairing QR.
     MeshDevicesAdd(Option<String>),
     /// `device_revoke(id)`, then `devices_list`.

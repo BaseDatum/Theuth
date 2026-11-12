@@ -479,6 +479,22 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            if let Some((FocusClass::Secret, editor)) = m.components.editor() {
+                match code {
+                    KeyCode::Enter => {
+                        if editor.submit_empty || !input.read().trim().is_empty() {
+                            let line = std::mem::take(&mut *input.write());
+                            m.component_submit(line.trim());
+                        }
+                    }
+                    KeyCode::Esc => {
+                        input.set(String::new());
+                        m.component_key(FocusClass::Secret, &key);
+                    }
+                    _ => {}
+                }
+                return;
+            }
             if m.component_key(FocusClass::Secret, &key) { return; }
             // The masked box types into the editor; ⏎ stores, esc declines.
             if m.secret_request().is_some() {
@@ -768,7 +784,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .or_else(|| menu(&m, &input.read(), width, height))
         .or_else(|| component_slot(&m, Surface::Modal, width, height).element());
     // A secret's value (or a provider's key) shows as dots.
-    let mask = (m.secret_request().is_some() || m.prompt.as_ref().is_some_and(Prompt::masked))
+    let component_editor = m.components.editor();
+    let mask = (m.secret_request().is_some() || m.prompt.as_ref().is_some_and(Prompt::masked)
+        || component_editor.as_ref().is_some_and(|(_, editor)| editor.masked))
         .then_some('•');
     let has_focus = m.input_focused();
     let (header, level) = m.header(&catalog);
@@ -852,6 +870,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     Text(content: p.hint(), color: OCHRE)
                 })
             }))
+            #(component_editor.as_ref().map(|(_, editor)| element!(
+                View(height: 1, padding_left: 1) {
+                    Text(content: editor.hint.clone(), color: OCHRE)
+                }
+            )))
             View(height: 1, padding_left: 1) {
                 #(match (&m.dictation, m.talk_view) {
                     (Some(d), _) => element!(MixedText(contents: dictation_header(d, m.frame), wrap: TextWrap::NoWrap)).into_any(),

@@ -1,4 +1,13 @@
-use super::*;
+use crate as computer;
+use agent::rpc_support::RpcServerExt;
+use browser::{BROWSER_ACTOR, Browsers, Screenshot};
+use computer::{COMPUTER_ACTOR, Computer, Permissions, ScreenContext};
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::types::ErrorObjectOwned;
+use rpc_core::{NOT_RUNNING, Server, ask, failed, lookup, peer, send};
+use runtime::SessionId;
 
 #[rpc(server, client)]
 pub trait ScreensApi {

@@ -7,7 +7,17 @@ struct Slot { generation: u64, component: Option<Box<dyn ErasedComponent>> }
 pub fn builtin() -> Registry {
     let mut registry = Registry::empty();
     registry.register(update::Update::default()).expect("built-in component registration");
+
+    // Step-11 group t1 (network and prompts): register below, in this block only.
     registry.register(computer::Computer).expect("built-in component registration");
+    registry.register(sandboxes::Sandboxes).expect("built-in component registration");
+
+    // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
+
+    // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
+
+    // Model-picker panels (after design 194): register below, in this block only.
+
     registry
 }
 
@@ -215,4 +225,13 @@ impl Registry {
     }
     /// Whether a component, rather than the chat editor, currently owns input.
     pub fn focused(&self) -> bool { self.focus.is_some() }
+    /// The exclusive focus owner's composer port and its input-precedence class.
+    pub fn editor(&self) -> Option<(FocusClass, Editor)> {
+        let (token, class) = self.focus?;
+        Some((class, self.slots[token.slot].component.as_ref()?.editor()?))
+    }
+    /// Modal capture excludes composer-backed prompts, just like the core prompt.
+    pub fn modal(&self) -> bool {
+        self.focus.is_some_and(|(_, class)| class == FocusClass::Modal) && self.editor().is_none()
+    }
 }
