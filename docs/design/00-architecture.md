@@ -224,6 +224,8 @@ rotation); main registers `nodes::rpc_module` directly. Its node lookup lives
 in `nodes::rpc_support`.
 The `schedule` crate owns routine RPC methods and exports
 `schedule::rpc_module`; its shared actor lookup stays in `schedule::rpc_support`.
+The `secrets` crate owns credentials RPC methods and exports
+`secrets::rpc_module`; vault lookups remain in `secrets::rpc_support`.
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because

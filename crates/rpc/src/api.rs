@@ -210,8 +210,6 @@ pub mod messaging;
 pub mod boards;
 /// Artifacts RPC server and client traits.
 pub mod artifacts;
-/// Credentials RPC server and client traits.
-pub use secrets::rpc as credentials;
 /// Kernels RPC server and client traits.
 pub mod kernels;
 /// Dreams RPC server and client traits.
@@ -237,7 +235,6 @@ pub use codemap::{CodemapApiClient, CodemapApiServer};
 pub use messaging::{MessagingApiClient, MessagingApiServer};
 pub use boards::{BoardsApiClient, BoardsApiServer};
 pub use artifacts::{ArtifactsApiClient, ArtifactsApiServer};
-pub use credentials::{CredentialsApiClient, CredentialsApiServer};
 pub use kernels::{KernelsApiClient, KernelsApiServer};
 pub use dreams::{DreamsApiClient, DreamsApiServer};
 pub use research::{ResearchApiClient, ResearchApiServer};
@@ -263,7 +260,7 @@ pub mod clients {
     pub use schedule::RoutinesApiClient;
     pub use super::boards::BoardsApiClient;
     pub use super::artifacts::ArtifactsApiClient;
-    pub use super::credentials::CredentialsApiClient;
+    pub use secrets::CredentialsApiClient;
     pub use talk::SpeechApiClient;
     pub use meeting::MeetingsApiClient;
     pub use super::kernels::KernelsApiClient;
@@ -293,7 +290,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         schedule::rpc_module(server.clone()),
         boards::rpc_module(server.clone()),
         artifacts::rpc_module(server.clone()),
-        credentials::rpc_module(server.clone()),
+        secrets::rpc_module(server.clone()),
         talk::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
         dreams::rpc_module(server.clone()),
