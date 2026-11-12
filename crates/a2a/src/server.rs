@@ -598,7 +598,7 @@ enum Target {
     Chat(SessionId),
     /// 183 §7.6: an agent: each contact gets its own inbox. 191 (D4): and its home, the only
     /// machine that opens one.
-    Agent(String, Option<String>),
+    Agent(String, agent::communication::network::InboxHome),
     /// 186 (D5): the return route: a contact's answers in conversations this engine opened.
     Return,
 }

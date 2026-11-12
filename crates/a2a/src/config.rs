@@ -336,9 +336,8 @@ pub struct AgentExport {
     pub title: String,
     /// Card description.
     pub description: String,
-    /// 191 (D4): the machine that opens its inboxes (`a2a_exports.home`); `None` when that
-    /// machine left the mesh (or the row names none): no new inbox, the export is paused.
-    pub home: Option<String>,
+    /// 191 (D4): the machine that opens its inboxes (`a2a_exports.home`).
+    pub home: agent::communication::network::InboxHome,
 }
 
 /// A validated export.
@@ -695,7 +694,7 @@ pub fn stage_on(
                         title: e.name.trim().to_owned(),
                         description: e.description.trim().to_owned(),
                         // `peers.yaml` is this machine's own file.
-                        home: Some(mesh::self_id().unwrap_or_default()),
+                        home: agent::communication::network::InboxHome::Here,
                     },
                 );
                 continue;

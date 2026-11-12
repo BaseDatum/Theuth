@@ -151,8 +151,19 @@ pub struct ContactInbox {
     /// 191 (D4): the export's replicated id, for the session's `contact_inbox` marker.
     pub export_id: Option<String>,
     /// 191 (D4): the export's home (`a2a_exports.home`), the only machine that opens a new
-    /// inbox; `None` when it left the mesh (or is unknown): no new inbox.
-    pub home: Option<String>,
+    /// inbox.
+    pub home: InboxHome,
+}
+
+/// 191 (D4): an agent export's home as the a2a plugin staged it from `a2a_exports.home`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InboxHome {
+    /// This machine.
+    Here,
+    /// Another live machine of the mesh: its engine id.
+    At(String),
+    /// It left the mesh (or the row names none): no new inbox.
+    Left,
 }
 
 impl A2aPrincipal {
@@ -3315,10 +3326,10 @@ impl Agents {
                 Err(full::not_owner_at(owner))
             };
         }
-        match m.home.as_deref() {
-            Some(h) if h == me => Ok(Inbox::Mint),
-            Some(h) if !h.is_empty() => Err(full::not_owner_at(h)),
-            _ => Err(A2AError::unsupported_operation(format!(
+        match &m.home {
+            InboxHome::Here => Ok(Inbox::Mint),
+            InboxHome::At(h) => Err(full::not_owner_at(h)),
+            InboxHome::Left => Err(A2AError::unsupported_operation(format!(
                 "export unavailable: {}: its machine left the mesh",
                 m.origin.export
             ))),
@@ -5580,7 +5591,7 @@ mod tests {
                 agent: "theuth".into(),
                 origin,
                 export_id: None,
-                home: Some(String::new()),
+                home: InboxHome::Here,
             })
             .await
             .unwrap();
@@ -5679,7 +5690,7 @@ mod tests {
                 agent: "theuth".into(),
                 origin: bob("research"),
                 export_id: None,
-                home: Some(String::new()),
+                home: InboxHome::Here,
             })
             .await
             .unwrap();
@@ -5965,7 +5976,7 @@ mod tests {
                 agent: "theuth".into(),
                 origin: bob("research"),
                 export_id: None,
-                home: Some(String::new()),
+                home: InboxHome::Here,
             })
             .await
             .unwrap();
@@ -6034,7 +6045,7 @@ mod tests {
                 agent: "research@c".into(),
                 origin: bob("research"),
                 export_id: None,
-                home: Some(String::new()),
+                home: InboxHome::Here,
             })
             .await
             .unwrap();
@@ -6065,7 +6076,7 @@ mod tests {
             agent: "theuth".into(),
             origin: bob(export),
             export_id: None,
-            home: Some(String::new()),
+            home: InboxHome::Here,
         };
         let first = a.handle_inbox(ask("research")).await.unwrap();
         let row = a.store.session(first).await.unwrap().unwrap();
@@ -6149,7 +6160,7 @@ mod tests {
                 agent: "research@sky-mac".into(),
                 origin: bob("research"),
                 export_id: None,
-                home: Some(String::new()),
+                home: InboxHome::Here,
             })
             .await
             .unwrap();
@@ -6171,7 +6182,7 @@ mod tests {
                 agent: "theuth".into(),
                 origin: bob("ops"),
                 export_id: None,
-                home: Some(String::new()),
+                home: InboxHome::Here,
             })
             .await
             .unwrap();
@@ -6866,7 +6877,7 @@ mod full_inbox_tests {
             agent: "research@sky-mac".into(),
             origin: full_bob(),
             export_id: None,
-            home: Some(String::new()),
+            home: InboxHome::Here,
         })
         .await
     }
@@ -6920,7 +6931,7 @@ mod full_inbox_tests {
                     ..full_bob()
                 },
                 export_id: None,
-                home: Some(String::new()),
+                home: InboxHome::Here,
             })
             .await
             .unwrap();
@@ -7305,21 +7316,24 @@ mod full_inbox_tests {
             .await
             .unwrap();
         route(&mut a, binding.id);
-        let ask = |home: Option<&str>| ContactInbox {
+        let ask = |home: InboxHome| ContactInbox {
             binding: binding.id,
             agent: "research@sky-mac".into(),
             origin: full_bob(),
             export_id: Some("x1".into()),
-            home: home.map(str::to_owned),
+            home,
         };
         let marker = format!("peer:{}|x1", binding.id);
-        let e = a.handle_inbox(ask(Some("home-engine"))).await.unwrap_err();
+        let e = a
+            .handle_inbox(ask(InboxHome::At("home-engine".into())))
+            .await
+            .unwrap_err();
         assert_eq!(
             (e.code, named(&e).as_deref()),
             (NOT_OWNER_CODE, Some("home-engine")),
             "not the home: forwarded there"
         );
-        let e = a.handle_inbox(ask(None)).await.unwrap_err();
+        let e = a.handle_inbox(ask(InboxHome::Left)).await.unwrap_err();
         assert!(e.message.contains("left the mesh"), "{}", e.message);
         assert!(a.store.marked_inboxes(&marker).await.unwrap().is_empty());
 
@@ -7333,7 +7347,9 @@ mod full_inbox_tests {
         a.reinstall_contact_limits(moved).await.unwrap();
         assert!(capped(&a, moved), "capped before the adoption");
         assert_eq!(
-            a.handle_inbox(ask(Some("home-engine"))).await.unwrap(),
+            a.handle_inbox(ask(InboxHome::At("home-engine".into())))
+                .await
+                .unwrap(),
             moved,
             "adopted, though this machine is not the home"
         );
@@ -7348,7 +7364,7 @@ mod full_inbox_tests {
 
         // It moves on: its local row here names a session another machine owns.
         a.store.owned_elsewhere(moved, "n2-engine").await;
-        let e = a.handle_inbox(ask(Some(""))).await.unwrap_err();
+        let e = a.handle_inbox(ask(InboxHome::Here)).await.unwrap_err();
         assert_eq!(
             (e.code, named(&e).as_deref()),
             (NOT_OWNER_CODE, Some("n2-engine"))
@@ -7362,7 +7378,7 @@ mod full_inbox_tests {
             .await
             .unwrap();
         a.store.set_contact_inbox(extra, &marker).await.unwrap();
-        let e = a.handle_inbox(ask(Some(""))).await.unwrap_err();
+        let e = a.handle_inbox(ask(InboxHome::Here)).await.unwrap_err();
         assert!(e.message.contains("more than one inbox"), "{}", e.message);
         assert!(named(&e).is_none());
         assert!(capped(&a, moved) && capped(&a, extra), "both capped");
@@ -7387,7 +7403,7 @@ mod full_inbox_tests {
             agent: "research@sky-mac".into(),
             origin: full_bob(),
             export_id: export_id.map(str::to_owned),
-            home: Some(String::new()),
+            home: InboxHome::Here,
         };
         let marker = format!("peer:{}|x1", binding.id);
         // Before 191: an unmarked inbox (no export id at its admission) that moved away.

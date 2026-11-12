@@ -2085,15 +2085,18 @@ impl crate::Ctx {
                 paused,
             });
         }
-        out.extend(live.staged.agents.values().map(|a| Export {
-            id: live.staged.export_ids.get(&a.name).cloned(),
-            name: a.name.clone(),
-            target: ExportTarget::Agent {
-                agent: a.agent.clone(),
-            },
-            description: a.description.clone(),
-            // 191 (D4): its home left the mesh: no new inbox (the UI offers to rehome it).
-            paused: a.home.is_none().then(|| PAUSED_HOME_LEFT.to_owned()),
+        out.extend(live.staged.agents.values().map(|a| {
+            Export {
+                id: live.staged.export_ids.get(&a.name).cloned(),
+                name: a.name.clone(),
+                target: ExportTarget::Agent {
+                    agent: a.agent.clone(),
+                },
+                description: a.description.clone(),
+                // 191 (D4): its home left the mesh: no new inbox (the UI offers to rehome it).
+                paused: (a.home == agent::communication::network::InboxHome::Left)
+                    .then(|| PAUSED_HOME_LEFT.to_owned()),
+            }
         }));
         out.sort_by(|a, b| a.name.cmp(&b.name));
         if !gone.is_empty() {

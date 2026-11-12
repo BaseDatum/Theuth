@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use agent::communication::network::InboxHome;
 use agent::store::contacts::{
     Cell, ContactRow, EndpointRow, GrantRow, RecordTable, RecordWrite, Records,
 };
@@ -678,9 +679,13 @@ pub fn stage_records(r: &Records, family: &BTreeSet<String>) -> Staged {
                         agent: agent.trim().to_owned(),
                         title,
                         description,
-                        // 191 (D4): its home while it is this machine or a live one of the
-                        // mesh; a home that left (or none) opens no new inbox.
-                        home: e.home.clone().filter(|h| *h == r.me || family.contains(h)),
+                        // 191 (D4): its home: this machine, a live one of the mesh, or one
+                        // that left (or none), which opens no new inbox.
+                        home: match e.home.as_deref() {
+                            Some(h) if h == r.me => InboxHome::Here,
+                            Some(h) if family.contains(h) => InboxHome::At(h.to_owned()),
+                            _ => InboxHome::Left,
+                        },
                     },
                 );
             }
