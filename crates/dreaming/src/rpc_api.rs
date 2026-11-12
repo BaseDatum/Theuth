@@ -8,6 +8,7 @@ use rpc_core::{Server, NOT_RUNNING, ask, dreaming_err};
 use runtime::SessionId;
 use decision::rpc_support::RpcDecisionExt;
 
+#[rpc_core_macros::rpc_descriptors(owner = "dreaming", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait DreamsApi {
     /// 57 §3.4 / §7.1: the decision-oracle switch of the families under `prefix` (`meeting`,
@@ -470,6 +471,7 @@ mod tests {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    DreamsApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(DreamsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("dreaming RPC descriptors")
 }

@@ -6,6 +6,7 @@ use rpc_core::{send, Server};
 use telegram::rpc_support::telegram;
 
 /// Messaging RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "telegram", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait TelegramMessagingApi {
     /// Telegram bot identity, poller state, trust lists, groups and bound threads (98 §13).
@@ -58,6 +59,7 @@ impl TelegramMessagingApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    TelegramMessagingApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(TelegramMessagingApiServer::into_rpc(server), rpc_descriptors())
+        .expect("telegram RPC descriptors")
 }

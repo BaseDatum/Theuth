@@ -11,6 +11,7 @@ use rpc_core::{Server, ask, failed, peer, send};
 use runtime::SessionId;
 use ::voice::{SpeechId, VoiceStatus};
 
+#[rpc_core_macros::rpc_descriptors(owner = "talk", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait SpeechApi {
     /// Read `text` (markdown) aloud in `session`'s name, stopping whatever is
@@ -549,6 +550,7 @@ impl SpeechConfigExt for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    SpeechApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(SpeechApiServer::into_rpc(server), rpc_descriptors())
+        .expect("talk RPC descriptors")
 }

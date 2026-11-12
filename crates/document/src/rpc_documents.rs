@@ -9,6 +9,7 @@ use document::rpc_support::{doc_send, documents, join_outcome, member_outcome, p
 use base64::Engine as _;
 
 /// Documents RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "document", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait DocumentDocumentsApi {
     /// Live documents, newest first (design doc 59 §6.1); `limit` defaults to 100.
@@ -229,6 +230,7 @@ impl DocumentDocumentsApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    DocumentDocumentsApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(DocumentDocumentsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("document RPC descriptors")
 }

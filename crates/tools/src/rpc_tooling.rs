@@ -5,6 +5,7 @@ use tools::{ListTools, ToolRegistry, ToolSpec};
 use rpc_core::{ask, Server};
 
 /// Tooling RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "tools", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait ToolsToolingApi {
     /// Every registered tool.
@@ -19,6 +20,7 @@ impl ToolsToolingApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    ToolsToolingApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(ToolsToolingApiServer::into_rpc(server), rpc_descriptors())
+        .expect("tools RPC descriptors")
 }

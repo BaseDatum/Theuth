@@ -9,6 +9,7 @@ description = "Transcript replication with transferable ownership: ships the age
 jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 wire = { workspace = true }
 replica = { workspace = true }
 agent = { workspace = true }

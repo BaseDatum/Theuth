@@ -29,7 +29,7 @@ mod second {
     pub struct Source { pub number: u32 }
 }
 
-#[rpc_descriptors(owner = "tiny", descriptors = tiny_descriptors)]
+#[rpc_core::rpc_descriptors(owner = "tiny", descriptors = tiny_descriptors)]
 #[rpc(server, client, namespace = "tiny", namespace_separator = ".")]
 pub trait TinyApi {
     /// Nullable middle slot, required text, omittable tail and named-input rename.
@@ -40,6 +40,7 @@ pub trait TinyApi {
     fn unit(&self) -> RpcResult<()>;
     /// An absent optional result also serializes as JSON null.
     #[method(name = "null")]
+    #[rpc_audience("mesh")]
     fn null(&self) -> RpcResult<Option<String>>;
     /// First of two distinct Rust types sharing the schema name Source.
     #[method(name = "source_a")]
@@ -68,6 +69,7 @@ pub trait OtherApi {
     fn source(&self) -> RpcResult<first::Source>;
     /// An independent stream with explicit dotted unsubscribe and notification names.
     #[subscription(name = "cell.attach" => "cell.output", unsubscribe = "cell.detach", item = second::Source)]
+    #[rpc_audience("owner")]
     async fn attach(&self) -> SubscriptionResult;
 }
 
@@ -158,6 +160,17 @@ async fn positional_nullable_slots_and_named_aliases_match_dispatch() {
     assert_eq!(request(&unit.module, "tiny.hidden", json!([])).await["error"]["code"], -32601);
     assert_eq!(method(&document, "absolute.send")["x-theuth-aliasFor"], "tiny.send.input");
     assert_eq!(method(&document, "other.source")["x-theuth-audience"], "mesh");
+}
+
+#[test]
+fn method_audience_overrides_trait_default_for_requests_and_stream_pairs() {
+    let unit = composed();
+    let document = Discovery { descriptors: unit.descriptors, ..Default::default() }.document().unwrap();
+    assert_eq!(method(&document, "tiny.null")["x-theuth-audience"], "mesh");
+    assert_eq!(method(&document, "tiny.unit")["x-theuth-audience"], "owner");
+    assert_eq!(method(&document, "other.source")["x-theuth-audience"], "mesh");
+    assert_eq!(method(&document, "cell.attach")["x-theuth-audience"], "owner");
+    assert_eq!(method(&document, "cell.detach")["x-theuth-audience"], "owner");
 }
 
 #[test]

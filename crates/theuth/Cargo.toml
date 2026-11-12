@@ -27,6 +27,7 @@ surface = { workspace = true }
 rpc = { workspace = true }
 rpc-compose = { workspace = true }
 rpc-core = { workspace = true }
+wire = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }

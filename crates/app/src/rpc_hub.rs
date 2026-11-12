@@ -10,6 +10,7 @@ use artifact::rpc_support::artifact;
 use agent::rpc_support::RpcServerExt;
 
 /// Hub RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "app", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait AppHubApi {
     /// A committed app record: its artifact, source, compatibility hash,
@@ -49,6 +50,7 @@ impl AppHubApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    AppHubApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(AppHubApiServer::into_rpc(server), rpc_descriptors())
+        .expect("app RPC descriptors")
 }

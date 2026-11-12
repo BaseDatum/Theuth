@@ -624,8 +624,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use sqlx::Row as _;
-
     use super::super::import::{import, is_ours};
     use super::*;
     use crate::index::RootIndex;

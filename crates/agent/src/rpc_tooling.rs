@@ -23,6 +23,7 @@ pub const SESSION_TOOLS: [&str; 6] = [
 ];
 
 /// Tooling RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait AgentToolingApi {
     /// 193 §7: run one registry tool ([`SESSION_TOOLS`] only) in `session` — its cwd, approval
@@ -152,6 +153,7 @@ impl AgentToolingApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    AgentToolingApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(AgentToolingApiServer::into_rpc(server), rpc_descriptors())
+        .expect("agent RPC descriptors")
 }

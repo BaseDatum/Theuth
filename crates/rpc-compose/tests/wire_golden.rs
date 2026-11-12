@@ -45,7 +45,7 @@ impl Stream {
 }
 
 async fn methods(rt: Runtime) -> (jsonrpsee::Methods, rpc_core::RpcPeerGuard) {
-    let mut methods = rpc_compose::methods(rt, rpc_compose::rpc_module).await;
+    let mut methods = rpc_compose::methods(rt, |server| rpc_compose::rpc_module(server).module).await;
     let (peer, guard) = rpc_core::RpcPeer::open();
     methods.extensions_mut().insert(peer);
     (methods, guard)

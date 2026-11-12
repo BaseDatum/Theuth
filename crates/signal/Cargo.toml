@@ -7,6 +7,7 @@ description = "Signal messenger frontend for the daemon (design doc 09)"
 
 [dependencies]
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }

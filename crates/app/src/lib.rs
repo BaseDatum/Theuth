@@ -18,11 +18,11 @@ pub mod rpc_artifacts;
 pub mod rpc_hub;
 
 /// Assemble this plugin's RPC methods.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    rpc_core::merge([
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::merge_described([
         rpc_artifacts::rpc_module(server.clone()),
         rpc_hub::rpc_module(server),
-    ])
+    ]).expect("app RPC composition")
 }
 
 pub mod rpc_support;

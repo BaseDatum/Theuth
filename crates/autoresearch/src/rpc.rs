@@ -4,6 +4,7 @@ use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::{Server, dreaming_err};
 
+#[rpc_core_macros::rpc_descriptors(owner = "autoresearch", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait ResearchApi {
     /// 140 §12.5: every study, newest first.
@@ -346,6 +347,7 @@ impl ResearchConfigExt for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    ResearchApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(ResearchApiServer::into_rpc(server), rpc_descriptors())
+        .expect("autoresearch RPC descriptors")
 }

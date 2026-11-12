@@ -9,6 +9,7 @@ description = "Relay uplink, Noise pairing and sessions, replicated paired-devic
 agent = { workspace = true }
 document = { workspace = true }
 rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
 platform = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }

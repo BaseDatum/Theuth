@@ -9,6 +9,9 @@
 //! method/notification/unsubscribe names, not aliases. Argument renames and
 //! jsonrpsee's snake/camel named-input aliases are retained. Optionality follows
 //! jsonrpsee's syntactic `Option` rule, not JSON Schema nullability.
+//! Mixed-audience traits may override a method/subscription with
+//! `#[rpc_audience("mesh")]` or `#[rpc_audience("owner")]`; the attribute is
+//! consumed before jsonrpsee expands the unchanged RPC declaration.
 
 use std::collections::BTreeSet;
 
@@ -125,7 +128,7 @@ impl RpcOptions {
     }
 }
 
-fn expand(args: Tokens, item: ItemTrait) -> syn::Result<Tokens> {
+fn expand(args: Tokens, mut item: ItemTrait) -> syn::Result<Tokens> {
     let config = Config::parse(args.clone())?;
     check_attrs(&item.attrs, &["rpc", "cfg", "doc", "allow", "warn", "deny", "forbid", "deprecated"])?;
     if !item.generics.params.is_empty() || item.generics.where_clause.is_some() || !item.supertraits.is_empty() || item.unsafety.is_some() || item.auto_token.is_some() {
@@ -152,7 +155,7 @@ fn expand(args: Tokens, item: ItemTrait) -> syn::Result<Tokens> {
     // before jsonrpsee sees it, rather than advertising an unregistered method.
     for (index, entry) in item.items.iter().enumerate() {
         let TraitItem::Fn(method) = entry else { return Err(syn::Error::new_spanned(entry, "only RPC methods are supported")); };
-        check_attrs(&method.attrs, &["method", "subscription", "cfg", "doc", "allow", "warn", "deny", "forbid", "deprecated"])?;
+        check_attrs(&method.attrs, &["method", "subscription", "rpc_audience", "cfg", "doc", "allow", "warn", "deny", "forbid", "deprecated"])?;
         if let Some((attr_index, attr)) = method.attrs.iter().enumerate().find(|(_, a)| a.path().is_ident("cfg")) {
             let predicate = &attr.meta.require_list()?.tokens;
             let mut enabled = item.clone();
@@ -163,11 +166,11 @@ fn expand(args: Tokens, item: ItemTrait) -> syn::Result<Tokens> {
             return Ok(quote! {
                 #(#cfg)*
                 #[cfg(#predicate)]
-                #[::rpc_core_macros::rpc_descriptors(#args)]
+                #[::rpc_core::rpc_descriptors(#args)]
                 #enabled
                 #(#cfg)*
                 #[cfg(not(#predicate))]
-                #[::rpc_core_macros::rpc_descriptors(#args)]
+                #[::rpc_core::rpc_descriptors(#args)]
                 #disabled
             });
         }
@@ -179,11 +182,25 @@ fn expand(args: Tokens, item: ItemTrait) -> syn::Result<Tokens> {
         }
     };
     let owner = &config.owner;
-    let audience = &config.audience;
     let mut methods = Vec::new();
     let mut subscriptions = Vec::new();
     for entry in &item.items {
         let TraitItem::Fn(method) = entry else { unreachable!() };
+        let overrides: Vec<_> = method.attrs.iter().filter(|a| a.path().is_ident("rpc_audience")).collect();
+        if overrides.len() > 1 {
+            return Err(syn::Error::new_spanned(method, "duplicate rpc_audience annotation"));
+        }
+        let audience = match overrides.first() {
+            Some(attr) => {
+                let value: LitStr = attr.parse_args()?;
+                match value.value().as_str() {
+                    "owner" => quote!(::rpc_core::Audience::Owner),
+                    "mesh" => quote!(::rpc_core::Audience::Mesh),
+                    _ => return Err(syn::Error::new_spanned(value, "audience must be owner or mesh")),
+                }
+            }
+            None => config.audience.clone(),
+        };
         let sig = &method.sig;
         if !sig.generics.params.is_empty() || sig.generics.where_clause.is_some() || sig.variadic.is_some() || sig.unsafety.is_some() || sig.constness.is_some() || sig.abi.is_some() || method.default.is_some() {
             return Err(syn::Error::new_spanned(sig, "unsupported RPC signature"));
@@ -221,6 +238,11 @@ fn expand(args: Tokens, item: ItemTrait) -> syn::Result<Tokens> {
                 owner:#owner, name:#qualified, aliases:vec![#(#aliases),*], params:vec![#(#params),*],
                 result: ::rpc_core::schema_for::<#result>, audience:#audience,
             }));
+        }
+    }
+    for entry in &mut item.items {
+        if let TraitItem::Fn(method) = entry {
+            method.attrs.retain(|a| !a.path().is_ident("rpc_audience"));
         }
     }
     let visibility = &item.vis;

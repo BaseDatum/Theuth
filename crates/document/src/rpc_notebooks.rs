@@ -6,6 +6,7 @@ use rpc_core::Server;
 use document::rpc_support::{doc_send, documents, member_outcome, nb_result, principal};
 
 /// Notebooks RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "document", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait DocumentNotebooksApi {
     /// What `notebook_delete` would do (144 §3.4): note count, exclusive sources, sources also in other notebooks.
@@ -96,6 +97,7 @@ impl DocumentNotebooksApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    DocumentNotebooksApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(DocumentNotebooksApiServer::into_rpc(server), rpc_descriptors())
+        .expect("document RPC descriptors")
 }

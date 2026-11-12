@@ -10,6 +10,7 @@ use agent::rpc_document::{check_session_cites, doc_forward, level_str, notebook_
 use document::rpc_support::{doc_send, documents, member_outcome, nb_result, principal};
 
 /// Notebooks RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait AgentNotebooksApi {
     /// Notebooks (144 §13.3): live ones newest first; `archived` includes archived. Any engine, from the replica.
@@ -561,6 +562,7 @@ impl AgentNotebooksApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    AgentNotebooksApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(AgentNotebooksApiServer::into_rpc(server), rpc_descriptors())
+        .expect("agent RPC descriptors")
 }

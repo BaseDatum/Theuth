@@ -440,7 +440,7 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
 }
 
 fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    rpc_core::merge([
+    rpc_core::merge_described([
         rpc_compose::rpc_module(server.clone()),
         a2a::rpc_module(server.clone()),
         agent::rpc_module(server.clone()),
@@ -454,5 +454,5 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::rpc_module(server.clone()),
         mcp_server::rpc_module(server.clone()),
         cells::rpc_module(server),
-    ])
+    ]).expect("test RPC descriptors").module
 }

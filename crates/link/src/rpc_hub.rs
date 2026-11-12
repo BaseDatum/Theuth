@@ -14,6 +14,7 @@ use document::rpc_support::{doc_send, documents};
 use base64::Engine as _;
 
 /// Hub RPC methods owned by this plugin.
+#[rpc_core_macros::rpc_descriptors(owner = "link", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait LinkHubApi {
     /// Remove a member (59 §8.4; owner only): `Closed{revoked}`, their connections dropped, the next
@@ -167,6 +168,7 @@ impl LinkHubApiServer for Server {
     }
 }
 
-pub(super) fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    LinkHubApiServer::into_rpc(server)
+pub(super) fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(LinkHubApiServer::into_rpc(server), rpc_descriptors())
+        .expect("link RPC descriptors")
 }

@@ -22,6 +22,7 @@ use rpc_core::{Server, ASK_FAILED, UNAUTHORIZED, ask, lookup, peer, send};
 use runtime::{InputId, SessionId};
 use tools::Retention;
 
+#[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
 #[rpc(server, client)]
 pub trait TurnsApi {
     /// Start a turn; `session: None` creates an `owner`-scope root first.
@@ -57,6 +58,7 @@ pub trait TurnsApi {
     /// Returns the owner's receipt (`accepted`); a refusal is the error the
     /// sender records as a `failed` receipt.
     #[method(name = "peer_deliver", with_extensions)]
+    #[rpc_audience("mesh")]
     async fn peer_deliver(
         &self,
         session: SessionId,
@@ -773,6 +775,7 @@ impl TurnsApiServer for Server {
 }
 
 /// Build this domain's RPC module.
-pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
-    TurnsApiServer::into_rpc(server)
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_core::DescribedModule::new(TurnsApiServer::into_rpc(server), rpc_descriptors())
+        .expect("agent RPC descriptors")
 }
