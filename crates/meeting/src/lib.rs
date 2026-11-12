@@ -49,6 +49,10 @@ pub mod note;
 pub mod ogg;
 pub mod oracle;
 pub mod post;
+/// Meeting, calendar and brief RPC methods.
+pub mod rpc;
+pub use rpc::rpc_module;
+/// Actor and connection helpers for meeting RPC methods.
 pub mod rpc_support;
 pub mod search;
 pub mod session;

@@ -203,7 +203,7 @@ mod boards;
 mod artifacts;
 mod credentials;
 mod speech;
-mod meetings;
+use meeting::rpc as meetings;
 mod kernels;
 mod dreams;
 mod research;
