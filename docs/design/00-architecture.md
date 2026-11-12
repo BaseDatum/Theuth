@@ -219,6 +219,10 @@ shared dictation lookup from `talk::rpc_support`; main registers
 `talk::rpc_module`. Generated clients remain available through
 `rpc::api::clients` without adding consumer dependencies on the owners.
 
+The `nodes` crate owns the network wire methods (link, nodes, mesh and vault
+rotation); main registers `nodes::rpc_module` directly. Its node lookup lives
+in `nodes::rpc_support`.
+
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
 every UI consumes the whole stream with one subscription and one `match`.

@@ -2004,7 +2004,7 @@ fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server
         rpc::api::notebooks::rpc_module(server.clone()),
         rpc::api::codemap::rpc_module(server.clone()),
         rpc::api::messaging::rpc_module(server.clone()),
-        rpc::api::network::rpc_module(server.clone()),
+        nodes::rpc_module(server.clone()),
         rpc::api::routines::rpc_module(server.clone()),
         rpc::api::boards::rpc_module(server.clone()),
         rpc::api::artifacts::rpc_module(server.clone()),
