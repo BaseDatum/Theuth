@@ -8,7 +8,7 @@ use jsonrpsee::core::server::Subscription;
 use kameo::actor::ActorRef;
 use roster::alert::AlertClass;
 use roster::attention::{Attention, AttentionItem, AttentionKind, Finished};
-use rpc::ApiServer;
+use rpc::into_rpc_module;
 use rpc::api::{FocusMap, SeenMap, Server};
 use runtime::{Runtime, SessionId};
 
@@ -26,15 +26,14 @@ impl Conn {
         focus: &FocusMap,
         seen: &SeenMap,
     ) -> Self {
-        let mut methods: jsonrpsee::Methods = Server {
+        let mut methods: jsonrpsee::Methods = into_rpc_module(Server {
             events: events.clone(),
             rt: rt.clone(),
             private: Default::default(),
             focus: focus.clone(),
             seen: seen.clone(),
             follows: Default::default(),
-        }
-        .into_rpc()
+        })
         .into();
         let (peer, guard) = link::RpcPeer::open();
         methods.extensions_mut().insert(peer.clone());

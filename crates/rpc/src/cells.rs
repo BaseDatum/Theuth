@@ -840,9 +840,9 @@ mod tests {
     /// "invalid params".
     #[tokio::test]
     async fn cell_run_without_confirmed_is_an_unconfirmed_press() {
-        use crate::api::ApiServer as _;
+        use crate::api::into_rpc_module;
         use jsonrpsee::core::server::MethodsError;
-        let mut methods: jsonrpsee::Methods = server().into_rpc().into();
+        let mut methods: jsonrpsee::Methods = into_rpc_module(server()).into();
         let (peer, _g) = link::RpcPeer::open();
         methods.extensions_mut().insert(peer);
         let (cell, run) = (chat_cell(), RunId("r_old".into()));

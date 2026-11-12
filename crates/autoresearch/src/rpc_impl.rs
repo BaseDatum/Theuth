@@ -1,5 +1,5 @@
 //! The `autoresearch.*` RPC methods (design doc 140 §12.5) as plain async fns
-//! the `rpc` crate's `ApiServer` delegates to: each asks the [`Studies`]
+//! the `rpc` crate's `ResearchApiServer` delegates to: each asks the [`Studies`]
 //! actor; absent actor → `Err("autoresearch is not running")`. Owned by W3
 //! after the skeleton (bodies here are complete delegation; W3 changes the
 //! actor, not this file, unless a method's shape changes).

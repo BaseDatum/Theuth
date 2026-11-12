@@ -9,7 +9,7 @@ use agent::{Authorize, CreateSessionOptions, SessionOpen};
 use base64::Engine as _;
 use jsonrpsee::core::server::MethodsError;
 use jsonrpsee::types::ErrorObjectOwned;
-use rpc::ApiServer;
+use rpc::into_rpc_module;
 use rpc::api::Server;
 use runtime::{Runtime, SessionId};
 
@@ -54,7 +54,7 @@ async fn private_get_attachment_serves_the_owner_only_and_only_with_the_session(
     let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
         .await
         .unwrap();
-    let base: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+    let base: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
     let (a, peer_a, _guard_a) = conn(&base);
     let (b, _peer_b, _guard_b) = conn(&base);
 
