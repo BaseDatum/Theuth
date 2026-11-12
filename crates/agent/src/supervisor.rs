@@ -179,6 +179,9 @@ pub struct Agents {
     /// Live tier-2 model of the decision oracle (57 §0.9); `None` = the title
     /// model, then each session's own model. Shared with every session.
     escalate_model: Arc<RwLock<Option<Resolved>>>,
+    /// 194: the live title/vision/escalate/polish efforts (`agent.title_effort`,
+    /// `agent.vision_effort`, `agent.escalate_effort`, `voice.polish_effort`). Shared with every session.
+    role_efforts: Arc<parking_lot::RwLock<crate::loop_::RoleEfforts>>,
     /// Why `agent.vision_model` from the config file was not selected at
     /// startup (invalid id or capability; 52 §3.1). The file is left as is
     /// and only the fallback is off; cleared by a successful [`SetVisionModel`].
@@ -1134,6 +1137,7 @@ impl Agents {
         .with_advisor(advised)
         .with_budget(budget)
         .with_polish_model(self.polish_model.clone())
+        .with_role_efforts(self.role_efforts.clone())
         .with_endless(self.endless.clone())
         .with_parent_view(parent_view);
         let actor = Session::spawn_with_mailbox(session, runtime::subscriber_mailbox());
@@ -4599,6 +4603,7 @@ impl Message<SetTitleModel> for Agents {
         if let Err(e) = runtime::write_config_value(&path, "agent", "title_model", value) {
             tracing::warn!("config.yaml: {e}");
         }
+        self.follow_role_model(resolved_effort_model(&self.title_model), TITLE_EFFORT);
         Ok(info)
     }
 }
@@ -4616,6 +4621,108 @@ impl Message<GetTitleModel> for Agents {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(ModelInfo::from)
+    }
+}
+
+/// 194: `agent.title_effort`'s config key and live slot.
+const TITLE_EFFORT: RoleEffortKey = ("agent", "title_effort", |r| &mut r.title);
+/// 194: `voice.polish_effort`.
+const POLISH_EFFORT: RoleEffortKey = ("voice", "polish_effort", |r| &mut r.polish);
+/// 194: `agent.vision_effort`.
+const VISION_EFFORT: RoleEffortKey = ("agent", "vision_effort", |r| &mut r.vision);
+/// 194: `agent.escalate_effort`.
+const ESCALATE_EFFORT: RoleEffortKey = ("agent", "escalate_effort", |r| &mut r.escalate);
+
+/// A role effort's `(section, key)` in config.yaml and its field of the live slot.
+type RoleEffortKey = (
+    &'static str,
+    &'static str,
+    fn(&mut crate::loop_::RoleEfforts) -> &mut Option<String>,
+);
+
+/// The model in `slot`, cloned out (never held across a call).
+fn resolved_effort_model(slot: &RwLock<Option<Resolved>>) -> Option<Resolved> {
+    slot.read().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+impl Agents {
+    /// 194 D4b/D4g: refuse an effort `model` (the setting's effective model)
+    /// does not take — `validate_effort`'s message; with no catalog entry, an
+    /// unknown word — then persist `key` and swap the live slot. A refusal or a
+    /// failed write changes nothing. Replies the stored value.
+    fn set_role_effort(
+        &mut self,
+        model: Option<Resolved>,
+        (section, key, field): RoleEffortKey,
+        effort: Option<String>,
+    ) -> Result<Option<String>, String> {
+        if let Some(e) = &effort {
+            match model.and_then(|r| r.model) {
+                Some(m) => m.validate_effort(e)?,
+                None if effort_of(e).is_none() => return Err(format!("unknown effort {e}")),
+                None => {}
+            }
+        }
+        // Quoted so a bare budget (`"8000"`) stays a YAML string; `~` clears.
+        let value = effort
+            .as_ref()
+            .map_or_else(|| "~".to_owned(), |e| format!("\"{e}\""));
+        let path = self.rt.data_dir.join("config.yaml");
+        runtime::write_config_value(&path, section, key, &value)
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        *field(&mut self.role_efforts.write()) = effort.clone();
+        Ok(effort)
+    }
+
+    /// 194 D4c/D4d, after the role's model changed to `model`: `None` (its
+    /// fallback row) clears the effort; a model that does not take the stored
+    /// one drops it. Persisted as `~`.
+    fn follow_role_model(&mut self, model: Option<Resolved>, (section, key, field): RoleEffortKey) {
+        {
+            let mut efforts = self.role_efforts.write();
+            let slot = field(&mut efforts);
+            let Some(e) = slot.as_deref() else { return };
+            let keeps = model.is_some_and(|r| r.model.is_none_or(|m| m.validate_effort(e).is_ok()));
+            if keeps {
+                return;
+            }
+            *slot = None;
+        }
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_config_value(&path, section, key, "~") {
+            tracing::warn!("config.yaml: {e}");
+        }
+    }
+
+    /// The live value of one role effort.
+    fn role_effort(&self, (_, _, field): RoleEffortKey) -> Option<String> {
+        let mut efforts = self.role_efforts.read().clone();
+        field(&mut efforts).take()
+    }
+}
+
+impl Message<crate::SetTitleEffort> for Agents {
+    type Reply = Result<Option<String>, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetTitleEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<String>, String> {
+        let model = resolved_effort_model(&self.title_model);
+        self.set_role_effort(model, TITLE_EFFORT, m.effort)
+    }
+}
+
+impl Message<crate::GetTitleEffort> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(
+        &mut self,
+        _: crate::GetTitleEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<String> {
+        self.role_effort(TITLE_EFFORT)
     }
 }
 
@@ -4638,6 +4745,7 @@ impl Message<SetPolishModel> for Agents {
         if let Err(e) = runtime::write_config_value(&path, "voice", "polish_model", value) {
             tracing::warn!("config.yaml: {e}");
         }
+        self.follow_role_model(resolved_effort_model(&self.polish_model), POLISH_EFFORT);
         Ok(info)
     }
 }
@@ -4655,6 +4763,33 @@ impl Message<GetPolishModel> for Agents {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(ModelInfo::from)
+    }
+}
+
+impl Message<crate::SetPolishEffort> for Agents {
+    type Reply = Result<Option<String>, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetPolishEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<String>, String> {
+        // Its effective model: polish → title (the session's own when neither).
+        let model = resolved_effort_model(&self.polish_model)
+            .or_else(|| resolved_effort_model(&self.title_model));
+        self.set_role_effort(model, POLISH_EFFORT, m.effort)
+    }
+}
+
+impl Message<crate::GetPolishEffort> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(
+        &mut self,
+        _: crate::GetPolishEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<String> {
+        self.role_effort(POLISH_EFFORT)
     }
 }
 
@@ -4820,6 +4955,7 @@ impl Agents {
             .escalate_model
             .write()
             .unwrap_or_else(|p| p.into_inner()) = resolved;
+        self.follow_role_model(resolved_effort_model(&self.escalate_model), ESCALATE_EFFORT);
         Ok(info)
     }
 
@@ -4859,6 +4995,33 @@ impl Message<GetEscalateModel> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> EscalateModel {
         self.escalate_model()
+    }
+}
+
+impl Message<crate::SetEscalateEffort> for Agents {
+    type Reply = Result<Option<String>, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetEscalateEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<String>, String> {
+        // Its effective model: escalate → title (the session's own when neither).
+        let model = resolved_effort_model(&self.escalate_model)
+            .or_else(|| resolved_effort_model(&self.title_model));
+        self.set_role_effort(model, ESCALATE_EFFORT, m.effort)
+    }
+}
+
+impl Message<crate::GetEscalateEffort> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(
+        &mut self,
+        _: crate::GetEscalateEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<String> {
+        self.role_effort(ESCALATE_EFFORT)
     }
 }
 
@@ -5012,6 +5175,7 @@ impl Agents {
         // read-file-images §3: a (re)chosen fallback gets a fresh chance everywhere.
         crate::vision::fallback_changed();
         self.vision_error = None;
+        self.follow_role_model(resolved_effort_model(&self.vision_model), VISION_EFFORT);
         Ok(info)
     }
 }
@@ -5041,6 +5205,31 @@ impl Message<GetVisionModel> for Agents {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(ModelInfo::from)
+    }
+}
+
+impl Message<crate::SetVisionEffort> for Agents {
+    type Reply = Result<Option<String>, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetVisionEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<String>, String> {
+        let model = resolved_effort_model(&self.vision_model);
+        self.set_role_effort(model, VISION_EFFORT, m.effort)
+    }
+}
+
+impl Message<crate::GetVisionEffort> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(
+        &mut self,
+        _: crate::GetVisionEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<String> {
+        self.role_effort(VISION_EFFORT)
     }
 }
 
@@ -11280,6 +11469,16 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             })
             .ok()
     });
+    // 194: the side-call roles' own efforts; one its model does not take is dropped at call time.
+    let role_efforts = crate::loop_::RoleEfforts {
+        title: cfg.title_effort.clone(),
+        vision: cfg.vision_effort.clone(),
+        escalate: cfg.escalate_effort.clone(),
+        polish: rt
+            .section::<voice::VoiceConfig>("voice")
+            .ok()
+            .and_then(|v| v.polish_effort),
+    };
     let nodes = Nodes::default();
     // 50 §2.1: the switch and where it came from; every persisted root and
     // parent link root-first, so the registry's synchronous view never sees
@@ -11389,6 +11588,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             desk_models: HashMap::new(),
             vision_model: Arc::new(RwLock::new(vision_model)),
             escalate_model: Arc::new(RwLock::new(escalate_model)),
+            role_efforts: Arc::new(parking_lot::RwLock::new(role_efforts)),
             vision_error,
             catalog,
             pool,
@@ -12495,6 +12695,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         subagent_model: Arc::default(),
         vision_model: Arc::default(),
         escalate_model: Arc::default(),
+        role_efforts: Arc::default(),
         vision_error: None,
         catalog: catalog.clone(),
         pool: None,
@@ -13724,6 +13925,136 @@ pub(crate) mod tests {
         assert!(agents.ask(GetPolishModel).await.unwrap().is_none());
         let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
         assert!(!yaml.contains("testvis/blind"), "{yaml}");
+    }
+
+    /// 194 rows 7–10, per setting: the effort persists beside its model key
+    /// (D4g) and swaps the slot every session reads per call (D4f); a value the
+    /// setting's model does not take is refused with `validate_effort`'s message
+    /// (D4b), an unknown word when no model resolves; a model change that does
+    /// not take the stored effort drops it (D4c); the `none` row clears it (D4d).
+    #[tokio::test]
+    async fn role_efforts_follow_their_models() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        let model = |id: &str, efforts: Option<&[&str]>| {
+            let mut m = serde_json::json!({
+                "id": id, "name": id, "image": true,
+                "limit": { "context": 100_000, "output": 4_096 }
+            });
+            if let Some(v) = efforts {
+                m["reasoning"] = true.into();
+                m["reasoning_options"] = serde_json::json!([{"type": "effort", "values": v}]);
+            }
+            m
+        };
+        let user = serde_json::json!({ "testfx": { "id": "testfx", "name": "FX", "models": {
+            "think": model("think", Some(&["low", "high"])),
+            "plain": model("plain", None),
+        }}});
+        std::fs::write(dir.join("models.json"), user.to_string()).unwrap();
+        a.catalog = Arc::new(Catalog::load(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testfx");
+        let live = a.role_efforts.clone();
+        let agents = Agents::spawn(a);
+        let stored = |section: &str, key: &str| {
+            let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+            let all: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+            all[section][key].as_str().map(str::to_owned)
+        };
+        macro_rules! role {
+            ($set_model:ident, $set:ident, $get:ident, $section:literal, $key:literal, $field:ident) => {{
+                let set_model = |m: Option<&str>| $set_model {
+                    model: m.map(str::to_owned),
+                };
+                let set = |e: Option<&str>| crate::$set {
+                    effort: e.map(str::to_owned),
+                };
+                // No model resolves: only a known word is taken.
+                let e = agents
+                    .ask(set(Some("bogus")))
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                assert!(e.contains("unknown effort bogus"), "{}: {e}", $key);
+                agents.ask(set_model(Some("testfx/think"))).await.unwrap();
+                let e = agents.ask(set(Some("max"))).await.unwrap_err().to_string();
+                assert!(e.contains("think accepts off|low|high"), "{}: {e}", $key);
+                let got = agents.ask(set(Some("high"))).await.unwrap();
+                assert_eq!(got.as_deref(), Some("high"), "{}", $key);
+                assert_eq!(
+                    agents.ask(crate::$get).await.unwrap().as_deref(),
+                    Some("high")
+                );
+                assert_eq!(stored($section, $key).as_deref(), Some("high"), "{}", $key);
+                assert_eq!(live.read().$field.as_deref(), Some("high"), "{}", $key);
+                // A model that takes no effort drops it, persisted.
+                agents.ask(set_model(Some("testfx/plain"))).await.unwrap();
+                assert_eq!(agents.ask(crate::$get).await.unwrap(), None, "{}", $key);
+                assert_eq!(stored($section, $key), None, "{}", $key);
+                // The none row clears it too.
+                agents.ask(set_model(Some("testfx/think"))).await.unwrap();
+                agents.ask(set(Some("low"))).await.unwrap();
+                agents.ask(set_model(None)).await.unwrap();
+                assert_eq!(agents.ask(crate::$get).await.unwrap(), None, "{}", $key);
+                assert_eq!(live.read().$field, None, "{}", $key);
+                assert_eq!(stored($section, $key), None, "{}", $key);
+            }};
+        }
+        role!(
+            SetTitleModel,
+            SetTitleEffort,
+            GetTitleEffort,
+            "agent",
+            "title_effort",
+            title
+        );
+        role!(
+            SetVisionModel,
+            SetVisionEffort,
+            GetVisionEffort,
+            "agent",
+            "vision_effort",
+            vision
+        );
+        role!(
+            SetEscalateModel,
+            SetEscalateEffort,
+            GetEscalateEffort,
+            "agent",
+            "escalate_effort",
+            escalate
+        );
+        role!(
+            SetPolishModel,
+            SetPolishEffort,
+            GetPolishEffort,
+            "voice",
+            "polish_effort",
+            polish
+        );
+    }
+
+    /// 194: configs written before the role efforts load with them unset; the
+    /// keys read back beside their models.
+    #[test]
+    fn role_effort_keys_load_old_and_new_configs() {
+        let old: AgentConfig =
+            serde_yaml::from_str("title_model: a/t\nvision_model: a/v\n").unwrap();
+        assert_eq!(
+            (old.title_effort, old.vision_effort, old.escalate_effort),
+            (None, None, None)
+        );
+        let new: AgentConfig = serde_yaml::from_str(
+            "title_effort: low\nvision_effort: \"8000\"\nescalate_effort: high\n",
+        )
+        .unwrap();
+        assert_eq!(new.title_effort.as_deref(), Some("low"));
+        assert_eq!(new.vision_effort.as_deref(), Some("8000"));
+        assert_eq!(new.escalate_effort.as_deref(), Some("high"));
+        let v: voice::VoiceConfig = serde_yaml::from_str("polish_model: a/p\n").unwrap();
+        assert_eq!(v.polish_effort, None);
+        let v: voice::VoiceConfig = serde_yaml::from_str("polish_effort: low\n").unwrap();
+        assert_eq!(v.polish_effort.as_deref(), Some("low"));
     }
 
     /// 153 §9.1: an agent prompt is never polished — no model call, no session

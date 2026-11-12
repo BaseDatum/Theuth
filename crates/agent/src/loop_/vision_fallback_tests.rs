@@ -880,7 +880,7 @@ async fn vision_scenarios() {
     // debug build gives every `.await`ed temporary its own slot in this
     // function's poll frame, and a score of inline turn-sized futures pass
     // the 2 MiB test-thread stack.
-    let scenarios: [fn() -> Scenario; 24] = [
+    let scenarios: [fn() -> Scenario; 25] = [
         || boxed(text_only_main_asks_fallback_looks_main_answers()),
         || boxed(vision_capable_main_bypasses_a_broken_fallback()),
         || boxed(text_only_main_without_fallback_gets_one_untyped_notice()),
@@ -905,6 +905,7 @@ async fn vision_scenarios() {
         || boxed(failed_or_refusing_fallback_is_not_asked_again()),
         || boxed(a_repeated_image_points_at_its_description()),
         || boxed(oversized_header_attachment_is_unreadable()),
+        || boxed(vision_effort_rides_the_vision_call()),
     ];
     for scenario in scenarios {
         scenario().await;
@@ -1049,6 +1050,32 @@ async fn text_only_main_asks_fallback_looks_main_answers() {
         QUESTION_USAGE.1 + VISION_USAGE.1 + MAIN_USAGE.1
     );
     assert_eq!(context, MAIN_USAGE.0 + MAIN_USAGE.1);
+}
+
+/// 194 row 8: `agent.vision_effort` (the live role-effort slot, read per
+/// consultation) rides the vision call as its reasoning effort.
+async fn vision_effort_rides_the_vision_call() {
+    let mut h = Harness::new(fake()).await;
+    let mut eyes = h.resolve("openai/eyes");
+    eyes.model.as_mut().unwrap().reasoning_options = vec![models::ReasoningOption::Effort {
+        values: vec!["low".into(), "high".into()],
+    }];
+    *h.vision_model.write().unwrap_or_else(|p| p.into_inner()) = Some(eyes);
+    let (turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
+    turn.shared.role_efforts.write().vision = Some("high".into());
+    turn.run(
+        tid,
+        vec![h.input("Please look at the attached screenshot.", true)],
+    )
+    .await;
+    let events = h.drain().await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    let reqs = h.requests().await;
+    let [_question, vision_req, _main] = reqs.as_slice() else {
+        panic!("question, vision, main: {reqs:#?}")
+    };
+    assert_eq!(model(vision_req), "eyes");
+    assert_eq!(vision_req["reasoning_effort"], "high", "{vision_req}");
 }
 
 /// Gate "Native bypass": an image-capable main gets the image itself; a

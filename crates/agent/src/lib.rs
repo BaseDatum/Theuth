@@ -750,6 +750,19 @@ pub struct SetTitleModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetTitleModel;
 
+/// `ask` → `Result<Option<String>, String>` (194): persist `agent.title_effort`
+/// and use it for the next title call; refused when the title model does not
+/// take it. `None` clears it (no reasoning setting). Replies the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetTitleEffort {
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `agent.title_effort`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetTitleEffort;
+
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `voice.polish_model` (153 §9.2)
 /// and use it for the next polish side call; `None` clears it (title model, then session).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -761,6 +774,19 @@ pub struct SetPolishModel {
 /// `ask` → `Option<ModelInfo>`: the live polish model, if set.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetPolishModel;
+
+/// `ask` → `Result<Option<String>, String>` (194): persist `voice.polish_effort`,
+/// used when the polish model answers; refused when the model polish resolves
+/// to does not take it. `None` clears it. Replies the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetPolishEffort {
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `voice.polish_effort`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetPolishEffort;
 
 /// `ask` → `Result<PolishReply, String>`: polish a dictation transcript for a human reader
 /// (153 §9) on `ModelRole::Polish`, charged to `session` when given.
@@ -817,6 +843,19 @@ pub struct SetVisionModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetVisionModel;
 
+/// `ask` → `Result<Option<String>, String>` (194): persist `agent.vision_effort`
+/// and use it for the next vision consultation; refused when the fallback model
+/// does not take it. `None` clears it (the model's default). Replies the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetVisionEffort {
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `agent.vision_effort`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetVisionEffort;
+
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.escalate_model`
 /// (57 §0.9, tier 2 of the decision oracle); `None` clears it (inherits the
 /// title model, then the session's model). Same validation as the title model:
@@ -830,6 +869,19 @@ pub struct SetEscalateModel {
 /// `ask` → [`EscalateModel`]: the escalation model and what it resolves to.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetEscalateModel;
+
+/// `ask` → `Result<Option<String>, String>` (194): persist `agent.escalate_effort`,
+/// used when the escalation model answers a tier-2 call; refused when the
+/// effective escalation model does not take it. `None` clears it. Replies the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetEscalateEffort {
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `agent.escalate_effort`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetEscalateEffort;
 
 /// The escalation slot as the UI shows it: what is set and what would answer.
 #[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply, schemars::JsonSchema)]
@@ -3846,14 +3898,20 @@ pub struct AgentConfig {
     pub compact_style: CompactStyle,
     /// Model for session titles (07 §15), ideally cheap and fast; unset = the session's model.
     pub title_model: Option<String>,
+    /// 194: the title call's reasoning effort (keyword or token budget); unset = no setting.
+    pub title_effort: Option<String>,
     /// Model that answers the main model's questions about images it cannot
     /// see itself (52 §3); unset = no fallback, never the main model. Must be
     /// an exact catalog entry that accepts images through its backend.
     pub vision_model: Option<String>,
+    /// 194: the vision fallback call's reasoning effort; unset = the model's default.
+    pub vision_effort: Option<String>,
     /// Tier-2 model of the local decision oracle (57 §0.9): answers a typed
     /// question the oracle abstained on, in one cheap no-tools side call.
     /// Unset = `title_model`; both unset = the session's model.
     pub escalate_model: Option<String>,
+    /// 194: a tier-2 call's reasoning effort when `escalate_model` answers; unset = no setting.
+    pub escalate_effort: Option<String>,
     /// How the loop uses the knowledge plugin (12 §9.2); the store itself is `knowledge.enabled`.
     pub knowledge: KnowledgeUse,
     /// Human broadcast limits (62 §7).
@@ -3901,8 +3959,11 @@ impl Default for AgentConfig {
             compact_at: 0.8,
             compact_style: CompactStyle::Summary,
             title_model: None,
+            title_effort: None,
             vision_model: None,
+            vision_effort: None,
             escalate_model: None,
+            escalate_effort: None,
             knowledge: KnowledgeUse::default(),
             broadcast: BroadcastConfig::default(),
             compaction: CompactionConfig::default(),

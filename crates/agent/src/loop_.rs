@@ -790,6 +790,9 @@ struct Shared {
     /// 153 §9.2 `voice.polish_model`; `None` = the title model, then the session's
     /// model. Shared with the supervisor ([`Session::with_polish_model`]).
     polish_model: Arc<RwLock<Option<Resolved>>>,
+    /// 194: the side-call roles' own efforts. Shared with the supervisor
+    /// ([`Session::with_role_efforts`]); read per call, so a pick is live.
+    role_efforts: Arc<parking_lot::RwLock<side::RoleEfforts>>,
     /// Subagent default model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
     /// 136 §2.2: the session's money cap from [`SetBudgetNow`] (persisted on
@@ -983,6 +986,7 @@ impl Session {
                 image_notice: Arc::default(),
                 escalate_model,
                 polish_model: Arc::default(),
+                role_efforts: Arc::default(),
                 subagent_model,
                 budget: Arc::default(),
                 store,
@@ -1057,6 +1061,15 @@ impl Session {
     /// 153 §9.2: the supervisor's shared `voice.polish_model` slot.
     pub(crate) fn with_polish_model(mut self, slot: Arc<RwLock<Option<Resolved>>>) -> Self {
         self.shared.polish_model = slot;
+        self
+    }
+
+    /// 194: the supervisor's shared role-effort slot.
+    pub(crate) fn with_role_efforts(
+        mut self,
+        slot: Arc<parking_lot::RwLock<side::RoleEfforts>>,
+    ) -> Self {
+        self.shared.role_efforts = slot;
         self
     }
 
@@ -5324,8 +5337,11 @@ impl Turn {
         kind: CallKind,
     ) -> Result<StreamEnd, Abort> {
         // 177 E2: an aux (vision) call to a local OpenAI-protocol server asks
-        // for no thinking and sends no effort keyword; turns are unchanged.
-        let quiet = kind == CallKind::Vision && current.backend.local_openai(&current.model);
+        // for no thinking and sends no effort keyword — unless it is the
+        // image call and `agent.vision_effort` picked one (194); turns are unchanged.
+        let picked = frame.vision && current.effort.is_some();
+        let quiet =
+            kind == CallKind::Vision && !picked && current.backend.local_openai(&current.model);
         let effort = if quiet { None } else { current.effort() };
         let (req, opts) = frame.request(transport, conversation, effort);
         let opts = if quiet {
@@ -8714,12 +8730,15 @@ impl Turn {
         question: &str,
         group: &[&VisionImage],
     ) -> Result<Vec<vision::Outcome>, String> {
-        let current = Current::new(
+        let mut current = Current::new(
             fallback.clone(),
             None,
             &self.shared.client,
             &self.shared.auth,
         );
+        // 194 D4e: `agent.vision_effort`, live; unset keeps the model's default.
+        let effort = self.shared.role_efforts.read().vision.clone();
+        current.effort = side::checked_effort(fallback, effort.as_deref());
         let transport = current.backend.transport(fallback).await?;
         let message = vision::vision_message(question, group);
         let reply = match self
@@ -8758,7 +8777,14 @@ impl Turn {
         // 116: one message on the fallback model; no calibration for it.
         let output = current.model.model.as_ref().map_or(0, |m| m.limit.output);
         let est = compact::est(&message).saturating_add((system.len() / 4) as u32);
-        let budget = compact::reply_budget(output, self.window_of(&current.model), est, None, 0);
+        // 194: a picked vision effort on Anthropic floors the reply above its thinking budget.
+        let floor = if vision && current.effort.is_some() {
+            current.reply_floor(transport)
+        } else {
+            0
+        };
+        let budget =
+            compact::reply_budget(output, self.window_of(&current.model), est, None, floor);
         let frame = Frame {
             tools: &[],
             system,
@@ -9228,6 +9254,7 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
 }
 
 mod side;
+pub(crate) use side::RoleEfforts;
 
 /// 137 §9: `zoom`, `recall`, `date` — specs and handlers of an endless turn.
 pub(crate) mod endless_tools;
@@ -12090,5 +12117,100 @@ mod tests {
         };
         send(low_only, Some("high".into())).await;
         assert!(wire(2).get("reasoning_effort").is_none(), "{}", wire(2));
+    }
+
+    /// 194 rows 7–10: the effort follows the setting whose model answered —
+    /// Title → `title_effort`; Escalate → `escalate_effort`, `title_effort` on
+    /// the title fallback, none on the session's model; Polish likewise with
+    /// `polish_effort`; Vision → `vision_effort`. Read per call (live).
+    #[tokio::test]
+    async fn role_effort_follows_the_answering_setting() {
+        let scratch = crate::TestDir::new("role-effort");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let (base_url, _hits, _) = fake_openai(vec![]).await;
+        let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
+        let shared = &turn.shared;
+        let pick = |role: ModelRole| {
+            let (m, e) = shared.role_model(&role).unwrap();
+            (m.id, e)
+        };
+        let at = |id: &str, e: Option<&str>| (id.to_owned(), e.map(str::to_owned));
+        *shared.role_efforts.write() = RoleEfforts {
+            title: Some("low".into()),
+            vision: Some("medium".into()),
+            escalate: Some("high".into()),
+            polish: Some("max".into()),
+        };
+        // Nothing set: every chain ends on the session's model, with no effort.
+        for role in [ModelRole::Title, ModelRole::Escalate, ModelRole::Polish] {
+            assert_eq!(pick(role), at("fake/m", None));
+        }
+        // The title model answers its own chain and the two that fall back to it.
+        *shared.title_model.write().unwrap() = Some(resolved("cheap/t"));
+        assert_eq!(pick(ModelRole::Title), at("cheap/t", Some("low")));
+        assert_eq!(pick(ModelRole::Escalate), at("cheap/t", Some("low")));
+        assert_eq!(pick(ModelRole::Polish), at("cheap/t", Some("low")));
+        *shared.escalate_model.write().unwrap() = Some(resolved("cheap/e"));
+        *shared.polish_model.write().unwrap() = Some(resolved("small/p"));
+        *shared.vision_model.write().unwrap() = Some(resolved("eyes/v"));
+        assert_eq!(pick(ModelRole::Escalate), at("cheap/e", Some("high")));
+        assert_eq!(pick(ModelRole::Polish), at("small/p", Some("max")));
+        assert_eq!(pick(ModelRole::Vision), at("eyes/v", Some("medium")));
+        assert_eq!(pick(ModelRole::Session), at("fake/m", None));
+        // Live: a new pick is the next call's effort.
+        shared.role_efforts.write().escalate = None;
+        assert_eq!(pick(ModelRole::Escalate), at("cheap/e", None));
+    }
+
+    /// 194 D4e: a role's side call — resolved and sent the way the `SideCall`
+    /// handler and the title turn do — carries that role's effort on the wire.
+    #[tokio::test]
+    async fn role_side_calls_carry_their_effort() {
+        let scratch = crate::TestDir::new("role-wire");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let usage = r#"{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}"#;
+        let (base_url, _, bodies) = fake_openai(vec![sse(usage), sse(usage), sse(usage)]).await;
+        let (turn, current, _, _events) = gateway_turn(&dir, store, id, base_url).await;
+        let shared = &turn.shared;
+        *shared.title_model.write().unwrap() = Some(current.model.clone());
+        *shared.polish_model.write().unwrap() = Some(current.model.clone());
+        *shared.role_efforts.write() = RoleEfforts {
+            title: Some("high".into()),
+            polish: Some("low".into()),
+            escalate: Some("medium".into()),
+            vision: None,
+        };
+        for (i, (role, want)) in [
+            (ModelRole::Title, "high"),
+            // No escalation model: the title model answers, at the title's effort.
+            (ModelRole::Escalate, "high"),
+            (ModelRole::Polish, "low"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (model, effort) = shared.role_model(&role).unwrap();
+            shared
+                .side(turn.turn)
+                .effort(&model, effort.as_deref())
+                .call(
+                    model,
+                    "s",
+                    "q".into(),
+                    Duration::from_secs(5),
+                    CallKind::Escalate,
+                )
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_str(&bodies.lock()[i]).unwrap();
+            assert_eq!(body["reasoning_effort"], want, "{role:?}: {body}");
+        }
     }
 }

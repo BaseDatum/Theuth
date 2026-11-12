@@ -34,6 +34,33 @@ pub(crate) struct Side {
     effort: Option<ReasoningEffort>,
 }
 
+/// 194: the side-call roles' own efforts — `agent.title_effort`,
+/// `agent.vision_effort`, `agent.escalate_effort`, `voice.polish_effort` —
+/// live, one slot shared by the supervisor with every session; `None` = no setting.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RoleEfforts {
+    pub title: Option<String>,
+    pub vision: Option<String>,
+    pub escalate: Option<String>,
+    pub polish: Option<String>,
+}
+
+/// 194 D4e: `effort` (a keyword or token budget) as `model`'s call sends it.
+/// One the model does not take — or no known word — is dropped with a
+/// warning, so a stale setting never 400s the call; `None` sends no setting.
+pub(crate) fn checked_effort(model: &Resolved, effort: Option<&str>) -> Option<ReasoningEffort> {
+    let e = effort?;
+    if let Some(Err(why)) = model.model.as_ref().map(|m| m.validate_effort(e)) {
+        tracing::warn!(model = %model.id, "side-call effort `{e}` dropped: {why}");
+        return None;
+    }
+    let out = crate::effort_of(e);
+    if out.is_none() && e != "default" {
+        tracing::warn!(model = %model.id, "side-call effort `{e}` dropped: unknown effort");
+    }
+    out
+}
+
 impl Shared {
     /// The role's model and the effort of the setting that resolved it (194
     /// D4e): `Escalate` → escalate → title → session; `Title` → title →
@@ -59,21 +86,26 @@ impl Shared {
             self.catalog
                 .resolve(id, &*crate::supervisor::configured(self.auth.clone()))
         };
-        // 194 S1(b): the Title/Escalate/Vision/Polish efforts are filled in here.
+        // 194 D4e: the effort follows the setting whose model answered.
+        let efforts = self.role_efforts.read().clone();
+        let own = |s: &std::sync::RwLock<Option<Resolved>>, effort: &Option<String>| {
+            slot(s).map(|m| (m, effort.clone()))
+        };
+        let or_session = |picked: Option<(Resolved, Option<String>)>| match picked {
+            Some(p) => Ok(p),
+            None => session().map(|m| (m, None)),
+        };
         match role {
-            ModelRole::Escalate => slot(&self.escalate_model)
-                .or_else(|| slot(&self.title_model))
-                .map_or_else(session, Ok)
-                .map(|m| (m, None)),
-            ModelRole::Title => slot(&self.title_model)
-                .map_or_else(session, Ok)
-                .map(|m| (m, None)),
-            ModelRole::Polish => slot(&self.polish_model)
-                .or_else(|| slot(&self.title_model))
-                .map_or_else(session, Ok)
-                .map(|m| (m, None)),
-            ModelRole::Vision => slot(&self.vision_model)
-                .map(|m| (m, None))
+            ModelRole::Escalate => or_session(
+                own(&self.escalate_model, &efforts.escalate)
+                    .or_else(|| own(&self.title_model, &efforts.title)),
+            ),
+            ModelRole::Title => or_session(own(&self.title_model, &efforts.title)),
+            ModelRole::Polish => or_session(
+                own(&self.polish_model, &efforts.polish)
+                    .or_else(|| own(&self.title_model, &efforts.title)),
+            ),
+            ModelRole::Vision => own(&self.vision_model, &efforts.vision)
                 .ok_or_else(|| "no vision fallback model is set".to_owned()),
             ModelRole::Session => session().map(|m| (m, None)),
             ModelRole::Named(id) => named(id).map(|m| (m, None)),
@@ -108,21 +140,9 @@ impl Side {
         self
     }
 
-    /// 194 D4e: carry `effort` (a keyword or token budget) on `model`'s call.
-    /// One the model does not take — or no known word — is dropped with a
-    /// warning, so a stale setting never 400s the call; `None` sends no setting.
+    /// 194 D4e: carry `effort` on `model`'s call ([`checked_effort`]).
     pub(crate) fn effort(mut self, model: &Resolved, effort: Option<&str>) -> Self {
-        self.effort = effort.and_then(|e| {
-            if let Some(Err(why)) = model.model.as_ref().map(|m| m.validate_effort(e)) {
-                tracing::warn!(model = %model.id, "side-call effort `{e}` dropped: {why}");
-                return None;
-            }
-            let out = crate::effort_of(e);
-            if out.is_none() && e != "default" {
-                tracing::warn!(model = %model.id, "side-call effort `{e}` dropped: unknown effort");
-            }
-            out
-        });
+        self.effort = checked_effort(model, effort);
         self
     }
 

@@ -90,14 +90,20 @@ export const queryKeys = {
   notes: ['notes'] as const,
   info: ['info'] as const,
   titleModel: ['title-model'] as const,
+  /** `title_effort()` (194); refetched with `titleModel` (a model change may drop it). */
+  titleEffort: ['title-effort'] as const,
   /** `subagent_model()`; Settings › Models › Defaults sets it (148 R2: native subagents' default). */
   subagentModel: ['subagent-model'] as const,
   /** `theuth_agent_model()` (148 R3); Settings › Models › Defaults and the Agents page's theuth tab set it. */
   theuthAgentModel: ['theuth-agent-model'] as const,
   /** `vision_model()` (52 §3.2); slash setters and the General dropdown invalidate this same key. */
   visionModel: ['vision-model'] as const,
+  /** `vision_effort()` (194); refetched with `visionModel`. */
+  visionEffort: ['vision-effort'] as const,
   /** `escalate_model()` (57 §0.9); the Agent loop dropdown and `/escalate` set it. */
   escalateModel: ['escalate-model'] as const,
+  /** `escalate_effort()` (194); refetched with `escalateModel`. */
+  escalateEffort: ['escalate-effort'] as const,
   signal: ['signal'] as const,
   slack: ['slack'] as const,
   /** `slack_manifest()` (170 D1): static per engine build; not under `slack` so channel events never refetch it. */

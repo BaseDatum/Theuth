@@ -139,6 +139,7 @@ unset.
 | `compact_style` | `summary` | `summary`, `cut` or `snap` |
 | `compaction.tail_tokens` / `image_tokens` / `target_tokens` | `40000` / `30000` / `120000` | post-compaction ceilings for the verbatim tail, snap images, head + tail |
 | `title_model`, `vision_model`, `escalate_model` | `null` | session titles; image questions from a text-only main model; tier-2 of the decision oracle |
+| `title_effort`, `vision_effort`, `escalate_effort` | `null` | reasoning effort of that call (a level the model lists, or a token budget), sent when that setting's model answers; a model change drops one the new model does not take. `voice.polish_effort` does the same for `voice.polish_model` |
 | `openrouter.provider` / `referer` / `title` | `null` | built-in OpenRouter provider (`openrouter/<model>` ids): `provider` preferences JSON sent verbatim, `HTTP-Referer` and `X-OpenRouter-Title` overrides; key = vault secret `openrouter` (or `open_router`), else `OPENROUTER_API_KEY` / `OPEN_ROUTER_API_KEY`. The built-in Zen provider (`opencode/<model>` ids) needs only the vault secret `opencode` or `OPENCODE_API_KEY` and has no config keys |
 | `subagents.model` / `effort` | `null` | defaults for `spawn_subagent` when the call omits them, then `agent.model` |
 | `subagents.max_depth` | `1` | sessions at this depth or deeper cannot spawn |

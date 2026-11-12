@@ -398,6 +398,8 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       active().qc.setQueryData(queryKeys.titleModel, m)
       // 57 §0.9: the escalation model inherits it.
       void active().qc.invalidateQueries({ queryKey: queryKeys.escalateModel })
+      // 194 D4c: the engine may have dropped the title effort.
+      void active().qc.invalidateQueries({ queryKey: queryKeys.titleEffort })
       toast(m ? `title model: ${m.id}` : 'title model: off')
       return
     }
@@ -406,6 +408,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!arg) return settings(navigate, 'helpers')
       const m = await api.set_escalate_model(arg === 'off' || arg === 'clear' ? null : arg)
       void active().qc.invalidateQueries({ queryKey: queryKeys.escalateModel })
+      void active().qc.invalidateQueries({ queryKey: queryKeys.escalateEffort })
       toast(m ? `escalation model: ${m.id}` : 'escalation model: off (inherits title model)')
       return
     }
@@ -421,6 +424,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!arg) return settings(navigate, 'helpers')
       const m = await api.set_vision_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.visionModel, m)
+      void active().qc.invalidateQueries({ queryKey: queryKeys.visionEffort })
       toast(m ? `vision fallback: ${m.id}` : 'vision fallback: off')
       return
     }
