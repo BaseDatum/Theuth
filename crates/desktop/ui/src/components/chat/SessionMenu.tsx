@@ -54,6 +54,7 @@ import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { useModels } from './ModelMenu'
 import { useMessagingSheet } from './messaging-sheet'
+import { useToolsSheet } from './tools-sheet'
 import { type Ctx, openSurface, run, type Surface, surfaceOf } from './slash'
 import { PopoutTerminalButton } from './TerminalViewer'
 
@@ -63,7 +64,6 @@ export type SettingsRow =
   | { id: 'approvals'; label: string; value: 'on' | 'off' | 'default' | undefined; options: { value: 'on' | 'off' | 'default'; label: string }[]; disabled: boolean; note?: string }
   | { id: 'messaging'; label: string; checked: boolean; disabled: boolean }
   | { id: 'model' | 'continue'; label: string; disabled: boolean }
-  | { id: 'effort'; label: string; value: string; options: string[]; disabled: boolean }
 
 /**
  * 183 §12.2: the session's own settings, then where it runs. `owner` is the owner's label for a session owned
@@ -78,8 +78,8 @@ export function settingsRows(o: {
   oldOwner?: boolean
   messaging?: Pick<CommunicationState, 'effective'>
   model: string
-  /** The session's effort (`null` = the model's default) and the levels its model offers. */
-  effort?: { value: string | null; options: string[] }
+  /** The session's effort (`null` = the model's default); the model row names it, the picker it opens has the chips. */
+  effort?: string | null
 }): SettingsRow[] {
   const off = o.offline && o.owner !== undefined
   // §12.2 (R1): what inherit gives is the EFFECTIVE value (`session`: an ancestor's pin can differ from the machine's switch)
@@ -103,9 +103,8 @@ export function settingsRows(o: {
       note: o.oldOwner && o.owner !== undefined ? `${o.owner} needs an update` : undefined,
     },
     { id: 'messaging', label: 'Agent messaging', checked: o.messaging?.effective ?? false, disabled: off || !o.messaging },
-    { id: 'model', label: `Model: ${o.model}`, disabled: off },
-    // §12.2 Effort ›: `set_effort` through the owner; a model without levels has nothing to pick.
-    { id: 'effort', label: 'Effort', value: o.effort?.value ?? 'default', options: o.effort?.options ?? [], disabled: off || !o.effort?.options.length },
+    // §12.2, 2026-11-11 (Sky): Model ›, with the effort, opens the standard picker; its effort chips replaced the Effort › submenu.
+    { id: 'model', label: `Model: ${o.model}${o.effort ? ` · ${o.effort}` : ''}`, disabled: off },
     { id: 'separator', label: '' },
     { id: 'continue', label: o.owner === undefined ? 'Continue here' : `Continue here (move to ${o.self})`, disabled: o.owner === undefined },
     { id: 'move', label: 'Move to' },
@@ -367,7 +366,7 @@ export function SessionMenu({ session }: { session: string }) {
     approvals: approvals.data,
     messaging: messaging.data,
     model: current?.name ?? model ?? 'default',
-    effort: current && { value: effort ?? null, options: current.efforts },
+    effort,
   })
   /** A setter through the owner: -32010 parks it behind the OwnerOfflineCard (nothing runs until Continue here). */
   const set = (call: () => Promise<unknown>) =>
@@ -474,23 +473,6 @@ export function SessionMenu({ session }: { session: string }) {
                   <span className="ml-auto text-fg-tertiary">›</span>
                 </DropdownMenuItem>
               )}
-              {r.id === 'effort' && (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger disabled={r.disabled} className="data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
-                    <span className="min-w-0 flex-1">{r.label}</span>
-                    <span className="text-xs text-fg-tertiary">{r.value}</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-44">
-                    <DropdownMenuRadioGroup value={r.value} onValueChange={(v) => set(() => api.set_effort(session, v === 'default' ? null : v, true))}>
-                      {['default', ...r.options].map((o) => (
-                        <DropdownMenuRadioItem key={o} value={o}>
-                          {o}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              )}
               {r.id === 'separator' && <DropdownMenuSeparator />}
               {r.id === 'continue' && (
                 <DropdownMenuItem disabled={r.disabled} title={r.disabled ? 'This session already runs on this node' : undefined} onSelect={cmd('/take')}>
@@ -559,6 +541,7 @@ export function SessionMenu({ session }: { session: string }) {
           <DropdownMenuItem onSelect={() => openSurface('prompt')}>Show prompt</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('jobs')}>Jobs</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => useMessagingSheet.getState().show(session)}>Messaging…</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => useToolsSheet.getState().show(session)}>Tools…</DropdownMenuItem>
           {/* 183 §12.10: contacts live on this machine; a phone or iPad never shares (§12.8). */}
           {hasLocal() && <SharingItems session={session} onShare={() => setShare(true)} />}
         </DropdownMenuContent>
