@@ -184,8 +184,6 @@ pub enum UiEvent {
         Option<schedule::ScheduleInfo>,
         Vec<schedule::RunInfo>,
     ),
-    /// Reply to [`Command::ListTasks`]: the project asked for and its tasks (67 §12).
-    Tasks(Option<String>, Vec<tasks::Task>),
     /// Reply to [`Command::ListRoster`] (67 §12).
     Roster(Vec<roster::AgentSummary>),
     /// Reply to [`Command::LinkStatus`] and the link commands that change it.
@@ -383,8 +381,6 @@ pub enum Command {
     AutoresearchControl(String, autoresearch::ControlOp),
     /// `autoresearch.steer`: `/autoresearch steer <slug> <text>`.
     AutoresearchSteer(String, String),
-    /// `tasks_list` for one project (`None` = every project) (67 §12).
-    ListTasks(Option<String>),
     /// `agents_list`: the roster (67 §12).
     ListRoster,
     /// `session_take(id, "user")`: `/take` continues the open session on this engine (68 §10).

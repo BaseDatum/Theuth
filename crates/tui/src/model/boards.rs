@@ -12,24 +12,6 @@ impl Model {
     }
 }
 
-/// `/tasks`: `id · state · owner · title`, oldest first as the engine lists them (67 §12).
-/// The heading names the project, or `all projects` when the session has none.
-pub fn tasks_table(project: Option<&str>, rows: &[tasks::Task]) -> String {
-    let scope = project.unwrap_or("all projects");
-    if rows.is_empty() {
-        return format!("no tasks ({scope})");
-    }
-    let mut out = vec![
-        format!("tasks · {scope}"),
-        "id · state · owner · title".to_owned(),
-    ];
-    out.extend(rows.iter().map(|t| {
-        let id = &t.id.0;
-        let short = &id[id.len().saturating_sub(6)..];
-        format!("{short} · {} · {} · {}", t.state.as_str(), t.owner, t.title)
-    }));
-    out.join("\n")
-}
 
 /// `/roster`: `name · status · open` per roster agent (67 §12; `/agents` is the subagent picker).
 pub fn agents_table(rows: &[roster::AgentSummary]) -> String {

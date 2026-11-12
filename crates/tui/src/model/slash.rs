@@ -103,11 +103,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "autoresearch studies (140): list, open, pause/resume/stop/steer one directly; a goal or anything else hands the `autoresearch` skill to the model",
     ),
     (
-        "/tasks",
-        "",
-        "this project's tasks: id, state, owner, title (67)",
-    ),
-    (
         "/roster",
         "",
         "the agent roster: name, status, open tasks (67)",
