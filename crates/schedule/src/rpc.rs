@@ -1,3 +1,4 @@
+use crate as schedule;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::{Server, send};
