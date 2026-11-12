@@ -254,6 +254,19 @@ impl<'a, M> Input<'a, M> {
     }
 }
 
+/// Status contributions occupy fixed positions among retained core segments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusSlot {
+    /// Background work, immediately after the queued-message count.
+    Work,
+    /// Loaded capabilities, before edit/history hints.
+    Catalog,
+    /// Focused pinned-view hints, after history.
+    Pinned,
+    /// Spoken-view hint, before the attached-engine label.
+    Spoken,
+}
+
 /// Fixed layout locations, never feature names.
 #[derive(Clone, Copy)]
 pub enum Surface<'a> {
@@ -261,8 +274,8 @@ pub enum Surface<'a> {
     Header,
     /// Owner presentation beside one session row, independent of feature DTOs.
     SessionBadge(SessionId),
-    /// Status suffix.
-    Status,
+    /// A fixed position in the status line, independent of registration order.
+    Status(StatusSlot),
     /// Transcript content replacement or append.
     Content,
     /// Rows pinned below the transcript.
