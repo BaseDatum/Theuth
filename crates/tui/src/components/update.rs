@@ -49,7 +49,7 @@ impl Component for Update {
         }
     }
     fn view(&self, at: Surface<'_>, _: &ViewCx<'_>) -> Option<View> {
-        if !matches!(at, Surface::Header) { return None; }
+        if !matches!(at, Surface::Header(super::HeaderSlot::Update)) { return None; }
         self.ready.as_ref().map(|ready| View::Text(if ready.applied {
             format!("  ·  {} ready", ready.version)
         } else {

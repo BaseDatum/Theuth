@@ -277,33 +277,39 @@ impl Model {
                 };
                 (
                     format!(
-                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}{}{}{}",
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}",
                         k(limit),
-                        self.cost_tag(),
-                        self.advisor_tag(),
-                        self.approvals_tag(),
-                        self.communication_tag(),
-                        self.link_tag(),
-                        self.nodes_tag(),
-                        self.component_text(crate::components::Surface::Header)
+                        self.header_suffix()
                     ),
                     level,
                 )
             }
             _ => (
                 format!(
-                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}{}{}{}",
-                    self.cost_tag(),
-                    self.advisor_tag(),
-                    self.approvals_tag(),
-                    self.communication_tag(),
-                    self.link_tag(),
-                    self.nodes_tag(),
-                    self.component_text(crate::components::Surface::Header)
+                    "{model}{effort}  ·  ctx {used}{cache}{}",
+                    self.header_suffix()
                 ),
                 Level::Normal,
             ),
         }
+    }
+
+    fn header_suffix(&self) -> String {
+        use crate::components::{HeaderSlot, Surface};
+        let mut text = String::new();
+        for slot in HeaderSlot::ALL {
+            match slot {
+                HeaderSlot::Costs => text.push_str(&self.cost_tag()),
+                HeaderSlot::Advisor => text.push_str(&self.advisor_tag()),
+                HeaderSlot::Approvals => text.push_str(self.approvals_tag()),
+                HeaderSlot::Communication => text.push_str(&self.communication_tag()),
+                HeaderSlot::Link => text.push_str(&self.link_tag()),
+                HeaderSlot::Nodes => text.push_str(&self.nodes_tag()),
+                HeaderSlot::Update => {}
+            }
+            text.push_str(&self.component_text(Surface::Header(slot)));
+        }
+        text
     }
 
     /// `  ·  advisor $0.012` (125 §7.5): the advisor session's spend from the
