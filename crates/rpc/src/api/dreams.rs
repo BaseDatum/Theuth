@@ -1,4 +1,10 @@
-use super::*;
+use agent::rpc_forward as forward;
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::types::ErrorObjectOwned;
+use rpc_core::{Server, NOT_RUNNING, ask, dreaming_err};
+use runtime::SessionId;
 use decision::rpc_support::RpcDecisionExt;
 
 #[rpc(server, client)]
@@ -404,4 +410,60 @@ impl DreamConfigExt for Server {
         self.rt.section("dreaming").unwrap_or_default()
     }
 
+}
+/// 185 R1 A5: the hub's refusal of a forwarded Dream now, said as the hub's —
+/// "Dream now runs on the hub, which …" — with the code and data kept (a
+/// `-32010` still carries `OwnerUnreachable`). Nothing runs here instead: the
+/// hub may have started the night.
+fn hub_said(e: ErrorObjectOwned) -> ErrorObjectOwned {
+    let msg = if e.code() == forward::OWNER_UNREACHABLE {
+        format!(
+            "Dream now runs on the hub, which did not answer ({}); try again when it is back",
+            e.message()
+        )
+    } else {
+        format!("Dream now runs on the hub, which said: {}", e.message())
+    };
+    ErrorObjectOwned::owned(e.code(), msg, e.data().map(|d| d.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rpc_core::ASK_FAILED;
+
+    /// 185 R1 A5: a hub that refuses or does not answer is named as the hub;
+    /// the code and the `OwnerUnreachable` payload stay for the UI.
+    #[test]
+    fn the_hubs_refusal_of_dream_now_is_said_as_the_hubs() {
+        let off = hub_said(ErrorObjectOwned::owned(
+            ASK_FAILED,
+            "dreaming is off in config (dreaming.enabled: false)",
+            None::<()>,
+        ));
+        assert_eq!(off.code(), ASK_FAILED);
+        assert_eq!(
+            off.message(),
+            "Dream now runs on the hub, which said: dreaming is off in config (dreaming.enabled: false)"
+        );
+        let gone = hub_said(ErrorObjectOwned::owned(
+            forward::OWNER_UNREACHABLE,
+            "no answer within 30s",
+            Some(forward::FrontDoorError::OwnerUnreachable {
+                owner: "hub".into(),
+                last_seen: None,
+            }),
+        ));
+        assert_eq!(gone.code(), forward::OWNER_UNREACHABLE);
+        assert!(
+            gone.message()
+                .starts_with("Dream now runs on the hub, which did not answer"),
+            "{}",
+            gone.message()
+        );
+        assert!(
+            gone.data()
+                .is_some_and(|d| d.get().contains("OwnerUnreachable"))
+        );
+    }
 }
