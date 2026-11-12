@@ -328,9 +328,8 @@ fn replacement_group_freezes_older_cards_without_crossing_groups() {
 #[test]
 fn intrinsic_capture_precedes_an_earlier_focused_owner_without_stealing_focus() {
     let mut registry = Registry::empty();
-    let mut focused = Counter::new("focused");
-    focused.bindings = &[Binding { class: FocusClass::Spoken, code: KeyCode::Char('x'), modifiers: KeyModifiers::NONE }];
-    registry.register(focused).unwrap();
+    registry.register(Counter::new("focused")).unwrap();
+    registry.get_mut::<Counter>().unwrap().bindings = &[Binding { class: FocusClass::Spoken, code: KeyCode::Char('x'), modifiers: KeyModifiers::NONE }];
     registry.key(FocusClass::Spoken, &KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Char('x')), &core());
     let mut capture = Counter::new("capture");
     capture.capture = Some(FocusClass::Spoken);

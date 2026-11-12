@@ -235,6 +235,11 @@ impl Registry {
     pub fn get<C: Component>(&self) -> Option<&C> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).find_map(|component| component.as_any().downcast_ref())
     }
+    /// Mechanical fixture rebinding only; production components cannot mutate peers.
+    #[cfg(test)]
+    pub(crate) fn get_mut<C: Component>(&mut self) -> Option<&mut C> {
+        self.slots.iter_mut().filter_map(|slot| slot.component.as_mut()).find_map(|component| component.as_any_mut().downcast_mut())
+    }
     /// Whether a component, rather than the chat editor, currently owns input.
     pub fn focused(&self) -> bool { self.focus.is_some() }
     /// The exclusive focus owner's composer port and its input-precedence class.

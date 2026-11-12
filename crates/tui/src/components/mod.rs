@@ -503,6 +503,8 @@ trait ErasedComponent: Send + Sync {
     fn wake(&self) -> Option<u64>;
     fn entry_rows(&self, key: &str) -> usize;
     fn as_any(&self) -> &dyn Any;
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 struct Mounted<C>(C);
 impl<C: Component> ErasedComponent for Mounted<C> {
@@ -528,6 +530,8 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn wake(&self) -> Option<u64> { self.0.wake() }
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
     fn as_any(&self) -> &dyn Any { &self.0 }
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn Any { &mut self.0 }
 }
 
 /// Fixed generic effect envelope, never a feature-specific Command or reply.
