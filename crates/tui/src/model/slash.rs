@@ -183,11 +183,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "encrypted secrets the agent uses by name",
     ),
     (
-        "/mesh",
-        "devices [list|add [name]|rm <id>|name <id> <name>]",
-        "devices paired with the mesh (any node serves them)",
-    ),
-    (
         "/artifacts",
         "",
         "files the agent showed (picker: ⏎ opens, s shows inline, e exports to ~/Downloads)",

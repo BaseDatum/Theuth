@@ -11,6 +11,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::clip;
+use crate::components::artifacts_apps::{APP_WHERE, artifact_size, artifact_row};
 use crate::dictation::{self, Dictating, Phase};
 use crate::components::{FocusClass, Lifecycle, Surface};
 use crate::model::{
@@ -18,8 +19,8 @@ use crate::model::{
     advisory_title, providers, session_row, severity_name,
 };
 use crate::model::{
-    APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
-    TodoCard, TurnAction, UiEvent, action_name, artifact_row, artifact_size, describe, gate_name,
+    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
+    TodoCard, TurnAction, UiEvent, action_name, describe, gate_name,
     k, meta_line, now_ms, progress_line, result_line, short, window,
 };
 use crate::pathac;
@@ -657,10 +658,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 && modifiers.is_empty()
                 && m.prompt.is_none()
                 && input.read().is_empty()
-                && let Some(path) = m.artifact_path()
             {
-                let _ = commands.send(Command::OpenPath(path.to_owned()));
-                return;
+                if m.component_open_latest_entry() { return; }
+                if let Some(path) = m.artifact_path() {
+                    let _ = commands.send(Command::OpenPath(path.to_owned()));
+                    return;
+                }
             }
             if m.component_key(FocusClass::Content, &key) { return; }
             // Transcript scrolling. ↑/↓ are the editor's while it spans
@@ -736,6 +739,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let extra_rows = pinned.rows + composer.rows + hint.rows + badge.rows;
     *component_rows.write() = extra_rows;
     let modal = modal
+        .or_else(|| component_slot(&m, Surface::Prompt(FocusClass::Secret), width, height).element())
         .or_else(|| secret_box(&m))
         .or_else(|| ask_box(&m))
         .or_else(|| {
@@ -776,7 +780,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .enumerate()
         .map(|(i, e)| {
             let decorations = match e {
-                Entry::Tool { call_id, artifact: None, .. } => m.component_views(Surface::Entry { key: call_id, skipped: 0 }, usize::from(width), 0),
+                Entry::Tool { call_id, .. } | Entry::Pending { call_id, .. } => m.component_views(Surface::Entry { key: call_id, skipped: 0 }, usize::from(width), m.entry_height(e, usize::from(width))),
                 _ => Vec::new(),
             };
             entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, decorations, m.entry_summary(e))
@@ -842,7 +846,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     Text(content: p.hint(), color: OCHRE)
                 })
             }))
-            #(component_editor.as_ref().map(|(_, editor)| element!(
+            #(component_editor.as_ref().filter(|(_, editor)| !editor.hint.is_empty()).map(|(_, editor)| element!(
                 View(height: 1, padding_left: 1) {
                     Text(content: editor.hint.clone(), color: OCHRE)
                 }
@@ -1871,6 +1875,11 @@ fn queued_text(text: &str) -> String {
 /// One transcript entry. `skip` drops that many leading rendered lines of a
 /// reply (`Model::window`): the part that cannot reach the screen.
 fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<crate::components::View>, summary: Option<String>) -> AnyElement<'static> {
+    if let Some(index) = decorations.iter().rposition(|view| matches!(view, crate::components::View::Element { replace: true, .. })) {
+        return element!(View(flex_direction: FlexDirection::Column) {
+            #(decorations.into_iter().skip(index).filter_map(|view| match view { crate::components::View::Element { element, .. } => Some(element), _ => None }))
+        }).into_any();
+    }
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
         // A live-talk utterance shows its `[spoken, N s]` marker as a muted tag line.

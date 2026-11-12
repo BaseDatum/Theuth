@@ -14,6 +14,7 @@ pub mod computer;
 pub mod sandboxes;
 pub mod link;
 pub mod nodes;
+pub mod mesh_devices;
 
 // Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
 pub mod tasks;
@@ -22,6 +23,7 @@ pub mod routines;
 pub mod autoresearch;
 pub mod costs;
 pub mod web_progress;
+pub mod artifacts_apps;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 pub mod jobs;
@@ -215,6 +217,10 @@ impl CoreView<'_> {
             _ => None,
         }) == Some(key)
     }
+    /// Match the selected root or one of its accepted descendants.
+    pub fn owns_session(&self, session: SessionId) -> bool {
+        self.session == Some(session) || self.members.member(session).is_some()
+    }
 }
 
 /// Notifications borrow accepted core data; retain only the owner's projection.
@@ -253,6 +259,14 @@ pub enum Lifecycle<'a> {
 
     // Step-11 group t3 Lifecycle variants: add below, in this block only.
 }
+/// Existing per-entry operations, dispatched at their original core input boundaries.
+#[derive(Clone, Copy)]
+pub enum EntryOperation {
+    /// Open a local representation of the selected transcript entry.
+    Open,
+    /// Expand or collapse the selected completed entry.
+    Toggle,
+}
 /// Owner-local input; no feature message is added to the central UiEvent enum.
 pub enum Input<'a, M> {
     /// A decoded wire message or typed local reply.
@@ -269,6 +283,13 @@ pub enum Input<'a, M> {
         name: &'a str,
         /// Remaining trimmed arguments.
         args: &'a str,
+    },
+    /// Core-selected transcript entry operation.
+    EntryAction {
+        /// Stable call identity, never a retained Vec index.
+        key: &'a str,
+        /// Open or toggle at the existing input boundary.
+        operation: EntryOperation,
     },
     /// A due deadline from the existing UI loop.
     Tick {
@@ -287,6 +308,7 @@ impl<'a, M> Input<'a, M> {
             Self::Key(key) => Input::Key(key), Self::Paste(text) => Input::Paste(text),
             Self::Submit(text) => Input::Submit(text),
             Self::Slash { name, args } => Input::Slash { name, args },
+            Self::EntryAction { key, operation } => Input::EntryAction { key, operation },
             Self::Tick { now_ms, frame } => Input::Tick { now_ms, frame },
             Self::Lifecycle(event) => Input::Lifecycle(event),
         })
@@ -360,6 +382,8 @@ pub enum Surface<'a> {
     },
 
     // Step-11 group t1 Surface variants: add below, in this block only.
+    /// Intrinsic prompt at an explicit input-precedence boundary, without displacing focus.
+    Prompt(FocusClass),
 
     // Step-11 group t2 Surface variants: add below, in this block only.
     /// Owner text for an existing pending/running transcript summary row; no spinner or extra rows.
@@ -563,6 +587,10 @@ pub trait Component: Send + Sync + 'static {
     // Step-11 group t1 Component methods (with defaults): add below, in this block only.
 
     // Step-11 group t2 Component methods (with defaults): add below, in this block only.
+    /// Total replacement height at this width; None keeps the core/raw entry.
+    fn entry_height(&self, _key: &str, _width: usize) -> Option<usize> { None }
+    /// This owner can open a local representation of the stable entry.
+    fn entry_openable(&self, _key: &str) -> bool { false }
 
     // Step-11 group t3 Component methods (with defaults): add below, in this block only.
     /// Intrinsic capture precedes exclusive focus and bound keys at this class.
@@ -579,6 +607,8 @@ trait ErasedComponent: Send + Sync {
     fn captures(&self, class: FocusClass) -> bool;
     fn wake(&self) -> Option<u64>;
     fn entry_rows(&self, key: &str) -> usize;
+    fn entry_height(&self, key: &str, width: usize) -> Option<usize>;
+    fn entry_openable(&self, key: &str) -> bool;
     fn as_any(&self) -> &dyn Any;
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -606,6 +636,8 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn captures(&self, class: FocusClass) -> bool { self.0.captures(class) }
     fn wake(&self) -> Option<u64> { self.0.wake() }
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
+    fn entry_height(&self, key: &str, width: usize) -> Option<usize> { self.0.entry_height(key, width) }
+    fn entry_openable(&self, key: &str) -> bool { self.0.entry_openable(key) }
     fn as_any(&self) -> &dyn Any { &self.0 }
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any { &mut self.0 }

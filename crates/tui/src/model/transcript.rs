@@ -211,15 +211,16 @@ fn text_rows(text: &str, width: usize) -> usize {
 }
 
 impl Entry {
+    /// Stable raw-call identity for neutral owner decorations.
+    pub(crate) fn key(&self) -> Option<&str> {
+        match self { Self::Pending { call_id, .. } | Self::Tool { call_id, .. } => Some(call_id), _ => None }
+    }
     /// Rows this entry draws at `width` columns (borders, headers and
     /// wrapping included; an estimate — the terminal's wrap is the truth).
     pub(super) fn height(&self, width: usize) -> usize {
         // Bordered boxes have two columns of frame and padding each side.
         let inner = width.saturating_sub(4);
-        let md = |t: &markdown::Text, width: usize| {
-            let v = t.view();
-            v.lines().map(|l| line_rows(l, width)).sum::<usize>() + text_rows(v.plain, width)
-        };
+        let md = crate::model::markdown_rows;
         match self {
             Entry::User { text, .. } => match crate::attach::spoken(text) {
                 Some((_, _, body)) => text_rows(&crate::attach::display(body), inner) + 5,
@@ -521,10 +522,9 @@ pub struct Window {
 impl Model {
     /// Core measurement plus registered owners' exact decoration rows.
     pub(crate) fn entry_height(&self, entry: &Entry, width: usize) -> usize {
-        entry.height(width) + match entry {
-            Entry::Tool { call_id, artifact: None, .. } => self.components.entry_rows(call_id),
-            _ => 0,
-        }
+        let Some(key) = entry.key() else { return entry.height(width) };
+        let (replacement, appended) = self.components.entry_layout(key, width);
+        replacement.unwrap_or_else(|| entry.height(width)) + appended
     }
 
 
@@ -721,4 +721,10 @@ pub(super) fn first_arg(args: &serde_json::Value) -> Option<String> {
                 .take(40)
                 .collect()
         })
+}
+
+/// Rows occupied by the existing markdown view at a terminal width.
+pub(crate) fn markdown_rows(text: &markdown::Text, width: usize) -> usize {
+    let view = text.view();
+    view.lines().map(|line| line_rows(line, width)).sum::<usize>() + text_rows(view.plain, width)
 }

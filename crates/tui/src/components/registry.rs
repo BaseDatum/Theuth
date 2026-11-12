@@ -13,6 +13,7 @@ pub fn builtin() -> Registry {
     registry.register(sandboxes::Sandboxes).expect("built-in component registration");
     registry.register(link::Link::default()).expect("built-in component registration");
     registry.register(nodes::Nodes::default()).expect("built-in component registration");
+    registry.register(mesh_devices::MeshDevices::default()).expect("built-in component registration");
 
     // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
     registry.register(tasks::Tasks).expect("built-in component registration");
@@ -184,6 +185,32 @@ impl Registry {
         self.finish(&mut out, core);
         out
     }
+    /// Deliver a core-selected stable entry action; only its owner consumes it.
+    pub fn entry_action(&mut self, key: &str, operation: EntryOperation, core: &CoreView<'_>) -> Outbox {
+        let mut out = Outbox::default();
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if let Some(component) = &mut slot.component {
+                component.input(Input::EntryAction { key, operation }, core, ComponentToken { slot: index, generation: slot.generation }, self.epoch, &mut out);
+                if out.consumed { break; }
+            }
+        }
+        self.finish(&mut out, core);
+        out
+    }
+    /// Whether an owner has a local representation of this stable entry.
+    pub fn entry_openable(&self, key: &str) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.entry_openable(key))
+    }
+    /// Last replacement and following append rows, matching entry-view composition exactly.
+    pub fn entry_layout(&self, key: &str, width: usize) -> (Option<usize>, usize) {
+        let mut replacement = None;
+        let mut appended = 0;
+        for component in self.slots.iter().filter_map(|slot| slot.component.as_ref()) {
+            if let Some(height) = component.entry_height(key, width) { replacement = Some(height); appended = 0; }
+            appended += component.entry_rows(key);
+        }
+        (replacement, appended)
+    }
     /// Deliver only due deadlines using the existing frame/line-printer loop.
     pub fn tick(&mut self, now_ms: u64, frame: usize, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
@@ -227,19 +254,19 @@ impl Registry {
         self.finish(&mut out, core);
         out
     }
-    /// Deliver bracketed paste only to the exclusive focus owner.
+    /// Deliver bracketed paste to the intrinsic secret capture or exclusive focus owner.
     pub fn paste(&mut self, text: &str, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
-        if let Some((token, _)) = self.focus
+        if let Some((token, _)) = self.editor_owner()
             && let Some(component) = &mut self.slots[token.slot].component
         { component.input(Input::Paste(text), core, token, self.epoch, &mut out); }
         self.finish(&mut out, core);
         out
     }
-    /// Deliver a submitted line only to the exclusive focus owner.
+    /// Deliver submitted input to the intrinsic secret capture or exclusive focus owner.
     pub fn submit(&mut self, text: &str, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
-        if let Some((token, _)) = self.focus
+        if let Some((token, _)) = self.editor_owner()
             && let Some(component) = &mut self.slots[token.slot].component
         { component.input(Input::Submit(text), core, token, self.epoch, &mut out); }
         self.finish(&mut out, core);
@@ -271,10 +298,6 @@ impl Registry {
     pub fn wake(&self) -> Option<u64> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()?.wake()).min()
     }
-    /// Exact decoration geometry without constructing a toolkit view.
-    pub fn entry_rows(&self, key: &str) -> usize {
-        self.slots.iter().filter_map(|slot| slot.component.as_ref()).map(|component| component.entry_rows(key)).sum()
-    }
     /// Read-only owner query for composition and component integration tests.
     pub fn get<C: Component>(&self) -> Option<&C> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).find_map(|component| component.as_any().downcast_ref())
@@ -290,9 +313,16 @@ impl Registry {
     }
     /// Whether a component, rather than the chat editor, currently owns input.
     pub fn focused(&self) -> bool { self.focus.is_some() }
-    /// The exclusive focus owner's composer port and its input-precedence class.
+    fn editor_owner(&self) -> Option<(ComponentToken, FocusClass)> {
+        self.slots.iter().enumerate().find_map(|(slot, mounted)| {
+            mounted.component.as_ref()?.captures(FocusClass::Secret).then_some((
+                ComponentToken { slot, generation: mounted.generation }, FocusClass::Secret,
+            ))
+        }).or(self.focus)
+    }
+    /// Composer configuration at secret precedence, otherwise the exclusive focus owner.
     pub fn editor(&self) -> Option<(FocusClass, Editor)> {
-        let (token, class) = self.focus?;
+        let (token, class) = self.editor_owner()?;
         Some((class, self.slots[token.slot].component.as_ref()?.editor()?))
     }
     /// Modal capture excludes composer-backed prompts, just like the core prompt.

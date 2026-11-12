@@ -631,30 +631,6 @@ impl Model {
             // The transcript reload that follows pushes the notice (`History`).
             UiEvent::Undone(t) => self.notice = Some(format!("undone: {t} — /redo restores")),
             UiEvent::Redone(t) => self.notice = Some(format!("restored: {t}")),
-            UiEvent::MeshDevices(list) => {
-                if list.is_empty() {
-                    self.entries.push(Entry::Info("mesh devices: none paired".into()));
-                }
-                let now = now_ms();
-                for d in list {
-                    self.entries.push(Entry::Info(mesh_device_line(&d, now)));
-                }
-            }
-            UiEvent::MeshDevicePairing(p) => {
-                // The QR any engine may show; the hub accepts (69 decision 4). Shares the
-                // node-invite countdown slot: one ticking invite card at a time.
-                let card = PairingCard::new(link::Pairing {
-                    key: p.string,
-                    expires_at_ms: p.expires_ms,
-                });
-                self.entries.push(Entry::Card {
-                    kind: CardKind::Component { group: "node-invite", key: card.id, glyph: "⌁", color: crate::ui::FAIENCE },
-                    title: format!("mesh device pairing · pending {}", p.pending_id),
-                    text: Box::new(markdown::Text::complete(&card.body())),
-                    expanded: true,
-                });
-                self.invite = Some(card);
-            }
             UiEvent::Secrets(list) => {
                 if self.awaiting_secrets && !matches!(self.menu, Some(Menu::Secrets { .. })) {
                     self.menu = Some(Menu::Secrets {

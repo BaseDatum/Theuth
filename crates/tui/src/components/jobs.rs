@@ -267,7 +267,7 @@ impl JobTail {
 #[test]
 fn ring_loss_resnapshot_reconciles_active_jobs_with_inflight_events() {
     let session = SessionId::new();
-    let core = CoreView { interactive: false, session: Some(session), parent: None, private_root: None, project: None, inspecting: false, streaming: false, reasoning: false, agent: None, entries: &[] };
+    let core = CoreView { interactive: false, session: Some(session), ..super::tests::core() };
     let mut registry = Registry::empty();
     let token = registry.register(Jobs::default()).unwrap();
     let message = |body| LocalReply { to: token, engine_epoch: 0, body: Box::new(body) };

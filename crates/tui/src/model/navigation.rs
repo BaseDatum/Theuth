@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::artifacts_apps::artifact_text;
 
 impl Model {
 
