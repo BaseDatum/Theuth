@@ -266,12 +266,35 @@ pub enum StatusSlot {
     /// Spoken-view hint, before the attached-engine label.
     Spoken,
 }
+/// Stable header geometry, independent of registry composition order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderSlot {
+    /// Session spend.
+    Costs,
+    /// Advisor spend.
+    Advisor,
+    /// Approval policy.
+    Approvals,
+    /// Peer communication.
+    Communication,
+    /// Paired phones.
+    Link,
+    /// Connected nodes.
+    Nodes,
+    /// Available update.
+    Update,
+}
+impl HeaderSlot {
+    /// The existing left-to-right header order.
+    pub const ALL: [Self; 7] = [Self::Costs, Self::Advisor, Self::Approvals,
+        Self::Communication, Self::Link, Self::Nodes, Self::Update];
+}
 
 /// Fixed layout locations, never feature names.
 #[derive(Clone, Copy)]
 pub enum Surface<'a> {
-    /// Header suffix.
-    Header,
+    /// One explicitly ordered header segment.
+    Header(HeaderSlot),
     /// Owner presentation beside one session row, independent of feature DTOs.
     SessionBadge(SessionId),
     /// A fixed position in the status line, independent of registration order.

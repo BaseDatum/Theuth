@@ -235,3 +235,35 @@ fn component_plain_output_precedes_core_actions_and_errors_keep_global_effects()
     assert!(!model.compacting && !model.awaiting_cost && !model.awaiting_link);
     assert!(matches!(model.entries.last(), Some(Entry::Error(text)) if text == "request failed"));
 }
+
+#[cfg(test)]
+#[test]
+fn header_slots_preserve_order_across_core_and_reverse_registered_owners() {
+    use crate::components::{Component, Cx, Declaration, HeaderSlot, Input, Registry, ViewCx};
+    struct Header { slot: HeaderSlot, id: &'static str }
+    impl Component for Header {
+        type Msg = ();
+        fn declaration(&self) -> Declaration {
+            Declaration { id: self.id, interests: &[], slash: &[], bindings: &[] }
+        }
+        fn decode(&self, _: &TopicEvent, _: &CoreView<'_>) -> Option<()> { None }
+        fn update(&mut self, _: Input<'_, ()>, _: &mut Cx<'_, '_, ()>) {}
+        fn view(&self, at: Surface<'_>, _: &ViewCx<'_>) -> Option<View> {
+            matches!(at, Surface::Header(slot) if slot == self.slot)
+                .then(|| View::Text(format!("  ·  {}", self.id)))
+        }
+    }
+    let mut model = Model::new("nobody/nothing".into(), true);
+    model.approvals_off = true;
+    model.components = Registry::empty();
+    for (slot, id) in [
+        (HeaderSlot::Update, "update"), (HeaderSlot::Nodes, "nodes"),
+        (HeaderSlot::Link, "link"), (HeaderSlot::Communication, "communication"),
+        (HeaderSlot::Advisor, "advisor"), (HeaderSlot::Costs, "costs"),
+    ] {
+        model.components.register(Header { slot, id }).unwrap();
+    }
+    let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+    assert_eq!(model.header(&catalog).0,
+        "nobody/nothing  ·  ctx 0  ·  costs  ·  advisor  ·  approvals off  ·  communication  ·  link  ·  nodes  ·  update");
+}
