@@ -505,14 +505,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::SetVisionModel(model) => {
             UiEvent::VisionModel(msg(api.set_vision_model(model).await)?)
         }
-        Command::ListAwsProfiles => UiEvent::AwsProfiles {
-            info: msg(api.list_aws_profiles().await)?,
-            pick: true,
-        },
-        Command::SetAwsProfile(profile) => UiEvent::AwsProfiles {
-            info: msg(api.set_aws_profile(profile).await)?,
-            pick: false,
-        },
         Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
         // Failures show nothing: the list simply does not open (PATH-AC).
         Command::PathComplete {
@@ -1088,7 +1080,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
         ),
         UiEvent::VisionModel(m) => writeln!(out, "{}", model::vision_model_line(m.as_ref())),
-        UiEvent::AwsProfiles { info, .. } => writeln!(out, "{}", model::aws_profile_line(info)),
         UiEvent::Skills(list) | UiEvent::SkillsAdded(list) => list.iter().try_for_each(|s| {
             writeln!(
                 out,

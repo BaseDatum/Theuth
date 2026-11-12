@@ -822,12 +822,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 *cursor,
             )
         }
-        Menu::AwsProfiles { cursor, .. } => (
-            "aws profile  ⏎ use for every session's Bedrock calls from the next request  esc close"
-                .to_owned(),
-            m.aws_rows(),
-            *cursor,
-        ),
         Menu::Sessions { items, cursor } => (
             "sessions  ⏎ switch  esc close  (the one you leave keeps running)".to_owned(),
             items

@@ -12,7 +12,7 @@ use acp::registry::RegistryAgent;
 use agent::durability::{ResumeCause, ResumeKind};
 use agent::{
     AdvisorDefaults, AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind,
-    AgentEvent, AgentInfo, AgentState, AwsProfiles,
+    AgentEvent, AgentInfo, AgentState,
     CompactStyle, ContextAttachment, ContextEntry, ContextRemoval,
     ContextTarget, HistoryEntry, Loaded, ModelInfo, ObservedMeta, ObservedSource,
     ObservedState, ProviderInfo, QueuedInput, SessionKind,
@@ -286,7 +286,7 @@ pub(crate) use advisor::{AdvisorReply};
 pub use agents::{AgentRow, sort_agents, agent_row, WATCH_GLYPH, source_tag, observed_word};
 use agents::{rank, harness_word};
 pub use approvals::Ask;
-pub use catalog::{vision_model_line, aws_profile_line};
+pub use catalog::vision_model_line;
 pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;

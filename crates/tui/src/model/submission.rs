@@ -99,11 +99,6 @@ impl Model {
                     },
                 );
             }
-            "/aws" if arg.is_empty() => send(tx, Command::ListAwsProfiles),
-            "/aws" => send(
-                tx,
-                Command::SetAwsProfile((arg != "clear").then(|| arg.to_owned())),
-            ),
             "/approvals" => self.approvals_cmd(arg, tx),
             "/advisor" => self.advisor_cmd(arg, tx),
 

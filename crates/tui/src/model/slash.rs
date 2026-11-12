@@ -13,11 +13,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "a second model that reviews this session and answers its consults (picker without argument)",
     ),
     (
-        "/aws",
-        "[profile|clear]",
-        "AWS profile for Bedrock, harness-wide (picker without arg)",
-    ),
-    (
         "/acp",
         "[add <registry-id>|remove <name>]",
         "External harnesses (ACP) and the registry",

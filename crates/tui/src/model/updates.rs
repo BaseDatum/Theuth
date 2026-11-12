@@ -275,14 +275,6 @@ impl Model {
                 }
                 self.vision_model = m;
             }
-            // Status always; the picker when there is a choice to make or a
-            // stale selection to clear (row 0 restores the default chain).
-            UiEvent::AwsProfiles { info, pick } => {
-                self.entries.push(Entry::Info(aws_profile_line(&info)));
-                if pick && (info.profiles.len() > 1 || info.selected.is_some()) {
-                    self.menu = Some(Menu::AwsProfiles { info, cursor: 0 });
-                }
-            }
             UiEvent::Providers(list) => {
                 // 85 §0.9: the built-ins come first; there may be no custom provider.
                 for p in &list {

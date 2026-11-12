@@ -66,13 +66,6 @@ pub enum UiEvent {
     /// Reply to [`Command::GetVisionModel`] / [`Command::SetVisionModel`]:
     /// the harness-wide vision fallback (52 §3), `None` = off.
     VisionModel(Option<ModelInfo>),
-    /// Reply to [`Command::ListAwsProfiles`] (`pick`) / [`Command::SetAwsProfile`].
-    AwsProfiles {
-        /// Discovered profiles and the harness-wide selection.
-        info: AwsProfiles,
-        /// Open the picker when there is a choice.
-        pick: bool,
-    },
     /// A command failed (actor missing, ask error).
     Error(String),
     /// Reply to [`Command::ListLogins`]: providers and OAuth MCP servers.
@@ -221,10 +214,6 @@ pub enum Command {
     GetVisionModel,
     /// `set_vision_model`; `None` turns the fallback off.
     SetVisionModel(Option<String>),
-    /// `list_aws_profiles`.
-    ListAwsProfiles,
-    /// `set_aws_profile`; `None` restores the AWS default credential chain.
-    SetAwsProfile(Option<String>),
     /// `list_sessions`.
     ListSessions,
     /// `list_agents`: the subtree under a session.
