@@ -65,6 +65,8 @@ export function MeetingDefaults() {
   const { settings, block: s, save, set, busy } = useMeetingBlock()
   const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  // 194: the summary model's effort chips (none while it follows the meeting model).
+  const summary = models.data?.find((m) => m.id === s?.summary_model)
   const projects = [...new Set([...useProjects(), ...Object.keys(useProjectStyles())])].sort()
   // §6.4: once per install, offer the start form's remembered model as `meeting.model` when the engine has none.
   useEffect(() => {
@@ -97,6 +99,7 @@ export function MeetingDefaults() {
           none={SAME_AS_MEETING}
           disabled={busy}
           onChange={(summary_model) => set({ summary_model })}
+          effort={summary && summary.efforts.length > 0 ? { levels: summary.efforts, current: s?.summary_effort, onSelect: (summary_effort) => set({ summary_effort }) } : undefined}
         />
       </Row>
       <Row label="Template" description="The note template a meeting gets unless the start form, the prompt or the event picks another.">

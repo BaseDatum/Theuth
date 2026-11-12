@@ -112,10 +112,16 @@ pub fn routine_text(
     agent: &config::AgentDefaults,
 ) -> String {
     let (models, _) = cfg.resolve_models(agent);
+    // 194 D4e: the tidy tier's effort (only beside its pick) is the routine's
+    // `effort:`, the night session's reasoning effort.
+    let effort_line = match (&cfg.models.tidy, &cfg.efforts.tidy) {
+        (Some(_), Some(e)) => format!("effort: \"{e}\"\n"),
+        _ => String::new(),
+    };
     let model_line = if models.tidy.is_empty() {
         String::new()
     } else {
-        format!("model: {}\n", models.tidy)
+        format!("model: {}\n{effort_line}", models.tidy)
     };
     let engine_arg = cfg
         .home_engine

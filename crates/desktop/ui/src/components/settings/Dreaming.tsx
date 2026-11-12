@@ -180,6 +180,8 @@ export function Dreaming() {
             session: info?.default_model ?? 'the default model',
           })
           const name = model === null ? 'rules only' : (models.data?.find((m) => m.id === model)?.name ?? model) + (same ? ', same as Propose' : '')
+          // 194: the picked model's effort chips (none while the tier runs on its default).
+          const picked = models.data?.find((m) => m.id === settings.data?.models[tier])
           return (
             <Row stack key={tier} label={TIER_LABEL[tier]} description={TIER_HELP[tier]}>
               <ModelCombobox
@@ -190,6 +192,7 @@ export function Dreaming() {
                 none={{ label: `Default (${name})` }}
                 disabled={busy}
                 onChange={(v) => change({ kind: 'model', tier, model: v })}
+                effort={picked && picked.efforts.length > 0 ? { levels: picked.efforts, current: settings.data?.efforts?.[tier], onSelect: (effort) => change({ kind: 'effort', tier, effort }) } : undefined}
               />
             </Row>
           )

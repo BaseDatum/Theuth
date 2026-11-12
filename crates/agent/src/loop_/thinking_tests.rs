@@ -480,6 +480,7 @@ async fn endless_compactor_turns_thinking_off_per_model() {
                 &crate::supervisor::Auth::stub(&h.dir.0),
             ),
             effort: thinking_off(&model),
+            chosen: false,
             model: model.clone(),
             system: prompt("theuth"),
             local: None,

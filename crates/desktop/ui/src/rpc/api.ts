@@ -1136,6 +1136,8 @@ export interface Api {
   endless_pause(session: SessionId, paused: boolean): Promise<SessionMemory>
   /** 137G: this chat's own summary model (`null` = inherit agent → Settings → title → chat model); the fresh memory. */
   set_session_compactor_model(session: SessionId, model: string | null): Promise<SessionMemory>
+  /** 194: this chat's own summary effort (`null` = the effort of the link that chose the model); refused when the model in force does not take it; the fresh memory (its `effort`). */
+  set_session_compactor_effort(session: SessionId, effort: string | null): Promise<SessionMemory>
   /** 137 §9 `zoom`: `n = 1` → one line with the whole message; `n > 1` → the two children of `id+n`. */
   endless_zoom(session: SessionId, id: number, n: number): Promise<ViewLine[]>
   /** 137 §9 `recall`: FTS over the level-0 lines (raw fallback under 2 hits); `limit` null = 8. */
@@ -1903,6 +1905,7 @@ export const METHODS = [
   'set_pty_idle',
   'set_schedule_run_timeout',
   'set_secret',
+  'set_session_compactor_effort',
   'set_session_compactor_model',
   'set_session_memory',
   'set_session_project',

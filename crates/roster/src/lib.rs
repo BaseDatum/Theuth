@@ -325,6 +325,43 @@ async fn resolve_configured(
     }
 }
 
+/// 194 D4b–d: `memory_effort` follows `memory_model` — cleared with it,
+/// dropped when a changed `memory_model` does not take it, refused with
+/// `agent::CheckEffort`'s words otherwise (a new file, the same model).
+/// Unchecked while the agent actor is down (its compactor drops an effort
+/// the model does not take at use).
+async fn settle_memory_effort(f: &mut AgentFile, old: Option<&AgentFile>) -> Result<(), String> {
+    f.memory_effort = f
+        .memory_effort
+        .take()
+        .map(|e| e.trim().to_owned())
+        .filter(|e| !e.is_empty());
+    if f.memory_model.is_none() {
+        f.memory_effort = None;
+    }
+    let Some(effort) = f.memory_effort.clone() else {
+        return Ok(());
+    };
+    let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+        return Ok(());
+    };
+    let check = agent::CheckEffort {
+        model: f.memory_model.clone(),
+        effort,
+    };
+    match agents.ask(check).await {
+        Err(kameo::error::SendError::HandlerError(why)) => {
+            if old.is_some_and(|o| o.memory_model != f.memory_model) {
+                f.memory_effort = None;
+                Ok(())
+            } else {
+                Err(format!("memory_effort: {why}"))
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
 /// 148 E3: the model a desk runs on — its (resolved) configured one, else
 /// the live default for new sessions; `None` when the agent actor cannot say.
 async fn effective_model(
@@ -464,7 +501,8 @@ impl Roster {
         // the watcher saw). `PutAgent` updates the read model before this
         // runs, so it applies its own change (F1).
         let mut remodelled = Vec::new();
-        // 137G: the same for `memory_model:` (the desk's compactor default).
+        // 137G: the same for `memory_model:` (the desk's compactor default)
+        // and (194) its `memory_effort:`.
         let mut rememory = Vec::new();
         for (stem, parsed) in file::load_dir(&self.dir) {
             if let Err(e) = AgentName::new(&stem) {
@@ -493,8 +531,15 @@ impl Roster {
                         if old.is_some_and(|o| o.model != f.model) {
                             remodelled.push((stem.clone(), f.model.clone()));
                         }
-                        if old.is_some_and(|o| o.memory_model != f.memory_model) {
-                            rememory.push((stem.clone(), f.memory_model.clone()));
+                        if old.is_some_and(|o| {
+                            (&o.memory_model, &o.memory_effort)
+                                != (&f.memory_model, &f.memory_effort)
+                        }) {
+                            rememory.push((
+                                stem.clone(),
+                                f.memory_model.clone(),
+                                f.memory_effort.clone(),
+                            ));
                         }
                         push_charter(old.map(|f| f.body.as_str()), f);
                     }
@@ -523,8 +568,8 @@ impl Roster {
         for (name, model) in remodelled {
             self.apply_desk_model(&name, model).await;
         }
-        for (name, model) in rememory {
-            self.apply_desk_memory_model(&name, model).await;
+        for (name, model, effort) in rememory {
+            self.apply_desk_memory_model(&name, model, effort).await;
         }
     }
 
@@ -1025,15 +1070,17 @@ impl Roster {
             tracing::warn!(agent = %name, bytes, "desk view_bytes not applied: {e}");
         }
         // 137G: the agent's `memory_model:` is its desk's compactor default
-        // (below a chat's own pick); written every open, so a cleared key clears.
+        // (below a chat's own pick), with its `memory_effort:` (194); written
+        // every open, so a cleared key clears.
         if let Err(e) = agents
             .ask(agent::SetAgentCompactorModel {
                 session,
                 model: f.memory_model.clone(),
+                effort: f.memory_effort.clone(),
             })
             .await
         {
-            tracing::warn!(agent = %name, model = ?f.memory_model, "desk memory_model not applied: {e}");
+            tracing::warn!(agent = %name, model = ?f.memory_model, effort = ?f.memory_effort, "desk memory_model not applied: {e}");
         }
         self.shared.set_desk(name, session);
         self.desks.insert(
@@ -1115,9 +1162,15 @@ impl Roster {
         }
     }
 
-    /// 137G: the agent's `memory_model` changed (a [`PutAgent`] or an on-disk
-    /// edit): its open desk's compactor default follows, live.
-    async fn apply_desk_memory_model(&self, name: &str, model: Option<String>) {
+    /// 137G: the agent's `memory_model` (194: or `memory_effort`) changed (a
+    /// [`PutAgent`] or an on-disk edit): its open desk's compactor default
+    /// follows, live.
+    async fn apply_desk_memory_model(
+        &self,
+        name: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) {
         let Some(session) = self.desks.get(name).map(|d| d.session) else {
             return;
         };
@@ -1125,7 +1178,11 @@ impl Roster {
             return;
         };
         if let Err(e) = agents
-            .ask(agent::SetAgentCompactorModel { session, model })
+            .ask(agent::SetAgentCompactorModel {
+                session,
+                model,
+                effort,
+            })
             .await
         {
             tracing::warn!(agent = %name, "desk memory_model not applied: {e}");
@@ -2632,6 +2689,7 @@ impl Message<ListAgents> for Roster {
                             memory: None,
                             view_bytes: None,
                             memory_model: None,
+                            memory_effort: None,
                             body: String::new(),
                         },
                         status: AgentStatus::Invalid,
@@ -2747,19 +2805,21 @@ impl Message<PutAgent> for Roster {
             m.0.paused = o.paused;
             m.0.proposed_by.clone_from(&o.proposed_by);
         }
+        settle_memory_effort(&mut m.0, old.as_ref()).await?;
         // Validate through the parser so the file on disk is always readable.
         file::parse(m.0.name.as_str(), &file::render(&m.0))?;
         // 148 F1: `write_file` updates the read model, so the reconcile below
         // cannot see the `model:` change — apply it here.
         let old_model = old.as_ref().and_then(|f| f.model.clone());
-        let old_memory_model = old.and_then(|f| f.memory_model);
+        let old_memory = old.map(|f| (f.memory_model, f.memory_effort));
         self.write_file(&m.0).await?;
         if old_model != m.0.model {
             self.apply_desk_model(m.0.name.as_str(), m.0.model.clone())
                 .await;
         }
-        if old_memory_model != m.0.memory_model {
-            self.apply_desk_memory_model(m.0.name.as_str(), m.0.memory_model.clone())
+        let memory = (m.0.memory_model.clone(), m.0.memory_effort.clone());
+        if old_memory.unwrap_or_default() != memory {
+            self.apply_desk_memory_model(m.0.name.as_str(), memory.0, memory.1)
                 .await;
         }
         let _ = ctx.actor_ref().tell(Reconcile).await;

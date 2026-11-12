@@ -140,6 +140,7 @@ fn compactor_for(model: models::Resolved, auth: &crate::supervisor::Auth) -> Mod
         backend,
         system: compactor::prompt("theuth"),
         effort: None,
+        chosen: false,
         quiet,
         cfg: Default::default(),
     }
