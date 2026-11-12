@@ -29,6 +29,9 @@ pub mod night;
 pub mod preferences;
 pub mod replay;
 pub mod rpc;
+/// JSON-RPC server and client contracts for dreams.
+pub mod rpc_api;
+pub use rpc_api::{DreamsApiClient, DreamsApiServer, rpc_module};
 pub mod scrub;
 pub mod sensor_rules;
 pub mod signals;
