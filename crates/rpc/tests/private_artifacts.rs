@@ -28,8 +28,8 @@ const EMPTY_ZIP: [u8; 22] = [
 ];
 
 /// One authenticated connection to the shared server state.
-fn conn(methods: &jsonrpsee::Methods) -> (jsonrpsee::Methods, link::RpcPeer, link::RpcPeerGuard) {
-    let (peer, guard) = link::RpcPeer::open();
+fn conn(methods: &jsonrpsee::Methods) -> (jsonrpsee::Methods, rpc_core::RpcPeer, rpc_core::RpcPeerGuard) {
+    let (peer, guard) = rpc_core::RpcPeer::open();
     let mut methods = methods.clone();
     methods.extensions_mut().insert(peer.clone());
     (methods, peer, guard)

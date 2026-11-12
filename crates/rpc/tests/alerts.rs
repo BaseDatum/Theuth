@@ -15,8 +15,8 @@ use runtime::{Runtime, SessionId};
 /// One authenticated connection to the shared server state.
 struct Conn {
     methods: jsonrpsee::Methods,
-    peer: link::RpcPeer,
-    guard: Option<link::RpcPeerGuard>,
+    peer: rpc_core::RpcPeer,
+    guard: Option<rpc_core::RpcPeerGuard>,
 }
 
 impl Conn {
@@ -35,7 +35,7 @@ impl Conn {
             follows: Default::default(),
         })
         .into();
-        let (peer, guard) = link::RpcPeer::open();
+        let (peer, guard) = rpc_core::RpcPeer::open();
         methods.extensions_mut().insert(peer.clone());
         Self {
             methods,

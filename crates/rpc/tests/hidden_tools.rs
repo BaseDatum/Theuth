@@ -57,7 +57,7 @@ async fn hides_survive_an_actor_restart_and_unhide_clears_them() {
     .await
     .unwrap();
 
-    let (peer, _guard) = link::RpcPeer::open();
+    let (peer, _guard) = rpc_core::RpcPeer::open();
     let mut api: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
     api.extensions_mut().insert(peer);
     let open: SessionOpen = api

@@ -10,7 +10,7 @@ runtime = { workspace = true }
 tools = { workspace = true }
 platform = { workspace = true }
 artifact = { workspace = true }
-link = { workspace = true }
+rpc-core = { workspace = true }
 agent = { workspace = true }
 roster = { workspace = true }
 schedule = { workspace = true }

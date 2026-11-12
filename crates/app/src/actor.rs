@@ -18,7 +18,7 @@ use artifact::{
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use kameo::reply::{DelegatedReply, ReplySender};
-use link::RpcPeer;
+use rpc_core::RpcPeer;
 use parking_lot::Mutex;
 use runtime::Runtime;
 use tools::{

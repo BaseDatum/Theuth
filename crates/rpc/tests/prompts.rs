@@ -58,7 +58,7 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
         follows: Default::default(),
     })
     .into();
-    let (peer, _guard) = link::RpcPeer::open();
+    let (peer, _guard) = rpc_core::RpcPeer::open();
     methods.extensions_mut().insert(peer);
     let subscribe = || {
         methods.subscribe_unbounded(

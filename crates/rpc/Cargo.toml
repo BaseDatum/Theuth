@@ -9,6 +9,7 @@ description = "JSON-RPC 2.0 over WebSocket: commands as methods, bus events as a
 platform = { workspace = true }
 dirs = { workspace = true }
 runtime = { workspace = true }
+rpc-core = { workspace = true }
 figment = { workspace = true }  # 188: `config_flag_get` reads config.yaml's `enabled` fresh
 tools = { workspace = true }
 agent = { workspace = true }

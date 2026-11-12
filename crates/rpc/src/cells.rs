@@ -648,7 +648,7 @@ mod tests {
         Server::new(rt)
     }
 
-    fn with(peer: link::RpcPeer) -> Extensions {
+    fn with(peer: rpc_core::RpcPeer) -> Extensions {
         let mut ext = Extensions::new();
         ext.insert(peer);
         ext
@@ -766,7 +766,7 @@ mod tests {
     #[tokio::test]
     async fn internal_peer_is_refused_for_every_press_method() {
         let server = server();
-        let ext = with(link::RpcPeer::internal());
+        let ext = with(rpc_core::RpcPeer::internal());
         assert_eq!(press_codes(&server, &ext).await, [UNAUTHORIZED; 9]);
     }
 
@@ -774,7 +774,7 @@ mod tests {
     #[tokio::test]
     async fn guest_peer_is_refused_for_every_press_method() {
         let server = server();
-        let (peer, _g) = link::RpcPeer::open_guest([1; 32], [2; 32]);
+        let (peer, _g) = rpc_core::RpcPeer::open_guest([1; 32], [2; 32]);
         let ext = with(peer);
         assert_eq!(press_codes(&server, &ext).await, [UNAUTHORIZED; 9]);
     }
@@ -783,7 +783,7 @@ mod tests {
     #[tokio::test]
     async fn forwarded_internal_peer_passes_the_guard() {
         let server = server();
-        let mut ext = with(link::RpcPeer::internal());
+        let mut ext = with(rpc_core::RpcPeer::internal());
         ext.insert(crate::forward::Forwarded(replica::PeerId(
             "engine-b".into(),
         )));
@@ -797,7 +797,7 @@ mod tests {
     #[tokio::test]
     async fn every_read_method_refuses_guests() {
         let server = server();
-        let (peer, _g) = link::RpcPeer::open_guest([1; 32], [2; 32]);
+        let (peer, _g) = rpc_core::RpcPeer::open_guest([1; 32], [2; 32]);
         let ext = with(peer);
         assert_eq!(read_codes(&server, &ext).await, [UNAUTHORIZED; 8]);
     }
@@ -813,24 +813,24 @@ mod tests {
 
     #[test]
     fn pressed_by_names_kind_and_device() {
-        let (local, _g1) = link::RpcPeer::open();
+        let (local, _g1) = rpc_core::RpcPeer::open();
         let mut ios = with(local.clone());
-        ios.insert(crate::Client("ios"));
+        ios.insert(rpc_core::Client("ios"));
         assert!(cells_guard::pressed_by(&ios, &local).starts_with("phone · "));
 
-        let (remote, _g2) = link::RpcPeer::open_remote();
+        let (remote, _g2) = rpc_core::RpcPeer::open_remote();
         let ext = with(remote.clone());
         assert_eq!(cells_guard::pressed_by(&ext, &remote), "web · relay");
 
         let ext = with(local.clone());
         assert!(cells_guard::pressed_by(&ext, &local).starts_with("desktop · "));
 
-        let mut fwd = with(link::RpcPeer::internal());
+        let mut fwd = with(rpc_core::RpcPeer::internal());
         fwd.insert(crate::forward::Forwarded(replica::PeerId(
             "engine-b".into(),
         )));
         assert_eq!(
-            cells_guard::pressed_by(&fwd, &link::RpcPeer::internal()),
+            cells_guard::pressed_by(&fwd, &rpc_core::RpcPeer::internal()),
             "desktop · engine-b"
         );
     }
@@ -843,7 +843,7 @@ mod tests {
         use crate::api::into_rpc_module;
         use jsonrpsee::core::server::MethodsError;
         let mut methods: jsonrpsee::Methods = into_rpc_module(server()).into();
-        let (peer, _g) = link::RpcPeer::open();
+        let (peer, _g) = rpc_core::RpcPeer::open();
         methods.extensions_mut().insert(peer);
         let (cell, run) = (chat_cell(), RunId("r_old".into()));
         let code = |r: Result<CellRun, MethodsError>| match r {
@@ -922,7 +922,7 @@ mod tests {
     #[tokio::test]
     async fn note_scope_routes_here() {
         let server = server();
-        let ext = with(link::RpcPeer::internal());
+        let ext = with(rpc_core::RpcPeer::internal());
         let scope = Scope::Doc(DocId("d1".into()));
         let got: Option<()> = route_scope(&server, &ext, &scope, "cell_stop", ())
             .await

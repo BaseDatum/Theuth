@@ -19,6 +19,7 @@ use jsonrpsee::server::{
     stop_channel,
 };
 use runtime::Runtime;
+use rpc_core::{Client, ConnId};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tower::Service;
@@ -64,35 +65,6 @@ impl Default for RpcConfig {
     }
 }
 
-/// 130 E4: the client a connection declared with `X-Theuth-Client` on the
-/// WebSocket upgrade — `desktop | tui | ios | companion`, `desktop` when the
-/// header is absent or unknown. [`Auth`] puts it in every admitted request's
-/// extensions beside the peer, so each call on the socket can stamp
-/// `ActivityEntry.actor = user@<client>` ([`Client::actor`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Client(pub &'static str);
-
-impl Client {
-    /// The header name.
-    pub const HEADER: &'static str = "x-theuth-client";
-    /// What an absent or unknown header means.
-    pub const DEFAULT: Client = Client("desktop");
-    const KNOWN: [&'static str; 4] = ["desktop", "tui", "ios", "companion"];
-
-    /// The header's value when it names a known client, else [`Self::DEFAULT`].
-    pub fn parse(value: Option<&str>) -> Self {
-        value
-            .map(str::trim)
-            .and_then(|v| Self::KNOWN.iter().find(|k| k.eq_ignore_ascii_case(v)))
-            .map_or(Self::DEFAULT, |k| Client(k))
-    }
-
-    /// `user@<client>` for the connection behind `ext` (`user@desktop` when
-    /// the call did not come over the socket, e.g. the in-process TUI).
-    pub fn actor(ext: &jsonrpsee::Extensions) -> String {
-        format!("user@{}", ext.get::<Client>().unwrap_or(&Self::DEFAULT).0)
-    }
-}
 
 /// The plugin. Reads `<data_dir>/token` (creating it) and requires it as
 /// `Authorization: Bearer <token>` on the WebSocket upgrade.
@@ -197,7 +169,7 @@ pub async fn serve(rt: &Runtime, cfg: RpcConfig) -> anyhow::Result<SocketAddr> {
 }
 
 /// Accept loop (jsonrpsee's low-level tower API). Each TCP connection is
-/// one [`link::RpcPeer`]: [`Auth`] puts it in every admitted request's
+/// one [`rpc_core::RpcPeer`]: [`Auth`] puts it in every admitted request's
 /// extensions, and jsonrpsee copies the upgrade request's extensions into
 /// every call on the resulting WebSocket, so all calls on one socket see
 /// the same peer and two sockets never do. The peer's guard is owned by the
@@ -205,7 +177,7 @@ pub async fn serve(rt: &Runtime, cfg: RpcConfig) -> anyhow::Result<SocketAddr> {
 /// hyper connection is over *and* jsonrpsee's session-closed signal fired,
 /// which it does on disconnect without waiting for in-flight calls (or at
 /// once when the connection never became a WebSocket). A call awaiting
-/// [`link::RpcPeer::closed`] therefore cannot hold its own peer open. On
+/// [`rpc_core::RpcPeer::closed`] therefore cannot hold its own peer open. On
 /// server stop jsonrpsee drains in-flight calls first, so the peer is
 /// closed at stop, before that drain.
 async fn accept(
@@ -231,7 +203,7 @@ async fn accept(
         let conn = Arc::new(wslog::Conn::new(addr));
         let mut svc = services.clone().build(methods.clone(), stop_handle.clone());
         let session_closed = svc.on_session_closed();
-        let (peer, guard) = link::RpcPeer::open();
+        let (peer, guard) = rpc_core::RpcPeer::open();
         let auth = Auth {
             inner: svc,
             token: token.clone(),
@@ -267,10 +239,6 @@ async fn accept(
     let _ = server.stop();
 }
 
-/// The local connection's `conn=` id in every admitted request's extensions, so
-/// `client_log` lines name the socket the `rpc: ws open` line announced (176 C2).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ConnId(pub(crate) u64);
 
 /// Read the token, or create it (64 hex chars, owner-only).
 fn load_token(path: &Path) -> anyhow::Result<Arc<str>> {
@@ -291,13 +259,13 @@ fn load_token(path: &Path) -> anyhow::Result<Arc<str>> {
 
 /// Per-connection HTTP middleware: 401 unless `Authorization: Bearer <token>`
 /// or `?token=<token>`; an admitted request carries the connection's
-/// [`link::RpcPeer`] and [`ConnId`] in its extensions, and an admitted upgrade
+/// [`rpc_core::RpcPeer`] and [`ConnId`] in its extensions, and an admitted upgrade
 /// logs the connection's `rpc: ws open` line.
 #[derive(Clone)]
 struct Auth<S> {
     inner: S,
     token: Arc<str>,
-    peer: link::RpcPeer,
+    peer: rpc_core::RpcPeer,
     conn: Arc<wslog::Conn>,
 }
 
@@ -361,7 +329,7 @@ mod tests {
     use jsonrpsee::core::client::ClientT;
     use jsonrpsee::rpc_params;
     use jsonrpsee::ws_client::{HeaderMap, HeaderValue, WsClient, WsClientBuilder};
-    use link::RpcPeer;
+    use rpc_core::RpcPeer;
     use tokio::sync::mpsc;
 
     async fn client(addr: SocketAddr) -> WsClient {

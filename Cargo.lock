@@ -680,10 +680,10 @@ dependencies = [
  "figment",
  "futures",
  "kameo",
- "link",
  "parking_lot",
  "platform",
  "roster",
+ "rpc-core",
  "runtime",
  "schedule",
  "schemars 1.2.3",
@@ -11450,6 +11450,7 @@ dependencies = [
  "qrcode",
  "rand 0.10.3",
  "replica",
+ "rpc-core",
  "runtime",
  "schemars 1.2.3",
  "secrets",
@@ -17543,6 +17544,7 @@ dependencies = [
  "platform",
  "replica",
  "roster",
+ "rpc-core",
  "runtime",
  "sandbox",
  "schedule",
@@ -17574,6 +17576,21 @@ dependencies = [
  "voice",
  "web",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rpc-core"
+version = "2.19.5"
+dependencies = [
+ "anyhow",
+ "jsonrpsee",
+ "kameo",
+ "parking_lot",
+ "rand 0.10.3",
+ "runtime",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

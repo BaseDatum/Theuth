@@ -28,7 +28,7 @@ impl Local {
     /// The full API over `rt`'s actors, every call as the owner console.
     pub fn new(rt: Runtime) -> Self {
         let mut methods: Methods = into_rpc_module(crate::api::Server::new(rt)).into();
-        methods.extensions_mut().insert(link::RpcPeer::internal());
+        methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         Self(methods)
     }
 }

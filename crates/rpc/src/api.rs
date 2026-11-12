@@ -526,7 +526,7 @@ impl Server {
     /// follow entries when it closes. A second waiter for the same peer (a
     /// map was fresh) removes nothing new; one spawned after the close
     /// removes at once.
-    fn forget_on_close(&self, peer: link::RpcPeer) {
+    fn forget_on_close(&self, peer: rpc_core::RpcPeer) {
         let (focus, seen, follows) = (self.focus.clone(), self.seen.clone(), self.follows.clone());
         tokio::spawn(async move {
             peer.closed().await;
@@ -1022,8 +1022,8 @@ fn apps() -> RpcResult<ActorRef<Apps>> {
 /// The authenticated connection behind a `with_extensions` call. Both
 /// listeners (local socket, link conn) put one in every admitted request;
 /// its absence means nothing authenticated the call — never "local".
-pub(crate) fn peer(ext: &Extensions) -> RpcResult<link::RpcPeer> {
-    ext.get::<link::RpcPeer>().cloned().ok_or_else(|| {
+pub(crate) fn peer(ext: &Extensions) -> RpcResult<rpc_core::RpcPeer> {
+    ext.get::<rpc_core::RpcPeer>().cloned().ok_or_else(|| {
         ErrorObjectOwned::owned(UNAUTHORIZED, "no authenticated connection", None::<()>)
     })
 }
@@ -1031,7 +1031,7 @@ pub(crate) fn peer(ext: &Extensions) -> RpcResult<link::RpcPeer> {
 /// The document principal behind a call (59 §8.3): a mode-2 guest conn is `Member{pub, device}`,
 /// everything else the owner on `device`. Returned with the peer so the caller can mark a guest
 /// joined or refused.
-fn principal(ext: &Extensions) -> RpcResult<(link::RpcPeer, document::Principal)> {
+fn principal(ext: &Extensions) -> RpcResult<(rpc_core::RpcPeer, document::Principal)> {
     let p = peer(ext)?;
     let device = Some(p.id());
     let by = match p.guest() {
@@ -1045,7 +1045,7 @@ fn principal(ext: &Extensions) -> RpcResult<(link::RpcPeer, document::Principal)
 }
 
 /// Owner-only methods (59 §8: `doc_members`, links): a guest peer is refused before the actor sees it.
-fn owner(ext: &Extensions) -> RpcResult<link::RpcPeer> {
+fn owner(ext: &Extensions) -> RpcResult<rpc_core::RpcPeer> {
     let p = peer(ext)?;
     if p.guest().is_some() {
         return Err(ErrorObjectOwned::owned(
@@ -1059,7 +1059,7 @@ fn owner(ext: &Extensions) -> RpcResult<link::RpcPeer> {
 
 /// A member call's outcome as the guest's conn sees it (59 §8.3, §11): success scopes the conn
 /// (no `doc_join` needed on a return visit), a membership or role refusal counts toward the close.
-fn member_outcome<T>(peer: &link::RpcPeer, r: &RpcResult<T>) {
+fn member_outcome<T>(peer: &rpc_core::RpcPeer, r: &RpcResult<T>) {
     let Some(g) = peer.guest() else {
         return;
     };
@@ -1168,7 +1168,7 @@ async fn to_doc_server<T: DeserializeOwned>(
 /// toward its close — the join's own (`JoinError`'s wire codes) and a member call's (Z184-R2/R3):
 /// a retryable `busy` (184 §4.3 step 4), a `hub_moved` during a Move or any transient error never
 /// locks a guest out.
-fn join_outcome<T>(guest: &link::Guest, r: &RpcResult<T>) {
+fn join_outcome<T>(guest: &rpc_core::Guest, r: &RpcResult<T>) {
     const REFUSALS: [&str; 10] = [
         "not_member",
         "viewer_readonly",
@@ -1568,7 +1568,7 @@ fn stub_err(e: anyhow::Error) -> ErrorObjectOwned {
 /// 158 §7.2: the connection's `x-theuth-client` value for companion-only methods; `None` when
 /// the call did not come over the socket (the in-process TUI).
 fn client_of(ext: &Extensions) -> Option<&'static str> {
-    ext.get::<crate::Client>().map(|c| c.0)
+    ext.get::<rpc_core::Client>().map(|c| c.0)
 }
 
 /// Largest decoded image `put_attachment` accepts (17 §1: Anthropic's 5 MB); an
@@ -2205,7 +2205,7 @@ mod tests {
     async fn routed_methods_dispatch_on_the_owner_with_the_forwarders_params() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let mut methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
-        methods.extensions_mut().insert(link::RpcPeer::internal());
+        methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         methods
             .extensions_mut()
             .insert(forward::Forwarded(replica::PeerId("engine-b".into())));
@@ -2251,7 +2251,7 @@ mod tests {
         let call = |forwarder: Option<&str>| {
             let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
             let mut methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
-            methods.extensions_mut().insert(link::RpcPeer::internal());
+            methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
             if let Some(f) = forwarder {
                 methods
                     .extensions_mut()
@@ -2292,7 +2292,7 @@ mod tests {
     async fn a_forwarded_dream_now_runs_on_the_hub_with_the_forwarders_params() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let mut methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
-        methods.extensions_mut().insert(link::RpcPeer::internal());
+        methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         methods
             .extensions_mut()
             .insert(forward::Forwarded(replica::PeerId("node".into())));
@@ -2653,8 +2653,8 @@ mod tests {
             methods: jsonrpsee::Methods,
             tx: broadcast::Sender<Event>,
             focus: FocusMap,
-            peer: link::RpcPeer,
-            guard: Option<link::RpcPeerGuard>,
+            peer: rpc_core::RpcPeer,
+            guard: Option<rpc_core::RpcPeerGuard>,
         }
 
         impl Harness {
@@ -2666,7 +2666,7 @@ mod tests {
                 server.events = tx.clone();
                 let focus = server.focus.clone();
                 let mut methods: jsonrpsee::Methods = into_rpc_module(server).into();
-                let (peer, guard) = link::RpcPeer::open();
+                let (peer, guard) = rpc_core::RpcPeer::open();
                 methods.extensions_mut().insert(peer.clone());
                 Self {
                     methods,
@@ -2893,7 +2893,7 @@ mod tests {
         let base: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
         assert_eq!(app_close_code(&base).await, i64::from(UNAUTHORIZED));
 
-        let (peer, _guard) = link::RpcPeer::open();
+        let (peer, _guard) = rpc_core::RpcPeer::open();
         let mut with_peer = base.clone();
         with_peer.extensions_mut().insert(peer);
         // No app actor in this process: past the peer gate, the lookup fails.
@@ -2904,7 +2904,7 @@ mod tests {
     async fn remote_dictation_call(method: &str, params: &str) -> serde_json::Value {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let mut methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
-        let (peer, _guard) = link::RpcPeer::open_remote();
+        let (peer, _guard) = rpc_core::RpcPeer::open_remote();
         methods.extensions_mut().insert(peer);
         let req = format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{params},"id":1}}"#);
         let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
@@ -3478,7 +3478,7 @@ mod tests {
         }
 
         /// `rt`'s methods behind `peer`.
-        fn methods(rt: &Runtime, peer: link::RpcPeer) -> jsonrpsee::Methods {
+        fn methods(rt: &Runtime, peer: rpc_core::RpcPeer) -> jsonrpsee::Methods {
             let mut m: jsonrpsee::Methods = into_rpc_module(Server::new(rt.clone())).into();
             m.extensions_mut().insert(peer);
             m
@@ -3511,7 +3511,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn the_rpc_returns_the_drawn_png() {
             let (rt, mut events) = harness().await;
-            let (peer, _guard) = link::RpcPeer::open();
+            let (peer, _guard) = rpc_core::RpcPeer::open();
             let m = methods(&rt, peer);
             let call = snapshot(&m, r#"["mermaid","graph TD; A-->B",560,"dark",2]"#);
             let (_, id) = events.recv().await.unwrap();
@@ -3538,7 +3538,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn no_subscriber_is_no_renderer() {
             let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-            let (peer, _guard) = link::RpcPeer::open();
+            let (peer, _guard) = rpc_core::RpcPeer::open();
             let v = snapshot(&methods(&rt, peer), r#"["openui","x",560,"light",2]"#)
                 .await
                 .unwrap();
@@ -3553,7 +3553,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn a_failed_client_is_failed_with_its_reason() {
             let (rt, mut events) = harness().await;
-            let (peer, _guard) = link::RpcPeer::open();
+            let (peer, _guard) = rpc_core::RpcPeer::open();
             let m = methods(&rt, peer);
             let call = snapshot(&m, r#"["json-render","{",560,"light",2]"#);
             let (_, id) = events.recv().await.unwrap();
@@ -3573,7 +3573,7 @@ mod tests {
             let (tx, mut seen) = mpsc::unbounded_channel();
             let req = Requests::spawn(Requests(tx));
             rt.subscribe::<Requests, FenceSnapshotRequested>(&req).await;
-            let (peer, _guard) = link::RpcPeer::open();
+            let (peer, _guard) = rpc_core::RpcPeer::open();
             let m = methods(&rt, peer);
             for (params, want) in [
                 (r#"["mermaid","a",10,"dark",9]"#, (240, 3)),
@@ -3592,7 +3592,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn guests_are_refused() {
             let (rt, mut events) = harness().await;
-            let (guest, _guard) = link::RpcPeer::open_guest([7; 32], [9; 32]);
+            let (guest, _guard) = rpc_core::RpcPeer::open_guest([7; 32], [9; 32]);
             let params = r#"["mermaid","a",560,"dark",2]"#;
             let v = snapshot(&methods(&rt, guest), params).await.unwrap();
             assert_eq!(
@@ -3686,7 +3686,7 @@ mod tests {
     /// toward the guest's three refusals; any other refusal does.
     #[test]
     fn a_busy_join_is_not_a_refusal() {
-        let (peer, _guard) = link::RpcPeer::open_guest([7; 32], [9; 32]);
+        let (peer, _guard) = rpc_core::RpcPeer::open_guest([7; 32], [9; 32]);
         let guest = peer.guest().unwrap();
         // Z184-R2: a move in flight or a transient failure never counts toward the close.
         for e in [

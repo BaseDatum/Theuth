@@ -643,7 +643,7 @@ impl CoreApiServer for Server {
             tasks::activity::record(
                 &self.rt,
                 tasks::activity::ActivityKind::ApprovalResolved,
-                &crate::Client::actor(ext),
+                &rpc_core::Client::actor(ext),
                 &id.0.to_string(),
                 format!("{what} approval {}", id.0),
             )
@@ -673,7 +673,7 @@ impl CoreApiServer for Server {
             tasks::activity::record(
                 &self.rt,
                 tasks::activity::ActivityKind::AskAnswered,
-                &crate::Client::actor(ext),
+                &rpc_core::Client::actor(ext),
                 &id.0.to_string(),
                 format!("{what} question {}", id.0),
             )
@@ -978,7 +978,7 @@ impl CoreApiServer for Server {
     }
 
     async fn shutdown(&self, ext: &Extensions) -> RpcResult<()> {
-        match ext.get::<link::RpcPeer>() {
+        match ext.get::<rpc_core::RpcPeer>() {
             Some(p) => tracing::warn!(
                 peer = p.id(),
                 remote = p.remote(),
@@ -1099,7 +1099,7 @@ impl CoreApiServer for Server {
         to: String,
     ) -> RpcResult<tasks::Task> {
         let task = send(&tasks_actor()?, tasks::GetTask(tasks::TaskId(id.clone()))).await?;
-        let actor = crate::Client::actor(ext);
+        let actor = rpc_core::Client::actor(ext);
         let m = |check_only, session_moved| tasks::MoveHome {
             id: tasks::TaskId(id.clone()),
             to: to.clone(),
@@ -1146,7 +1146,7 @@ impl CoreApiServer for Server {
         let m = tasks::MoveWaiting {
             from,
             to: store.engine().to_owned(),
-            actor: crate::Client::actor(ext),
+            actor: rpc_core::Client::actor(ext),
         };
         send(&tasks_actor()?, m).await
     }
@@ -1404,7 +1404,7 @@ impl CoreApiServer for Server {
         source: String,
         message: String,
     ) -> RpcResult<()> {
-        let conn = ext.get::<crate::ConnId>().map_or(0, |c| c.0);
+        let conn = ext.get::<rpc_core::ConnId>().map_or(0, |c| c.0);
         crate::diag::client_log(&peer(ext)?, conn, &level, &source, &message);
         Ok(())
     }

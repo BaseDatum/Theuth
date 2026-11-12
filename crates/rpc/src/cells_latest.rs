@@ -78,7 +78,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.code(), UNAUTHORIZED);
         // A guest conn reaches the membership check, which needs the document actor.
-        let (guest, _guard) = link::RpcPeer::open_guest([7; 32], [9; 32]);
+        let (guest, _guard) = rpc_core::RpcPeer::open_guest([7; 32], [9; 32]);
         let mut ext = Extensions::new();
         ext.insert(guest);
         let e = latest(&server, &ext, doc).await.unwrap_err();

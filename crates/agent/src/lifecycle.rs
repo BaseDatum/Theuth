@@ -208,9 +208,9 @@ pub struct PrivateTrees;
 pub struct PrivateOwner {
     /// The client's view id given at `create_session`; must match on resume.
     pub view: String,
-    /// `link::RpcPeer::id()` of the holder.
+    /// `rpc_core::RpcPeer::id()` of the holder.
     pub peer: u64,
-    /// `link::RpcPeer`'s closed token: cancelled when the connection went.
+    /// `rpc_core::RpcPeer`'s closed token: cancelled when the connection went.
     pub peer_closed: CancellationToken,
     /// Lifecycle generation the lease was taken under.
     pub generation: u64,

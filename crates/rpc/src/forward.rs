@@ -483,7 +483,7 @@ pub async fn forward_within(
 /// each with one dispatch of `methods` as the internal peer, marked
 /// [`Forwarded`] with the opening peer. `methods` is the full API ([`crate::methods`]).
 pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>, mut methods: jsonrpsee::Methods) {
-    methods.extensions_mut().insert(link::RpcPeer::internal());
+    methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
     loop {
         let accepted = tokio::select! {
             () = rt.shutdown.cancelled() => return,
@@ -716,7 +716,7 @@ mod tests {
             "owner dispatch carries the one-hop marker naming the forwarder"
         );
         assert!(
-            ext.get::<link::RpcPeer>().is_some(),
+            ext.get::<rpc_core::RpcPeer>().is_some(),
             "owner dispatch runs as the internal peer"
         );
     }
@@ -1026,7 +1026,7 @@ mod tests {
         assert_eq!((s, e), (session, env.clone()));
         let ext = ext.unwrap();
         assert_eq!(ext.get::<Forwarded>().unwrap().0, a.me);
-        assert!(ext.get::<link::RpcPeer>().is_some());
+        assert!(ext.get::<rpc_core::RpcPeer>().is_some());
 
         let refused = pm::forward(
             a.as_ref(),

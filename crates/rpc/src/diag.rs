@@ -79,7 +79,7 @@ fn clean(message: &str) -> String {
 
 /// `client_log` (176 C2): log `message` at target `client`, rate-limited per connection.
 pub(crate) fn client_log(
-    peer: &link::RpcPeer,
+    peer: &rpc_core::RpcPeer,
     conn: u64,
     level: &str,
     source: &str,
@@ -201,7 +201,7 @@ mod tests {
         )
         .await;
         assert!(anon.get("error").is_some(), "{anon}");
-        methods.extensions_mut().insert(link::RpcPeer::internal());
+        methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         for level in ["info", "warn", "debug"] {
             let req = format!(
                 r#"{{"jsonrpc":"2.0","method":"client_log","params":["{level}","Bad Source","hi"],"id":1}}"#
