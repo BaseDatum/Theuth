@@ -35,6 +35,12 @@ macro_rules! core_view {
             secret_editor: $model.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret),
             approval: $model.approval().is_some(),
             awaiting_session: $model.awaiting_session,
+            model_id: &$model.model_id,
+            effort: $model.effort.as_deref(),
+            default_effort: $model.default_effort.as_deref(),
+            harness: $model.agent.as_deref(),
+            harness_model: $model.harness_model.as_deref(),
+            catalog: $model.catalog.as_deref(),
             frame: $model.frame,
             composer_read_only: $model.components.composer_read_only(),
             draft_options: Model::draft_options_ref($model.draft.as_ref(), $model.session),
@@ -45,6 +51,12 @@ macro_rules! core_view {
 impl Model {
     /// Fold a topic, component reply or residual core event into the UI state.
     pub fn apply(&mut self, event: UiEvent) { self.receive(event, &mut |_| {}); }
+    /// Deliver typed input to one registered owner through the core action queue.
+    pub fn component_message<C: crate::components::Component>(&mut self, message: C::Msg) {
+        let core = core_view!(self, None);
+        let out = self.components.send_to::<C>(message, &core);
+        self.component_finish(out, &mut |_| {});
+    }
 
     pub(crate) fn receive(&mut self, event: UiEvent, emit: &mut impl FnMut(Output<'_>)) {
         let (residual, out) = match event {
@@ -111,6 +123,27 @@ impl Model {
         }
         for action in out.actions {
             match action {
+                CoreAction::PickModel(model) => {
+                    if let Some(commands) = self.component_commands.clone() { self.pick_model(model, &commands); }
+                }
+                CoreAction::SetEffort(effort) => {
+                    if let Some(commands) = self.component_commands.clone() { self.set_effort(effort, &commands); }
+                }
+                CoreAction::ModelApplied(model) => self.model_id = model,
+                CoreAction::EffortApplied(effort) => {
+                    self.awaiting_effort = false;
+                    self.entries.push(Entry::Info(match &effort {
+                        Some(e) => format!("effort: {e}"),
+                        None => "effort cleared".to_owned(),
+                    }));
+                    self.effort = effort;
+                }
+                CoreAction::AwaitingEffort(pending) => self.awaiting_effort = pending,
+                CoreAction::PostTo(message) => {
+                    if let Some(reply) = self.components.address(message) {
+                        self.receive(UiEvent::Component(reply), emit);
+                    }
+                }
                 CoreAction::SessionCreated(session) => self.receive(UiEvent::SessionCreated(session), emit),
                 CoreAction::SessionOpened(open) => self.receive(UiEvent::SessionOpened(open), emit),
                 CoreAction::ReplaceEditor { value, caret } => self.pending_input = Some((value, caret)),

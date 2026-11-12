@@ -191,6 +191,23 @@ impl Registry {
         self.finish(&mut out, core);
         out
     }
+    pub(crate) fn address(&self, message: AddressedMessage) -> Option<LocalReply> {
+        if message.engine_epoch != self.epoch { return None; }
+        let (slot, mounted) = self.slots.iter().enumerate().find(|(_, slot)|
+            slot.component.as_ref().is_some_and(|component| component.as_any().type_id() == message.owner)
+        )?;
+        Some(LocalReply {
+            to: ComponentToken { slot, generation: mounted.generation },
+            engine_epoch: message.engine_epoch, body: message.body,
+        })
+    }
+    /// Address synchronous typed input with the target's current token and epoch.
+    pub fn send_to<C: Component>(&mut self, message: C::Msg, core: &CoreView<'_>) -> Outbox {
+        let message = AddressedMessage {
+            owner: std::any::TypeId::of::<C>(), engine_epoch: self.epoch, body: Box::new(message),
+        };
+        self.address(message).map_or_else(Outbox::default, |reply| self.reply(reply, core))
+    }
     /// Drop stale/removed/wrong-owner replies before the typed adapter sees them.
     pub fn reply(&mut self, reply: LocalReply, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
