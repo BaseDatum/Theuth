@@ -695,6 +695,8 @@ The sandboxes component owns inventory and desktop URL replies; desktop password
 remain private inside opaque local replies, never transcript or plain output.
 Focused components may expose an `Editor` port (hint, masking, empty-answer policy)
 on the mounted composer. Secret-class answers retain precedence over ask-user input.
+Component-owned modal rows reuse `ui::menu_view` for the existing frame, selection
+window, colors and width clipping; components retain their own row vocabulary.
 Later panel increments delete their residual cases and use typed local messages,
 borrowed owner serde contracts, neutral core actions/lifecycle and plain-output
 ports. Generic errors retain existing cross-panel pending-state effects.
