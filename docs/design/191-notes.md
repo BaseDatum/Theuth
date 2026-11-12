@@ -144,7 +144,7 @@ Built on `feat/191-p3-holds` from the P2 head 0160ad19 with the revised design m
 - **Writing a hold** (`crates/agent/src/communication/network.rs`): every change of the agent's in-memory holds goes through `Agents::held_changed`, which mirrors `NetworkState.held` into `contact_holds` (only the rows that changed; `holds_mirrored` keeps what was written) and then publishes `ContactsHeldChanged`. `HeldTask.machine` carries the contact's machine from its `ContactOrigin`. The boot accounting (`supervisor/pause.rs`) deletes this engine's own rows (the restart failed the holds).
 - **Attention from every machine** (`crates/a2a/src/contacts.rs`): `Ctx::first_waiting` lists this machine's own holds (the agent's memory) and every other `contact_holds` row through `held_row` (cleaned and cut). `Ctx::holds_tick`, on the 2 s tick (`watch_file`), hashes the table and on a change publishes `A2aChanged` and nudges Attention, whoever wrote the rows. The strip, `ContactFirstScreen` and the HUD already refetch `contact_first_waiting` on `A2aChanged` (`queryKeys.waiting` sits under `a2a`); `ContactAllowStrip` only gains the comment.
 - **Release only on a grant change**: `Ctx::release_answered`, step 5 of every reconcile pass (after the rebinds), asks the agent for its own holds and releases each whose staged answer is now `allow` for an export the contact still holds (`ContactRelease { allow: true }`), or fails it on `block`. A replicated Allow from another machine changes the records' hash, so the owner's next tick runs the pass. `start_held` checks `Store::owned_here` first (`Store::owner_strict` after the integration: routing renamed it): another machine's chat fails the task `HOLD_MOVED` ("the chat moved; send again"), an unreadable row fails it too; nothing is started here or carried elsewhere (no `peer_deliver`, no forward).
-- **Drain**: `SessionDrained` (a release drain only) calls `Agents::network_session_drained`: the session's holds fail `HOLD_MOVED` and their rows go. Its waiting `full_inbound` tasks fail `HOLD_MOVED` too; this branch completed them as receipts, and P3 INTEGRATION changed that.
+- **Drain**: `SessionDrained` (a release drain only) calls `Agents::network_session_drained`: the session's holds fail `HOLD_MOVED` and their rows go. This branch completed all its `full_inbound` tasks as receipts. After P3 INTEGRATION, only a task whose exchange was consumed completes as a receipt; a waiting one fails `HOLD_MOVED`.
 - **`contact_first_answer` on a machine that does not hold the message**: Always is the grant write (the owner releases), Block removes and blocks as on the owner, and Allow once is refused with "the message from <contact> waits on the machine that holds the chat: answer Allow once there, or Always here".
 
 ### Deviations from the doc
@@ -164,7 +164,7 @@ Built on `feat/191-p3-holds` from the P2 head 0160ad19 with the revised design m
 | A replicated hold row | Data only, never a release trigger. Read typed (`Store::contact_holds`: a cell of another type reads NULL, text cut to 256 characters, a non-text id skipped, at most 512 rows), so one bad row never fails the read of the others. Cleaned and cut (control characters dropped, `machine` 64 characters, `preview` 200 bytes); dropped past `until_ms` or when it ends later than now + `HOLD_TTL` + 10 min (`hold_live`), with a missing or malformed field, for a contact or export this machine does not admit, or for a session that is not where the export's message runs (`hold_target`). An offline owner's row stays until `until_ms`. |
 | A release | Only the owner's own holds (the agent's memory), only when the staged answer is `allow` on an export still granted (`release_of`: `block`, and any unknown stored answer, fails them; anything else waits). `start_held` serves only a session `hold_moved` clears: mid-release-drain or another engine's chat fails `HOLD_MOVED`, an unreadable row fails `HOLD_UNCHECKED` (fixed text, the error logged); nothing is started or carried (no `peer_deliver`, no forward). |
 | A hold admitted into a leaving chat | `hold_task` asks `hold_moved` first: a chat mid-release-drain or no longer strictly ours fails the task `HOLD_MOVED` at once, so no hold or row outlives the drain; an unreadable row fails `HOLD_UNCHECKED`. A failed hold transition fails with a fixed sentence, never the store's text. |
-| A drain | Only a `release` drain (`session_drained(_, true)`): its holds and its waiting full tasks fail `HOLD_MOVED` and the hold rows go; never started, never carried. A desk pause keeps them. The resend reaches the new owner, which holds it afresh while the answer is still `ask`. |
+| A drain | Only a `release` drain (`session_drained(_, true)`): its holds fail `HOLD_MOVED` and their rows go, and so do its full tasks whose exchange was not consumed (P3 INTEGRATION); none is started or carried. A desk pause keeps them. The resend reaches the new owner, which holds it afresh while the answer is still `ask`. |
 | An answer on another machine | Always and Block are grant writes the owner acts on; Allow once is refused and writes nothing, and the surfaces do not offer it for a row held elsewhere (`FirstWaiting.elsewhere`). A holds read that fails is the answer's error (`waiting_list(true)`), never "nothing waits". |
 | One (contact, export) held twice | Listed once (`waiting_list`): this machine's own hold first, else the oldest row; one Attention id per pair. |
 
@@ -299,3 +299,61 @@ Gates: `cargo fmt -p agent -p a2a -p rpc -p mesh -p sessionsync`; `mbx check` an
 After merging main 4d50ef7d (P1+P2 with both review-fix branches, hides 0061, P4): the same gates on the merged tree: a2a 104/104, agent 872/872 (`a_waiting_first_message_leaves_the_chat_working`, a listed load flake, failed once in the full run and passes alone) + 9 integration, mesh 70/70, rpc 96/96 (+ 5), sessionsync 47/47 (+ 2), tools 241/241; bindings regenerated, `tsc` 0 errors (P4's `dev/local-fixture.ts` lost its `cap`), vitest 35/35; the rig re-run on the merged binary with the same results.
 
 Review 1 (P3ROUTE-FIX): new or extended tests: `forward.rs` `only_unary_calls_of_a_route_are_carried` (bare `/rpc`, `?`, `%`, uppercase, `..` refused), `an_answer_over_two_mib_fails_never_cut`; e2e `a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner` (+ a > 2 MiB answer fails on the receiving machine; a `SendMessage` with a crafted `params.id` is never routed by it; an unknown task prefix is offline and never carried; the same `messageId` again on the owner returns the first task; a blocked caller is 401 there), `re_sharing_an_agent_export_whose_home_left_rehomes_it_here`; `config.rs` `an_agent_exports_home_moving_elsewhere_is_the_same_grant`; rpc `a2a_forward_needs_the_forwarded_marker_and_messaging_on`; agent `a_contacts_message_into_an_archived_silenced_or_deleted_chat_is_refused`, `a_moved_inbox_is_never_adopted_without_a_live_persona`, `an_empty_owner_on_a_mesh_engine_is_never_here` (a mesh engine, `agents_on(…, Some("me-engine"))`), `a_name_valued_or_unmarked_moved_inbox_is_never_reached_again` (now with a home elsewhere, so only an adoption could serve it); sessionsync `take_of_a_contact_inbox_is_refused_by_its_owner` (+ a name-valued and an unreadable marker refused on a Write take). Gates on 04917ff7, same set and rules: fmt; check and clippy `--tests --no-deps -D warnings` clean; a2a 107/107, agent 873/875 (`monty_budgets_and_allowlist` and `human_input_releases_parked_items_as_steers`, listed load flakes, pass alone) + 9 integration, mesh 70/70, rpc 97/97 (+ 6), sessionsync 47/47 (+ 2), tools 241/241 (+ 1). No TS type changed (no bindings regenerated). Rig 1/3/15/16/18 re-run on that head's binary: the same results (appended to `route-evidence.txt`); case 18's refusal now comes from `gate_refused` alone.
+
+## P3 INTEGRATION (`feat/191-p3`: routing bec6e8c0 + holds 78116e17)
+
+Holds was merged into routing on `feat/191-p3`. Both branches already held main 4d50ef7d, and `origin/main` was still 4d50ef7d at the fold, so the fold changed nothing. Migrations: 0061 is main's hides, 0062 is holds' `contact_holds` plus the `sessions_contact_inbox` index, and routing adds none. `SESSIONS_WIRE_SCHEMA` stays 61.
+
+### Merge
+- **One textual conflict**, in `crates/a2a/src/contacts/e2e_tests.rs`, at the file's tail. Routing added `mod forward;`; holds added `replicate_holds`, `a_hold_answered_on_another_machine_is_released_by_its_owner` and `a_hold_fails_on_a_block_wherever_it_is_written`. Both were kept: the holds tests, then `mod forward;` beside `mod owners; mod rosters;`.
+- **Compile seams, fixed in the merge commit.**
+  - Holds' `hold_moved` called `Store::owned_here`, which routing replaced with `owner_strict`. Now `Ok(Owner::Here)` is owned and every other `Ok` is `HOLD_MOVED`, so the predicate is unchanged.
+  - Holds' tests still used the removed `Contact.cap` (`bob(export, cap)` and `ContactFacts.cap`) and lacked routing's `AgentExport.home`. The cap arguments went, and `home` is `InboxHome::Here`.
+- **No helper is duplicated.** Both sides' `network.rs`, `contacts.rs`, `lib.rs`, `store/contacts.rs`, `supervisor.rs` and `Contacts.tsx` auto-merged into disjoint functions.
+
+### Seams the combined tree showed (rig 15w, a task waiting during the move)
+1. **A drain completed a full task as a receipt for a message nothing carried.**
+   - `network_session_drained` ran `full_consumed` on every `full_inbound` task of the session.
+   - An entry still in `full_inbound` at the drain was not consumed: consumption removes it through `PeerConsumed`, which is processed before `SessionDrained`.
+   - Its exchange row (`peer_exchanges`) and its steer exist only on the old owner. The rig confirmed it: the taker had 0 exchanges and 0 history rows for the message.
+   - Completing the task failed the scope's exchange ("task completed") while C read `consumed`, so the message was lost under a success receipt.
+   - **Now:** a task whose exchange reads `consumed` or `replied` (linked into the history, which moves) completes as a receipt, as before. Any other, including an exchange that does not read, fails `HOLD_MOVED` ("the chat moved; send again"), as a hold does, and its exchange fails with it. The contact's resend reaches the new owner.
+2. **After the move, the old owner could not read its own tasks.** The task id carries n1's prefix, so the forwarder routes C's `GetTask` to n1. There, `handle_inbox` answered every read of an inbox owned elsewhere TASK_NOT_FOUND, which the client treats as final, so C's receipt went `unknown` ("remote task no longer exists").
+   - **Now:** a read (`send` unset) whose local inbox row is strictly another machine's resolves to that session and returns at once, before any side effect. A2aGet/A2aList/A2aCancel then read this machine's own rows, scoped by principal and export. A chat export's reads were already served this way.
+   - An empty owner, no row or a store error (logged) is still TASK_NOT_FOUND.
+
+### Deviations from the doc
+1. **D3, "On drain, the old owner completes the session's `full_inbound` tasks as receipts: the message already sits in the queue that moved"**, is built only for a consumed message. A waiting one is not in anything that moves, so it fails `HOLD_MOVED` (seam 1).
+2. **D3/S4 and the routing row "A read … only an inbox owned here"** now also serves a read of an inbox that moved away, from this machine's own task rows only (seam 2).
+
+### Fail-closed, path by path
+| Path | How it stays closed |
+|---|---|
+| A full task on a release drain | A receipt only when its exchange reads `consumed`/`replied`. Waiting, missing or unreadable: the task fails `HOLD_MOVED` and its exchange fails with it; never a success for a message no turn will read, never carried. |
+| A read of an agent export whose inbox moved away | Only a local row whose owner is non-empty and not this engine. It returns before any side effect (no marker, mark, persona, cap or run), and it reads only this machine's task rows for that principal and export. An empty owner, no row or a store error is TASK_NOT_FOUND; a send there is still `not owner` naming the owner. |
+
+### Proof
+Tests:
+- `a_drain_fails_a_hold_and_a_waiting_full_task`, formerly `…_and_completes_full_tasks`.
+  - It holds `PEER_INTAKE` across admission and drain, so the message waits: the task fails `HOLD_MOVED` and the exchange is `failed`.
+  - It then waits for a second message to be consumed and drains again: that task completes as a receipt. 5 of 5 alone.
+- `a_non_owner_inbox_resolve_changes_nothing`: GetTask and CancelTask now resolve the moved session, and still change nothing.
+- `an_empty_owner_on_a_mesh_engine_is_never_here`: a read is TASK_NOT_FOUND too.
+
+Rig: copies of the builders' rigs in `/tmp/d191/p3/int/{route-rig,holds-rig}` (other ports). Binary: `t` from 5385db58. Evidence: `/tmp/d191/p3/int-evidence.txt`.
+- Rigs 1, 3, 15, 16, 17 and 18 gave the builders' results.
+- **15w**
+  - C's first message to the marked inbox W of agent export E2 on n1 was consumed, and n1's model call was latched.
+  - C's second message was admitted and `working`, then W moved to n2 (9.2 s, the release window).
+  - C's receipt was `failed` "the chat moved; send again"; n1's task `failed`, no task of W non-terminal, n1's exchange `failed (task failed)`; n2 had 0 exchanges and 0 history rows for the message; `contact_holds` and first-waiting were empty on both.
+  - The suspended turn resumed on n2 with no tools, and an owner turn on n2 before adoption had none. C's next message was adopted by its marker on n2 and ran with the agent's tools; n2's local row is full.
+
+Gates:
+- `cargo fmt -p agent -p a2a -p rpc -p mesh -p sessionsync -p tools`.
+- `mbx check` and `clippy --tests --no-deps -D warnings` on that set: clean.
+- Tests, built `--no-run`, then run bare on the same set (`--no-fail-fast`, `THEUTH_MONTY_WORKER`/`THEUTH_WORKER` = this tree's `t`):
+  - a2a 112/112, mesh 70/70, rpc 97/97 (+ 6), sessionsync 47/47 (+ 2), tools 241/241 (+ 1).
+  - agent 882/883 (+ 9 integration). The one failure is `monty_budgets_and_allowlist`, a listed flake, which passes alone.
+  - An earlier run under load average 20+ also failed `advisors_contract`, `human_input_releases_parked_items_as_steers` and tools' `registration_adopts_a_running_untracked_invocation` / `slow_call_is_promoted_to_a_job`. Each passes alone, and all four passed in the final run.
+- TS bindings regenerated (1037 files; the integration changes no exported type); `tsc -b --noEmit` 0 errors; vitest `Contacts`, `ContactAllowStrip`, `Hud`, `api` 49/49.
+- `grep -rn "W-40 only" crates`: nothing.
