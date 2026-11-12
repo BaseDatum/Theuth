@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::{Wrapper, WrapperView};
 
 /// One transcript row.
 #[derive(Debug)]
@@ -295,7 +296,7 @@ impl Entry {
 /// `<context_pressure>`, `<runtime>`, `<knowledge>`; design docs 07 §8.7,
 /// 10 §4) are wrappers too but yield no card. `None` for human text
 /// (or anything not entirely made of wrappers).
-pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
+pub fn injected<'a>(text: &'a str, mut project: impl FnMut(Wrapper<'a>) -> Option<WrapperView>) -> Option<Vec<(CardKind, String, String)>> {
     let mut out = Vec::new();
     let mut rest = text.trim_start();
     while !rest.is_empty() {
@@ -331,6 +332,15 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             _ => return None,
         };
         let (body, tail) = after.split_once(close)?;
+        let row = Wrapper { tag: name, open, body: body.strip_prefix('\n').unwrap_or(body).trim_end(),
+            sender: None, origin: None, live: false };
+        match project(row) {
+            Some(WrapperView::Hidden) => { rest = tail.trim_start(); continue; }
+            Some(WrapperView::Card { kind, title, body }) => {
+                out.push((kind, title, body)); rest = tail.trim_start(); continue;
+            }
+            Some(WrapperView::Fallback) | None => {}
+        }
         if name == "resume_handoff" {
             let body = body.trim();
             let at = body
