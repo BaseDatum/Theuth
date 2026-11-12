@@ -752,25 +752,6 @@ impl Model {
                 }
                 self.cost = Some(cost);
             }
-            UiEvent::Terminals(items) => {
-                if items.is_empty() {
-                    self.entries
-                        .push(Entry::Info("no terminals in this session's tree".into()));
-                } else {
-                    self.menu = Some(Menu::Terminals { items, cursor: 0 });
-                }
-            }
-            UiEvent::PtyScreen {
-                session,
-                job,
-                viewport,
-                epoch,
-                reply,
-            } => {
-                if let Some(Menu::Terminal(v)) = &mut self.menu {
-                    v.reply(session, &job, viewport, epoch, reply);
-                }
-            }
             UiEvent::SessionOpened(open) => {
                 self.reset();
                 self.session = Some(open.session);

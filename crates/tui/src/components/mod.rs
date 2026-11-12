@@ -22,6 +22,7 @@ pub mod autoresearch;
 
 // Step-11 group t3 (jobs, terminals, speech and search): add modules below, in this block only.
 pub mod jobs;
+pub mod terminals;
 
 // Model-picker panels (after design 194): add modules below, in this block only.
 pub use registry::{Registry, builtin};

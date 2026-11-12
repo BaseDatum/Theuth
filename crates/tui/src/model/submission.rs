@@ -234,10 +234,6 @@ impl Model {
                 }
                 None => self.entries.push(Entry::Info("no session".into())),
             },
-            "/terminals" => match self.session {
-                Some(session) => send(tx, Command::ListTerminals(session)),
-                None => self.entries.push(Entry::Info("no session".into())),
-            },
             "/apps" if !self.app_enabled => self.entries.push(Entry::Info(
                 "apps are off (app.enabled); /artifacts lists their sources".into(),
             )),

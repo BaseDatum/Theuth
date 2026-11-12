@@ -230,22 +230,6 @@ pub enum UiEvent {
     A2aChanged(a2a::A2aChanged),
     /// Reply to [`Command::SessionCost`]: the owner summary of `session` (51 §6.5).
     Cost(SessionId, SessionCost),
-    /// Reply to [`Command::ListTerminals`].
-    Terminals(Vec<TerminalSummary>),
-    /// Reply to [`Command::PtyScreen`], echoing the request's identity so a
-    /// reply for a terminal or viewport left behind is dropped (51 §7.4).
-    PtyScreen {
-        /// Owning session asked.
-        session: SessionId,
-        /// Job asked.
-        job: JobId,
-        /// Viewport asked.
-        viewport: PtyViewport,
-        /// [`TerminalView::epoch`] when asked.
-        epoch: u64,
-        /// The page, or why there is none (`terminal busy` is retried).
-        reply: Result<PtyScreenReply, String>,
-    },
     /// Reply to [`Command::CreateSession`].
     SessionOpened(SessionOpen),
     /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
@@ -755,32 +739,6 @@ pub enum Command {
     },
     /// `session_cost` for the shown session.
     SessionCost(SessionId),
-    /// `list_terminals(session, descendants: true)`.
-    ListTerminals(SessionId),
-    /// `pty_screen`: one page of a retained terminal (51 §7.4).
-    PtyScreen {
-        /// Owning session.
-        session: SessionId,
-        /// Job.
-        job: JobId,
-        /// Rows asked for.
-        viewport: PtyViewport,
-        /// Revision already shown; `Unchanged` comes back when it still holds.
-        if_revision: Option<u64>,
-        /// [`TerminalView::epoch`] at the time of asking, echoed by the reply.
-        epoch: u64,
-    },
-    /// `pty_input`: the human types into a PTY job (55 §3).
-    PtyInput {
-        /// Owning session.
-        session: SessionId,
-        /// Job.
-        job: JobId,
-        /// Typed text.
-        text: Option<String>,
-        /// Keys after `text`.
-        keys: Vec<Key>,
-    },
     /// `create_session`: explicit creation, private or durable (51 §4.1).
     CreateSession(CreateSessionOptions),
     /// `leave_session`: release the private root this view owns (51 §4.3).

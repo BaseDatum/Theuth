@@ -183,15 +183,6 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
-    /// `/terminals` picker (51 §7.4).
-    Terminals {
-        /// PTY jobs of the shown session's tree.
-        items: Vec<TerminalSummary>,
-        /// Highlighted row.
-        cursor: usize,
-    },
-    /// The read-only terminal observer (51 §7.4); drawn by `terminal_box`, never `menu`.
-    Terminal(Box<TerminalView>),
 }
 
 /// A picker row that may be a heading: the cursor skips headings.
@@ -277,8 +268,6 @@ impl Model {
             Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
             Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),
             Some(Menu::Cost { .. }) => self.cost_key(code),
-            Some(Menu::Terminals { .. }) => self.terminals_key(code, tx),
-            Some(Menu::Terminal(_)) => self.terminal_key(code, tx),
         }
     }
 }

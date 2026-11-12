@@ -264,8 +264,7 @@ async fn run_commands(api: Api, mut rx: UnboundedReceiver<Command>, tx: Unbounde
         }
     });
     while let Some(cmd) = rx.recv().await {
-        if matches!(&cmd, Command::PtyInput { .. })
-            || matches!(&cmd, Command::Component(effect) if effect.lane == components::Lane::OrderedInput)
+        if matches!(&cmd, Command::Component(effect) if effect.lane == components::Lane::OrderedInput)
         {
             let _ = keys_tx.send(cmd);
             continue;
@@ -449,35 +448,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         Command::SessionCost(session) => {
             UiEvent::Cost(session, msg(api.session_cost(session).await)?)
-        }
-        Command::ListTerminals(session) => {
-            UiEvent::Terminals(msg(api.list_terminals(session, Some(true)).await)?)
-        }
-        // Errors ride inside the reply so the observer knows its ask answered.
-        Command::PtyScreen {
-            session,
-            job,
-            viewport,
-            if_revision,
-            epoch,
-        } => UiEvent::PtyScreen {
-            session,
-            job: job.clone(),
-            viewport,
-            epoch,
-            reply: api
-                .pty_screen(session, job, viewport, if_revision)
-                .await
-                .map_err(reason),
-        },
-        Command::PtyInput {
-            session,
-            job,
-            text,
-            keys,
-        } => {
-            msg(api.pty_input(session, job, text, Some(keys)).await)?;
-            return Ok(());
         }
         Command::CreateSession(options) => {
             UiEvent::SessionOpened(msg(api.create_session(options).await)?)
@@ -1993,36 +1963,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Cost(_, c) => model::cost_lines(&c.total)
             .iter()
             .try_for_each(|l| writeln!(out, "{l}")),
-        UiEvent::Terminals(list) if list.is_empty() => {
-            writeln!(out, "no terminals in this session's tree")
-        }
-        UiEvent::Terminals(list) => list
-            .iter()
-            .try_for_each(|t| writeln!(out, "{}", model::terminal_row(t))),
-        // The observer needs a TTY; a page that lands here prints its text rows.
-        UiEvent::PtyScreen {
-            reply: Ok(tools::PtyScreenReply::Updated(p)),
-            ..
-        } => p.lines.iter().try_for_each(|row| {
-            let text: String = row
-                .iter()
-                .flat_map(|r| r.cells.iter())
-                .filter(|c| !c.continuation)
-                .map(|c| c.text.as_str())
-                .collect();
-            writeln!(out, "{}", text.trim_end())
-        }),
-        UiEvent::PtyScreen {
-            reply: Ok(tools::PtyScreenReply::Unavailable),
-            ..
-        } => {
-            writeln!(out, "No longer available.")
-        }
-        UiEvent::PtyScreen {
-            reply: Ok(tools::PtyScreenReply::Unchanged { .. }),
-            ..
-        } => Ok(()),
-        UiEvent::PtyScreen { reply: Err(e), .. } => writeln!(out, "terminal: {e}"),
         UiEvent::SessionOpened(o) => writeln!(
             out,
             "session {}{}",

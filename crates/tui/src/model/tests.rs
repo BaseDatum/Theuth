@@ -1,7 +1,10 @@
     use super::*;
     use tokio::sync::mpsc::unbounded_channel;
+    use iocraft::KeyModifiers;
     use tools::JobEvent;
     use crate::components::jobs::{Jobs, JOB_LINES};
+    use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
+    use crate::components::{FocusClass, terminals::{Terminals, TerminalView, Menu as TerminalMenu, Request as TerminalRequest, TERMINAL_PAGE, TERMINAL_INTERACTIVE_POLL_MS}};
     fn job_event(event: JobEvent) -> UiEvent {
         UiEvent::Wire(crate::topics::TopicEvent::Legacy(Arc::new(serde_json::to_value(event).unwrap())))
     }
@@ -6809,7 +6812,7 @@
         let mut v = TerminalView::new(&t, 7);
         assert!(matches!(
             v.poll(1000),
-            Some(Command::PtyScreen {
+            Some(TerminalRequest::PtyScreen {
                 epoch: 7,
                 if_revision: None,
                 ..
@@ -6844,7 +6847,7 @@
         };
         assert_eq!(v.viewport, hist);
         assert!(
-            matches!(v.poll(1100), Some(Command::PtyScreen { viewport, if_revision: None, .. }) if viewport == hist)
+            matches!(v.poll(1100), Some(TerminalRequest::PtyScreen { viewport, if_revision: None, .. }) if viewport == hist)
         );
         // `Unchanged` echoing the old viewport is not an answer: re-ask.
         assert!(!v.reply(
@@ -6909,6 +6912,12 @@
     fn terminal_interactive_forwards_keys_and_detaches() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Terminals::default()).unwrap();
+        let key = |m: &mut Model, class, code, modifiers| {
+            let mut event = iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, code);
+            event.modifiers = modifiers;
+            m.component_key(class, &event)
+        };
         let s = SessionId::new();
         let t = TerminalSummary {
             session: s,
@@ -6931,19 +6940,20 @@
             1,
             Ok(PtyScreenReply::Updated(page(s, "j1", 1, live))),
         );
-        m.menu = Some(Menu::Terminal(Box::new(v)));
-        assert!(!m.terminal_interactive());
+        m.components.get_mut::<Terminals>().unwrap().menu = Some(TerminalMenu::Terminal(Box::new(v)));
+        m.mount_components(&tx);
+        assert!(!m.components.get::<Terminals>().unwrap().interactive());
         // Esc in view mode closes; `i` first.
-        m.menu_key(KeyCode::Char('i'), "", &tx);
-        assert!(m.terminal_interactive());
+        key(&mut m, FocusClass::Modal, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert!(m.components.get::<Terminals>().unwrap().interactive());
         while rx.try_recv().is_ok() {}
-        m.terminal_type(KeyCode::Char('c'), KeyModifiers::CONTROL, &tx);
-        m.terminal_type(KeyCode::Esc, KeyModifiers::NONE, &tx);
-        m.terminal_type(KeyCode::Char('x'), KeyModifiers::NONE, &tx);
-        m.terminal_type(KeyCode::Char('w'), KeyModifiers::SHIFT, &tx);
+        key(&mut m, FocusClass::Interactive, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        key(&mut m, FocusClass::Interactive, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut m, FocusClass::Interactive, KeyCode::Char('x'), KeyModifiers::NONE);
+        key(&mut m, FocusClass::Interactive, KeyCode::Char('w'), KeyModifiers::SHIFT);
         let mut sent = Vec::new();
-        while let Ok(c) = rx.try_recv() {
-            if let Command::PtyInput {
+        while let Ok(c) = component_request::<TerminalRequest>(&mut rx) {
+            if let TerminalRequest::PtyInput {
                 text, keys, job, ..
             } = c
             {
@@ -6960,7 +6970,7 @@
                 (Some("w".into()), vec![]),
             ]
         );
-        let Some(Menu::Terminal(v)) = &mut m.menu else {
+        let Some(TerminalMenu::Terminal(v)) = &mut m.components.get_mut::<Terminals>().unwrap().menu else {
             panic!()
         };
         assert!(v.interactive && v.inflight);
@@ -6972,11 +6982,11 @@
             "tight poll while typing"
         );
         // Ctrl-] detaches and sends nothing.
-        m.terminal_type(KeyCode::Char(']'), KeyModifiers::CONTROL, &tx);
-        assert!(!m.terminal_interactive());
+        key(&mut m, FocusClass::Interactive, KeyCode::Char(']'), KeyModifiers::CONTROL);
+        assert!(!m.components.get::<Terminals>().unwrap().interactive());
         assert!(rx.try_recv().is_err());
         // The job exits: `i` no longer enters, and an open typing mode drops.
-        let Some(Menu::Terminal(v)) = &mut m.menu else {
+        let Some(TerminalMenu::Terminal(v)) = &mut m.components.get_mut::<Terminals>().unwrap().menu else {
             panic!()
         };
         v.interactive = true;
@@ -6991,11 +7001,11 @@
             Ok(PtyScreenReply::Updated(exited)),
         );
         assert!(!v.interactive);
-        m.menu_key(KeyCode::Char('i'), "", &tx);
-        assert!(!m.terminal_interactive());
+        key(&mut m, FocusClass::Modal, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert!(!m.components.get::<Terminals>().unwrap().interactive());
         // Esc in view mode closes the overlay.
-        m.menu_key(KeyCode::Esc, "", &tx);
-        assert!(m.menu.is_none());
+        key(&mut m, FocusClass::Modal, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(m.components.get::<Terminals>().unwrap().menu.is_none());
     }
 
     /// 51 §4.3: leaving the owned tree for another root releases it once;

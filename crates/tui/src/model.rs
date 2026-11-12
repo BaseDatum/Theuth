@@ -27,7 +27,7 @@ use agent::{
     SessionOpen,
 };
 use double::{DoubleAnswered, DoublePredicted};
-use iocraft::{KeyCode, KeyModifiers};
+use iocraft::KeyCode;
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use models::Catalog;
 use runtime::{InputId, SessionId, TurnId};
@@ -38,7 +38,6 @@ use tools::{
     AskResolved, Decision, Gate, McpAuth, McpProgress, McpServer, McpToolInfo,
     PolicyAction, RepoInfo,
 };
-use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use uuid::Uuid;
 
 use crate::broadcast::{Broadcast, BroadcastStage};
@@ -340,9 +339,6 @@ pub struct Model {
     pub private: Option<Private>,
     /// The retention warning was shown once this run.
     private_warned: bool,
-    /// Bumped whenever a terminal observer opens: replies carry the epoch
-    /// they were asked under and older ones are dropped.
-    terminal_epoch: u64,
     /// The dictation in progress (54 §6); the editor is read-only while `Some`.
     pub dictation: Option<Dictating>,
     /// `before`/`after` snapshot taken at Ctrl+D, waiting for `dictation_start`'s reply.
@@ -397,7 +393,6 @@ mod slash;
 mod speech;
 mod status;
 mod submission;
-mod terminal;
 mod todos;
 mod tooling;
 mod transcript;
@@ -415,7 +410,6 @@ pub use catalog::{PickTarget, ModelRow, rank_models, providers, provider_models,
 #[cfg(test)]
 use catalog::{search_terms};
 pub use concepts::{meta_line, HISTORY_PAGE, revision_rows};
-use concepts::{DIFF_STEP};
 pub use costs::{money_units, cost_lines, cost_short};
 pub use credentials::{LoginRow, SecretRequest};
 use credentials::{bad_secret_name};
@@ -443,9 +437,7 @@ pub use speech::{voice_cmd, voice_line};
 pub(crate) use status::{now_ms, when, ago};
 pub use status::{Level, k};
 pub(crate) use status::elapsed;
-pub use terminal::{TERMINAL_POLL_MS, TERMINAL_INTERACTIVE_POLL_MS, TerminalView, terminal_row};
-#[cfg(test)]
-use terminal::{TERMINAL_PAGE};
+
 pub use todos::{TODO_ROWS, TodoCard, status_label};
 pub use tooling::{Row, Target, Switch, action_name, gate_name, git_url, mcp_entry};
 pub use transcript::{Entry, CardKind, moved_title, injected, describe, output_markdown, result_line, Window, vision_line, note_title, attachment_label};
