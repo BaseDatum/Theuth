@@ -18,9 +18,6 @@ impl Model {
         if self.components.editor().is_some_and(|(class, _)| class == crate::components::FocusClass::Secret) {
             return true;
         }
-        if self.secret_request().is_some() {
-            return true;
-        }
         if let Some(a) = self.ask() {
             return a.typing;
         }

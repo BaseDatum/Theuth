@@ -15,6 +15,7 @@ pub mod sandboxes;
 pub mod link;
 pub mod nodes;
 pub mod mesh_devices;
+pub mod secrets;
 
 // Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
 pub mod tasks;
@@ -29,6 +30,7 @@ pub mod artifacts_apps;
 pub mod jobs;
 pub mod terminals;
 pub mod broadcast;
+pub mod knowledge;
 
 // Model-picker panels (after design 194): add modules below, in this block only.
 pub use registry::{Registry, builtin};
@@ -393,6 +395,8 @@ pub enum Surface<'a> {
     },
 
     // Step-11 group t3 Surface variants: add below, in this block only.
+    /// Owner activity while core streaming/compaction/vision has no priority.
+    Activity,
 }
 /// Read-only layout context; no iocraft Hooks or editor handles.
 pub struct ViewCx<'a> {
@@ -502,6 +506,8 @@ pub struct Outbox {
     pub(crate) claimed: Option<FocusClass>,
     consumed: bool,
     focus: Option<(ComponentToken, Option<FocusClass>)>,
+    pub(crate) error_claimed: bool,
+    pub(crate) plain_claimed: bool,
 }
 /// Typed ports; the core view is read-only and mutations are deferred.
 pub struct Cx<'a, 'core, M> {
@@ -563,6 +569,10 @@ impl<M: Send + 'static> Cx<'_, '_, M> {
     // Step-11 group t2 Cx helpers: add below, in this block only.
 
     // Step-11 group t3 Cx helpers: add below, in this block only.
+    /// Keep an error inline after the core's existing generic failure transitions.
+    pub fn claim_error(&mut self) { self.out.error_claimed = true; }
+    /// Own this event's plain output without bypassing core admission/bookkeeping.
+    pub fn claim_plain(&mut self) { self.out.plain_claimed = true; }
 }
 
 /// Synchronous owner-local state machine, erased only by Mounted<C>.
@@ -591,10 +601,14 @@ pub trait Component: Send + Sync + 'static {
     fn entry_height(&self, _key: &str, _width: usize) -> Option<usize> { None }
     /// This owner can open a local representation of the stable entry.
     fn entry_openable(&self, _key: &str) -> bool { false }
+    /// Keep a command routable while omitting it from help/completion.
+    fn slash_visible(&self, _name: &str) -> bool { true }
 
     // Step-11 group t3 Component methods (with defaults): add below, in this block only.
     /// Intrinsic capture precedes exclusive focus and bound keys at this class.
     fn captures(&self, _class: FocusClass) -> bool { false }
+    /// Request core animation frames while an owner operation remains active.
+    fn animating(&self) -> bool { false }
 }
 
 trait ErasedComponent: Send + Sync {
@@ -606,9 +620,11 @@ trait ErasedComponent: Send + Sync {
     fn editor(&self) -> Option<Editor>;
     fn captures(&self, class: FocusClass) -> bool;
     fn wake(&self) -> Option<u64>;
+    fn animating(&self) -> bool;
     fn entry_rows(&self, key: &str) -> usize;
     fn entry_height(&self, key: &str, width: usize) -> Option<usize>;
     fn entry_openable(&self, key: &str) -> bool;
+    fn slash_visible(&self, name: &str) -> bool;
     fn as_any(&self) -> &dyn Any;
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -635,9 +651,11 @@ impl<C: Component> ErasedComponent for Mounted<C> {
     fn editor(&self) -> Option<Editor> { self.0.editor() }
     fn captures(&self, class: FocusClass) -> bool { self.0.captures(class) }
     fn wake(&self) -> Option<u64> { self.0.wake() }
+    fn animating(&self) -> bool { self.0.animating() }
     fn entry_rows(&self, key: &str) -> usize { self.0.entry_rows(key) }
     fn entry_height(&self, key: &str, width: usize) -> Option<usize> { self.0.entry_height(key, width) }
     fn entry_openable(&self, key: &str) -> bool { self.0.entry_openable(key) }
+    fn slash_visible(&self, name: &str) -> bool { self.0.slash_visible(name) }
     fn as_any(&self) -> &dyn Any { &self.0 }
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn Any { &mut self.0 }

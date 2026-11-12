@@ -21,7 +21,7 @@ use crate::model::{
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
     TodoCard, TurnAction, UiEvent, action_name, describe, gate_name,
-    k, meta_line, now_ms, progress_line, result_line, short, window,
+    k, now_ms, progress_line, result_line, short, window,
 };
 use crate::pathac;
 use crate::search::{self, Focus, Preview};
@@ -249,9 +249,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if std::mem::take(&mut m.refresh_mcp) {
                     let _ = commands.send(Command::ListMcp(m.session));
                 }
-                if std::mem::take(&mut m.refresh_secrets) {
-                    let _ = commands.send(Command::ListSecrets);
-                }
                 if std::mem::take(&mut m.refresh_artifacts)
                     && let Some(session) = m.session
                 {
@@ -394,7 +391,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
-            if ctrl_t && m.dictation.is_none() && m.menu.is_none() && m.secret_request().is_none() {
+            if ctrl_t && m.dictation.is_none() && m.menu.is_none() && !m.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret) {
                 if let Some(cmd) = m.toggle_talk(true) {
                     let _ = commands.send(cmd);
                 }
@@ -419,7 +416,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 return;
             }
             // Idle: anchor the caret (a byte offset, on a char boundary) and start.
-            if ctrl_d && m.input_focused() && m.menu.is_none() && m.secret_request().is_none() {
+            if ctrl_d && m.input_focused() && m.menu.is_none() && !m.components.editor().is_some_and(|(class, _)| class == FocusClass::Secret) {
                 let v = input.read();
                 let at = handle.read().cursor_offset();
                 let at = if v.is_char_boundary(at) { at } else { v.len() };
@@ -464,24 +461,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 return;
             }
             if m.component_key(FocusClass::Secret, &key) { return; }
-            // The masked box types into the editor; ⏎ stores, esc declines.
-            if m.secret_request().is_some() {
-                match code {
-                    KeyCode::Enter => {
-                        let line = std::mem::take(&mut *input.write());
-                        let value = line.trim();
-                        if !value.is_empty() {
-                            m.answer_secret(Some(value.to_owned()), &commands);
-                        }
-                    }
-                    KeyCode::Esc => {
-                        input.set(String::new());
-                        m.answer_secret(None, &commands);
-                    }
-                    _ => {}
-                }
-                return;
-            }
             if m.component_key(FocusClass::Suggestion, &key) { return; }
             // The dictionary suggestion line (153 §6.4): `y` add · `n` not now ·
             // `N` never · `p` is the desktop's; Esc = not now; the rest is swallowed.
@@ -740,7 +719,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     *component_rows.write() = extra_rows;
     let modal = modal
         .or_else(|| component_slot(&m, Surface::Prompt(FocusClass::Secret), width, height).element())
-        .or_else(|| secret_box(&m))
+
         .or_else(|| ask_box(&m))
         .or_else(|| {
             m.search_open().then(|| {
@@ -755,7 +734,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .or_else(|| component_slot(&m, Surface::Modal, width, height).element());
     // A secret's value (or a provider's key) shows as dots.
     let component_editor = m.components.editor();
-    let mask = (m.secret_request().is_some() || m.prompt.as_ref().is_some_and(Prompt::masked)
+    let mask = (m.prompt.as_ref().is_some_and(Prompt::masked)
         || component_editor.as_ref().is_some_and(|(_, editor)| editor.masked))
         .then_some('•');
     let has_focus = m.input_focused();
@@ -1045,38 +1024,6 @@ fn dictation_region(d: &Dictating) -> Vec<MixedTextContent> {
     out
 }
 
-/// The shown `secret_request` (37 §5): name and note, what version the
-/// answer becomes, the keys. The value itself is typed into the (masked)
-/// editor below. `None` without one.
-fn secret_box(m: &Model) -> Option<AnyElement<'static>> {
-    let r = m.secret_request()?;
-    let head = if r.note.is_empty() {
-        r.name.clone()
-    } else {
-        format!("{} — {}", r.name, r.note)
-    };
-    let version = r.current.map_or_else(
-        || "(new secret)".to_owned(),
-        |v| {
-            format!(
-                "(adds v{}; v{v} stays as {{{{secret:{}:-1}}}})",
-                v + 1,
-                r.name
-            )
-        },
-    );
-    Some(
-        element! {
-            View(border_style: BorderStyle::Double, border_color: FAIENCE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
-                Text(content: "secret requested", weight: Weight::Bold)
-                Text(content: head, color: FAIENCE, wrap: TextWrap::Wrap)
-                Text(content: version, color: BONE_DIM)
-                Text(content: "type it below · [⏎] store  [esc] decline", color: FAIENCE)
-            }
-        }
-        .into_any(),
-    )
-}
 
 /// The shown `ask_user` question: options with the cursor, a "type your own"
 /// row, and the keys. `None` without one.
@@ -1424,9 +1371,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .collect(),
             *cursor,
         ),
-        Menu::Secrets { cursor, history } => {
-            (m.secrets_title(), m.secrets_rows(), history.unwrap_or(*cursor))
-        }
         Menu::Artifacts {
             items,
             cursor,
@@ -1452,28 +1396,8 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             m.peers_rows().iter().map(|r| r.line()).collect(),
             *cursor,
         ),
-        Menu::Knowledge { items, cursor } => (
-            "knowledge  ⏎/h history of concept  H history of all  esc close".to_owned(),
-            if items.is_empty() {
-                vec!["no concepts · H shows the history of all (deleted ones too)".to_owned()]
-            } else {
-                items.iter().map(meta_line).collect()
-            },
-            *cursor,
-        ),
-        Menu::KnowledgeHistory { .. } => m.knowledge_history_menu(),
     };
-    // Diffs get the screen minus the frame around the box; lists stay short.
-    let tall = matches!(
-        m.menu,
-        Some(
-            Menu::KnowledgeHistory {
-                revision: Some(_),
-                ..
-            }
-        )
-    );
-    Some(menu_view(title, rows, cursor, width, height, tall))
+    Some(menu_view(title, rows, cursor, width, height, false))
 }
 
 /// Shared modal frame, selection window and clipping for component-owned rows.

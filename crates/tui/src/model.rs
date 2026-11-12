@@ -28,7 +28,6 @@ use agent::{
 };
 use double::{DoubleAnswered, DoublePredicted};
 use iocraft::KeyCode;
-use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use models::Catalog;
 use runtime::{InputId, SessionId, TurnId};
 use tokio::sync::mpsc::UnboundedSender;
@@ -196,10 +195,6 @@ pub struct Model {
     /// not this one (`Loaded.resume.owner` with `here = false`); the
     /// owner-offline line's `/take` then also resumes it.
     owner_turn: Option<String>,
-    /// The shown session's harvest is in flight (`Harvesting` … `Harvested`).
-    /// Detached from the turn (10 §5.2 as built): survives `TurnFinished`,
-    /// shown only while nothing else is.
-    pub harvesting: bool,
     /// The shown session's vision consultation step in flight
     /// (`VisionProgress`, 52 §6): the status-line text until it settles.
     pub vision: Option<String>,
@@ -228,14 +223,6 @@ pub struct Model {
     /// A loaded transcript holds `show` cards: the event loop asks
     /// `list_artifacts` to join their artifacts back (35 §0.3).
     pub refresh_artifacts: bool,
-    /// Latest `list_secrets` (the `/secrets` menu, the `replaces vN` hint); `None` until fetched.
-    pub secrets: Option<secrets::SecretsList>,
-    /// `/secrets` was typed; the next `UiEvent::Secrets` opens the menu.
-    awaiting_secrets: bool,
-    /// The vault changed while a list is held: the event loop re-asks `list_secrets`.
-    pub refresh_secrets: bool,
-    /// Pending `secret_request`s for the current session or its subtree, oldest first; the front is shown.
-    pub secret_requests: VecDeque<SecretRequest>,
     /// Context revision of the shown transcript (`Loaded.context_revision`,
     /// 48 §3.1); empty until loaded. A `ContextChanged` with a newer one
     /// sets `refresh_context`; an older settled reload is dropped.
@@ -354,7 +341,6 @@ mod approvals;
 mod artifacts;
 mod boards;
 mod catalog;
-mod concepts;
 mod credentials;
 mod components;
 mod events;
@@ -388,9 +374,7 @@ use artifacts::{SHOW, APP};
 pub use catalog::{PickTarget, ModelRow, rank_models, providers, provider_models, title_model_line, vision_model_line, aws_profile_line};
 #[cfg(test)]
 use catalog::{search_terms};
-pub use concepts::{meta_line, HISTORY_PAGE, revision_rows};
-pub use credentials::{LoginRow, SecretRequest};
-use credentials::{bad_secret_name};
+pub use credentials::LoginRow;
 pub use events::{UiEvent, Command};
 pub(crate) use components::Output;
 pub(crate) use events::{send};

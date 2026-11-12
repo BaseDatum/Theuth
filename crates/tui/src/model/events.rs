@@ -97,32 +97,6 @@ pub enum UiEvent {
     AcpRegistry(Vec<RegistryAgent>),
     /// Reply to [`Command::AddAcp`].
     AcpAdded(EntryInfo),
-    /// Reply to [`Command::KnowledgeList`] / [`Command::KnowledgeSearch`]: metas: best first for a search, by id for a list.
-    Knowledge(Vec<Meta>),
-    /// Reply to [`Command::KnowledgeHistory`]: the request's scope and page
-    /// size; `history` holds up to `limit + 1` changes (the extra one means
-    /// an older page exists).
-    KnowledgeHistory {
-        /// Concept id, `None` for the whole bundle.
-        id: Option<String>,
-        /// Rows asked for.
-        limit: usize,
-        /// The reply.
-        history: History,
-    },
-    /// Reply to [`Command::KnowledgeRevision`]: the request's scope and the commit.
-    KnowledgeRevision {
-        /// Concept id filter, `None` for every concept the commit touched.
-        id: Option<String>,
-        /// The reply.
-        revision: Revision,
-        /// `/knowledge show`: a transcript card, not the history menu.
-        card: bool,
-    },
-    /// Reply to [`Command::KnowledgeRestore`]: the restoring commit.
-    KnowledgeRestored(Change),
-    /// Reply to [`Command::Harvest`].
-    Harvested(HarvestResult),
     /// A command succeeded with nothing to show but a notice.
     Info(String),
     /// Reply to [`Command::GetCompactStyle`].
@@ -184,12 +158,6 @@ pub enum UiEvent {
         /// group under (51 §3); empty otherwise.
         sessions: Vec<SessionSummary>,
     },
-    /// Reply to [`Command::ListSecrets`]: names, notes, versions. Never values.
-    Secrets(secrets::SecretsList),
-    /// Reply to [`Command::SetSecret`] / [`Command::RestoreSecret`]: the new version.
-    SecretSet(secrets::SecretInfo),
-    /// Secrets plugin traffic (bus event): a change, a `secret_request`, its resolution.
-    SecretsEvent(secrets::SecretsEvent),
     /// Reply to [`Command::GetCommunication`], [`Command::SetCommunication`]
     /// and [`Command::SetPeerScope`]: the authoritative switches (50 §10);
     /// `state.session` says whose, so a reply for a session left behind is dropped.
@@ -518,35 +486,6 @@ pub enum Command {
         /// `session: None` only (148 R1): the draft's pending model/effort for the started session.
         draft: Option<CreateSessionOptions>,
     },
-    /// `knowledge_list` (first 50 by id).
-    KnowledgeList,
-    /// `knowledge_search`.
-    KnowledgeSearch(String),
-    /// `knowledge_history` for `limit + 1` rows; `id: None` for the whole bundle.
-    KnowledgeHistory {
-        /// Concept id.
-        id: Option<String>,
-        /// Rows to show; one more is fetched to learn whether older ones exist.
-        limit: usize,
-    },
-    /// `knowledge_revision`: one commit against its first parent.
-    KnowledgeRevision {
-        /// Abbreviated commit.
-        commit: String,
-        /// Concept id filter.
-        id: Option<String>,
-        /// `/knowledge show`: print a card rather than fill the history menu.
-        card: bool,
-    },
-    /// `knowledge_restore`.
-    KnowledgeRestore {
-        /// Concept id.
-        id: String,
-        /// Abbreviated commit; default the one before the latest change.
-        commit: Option<String>,
-    },
-    /// `knowledge_harvest` for the shown session.
-    Harvest(SessionId),
     /// `add_mcp_server`.
     AddMcp {
         /// Server name (file stem).
@@ -624,33 +563,6 @@ pub enum Command {
     },
     /// Open a local file with the OS default handler ([`platform::open::open_path`], detached).
     OpenPath(PathBuf),
-    /// `list_secrets`.
-    ListSecrets,
-    /// `set_secret(name, value, note)`. The value transits once and is never shown again.
-    SetSecret {
-        /// Name.
-        name: String,
-        /// The value (source `user`).
-        value: String,
-        /// `None` keeps the old note.
-        note: Option<String>,
-    },
-    /// `restore_secret(name, back)`: version `-back` becomes current, as a new version.
-    RestoreSecret {
-        /// Name.
-        name: String,
-        /// Versions back, 1..=4.
-        back: u8,
-    },
-    /// `delete_secret`: the name and every version.
-    DeleteSecret(String),
-    /// `answer_secret`: `None` declines a `secret_request`.
-    AnswerSecret {
-        /// The request.
-        id: secrets::RequestId,
-        /// The typed value.
-        value: Option<String>,
-    },
     /// `get_communication`; `None` reads the global default alone.
     GetCommunication(Option<SessionId>),
     /// `set_communication`, then `get_communication(view)`: the reply is the

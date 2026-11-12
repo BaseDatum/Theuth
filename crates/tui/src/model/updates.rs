@@ -3,7 +3,7 @@ use super::*;
 impl Model {
 
     /// Fold one event into the state.
-    pub(super) fn reduce(&mut self, ev: UiEvent) {
+    pub(super) fn reduce(&mut self, ev: UiEvent, error_claimed: bool) {
         match ev {
             UiEvent::Wire(_) | UiEvent::Component(_) => unreachable!("intake is dispatched before reduction"),
             UiEvent::Agent(ev) => self.apply_agent(ev),
@@ -433,80 +433,6 @@ impl Model {
                 "cloned {} → {}  (build it, then `/mcp add {{...\"cwd\": ...}}`)",
                 r.name, r.path
             ))),
-            // Always the picker: `H` reaches the bundle's history (and so
-            // deleted concepts) even when nothing is left to list.
-            UiEvent::Knowledge(items) => self.menu = Some(Menu::Knowledge { items, cursor: 0 }),
-            // Fills the menu opened by the request it answers; anything else
-            // (closed with esc, another scope or page since) is dropped.
-            UiEvent::KnowledgeHistory {
-                id,
-                limit,
-                history,
-            } => {
-                if let Some(Menu::KnowledgeHistory {
-                    id: open,
-                    changes: shown,
-                    limit: page,
-                    more,
-                    loading,
-                    error,
-                    ..
-                }) = &mut self.menu
-                    && *open == id
-                    && *page == limit
-                {
-                    let mut changes = history.changes;
-                    *more = changes.len() > limit;
-                    changes.truncate(limit);
-                    *shown = changes;
-                    *loading = false;
-                    *error = None;
-                }
-            }
-            UiEvent::KnowledgeRevision {
-                id,
-                revision,
-                card: true,
-            } => {
-                let title = format!(
-                    "knowledge {}  {}{}",
-                    revision.change.commit,
-                    revision.change.message,
-                    id.map_or(String::new(), |i| format!("  ({i})"))
-                );
-                let text = revision_rows(&revision).join("\n");
-                self.entries.push(card(
-                    CardKind::Skill,
-                    title,
-                    &format!("```diff\n{text}\n```"),
-                ));
-            }
-            // Only the commit still awaited in the open scope.
-            UiEvent::KnowledgeRevision {
-                id,
-                revision,
-                card: false,
-            } => {
-                if let Some(Menu::KnowledgeHistory {
-                    id: open,
-                    pending,
-                    revision: shown,
-                    ..
-                }) = &mut self.menu
-                    && *open == id
-                    && pending.as_deref() == Some(revision.change.commit.as_str())
-                {
-                    *pending = None;
-                    *shown = Some((revision, 0, 0));
-                }
-            }
-            UiEvent::KnowledgeRestored(c) => self
-                .entries
-                .push(Entry::Info(format!("{}  {}", c.commit, c.message))),
-            UiEvent::Harvested(r) => self.entries.push(Entry::Info(format!(
-                "knowledge +{} ~{}",
-                r.added, r.updated
-            ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             // The note rides the reload (like undo's), so it lands after the
             // transcript the new engine serves — a pushed entry would go with
@@ -631,43 +557,14 @@ impl Model {
             // The transcript reload that follows pushes the notice (`History`).
             UiEvent::Undone(t) => self.notice = Some(format!("undone: {t} — /redo restores")),
             UiEvent::Redone(t) => self.notice = Some(format!("restored: {t}")),
-            UiEvent::Secrets(list) => {
-                if self.awaiting_secrets && !matches!(self.menu, Some(Menu::Secrets { .. })) {
-                    self.menu = Some(Menu::Secrets {
-                        cursor: 0,
-                        history: None,
-                    });
-                }
-                self.awaiting_secrets = false;
-                self.secrets = Some(list);
-            }
-            UiEvent::SecretSet(info) => self
-                .entries
-                .push(Entry::Info(format!("{}: v{} set", info.name, info.current))),
-            UiEvent::SecretsEvent(ev) => self.apply_secrets(ev),
             UiEvent::Error(e) => {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
                 self.awaiting_effort = false;
                 self.awaiting_vision = false;
-                self.awaiting_secrets = false;
 
                 self.notice = None;
-                // A knowledge request that was in flight failed: the menu
-                // shows it where the rows would be (`r` retries).
-                if let Some(Menu::KnowledgeHistory {
-                    loading,
-                    pending,
-                    error,
-                    ..
-                }) = &mut self.menu
-                    && (*loading || pending.is_some())
-                {
-                    *loading = false;
-                    *pending = None;
-                    *error = Some(e);
-                    return;
-                }
+                if error_claimed { return; }
                 // 139 §9.3: the owner-offline line says when `/take` also resumes a turn.
                 let e = match &self.owner_turn {
                     Some(owner) if e.ends_with("— /take") => format!("{e}{}", owner_turn_suffix(owner)),

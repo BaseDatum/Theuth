@@ -116,44 +116,6 @@ pub enum Menu {
         /// Rows are apps: the title says so and where they run.
         apps: bool,
     },
-    /// `/secrets`: the vault's names over [`Model::secrets`] (37 §5).
-    Secrets {
-        /// Highlighted secret.
-        cursor: usize,
-        /// History of the highlighted secret is open: the highlighted
-        /// version row (0 = current). `None` shows the names.
-        history: Option<usize>,
-    },
-    /// `/knowledge [query]` picker (10 §6).
-    Knowledge {
-        /// The list or search reply.
-        items: Vec<Meta>,
-        /// Highlighted row.
-        cursor: usize,
-    },
-    /// `/knowledge history [id]`: commits newest first, then one commit's
-    /// diff against its parent. Opened when asked, filled by the reply that
-    /// matches `id` and `limit`; later or stale replies are dropped.
-    KnowledgeHistory {
-        /// Concept id, `None` for the whole bundle.
-        id: Option<String>,
-        /// Shown commits, at most `limit`.
-        changes: Vec<Change>,
-        /// Page size asked for; `⏎` on the `older` row asks for 20 more.
-        limit: usize,
-        /// Commits exist past `changes`: the `older` row shows.
-        more: bool,
-        /// Highlighted commit (or the `older` row at `changes.len()`).
-        cursor: usize,
-        /// A page request is in flight.
-        loading: bool,
-        /// Commit whose revision is being fetched; cleared by moving.
-        pending: Option<String>,
-        /// The last failed request's message, shown in place of the rows.
-        error: Option<String>,
-        /// Open diff of the highlighted commit: first shown row, first shown column.
-        revision: Option<(Revision, usize, usize)>,
-    },
     /// `/shake` picker and review (48 §2.4).
     Shake(Box<Shake>),
     /// `/peers` (50 §5.1, §5.3): the directory `session` may address, then
@@ -245,12 +207,9 @@ impl Model {
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
-            Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
             Some(Menu::Shake(_)) => self.shake_key(code, tx),
             Some(Menu::Peers { .. }) => self.peers_key(code, tx),
-            Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
-            Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),
         }
     }
 }

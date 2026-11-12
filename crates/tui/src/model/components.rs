@@ -37,9 +37,9 @@ impl Model {
         };
         for plain in &out.plain { emit(Output::Plain(plain)); }
         if let Some(event) = residual {
-            emit(Output::Event(self, &event));
+            if !out.plain_claimed { emit(Output::Event(self, &event)); }
             let previous_session = self.session;
-            self.reduce(event);
+            self.reduce(event, out.error_claimed);
             if self.session != previous_session {
                 let changed = self.component_lifecycle(Lifecycle::SessionChanged);
                 self.component_finish(changed, emit);
@@ -197,14 +197,13 @@ impl Model {
         match value["type"].as_str() {
             Some("PendingPrompts") => {
                 // Replace even empty sets; repeat live Requested messages are idempotent.
-                // Secrets remain in the residual owner until its own migration.
                 if let Some(rows) = value["approvals"].as_array() {
                     self.approvals.clear();
                     for row in rows {
                         if let Ok(request) = <ApprovalRequested as serde::Deserialize>::deserialize(row) {
                             let event = UiEvent::Approval(request);
                             emit(Output::Event(self, &event));
-                            self.reduce(event);
+                            self.reduce(event, false);
                         }
                     }
                 }
@@ -214,24 +213,17 @@ impl Model {
                         if let Ok(request) = <AskRequested as serde::Deserialize>::deserialize(row) {
                             let event = UiEvent::Ask(request);
                             emit(Output::Event(self, &event));
-                            self.reduce(event);
+                            self.reduce(event, false);
                         }
                     }
                 }
-                if let Some(rows) = value["secrets"].as_array() {
-                    self.secret_requests.clear();
-                    for row in rows {
-                        if let Ok(request) = <secrets::SecretsEvent as serde::Deserialize>::deserialize(row) {
-                            let event = UiEvent::SecretsEvent(request);
-                            emit(Output::Event(self, &event));
-                            self.reduce(event);
-                        }
-                    }
-                }
+
                 let approvals = &self.approvals;
                 let asks = &self.asks;
                 self.double.retain(|id, _| approvals.iter().any(|a| a.id.0.to_string() == *id) || asks.iter().any(|a| a.req.id.0.to_string() == *id));
-                self.component_notify(Lifecycle::Prompts(value));
+                let out = self.component_lifecycle(Lifecycle::Prompts(value));
+                for plain in &out.plain { emit(Output::Plain(plain)); }
+                self.component_finish(out, emit);
             }
             Some("Lagged") => {
                 // Never overwrite an inspected historical page or clear the draft.
@@ -242,7 +234,6 @@ impl Model {
                 self.refresh_artifacts = self.session.is_some();
                 self.refresh_advisor = self.session.is_some();
                 self.refresh_communication = true;
-                self.refresh_secrets = self.secrets.is_some();
                 self.component_notify(Lifecycle::Resync);
             }
             _ => {}
@@ -362,4 +353,47 @@ impl crate::components::SessionMembers for HashMap<SessionId, AgentRow> {
     fn member(&self, id: SessionId) -> Option<crate::components::SessionMember<'_>> {
         self.get(&id).map(|row| crate::components::SessionMember { name: &row.info.name, project: row.info.project.as_deref() })
     }
+}
+
+#[cfg(test)]
+#[test]
+fn owner_plain_claim_prints_once_without_skipping_core_tail_bookkeeping() {
+    use crate::components::{Component, Cx, Declaration, Input, Interest, ViewCx};
+    struct HarvestOutput;
+    impl Component for HarvestOutput {
+        type Msg = (u32, u32);
+        fn declaration(&self) -> Declaration {
+            Declaration { id: "harvest-output", interests: &[Interest {
+                topic: "agent.events", version: 1, variants: &["Harvested"],
+            }], slash: &[], bindings: &[] }
+        }
+        fn decode(&self, _: &TopicEvent, core: &CoreView<'_>) -> Option<Self::Msg> {
+            match core.agent? {
+                AgentEvent::Harvested { added, updated, .. } => Some((*added, *updated)),
+                _ => None,
+            }
+        }
+        fn update(&mut self, input: Input<'_, Self::Msg>, cx: &mut Cx<'_, '_, Self::Msg>) {
+            if let Input::Message((added, updated)) = input {
+                cx.claim_plain();
+                if cx.core.reasoning { cx.plain(Plain::Text("\x1b[0m\n".into())); }
+                cx.plain(Plain::Line(format!("knowledge +{added} ~{updated}")));
+            }
+        }
+        fn view(&self, _: Surface<'_>, _: &ViewCx<'_>) -> Option<View> { None }
+    }
+    let session = SessionId::new();
+    let mut model = Model::default();
+    model.session = Some(session);
+    model.streaming = true;
+    model.entries.push(Entry::Reasoning { text: "thinking".into(), done: false });
+    model.components.register(HarvestOutput).unwrap();
+    let event = AgentEvent::Harvested { session, added: 2, updated: 3 };
+    let mut bytes = Vec::new();
+    model.receive(UiEvent::Wire(TopicEvent::Legacy(Arc::new(serde_json::to_value(event).unwrap()))), &mut |output| {
+        crate::print_output(&mut bytes, output);
+    });
+    assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[0m\nknowledge +2 ~3\n");
+    assert!(matches!(model.entries[0], Entry::Reasoning { done: true, .. }));
+    assert!(model.streaming, "harvesting is detached from turn completion");
 }

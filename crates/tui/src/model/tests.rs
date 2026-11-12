@@ -11,6 +11,13 @@
         UiEvent::Wire(crate::topics::TopicEvent::Legacy(Arc::new(serde_json::to_value(event).unwrap())))
     }
     use crate::components::nodes::{NodesArg, parse_nodes_arg, find_node};
+    use ::knowledge::{Change, ChangeStatus, History, Meta, Revision};
+    use crate::components::knowledge::{Knowledge, Menu as KnowledgeMenu, Request as KnowledgeRequest, Msg as KnowledgeMsg, HISTORY_PAGE};
+    fn knowledge_reply(model: &Model, body: KnowledgeMsg) -> UiEvent {
+        UiEvent::Component(crate::components::LocalReply {
+            to: model.components.token("knowledge"), engine_epoch: 0, body: Box::new(body),
+        })
+    }
 
 
     fn wire_event(topic: &str, event: impl serde::Serialize) -> UiEvent {
@@ -2281,44 +2288,46 @@
 
     #[test]
     fn secrets_add_and_request_never_show_the_value() {
+        use crate::components::secrets::{Secrets, Prompt as SecretPrompt, Request as SecretRpc, Msg as SecretMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         // `/secrets add`: name → masked value → note; the note may be empty.
         m.submit("/secrets add", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::SecretName)));
-        assert!(!m.prompt.as_ref().unwrap().masked());
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretName)));
+        assert!(!m.components.get::<Secrets>().unwrap().prompt.as_ref().unwrap().masked());
         m.submit("bad name", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::SecretName)));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretName)));
         m.submit("github", &tx);
         assert!(matches!(
-            m.prompt,
-            Some(Prompt::SecretValue { current: None, .. })
+            m.components.get::<Secrets>().unwrap().prompt,
+            Some(SecretPrompt::SecretValue { current: None, .. })
         ));
-        assert!(m.prompt.as_ref().unwrap().masked());
+        assert!(m.components.get::<Secrets>().unwrap().prompt.as_ref().unwrap().masked());
         m.submit("ghp_topsecret", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::SecretNote { .. })));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretNote { .. })));
         m.submit("", &tx);
-        assert!(m.prompt.is_none());
+        assert!(m.components.get::<Secrets>().unwrap().prompt.is_none());
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetSecret { name, value, note: None }) if name == "github" && value == "ghp_topsecret"
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::SetSecret { name, value, note: None }) if name == "github" && value == "ghp_topsecret"
         ));
         let mut list = secrets_list();
         list.secrets[0].current = 1;
         list.secrets[0].versions.truncate(1);
-        m.apply(UiEvent::SecretSet(list.secrets[0].clone()));
+        component_reply(&mut m, "secrets", SecretMsg::Set(Ok(list.secrets[0].clone())));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "github: v1 set"));
         // Once listed, adding to a known name says which version it replaces.
-        m.apply(UiEvent::Secrets(list));
+        component_reply(&mut m, "secrets", SecretMsg::Listed(Ok(list)));
         m.submit("/secrets add github", &tx);
         assert!(
             matches!(
-                &m.prompt,
-                Some(Prompt::SecretValue {
+                &m.components.get::<Secrets>().unwrap().prompt,
+                Some(SecretPrompt::SecretValue {
                     current: Some(1),
                     ..
                 })
-            ) && m
+            ) && m.components.get::<Secrets>().unwrap()
                 .prompt
                 .as_ref()
                 .unwrap()
@@ -2328,15 +2337,15 @@
         m.submit("ghp_second", &tx);
         m.submit("rotated", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetSecret { note: Some(n), .. }) if n == "rotated"
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::SetSecret { note: Some(n), .. }) if n == "rotated"
         ));
         // `secret_request`: ours opens the masked box; a stranger's does not.
         let session = SessionId::new();
         m.session = Some(session);
         let id: secrets::RequestId =
             serde_json::from_str("\"6f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b\"").unwrap();
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Requested {
             id,
             session: SessionId::new(),
             name: "other".into(),
@@ -2345,8 +2354,8 @@
             title: None,
             fields: vec![],
         }));
-        assert!(m.secret_request().is_none());
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
+        assert!(m.components.get::<Secrets>().unwrap().requests.front().is_none());
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Requested {
             id,
             session,
             name: "github".into(),
@@ -2355,16 +2364,16 @@
             title: None,
             fields: vec![],
         }));
-        assert!(m.secret_request().is_some() && m.input_focused());
-        m.answer_secret(Some("ghp_requested".into()), &tx);
-        assert!(m.secret_request().is_none());
+        assert!(m.components.get::<Secrets>().unwrap().requests.front().is_some() && m.input_focused());
+        m.component_submit("ghp_requested");
+        assert!(m.components.get::<Secrets>().unwrap().requests.front().is_none());
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::AnswerSecret { id: i, value: Some(v) }) if i == id && v == "ghp_requested"
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::AnswerSecret { id: i, value: Some(v) }) if i == id && v == "ghp_requested"
         ));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "github: stored"));
         // Resolved elsewhere (or timed out): the box goes away.
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Requested {
             id,
             session,
             name: "github".into(),
@@ -2373,12 +2382,12 @@
             title: None,
             fields: vec![],
         }));
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Resolved {
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Resolved {
             id,
             stored: None,
             timed_out: true,
         }));
-        assert!(m.secret_request().is_none());
+        assert!(m.components.get::<Secrets>().unwrap().requests.front().is_none());
         for v in ["ghp_topsecret", "ghp_second", "ghp_requested"] {
             assert!(!leaked(&m, v), "{v} must not land in the transcript");
         }
@@ -2386,76 +2395,78 @@
 
     #[test]
     fn secrets_menu_history_restore_delete() {
+        use crate::components::secrets::{Secrets, Prompt as SecretPrompt, Menu as SecretMenu, Request as SecretRpc, Msg as SecretMsg};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.mount_components(&tx);
         m.submit("/secrets", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListSecrets)));
-        m.apply(UiEvent::Secrets(secrets_list()));
-        assert!(matches!(m.menu, Some(Menu::Secrets { .. })) && !m.input_focused());
-        assert!(m.secrets_title().starts_with("secrets · key: keychain"));
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::ListSecrets)));
+        component_reply(&mut m, "secrets", SecretMsg::Listed(Ok(secrets_list())));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().menu, Some(SecretMenu::Secrets { .. })) && !m.input_focused());
+        assert!(m.components.get::<Secrets>().unwrap().secrets_title().starts_with("secrets · key: keychain"));
         assert!(
-            m.secrets_rows()[0].starts_with("github")
-                && m.secrets_rows()[0].contains("v2 (2 kept)")
+            m.components.get::<Secrets>().unwrap().secrets_rows()[0].starts_with("github")
+                && m.components.get::<Secrets>().unwrap().secrets_rows()[0].contains("v2 (2 kept)")
         );
         // `h` opens the history; ⏎ on the current row is a no-op, on v1 restores it.
-        m.menu_key(KeyCode::Char('h'), "", &tx);
-        let rows = m.secrets_rows();
+        component_menu_key(&mut m, "secrets", KeyCode::Char('h'));
+        let rows = m.components.get::<Secrets>().unwrap().secrets_rows();
         assert!(
             rows[0].starts_with("v2") && rows[0].ends_with("current") && rows[1].starts_with("v1")
         );
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_menu_key(&mut m, "secrets", KeyCode::Enter);
         assert!(rx.try_recv().is_err());
-        m.menu_key(KeyCode::Down, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        component_menu_key(&mut m, "secrets", KeyCode::Down);
+        component_menu_key(&mut m, "secrets", KeyCode::Enter);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::RestoreSecret { name, back: 1 }) if name == "github"
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::RestoreSecret { name, back: 1 }) if name == "github"
         ));
         // A change re-lists while the menu is open; Esc leaves the history first.
-        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Changed));
-        assert!(std::mem::take(&mut m.refresh_secrets));
-        m.menu_key(KeyCode::Esc, "", &tx);
-        assert!(matches!(m.menu, Some(Menu::Secrets { history: None, .. })));
+        m.apply(wire_event("secrets.events", secrets::SecretsEvent::Changed));
+        assert!(std::mem::take(&mut m.components.get_mut::<Secrets>().unwrap().refresh));
+        component_menu_key(&mut m, "secrets", KeyCode::Esc);
+        assert!(matches!(m.components.get::<Secrets>().unwrap().menu, Some(SecretMenu::Secrets { history: None, .. })));
         // `r` replaces the highlighted value, knowing its version.
-        m.menu_key(KeyCode::Char('r'), "", &tx);
+        component_menu_key(&mut m, "secrets", KeyCode::Char('r'));
         assert!(
             matches!(
-                m.prompt,
-                Some(Prompt::SecretValue {
+                m.components.get::<Secrets>().unwrap().prompt,
+                Some(SecretPrompt::SecretValue {
                     current: Some(2),
                     ..
                 })
-            ) && m.menu.is_none()
+            ) && m.components.get::<Secrets>().unwrap().menu.is_none()
         );
-        m.cancel_prompt();
+        component_menu_key(&mut m, "secrets", KeyCode::Esc);
         // `d` deletes only when the name is typed back.
-        m.menu = Some(Menu::Secrets {
+        m.components.get_mut::<Secrets>().unwrap().menu = Some(SecretMenu::Secrets {
             cursor: 0,
             history: None,
         });
-        m.menu_key(KeyCode::Char('d'), "", &tx);
-        assert!(matches!(m.prompt, Some(Prompt::SecretDelete { .. })));
+        component_menu_key(&mut m, "secrets", KeyCode::Char('d'));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::SecretDelete { .. })));
         m.submit("nope", &tx);
-        assert!(rx.try_recv().is_err() && m.prompt.is_none());
-        m.menu = Some(Menu::Secrets {
+        assert!(rx.try_recv().is_err() && m.components.get::<Secrets>().unwrap().prompt.is_none());
+        m.components.get_mut::<Secrets>().unwrap().menu = Some(SecretMenu::Secrets {
             cursor: 0,
             history: None,
         });
-        m.menu_key(KeyCode::Char('d'), "", &tx);
+        component_menu_key(&mut m, "secrets", KeyCode::Char('d'));
         m.submit("github", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::DeleteSecret(n)) if n == "github"));
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::DeleteSecret(n)) if n == "github"));
         // One-shot forms.
         m.submit("/secrets rm github", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::DeleteSecret(n)) if n == "github"));
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::DeleteSecret(n)) if n == "github"));
         m.submit("/secrets restore github", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::RestoreSecret { back: 1, .. })
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::RestoreSecret { back: 1, .. })
         ));
         m.submit("/secrets restore github 3", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::RestoreSecret { back: 3, .. })
+            component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::RestoreSecret { back: 3, .. })
         ));
         m.submit("/secrets restore github 9", &tx);
         assert!(rx.try_recv().is_err() && matches!(m.entries.last(), Some(Entry::Error(_))));
@@ -3553,27 +3564,29 @@
     fn knowledge_command_grammar() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Knowledge::default()).unwrap();
+        m.mount_components(&tx);
         m.submit("/knowledge", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::KnowledgeList)));
+        assert!(matches!(component_request::<KnowledgeRequest>(&mut rx), Ok(KnowledgeRequest::KnowledgeList)));
         m.submit("/knowledge history facts/x", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::KnowledgeHistory { id: Some(id), limit: HISTORY_PAGE }) if id == "facts/x"
+            component_request::<KnowledgeRequest>(&mut rx),
+            Ok(KnowledgeRequest::KnowledgeHistory { id: Some(id), limit: HISTORY_PAGE }) if id == "facts/x"
         ));
         m.submit("/knowledge history", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::KnowledgeHistory { id: None, .. })
+            component_request::<KnowledgeRequest>(&mut rx),
+            Ok(KnowledgeRequest::KnowledgeHistory { id: None, .. })
         ));
         m.submit("/knowledge show a1b2c3d facts/x", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::KnowledgeRevision { commit, id: Some(id), card: true }) if commit == "a1b2c3d" && id == "facts/x"
+            component_request::<KnowledgeRequest>(&mut rx),
+            Ok(KnowledgeRequest::KnowledgeRevision { commit, id: Some(id), card: true }) if commit == "a1b2c3d" && id == "facts/x"
         ));
         m.submit("/knowledge restore facts/x a1b2c3d", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::KnowledgeRestore { id, commit: Some(c) }) if id == "facts/x" && c == "a1b2c3d"
+            component_request::<KnowledgeRequest>(&mut rx),
+            Ok(KnowledgeRequest::KnowledgeRestore { id, commit: Some(c) }) if id == "facts/x" && c == "a1b2c3d"
         ));
         m.submit("/knowledge restore", &tx);
         assert!(rx.try_recv().is_err());
@@ -3581,7 +3594,7 @@
         m.submit("/knowledge harvest", &tx);
         assert!(rx.try_recv().is_err(), "no session shown");
         m.submit("/knowledge rust toolchain", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::KnowledgeSearch(q)) if q == "rust toolchain"));
+        assert!(matches!(component_request::<KnowledgeRequest>(&mut rx), Ok(KnowledgeRequest::KnowledgeSearch(q)) if q == "rust toolchain"));
     }
 
     /// `/knowledge` → `h` opens the history menu loading; only the matching
@@ -3593,7 +3606,12 @@
     fn knowledge_history_menu_pages_and_shows_one_commit() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
-        m.apply(UiEvent::Knowledge(vec![Meta {
+        m.components.register(Knowledge::default()).unwrap();
+        m.mount_components(&tx);
+        let key = |m: &mut Model, code| {
+            m.component_key(FocusClass::Modal, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, code))
+        };
+        m.apply(knowledge_reply(&m, KnowledgeMsg::Knowledge(Ok(vec![Meta {
             id: "facts/x".into(),
             type_: "fact".into(),
             title: "x".into(),
@@ -3605,18 +3623,18 @@
             owner: "user".into(),
             visibility: Default::default(),
             ..Default::default()
-        }]));
-        assert!(matches!(m.menu, Some(Menu::Knowledge { .. })) && !m.input_focused());
-        m.menu_key(KeyCode::Char('h'), "", &tx);
-        let Ok(Command::KnowledgeHistory { id, limit }) = rx.try_recv() else {
+        }]))));
+        assert!(matches!(&m.components.get::<Knowledge>().unwrap().menu, Some(KnowledgeMenu::Knowledge { .. })) && !m.input_focused());
+        key(&mut m, KeyCode::Char('h'));
+        let Ok(KnowledgeRequest::KnowledgeHistory { id, limit }) = component_request::<KnowledgeRequest>(&mut rx) else {
             panic!("history asked");
         };
         assert_eq!((id.as_deref(), limit), (Some("facts/x"), HISTORY_PAGE));
         assert!(matches!(
-            m.menu,
-            Some(Menu::KnowledgeHistory { loading: true, .. })
+            &m.components.get::<Knowledge>().unwrap().menu,
+            Some(KnowledgeMenu::KnowledgeHistory { loading: true, .. })
         ));
-        assert_eq!(m.knowledge_history_menu().1, ["loading…"]);
+        assert_eq!(m.components.get::<Knowledge>().unwrap().knowledge_history_menu().1, ["loading…"]);
         let change = |c: &str| Change {
             commit: c.into(),
             time: "2026-09-18 10:00".into(),
@@ -3627,66 +3645,66 @@
             diff: None,
         };
         // Another scope's reply is dropped; the matching one fills the menu.
-        m.apply(UiEvent::KnowledgeHistory {
+        m.apply(knowledge_reply(&m, KnowledgeMsg::KnowledgeHistory {
             id: None,
             limit,
-            history: history(3),
-        });
+            history: Ok(history(3)),
+        }));
         assert!(matches!(
-            m.menu,
-            Some(Menu::KnowledgeHistory { loading: true, .. })
+            &m.components.get::<Knowledge>().unwrap().menu,
+            Some(KnowledgeMenu::KnowledgeHistory { loading: true, .. })
         ));
         // A full page plus one: the `older` row shows and asks for 20 more.
-        m.apply(UiEvent::KnowledgeHistory {
+        m.apply(knowledge_reply(&m, KnowledgeMsg::KnowledgeHistory {
             id: id.clone(),
             limit,
-            history: history(HISTORY_PAGE + 1),
-        });
+            history: Ok(history(HISTORY_PAGE + 1)),
+        }));
         assert!(matches!(
-            m.menu,
-            Some(Menu::KnowledgeHistory {
+            &m.components.get::<Knowledge>().unwrap().menu,
+            Some(KnowledgeMenu::KnowledgeHistory {
                 more: true,
                 loading: false,
                 ..
             })
         ));
-        let (_, rows, _) = m.knowledge_history_menu();
+        let (_, rows, _) = m.components.get::<Knowledge>().unwrap().knowledge_history_menu();
         assert_eq!(rows.len(), HISTORY_PAGE + 1);
         assert!(rows[HISTORY_PAGE].starts_with("… older"));
         for _ in 0..HISTORY_PAGE + 5 {
-            m.menu_key(KeyCode::Down, "", &tx);
+            key(&mut m, KeyCode::Down);
         }
-        m.menu_key(KeyCode::Enter, "", &tx);
+        key(&mut m, KeyCode::Enter);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::KnowledgeHistory { limit, .. }) if limit == 2 * HISTORY_PAGE
+            component_request::<KnowledgeRequest>(&mut rx),
+            Ok(KnowledgeRequest::KnowledgeHistory { limit, .. }) if limit == 2 * HISTORY_PAGE
         ));
         // The old page stays up while the next loads; a stale first-page reply is dropped.
-        assert_eq!(m.knowledge_history_menu().1.len(), HISTORY_PAGE + 1);
-        m.apply(UiEvent::KnowledgeHistory {
+        assert_eq!(m.components.get::<Knowledge>().unwrap().knowledge_history_menu().1.len(), HISTORY_PAGE + 1);
+        m.apply(knowledge_reply(&m, KnowledgeMsg::KnowledgeHistory {
             id: id.clone(),
             limit: HISTORY_PAGE,
-            history: history(2),
-        });
-        m.apply(UiEvent::KnowledgeHistory {
+            history: Ok(history(2)),
+        }));
+        m.apply(knowledge_reply(&m, KnowledgeMsg::KnowledgeHistory {
             id: id.clone(),
             limit: 2 * HISTORY_PAGE,
-            history: history(30),
-        });
-        let (_, rows, cursor) = m.knowledge_history_menu();
+            history: Ok(history(30)),
+        }));
+        let (_, rows, cursor) = m.components.get::<Knowledge>().unwrap().knowledge_history_menu();
         assert_eq!(
             (rows.len(), cursor),
             (30, HISTORY_PAGE),
             "no older row; highlight on the first new commit"
         );
         // ⏎ on a commit fetches its revision in the menu's scope.
-        m.menu_key(KeyCode::Up, "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        key(&mut m, KeyCode::Up);
+        key(&mut m, KeyCode::Enter);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::KnowledgeRevision { commit, id: Some(i), card: false }) if commit == "c000019" && i == "facts/x"
+            component_request::<KnowledgeRequest>(&mut rx),
+            Ok(KnowledgeRequest::KnowledgeRevision { commit, id: Some(i), card: false }) if commit == "c000019" && i == "facts/x"
         ));
-        assert!(m.knowledge_history_menu().0.contains("loading c000019"));
+        assert!(m.components.get::<Knowledge>().unwrap().knowledge_history_menu().0.contains("loading c000019"));
         let revision = |c: &str| Revision {
             change: change(c),
             parent: None,
@@ -3697,14 +3715,14 @@
             }],
         };
         // A reply for a commit no longer awaited is dropped.
-        m.apply(UiEvent::KnowledgeRevision {
+        m.apply(knowledge_reply(&m, KnowledgeMsg::KnowledgeRevision {
             id: id.clone(),
-            revision: revision("c000003"),
+            revision: Ok(revision("c000003")),
             card: false,
-        });
+        }));
         assert!(matches!(
-            m.menu,
-            Some(Menu::KnowledgeHistory {
+            &m.components.get::<Knowledge>().unwrap().menu,
+            Some(KnowledgeMenu::KnowledgeHistory {
                 revision: None,
                 pending: Some(_),
                 ..
@@ -3713,65 +3731,65 @@
         // A failed fetch shows in the menu, not the transcript; `r` re-asks.
         m.apply(UiEvent::Error("boom".into()));
         assert!(m.entries.is_empty());
-        assert!(m.knowledge_history_menu().0.contains("error: boom"));
-        m.menu_key(KeyCode::Char('r'), "", &tx);
+        assert!(m.components.get::<Knowledge>().unwrap().knowledge_history_menu().0.contains("error: boom"));
+        key(&mut m, KeyCode::Char('r'));
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::KnowledgeHistory { limit, .. }) if limit == 2 * HISTORY_PAGE
+            component_request::<KnowledgeRequest>(&mut rx),
+            Ok(KnowledgeRequest::KnowledgeHistory { limit, .. }) if limit == 2 * HISTORY_PAGE
         ));
-        m.apply(UiEvent::KnowledgeHistory {
+        m.apply(knowledge_reply(&m, KnowledgeMsg::KnowledgeHistory {
             id: id.clone(),
             limit: 2 * HISTORY_PAGE,
-            history: history(30),
-        });
-        assert!(!m.knowledge_history_menu().0.contains("error"));
-        m.menu_key(KeyCode::Enter, "", &tx);
+            history: Ok(history(30)),
+        }));
+        assert!(!m.components.get::<Knowledge>().unwrap().knowledge_history_menu().0.contains("error"));
+        key(&mut m, KeyCode::Enter);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::KnowledgeRevision { .. })
+            component_request::<KnowledgeRequest>(&mut rx),
+            Ok(KnowledgeRequest::KnowledgeRevision { .. })
         ));
-        m.apply(UiEvent::KnowledgeRevision {
+        m.apply(knowledge_reply(&m, KnowledgeMsg::KnowledgeRevision {
             id: id.clone(),
-            revision: revision("c000019"),
+            revision: Ok(revision("c000019")),
             card: false,
-        });
-        let (title, rows, scroll) = m.knowledge_history_menu();
+        }));
+        let (title, rows, scroll) = m.components.get::<Knowledge>().unwrap().knowledge_history_menu();
         assert!(title.contains("parent none (root)"), "{title}");
         assert_eq!(rows, ["- facts/x  (deleted)", "-a", "-bcdefghijklmnop"]);
         assert_eq!(scroll, 0);
         // ↓ scrolls rows and clamps; → drops leading chars, ← restores them.
         for _ in 0..3 {
-            m.menu_key(KeyCode::Down, "", &tx);
+            key(&mut m, KeyCode::Down);
         }
-        assert_eq!(m.knowledge_history_menu().2, 2);
-        m.menu_key(KeyCode::Right, "", &tx);
-        assert_eq!(m.knowledge_history_menu().1[2], "ijklmnop");
-        m.menu_key(KeyCode::Left, "", &tx);
-        assert_eq!(m.knowledge_history_menu().1[1], "-a");
+        assert_eq!(m.components.get::<Knowledge>().unwrap().knowledge_history_menu().2, 2);
+        key(&mut m, KeyCode::Right);
+        assert_eq!(m.components.get::<Knowledge>().unwrap().knowledge_history_menu().1[2], "ijklmnop");
+        key(&mut m, KeyCode::Left);
+        assert_eq!(m.components.get::<Knowledge>().unwrap().knowledge_history_menu().1[1], "-a");
         // esc goes back to the list, then closes; a reply after that is dropped.
-        m.menu_key(KeyCode::Esc, "", &tx);
+        key(&mut m, KeyCode::Esc);
         assert!(matches!(
-            m.menu,
-            Some(Menu::KnowledgeHistory {
+            &m.components.get::<Knowledge>().unwrap().menu,
+            Some(KnowledgeMenu::KnowledgeHistory {
                 revision: None,
                 cursor: 19,
                 ..
             })
         ));
-        m.menu_key(KeyCode::Esc, "", &tx);
-        assert!(m.menu.is_none());
-        m.apply(UiEvent::KnowledgeRevision {
+        key(&mut m, KeyCode::Esc);
+        assert!(m.components.get::<Knowledge>().unwrap().menu.is_none());
+        m.apply(knowledge_reply(&m, KnowledgeMsg::KnowledgeRevision {
             id: id.clone(),
-            revision: revision("c000019"),
+            revision: Ok(revision("c000019")),
             card: false,
-        });
-        assert!(m.menu.is_none() && m.entries.is_empty());
+        }));
+        assert!(m.components.get::<Knowledge>().unwrap().menu.is_none() && m.entries.is_empty());
         // `/knowledge show` is the one path to a transcript card.
-        m.apply(UiEvent::KnowledgeRevision {
+        m.apply(knowledge_reply(&m, KnowledgeMsg::KnowledgeRevision {
             id: None,
-            revision: revision("c000019"),
+            revision: Ok(revision("c000019")),
             card: true,
-        });
+        }));
         assert!(matches!(m.entries.last(), Some(Entry::Card { .. })));
     }
 

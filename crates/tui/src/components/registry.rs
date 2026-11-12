@@ -14,6 +14,7 @@ pub fn builtin() -> Registry {
     registry.register(link::Link::default()).expect("built-in component registration");
     registry.register(nodes::Nodes::default()).expect("built-in component registration");
     registry.register(mesh_devices::MeshDevices::default()).expect("built-in component registration");
+    registry.register(secrets::Secrets::default()).expect("built-in component registration");
 
     // Step-11 group t2 (boards, costs and artifacts): register below, in this block only.
     registry.register(tasks::Tasks).expect("built-in component registration");
@@ -27,6 +28,7 @@ pub fn builtin() -> Registry {
     registry.register(jobs::Jobs::default()).expect("built-in component registration");
     registry.register(terminals::Terminals::default()).expect("built-in component registration");
     registry.register(broadcast::BroadcastPanel::default()).expect("built-in component registration");
+    registry.register(knowledge::Knowledge::default()).expect("built-in component registration");
 
     // Model-picker panels (after design 194): register below, in this block only.
     registry
@@ -283,7 +285,9 @@ impl Registry {
     }
     /// Registration-ordered rows shared by completion/help and dictation.
     pub fn slash_specs(&self) -> impl Iterator<Item = &'static SlashSpec> + '_ {
-        self.slots.iter().filter_map(|slot| slot.component.as_ref()).flat_map(|component| component.declaration().slash)
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).flat_map(|component| {
+            component.declaration().slash.iter().filter(move |spec| component.slash_visible(spec.0))
+        })
     }
     /// Render in registration order; elements own all retained presentation data.
     pub fn views<'a>(&'a self, at: Surface<'a>, cx: &'a ViewCx<'a>) -> impl Iterator<Item = View> + 'a {
@@ -297,6 +301,10 @@ impl Registry {
     /// Earliest deadline, without a second scheduler or per-component task.
     pub fn wake(&self) -> Option<u64> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()?.wake()).min()
+    }
+    /// Any mounted owner needs the shared animation clock.
+    pub fn animating(&self) -> bool {
+        self.slots.iter().filter_map(|slot| slot.component.as_ref()).any(|component| component.animating())
     }
     /// Read-only owner query for composition and component integration tests.
     pub fn get<C: Component>(&self) -> Option<&C> {
