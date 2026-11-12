@@ -33,6 +33,7 @@ use voice::{ModelState, SpeechId, VoiceEvent};
 use policy::{Action, Input, Policy, Timer};
 
 mod policy;
+pub mod rpc_support;
 
 /// Registry name of the [`Talk`] actor.
 pub const TALK_ACTOR: &str = "talk";

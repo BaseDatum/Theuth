@@ -1,4 +1,15 @@
-use super::*;
+use std::path::PathBuf;
+use ::talk;
+use ::talk::rpc_support::{dictation, history_store, talk, transcriber, voice};
+use agent::{Agents, Polish, PolishReply, Rewrite};
+use agent::rpc_support::RpcServerExt;
+use base64::Engine as _;
+use jsonrpsee::Extensions;
+use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::proc_macros::rpc;
+use rpc_core::{Server, ask, failed, peer, send};
+use runtime::SessionId;
+use ::voice::{SpeechId, VoiceStatus};
 
 #[rpc(server, client)]
 pub trait SpeechApi {
