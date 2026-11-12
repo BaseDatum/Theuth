@@ -1,4 +1,5 @@
 use super::*;
+use decision::rpc_support::RpcDecisionExt;
 
 #[rpc(server, client)]
 pub trait DreamsApi {
@@ -148,7 +149,7 @@ pub trait DreamsApi {
 impl DreamsApiServer for Server {
 
     async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::GetMode { prefix }).await
+        RpcDecisionExt::decision_mode(self, prefix).await
     }
 
     async fn set_decision_mode(
@@ -156,8 +157,7 @@ impl DreamsApiServer for Server {
         prefix: String,
         mode: decision::Mode,
     ) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetMode { prefix, mode })
-            .await
+        RpcDecisionExt::set_decision_mode(self, prefix, mode).await
     }
 
     // 126: the read / ladder methods ask the double actor (W1); `double_train`, `double_rollback`,
@@ -384,4 +384,24 @@ impl DreamsApiServer for Server {
         )
         .await
     }
+}
+
+
+
+pub(super) trait DreamConfigExt {
+    fn double_config(&self) -> double::DoubleConfig;
+    fn dreaming_config(&self) -> dreaming::DreamConfig;
+}
+
+impl DreamConfigExt for Server {
+    /// The `double:` section as read at start (126 §12); defaults when absent.
+    fn double_config(&self) -> double::DoubleConfig {
+        self.rt.section("double").unwrap_or_default()
+    }
+
+    /// The `dreaming:` section as read at start (136 §9.2); defaults when absent.
+    fn dreaming_config(&self) -> dreaming::DreamConfig {
+        self.rt.section("dreaming").unwrap_or_default()
+    }
+
 }

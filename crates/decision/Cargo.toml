@@ -19,6 +19,8 @@ gliner-onnx = ["dep:ort"]
 train = []
 
 [dependencies]
+jsonrpsee = { workspace = true }
+rpc-core = { workspace = true }
 runtime = { workspace = true }
 platform = { workspace = true }  # `sha256::cached`: the `<weights>.sha256` sidecar shared with the desktop downloader
 tools = { workspace = true }

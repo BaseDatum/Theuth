@@ -19,6 +19,8 @@
 //! - events: [`SecretsEvent`]
 //! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
+/// Provider-owned helpers used by RPC method owners.
+pub mod rpc_support;
 mod key;
 pub mod requests;
 pub mod store;

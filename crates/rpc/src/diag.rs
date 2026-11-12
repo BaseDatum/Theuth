@@ -79,7 +79,7 @@ fn clean(message: &str) -> String {
 
 /// `client_log` (176 C2): log `message` at target `client`, rate-limited per connection.
 pub(crate) fn client_log(
-    peer: &link::RpcPeer,
+    peer: &rpc_core::RpcPeer,
     conn: u64,
     level: &str,
     source: &str,
@@ -181,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn ping_answers_null_without_actors() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(crate::api::Server::new(rt)).into();
+        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         let v = call(
             &methods,
             r#"{"jsonrpc":"2.0","method":"ping","params":[],"id":1}"#,
@@ -194,14 +194,14 @@ mod tests {
     #[tokio::test]
     async fn client_log_answers_null_on_a_connection() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let mut methods: jsonrpsee::Methods = into_rpc_module(crate::api::Server::new(rt)).into();
+        let mut methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         let anon = call(
             &methods,
             r#"{"jsonrpc":"2.0","method":"client_log","params":["info","island","x"],"id":1}"#,
         )
         .await;
         assert!(anon.get("error").is_some(), "{anon}");
-        methods.extensions_mut().insert(link::RpcPeer::internal());
+        methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         for level in ["info", "warn", "debug"] {
             let req = format!(
                 r#"{{"jsonrpc":"2.0","method":"client_log","params":["{level}","Bad Source","hi"],"id":1}}"#

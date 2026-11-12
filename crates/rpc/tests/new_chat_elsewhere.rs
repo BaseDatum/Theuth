@@ -15,7 +15,7 @@ use jsonrpsee::core::RpcResult;
 use parking_lot::Mutex;
 use replica::{ALPN_RPC, ByteStream, PeerEvent, PeerId, Transport};
 use rpc::into_rpc_module;
-use rpc::api::Server;
+
 use runtime::{Plugin as _, Runtime, SessionId};
 use tokio::sync::{broadcast, mpsc};
 
@@ -205,7 +205,7 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
     let seen = Seen::default();
     let there = tempfile::tempdir().unwrap();
     let rt_b = Runtime::new(figment::Figment::new(), there.path().to_path_buf());
-    tokio::spawn(rpc::forward::serve(rt_b, b, target(seen.clone())));
+    tokio::spawn(agent::rpc_forward::serve(rt_b, b, target(seen.clone())));
 
     // The caller: a live agent store, the replica actor holding the link,
     // and the sessions plugin (the front door forwards only with it).
@@ -223,8 +223,8 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
         .await
         .unwrap();
 
-    let (peer, _guard) = link::RpcPeer::open();
-    let mut api: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+    let (peer, _guard) = rpc_core::RpcPeer::open();
+    let mut api: jsonrpsee::Methods = into_rpc_module(rpc::new_server(rt)).into();
     api.extensions_mut().insert(peer);
 
     let open: SessionOpen = api
@@ -340,7 +340,7 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
     let mut forwarded = api.clone();
     forwarded
         .extensions_mut()
-        .insert(rpc::forward::Forwarded(PeerId("b".into())));
+        .insert(agent::rpc_forward::Forwarded(PeerId("b".into())));
     let e = forwarded
         .call::<_, agent::Loaded>(
             "load_session",

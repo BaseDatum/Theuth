@@ -53,7 +53,7 @@ use voice::VoiceEvent;
 use web::progress::ScrapeProgress;
 
 /// One serialized event; shared across every subscription without copying.
-pub type Event = Arc<serde_json::Value>;
+use rpc_core::Event;
 
 /// Registry name of the one [`Bridge`] per process.
 pub const BRIDGE_ACTOR: &str = "rpc.events";

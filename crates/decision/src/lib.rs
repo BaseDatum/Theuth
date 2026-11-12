@@ -10,6 +10,8 @@
 //! one is [`DECISION_ACTOR`], the others `decision/<name>` ([`actor_name`]); an `Ask` sent to
 //! any of them is routed to the one its family's gate names.
 
+/// Provider-owned RPC extension contracts.
+pub mod rpc_support;
 pub mod candle;
 pub mod embed;
 pub mod engine;

@@ -6,7 +6,7 @@
 //!   [`Enable`], [`Pair`], [`CancelPair`], [`Rename`], [`RenameDevice`],
 //!   [`Revoke`]
 //! - events: [`LinkEvent`]
-//! - [`RpcPeer`]: the authenticated connection behind an RPC call (mode-0
+//! - [`rpc_core::RpcPeer`]: the authenticated connection behind an RPC call (mode-0
 //!   conns here, local sockets in `rpc`), read from jsonrpsee extensions
 //! - [`qr`] renders a pairing string for terminals
 //!
@@ -31,6 +31,8 @@ use runtime::Runtime;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+/// Provider-owned helpers used by RPC method owners.
+pub mod rpc_support;
 pub mod conn;
 pub mod devices;
 pub mod follow;

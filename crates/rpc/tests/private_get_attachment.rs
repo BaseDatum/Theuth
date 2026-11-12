@@ -10,7 +10,7 @@ use base64::Engine as _;
 use jsonrpsee::core::server::MethodsError;
 use jsonrpsee::types::ErrorObjectOwned;
 use rpc::into_rpc_module;
-use rpc::api::Server;
+
 use runtime::{Runtime, SessionId};
 
 /// `ask` failed: a handler error, here `authorize` refusing or the path
@@ -18,8 +18,8 @@ use runtime::{Runtime, SessionId};
 const ASK_FAILED: i32 = -32000;
 
 /// One authenticated connection to the shared server state.
-fn conn(methods: &jsonrpsee::Methods) -> (jsonrpsee::Methods, link::RpcPeer, link::RpcPeerGuard) {
-    let (peer, guard) = link::RpcPeer::open();
+fn conn(methods: &jsonrpsee::Methods) -> (jsonrpsee::Methods, rpc_core::RpcPeer, rpc_core::RpcPeerGuard) {
+    let (peer, guard) = rpc_core::RpcPeer::open();
     let mut methods = methods.clone();
     methods.extensions_mut().insert(peer.clone());
     (methods, peer, guard)
@@ -54,7 +54,7 @@ async fn private_get_attachment_serves_the_owner_only_and_only_with_the_session(
     let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
         .await
         .unwrap();
-    let base: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+    let base: jsonrpsee::Methods = into_rpc_module(rpc::new_server(rt)).into();
     let (a, peer_a, _guard_a) = conn(&base);
     let (b, _peer_b, _guard_b) = conn(&base);
 

@@ -150,7 +150,7 @@ impl BoardsApiServer for Server {
     async fn agent_approve(&self, ext: &Extensions, name: String) -> RpcResult<()> {
         let m = roster::ApproveAgent {
             name,
-            actor: crate::Client::actor(ext),
+            actor: rpc_core::Client::actor(ext),
         };
         send(&roster_actor()?, m).await
     }
@@ -200,7 +200,7 @@ impl BoardsApiServer for Server {
             note,
             done_because: None,
             next,
-            actor: crate::Client::actor(ext),
+            actor: rpc_core::Client::actor(ext),
             session: None,
         };
         send(&tasks_actor()?, m).await
@@ -243,7 +243,7 @@ impl BoardsApiServer for Server {
     ) -> RpcResult<Vec<roster::attention::AttentionItem>> {
         let mut items: Vec<roster::attention::AttentionItem> =
             send(&attention_actor()?, roster::attention::ListAttention).await?;
-        if let Some(peer) = ext.get::<link::RpcPeer>() {
+        if let Some(peer) = ext.get::<rpc_core::RpcPeer>() {
             let focus = self.focus.read().get(&peer.id()).cloned();
             let mut seen = self.seen.write();
             let fresh = !seen.contains_key(&peer.id());
@@ -285,7 +285,7 @@ impl BoardsApiServer for Server {
         let m = tasks::AnswerDecision {
             decision,
             answer,
-            actor: crate::Client::actor(ext),
+            actor: rpc_core::Client::actor(ext),
             session: None,
         };
         send(&tasks_actor()?, m).await

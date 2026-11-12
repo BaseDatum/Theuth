@@ -26,7 +26,8 @@ use tokio_util::sync::CancellationToken;
 use crate::devices::{Row, device_id};
 use crate::identity::{Identity, now_ms, params};
 use crate::state::{ConnHandle, Ctx, State};
-use crate::types::{LinkEvent, RpcPeer};
+use crate::types::LinkEvent;
+use rpc_core::RpcPeer;
 use crate::uplink::{self, CLOSE_NORMAL, CLOSE_REFUSED};
 
 /// Noise message ceiling.
@@ -579,7 +580,7 @@ pub fn guest_gate(text: &[u8]) -> Option<Box<JsonRawValue>> {
 
 /// Mode 2 (59 §8.3): like [`run_api`] with a guest [`RpcPeer`] (static + handshake hash for the
 /// join proof), [`guest_gate`] on every request, `CLOSE 3` when nothing admitted the static within
-/// [`JOIN_DEADLINE`] or after [`crate::Guest::MAX_REFUSALS`] refused member calls. Return visits need
+/// [`JOIN_DEADLINE`] or after [`rpc_core::Guest::MAX_REFUSALS`] refused member calls. Return visits need
 /// no join: a member's first `doc_open`/`doc_subscribe` succeeds and marks the conn joined.
 async fn run_guest(
     c: &mut Conn,
@@ -631,7 +632,7 @@ async fn run_guest(
                 let Some(raw) = r else { break };
                 if !c.write_records(transport, raw.get().as_bytes(), &mut buf).await { break }
                 if guest.exhausted() {
-                    tracing::debug!(conn = c.id, "guest refused {} times; closed", crate::Guest::MAX_REFUSALS);
+                    tracing::debug!(conn = c.id, "guest refused {} times; closed", rpc_core::Guest::MAX_REFUSALS);
                     c.close(CLOSE_REFUSED).await;
                     break;
                 }

@@ -189,6 +189,28 @@ its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
 agent needed `tools` anyway for the registry actor type.)
 
+The wire-layer extraction adds `rpc-core` below method owners: its only normal
+workspace dependency is `runtime`. It owns `Server`, connection identity
+(`RpcPeer`, `Guest`, `Client`, `ConnId`), original-actor follow leases, the
+shared event-feed item and unchanged stream backlog, and actor/error helpers.
+It contains no plugin registration, domain RPC traits, sessions registry calls
+or artifact operations. Every domain implements its server trait on this one
+`Server`; clones share all six handles. New servers share only process-wide,
+insert-only private-tree membership; focus, seen and follow maps remain local.
+
+`rpc::new_server` installs plugin hooks before constructing the pure state.
+`agent::rpc_forward` owns forwarding; five immutable hooks read current
+session/artifact registries on each call, never a runtime captured at first
+installation. Method assembly is an explicit `rpc_core::ModuleFactory` function
+pointer, supplied by `main` and threaded through socket, Noise, mesh, ACP,
+`Local` and attached-TUI takeover paths. Transports never silently choose the
+aggregate factory; domain bodies and wire names remain unchanged.
+Authorization belongs to `agent::rpc_support::RpcServerExt`, not inherent
+`Server` methods. `decision::rpc_support::RpcDecisionExt` and
+`sessionsync::rpc_support::RpcSessionMoveExt` expose the real owner operations;
+cross-domain callers use those contracts rather than generated wire traits.
+Configuration and private-session tracking/wait extensions stay domain-local.
+
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
 every UI consumes the whole stream with one subscription and one `match`.
@@ -574,7 +596,7 @@ webview story without grpc-web).
 
 **Second in-process consumer.** The `link` plugin (31) dispatches each
 decrypted device request into the same `jsonrpsee::Methods` the socket
-serves, through `Methods::raw_json_request` (`rpc::methods(rt)` builds it;
+serves, through `Methods::raw_json_request` (`rpc::methods(rt, module)` builds it;
 `crates/link/src/conn.rs`) — no loopback socket, no token, no second
 serialization. So `rpc::bridge::start` is idempotent: the one `Bridge` per
 process is registered as `"rpc.events"` and looked up before it is spawned.
@@ -602,18 +624,16 @@ the oh-my-pi rendering approach.
 The TUI is a control plane over the same actor commands RPC exposes. It
 subscribes to bus events for the transcript, approvals, MCP progress and
 logins (its own subscription, so `TextDelta` never serializes), and for
-everything else calls the harness commands. **There is one list of
-commands: `rpc::Api`.** `rpc::api::Server` implements it as lookup + one
-`ask` per method; the TUI holds a `Server::new(rt)` in-process and calls
-the trait methods directly (plain async fn calls, no socket, no JSON);
-Tauri calls the same trait over the WebSocket. A command exists when it is
-an `Api` method: add it once, every frontend has it. `mcp_status` was
-added to `Api` to cover the one ask only the TUI made; the TUI's own actor
-lookups and message imports are gone. Alternatives rejected: (a) a
-`TypeId` registry both facades consume — reflection machinery for what a
-trait already does; (b) TUI as a real jsonrpsee client of localhost — §2's
-serialization cost on the chat path, and RPC would have to always listen.
-See 12 §7.
+everything else calls the harness commands. The 25 domain RPC traits in
+`rpc::api` implement their generated server contracts on `rpc_core::Server`,
+using actor lookup plus `ask`/`tell`. They are assembled by the explicit
+`rpc_core::ModuleFactory` supplied by `main` (temporarily
+`rpc::api::into_rpc_module`). The TUI uses the generated typed clients over
+`rpc::client::Local::new(rt, module)` or a remote WebSocket. Local dispatch
+uses jsonrpsee `Methods` in-process: no loopback socket or bearer token.
+Events still use the TUI's own bus subscription. A command is added once to
+its domain trait and implementation, then exposed to every frontend through
+the same assembled methods. TUI takeover retains the original factory.
 
 Input: `TextInput` is multiline with `newline_modifiers: SHIFT` (our iocraft
 patch, `[patch.crates-io]`): plain Enter submits, Shift+Enter inserts a

@@ -54,6 +54,8 @@ pub struct TuiPlugin {
     pub prompt: Option<String>,
     /// Attached to a running engine (63 §0.3); `None` when this process is it.
     pub attached: Option<Attached>,
+    /// Method assembly used at startup and after attached-engine takeover.
+    pub module: rpc_core::ModuleFactory,
 }
 
 /// Starts the engine in this process (the plugin list `main` would have
@@ -125,7 +127,7 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, ::talk::TalkEvent>(&bridge).await;
         let api: Api = Arc::new(RwLock::new(Arc::new(match &self.attached {
             Some(a) => Engine::Remote(a.client.clone()),
-            None => Engine::Local(Local::new(rt.clone())),
+            None => Engine::Local(Local::new(rt.clone(), self.module)),
         })));
         if let Some(attached) = self.attached {
             let _ = events_tx.send(UiEvent::Engine(Some(attached_label(&attached.running))));
@@ -134,6 +136,7 @@ impl runtime::Plugin for TuiPlugin {
                 api.clone(),
                 events_tx.clone(),
                 attached,
+                self.module,
             ));
         }
         // Startup facts the runtime does not hand out as config sections: whether
@@ -260,7 +263,7 @@ forward!(
 /// take the lock and start the engine here, or — another client won — attach
 /// to the winner; three attempts, then a plain error. Every switch tells the
 /// UI (`Engine`), which re-selects its session on the new end.
-async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached: Attached) {
+async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached: Attached, module: rpc_core::ModuleFactory) {
     // The record's listen until the implicit server binds (63 §6.4).
     let listen = rpc::configured_listen(&rt);
     let mut client = attached.client;
@@ -278,7 +281,7 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
                 };
                 match start(rt.clone()).await {
                     Ok(()) => {
-                        *api.write().unwrap() = Arc::new(Engine::Local(Local::new(rt.clone())));
+                        *api.write().unwrap() = Arc::new(Engine::Local(Local::new(rt.clone(), module)));
                         let _ = tx.send(UiEvent::Engine(None));
                     }
                     Err(e) => {

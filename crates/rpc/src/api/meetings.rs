@@ -404,11 +404,11 @@ impl MeetingsApiServer for Server {
     }
 
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {
-        self.decision_mode(meeting::oracle::PREFIX.to_owned()).await
+        decision::rpc_support::RpcDecisionExt::decision_mode(self, meeting::oracle::PREFIX.to_owned()).await
     }
 
     async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
-        self.set_decision_mode(meeting::oracle::PREFIX.to_owned(), mode)
+        decision::rpc_support::RpcDecisionExt::set_decision_mode(self, meeting::oracle::PREFIX.to_owned(), mode)
             .await
     }
 

@@ -28,6 +28,7 @@ const ALLOWED: &[&str] = &[
     "platform",
     "replica",
     "roster",
+    "rpc-core",
     "runtime",
     "sandbox",
     "schedule",

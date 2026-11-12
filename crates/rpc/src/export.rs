@@ -17,7 +17,7 @@ async fn export_bindings() {
         crate::api::Info,
         crate::api::PendingPrompts,
         crate::api::ConfigFlag,
-        crate::forward::FrontDoorError,
+        agent::rpc_forward::FrontDoorError,
         crate::pathac::PathCompletion,
         crate::pathac::PathCandidate,
         agent::AgentEvent,
@@ -871,7 +871,7 @@ async fn export_bindings() {
 
     use crate::into_rpc_module;
     let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
-    let module = into_rpc_module(crate::api::Server::new(rt));
+    let module = into_rpc_module(crate::new_server(rt));
     let mut names: Vec<&str> = module.method_names().collect();
     names.sort_unstable();
     std::fs::write(

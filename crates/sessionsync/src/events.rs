@@ -45,6 +45,7 @@ use kameo::actor::{ActorRef, Spawn as _};
 use kameo::message::{Context, Message};
 use replica::{ALPN_SESSIONS, ByteStream, PeerEvent, PeerId, Transport};
 use runtime::{Runtime, SessionId};
+use rpc_core::{Following, Unfollow};
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -67,9 +68,6 @@ pub struct SetTransport(pub Arc<dyn Transport>);
 #[derive(Clone, Copy, Debug)]
 pub struct Follow(pub SessionId);
 
-/// `tell`: one local client of `session` is gone.
-#[derive(Clone, Copy, Debug)]
-pub struct Unfollow(pub SessionId);
 
 /// `tell`: a remote subscriber's stream for `session` is open; events go to `tx`.
 pub struct Serve {
@@ -114,23 +112,12 @@ impl wire::WireEvent for FollowState {
 #[derive(Clone, Debug)]
 pub struct Reconnected(pub PeerId);
 
-/// Refcount guard from [`follow`]: dropping it is the [`Unfollow`].
-pub struct Following {
-    session: SessionId,
-    actor: ActorRef<EventRelay>,
-}
-
-impl Drop for Following {
-    fn drop(&mut self) {
-        let _ = self.actor.tell(Unfollow(self.session)).try_send();
-    }
-}
 
 /// Follow `session`'s owner while the guard lives; `None` before the actor exists.
 pub fn follow(session: SessionId) -> Option<Following> {
     let actor = actor()?;
     actor.tell(Follow(session)).try_send().ok()?;
-    Some(Following { session, actor })
+    Some(Following::new(session, actor.recipient()))
 }
 
 /// The relay; `None` before the plugin started it.
@@ -1075,6 +1062,8 @@ mod tests {
         rt_f.subscribe::<Tap, AgentEvent>(&tap).await;
 
         let guard = follow(session).expect("relay registered");
+        let follows = rpc_core::FollowMap::default();
+        follows.lock().entry(1).or_default().insert(session, guard);
         // Give the follower time to open the stream.
         tokio::time::sleep(Duration::from_millis(200)).await;
         rt_o.publish(AgentEvent::TitleChanged {
@@ -1092,7 +1081,7 @@ mod tests {
             "{got:?}"
         );
 
-        drop(guard);
+        follows.lock().remove(&1);
         tokio::time::sleep(Duration::from_millis(200)).await;
         rt_o.publish(AgentEvent::TitleChanged {
             session,

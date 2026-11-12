@@ -11,6 +11,8 @@
 //! - [`file::parse`]: `agents/<name>.md` → [`AgentFile`]
 //! - [`Desks`]: the shared read model handed to the tasks plugin
 
+/// Provider-owned helpers used by RPC method owners.
+pub mod rpc_support;
 pub mod alert;
 pub mod attention;
 pub mod budget;

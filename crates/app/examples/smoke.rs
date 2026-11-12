@@ -26,7 +26,7 @@ use figment::providers::Format;
 use futures::future::BoxFuture;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
-use link::RpcPeer;
+use rpc_core::RpcPeer;
 use parking_lot::Mutex;
 use runtime::{Plugin, Runtime, SessionId};
 use tools::{Invoke, Risk, Tool, ToolCall, ToolCx, ToolOutput, ToolRegistry};

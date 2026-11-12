@@ -9,20 +9,20 @@ use kameo::actor::ActorRef;
 use roster::alert::AlertClass;
 use roster::attention::{Attention, AttentionItem, AttentionKind, Finished};
 use rpc::into_rpc_module;
-use rpc::api::{FocusMap, SeenMap, Server};
+use rpc_core::{FocusMap, SeenMap, Server};
 use runtime::{Runtime, SessionId};
 
 /// One authenticated connection to the shared server state.
 struct Conn {
     methods: jsonrpsee::Methods,
-    peer: link::RpcPeer,
-    guard: Option<link::RpcPeerGuard>,
+    peer: rpc_core::RpcPeer,
+    guard: Option<rpc_core::RpcPeerGuard>,
 }
 
 impl Conn {
     fn new(
         rt: &Runtime,
-        events: &tokio::sync::broadcast::Sender<rpc::bridge::Event>,
+        events: &tokio::sync::broadcast::Sender<rpc_core::Event>,
         focus: &FocusMap,
         seen: &SeenMap,
     ) -> Self {
@@ -35,7 +35,7 @@ impl Conn {
             follows: Default::default(),
         })
         .into();
-        let (peer, guard) = link::RpcPeer::open();
+        let (peer, guard) = rpc_core::RpcPeer::open();
         methods.extensions_mut().insert(peer.clone());
         Self {
             methods,

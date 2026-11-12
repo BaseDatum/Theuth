@@ -13,6 +13,8 @@
 //! Loops (design doc 33) are schedule files with a stop (`until:` /
 //! `max_runs:`); the same actor runs them.
 
+/// Provider-owned helpers used by RPC method owners.
+pub mod rpc_support;
 pub mod file;
 pub mod store;
 pub mod tools;

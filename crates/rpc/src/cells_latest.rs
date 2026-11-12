@@ -7,7 +7,9 @@ use base64::Engine as _;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::RpcResult;
 
-use crate::api::{Server, ask, peer};
+use rpc_core::Server;
+
+use rpc_core::{ask, peer};
 use crate::cells::Latest;
 
 /// `cell_latest`.
@@ -66,19 +68,19 @@ pub(crate) async fn latest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{NOT_RUNNING, UNAUTHORIZED};
+    use rpc_core::{NOT_RUNNING, UNAUTHORIZED};
 
     #[tokio::test]
     async fn needs_an_authenticated_peer_and_the_documents_plugin() {
         let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let server = Server::new(rt);
+        let server = crate::new_server(rt);
         let doc = document::DocId("d1".into());
         let e = latest(&server, &Extensions::new(), doc.clone())
             .await
             .unwrap_err();
         assert_eq!(e.code(), UNAUTHORIZED);
         // A guest conn reaches the membership check, which needs the document actor.
-        let (guest, _guard) = link::RpcPeer::open_guest([7; 32], [9; 32]);
+        let (guest, _guard) = rpc_core::RpcPeer::open_guest([7; 32], [9; 32]);
         let mut ext = Extensions::new();
         ext.insert(guest);
         let e = latest(&server, &ext, doc).await.unwrap_err();

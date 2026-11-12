@@ -19,6 +19,8 @@ use replica::{ALPN_SESSIONS, PeerEvent, PeerId, Transport};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
+/// Provider-owned RPC extension contracts.
+pub mod rpc_support;
 pub mod apply;
 pub mod config;
 pub mod events;

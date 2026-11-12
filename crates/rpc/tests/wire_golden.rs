@@ -43,9 +43,9 @@ impl Stream {
     }
 }
 
-async fn methods(rt: Runtime) -> (jsonrpsee::Methods, link::RpcPeerGuard) {
-    let mut methods = rpc::methods(rt).await;
-    let (peer, guard) = link::RpcPeer::open();
+async fn methods(rt: Runtime) -> (jsonrpsee::Methods, rpc_core::RpcPeerGuard) {
+    let mut methods = rpc::methods(rt, rpc::api::into_rpc_module).await;
+    let (peer, guard) = rpc_core::RpcPeer::open();
     methods.extensions_mut().insert(peer);
     (methods, guard)
 }
@@ -238,7 +238,7 @@ async fn relay(rt: &Runtime, stream: &mut Stream) {
 /// bridge ring by exactly two frames, without timing a stalled network client.
 async fn lagged_then_pending_snapshot(
     methods: &jsonrpsee::Methods,
-    events: &tokio::sync::broadcast::Sender<rpc::bridge::Event>,
+    events: &tokio::sync::broadcast::Sender<rpc_core::Event>,
 ) {
     let mut stream = Stream::open(methods).await;
     let initial = stream.next().await;

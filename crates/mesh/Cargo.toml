@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Leaderless engine mesh: iroh endpoint, pairing, peer set, stability-elected hub lease, engine stats (design doc 67 §4)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 replica = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }

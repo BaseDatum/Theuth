@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Prompt files that fire on a clock: schedules/ directory, croner tick, one session per schedule, reply delivery (design doc 34)"
 
 [dependencies]
+rpc-core = { workspace = true }
+jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 replica = { workspace = true }
