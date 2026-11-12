@@ -127,10 +127,14 @@ pub enum CardKind {
         glyph: &'static str,
         /// Header color.
         color: iocraft::Color,
+        /// Literal untrusted text, without Markdown or terminal hyperlinks.
+        plain: bool,
     },
 }
 
 impl CardKind {
+    /// Whether this owner card requests literal text presentation.
+    pub fn plain(self) -> bool { matches!(self, Self::Component { plain: true, .. }) }
     /// Header glyph.
     pub fn glyph(self) -> &'static str {
         match self {
@@ -235,7 +239,7 @@ impl Entry {
                 text,
                 expanded,
             } => {
-                4 + match (*expanded, outside_card(*kind, title)) {
+                4 + match (*expanded, kind.plain() || outside_card(*kind, title)) {
                     (false, _) => 0,
                     (true, true) => text_rows(&clean(text.raw()), inner),
                     (true, false) => md(text, inner),

@@ -282,7 +282,7 @@ impl Countdown {
         let remaining = pairing.expires_at_ms.saturating_sub(now);
         let card = Self { group, key: uuid::Uuid::new_v4(), left: remaining / 1000, pairing, wake: now + remaining % 1000 + 1 };
         cx.core(CoreAction::AppendCard(TranscriptCard { group, key: card.key, glyph: "⌁", color: crate::ui::FAIENCE,
-            title, body: card.body(), expanded: true }));
+            title, body: markdown::Text::complete(&card.body()), expanded: true, plain: false }));
         card
     }
     fn body(&self) -> String {
