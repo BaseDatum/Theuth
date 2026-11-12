@@ -126,6 +126,11 @@ impl Ask {
 }
 
 impl Model {
+    /// Stable identity of the shown core prompt, independent of feature badges.
+    pub(crate) fn prompt_id(&self) -> Option<Uuid> {
+        self.approvals.front().map(|request| request.id.0)
+            .or_else(|| self.asks.front().map(|ask| ask.req.id.0))
+    }
 
     /// The approval currently shown, if any.
     pub fn approval(&self) -> Option<&ApprovalRequested> {
@@ -186,6 +191,7 @@ impl Model {
                     decision,
                 },
             );
+            self.component_notify(crate::components::Lifecycle::PromptChanged { resolved: None });
         }
     }
 
@@ -241,6 +247,7 @@ impl Model {
                             answers: None,
                         },
                     );
+                    self.component_notify(crate::components::Lifecycle::PromptChanged { resolved: None });
                 }
             }
             _ => {}
@@ -268,6 +275,7 @@ impl Model {
                     answers: Some(a.answers),
                 },
             );
+            self.component_notify(crate::components::Lifecycle::PromptChanged { resolved: None });
         }
     }
 }
