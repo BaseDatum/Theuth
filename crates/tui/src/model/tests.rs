@@ -2,6 +2,14 @@
     use agent::{CostBucket, CostScope, Coverage, Money, SessionCost};
     use crate::components::costs::{cost_lines, cost_short, money_units};
     use tokio::sync::mpsc::unbounded_channel;
+    use iocraft::KeyModifiers;
+    use tools::JobEvent;
+    use crate::components::jobs::{Jobs, JOB_LINES};
+    use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
+    use crate::components::{FocusClass, terminals::{Terminals, TerminalView, Menu as TerminalMenu, Request as TerminalRequest, TERMINAL_PAGE, TERMINAL_INTERACTIVE_POLL_MS}};
+    fn job_event(event: JobEvent) -> UiEvent {
+        UiEvent::Wire(crate::topics::TopicEvent::Legacy(Arc::new(serde_json::to_value(event).unwrap())))
+    }
     use crate::components::nodes::{NodesArg, parse_nodes_arg, find_node};
 
 
@@ -1299,9 +1307,21 @@
     /// the same request for real; the receipt closes the menu and prints.
     #[test]
     fn broadcast_picker_composes_reviews_and_sends() {
-        use agent::{BroadcastOutcome, BroadcastRow, SessionActivity};
+        use agent::{BroadcastOutcome, BroadcastRow, SessionActivity, BroadcastTargets, BroadcastReceipt};
+        use crate::components::broadcast::{BroadcastPanel, Request as BroadcastRequest, Msg as BroadcastMsg, state::BroadcastStage};
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(BroadcastPanel::default()).unwrap();
+        m.mount_components(&tx);
+        let key = |m: &mut Model, code| {
+            m.component_key(FocusClass::Modal, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, code))
+        };
+        let reply = |m: &mut Model, body: BroadcastMsg| {
+            let event = UiEvent::Component(crate::components::LocalReply {
+                to: m.components.token("broadcast"), engine_epoch: 0, body: Box::new(body),
+            });
+            m.apply(event);
+        };
         let info = |name: &str, parent: Option<SessionId>, state: AgentState, ptys: u16| {
             let id = SessionId::new();
             AgentInfo {
@@ -1334,14 +1354,14 @@
         let child = info("kid", Some(busy.id), AgentState::Running, 0);
         // Children arrive out of order; the picker regroups them under their root.
         m.submit("/broadcast", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListActivity)));
-        m.apply(UiEvent::Activity(vec![
+        assert!(matches!(component_request::<BroadcastRequest>(&mut rx), Ok(BroadcastRequest::ListActivity)));
+        reply(&mut m, BroadcastMsg::Activity(Ok(vec![
             child.clone(),
             busy.clone(),
             idle.clone(),
             pty.clone(),
-        ]));
-        let Some(Menu::Broadcast(b)) = &m.menu else {
+        ])));
+        let Some(b) = &m.components.get::<BroadcastPanel>().unwrap().menu else {
             panic!("picker open");
         };
         let names: Vec<&str> = b.rows.iter().map(|a| a.name.as_str()).collect();
@@ -1349,23 +1369,23 @@
         assert_eq!(b.selected, [busy.id, pty.id].into_iter().collect());
         assert!(b.rows("●")[1].contains("↳ kid"));
         // `a` ticks every root, `n` none, `r` the running ones again; `d` flips delivery.
-        m.menu_key(KeyCode::Char('a'), "", &tx);
-        m.menu_key(KeyCode::Char('n'), "", &tx);
-        m.menu_key(KeyCode::Enter, "", &tx);
-        m.menu_key(KeyCode::Char('r'), "", &tx);
-        m.menu_key(KeyCode::Char('d'), "", &tx);
-        let Some(Menu::Broadcast(b)) = &m.menu else {
+        key(&mut m, KeyCode::Char('a'));
+        key(&mut m, KeyCode::Char('n'));
+        key(&mut m, KeyCode::Enter);
+        key(&mut m, KeyCode::Char('r'));
+        key(&mut m, KeyCode::Char('d'));
+        let Some(b) = &m.components.get::<BroadcastPanel>().unwrap().menu else {
             panic!("still picking");
         };
         assert_eq!(b.stage, BroadcastStage::Pick, "⏎ with nothing ticked stays");
         assert_eq!(b.selected.len(), 2);
         assert_eq!(b.delivery, agent::Delivery::NextTurn);
-        m.menu_key(KeyCode::Enter, "", &tx);
+        key(&mut m, KeyCode::Enter);
         for c in "hi all".chars() {
-            m.menu_key(KeyCode::Char(c), "", &tx);
+            key(&mut m, KeyCode::Char(c));
         }
-        m.menu_key(KeyCode::Enter, "", &tx);
-        let Ok(Command::Broadcast(req)) = rx.try_recv() else {
+        key(&mut m, KeyCode::Enter);
+        let Ok(BroadcastRequest::Broadcast(req)) = component_request::<BroadcastRequest>(&mut rx) else {
             panic!("dry run sent");
         };
         assert!(req.dry_run && req.text == "hi all");
@@ -1393,8 +1413,8 @@
         let skip = || BroadcastOutcome::Skipped {
             reason: "dry run".into(),
         };
-        m.apply(UiEvent::Broadcasted(Ok(receipt([skip(), skip()]))));
-        let Some(Menu::Broadcast(b)) = &m.menu else {
+        reply(&mut m, BroadcastMsg::Broadcasted(Ok(receipt([skip(), skip()]))));
+        let Some(b) = &m.components.get::<BroadcastPanel>().unwrap().menu else {
             panic!("review open");
         };
         assert_eq!(b.stage, BroadcastStage::Review);
@@ -1402,23 +1422,23 @@
         assert!(rows[0].starts_with("[broadcast … · 2 sessions]"));
         assert!(rows[2].ends_with("will queue (next turn)"), "{}", rows[2]);
         // A refusal stays on the menu; ⏎ then sends for real.
-        m.menu_key(KeyCode::Enter, "", &tx);
-        let Ok(Command::Broadcast(req)) = rx.try_recv() else {
+        key(&mut m, KeyCode::Enter);
+        let Ok(BroadcastRequest::Broadcast(req)) = component_request::<BroadcastRequest>(&mut rx) else {
             panic!("send");
         };
         assert!(!req.dry_run && req.delivery == agent::Delivery::NextTurn);
-        m.apply(UiEvent::Broadcasted(Err("too many targets".into())));
+        reply(&mut m, BroadcastMsg::Broadcasted(Err("too many targets".into())));
         assert!(
-            matches!(&m.menu, Some(Menu::Broadcast(b)) if b.error.as_deref() == Some("too many targets"))
+            matches!(&m.components.get::<BroadcastPanel>().unwrap().menu, Some(b) if b.error.as_deref() == Some("too many targets"))
         );
-        m.apply(UiEvent::Broadcasted(Ok(receipt([
+        reply(&mut m, BroadcastMsg::Broadcasted(Ok(receipt([
             BroadcastOutcome::Started,
             BroadcastOutcome::Queued {
                 input_id: InputId::new(),
                 delivery: agent::Delivery::NextTurn,
             },
         ]))));
-        assert!(m.menu.is_none());
+        assert!(m.components.get::<BroadcastPanel>().unwrap().menu.is_none());
         let last = m.entries.iter().rev().find_map(|e| match e {
             Entry::Info(t) => Some(t.as_str()),
             _ => None,
@@ -2952,7 +2972,7 @@
 
     #[test]
     fn screen_event_replaces_tail() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let s = SessionId::new();
         m.session = Some(s);
         m.apply_agent(AgentEvent::ToolCallStarted {
@@ -2962,7 +2982,7 @@
             name: "start".into(),
             args: serde_json::json!({ "command": "python3 -q" }),
         });
-        m.apply(UiEvent::Job(JobEvent::Started {
+        m.apply(job_event(JobEvent::Started {
             session: s,
             id: tools::JobId("j1".into()),
             command: "python3 -q".into(),
@@ -2973,7 +2993,7 @@
             kind: tools::JobKind::Shell,
         }));
         let screen = |rows: &[&str]| {
-            UiEvent::Job(JobEvent::Screen {
+            job_event(JobEvent::Screen {
                 session: s,
                 id: tools::JobId("j1".into()),
                 rows: rows.iter().map(|r| (*r).to_owned()).collect(),
@@ -2981,13 +3001,7 @@
             })
         };
         let rows = |m: &Model| -> Vec<String> {
-            m.entries
-                .iter()
-                .find_map(|e| match e {
-                    Entry::Tool { job: Some(j), .. } => Some(j.rows().map(str::to_owned).collect()),
-                    _ => None,
-                })
-                .unwrap()
+            m.components.get::<Jobs>().unwrap().tail("c1").unwrap().rows().map(str::to_owned).collect()
         };
         m.apply(screen(&["Python 3.12", ">>> ", "", "   "]));
         assert_eq!(rows(&m), ["Python 3.12", ">>> "], "blank rows dropped");
@@ -3000,7 +3014,7 @@
         assert_eq!(got[0], "row 14");
         assert_eq!(got[JOB_LINES - 1], "row 23");
         // Another session's screen is not ours.
-        m.apply(UiEvent::Job(JobEvent::Screen {
+        m.apply(job_event(JobEvent::Screen {
             session: SessionId::new(),
             id: tools::JobId("j1".into()),
             rows: vec!["nope".into()],
@@ -3377,7 +3391,7 @@
     #[test]
     fn jobs_slash_args_and_status_count() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         m.submit("/jobs", &tx);
         assert!(rx.try_recv().is_err(), "no session");
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no session"));
@@ -3385,11 +3399,11 @@
         let s = SessionId::new();
         m.session = Some(s);
         m.submit("/jobs", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListJobs(session)) if session == s));
+        assert!(matches!(rx.try_recv().ok().and_then(|command| match command { Command::Component(effect) => effect.request::<crate::components::jobs::Request>().cloned(), _ => None }), Some(crate::components::jobs::Request::ListJobs(session)) if session == s));
         m.submit("/jobs kill j3", &tx);
         assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::CancelJob { session, id }) if session == s && id == "j3"
+            rx.try_recv().ok().and_then(|command| match command { Command::Component(effect) => effect.request::<crate::components::jobs::Request>().cloned(), _ => None }),
+            Some(crate::components::jobs::Request::CancelJob { session, id }) if session == s && id == "j3"
         ));
         for bad in ["/jobs foo", "/jobs kill"] {
             m.submit(bad, &tx);
@@ -3410,12 +3424,12 @@
             pty: false,
             kind: tools::JobKind::Shell,
         };
-        m.apply(UiEvent::Job(started(s, "j1")));
-        m.apply(UiEvent::Job(started(s, "j2")));
+        m.apply(job_event(started(s, "j1")));
+        m.apply(job_event(started(s, "j2")));
         // Another session's job does not count.
-        m.apply(UiEvent::Job(started(SessionId::new(), "j1")));
+        m.apply(job_event(started(SessionId::new(), "j1")));
         assert!(m.status().ends_with("2 job(s)"), "{}", m.status());
-        m.apply(UiEvent::Job(JobEvent::Finished {
+        m.apply(job_event(JobEvent::Finished {
             session: s,
             id: tools::JobId("j1".into()),
             command: "sleep 9".into(),
@@ -3440,7 +3454,7 @@
 
     #[test]
     fn shell_card_shows_the_job_tail_until_its_result_lands() {
-        let mut m = Model::default();
+        let mut m = Model::new(String::new(), false);
         let s = SessionId::new();
         m.session = Some(s);
         let turn = TurnId::new();
@@ -3454,16 +3468,10 @@
             });
         }
         let job = |m: &Model, c: &str| {
-            m.entries
-                .iter()
-                .find_map(|e| match e {
-                    Entry::Tool { call_id, job, .. } if call_id == c => Some(job.clone()),
-                    _ => None,
-                })
-                .unwrap()
+            m.components.get::<Jobs>().unwrap().tail(c).cloned()
         };
         let started = |id: &str, call: &str| {
-            UiEvent::Job(JobEvent::Started {
+            job_event(JobEvent::Started {
                 session: s,
                 id: tools::JobId(id.into()),
                 command: "make".into(),
@@ -3485,7 +3493,7 @@
             acc.push_str(&format!("\x1b[32mline {i}\x1b[0m\n"));
             acc
         });
-        m.apply(UiEvent::Job(JobEvent::Output {
+        m.apply(job_event(JobEvent::Output {
             session: s,
             id: tools::JobId("j2".into()),
             chunk: format!("{chunk}10%\r55%"),
@@ -3507,7 +3515,6 @@
             args: vec!["make".into()],
             result: None,
             expanded: None,
-            job: None,
             artifact: None,
         }
         .height(80);
@@ -3516,11 +3523,11 @@
             .iter()
             .find(|e| matches!(e, Entry::Tool { call_id, .. } if call_id == "c2"))
             .unwrap();
-        assert_eq!(tool.height(80), base + 1 + 10);
+        assert_eq!(m.entry_height(tool, 80), base + 1 + 10);
 
         // Finished within grace: the result carries the output, the block goes.
         let finished = |id: &str, inline: bool| {
-            UiEvent::Job(JobEvent::Finished {
+            job_event(JobEvent::Finished {
                 session: s,
                 id: tools::JobId(id.into()),
                 command: "make".into(),
@@ -6831,7 +6838,7 @@
         let mut v = TerminalView::new(&t, 7);
         assert!(matches!(
             v.poll(1000),
-            Some(Command::PtyScreen {
+            Some(TerminalRequest::PtyScreen {
                 epoch: 7,
                 if_revision: None,
                 ..
@@ -6866,7 +6873,7 @@
         };
         assert_eq!(v.viewport, hist);
         assert!(
-            matches!(v.poll(1100), Some(Command::PtyScreen { viewport, if_revision: None, .. }) if viewport == hist)
+            matches!(v.poll(1100), Some(TerminalRequest::PtyScreen { viewport, if_revision: None, .. }) if viewport == hist)
         );
         // `Unchanged` echoing the old viewport is not an answer: re-ask.
         assert!(!v.reply(
@@ -6931,6 +6938,12 @@
     fn terminal_interactive_forwards_keys_and_detaches() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        m.components.register(Terminals::default()).unwrap();
+        let key = |m: &mut Model, class, code, modifiers| {
+            let mut event = iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, code);
+            event.modifiers = modifiers;
+            m.component_key(class, &event)
+        };
         let s = SessionId::new();
         let t = TerminalSummary {
             session: s,
@@ -6953,19 +6966,20 @@
             1,
             Ok(PtyScreenReply::Updated(page(s, "j1", 1, live))),
         );
-        m.menu = Some(Menu::Terminal(Box::new(v)));
-        assert!(!m.terminal_interactive());
+        m.components.get_mut::<Terminals>().unwrap().menu = Some(TerminalMenu::Terminal(Box::new(v)));
+        m.mount_components(&tx);
+        assert!(!m.components.get::<Terminals>().unwrap().interactive());
         // Esc in view mode closes; `i` first.
-        m.menu_key(KeyCode::Char('i'), "", &tx);
-        assert!(m.terminal_interactive());
+        key(&mut m, FocusClass::Modal, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert!(m.components.get::<Terminals>().unwrap().interactive());
         while rx.try_recv().is_ok() {}
-        m.terminal_type(KeyCode::Char('c'), KeyModifiers::CONTROL, &tx);
-        m.terminal_type(KeyCode::Esc, KeyModifiers::NONE, &tx);
-        m.terminal_type(KeyCode::Char('x'), KeyModifiers::NONE, &tx);
-        m.terminal_type(KeyCode::Char('w'), KeyModifiers::SHIFT, &tx);
+        key(&mut m, FocusClass::Interactive, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        key(&mut m, FocusClass::Interactive, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut m, FocusClass::Interactive, KeyCode::Char('x'), KeyModifiers::NONE);
+        key(&mut m, FocusClass::Interactive, KeyCode::Char('w'), KeyModifiers::SHIFT);
         let mut sent = Vec::new();
-        while let Ok(c) = rx.try_recv() {
-            if let Command::PtyInput {
+        while let Ok(c) = component_request::<TerminalRequest>(&mut rx) {
+            if let TerminalRequest::PtyInput {
                 text, keys, job, ..
             } = c
             {
@@ -6982,7 +6996,7 @@
                 (Some("w".into()), vec![]),
             ]
         );
-        let Some(Menu::Terminal(v)) = &mut m.menu else {
+        let Some(TerminalMenu::Terminal(v)) = &mut m.components.get_mut::<Terminals>().unwrap().menu else {
             panic!()
         };
         assert!(v.interactive && v.inflight);
@@ -6994,11 +7008,11 @@
             "tight poll while typing"
         );
         // Ctrl-] detaches and sends nothing.
-        m.terminal_type(KeyCode::Char(']'), KeyModifiers::CONTROL, &tx);
-        assert!(!m.terminal_interactive());
+        key(&mut m, FocusClass::Interactive, KeyCode::Char(']'), KeyModifiers::CONTROL);
+        assert!(!m.components.get::<Terminals>().unwrap().interactive());
         assert!(rx.try_recv().is_err());
         // The job exits: `i` no longer enters, and an open typing mode drops.
-        let Some(Menu::Terminal(v)) = &mut m.menu else {
+        let Some(TerminalMenu::Terminal(v)) = &mut m.components.get_mut::<Terminals>().unwrap().menu else {
             panic!()
         };
         v.interactive = true;
@@ -7013,11 +7027,11 @@
             Ok(PtyScreenReply::Updated(exited)),
         );
         assert!(!v.interactive);
-        m.menu_key(KeyCode::Char('i'), "", &tx);
-        assert!(!m.terminal_interactive());
+        key(&mut m, FocusClass::Modal, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert!(!m.components.get::<Terminals>().unwrap().interactive());
         // Esc in view mode closes the overlay.
-        m.menu_key(KeyCode::Esc, "", &tx);
-        assert!(m.menu.is_none());
+        key(&mut m, FocusClass::Modal, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(m.components.get::<Terminals>().unwrap().menu.is_none());
     }
 
     /// 51 §4.3: leaving the owned tree for another root releases it once;

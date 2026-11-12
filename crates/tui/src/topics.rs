@@ -136,9 +136,6 @@ pub fn residual(event: &TopicEvent) -> Option<UiEvent> {
         Some("double.answered") => decode!(double::DoubleAnswered, DoubleAnswered),
         Some("tools.mcp-progress") => decode!(tools::McpProgress, McpProgress),
         Some("agent.login") => decode!(agent::LoginFinished, LoginFinished),
-        // The sole typed local exception sees kernels; never deliver both copies.
-        Some("tools.jobs") if matches!(event, TopicEvent::Local(_)) => None,
-        Some("tools.jobs") => decode!(tools::JobEvent, Job),
         Some("artifact.shown") => decode!(artifact::ArtifactShown, ArtifactShown),
         Some("secrets.events") => decode!(secrets::SecretsEvent, SecretsEvent),
         Some("knowledge.changed") => decode!(knowledge::KnowledgeChanged, KnowledgeChanged),
@@ -153,7 +150,7 @@ pub fn residual(event: &TopicEvent) -> Option<UiEvent> {
     }
 }
 
-fn legacy(value: &Value, local: bool) -> Option<UiEvent> {
+fn legacy(value: &Value, _local: bool) -> Option<UiEvent> {
     // Struct serde decoders do not validate their tag. Explicit tags avoid
     // swallowing unknown events (in particular the empty A2aChanged struct).
     macro_rules! tagged {
@@ -184,7 +181,6 @@ fn legacy(value: &Value, local: bool) -> Option<UiEvent> {
         };
     }
     owner!(agent::AgentEvent, Agent);
-    if !local { owner!(tools::JobEvent, Job); }
     owner!(secrets::SecretsEvent, SecretsEvent);
     owner!(voice::VoiceEvent, Voice);
     owner!(talk::TalkEvent, Talk);

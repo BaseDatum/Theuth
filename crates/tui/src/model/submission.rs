@@ -15,6 +15,7 @@ impl Model {
     }
 
     fn submit_with(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
+        self.component_commands = Some(tx.clone());
         self.component_reconcile_core_focus();
         let line = line.trim();
         // An empty note is an answer (keep / none); every other step waits for text.
@@ -199,7 +200,6 @@ impl Model {
                     send(tx, cmd);
                 }
             }
-            "/broadcast" => self.broadcast_cmd(arg, tx),
             "/agents" => match self.session {
                 Some(session) => {
                     self.agents_picker_pending = true;
@@ -213,20 +213,6 @@ impl Model {
                     .entries
                     .push(Entry::Info("this is the top-level session".into())),
             },
-            "/jobs" => match (self.session, arg.split_once(' ')) {
-                (None, _) => self.entries.push(Entry::Info("no session".into())),
-                (Some(session), None) if arg.is_empty() => send(tx, Command::ListJobs(session)),
-                (Some(session), Some(("kill", id))) if !id.trim().is_empty() => send(
-                    tx,
-                    Command::CancelJob {
-                        session,
-                        id: id.trim().to_owned(),
-                    },
-                ),
-                _ => self
-                    .entries
-                    .push(Entry::Error("usage: /jobs [kill <id>]".into())),
-            },
             "/project" => match (self.session, arg) {
                 (None, _) => self.entries.push(Entry::Info("no session".into())),
                 (Some(_), "") => self
@@ -239,10 +225,6 @@ impl Model {
                         project: (label != "off" && label != "clear").then(|| label.to_owned()),
                     },
                 ),
-            },
-            "/terminals" => match self.session {
-                Some(session) => send(tx, Command::ListTerminals(session)),
-                None => self.entries.push(Entry::Info("no session".into())),
             },
             "/apps" if !self.app_enabled => self.entries.push(Entry::Info(
                 "apps are off (app.enabled); /artifacts lists their sources".into(),

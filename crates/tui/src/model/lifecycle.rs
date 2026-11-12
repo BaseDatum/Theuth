@@ -34,7 +34,6 @@ impl Model {
             search: std::mem::take(&mut self.search),
             private: self.private.take(),
             private_warned: self.private_warned,
-            terminal_epoch: self.terminal_epoch,
             dictation: self.dictation.take(),
             dictation_pending: self.dictation_pending.take(),
             dictation_model: self.dictation_model.clone(),

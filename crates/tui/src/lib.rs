@@ -1,6 +1,6 @@
 //! Terminal UI: one topic intake, in-process or attached, feeding the same
 //! synchronous model/component loop. Commands use the current RPC engine.
-//! Only local jobs retain a typed subscriber, preserving kernel visibility.
+//! Local kernel-job visibility is owned by the jobs component's adapter.
 
 use std::io::{IsTerminal, Write};
 use std::sync::Arc;
@@ -11,20 +11,16 @@ use agent::{AgentConfig, AgentEvent, CompactStyle};
 use futures::future::BoxFuture;
 use jsonrpsee::core::client::Error as ClientError;
 use jsonrpsee::ws_client::WsClient;
-use kameo::Actor;
-use kameo::actor::Spawn;
-use kameo::message::{Context, Message};
 use rpc::api::clients::*;
 use rpc::client::{Engine, Local};
 use rpc::engine::{Host, Running};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{Decision, JobEvent, McpAuth};
+use tools::{Decision, McpAuth};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod attach;
-pub mod broadcast;
 mod clip;
 pub mod components;
 pub mod topics;
@@ -83,11 +79,7 @@ impl runtime::Plugin for TuiPlugin {
         // Take the ring cursor before any asynchronous initialization.
         let local_stream = self.attached.is_none().then(|| rpc::topics::local_stream(rt));
         let local_jobs = Arc::new(AtomicBool::new(self.attached.is_none()));
-        let bridge = JobsBridge::spawn_with_mailbox(
-            JobsBridge { tx: events_tx.clone(), local: local_jobs.clone() },
-            runtime::subscriber_mailbox(),
-        );
-        rt.subscribe::<JobsBridge, JobEvent>(&bridge).await;
+        components::jobs::subscribe(rt, events_tx.clone(), local_jobs.clone()).await;
         if let Some(stream) = local_stream {
             tokio::spawn(topics::local(rt.clone(), stream, events_tx.clone()));
         }
@@ -184,22 +176,6 @@ impl runtime::Plugin for TuiPlugin {
     }
 }
 
-/// The only typed intake exception: the external wire projector hides kernels.
-#[derive(Actor)]
-struct JobsBridge {
-    tx: UnboundedSender<UiEvent>,
-    local: Arc<AtomicBool>,
-}
-
-impl Message<JobEvent> for JobsBridge {
-    type Reply = ();
-    async fn handle(&mut self, event: JobEvent, _: &mut Context<Self, ()>) {
-        if self.local.load(Ordering::Acquire) {
-            let _ = self.tx.send(UiEvent::Job(event));
-        }
-    }
-}
-
 /// Attached mode's supervisor (63 §2.3 Disconnect): when the socket closes,
 /// take the lock and start the engine here, or — another client won — attach
 /// to the winner; three attempts, then a plain error. Every switch tells the
@@ -287,8 +263,7 @@ async fn run_commands(api: Api, mut rx: UnboundedReceiver<Command>, tx: Unbounde
         }
     });
     while let Some(cmd) = rx.recv().await {
-        if matches!(&cmd, Command::PtyInput { .. })
-            || matches!(&cmd, Command::Component(effect) if effect.lane == components::Lane::OrderedInput)
+        if matches!(&cmd, Command::Component(effect) if effect.lane == components::Lane::OrderedInput)
         {
             let _ = keys_tx.send(cmd);
             continue;
@@ -463,42 +438,12 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .await)?;
             return Ok(());
         }
-        Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(session).await)?),
         Command::SetSessionProject { session, project } => {
             msg(api.set_session_project(session, project.clone()).await)?;
             UiEvent::Info(match project {
                 Some(p) => format!("project: {p}"),
                 None => "project cleared".to_owned(),
             })
-        }
-        Command::ListTerminals(session) => {
-            UiEvent::Terminals(msg(api.list_terminals(session, Some(true)).await)?)
-        }
-        // Errors ride inside the reply so the observer knows its ask answered.
-        Command::PtyScreen {
-            session,
-            job,
-            viewport,
-            if_revision,
-            epoch,
-        } => UiEvent::PtyScreen {
-            session,
-            job: job.clone(),
-            viewport,
-            epoch,
-            reply: api
-                .pty_screen(session, job, viewport, if_revision)
-                .await
-                .map_err(reason),
-        },
-        Command::PtyInput {
-            session,
-            job,
-            text,
-            keys,
-        } => {
-            msg(api.pty_input(session, job, text, Some(keys)).await)?;
-            return Ok(());
         }
         Command::CreateSession(options) => {
             UiEvent::SessionOpened(msg(api.create_session(options).await)?)
@@ -510,10 +455,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::TakeSession(id) => {
             let o = msg(api.session_take(id, "user".into()).await)?;
             UiEvent::Info(format!("taking session here (epoch {})", o.epoch))
-        }
-        Command::CancelJob { session, id } => {
-            msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
-            UiEvent::Info(format!("killed {id}"))
         }
         Command::Compact { session, style } => {
             let epoch = msg(api.compact(session, style).await)?;
@@ -593,9 +534,6 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             api.path_complete(session, input, cursor, None).await.ok(),
         ),
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
-        Command::ListActivity => UiEvent::Activity(msg(api.list_activity().await)?),
-        // The menu shows the refusal on its error line; not an `Error` entry.
-        Command::Broadcast(req) => UiEvent::Broadcasted(api.broadcast(req).await.map_err(reason)),
         // A failed read must not leave the card looking current: the plan is
         // marked stale first, then the error line explains why (47 §5.4).
         Command::GetTodos(session) => match msg(api.get_todos(session).await) {
@@ -1634,8 +1572,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             Some(e) => writeln!(out, "login: {} failed: {e}", f.provider),
         },
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
-        UiEvent::Jobs(jobs) => writeln!(out, "{}", tools::jobs::table(jobs)),
-        UiEvent::Job(_) => Ok(()),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         // The `Error` line that follows names the failure; there is no editor to refill.
         UiEvent::Unsent { .. } => Ok(()),
@@ -1786,23 +1722,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 model::short(a.id)
             )
         }),
-        UiEvent::Activity(list) => list.iter().try_for_each(|a| {
-            writeln!(
-                out,
-                "{}{}  {}  j{} p{}  {}  {}",
-                "  ".repeat(usize::from(a.depth)),
-                a.name,
-                a.activity.state.word(),
-                a.activity.jobs,
-                a.activity.ptys,
-                broadcast::age(a.activity.last_active),
-                model::short(a.id)
-            )
-        }),
-        UiEvent::Broadcasted(Err(e)) => writeln!(out, "broadcast: {e}"),
-        UiEvent::Broadcasted(Ok(r)) => broadcast::result_lines(r)
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}")),
         UiEvent::History(_, loaded) => print_history(out, loaded),
         // A busy session's settled reload is refused (48 §5); the model
         // keeps what it shows and says so.
@@ -1960,36 +1879,6 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::CommunicationChanged(_)
         | UiEvent::PeerMessageChanged(_)
         | UiEvent::A2aChanged(_) => Ok(()),
-        UiEvent::Terminals(list) if list.is_empty() => {
-            writeln!(out, "no terminals in this session's tree")
-        }
-        UiEvent::Terminals(list) => list
-            .iter()
-            .try_for_each(|t| writeln!(out, "{}", model::terminal_row(t))),
-        // The observer needs a TTY; a page that lands here prints its text rows.
-        UiEvent::PtyScreen {
-            reply: Ok(tools::PtyScreenReply::Updated(p)),
-            ..
-        } => p.lines.iter().try_for_each(|row| {
-            let text: String = row
-                .iter()
-                .flat_map(|r| r.cells.iter())
-                .filter(|c| !c.continuation)
-                .map(|c| c.text.as_str())
-                .collect();
-            writeln!(out, "{}", text.trim_end())
-        }),
-        UiEvent::PtyScreen {
-            reply: Ok(tools::PtyScreenReply::Unavailable),
-            ..
-        } => {
-            writeln!(out, "No longer available.")
-        }
-        UiEvent::PtyScreen {
-            reply: Ok(tools::PtyScreenReply::Unchanged { .. }),
-            ..
-        } => Ok(()),
-        UiEvent::PtyScreen { reply: Err(e), .. } => writeln!(out, "terminal: {e}"),
         UiEvent::SessionOpened(o) => writeln!(
             out,
             "session {}{}",

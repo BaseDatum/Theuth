@@ -23,6 +23,9 @@ pub fn builtin() -> Registry {
     registry.register(web_progress::WebProgress::default()).expect("built-in component registration");
 
     // Step-11 group t3 (jobs, terminals, speech and search): register below, in this block only.
+    registry.register(jobs::Jobs::default()).expect("built-in component registration");
+    registry.register(terminals::Terminals::default()).expect("built-in component registration");
+    registry.register(broadcast::BroadcastPanel::default()).expect("built-in component registration");
 
     // Model-picker panels (after design 194): register below, in this block only.
     registry
@@ -195,27 +198,31 @@ impl Registry {
     /// Dispatch at one fixed precedence boundary, stopping after consumption.
     pub fn key(&mut self, class: FocusClass, key: &KeyEvent, core: &CoreView<'_>) -> Outbox {
         let mut out = Outbox::default();
-        if let Some((token, focused_class)) = self.focus {
-            if class == focused_class {
-                if let Some(component) = &mut self.slots[token.slot].component {
-                    component.input(Input::Key(key), core, token, self.epoch, &mut out);
-                }
-                self.finish(&mut out, core);
-                return out;
-            }
-            if (focused_class == FocusClass::Modal || self.editor().is_some())
+        // Intrinsic capture precedes exclusive focus and declared chords.
+        let blocked = self.focus.is_some_and(|(_, focused_class)| {
+            class != focused_class
+                && (focused_class == FocusClass::Modal || self.editor().is_some())
                 && !matches!(class, FocusClass::Interactive | FocusClass::Spoken)
-            { return out; }
-        }
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            let token = ComponentToken { slot: index, generation: slot.generation };
-            if let Some(component) = &mut slot.component {
-                let bound = component.declaration().bindings.iter().any(|binding|
-                    binding.class == class && binding.code == key.code && binding.modifiers == key.modifiers
-                );
-                if bound { component.input(Input::Key(key), core, token, self.epoch, &mut out); }
-                if out.consumed { break; }
+        });
+        'delivery: for pass in 0..3 {
+            if pass == 1 && blocked { break; }
+            for (index, slot) in self.slots.iter_mut().enumerate() {
+                let token = ComponentToken { slot: index, generation: slot.generation };
+                if let Some(component) = &mut slot.component {
+                    let capture = component.captures(class);
+                    let focused = self.focus == Some((token, class));
+                    let selected = match pass {
+                        0 => capture,
+                        1 => !capture && focused,
+                        _ => !capture && !focused && component.declaration().bindings.iter().any(|binding|
+                            binding.class == class && binding.code == key.code && binding.modifiers == key.modifiers
+                        ),
+                    };
+                    if selected { component.input(Input::Key(key), core, token, self.epoch, &mut out); }
+                    if out.consumed { break 'delivery; }
+                }
             }
+            if pass == 1 && self.focus.is_some_and(|(_, focused)| focused == class) { break; }
         }
         self.finish(&mut out, core);
         out
@@ -272,6 +279,7 @@ impl Registry {
     pub fn get<C: Component>(&self) -> Option<&C> {
         self.slots.iter().filter_map(|slot| slot.component.as_ref()).find_map(|component| component.as_any().downcast_ref())
     }
+    /// Mechanical fixture rebinding only; production components cannot mutate peers.
     #[cfg(test)]
     pub(crate) fn get_mut<C: Component>(&mut self) -> Option<&mut C> {
         self.slots.iter_mut().filter_map(|slot| slot.component.as_mut()).find_map(|component| component.as_any_mut().downcast_mut())

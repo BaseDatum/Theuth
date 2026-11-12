@@ -15,7 +15,7 @@ use crate::dictation::{self, Dictating, Phase};
 use crate::components::{FocusClass, Lifecycle, Surface};
 use crate::model::{
     ADVISORY_COLLAPSED, Grouped, ModelRow, PickTarget, advisory_rows, advisory_severity,
-    advisory_title, providers, session_row, severity_name, terminal_row,
+    advisory_title, providers, session_row, severity_name,
 };
 use crate::model::{
     APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
@@ -70,11 +70,11 @@ const fn rgb(hex: u32) -> Color {
 /// Highlighted rows, focused labels.
 const BONE: Color = rgb(0xE8DCC8);
 /// Secondary text.
-const BONE_DIM: Color = rgb(0xC9B89A);
+pub(crate) const BONE_DIM: Color = rgb(0xC9B89A);
 /// Tertiary text, hints, quiet borders.
 pub(crate) const SAND: Color = rgb(0x9A8B72);
 /// Accent: focus borders, headings, hints, the human's turn.
-const OCHRE: Color = rgb(0xC47A2C);
+pub(crate) const OCHRE: Color = rgb(0xC47A2C);
 /// Success / done.
 const MALACHITE: Color = rgb(0x4A8A6E);
 /// Info / agent state: tools, peers, asks.
@@ -204,7 +204,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 // poll (51 §7.3) wakes an idle loop.
                 let now = now_ms();
                 let due = model.read().search_wake().is_some_and(|t| t <= now)
-                    || model.read().terminal_wake().is_some_and(|t| t <= now)
                     || model.read().path.wake().is_some_and(|t| t <= now)
                     || model.read().suggestion_wake().is_some_and(|t| t <= now);
                 let due = due || model.read().components.wake().is_some_and(|at| at <= now);
@@ -221,7 +220,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     m.tick();
                 }
                 m.search_tick(now, &commands);
-                m.terminal_tick(now, &commands);
                 m.component_tick(now);
                 let session = m.session;
                 m.path.tick(now, session, &commands);
@@ -337,23 +335,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 && key.kind != KeyEventKind::Release
                 && m.component_key(FocusClass::Interactive, key)
             { return; }
-            // 55 §3: the keyboard belongs to the program in the open terminal,
-            // Ctrl-C included; only Ctrl-] comes back here.
-            if m.terminal_interactive() {
-                match event {
-                    TerminalEvent::Key(KeyEvent {
-                        code,
-                        kind,
-                        modifiers,
-                        ..
-                    }) if kind != KeyEventKind::Release => {
-                        m.terminal_type(code, modifiers, &commands);
-                    }
-                    TerminalEvent::BracketedPaste(text) => m.terminal_paste(text, &commands),
-                    _ => {}
-                }
-                return;
-            }
             let TerminalEvent::Key(key) = event
             else {
                 if let TerminalEvent::BracketedPaste(text) = event {
@@ -766,7 +747,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 search_box(&m, model, search_handle, width, budget)
             })
         })
-        .or_else(|| terminal_box(&m, width, height))
         .or_else(|| menu(&m, &input.read(), width, height))
         .or_else(|| component_slot(&m, Surface::Modal, width, height).element());
     // A secret's value (or a provider's key) shows as dots.
@@ -794,7 +774,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let entries = m.entries[win.from..win.to]
         .iter()
         .enumerate()
-        .map(|(i, e)| entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, m.entry_summary(e)));
+        .map(|(i, e)| {
+            let decorations = match e {
+                Entry::Tool { call_id, artifact: None, .. } => m.component_views(Surface::Entry { key: call_id, skipped: 0 }, usize::from(width), 0),
+                _ => Vec::new(),
+            };
+            entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width, decorations, m.entry_summary(e))
+        });
     let transcript = if let (true, Some(t)) = (m.talk_view, &m.talk) {
         talk_pane(t, m.frame, width, view)
     } else if m.anchor.is_some() {
@@ -1457,7 +1443,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             *cursor,
         ),
         Menu::Shake(s) => (s.title(), s.rows(), s.cursor),
-        Menu::Broadcast(b) => (b.title(), b.rows(m.spinner()), b.cursor),
         Menu::Peers { cursor, .. } => (
             m.peers_title(),
             m.peers_rows().iter().map(|r| r.line()).collect(),
@@ -1473,13 +1458,6 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             *cursor,
         ),
         Menu::KnowledgeHistory { .. } => m.knowledge_history_menu(),
-        Menu::Terminals { items, cursor } => (
-            "terminals  ⏎ observe (read-only)  r refresh  esc close".to_owned(),
-            items.iter().map(terminal_row).collect(),
-            *cursor,
-        ),
-        // Drawn by `terminal_box`, never here.
-        Menu::Terminal(_) => return None,
     };
     // Diffs get the screen minus the frame around the box; lists stay short.
     let tall = matches!(
@@ -1560,123 +1538,6 @@ fn path_box(m: &Model, width: u16) -> Option<AnyElement<'static>> {
     )
 }
 
-/// The `/terminals` observer (51 §7.4): the page's cells as styled text
-/// runs, the cursor cell inverted, `col` leading columns panned off, then a
-/// status row for what the page cannot show. Attributes the toolkit lacks
-/// (background colour) drop; the redacted text is the same either way.
-fn terminal_box(m: &Model, width: u16, height: u16) -> Option<AnyElement<'static>> {
-    let Some(Menu::Terminal(v)) = &m.menu else {
-        return None;
-    };
-    let dim = SAND;
-    // Border 2 + padding 2; rows stay one cell short so taffy never wraps them.
-    let inner = usize::from(width).saturating_sub(5).max(8);
-    // Border, title and status around the page; the page gets the rest of the screen.
-    let budget = usize::from(height).saturating_sub(10).max(5);
-    let mut body: Vec<AnyElement<'static>> = Vec::new();
-    match &v.page {
-        None => body.push(
-            element!(Text(content: if v.unavailable { "" } else { "loading…" }, color: dim))
-                .into_any(),
-        ),
-        Some(p) => {
-            for (r, row) in p.lines.iter().take(budget).enumerate() {
-                let cursor = p
-                    .cursor
-                    .filter(|(cr, _)| usize::from(*cr) == r)
-                    .map(|(_, c)| usize::from(c));
-                body.push(terminal_line(row, v.col, inner, cursor));
-            }
-        }
-    }
-    let status = v.status();
-    let title = search::fit(&v.title(), inner);
-    Some(
-        element! {
-            View(border_style: BorderStyle::Round, border_color: OCHRE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1, width) {
-                Text(content: title, color: dim, wrap: TextWrap::NoWrap)
-                #(body)
-                #(status.map(|s| element!(Text(content: search::fit(&s, inner), color: OCHRE, wrap: TextWrap::NoWrap))))
-            }
-        }
-        .into_any(),
-    )
-}
-
-/// One page row: cells from column `skip` on, at most `fit` columns, each
-/// run's style mapped to the toolkit's; the cursor column inverted.
-fn terminal_line(
-    row: &[tools::StyledRun],
-    skip: usize,
-    fit: usize,
-    cursor: Option<usize>,
-) -> AnyElement<'static> {
-    let mut contents: Vec<MixedTextContent> = Vec::new();
-    let mut col = 0usize;
-    for run in row {
-        let mut text = String::new();
-        for cell in &run.cells {
-            let here = col;
-            col += 1;
-            if here < skip || here >= skip + fit {
-                continue;
-            }
-            // A wide glyph cut in half by the pan shows as a blank column.
-            if cell.continuation && here == skip {
-                text.push(' ');
-                continue;
-            }
-            if cursor == Some(here) {
-                if !text.is_empty() {
-                    contents.push(styled(
-                        &run.style,
-                        MixedTextContent::new(std::mem::take(&mut text)),
-                    ));
-                }
-                let glyph = if cell.text.is_empty() {
-                    " "
-                } else {
-                    cell.text.as_str()
-                };
-                contents.push(styled(&run.style, MixedTextContent::new(glyph)).invert());
-                continue;
-            }
-            text.push_str(&cell.text);
-        }
-        if !text.is_empty() {
-            contents.push(styled(&run.style, MixedTextContent::new(text)));
-        }
-    }
-    if contents.is_empty() {
-        contents.push(MixedTextContent::new(" "));
-    }
-    element!(MixedText(contents, wrap: TextWrap::NoWrap)).into_any()
-}
-
-/// A PTY cell style on a text run: foreground colour, weight, italic,
-/// underline, inverse. Background colour has no toolkit counterpart.
-fn styled(s: &tools::Style, mut c: MixedTextContent) -> MixedTextContent {
-    match s.fg {
-        tools::Color::Default => {}
-        tools::Color::Idx { idx } => c = c.color(Color::AnsiValue(idx)),
-        tools::Color::Rgb { r, g, b } => c = c.color(Color::Rgb { r, g, b }),
-    }
-    if s.bold {
-        c = c.weight(Weight::Bold);
-    } else if s.dim {
-        c = c.weight(Weight::Light);
-    }
-    if s.italic {
-        c = c.italic();
-    }
-    if s.underline {
-        c = c.decoration(TextDecoration::Underline);
-    }
-    if s.inverse {
-        c = c.invert();
-    }
-    c
-}
 
 /// Rows the transcript pane gets: the terminal minus everything drawn
 /// around it (header, status, editor box, prompt line, activity row, queued
@@ -2009,7 +1870,7 @@ fn queued_text(text: &str) -> String {
 
 /// One transcript entry. `skip` drops that many leading rendered lines of a
 /// reply (`Model::window`): the part that cannot reach the screen.
-fn entry(e: &Entry, spinner: &str, skip: usize, width: u16, summary: Option<String>) -> AnyElement<'static> {
+fn entry(e: &Entry, spinner: &str, skip: usize, _width: u16, decorations: Vec<crate::components::View>, summary: Option<String>) -> AnyElement<'static> {
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
         // A live-talk utterance shows its `[spoken, N s]` marker as a muted tag line.
@@ -2162,20 +2023,8 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16, summary: Option<Stri
             args,
             result,
             expanded,
-            job,
             ..
         } => {
-            // Live job output: rows clipped, not wrapped, so the block never
-            // grows past `JOB_LINES` (border 2 + padding 2, then one less).
-            let fit = usize::from(width).saturating_sub(5);
-            let job = job.as_ref().map(|j| {
-                element! {
-                    View(flex_direction: FlexDirection::Column, margin_top: 1) {
-                        Text(content: j.header(), color: SAND, italic: true, wrap: TextWrap::NoWrap)
-                        #(j.rows().map(|l| element!(Text(content: l.chars().take(fit).collect::<String>(), color: BONE_DIM, wrap: TextWrap::NoWrap))))
-                    }
-                }
-            });
             let summary = match result {
                 None => (
                     format!("{spinner} {}", summary.as_deref().unwrap_or("running…")),
@@ -2202,7 +2051,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16, summary: Option<Stri
                     #(expanded.as_ref().map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
                         #(t.view().lines().map(line))
                     })))
-                    #(job)
+                    #(decorations.into_iter().filter_map(|view| match view { crate::components::View::Element { element, .. } => Some(element), _ => None }))
                 }
             }
             .into_any()
@@ -2622,7 +2471,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width, None)))
+                        #(Some(entry(&e, "⠋", 0, width, Vec::new(), None)))
                     }
                 }
                 .to_string();
@@ -2679,7 +2528,7 @@ mod tests {
             ] {
                 let frame = element! {
                     View(flex_direction: FlexDirection::Column, width, height: 20u16) {
-                        #(Some(entry(&e, "⠋", 0, width, None)))
+                        #(Some(entry(&e, "⠋", 0, width, Vec::new(), None)))
                     }
                 }
                 .to_string();
@@ -2913,7 +2762,7 @@ mod tests {
         };
         let frame = element! {
             View(flex_direction: FlexDirection::Column, width: 60u16) {
-                #(entry(&e, "", 0, 60, None))
+                #(entry(&e, "", 0, 60, Vec::new(), None))
             }
         }
         .to_string();
@@ -2937,7 +2786,7 @@ mod tests {
             };
             element! {
                 View(flex_direction: FlexDirection::Column, width: 60u16) {
-                    #(entry(&e, "", 0, 60, None))
+                    #(entry(&e, "", 0, 60, Vec::new(), None))
                 }
             }
             .to_string()
@@ -2967,7 +2816,7 @@ mod tests {
             let e = Entry::Divider(label.into());
             let frame = element! {
                 View(flex_direction: FlexDirection::Column, width: 60u16) {
-                    #(entry(&e, "", 0, 60, None))
+                    #(entry(&e, "", 0, 60, Vec::new(), None))
                 }
             }
             .to_string();
