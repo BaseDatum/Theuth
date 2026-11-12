@@ -122,13 +122,9 @@ test('contextLabel: thousands, empty when unknown', () => {
   expect(contextLabel(0)).toBe('')
 })
 
-test('177 U4: local models and their providers carry the "local" tag; `localFirst` (summary pickers) lists local providers and local search hits first', () => {
+test('177 U4: local models and their providers carry the "local" tag; 194 D5: one ordering for every picker, local providers in their alphabetical place', () => {
   const local = [...models, model('mlx', 'mlx/LFM3-1.7B-MLX-bf16', 'LFM3 1.7B', { local: true }), model('ollama', 'ollama/gpt-oss:20b', 'gpt-oss 20B', { local: true })]
   expect(values(viewFor({ models: local, model: undefined, provider: null, query: '' }))).toEqual(['provider:anthropic', 'provider:mlx', 'provider:ollama', 'provider:openai'])
-  expect(values(viewFor({ models: local, model: undefined, provider: null, query: '', localFirst: true }))).toEqual(['provider:mlx', 'provider:ollama', 'provider:anthropic', 'provider:openai'])
-  const hits = (localFirst: boolean) => values(viewFor({ models: local, model: undefined, provider: null, query: 'gpt', localFirst }))
-  expect(hits(true)[0]).toBe('model:ollama/gpt-oss:20b')
-  expect(hits(true).slice(1).sort()).toEqual(hits(false).filter((v) => v !== 'model:ollama/gpt-oss:20b').sort())
   // An `extra` (stale on-file) id is never local.
   expect(withExtra([], ['x/gone'])[0]!.local).toBe(false)
   const tags = (html: string) => html.match(/>local</g)?.length ?? 0
