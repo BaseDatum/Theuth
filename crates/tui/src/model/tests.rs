@@ -6286,6 +6286,36 @@
     }
 
     #[test]
+    fn entry_open_uses_the_latest_owned_call_and_yields_after_a_user_turn() {
+        let session = SessionId::new();
+        let path = std::path::PathBuf::from("/missing-theuth-wire-open.md");
+        let (tx, mut rx) = unbounded_channel();
+        let mut model = Model::new(String::new(), false);
+        model.session = Some(session);
+        model.component_commands = Some(tx);
+        let tool = |id: &str, name: &str| Entry::Tool {
+            call_id: id.into(), name: name.into(), args: Vec::new(),
+            result: Some(("done".into(), false)), expanded: None,
+        };
+        model.entries = vec![tool("shown", "show"), tool("unclaimed", "shell")];
+        model.apply(wire_event("artifact.shown", artifact::ArtifactShown {
+            session, call_id: "shown".into(),
+            artifact: artifact::Artifact {
+                id: "owned".into(), session, call_id: "shown".into(),
+                name: "note.md".into(), title: "note.md".into(), kind: artifact::Kind::Markdown,
+                mime: "text/markdown".into(), bytes: 4, version: 1, path: path.clone(),
+                source: None, preview: None, pages: None, origin: None, created_at: 0,
+            },
+        }));
+        assert!(model.component_open_latest_entry());
+        assert!(matches!(component_request::<ArtifactRequest>(&mut rx), Ok(ArtifactRequest::OpenPath(opened)) if opened == path));
+        model.entries.push(Entry::User { text: "next turn".into(), turn: None });
+        model.entries.push(tool("next-unclaimed", "shell"));
+        assert!(!model.component_open_latest_entry());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn unclaimed_tool_toggle_keeps_generic_output_and_skips_unfinished_calls() {
         let mut model = Model::new(String::new(), false);
         model.entries = vec![
