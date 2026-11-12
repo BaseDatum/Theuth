@@ -10,7 +10,7 @@ use std::sync::Arc;
 use agent::{CreateSessionOptions, DurableStore, PinTitle, SessionOpen, UnloadSession};
 use kameo::actor::ActorRef;
 use rpc::into_rpc_module;
-use rpc::api::Server;
+use rpc_core::Server;
 use runtime::{Runtime, SessionId};
 use tools::{HiddenTools, ListTools, RestoreHidden, ToolRegistry};
 
@@ -58,7 +58,7 @@ async fn hides_survive_an_actor_restart_and_unhide_clears_them() {
     .unwrap();
 
     let (peer, _guard) = rpc_core::RpcPeer::open();
-    let mut api: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+    let mut api: jsonrpsee::Methods = into_rpc_module(rpc::new_server(rt)).into();
     api.extensions_mut().insert(peer);
     let open: SessionOpen = api
         .call("create_session", (CreateSessionOptions::default(),))

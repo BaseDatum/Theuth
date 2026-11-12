@@ -21,7 +21,8 @@ use jsonrpsee::types::ErrorObjectOwned;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::api::Server;
+use rpc_core::Server;
+use crate::api::RpcServerExt;
 use rpc_core::{NOT_RUNNING, UNAUTHORIZED};
 
 #[path = "cells_guard.rs"]
@@ -646,7 +647,7 @@ mod tests {
 
     fn server() -> Server {
         let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        Server::new(rt)
+        crate::new_server(rt)
     }
 
     fn with(peer: rpc_core::RpcPeer) -> Extensions {

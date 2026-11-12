@@ -22,6 +22,7 @@ pub const BACKLOG: usize = 8192;
 /// What one `subscribe_events` stream shares between its ring reader and its
 /// sink writer; locked per statement, never across an await.
 pub struct Stream {
+    /// Pending frames, merged and bounded by this stream.
     pub backlog: Backlog,
     /// Descendants-mode tree; `wanted` enrols spawned children into it.
     pub tree: Option<HashSet<String>>,
@@ -50,13 +51,16 @@ pub struct Backlog {
 
 /// What the sink writer does next.
 pub enum Next {
+    /// Emit one shared frame.
     Frame(Event),
+    /// Emit the number of discarded non-delta frames.
     Lagged(u64),
     /// Nothing due: wake on the next push, or at the instant.
     Wait(Option<Instant>),
 }
 
 impl Backlog {
+    /// Enqueue a frame, preserving per-session order and bounded controls.
     pub fn push(&mut self, ev: Event, now: Instant) {
         if !is_delta(&ev) {
             if self.control == BACKLOG {
@@ -99,6 +103,7 @@ impl Backlog {
         self.frames.push_back(ev);
     }
 
+    /// Select the next frame or its next wake deadline.
     pub fn next(&mut self, now: Instant) -> Next {
         if self.lost > 0 {
             return Next::Lagged(std::mem::take(&mut self.lost));

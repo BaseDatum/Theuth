@@ -7,7 +7,8 @@ use std::time::Duration;
 use jsonrpsee::core::server::Subscription;
 use kameo::actor::Spawn;
 use rpc::into_rpc_module;
-use rpc::api::{PendingPrompts, Server};
+use rpc::api::PendingPrompts;
+use rpc_core::Server;
 use runtime::{Runtime, SessionId};
 use tools::{Approval, AskUser, Decision};
 

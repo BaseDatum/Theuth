@@ -189,6 +189,23 @@ its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
 agent needed `tools` anyway for the registry actor type.)
 
+The wire-layer extraction adds `rpc-core` below method owners: its only normal
+workspace dependency is `runtime`. It owns `Server`, connection identity
+(`RpcPeer`, `Guest`, `Client`, `ConnId`), original-actor follow leases, the
+shared event-feed item and unchanged stream backlog, and actor/error helpers.
+It contains no plugin registration, domain RPC traits, sessions registry calls
+or artifact operations. Every domain implements its server trait on this one
+`Server`; clones share all six handles. New servers share only process-wide,
+insert-only private-tree membership; focus, seen and follow maps remain local.
+
+`rpc::new_server` installs plugin hooks before constructing the pure state.
+`agent::rpc_forward` owns forwarding; five immutable hooks read current
+session/artifact registries on each call, never a runtime captured at first
+installation. Method assembly is an explicit `rpc_core::ModuleFactory` function
+pointer, supplied by `main` and threaded through socket, Noise, mesh, ACP,
+`Local` and attached-TUI takeover paths. Transports never silently choose the
+aggregate factory; domain bodies and wire names remain unchanged.
+
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
 every UI consumes the whole stream with one subscription and one `match`.
@@ -574,7 +591,7 @@ webview story without grpc-web).
 
 **Second in-process consumer.** The `link` plugin (31) dispatches each
 decrypted device request into the same `jsonrpsee::Methods` the socket
-serves, through `Methods::raw_json_request` (`rpc::methods(rt)` builds it;
+serves, through `Methods::raw_json_request` (`rpc::methods(rt, module)` builds it;
 `crates/link/src/conn.rs`) — no loopback socket, no token, no second
 serialization. So `rpc::bridge::start` is idempotent: the one `Bridge` per
 process is registered as `"rpc.events"` and looked up before it is spawned.

@@ -7,12 +7,12 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::LazyLock;
-use std::time::Duration;
+
 
 use ::search::SearchCategory;
 use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
 use agent::SetModelFavorite;
+use agent::context::save_blob;
 use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
 use agent::todo::TodoSnapshot;
 use agent::{
@@ -75,7 +75,7 @@ use link::{
     CancelPair, Enable, LinkConfig, LinkStatus, Pair, Pairing, Rename,
     RenameDevice, Revoke,
 };
-use parking_lot::RwLock;
+
 use runtime::{InputId, Runtime, SessionId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -101,11 +101,12 @@ use tools::{LiveCounts, LiveCountsRow};
 use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
 
-use rpc_core::Event;
+#[cfg(test)]
+use rpc_core::{Event, FocusMap, BACKLOG};
 use agent::rpc_forward as forward;
 use crate::pathac::PathCompletion;
 use crate::search::SearchResponse;
-use rpc_core::{is_delta, Stream, Backlog, Next, BACKLOG, ask, send, lookup, failed, peer, owner, dreaming_err, stub_err, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
+use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, lookup, failed, peer, owner, dreaming_err, stub_err, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
 use agent::rpc_support::owner_root;
 use link::rpc_support::{link, mint_as_holder};
 use mesh::rpc_support::mesh_actor;
@@ -462,81 +463,14 @@ pub struct ConfigFlag {
     pub restart_required: bool,
 }
 
-/// Members of private trees this process knows: `member → (root, owner
-/// peer)`. The event filter drops any event naming a member for every peer
-/// but its owner (51 §4.2). Insert-only: broadcast fan-out hands every
-/// subscription task the same event in no fixed order, so removing an entry
-/// on `SessionDeleted` / leave would let the *next* task pass that event to a
-/// non-owner; ids are UUIDs and never reused, so a dead entry is harmless.
-/// One per process so the TUI's in-process `Server` and `serve`'s share it.
-pub type PrivateMap = Arc<RwLock<HashMap<SessionId, (SessionId, u64)>>>;
+use rpc_core::{Server, PrivateMap};
 
-static PRIVATE: LazyLock<PrivateMap> = LazyLock::new(Default::default);
-
-/// 129 §3.2: `connection id → sessions` whose delta-class events the connection
-/// wants, as the strings the serialized `session` field carries. No entry means
-/// everything; the entry is removed when the connection closes.
-pub type FocusMap = Arc<RwLock<HashMap<u64, Arc<HashSet<String>>>>>;
-
-/// 155 §7.5: `connection id → finished alert ids` this connection has seen
-/// (it focused the item's session after the finish). Dropped with the
-/// connection like [`FocusMap`]; `attention_list` blanks seen `finished`
-/// alerts for that connection only.
-pub type SeenMap = Arc<RwLock<HashMap<u64, HashSet<String>>>>;
-
-/// 183 §5.1: `connection id → focused sessions` with the relay's follow guard
-/// held for each (a session owned elsewhere streams while focused). Dropped
-/// with the focus and with the connection.
-pub type FollowMap =
-    Arc<parking_lot::Mutex<HashMap<u64, HashMap<SessionId, rpc_core::Following>>>>;
-
-/// Server state: the event feed and the runtime (for `shutdown`).
-#[derive(Clone)]
-pub struct Server {
-    /// Feed from [`crate::bridge`].
-    pub events: broadcast::Sender<Event>,
-    /// `rt.shutdown` is cancelled by `shutdown`.
-    pub rt: Runtime,
-    /// Private-tree membership for admission of events; see [`PrivateMap`].
-    pub private: PrivateMap,
-    /// Per-connection delta focus; see [`FocusMap`].
-    pub focus: FocusMap,
-    /// Per-connection finished-seen set; see [`SeenMap`].
-    pub seen: SeenMap,
-    /// Per-connection follow guards of focused sessions; see [`FollowMap`].
-    pub follows: FollowMap,
+pub(super) trait DreamConfigExt {
+    fn double_config(&self) -> double::DoubleConfig;
+    fn dreaming_config(&self) -> dreaming::DreamConfig;
 }
 
-impl Server {
-    /// A server with no event feed: for in-process callers (the TUI), which
-    /// subscribe to the bus themselves. `serve` builds the real one.
-    pub fn new(rt: Runtime) -> Self {
-        crate::install_forward_hooks();
-        install_insight_hooks(&rt);
-        Self {
-            events: broadcast::channel(1).0,
-            rt,
-            private: PRIVATE.clone(),
-            focus: Default::default(),
-            seen: Default::default(),
-            follows: Default::default(),
-        }
-    }
-
-    /// 129 §3 / 155 §7.5 / 183 §5.1: drop the connection's focus, seen and
-    /// follow entries when it closes. A second waiter for the same peer (a
-    /// map was fresh) removes nothing new; one spawned after the close
-    /// removes at once.
-    fn forget_on_close(&self, peer: rpc_core::RpcPeer) {
-        let (focus, seen, follows) = (self.focus.clone(), self.seen.clone(), self.follows.clone());
-        tokio::spawn(async move {
-            peer.closed().await;
-            focus.write().remove(&peer.id());
-            seen.write().remove(&peer.id());
-            follows.lock().remove(&peer.id());
-        });
-    }
-
+impl DreamConfigExt for Server {
     /// The `double:` section as read at start (126 §12); defaults when absent.
     fn double_config(&self) -> double::DoubleConfig {
         self.rt.section("double").unwrap_or_default()
@@ -547,11 +481,25 @@ impl Server {
         self.rt.section("dreaming").unwrap_or_default()
     }
 
+}
+
+pub(super) trait ResearchConfigExt {
+    fn autoresearch_config(&self) -> autoresearch::AutoresearchConfig;
+}
+
+impl ResearchConfigExt for Server {
     /// The `autoresearch:` section as read at start (140 §12.2); defaults when absent.
     fn autoresearch_config(&self) -> autoresearch::AutoresearchConfig {
         self.rt.section("autoresearch").unwrap_or_default()
     }
 
+}
+
+pub(super) trait SpeechConfigExt {
+    fn write_voice_config(&self, key: &[&str], value: &str) -> RpcResult<()>;
+}
+
+impl SpeechConfigExt for Server {
     /// 153 §14.3: persist `voice.<key>` (one or two levels; the value is YAML flow syntax).
     fn write_voice_config(&self, key: &[&str], value: &str) -> RpcResult<()> {
         let path = self.rt.data_dir.join("config.yaml");
@@ -563,6 +511,13 @@ impl Server {
         .map_err(|e| failed(format!("config.yaml: {e}")))
     }
 
+}
+
+pub(super) trait SettingsConfigExt {
+    fn config_flag(&self, key: ConfigFlagKey) -> ConfigFlag;
+}
+
+impl SettingsConfigExt for Server {
     /// 188: `key` in config.yaml now (read fresh) and in the boot config (never re-read).
     fn config_flag(&self, key: ConfigFlagKey) -> ConfigFlag {
         use figment::providers::{Format, Yaml};
@@ -575,13 +530,42 @@ impl Server {
             restart_required: enabled != running,
         }
     }
+
 }
 
-impl Server {
+/// Actor authorization shared by RPC method owners.
+pub trait RpcServerExt {
+    /// Admit an authenticated peer to the named session.
+    fn authorize<'a>(
+        &'a self,
+        ext: &'a Extensions,
+        session: SessionId,
+    ) -> impl std::future::Future<Output = RpcResult<Authorized>> + Send + 'a;
+    /// Admit a session when one is named.
+    fn authorize_opt<'a>(
+        &'a self,
+        ext: &'a Extensions,
+        session: Option<SessionId>,
+    ) -> impl std::future::Future<Output = RpcResult<()>> + Send + 'a;
+    /// Admit a forwardable session, including a creator-owned pending row.
+    fn authorize_fwd<'a>(
+        &'a self,
+        ext: &'a Extensions,
+        session: SessionId,
+    ) -> impl std::future::Future<Output = RpcResult<()>> + Send + 'a;
+    /// Admit an optional forwardable session.
+    fn authorize_opt_fwd<'a>(
+        &'a self,
+        ext: &'a Extensions,
+        session: Option<SessionId>,
+    ) -> impl std::future::Future<Output = RpcResult<()>> + Send + 'a;
+}
+
+impl RpcServerExt for Server {
     /// The one admission check (51 §4.2): the calling connection may act on
     /// `session`. Durable sessions admit any authenticated peer; a private
     /// one only its owner; unknown or closing ids fail closed.
-    pub(crate) async fn authorize(
+    async fn authorize(
         &self,
         ext: &Extensions,
         session: SessionId,
@@ -599,7 +583,7 @@ impl Server {
 
     /// `authorize` when a session is named; `None` is the caller's own root
     /// or the global scope, nothing to admit.
-    pub(crate) async fn authorize_opt(
+    async fn authorize_opt(
         &self,
         ext: &Extensions,
         session: Option<SessionId>,
@@ -615,7 +599,7 @@ impl Server {
     /// for us whose row is not here yet is admitted (durable chats only, see
     /// `create_session`), since the call goes to that engine, which admits
     /// it. Every other handler keeps the strict check and fails closed.
-    pub(crate) async fn authorize_fwd(
+    async fn authorize_fwd(
         &self,
         ext: &Extensions,
         session: SessionId,
@@ -629,7 +613,7 @@ impl Server {
     }
 
     /// [`Self::authorize_fwd`] when a session is named.
-    pub(crate) async fn authorize_opt_fwd(
+    async fn authorize_opt_fwd(
         &self,
         ext: &Extensions,
         session: Option<SessionId>,
@@ -640,6 +624,14 @@ impl Server {
         Ok(())
     }
 
+}
+
+pub(super) trait SessionStateExt {
+    fn track(&self, open: &SessionOpen, peer: u64);
+    fn wait_for_row<'a>(&'a self, session: SessionId, engine: &'a str)-> impl std::future::Future<Output = ()> + Send + 'a;
+}
+
+impl SessionStateExt for Server {
     /// Record a freshly opened private tree as `peer`'s: every known member
     /// of its root moves to `peer` (a resume rebinds the whole tree), and
     /// the opened session and root join.
@@ -679,6 +671,7 @@ impl Server {
             }
         });
     }
+
 }
 
 /// `session`'s row is in `store` within `wait` (polled every 100 ms).
@@ -1253,7 +1246,7 @@ fn nb_result<T>(r: anyhow::Result<T>) -> RpcResult<T> {
 /// 144 §4.3 (E1): the insight job's model call and skill lookup live in `agent`; the document crate
 /// cannot name the agent actor, so this crate — which knows both ends — installs the two closures once
 /// (the pattern of `codeindex::map::generator::install_side_caller`). Looked up per call.
-fn install_insight_hooks(rt: &Runtime) {
+pub(crate) fn install_insight_hooks(rt: &Runtime) {
     use document::ingest::insights::{Hooks, InsightReply, install};
     let dir = agent::skills::dir(&rt.data_dir);
     install(Hooks {
@@ -1395,12 +1388,6 @@ where
 
 
 
-/// Write `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`; an existing
-/// file is not rewritten. Shared by `put_attachment` and the ACP prompt path;
-/// the naming rule lives in `agent::context` (48 §3.3).
-pub(crate) fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Result<PathBuf> {
-    agent::context::save_blob(bytes, ext, data_dir)
-}
 
 
 /// 184 §12.4: `msg` with engine id `id` replaced by its machine name, else by the id's first 8
@@ -1702,7 +1689,7 @@ mod tests {
             "resume"
         );
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let names: Vec<&str> = into_rpc_module(Server::new(rt)).method_names().collect();
+        let names: Vec<&str> = into_rpc_module(crate::new_server(rt)).method_names().collect();
         assert!(names.contains(&"resume_turn"), "{names:?}");
     }
 
@@ -1710,7 +1697,7 @@ mod tests {
     #[tokio::test]
     async fn dreaming_methods_are_registered() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let names: Vec<&str> = into_rpc_module(Server::new(rt)).method_names().collect();
+        let names: Vec<&str> = into_rpc_module(crate::new_server(rt)).method_names().collect();
         for m in dreaming::rpc::METHODS {
             assert!(names.contains(&m), "{m} missing from {names:?}");
         }
@@ -1720,7 +1707,7 @@ mod tests {
     #[tokio::test]
     async fn autoresearch_methods_are_registered() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let names: Vec<&str> = into_rpc_module(Server::new(rt)).method_names().collect();
+        let names: Vec<&str> = into_rpc_module(crate::new_server(rt)).method_names().collect();
         for m in autoresearch::rpc_impl::METHODS {
             assert!(names.contains(&m), "{m} missing from {names:?}");
         }
@@ -1731,7 +1718,7 @@ mod tests {
     #[tokio::test]
     async fn slack_manifest_answers_the_compiled_manifest_without_slack() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         let req = r#"{"jsonrpc":"2.0","method":"slack_manifest","params":[],"id":1}"#;
         let (resp, _) = methods.raw_json_request(req, 1).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
@@ -1757,7 +1744,7 @@ mod tests {
             figment::Figment::from(Yaml::string(boot)),
             dir.path().to_path_buf(),
         );
-        let methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         let req = format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{params},"id":1}}"#);
         let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
         (serde_json::from_str(resp.get()).unwrap(), dir)
@@ -1916,7 +1903,7 @@ mod tests {
     #[tokio::test]
     async fn routed_methods_dispatch_on_the_owner_with_the_forwarders_params() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let mut methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+        let mut methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         methods
             .extensions_mut()
@@ -1962,7 +1949,7 @@ mod tests {
     async fn a2a_forward_needs_the_forwarded_marker_and_messaging_on() {
         let call = |forwarder: Option<&str>| {
             let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-            let mut methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+            let mut methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
             methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
             if let Some(f) = forwarder {
                 methods
@@ -2003,7 +1990,7 @@ mod tests {
     #[tokio::test]
     async fn a_forwarded_dream_now_runs_on_the_hub_with_the_forwarders_params() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let mut methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+        let mut methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         methods
             .extensions_mut()
@@ -2265,7 +2252,8 @@ mod tests {
     mod event_focus {
         use super::*;
         use jsonrpsee::core::server::Subscription;
-        use std::time::Duration;
+        #[cfg(test)]
+use std::time::Duration;
 
         fn delta(kind: &str, s: SessionId, turn: &str, text: &str) -> serde_json::Value {
             serde_json::json!({ "type": kind, "session": s, "turn": turn, "text": text })
@@ -2292,7 +2280,7 @@ mod tests {
             /// A server whose feed is a ring of `ring` slots, every call authenticated as one peer.
             fn new(ring: usize) -> Self {
                 let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-                let mut server = Server::new(rt);
+                let mut server = crate::new_server(rt);
                 let tx = broadcast::channel(ring).0;
                 server.events = tx.clone();
                 let focus = server.focus.clone();
@@ -2480,7 +2468,7 @@ mod tests {
     #[tokio::test]
     async fn session_calls_need_an_authenticated_peer() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         let id = SessionId::new();
         for req in [
             format!(r#"{{"jsonrpc":"2.0","method":"get_todos","params":["{id}"],"id":1}}"#),
@@ -2521,7 +2509,7 @@ mod tests {
     #[tokio::test]
     async fn app_calls_need_an_authenticated_peer() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let base: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+        let base: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         assert_eq!(app_close_code(&base).await, i64::from(UNAUTHORIZED));
 
         let (peer, _guard) = rpc_core::RpcPeer::open();
@@ -2534,7 +2522,7 @@ mod tests {
     /// Dispatch a raw dictation request as a remote (relay) peer on a fresh server.
     async fn remote_dictation_call(method: &str, params: &str) -> serde_json::Value {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let mut methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+        let mut methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         let (peer, _guard) = rpc_core::RpcPeer::open_remote();
         methods.extensions_mut().insert(peer);
         let req = format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{params},"id":1}}"#);
@@ -2569,7 +2557,7 @@ mod tests {
     #[tokio::test]
     async fn spend_report_is_registered_and_round_trips() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         assert!(methods.method_names().any(|m| m == "spend_report"));
         let (resp, _) = methods
             .raw_json_request(
@@ -2614,7 +2602,7 @@ mod tests {
     #[tokio::test]
     async fn cost_methods_are_registered_with_their_wire_shapes() {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
         let call = |body: String| {
             let methods = methods.clone();
             async move {
@@ -2697,7 +2685,8 @@ mod tests {
     /// dispatch. Time is paused, so the 2 s / 15 s deadlines elapse at once.
     mod page_preview {
         use super::*;
-        use std::time::Duration;
+        #[cfg(test)]
+use std::time::Duration;
 
         use artifact::preview::{
             Client, ConsoleLevel, ConsoleLine, PagePreviewAnswer, PagePreviewRequested,
@@ -2747,7 +2736,7 @@ mod tests {
                     .unwrap();
                 tokio::time::pause();
                 let stores = Arc::new(artifact::Stores::new(Arc::new(state)));
-                let methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt.clone())).into();
+                let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
                 let (tx, events) = mpsc::unbounded_channel();
                 let cap = Capture::spawn(Capture(tx));
                 rt.subscribe::<Capture, PagePreviewRequested>(&cap).await;
@@ -3018,7 +3007,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn first_done_wins_and_late_answers_are_refused() {
             let (rt, mut events) = harness().await;
-            let methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt.clone())).into();
+            let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
             let call = render(&rt, "{\"a\":1}");
             let (resolved, id) = events.recv().await.unwrap();
             assert!(!resolved);
@@ -3060,7 +3049,7 @@ mod tests {
             let (rt, mut events) = harness().await;
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
-            let methods: jsonrpsee::Methods = into_rpc_module(Server::new(rt.clone())).into();
+            let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
             tokio::spawn(crate::accept(
                 listener,
                 methods,
@@ -3110,7 +3099,7 @@ mod tests {
 
         /// `rt`'s methods behind `peer`.
         fn methods(rt: &Runtime, peer: rpc_core::RpcPeer) -> jsonrpsee::Methods {
-            let mut m: jsonrpsee::Methods = into_rpc_module(Server::new(rt.clone())).into();
+            let mut m: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
             m.extensions_mut().insert(peer);
             m
         }
@@ -3231,7 +3220,7 @@ mod tests {
                 Some(i64::from(UNAUTHORIZED)),
                 "{v}"
             );
-            let bare: jsonrpsee::Methods = into_rpc_module(Server::new(rt.clone())).into();
+            let bare: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt.clone())).into();
             let v = snapshot(&bare, params).await.unwrap();
             assert_eq!(
                 v["error"]["code"].as_i64(),

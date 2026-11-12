@@ -16,7 +16,7 @@
 //! replica never answers for it.
 //!
 //! The owner side ([`serve`]) dispatches each forwarded request into its own
-//! [`crate::api::Server`] as the internal peer, with a [`Forwarded`] marker in
+//! [`rpc_core::Server`] as the internal peer, with a [`Forwarded`] marker in
 //! the extensions so the request is never forwarded a second hop. A forwarded
 //! call for a row this engine does not own (it moved meanwhile) answers
 //! [`NOT_OWNER`] (183 §4.8), not a relay loop.
@@ -237,7 +237,7 @@ pub async fn owner_peer(session: SessionId) -> Option<PeerId> {
 /// or ours; otherwise `Forward(owner)` when the owner is in `connected` (the
 /// transport's peers at call time, W-3), else `Offline(owner)`. User sessions
 /// and desks follow the same rule. 183 §5.6: an unknown row another engine
-/// just created for us ([`sessionsync::owner::expected`]) is that engine's.
+/// just created for us (the session owner's expected-row registry) is that engine's.
 pub async fn classify(
     store: &Store,
     session: SessionId,
@@ -261,7 +261,7 @@ pub async fn classify(
 }
 
 /// 183 §5.6: a chat another engine created at this engine's request and still
-/// in use ([`sessionsync::owner::expected`]).
+/// in use (the session owner's expected-row registry).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expected {
     /// The engine that created it.
@@ -272,7 +272,7 @@ pub struct Expected {
 
 /// [`Expected`] for `session`: `None` on a forwarded call, without the
 /// sessions plugin, when nothing was created elsewhere for it (or that went
-/// unused for [`sessionsync::owner::EXPECT_FOR`]), or when its row here names
+/// unused for the session owner's expected-row timeout), or when its row here names
 /// another owner (it moved: normal routing applies).
 pub async fn expected(ext: &Extensions, session: SessionId) -> RpcResult<Option<Expected>> {
     if ext.get::<Forwarded>().is_some() || !(hooks().sessions_running)() {

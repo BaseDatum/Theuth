@@ -47,7 +47,7 @@ use runtime::{Runtime, SessionId};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tools::{ApprovalRequested, Decision, Risk};
 
-use crate::api::{self, clients::*};
+use crate::api::clients::*;
 use crate::client::{Engine, Local};
 
 /// Registry name of the process-wide [`Relay`].
@@ -60,6 +60,8 @@ pub struct AcpPlugin {
     /// process is the engine. Events arrive through [`crate::client::mirror`];
     /// the socket closing ends the process (the editor restarts it).
     pub remote: Option<Arc<WsClient>>,
+    /// Method assembly retained by every local fallback.
+    pub module: rpc_core::ModuleFactory,
 }
 
 #[async_trait::async_trait]
@@ -69,11 +71,12 @@ impl runtime::Plugin for AcpPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        let module = self.module;
         let api = Arc::new(match &self.remote {
             Some(ws) => Engine::Remote(ws.clone()),
-            None => Engine::Local(Local::new(rt.clone())),
+            None => Engine::Local(Local::new(rt.clone(), module)),
         });
-        let relay = relay(rt, Some(api.clone())).await;
+        let relay = relay(rt, Some(api.clone()), module).await;
         if let Some(ws) = self.remote {
             let (rt, shutdown) = (rt.clone(), rt.shutdown.clone());
             tokio::spawn(async move {
@@ -100,11 +103,11 @@ impl runtime::Plugin for AcpPlugin {
 /// on [`runtime::subscriber_mailbox`], subscribed to the bus and registered
 /// as [`ACP_RELAY_ACTOR`]. Whichever caller comes first creates it, on `api`
 /// (default: this process's engine).
-pub async fn relay(rt: &Runtime, api: Option<Arc<Engine>>) -> ActorRef<Relay> {
+pub async fn relay(rt: &Runtime, api: Option<Arc<Engine>>, module: rpc_core::ModuleFactory) -> ActorRef<Relay> {
     if let Ok(Some(relay)) = ActorRef::<Relay>::lookup(ACP_RELAY_ACTOR) {
         return relay;
     }
-    let api = api.unwrap_or_else(|| Arc::new(Engine::Local(Local::new(rt.clone()))));
+    let api = api.unwrap_or_else(|| Arc::new(Engine::Local(Local::new(rt.clone(), module))));
     let relay = Relay::spawn_with_mailbox(
         Relay {
             api,
@@ -133,6 +136,7 @@ pub async fn serve_records(
     rt: Runtime,
     inbound: mpsc::Receiver<Vec<u8>>,
     outbound: mpsc::Sender<Vec<u8>>,
+    module: rpc_core::ModuleFactory,
 ) {
     let incoming = futures::stream::unfold(inbound, async |mut rx: mpsc::Receiver<Vec<u8>>| {
         let line = String::from_utf8(rx.recv().await?)
@@ -146,11 +150,11 @@ pub async fn serve_records(
                 .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
             Ok::<_, io::Error>(tx)
         });
-    let relay = relay(&rt, None).await;
+    let relay = relay(&rt, None, module).await;
     let api = relay
         .ask(Api)
         .await
-        .unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone()))));
+        .unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone(), module))));
     if let Err(e) = serve(
         Lines::new(outgoing, incoming),
         relay,
@@ -171,7 +175,7 @@ pub async fn serve_records(
 /// `"omp@build-A"` and the tool description work as for a 32 node. A peer
 /// is re-registered on every connect/disconnect (`· offline` while away,
 /// like a node); one removed from the mesh is unregistered.
-pub async fn serve_mesh(rt: Runtime) {
+pub async fn serve_mesh(rt: Runtime, module: rpc_core::ModuleFactory) {
     let Some(transport) = replica::transport(&rt).await else {
         return;
     };
@@ -179,13 +183,13 @@ pub async fn serve_mesh(rt: Runtime) {
     tokio::spawn(agent::rpc_forward::serve(
         rt.clone(),
         transport.clone(),
-        crate::methods(rt.clone()).await,
+        crate::methods(rt.clone(), module).await,
     ));
-    let relay = relay(&rt, None).await;
+    let relay = relay(&rt, None, module).await;
     let api = relay
         .ask(Api)
         .await
-        .unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone()))));
+        .unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone(), module))));
     let (t, data_dir, shutdown) = (transport.clone(), rt.data_dir.clone(), rt.shutdown.clone());
     tokio::spawn(async move {
         loop {
@@ -534,7 +538,7 @@ fn save_blob(data: &str, mime: &str, data_dir: &Path) -> anyhow::Result<Option<P
         _ => return Ok(None),
     };
     let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
-    Ok(Some(api::save_blob(&bytes, ext, data_dir)?))
+    Ok(Some(agent::context::save_blob(&bytes, ext, data_dir)?))
 }
 
 /// theuth's stop reason string as ACP's: matching serde names pass through,

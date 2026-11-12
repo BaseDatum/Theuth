@@ -9,7 +9,7 @@ use kameo::actor::ActorRef;
 use roster::alert::AlertClass;
 use roster::attention::{Attention, AttentionItem, AttentionKind, Finished};
 use rpc::into_rpc_module;
-use rpc::api::{FocusMap, SeenMap, Server};
+use rpc_core::{FocusMap, SeenMap, Server};
 use runtime::{Runtime, SessionId};
 
 /// One authenticated connection to the shared server state.

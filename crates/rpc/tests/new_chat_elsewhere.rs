@@ -15,7 +15,7 @@ use jsonrpsee::core::RpcResult;
 use parking_lot::Mutex;
 use replica::{ALPN_RPC, ByteStream, PeerEvent, PeerId, Transport};
 use rpc::into_rpc_module;
-use rpc::api::Server;
+use rpc_core::Server;
 use runtime::{Plugin as _, Runtime, SessionId};
 use tokio::sync::{broadcast, mpsc};
 
@@ -224,7 +224,7 @@ async fn a_chat_created_elsewhere_is_forwarded_by_id_while_in_use() {
         .unwrap();
 
     let (peer, _guard) = rpc_core::RpcPeer::open();
-    let mut api: jsonrpsee::Methods = into_rpc_module(Server::new(rt)).into();
+    let mut api: jsonrpsee::Methods = into_rpc_module(rpc::new_server(rt)).into();
     api.extensions_mut().insert(peer);
 
     let open: SessionOpen = api

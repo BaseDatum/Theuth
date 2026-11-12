@@ -7,7 +7,8 @@ use base64::Engine as _;
 use jsonrpsee::Extensions;
 use jsonrpsee::core::RpcResult;
 
-use crate::api::Server;
+use rpc_core::Server;
+
 use rpc_core::{ask, peer};
 use crate::cells::Latest;
 
@@ -72,7 +73,7 @@ mod tests {
     #[tokio::test]
     async fn needs_an_authenticated_peer_and_the_documents_plugin() {
         let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        let server = Server::new(rt);
+        let server = crate::new_server(rt);
         let doc = document::DocId("d1".into());
         let e = latest(&server, &Extensions::new(), doc.clone())
             .await

@@ -2,7 +2,7 @@
 //! every wire-visible bus event as `{"type": ..., ...}`. See design doc §7.
 //!
 //! [`api`] contains the domain traits for harness commands. In-process callers
-//! (the TUI) hold an [`api::Server`] from [`api::Server::new`] and call its
+//! (the TUI) dispatch through [`rpc_core::Server`] from [`new_server`] and its
 //! domain server methods directly; `serve` exposes the merged methods over the
 //! socket for remote clients.
 
@@ -33,7 +33,15 @@ fn install_forward_hooks() {
     });
 }
 
-use rpc_core::{Client, ConnId};
+use rpc_core::{Client, ConnId, ModuleFactory};
+
+/// Construct shared RPC state after installing plugin-owned startup hooks.
+pub fn new_server(rt: Runtime) -> rpc_core::Server {
+    install_forward_hooks();
+    api::install_insight_hooks(&rt);
+    rpc_core::Server::new(rt)
+}
+
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tower::Service;
@@ -92,6 +100,8 @@ pub struct RpcPlugin {
     /// instead of failing the start. `false` = `--serve`/`--headless`: the
     /// configured address, bind failure fatal, as before.
     pub implicit: bool,
+    /// Method assembly supplied by the composition root.
+    pub module: ModuleFactory,
 }
 
 /// Any loopback port.
@@ -104,15 +114,16 @@ impl runtime::Plugin for RpcPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        let module = self.module;
         let mut cfg: RpcConfig = rt.section("rpc").unwrap_or_default();
         if self.implicit && configured_listen(rt).is_none() {
             cfg.listen = EPHEMERAL.to_owned();
         }
-        let addr = match serve(rt, cfg.clone()).await {
+        let addr = match serve(rt, cfg.clone(), module).await {
             Err(e) if self.implicit && cfg.listen != EPHEMERAL => {
                 tracing::warn!(listen = %cfg.listen, error = %e, "rpc.listen busy; binding an ephemeral port");
                 cfg.listen = EPHEMERAL.to_owned();
-                serve(rt, cfg).await?
+                serve(rt, cfg, module).await?
             }
             r => r?,
         };
@@ -123,17 +134,17 @@ impl runtime::Plugin for RpcPlugin {
         let link_rt = rt.clone();
         tokio::spawn(async move {
             let rt = link_rt;
-            let methods = methods(rt.clone()).await;
+            let methods = methods(rt.clone(), module).await;
             if let Some(link) = rt.lookup_when::<link::LinkActor>(link::LINK_ACTOR).await {
-                let acp: link::AcpServe = Arc::new(|rt, ch: link::RecordChannel| {
-                    Box::pin(acp::serve_records(rt, ch.inbound, ch.outbound))
+                let acp: link::AcpServe = Arc::new(move |rt, ch: link::RecordChannel| {
+                    Box::pin(acp::serve_records(rt, ch.inbound, ch.outbound, module))
                 });
                 let _ = link.tell(link::SetDispatch { methods, acp }).await;
             }
         });
         // 67 §4.2: the same ACP over the mesh's `theuth/acp/1` streams, and
         // mesh engines registered with `agent` as nodes.
-        tokio::spawn(acp::serve_mesh(rt.clone()));
+        tokio::spawn(acp::serve_mesh(rt.clone(), module));
         // 39 §3.4: how many frontends hold a receiver; the updater only
         // restarts a service daemon when this is 0.
         let rt = rt.clone();
@@ -161,19 +172,19 @@ pub fn configured_listen(rt: &Runtime) -> Option<String> {
 /// The full [`api`] surface as a jsonrpsee `Methods` object, fed by the shared
 /// [`bridge`]: what `serve` binds to the socket and what the link plugin
 /// dispatches decrypted requests into with `raw_json_request` (31 §6.2).
-pub async fn methods(rt: Runtime) -> jsonrpsee::Methods {
+pub async fn methods(rt: Runtime, module: ModuleFactory) -> jsonrpsee::Methods {
     let events = bridge::start(&rt).await;
-    let mut server = api::Server::new(rt);
+    let mut server = new_server(rt);
     server.events = events;
-    into_rpc_module(server).into()
+    module(server).into()
 }
 
 /// Start the bridge and the server; returns the bound address. The server
 /// stops when `rt.shutdown` is cancelled.
-pub async fn serve(rt: &Runtime, cfg: RpcConfig) -> anyhow::Result<SocketAddr> {
+pub async fn serve(rt: &Runtime, cfg: RpcConfig, module: ModuleFactory) -> anyhow::Result<SocketAddr> {
     let token_path = rt.data_dir.join("token");
     let token = load_token(&token_path)?;
-    let methods = methods(rt.clone()).await;
+    let methods = methods(rt.clone(), module).await;
     let listener = TcpListener::bind(cfg.listen.as_str()).await?;
     let addr = listener.local_addr()?;
     tracing::info!(%addr, token = %token_path.display(), "rpc listening");

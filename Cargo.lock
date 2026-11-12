@@ -22944,6 +22944,7 @@ dependencies = [
  "png",
  "roster",
  "rpc",
+ "rpc-core",
  "runtime",
  "sandbox",
  "schedule",

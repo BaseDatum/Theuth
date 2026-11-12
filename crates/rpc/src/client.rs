@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 use serde_json::value::RawValue;
 use std::sync::Arc;
 
-use crate::api::into_rpc_module;
+use rpc_core::ModuleFactory;
 use crate::engine::Running;
 
 /// The in-process client: the owner console's peer on every call.
@@ -26,8 +26,8 @@ pub struct Local(Methods);
 
 impl Local {
     /// The full API over `rt`'s actors, every call as the owner console.
-    pub fn new(rt: Runtime) -> Self {
-        let mut methods: Methods = into_rpc_module(crate::api::Server::new(rt)).into();
+    pub fn new(rt: Runtime, module: ModuleFactory) -> Self {
+        let mut methods: Methods = module(crate::new_server(rt)).into();
         methods.extensions_mut().insert(rpc_core::RpcPeer::internal());
         Self(methods)
     }

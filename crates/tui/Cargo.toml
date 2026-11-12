@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Terminal frontend (iocraft): an ordinary bus subscriber"
 
 [dependencies]
+rpc-core = { workspace = true }
 runtime = { workspace = true }
 platform = { workspace = true }
 tools = { workspace = true }
