@@ -54,3 +54,8 @@ impl ScreensApiServer for Server {
         send(&actor, ScreenContext(req)).await
     }
 }
+
+/// Build this domain's RPC module.
+pub fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    ScreensApiServer::into_rpc(server)
+}

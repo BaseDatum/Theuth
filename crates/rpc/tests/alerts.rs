@@ -8,7 +8,7 @@ use jsonrpsee::core::server::Subscription;
 use kameo::actor::ActorRef;
 use roster::alert::AlertClass;
 use roster::attention::{Attention, AttentionItem, AttentionKind, Finished};
-use rpc::into_rpc_module;
+use rpc::api::{hub, boards};
 use rpc_core::{FocusMap, SeenMap, Server};
 use runtime::{Runtime, SessionId};
 
@@ -26,7 +26,7 @@ impl Conn {
         focus: &FocusMap,
         seen: &SeenMap,
     ) -> Self {
-        let mut methods: jsonrpsee::Methods = into_rpc_module(Server {
+        let mut methods: jsonrpsee::Methods = rpc_module(Server {
             events: events.clone(),
             rt: rt.clone(),
             private: Default::default(),
@@ -209,4 +209,11 @@ async fn attention_list_masks_alerts_per_connection() {
         tokio::task::yield_now().await;
     }
     panic!("seen entry outlived its connection");
+}
+
+fn rpc_module(server: rpc_core::Server) -> jsonrpsee::RpcModule<rpc_core::Server> {
+    rpc_core::merge([
+        hub::rpc_module(server.clone()),
+        boards::rpc_module(server),
+    ])
 }
