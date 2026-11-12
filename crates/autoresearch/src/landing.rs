@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use autoresearch::{self, CaseSource, ControlOp, StudyState};
+use crate::{self as autoresearch, CaseSource, ControlOp, StudyState};
 use dreaming::night::{NightRecord, read_record, write_record};
 use dreaming::types::{NightCounts, NightId, NightSummary};
 

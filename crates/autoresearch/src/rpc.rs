@@ -1,3 +1,4 @@
+use crate as autoresearch;
 use crate::landing;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;

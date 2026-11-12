@@ -106,7 +106,7 @@ use rpc_core::{Event, FocusMap, BACKLOG};
 use agent::rpc_forward as forward;
 use crate::pathac::PathCompletion;
 use crate::search::SearchResponse;
-use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, lookup, failed, peer, owner, dreaming_err, stub_err, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
+use rpc_core::{is_delta, Stream, Backlog, Next, ask, send, lookup, failed, peer, owner, stub_err, ASK_FAILED, NOT_RUNNING, UNAUTHORIZED};
 use agent::rpc_support::{owner_root, RpcServerExt};
 use link::rpc_support::{link, mint_as_holder};
 use mesh::rpc_support::mesh_actor;
@@ -227,7 +227,7 @@ pub mod meetings;
 /// Kernels RPC server and client traits.
 pub mod kernels;
 /// Research RPC server and client traits.
-pub mod research;
+pub use autoresearch::rpc as research;
 /// Sandboxes RPC server and client traits.
 pub mod sandboxes;
 
