@@ -158,7 +158,9 @@ pub async fn draft_edit(
     value: String,
 ) -> std::result::Result<DraftView, String> {
     let (root, started) = draft_ctx(&draft_id).await?;
-    crate::setup::edit(&root, &draft_id, field.trim(), &value).map_err(|e| e.to_string())?;
+    crate::setup::edit(&root, &draft_id, field.trim(), &value)
+        .await
+        .map_err(|e| e.to_string())?;
     crate::setup::view(&root, &draft_id, started).map_err(|e| e.to_string())
 }
 

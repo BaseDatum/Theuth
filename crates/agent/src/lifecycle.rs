@@ -260,11 +260,12 @@ pub(crate) struct PrivateRoot {
 /// - `None`, blank or `default` is the Default chip: `Ok(None)`.
 /// - No model (the setting's `none` row) clears the effort too (D4d): `Ok(None)`.
 /// - A catalog model checks it the way `models::Model::validate_effort` does, with its message;
-///   a model the catalog does not know (or no agent) accepts any known effort word (`effort_of`).
+///   a model the catalog does not know (`Ok(None)`, or no agent) accepts any known effort word
+///   (`effort_of`); a model that does not resolve (`Err`) refuses with that error.
 /// - A refused effort is dropped (`Ok(None)`) when `model_changed` (D4c), else `Err` (D4b).
 pub fn settle_effort(
     model: Option<&str>,
-    info: Option<&crate::ModelInfo>,
+    info: &Result<Option<crate::ModelInfo>, String>,
     effort: Option<&str>,
     model_changed: bool,
 ) -> Result<Option<String>, String> {
@@ -277,10 +278,9 @@ pub fn settle_effort(
     if model.is_none_or(|m| m.trim().is_empty()) {
         return Ok(None);
     }
-    let known =
-        info.filter(|i| !(i.efforts.is_empty() && i.budget_min.is_none() && i.context == 0));
-    let checked = match known {
-        Some(i) => {
+    let checked = match info {
+        Err(why) => Err(why.clone()),
+        Ok(Some(i)) => {
             let budget = i.budget_min.map(|min| (min, i.budget_max));
             let in_budget = |(min, max): (u32, Option<u32>)| {
                 e.parse::<u32>()
@@ -301,8 +301,8 @@ pub fn settle_effort(
                 Err(format!("{} accepts {accepted}", i.id))
             }
         }
-        None if crate::effort_of(e).is_none() => Err(format!("unknown effort {e}")),
-        None => Ok(()),
+        Ok(None) if crate::effort_of(e).is_none() => Err(format!("unknown effort {e}")),
+        Ok(None) => Ok(()),
     };
     match checked {
         Ok(()) => Ok(Some(e.to_owned())),
@@ -311,19 +311,37 @@ pub fn settle_effort(
     }
 }
 
-/// 194: the catalog row [`settle_effort`] checks `model` against (`ResolveModel`); `None`
-/// without a model, without a running agent, or when it does not resolve.
-pub async fn effort_model(model: Option<&str>) -> Option<crate::ModelInfo> {
-    let model = model.map(str::trim).filter(|m| !m.is_empty())?;
-    let agents = kameo::actor::ActorRef::<crate::Agents>::lookup(crate::AGENT_ACTOR)
-        .ok()
-        .flatten()?;
-    agents
-        .ask(crate::ResolveModel {
-            model: model.to_owned(),
-        })
-        .await
-        .ok()
+/// 194: the catalog row [`settle_effort`] checks `model` against ([`model_meta`] on the
+/// registered agent); `Ok(None)` without a model or without a running agent.
+pub async fn effort_model(model: Option<&str>) -> Result<Option<crate::ModelInfo>, String> {
+    let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) else {
+        return Ok(None);
+    };
+    match kameo::actor::ActorRef::<crate::Agents>::lookup(crate::AGENT_ACTOR) {
+        Ok(Some(agents)) => model_meta(&agents, model).await,
+        _ => Ok(None),
+    }
+}
+
+/// 194 D4b: `model`'s catalog metadata without the credentials check `ResolveModel` makes,
+/// so a stored setting is validated against a known model whose provider has no key yet.
+/// `Ok(None)`: the catalog does not know it (a pass-through id); `Err`: it does not resolve.
+pub async fn model_meta(
+    agents: &kameo::actor::ActorRef<crate::Agents>,
+    model: &str,
+) -> Result<Option<crate::ModelInfo>, String> {
+    let model = model.to_owned();
+    agents.ask(ModelMeta { model }).await.map_err(|e| match e {
+        kameo::error::SendError::HandlerError(e) => e,
+        e => e.to_string(),
+    })
+}
+
+/// `ask` → `Result<Option<ModelInfo>, String>`: [`model_meta`]'s catalog resolution.
+#[derive(Clone, Debug)]
+pub struct ModelMeta {
+    /// `provider/model` or a bare model id.
+    pub model: String,
 }
 
 #[cfg(test)]

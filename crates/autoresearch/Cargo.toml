@@ -40,6 +40,7 @@ ts-rs = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = "3"
 figment = { workspace = true }
+agent = { workspace = true, features = ["test-support"] }  # 194 R1: a live keyless engine for `tests/effort.rs`
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts", "schedule/ts"]

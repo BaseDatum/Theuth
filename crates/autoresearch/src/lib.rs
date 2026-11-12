@@ -253,25 +253,7 @@ impl Message<SetSettings> for Studies {
             ));
         }
         // 194 D4b–d: each role's effort against the model it goes with.
-        let was = &self.cfg;
-        cfg.models.executor_effort = config::settle_role(
-            &cfg.models.executor,
-            &cfg.models.executor_effort,
-            &was.models.executor,
-        )
-        .await
-        .map_err(|e| format!("models.executor_effort: {e}"))?;
-        cfg.models.advisor_effort = config::settle_role(
-            &cfg.models.advisor,
-            &cfg.models.advisor_effort,
-            &was.models.advisor,
-        )
-        .await
-        .map_err(|e| format!("models.advisor_effort: {e}"))?;
-        cfg.review.effort =
-            config::settle_role(&cfg.review.model, &cfg.review.effort, &was.review.model)
-                .await
-                .map_err(|e| format!("review.effort: {e}"))?;
+        config::settle_settings(&mut cfg, &self.cfg).await?;
         config::persist(&self.data_dir.join("config.yaml"), &cfg)
             .map_err(|e| format!("config.yaml: {e}"))?;
         self.cfg = cfg;

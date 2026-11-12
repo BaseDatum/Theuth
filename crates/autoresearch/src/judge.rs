@@ -1867,6 +1867,8 @@ mod tests {
     struct ShorterWins {
         calls: parking_lot::Mutex<u32>,
         last_user: parking_lot::Mutex<String>,
+        /// 194 D4e: the role of every call.
+        roles: parking_lot::Mutex<Vec<runtime::ModelRole>>,
     }
 
     fn fenced(user: &str, label: &str) -> String {
@@ -1888,12 +1890,13 @@ mod tests {
         async fn side_call(
             &self,
             _study: &StudyRecord,
-            _role: runtime::ModelRole,
+            role: runtime::ModelRole,
             _system: &str,
             user: String,
             _budget: Duration,
         ) -> Result<runtime::SideReply> {
             *self.calls.lock() += 1;
+            self.roles.lock().push(role);
             *self.last_user.lock() = user.clone();
             let a = words(&fenced(&user, "Output A (data):"));
             let b = words(&fenced(&user, "Output B (data):"));
@@ -2100,7 +2103,9 @@ sys.exit(main())
             backend: fake.clone(),
         };
         let env = studies.env();
-        let spec = judged_spec(&worktree.display().to_string());
+        let mut spec = judged_spec(&worktree.display().to_string());
+        spec.models.judge = Some("fake/judge".into());
+        spec.models.judge_effort = Some("high".into());
         let study = StudyRecord {
             slug: "tj".into(),
             state: StudyState::Running,
@@ -2195,6 +2200,12 @@ sys.exit(main())
         .await
         .unwrap();
         assert_eq!((b2.value, *fake.calls.lock()), (Some(0.5), 12));
+        // 194 D4e: every judge call carries the judge role's effort.
+        let judge = runtime::ModelRole::NamedWithEffort {
+            model: "fake/judge".into(),
+            effort: Some("high".into()),
+        };
+        assert_eq!(*fake.roles.lock(), vec![judge; 12]);
 
         // Experiment 1: a shorter, complete generator.
         std::fs::write(worktree.join("blurb.py"), BETTER).unwrap();

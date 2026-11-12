@@ -4911,6 +4911,21 @@ impl Message<ResolveModel> for Agents {
     }
 }
 
+/// 194 D4b: [`crate::lifecycle::model_meta`] — [`ResolveModel`] without the credentials check;
+/// `None` without a catalog row (what `SetEffort` then accepts: any known word).
+impl Message<crate::lifecycle::ModelMeta> for Agents {
+    type Reply = Result<Option<ModelInfo>, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::lifecycle::ModelMeta,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<ModelInfo>, String> {
+        let r = self.catalog.resolve(&m.model, &*self.configured)?;
+        Ok(r.model.is_some().then(|| ModelInfo::from(&r)))
+    }
+}
+
 impl Message<SideCallable> for Agents {
     type Reply = Result<(), String>;
 

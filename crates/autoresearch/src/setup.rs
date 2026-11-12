@@ -810,8 +810,8 @@ fn opt(v: &str) -> Option<String> {
     non_empty(v).then(|| v.trim().to_owned())
 }
 
-/// 194: an effort leaf; empty = Default, else a known effort word (the model's own levels are
-/// the panel's chips; a level that model does not take is dropped at the call, with a warning).
+/// 194: an effort leaf; empty = Default, else a known effort word. The catalog check against
+/// its model is [`edit`]'s, before the save (`config::settle_models`).
 fn effort(v: &str) -> std::result::Result<Option<String>, String> {
     match opt(v) {
         Some(e) if agent::effort_of(&e).is_none() => Err(format!("unknown effort `{e}`")),
@@ -943,10 +943,16 @@ pub fn set_leaf(spec: &mut StudySpec, leaf: &str, v: &str) -> std::result::Resul
     Ok(())
 }
 
-/// `autoresearch.draft_edit`: set a leaf, mark its row user-set and confirmed, save.
-pub fn edit(root: &Path, draft_id: &str, leaf: &str, value: &str) -> Result<()> {
+/// `autoresearch.draft_edit`: set a leaf, mark its row user-set and confirmed, save. 194 D4b–d:
+/// the `models:` efforts are settled against their models first (a model change drops one the
+/// new model does not take).
+pub async fn edit(root: &Path, draft_id: &str, leaf: &str, value: &str) -> Result<()> {
     let mut d = read_draft(root, draft_id)?;
+    let was = d.spec.models.clone();
     set_leaf(&mut d.spec, leaf, value).map_err(|e| Error::refused(format!("{leaf}: {e}")))?;
+    crate::config::settle_models(&mut d.spec.models, &was)
+        .await
+        .map_err(Error::refused)?;
     validate_partial(&d.spec).map_err(Error::refused)?;
     if leaf != "include_dirty" {
         let row = row_of(leaf);
@@ -954,6 +960,14 @@ pub fn edit(root: &Path, draft_id: &str, leaf: &str, value: &str) -> Result<()> 
         push_unique(&mut d.confirmed, row);
     }
     save(root, &mut d)
+}
+
+/// 194 D4b–d for `autoresearch_draft`: the spec's `models:` efforts settled before the write,
+/// against the saved draft's models — a re-draft that changes a model drops an effort the new
+/// model does not take; a new draft (or an unchanged model) refuses one.
+pub async fn settle_draft(root: &Path, spec: &mut StudySpec) -> std::result::Result<(), String> {
+    let was = read_draft(root, &spec.slug).map_or_else(|_| spec.models.clone(), |d| d.spec.models);
+    crate::config::settle_models(&mut spec.models, &was).await
 }
 
 /// `autoresearch.draft_confirm`: the user OK'd a row; refused for a missing one.
@@ -1464,13 +1478,13 @@ mod tests {
         assert_eq!(state(&v, "repo"), FieldState::Proposed);
     }
 
-    #[test]
-    fn user_set_rows_are_sticky() {
+    #[tokio::test]
+    async fn user_set_rows_are_sticky() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("root");
         let s = spec(Path::new("/x/repo"));
         write_draft(&root, &s, SessionId::new(), true, vec!["goal".into()]).unwrap();
-        edit(&root, "toy", "budget.usd", "7").unwrap();
+        edit(&root, "toy", "budget.usd", "7").await.unwrap();
         confirm(&root, "toy", "scope").unwrap();
         let d = read_draft(&root, "toy").unwrap();
         assert_eq!(d.user_set, vec!["budget"]);
@@ -1479,7 +1493,7 @@ mod tests {
         // R1: `include_dirty` is the panel's third Start button, not a row — the flag flips,
         // the token stays, nothing becomes user-set or confirmed, `settled` is unchanged.
         let settled_before = view_of(&root, read_draft(&root, "toy").unwrap(), false).settled;
-        edit(&root, "toy", "include_dirty", "true").unwrap();
+        edit(&root, "toy", "include_dirty", "true").await.unwrap();
         let d2 = read_draft(&root, "toy").unwrap();
         assert!(d2.spec.include_dirty);
         assert_eq!(
@@ -1487,7 +1501,7 @@ mod tests {
             (&d.token, &d.user_set, &d.confirmed)
         );
         assert_eq!(view_of(&root, d2, false).settled, settled_before);
-        edit(&root, "toy", "include_dirty", "no").unwrap();
+        edit(&root, "toy", "include_dirty", "no").await.unwrap();
         assert!(!read_draft(&root, "toy").unwrap().spec.include_dirty);
         // A re-draft that changes the user-set budget: applied, but the row drops to proposed
         // and is named; the untouched panel OK on scope survives; goal (changed) does not.
@@ -1532,8 +1546,8 @@ mod tests {
 
     /// 159 Z (W1 H3, W2 H2, W5 hand-off 4): a kind row can be OK'd and is sticky; a prompt
     /// study's Check row counts as present; the literature toggle works on a plain draft.
-    #[test]
-    fn kind_rows_confirm_stick_and_literature_toggles_on_a_plain_draft() {
+    #[tokio::test]
+    async fn kind_rows_confirm_stick_and_literature_toggles_on_a_plain_draft() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("root");
         let s = spec(Path::new("/x/repo"));
@@ -1551,6 +1565,7 @@ mod tests {
             "objectives",
             "time_ms lower 1% 5% ms\nsize_kb lower 1% 5% kB",
         )
+        .await
         .unwrap();
         let d = read_draft(&root, "toy").unwrap();
         assert_eq!(d.spec.axes.search, crate::types::Search::Front);
@@ -1580,14 +1595,17 @@ mod tests {
         // W5 hand-off 4: the literature leaf before the block exists.
         write_draft(&root, &s, SessionId::new(), true, vec![]).unwrap();
         assert!(kind_rows(&s).is_empty());
-        edit(&root, "toy", "literature", "on").unwrap();
+        edit(&root, "toy", "literature", "on").await.unwrap();
         let d = read_draft(&root, "toy").unwrap();
         assert!(d.spec.literature.is_some());
         assert_eq!(d.confirmed, vec!["literature"]);
         assert!(kind_rows(&d.spec).iter().any(|r| r.row == "literature"));
-        edit(&root, "toy", "hooks.before.command", "bash hook.sh").unwrap();
+        edit(&root, "toy", "hooks.before.command", "bash hook.sh")
+            .await
+            .unwrap();
         assert!(read_draft(&root, "toy").unwrap().spec.hooks.is_some());
         let e = edit(&root, "toy", "cases.path", "x")
+            .await
             .unwrap_err()
             .to_string();
         assert!(e.contains("unknown field"), "{e}");

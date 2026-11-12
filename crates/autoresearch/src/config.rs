@@ -501,12 +501,99 @@ pub async fn settle_role(
 ) -> std::result::Result<Option<String>, String> {
     let m = pick(model).filter(|m| *m != "off");
     let info = agent::lifecycle::effort_model(m).await;
-    agent::lifecycle::settle_effort(
-        m,
-        info.as_ref(),
-        effort.as_deref(),
-        pick(model) != pick(was),
-    )
+    agent::lifecycle::settle_effort(m, &info, effort.as_deref(), pick(model) != pick(was))
+}
+
+/// 194 D4b–d: the section's role efforts settled against their models, `was` = the section
+/// saved before this set (D4c) — `Studies::SetSettings` and [`set_unloaded`] alike.
+pub async fn settle_settings(
+    cfg: &mut AutoresearchConfig,
+    was: &AutoresearchConfig,
+) -> std::result::Result<(), String> {
+    let m = &mut cfg.models;
+    for (key, model, effort, was) in [
+        (
+            "models.executor_effort",
+            &m.executor,
+            &mut m.executor_effort,
+            &was.models.executor,
+        ),
+        (
+            "models.advisor_effort",
+            &m.advisor,
+            &mut m.advisor_effort,
+            &was.models.advisor,
+        ),
+        (
+            "review.effort",
+            &cfg.review.model,
+            &mut cfg.review.effort,
+            &was.review.model,
+        ),
+    ] {
+        *effort = settle_role(model, effort, was)
+            .await
+            .map_err(|e| format!("{key}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// 194 D4b–d: every `*_effort` of a study's `models:` settled against its model, `was` = the
+/// models before this change (D4c; the same models when there is none, so a bad pick is
+/// refused) — the panel's `draft_edit` and the `autoresearch_draft` tool alike.
+pub async fn settle_models(
+    m: &mut crate::types::ModelsSpec,
+    was: &crate::types::ModelsSpec,
+) -> std::result::Result<(), String> {
+    for (key, model, effort, was) in [
+        (
+            "executor_effort",
+            &m.executor,
+            &mut m.executor_effort,
+            &was.executor,
+        ),
+        (
+            "review_effort",
+            &m.review,
+            &mut m.review_effort,
+            &was.review,
+        ),
+        (
+            "advisor_effort",
+            &m.advisor,
+            &mut m.advisor_effort,
+            &was.advisor,
+        ),
+        (
+            "target_effort",
+            &m.target,
+            &mut m.target_effort,
+            &was.target,
+        ),
+        ("judge_effort", &m.judge, &mut m.judge_effort, &was.judge),
+    ] {
+        *effort = settle_role(model, effort, was)
+            .await
+            .map_err(|e| format!("models.{key}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// `autoresearch.settings.set` while the plugin is not running: [`settle_settings`] against
+/// the section `config.yaml` holds now, then [`persist`]; the stored section is returned.
+pub async fn set_unloaded(
+    data_dir: &Path,
+    mut cfg: AutoresearchConfig,
+) -> std::result::Result<AutoresearchConfig, String> {
+    let path = data_dir.join("config.yaml");
+    let was: AutoresearchConfig = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_yaml::from_str::<serde_yaml::Value>(&t).ok())
+        .and_then(|v| serde_yaml::from_value(v.get("autoresearch")?.clone()).ok())
+        .unwrap_or_default();
+    settle_settings(&mut cfg, &was).await?;
+    persist(&path, &cfg).map_err(|e| format!("config.yaml: {e}"))?;
+    Ok(cfg)
 }
 
 /// Persist the whole `autoresearch:` section of `config.yaml` (the block is

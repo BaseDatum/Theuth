@@ -23,7 +23,6 @@ import { LAWFUL } from '@/lib/detection'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { PermissionState } from '@/rpc/bindings/PermissionState'
-import { useConnection } from '@/store/connection'
 import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
 
 /** The picker's "System audio" row; `meeting_start` gets `process: null`. */
@@ -47,11 +46,12 @@ export function startOptions(form: { pid: number; title: string; context: string
 
 // Radix Select refuses '' as a value: "let the engine decide" is its own row.
 const AUTO = 'auto'
+/** 194: the model picker's `none` row — no override, the engine's `meeting.model` at `meeting.effort`. */
+const MEETING_DEFAULT = { label: 'Meeting default' }
 
 export function StartForm() {
   const api = useApi()
   const navigate = useNavigate()
-  const info = useConnection((s) => s.info)
   const processes = useQuery({ queryKey: queryKeys.meetingProcesses, queryFn: () => api.meeting_processes() })
   const perms = useQuery({ queryKey: queryKeys.meetingPermissions, queryFn: () => api.meeting_permissions() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
@@ -59,10 +59,10 @@ export function StartForm() {
   const [title, setTitle] = useState('')
   const [context, setContext] = useState('')
   const [project, setProject] = useState<string | null>(null)
+  // 194: the start's override (`null` = Meeting default); the engine's fallback is never shown as a pick.
   const saved = useMeetingSettings((s) => s.model)
   const savedEffort = useMeetingSettings((s) => s.effort)
-  const model = saved ?? info?.default_model
-  const current = models.data?.find((m) => m.id === model)
+  const current = saved ? models.data?.find((m) => m.id === saved) : undefined
 
   // 137 R1-D6: the ∞ switch starts at `agent.endless.default_meeting`, remembered for this form only.
   const endlessSettings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
@@ -123,15 +123,16 @@ export function StartForm() {
         </Row>
         <Row
           label="Session model"
-          description="The meeting's own chat session runs on it; a fast, inexpensive model is the sensible choice here."
+          description="The meeting's own chat session runs on it; a fast, inexpensive model is the sensible choice here. Meeting default: the model in Settings › Meetings."
         >
           <ModelCombobox
             aria-label="Session model"
             className="w-64"
             models={models.data ?? []}
-            value={model}
-            effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: saved ? savedEffort : null, onSelect: (level) => useMeetingSettings.getState().setModel(current.id, level) } : undefined}
-            onChange={(id) => id && useMeetingSettings.getState().setModel(id, models.data?.find((m) => m.id === id)?.efforts.includes(savedEffort ?? '') ? savedEffort : null)}
+            value={saved}
+            none={MEETING_DEFAULT}
+            effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: savedEffort, onSelect: (level) => useMeetingSettings.getState().setEffort(level) } : undefined}
+            onChange={(id) => useMeetingSettings.getState().setModel(id, id && models.data?.find((m) => m.id === id)?.efforts.includes(savedEffort ?? '') ? savedEffort : null)}
           />
         </Row>
         <Row label="Note template" description="The headings the summary is written under. Automatic: the one remembered for this calendar event, else the default from Settings › Meetings.">

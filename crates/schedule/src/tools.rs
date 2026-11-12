@@ -256,12 +256,8 @@ impl Tool for ScheduleTool {
         // 194 D4b: an effort the run's model does not take is refused, as the editor refuses it.
         if let Some(e) = &spec.effort {
             let info = agent::lifecycle::effort_model(spec.model.as_deref()).await;
-            let settled = agent::lifecycle::settle_effort(
-                spec.model.as_deref(),
-                info.as_ref(),
-                Some(e),
-                false,
-            );
+            let settled =
+                agent::lifecycle::settle_effort(spec.model.as_deref(), &info, Some(e), false);
             if let Err(why) = settled {
                 return Ok(ToolOutput::err(format!("effort: {why}")));
             }
