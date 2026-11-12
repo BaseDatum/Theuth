@@ -92,7 +92,7 @@ What happens:
 
 1. theuth starts `opencode acp` in that `cwd`, sends `initialize`, authenticates if the harness asks, and opens a session. The harness's stderr goes to `~/.theuth/logs/acp-opencode.log`.
 2. If you gave a `model`/`effort`, theuth applies them through the harness's own option menu when it offers one; otherwise the harness keeps its default. The chat header of the child shows the harness's live model picker and thought level, if it exposes them.
-3. The harness gets a small theuth MCP server inside its session (`list_skills`, `load_skill`, `send_message` back to the parent), and any `skills` you asked for are written into `<cwd>/.agents/skills` for the run and removed when it stops.
+3. The harness gets a small theuth MCP server inside its session (`list_skills`, `load_skill`, `send_message` back to the parent, plus `read_file`, `edit`, `move_text`, `copy_text`, `indent` and `clip` run in the child's session: its working directory and approvals), and any `skills` you asked for are written into `<cwd>/.agents/skills` for the run and removed when it stops.
 4. **Every permission the harness asks for comes to you** as a normal approval card on the child session (and surfaces in the parent transcript as "subagent `opencode-…` is waiting on you · open"). Allow/Deny there is forwarded as the harness's `allow_once`/`reject_once`.
 5. When opencode finishes, its final message (or, if it ended with no text after a rejected permission, its last tool output) arrives in the parent as the `<message from="session:…">` input; the parent verifies and reports to you.
 

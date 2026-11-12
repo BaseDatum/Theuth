@@ -544,6 +544,10 @@ wire! {
     }
 }
 
+impl wire::WireEvent for CellEvent {
+    const TOPIC: &'static str = "cells.events";
+}
+
 /// `cell_run` parameters plus what the RPC layer knows about the press (internal: RPC → actor).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunRequest {

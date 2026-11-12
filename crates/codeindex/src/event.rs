@@ -124,6 +124,10 @@ pub enum CodeindexEvent {
     },
 }
 
+impl wire::WireEvent for CodeindexEvent {
+    const TOPIC: &'static str = "codeindex.events";
+}
+
 fn is_zero(n: &usize) -> bool {
     *n == 0
 }

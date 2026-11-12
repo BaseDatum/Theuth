@@ -296,6 +296,11 @@ pub enum MeshEvent {
     Pair(PairCeremony),
 }
 
+impl wire::WireEvent for MeshEvent {
+    const TOPIC: &'static str = "mesh.events";
+    const VERSION: u32 = 1;
+}
+
 /// Frames and bytes one stream ALPN has moved since start (69 audit: the
 /// number a storm would show). A frame is one read or write on a stream,
 /// not a protocol message.

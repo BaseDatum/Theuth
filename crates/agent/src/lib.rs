@@ -836,7 +836,7 @@ pub struct SetEscalateModel {
 pub struct GetEscalateModel;
 
 /// The escalation slot as the UI shows it: what is set and what would answer.
-#[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply)]
+#[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct EscalateModel {
     /// `agent.escalate_model`, if set.
@@ -1547,7 +1547,7 @@ impl Default for SessionActivity {
 }
 
 /// Which sessions a [`Broadcast`] reaches (62 §0.2).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BroadcastTargets {
@@ -1564,7 +1564,7 @@ pub enum BroadcastTargets {
 
 /// One message to many sessions (62 §0.1); `ask` the supervisor with
 /// [`Broadcast`] → `Result<BroadcastReceipt, String>`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BroadcastRequest {
     /// Selector.
@@ -1583,7 +1583,7 @@ pub struct BroadcastRequest {
 }
 
 /// What happened to one broadcast recipient.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum BroadcastOutcome {
@@ -1610,7 +1610,7 @@ pub enum BroadcastOutcome {
 }
 
 /// One recipient of a broadcast.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BroadcastRow {
     /// Session id.
@@ -1626,7 +1626,7 @@ pub struct BroadcastRow {
 }
 
 /// Reply of [`Broadcast`].
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BroadcastReceipt {
     /// Broadcast id; the marker's short id is its first 4 hex chars.
@@ -2359,6 +2359,10 @@ pub struct LoginFinished {
     pub error: Option<String>,
 }
 
+impl wire::WireEvent for LoginFinished {
+    const TOPIC: &'static str = "agent.login";
+}
+
 /// `ask` → `Vec<ProviderInfo>`: the built-in key providers (`opencode`, `openrouter`;
 /// 85 §0.9) first, then the custom providers by name.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -2571,7 +2575,7 @@ pub struct ProviderModels {
 }
 
 /// One model of a provider with its stored limits (177).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProviderModel {
     /// Model id within the provider (`provider/<id>` is the picker id).
@@ -3731,6 +3735,21 @@ pub enum AgentEvent {
     },
 }
 
+impl wire::WireEvent for AgentEvent {
+    const TOPIC: &'static str = "agent.events";
+
+    fn policy(json: &serde_json::Value) -> wire::EventPolicy {
+        let mut policy = wire::EventPolicy::legacy_fields(json);
+        match json.get("type").and_then(serde_json::Value::as_str) {
+            Some("SubagentSpawned" | "ObservedChildChanged") => policy.announces_child = true,
+            Some("TextDelta" | "ReasoningDelta") => policy.delta = wire::Delta::AppendText,
+            Some("ToolCallProgress" | "VisionProgress") => policy.delta = wire::Delta::Replace,
+            _ => {}
+        }
+        policy
+    }
+}
+
 impl AgentEvent {
     /// Session the event belongs to; `None` for global events.
     pub fn session(&self) -> Option<SessionId> {
@@ -4130,6 +4149,20 @@ impl Default for SubagentsConfig {
     }
 }
 
+/// Declare the agent's wire contracts before starting any producers.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<AgentEvent>().await?;
+    rt.register_wire_event::<LoginFinished>().await?;
+    rt.register_wire_event::<CommunicationChanged>().await?;
+    rt.register_wire_event::<PeerMessageChanged>().await?;
+    rt.register_wire_event::<PeerDelivered>().await?;
+    rt.register_wire_event::<ask::NotebookAsk>().await?;
+    rt.register_wire_event::<EndlessProgress>().await?;
+    rt.register_wire_event::<CostCubeChanged>().await?;
+    Ok(())
+}
+
 /// The plugin.
 pub struct AgentPlugin;
 
@@ -4140,6 +4173,7 @@ impl runtime::Plugin for AgentPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         // 144 §13.2 (E1): `notebook_context_set` / `notebook_context_estimate` ride the agent's store.
         notebook_context::register(rt);
         supervisor::start(rt).await

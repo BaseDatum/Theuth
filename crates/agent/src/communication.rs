@@ -727,6 +727,17 @@ pub struct CommunicationChanged {
     pub revision: u64,
 }
 
+impl wire::WireEvent for CommunicationChanged {
+    const TOPIC: &'static str = "agent.communication";
+
+    fn policy(json: &serde_json::Value) -> wire::EventPolicy {
+        wire::EventPolicy {
+            always_wanted: true,
+            ..wire::EventPolicy::legacy_fields(json)
+        }
+    }
+}
+
 /// Event: a participant's receipt changed state (§10). No body; reload the
 /// durable record when needed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -739,6 +750,10 @@ pub struct PeerMessageChanged {
     pub id: Uuid,
     /// New state.
     pub state: PeerMessageState,
+}
+
+impl wire::WireEvent for PeerMessageChanged {
+    const TOPIC: &'static str = "agent.peer-message";
 }
 
 /// Typed provenance of a transcript row that a peer exchange produced (§9):
@@ -822,6 +837,10 @@ pub struct PeerDelivered {
     pub seq: i64,
     /// The turn that consumed it.
     pub turn: TurnId,
+}
+
+impl wire::WireEvent for PeerDelivered {
+    const TOPIC: &'static str = "agent.peer-delivered";
 }
 
 /// Bus message: a session opened by a remote parent (67 §8) sent

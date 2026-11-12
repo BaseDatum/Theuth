@@ -60,6 +60,12 @@ const STABLE_AFTER: Duration = Duration::from_secs(60);
 /// The plugin.
 pub struct NodesPlugin;
 
+/// Declare wire contracts before starting producers, including disabled services.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<NodeEvent>().await
+}
+
 /// The [`NODES_ACTOR`] actor: the store, one control conn task per node.
 #[derive(kameo::Actor)]
 pub struct NodesActor {
@@ -669,6 +675,7 @@ impl runtime::Plugin for NodesPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: NodesConfig = rt.section("nodes").unwrap_or_else(|e| {
             tracing::debug!("no [nodes] config section, using defaults: {e}");
             NodesConfig::default()

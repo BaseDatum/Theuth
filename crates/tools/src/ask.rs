@@ -92,6 +92,11 @@ pub struct AskRequested {
     pub questions: Vec<Question>,
 }
 
+impl wire::WireEvent for AskRequested {
+    const TOPIC: &'static str = "tools.ask-requested";
+    const VERSION: u32 = 1;
+}
+
 /// Event: a request was answered, dismissed or timed out. UIs drop their
 /// prompt on this.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
@@ -104,6 +109,11 @@ pub struct AskResolved {
     pub dismissed: bool,
     /// Nobody answered in time.
     pub timed_out: bool,
+}
+
+impl wire::WireEvent for AskResolved {
+    const TOPIC: &'static str = "tools.ask-resolved";
+    const VERSION: u32 = 1;
 }
 
 /// `ask` → `Option<SessionId>`: the owning session if the id was pending and

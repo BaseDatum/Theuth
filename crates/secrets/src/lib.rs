@@ -273,6 +273,10 @@ pub enum SecretsEvent {
     Rotation(RotationState),
 }
 
+impl wire::WireEvent for SecretsEvent {
+    const TOPIC: &'static str = "secrets.events";
+}
+
 /// Internal `tell`: the waiter finished (answered, timed out) — drop its pending entry.
 struct Forget(RequestId);
 
@@ -746,6 +750,13 @@ impl ::oauth::Grants for Vault {
     }
 }
 
+/// Declare secrets wire metadata, never secret values, before opening the vault.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<SecretsEvent>().await?;
+    Ok(())
+}
+
 /// The plugin (37 §3.3, 67 §5.4): reads `secrets`, opens the vault (migrating
 /// `secrets.vault`, importing `credentials.yaml`), spawns [`SecretsActor`] as
 /// [`SECRETS_ACTOR`], attaches `vault` + `vault_current` to replication once
@@ -761,6 +772,7 @@ impl runtime::Plugin for SecretsPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: SecretsConfig = if rt.config.contains("secrets") {
             rt.section("secrets")?
         } else {

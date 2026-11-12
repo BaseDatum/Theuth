@@ -7,6 +7,7 @@ description = "Autoresearch: a measured experiment loop whose noise gate, evalua
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 tools = { workspace = true }  # 140 §12.4 the seven tools, `RegisterPrompt`, `Risk`
 agent = { workspace = true }  # 140 §8.2 `SetToolset`, §8.4 the spend ledger, `AgentConfig` model defaults
 schedule = { workspace = true }  # 140 §8.1 the study's schedule file, `ScheduleEvent::Fired`, `SetEnabled`, `Done`

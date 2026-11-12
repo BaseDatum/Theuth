@@ -93,6 +93,21 @@ pub struct Relayed {
     pub event: serde_json::Value,
 }
 
+/// Whether a followed owner's stream supports live Watch events.
+#[derive(Clone, Debug, Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type")]
+pub struct FollowState {
+    /// Followed session, not the relay carrier's admission scope.
+    pub session: SessionId,
+    /// False for a disconnected stream or an old owner's Events fallback.
+    pub live: bool,
+}
+
+impl wire::WireEvent for FollowState {
+    const TOPIC: &'static str = "sessionsync.follow-state";
+    const VERSION: u32 = 1;
+}
+
 /// `tell`: the owner of `session` (per the replica) reconnected; retry now.
 #[derive(Clone, Debug)]
 pub struct Reconnected(pub PeerId);
@@ -197,7 +212,7 @@ async fn follow_state(rt: &Runtime, session: SessionId, live: bool) {
     rt.publish(Relayed {
         session,
         kind: "FollowState".to_owned(),
-        event: serde_json::json!({ "type": "FollowState", "session": session, "live": live }),
+        event: serde_json::json!(FollowState { session, live }),
     })
     .await;
 }

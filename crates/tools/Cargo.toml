@@ -7,6 +7,7 @@ description = "Tool registry, approval gate, builtin tools (shell, fs), MCP tool
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 replica = { workspace = true }
 parking_lot = { workspace = true }
 tokio = { workspace = true }
@@ -44,6 +45,7 @@ hex = { workspace = true }
 jsonschema = { workspace = true }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 base64 = { workspace = true }
+ec4rs = { workspace = true }  # 193 §3 .editorconfig
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }  # `O_NONBLOCK` open in `images.rs`

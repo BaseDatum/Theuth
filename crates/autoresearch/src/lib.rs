@@ -306,6 +306,12 @@ pub async fn start(
     Ok(actor)
 }
 
+/// Declare wire contracts before starting producers, even when disabled.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<StudyEvent>().await
+}
+
 /// The plugin. Reads `autoresearch:`; when enabled opens the store, spawns
 /// [`Studies`], writes the bundled skill, registers the tools and the prompt block.
 pub struct AutoresearchPlugin;
@@ -317,6 +323,7 @@ impl runtime::Plugin for AutoresearchPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: AutoresearchConfig = rt.section(PLUGIN).unwrap_or_else(|e| {
             tracing::debug!("no [autoresearch] config section, using defaults: {e}");
             AutoresearchConfig::default()

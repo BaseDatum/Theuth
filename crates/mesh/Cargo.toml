@@ -10,6 +10,7 @@ rpc-core = { workspace = true }
 jsonrpsee = { workspace = true }
 replica = { workspace = true }
 runtime = { workspace = true }
+wire = { workspace = true }
 tools = { workspace = true }
 platform = { workspace = true }
 secrets = { workspace = true }

@@ -214,7 +214,7 @@ pub use sessions::{SessionsApiClient, SessionsApiServer};
 pub use turns::{TurnsApiClient, TurnsApiServer};
 pub use settings::{SettingsApiClient, SettingsApiServer};
 pub use jobs::{JobsApiClient, JobsApiServer};
-pub use tooling::{ToolingApiClient, ToolingApiServer};
+pub use tooling::{SESSION_TOOLS, ToolingApiClient, ToolingApiServer};
 pub use skills::{SkillsApiClient, SkillsApiServer};
 pub use screens::{ScreensApiClient, ScreensApiServer};
 pub use mcp::{McpApiClient, McpApiServer};
@@ -1791,6 +1791,40 @@ mod tests {
             Some(i64::from(NOT_RUNNING)),
             "{v}"
         );
+    }
+
+    /// 193 §7: `session_call_tool` refuses a name outside `SESSION_TOOLS` as invalid params
+    /// before authorize (even for an unknown session); the six pass the allowlist (an
+    /// unauthenticated raw call then fails at authorize, with another error).
+    #[tokio::test]
+    async fn session_call_tool_allowlist_precedes_authorize() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let methods: jsonrpsee::Methods = into_rpc_module(crate::new_server(rt)).into();
+        let call = |name: &str| {
+            let methods = methods.clone();
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","method":"session_call_tool","params":["{}","{name}",{{}}],"id":1}}"#,
+                uuid::Uuid::now_v7()
+            );
+            async move {
+                let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
+                serde_json::from_str::<serde_json::Value>(resp.get()).unwrap()
+            }
+        };
+        let invalid = i64::from(jsonrpsee::types::error::INVALID_PARAMS_CODE);
+        let v = call("shell").await;
+        assert_eq!(v["error"]["code"].as_i64(), Some(invalid), "{v}");
+        for name in SESSION_TOOLS {
+            let v = call(name).await;
+            assert_ne!(v["error"]["code"].as_i64(), Some(invalid), "{name}: {v}");
+            assert!(
+                !v["error"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("not offered"),
+                "{name}: {v}"
+            );
+        }
     }
 
     /// 185 R1 A5: a hub that refuses or does not answer is named as the hub;

@@ -86,6 +86,10 @@ tree-sitter-go = "0.25"  # 60
 cargo_toml = "1"  # 60
 globset = "0.4"  # 60
 similar = "3"  # 12 §10 edit/write_file unified diffs
+# 193 §3 `.editorconfig` (Apache-2.0). The v1.2.0 release commit from git: static.crates.io
+# answers 403 on the build machine (Zscaler). Switch to `ec4rs = "1.2"` when it is reachable
+# (the lock then gains a `checksum` line too).
+ec4rs = { git = "https://github.com/TheDaemoness/ec4rs", rev = "14bbca047324cedd5791b89f858eb5e17e6b0b3c" }
 oxc_resolver = "11"  # 60
 toml = "1"  # 60
 # Meetings (design doc 53): `rtrb` = lock-free rings between the capture threads and the encoder;

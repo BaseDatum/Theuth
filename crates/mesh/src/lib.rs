@@ -1203,6 +1203,12 @@ impl Message<RemovedPeers> for Mesh {
 /// registers the `mesh_peers` tool once the registry is up.
 pub struct MeshPlugin;
 
+/// Declare wire contracts before starting producers, including disabled services.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<MeshEvent>().await
+}
+
 #[async_trait::async_trait]
 impl runtime::Plugin for MeshPlugin {
     fn name(&self) -> &'static str {
@@ -1210,6 +1216,7 @@ impl runtime::Plugin for MeshPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         // SIGTERM: release the lease gracefully (67 §4.6), then stop — armed
         // before anything below can bail out, so a mesh without its store
         // still stops cleanly. macOS `willSleep` has no platform hook yet.

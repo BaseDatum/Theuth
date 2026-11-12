@@ -43,8 +43,8 @@ pub struct Entry {
     /// (`.claude/skills` for Claude Code).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills_dir: Option<PathBuf>,
-    /// Give the child the theuth MCP skills back-channel (`list_skills`,
-    /// `load_skill`, `send_message`; 75 §9, 141 D14) in `session/new` |
+    /// Give the child the theuth MCP back-channel (`list_skills`, `load_skill`,
+    /// `send_message`; 75 §9, 141 D14; plus the six text tools, 193 §7) in `session/new` |
     /// `session/load` `mcpServers`. **Default on** for every harness — unset
     /// or `mcp: true` sends it, `mcp: false` opts out; read via
     /// [`Entry::mcp_enabled`]. A harness that rejects it is retried once

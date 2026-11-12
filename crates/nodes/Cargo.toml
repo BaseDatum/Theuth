@@ -7,6 +7,7 @@ description = "Paired remote harnesses: control conns, presence, dial transport 
 
 [dependencies]
 runtime = { workspace = true }
+wire = { workspace = true }
 link = { workspace = true }
 platform = { workspace = true }
 acp = { workspace = true }

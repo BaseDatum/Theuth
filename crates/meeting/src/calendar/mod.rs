@@ -209,6 +209,10 @@ pub enum CalendarEvent {
     SourcesChanged,
 }
 
+impl wire::WireEvent for CalendarEvent {
+    const TOPIC: &'static str = "meeting.calendar";
+}
+
 /// Rolling window every source is kept for: −1 day … +14 days (§7.2).
 pub fn window() -> (DateTime<Utc>, DateTime<Utc>) {
     let now = Utc::now();

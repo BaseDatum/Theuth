@@ -2942,6 +2942,10 @@ wire! {
     }
 }
 
+impl wire::WireEvent for StudyEvent {
+    const TOPIC: &'static str = "autoresearch.events";
+}
+
 // ───────────────────────────── §12.3 actor messages ─────────────────────────────
 
 /// `Create` → `StudyInfo` (state `preparing`).

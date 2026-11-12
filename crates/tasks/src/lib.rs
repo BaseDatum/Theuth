@@ -1581,6 +1581,12 @@ impl schedule::TaskCreator for ScheduleTasks {
     }
 }
 
+/// Declare wire contracts before starting producers.
+pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<activity::ActivityAppended>().await
+}
+
 /// The plugin: reads `tasks`, opens the store, spawns [`Tasks`] as
 /// [`TASKS_ACTOR`], starts the dispatch and sweep ticks, registers
 /// [`ScheduleTasks`] with the schedule actor and the seven tools with the
@@ -1594,6 +1600,7 @@ impl runtime::Plugin for TasksPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
         let cfg: TasksConfig = rt.section("tasks").unwrap_or_else(|e| {
             tracing::debug!("no [tasks] config section, using defaults: {e}");
             TasksConfig::default()
