@@ -112,11 +112,6 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "the agent roster: name, status, open tasks (67)",
     ),
-    (
-        "/computer",
-        "",
-        "computer control: permissions and displays",
-    ),
     ("/parent", "", "open the parent session (from a subagent)"),
     (
         "/sessions",

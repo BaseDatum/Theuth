@@ -7,6 +7,7 @@ struct Slot { generation: u64, component: Option<Box<dyn ErasedComponent>> }
 pub fn builtin() -> Registry {
     let mut registry = Registry::empty();
     registry.register(update::Update::default()).expect("built-in component registration");
+    registry.register(computer::Computer).expect("built-in component registration");
     registry
 }
 
@@ -25,6 +26,13 @@ impl std::fmt::Debug for Registry {
     }
 }
 impl Registry {
+    #[cfg(test)]
+    pub(crate) fn token(&self, id: &str) -> ComponentToken {
+        let slot = self.slots.iter().position(|slot|
+            slot.component.as_ref().is_some_and(|component| component.declaration().id == id)
+        ).expect("registered component");
+        ComponentToken { slot, generation: self.slots[slot].generation }
+    }
     /// Empty shell for fixed composition and isolated contract consumers.
     pub fn empty() -> Self {
         Self { slots: Vec::new(), by_topic: HashMap::new(), by_slash: HashMap::new(), focus: None, epoch: 0 }

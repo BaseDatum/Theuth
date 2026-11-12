@@ -188,8 +188,6 @@ pub enum UiEvent {
     Tasks(Option<String>, Vec<tasks::Task>),
     /// Reply to [`Command::ListRoster`] (67 §12).
     Roster(Vec<roster::AgentSummary>),
-    /// Reply to [`Command::ComputerStatus`].
-    Computer(computer::PermissionStatus),
     /// Reply to [`Command::LinkStatus`] and the link commands that change it.
     Link(link::LinkStatus),
     /// Reply to [`Command::LinkPair`]: the string the QR card encodes.
@@ -391,8 +389,6 @@ pub enum Command {
     ListRoster,
     /// `session_take(id, "user")`: `/take` continues the open session on this engine (68 §10).
     TakeSession(SessionId),
-    /// `computer_permissions`.
-    ComputerStatus,
     /// `compact`.
     Compact {
         /// Target.

@@ -539,7 +539,6 @@ impl Model {
             UiEvent::ScheduleHistory(name, info, rows) => self
                 .entries
                 .push(Entry::Info(schedule_history_table(&name, info.as_ref(), &rows))),
-            UiEvent::Computer(status) => self.entries.push(Entry::Info(computer_line(&status))),
             UiEvent::ArtifactShown(ev) => {
                 self.search_invalidate(SearchCategory::Artifacts);
                 if self.session == Some(ev.session) {

@@ -372,37 +372,6 @@ impl Model {
 
 }
 
-/// The `/computer` reply: permission ticks and the attached displays on one
-/// line, then the status note on a second line when there is one.
-pub fn computer_line(s: &computer::PermissionStatus) -> String {
-    let tick = |ok: bool| if ok { "✓" } else { "✗" };
-    let displays: Vec<String> = s
-        .displays
-        .iter()
-        .map(|d| {
-            format!(
-                "{}{} {}×{} @{}×",
-                d.index,
-                if d.main { " main" } else { "" },
-                d.width,
-                d.height,
-                d.scale
-            )
-        })
-        .collect();
-    let mut line = format!(
-        "accessibility {} · screen recording {} · {} displays: {}",
-        tick(s.accessibility),
-        tick(s.screen_recording),
-        s.displays.len(),
-        displays.join(", ")
-    );
-    if !s.note.is_empty() {
-        line.push('\n');
-        line.push_str(&s.note);
-    }
-    line
-}
 
 /// Running time: `48s`, `1m32s`, `2h05m`.
 pub(super) fn elapsed(d: chrono::Duration) -> String {
