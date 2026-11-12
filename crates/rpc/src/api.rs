@@ -185,7 +185,6 @@ mod hub;
 mod sessions;
 mod turns;
 mod settings;
-pub use agent::rpc_jobs as jobs;
 mod tooling;
 mod skills;
 mod screens;
@@ -211,7 +210,6 @@ pub use hub::{CoreApiClient, CoreApiServer};
 pub use sessions::{SessionsApiClient, SessionsApiServer};
 pub use turns::{TurnsApiClient, TurnsApiServer};
 pub use settings::{SettingsApiClient, SettingsApiServer};
-pub use jobs::{JobsApiClient, JobsApiServer};
 pub use tooling::{SESSION_TOOLS, ToolingApiClient, ToolingApiServer};
 pub use skills::{SkillsApiClient, SkillsApiServer};
 pub use screens::{ScreensApiClient, ScreensApiServer};
@@ -239,7 +237,6 @@ pub mod clients {
     pub use super::sessions::SessionsApiClient;
     pub use super::turns::TurnsApiClient;
     pub use super::settings::SettingsApiClient;
-    pub use super::jobs::JobsApiClient;
     pub use super::tooling::ToolingApiClient;
     pub use super::skills::SkillsApiClient;
     pub use super::screens::ScreensApiClient;
@@ -271,7 +268,7 @@ pub fn into_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
     module.merge(SettingsApiServer::into_rpc(server.clone()))
         .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
-    module.merge(JobsApiServer::into_rpc(server.clone()))
+    module.merge(agent::rpc_module(server.clone()))
         .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));
     module.merge(ToolingApiServer::into_rpc(server.clone()))
         .unwrap_or_else(|error| panic!("RPC module merge failed: {error}"));

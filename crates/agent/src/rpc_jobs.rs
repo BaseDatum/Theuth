@@ -240,6 +240,7 @@ impl JobsApiServer for Server {
     }
 }
 
+/// Register background jobs and terminal methods.
 pub fn rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
     JobsApiServer::into_rpc(server)
 }

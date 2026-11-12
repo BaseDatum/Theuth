@@ -210,6 +210,8 @@ Authorization belongs to `agent::rpc_support::RpcServerExt`, not inherent
 `sessionsync::rpc_support::RpcSessionMoveExt` expose the real owner operations;
 cross-domain callers use those contracts rather than generated wire traits.
 Configuration and private-session tracking/wait extensions stay domain-local.
+Agent-owned jobs RPC methods live in `agent::rpc_jobs`, assembled through
+`agent::rpc_module`; terminal attachment support lives in `agent::rpc_support`.
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
