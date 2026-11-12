@@ -143,10 +143,10 @@ impl Component for Talk {
     }
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> {
         match at {
-            Surface::Content if self.talk_view => self.talk.as_ref().map(|t| View::Element {
+            Surface::Content if self.talk_view => self.talk.as_ref().map(|t| View::IntrinsicElement {
                 element: talk_pane(t, cx.frame, u16::try_from(cx.width).unwrap_or(u16::MAX), cx.height), rows: cx.height, replace: true,
             }),
-            Surface::ComposerHeader if self.talk_view => Some(View::Element {
+            Surface::ComposerHeader if self.talk_view => Some(View::IntrinsicElement {
                 element: element!(Text(content: "● talk  (Esc cancels / leaves · Ctrl+T stops)", color: SAND)).into_any(), rows: 1, replace: true,
             }),
             Surface::Status(StatusSlot::Spoken) if !self.talk_view => self.talk.as_ref().map(|t| View::Text(format!("  ·  ● talk: {} (/talk)", format!("{:?}", t.state).to_lowercase()))),

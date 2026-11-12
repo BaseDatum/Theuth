@@ -290,7 +290,7 @@ impl Component for Secrets {
                 let r = self.requests.front()?;
                 let head = if r.note.is_empty() { r.name.clone() } else { format!("{} — {}", r.name, r.note) };
                 let version = r.current.map_or_else(|| "(new secret)".to_owned(), |v| format!("(adds v{}; v{v} stays as {{{{secret:{}:-1}}}})", v + 1, r.name));
-                Some(View::Element { element: element! {
+                Some(View::IntrinsicElement { element: element! {
                     BoxView(border_style: BorderStyle::Double, border_color: FAIENCE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                         Text(content: "secret requested", weight: Weight::Bold)
                         Text(content: head, color: FAIENCE, wrap: TextWrap::Wrap)
@@ -301,7 +301,7 @@ impl Component for Secrets {
             }
             Surface::Modal => {
                 let Some(Menu::Secrets { cursor, history }) = self.menu else { return None };
-                Some(View::Element { element: crate::ui::menu_view(self.secrets_title(), self.secrets_rows(), history.unwrap_or(cursor), vc.width as u16, vc.height as u16, false), rows: 0, replace: false })
+                Some(View::IntrinsicElement { element: crate::ui::menu_view(self.secrets_title(), self.secrets_rows(), history.unwrap_or(cursor), vc.width as u16, vc.height as u16, false), rows: 0, replace: false })
             }
             _ => None,
         }

@@ -687,6 +687,8 @@ fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: O
     let mut slot = ComponentSlot { elements: Vec::new(), rows: 0, replace: false, intrinsic: false };
     for view in m.component_views(at, usize::from(width), usize::from(height)) {
         let (element, rows, replace, intrinsic) = match view {
+            // Text badges are projected inside the active approval/question, not a second row.
+            crate::components::View::Text(_) if matches!(at, Surface::PromptBadge) => continue,
             crate::components::View::Text(text) => {
                 let rows = text.lines().count();
                 (element!(Text(content: text, wrap: TextWrap::NoWrap)).into_any(), rows, false, false)
@@ -699,7 +701,7 @@ fn component_slot(m: &Model, at: Surface<'_>, width: u16, height: u16, handle: O
                     handle, has_focus: editor.focused, value: editor.value, ignore_paste: true,
                     on_change: editor.on_change,
                 )).into_any();
-                (render(input), rows, replace, false)
+                (render(input), rows, replace, true)
             }
         };
         if replace { slot.elements.clear(); slot.rows = 0; slot.replace = true; slot.intrinsic = false; }
@@ -1198,10 +1200,7 @@ mod tests {
     use crate::components::models::Picker;
     use crate::model::tests::{models_mut, models_reply, models_selection, models_key, harness_reply};
     fn models_menu(m: &Model, width: u16, height: u16) -> Option<AnyElement<'static>> {
-        m.component_views(Surface::Modal, usize::from(width), usize::from(height))
-            .into_iter().find_map(|view| match view {
-                crate::components::View::Element { element, .. } => Some(element), _ => None,
-            })
+        component_slot(m, Surface::Modal, width, height, None).element()
     }
     use agent::ModelInfo;
     use runtime::SessionId;
@@ -1370,6 +1369,7 @@ mod tests {
         width: u16,
         budget: usize,
         focus: Focus,
+        unwrapped: bool,
     }
 
     /// `search_box` over [`search_model`] with `focus`, with the hooks a
@@ -1384,7 +1384,17 @@ mod tests {
         });
         let handle = hooks.use_ref_default::<TextInputHandle>();
         let m = model.read();
-        component_slot(&m, Surface::Modal, props.width, props.budget as u16, Some(handle)).element().expect("search view")
+        if props.unwrapped {
+            let crate::components::View::Editor { editor, render, .. } = m.component_views(
+                Surface::Modal, usize::from(props.width), props.budget,
+            ).into_iter().next().expect("search view") else { panic!("query editor") };
+            render(element!(TextInput(
+                handle, has_focus: editor.focused, value: editor.value, ignore_paste: true,
+                on_change: editor.on_change,
+            )).into_any())
+        } else {
+            component_slot(&m, Surface::Modal, props.width, props.budget as u16, Some(handle)).element().expect("search view")
+        }
     }
 
     /// Wide characters count cells, chips wrap whole, and the box never
@@ -1419,6 +1429,100 @@ mod tests {
                     "width {width} budget {budget} {focus:?}: {shown} not in view\n{frame}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn search_editor_keeps_historical_short_terminal_allocation() {
+        for height in [8u16, 10, 12] {
+            for focus in [Focus::Query, Focus::Filters(6), Focus::Footer(1)] {
+                let frame = |unwrapped| element! {
+                    View(width: 100u16, height, flex_direction: FlexDirection::Column) {
+                        View(flex_grow: 1.0_f32, min_height: 0) { Text(content: "transcript") }
+                        SearchProbe(width: 100u16, budget: 6usize, focus, unwrapped)
+                        View(height: 1) { Text(content: "header") }
+                        View(height: 3, flex_shrink: 0.0) { Text(content: "composer") }
+                        View(height: 1) { Text(content: "status") }
+                    }
+                }.to_string();
+                let expected = frame(true);
+                assert_eq!(expected.lines().count(), usize::from(height));
+                assert_eq!(frame(false), expected, "terminal height {height}, focus {focus:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn prediction_stays_inside_the_question_in_short_terminals() {
+        use crate::components::double::{Double, Msg};
+        let session = SessionId::new();
+        let id = tools::AskId(uuid::Uuid::new_v4());
+        let mut model = Model::with_components(String::new(), true, crate::components::Registry::empty());
+        model.session = Some(session);
+        model.components.register(Double::default()).unwrap();
+        model.apply(UiEvent::Ask(tools::AskRequested {
+            id, session, questions: vec![tools::Question {
+                id: "q".into(), question: "Which?".into(), options: vec![], recommended: None,
+            }],
+        }));
+        model.apply(UiEvent::Component(crate::components::LocalReply {
+            to: model.components.token("double"), engine_epoch: 0,
+            body: Box::new(Msg::Predicted(::double::DoublePredicted {
+                question_id: id.0.to_string(), session: Some(session), kind: ::double::CardKind::Ask,
+                class: "test".into(), choice: "Wait".into(), index: None, p: 0.9,
+                probs: vec![], rung: 1, will_act_at: None, version: "baseline".into(),
+                explain: Default::default(),
+            })),
+        }));
+        let chip = model.components.get::<Double>().unwrap().chip().unwrap();
+        let frame = |badge: Option<AnyElement<'static>>, height| element! {
+            View(width: 100u16, height, flex_direction: FlexDirection::Column) {
+                #(ask_box(&model))
+                #(badge)
+                View(height: 3, flex_shrink: 0.0) { Text(content: "composer") }
+            }
+        }.to_string();
+        for height in [8u16, 10, 12] {
+            let expected = frame(None, height);
+            assert_eq!(expected.lines().count(), usize::from(height));
+            assert_eq!(expected.matches(chip.as_str()).count(), 1, "{expected}");
+            let actual = frame(component_slot(&model, Surface::PromptBadge, 100, height, None).element(), height);
+            assert_eq!(actual, expected, "terminal height {height}");
+        }
+    }
+
+    #[test]
+    fn owner_modal_keeps_historical_short_terminal_allocation() {
+        use crate::components::aws::Aws;
+        let mut model = Model::default();
+        model.components.register(Aws {
+            picker: Some((agent::AwsProfiles {
+                profiles: (0..5).map(|i| format!("profile-{i}")).collect(),
+                selected: None, default_profile: "default".into(),
+            }, 0)),
+        }).unwrap();
+        model.components.focus_fixture("aws", crate::components::FocusClass::Modal);
+        let frame = |modal, height| element! {
+            View(width: 100u16, height, flex_direction: FlexDirection::Column) {
+                View(height: 2, flex_shrink: 0.0) { Text(content: "transcript") }
+                #(Some(modal))
+                View(height: 3, flex_shrink: 0.0) { Text(content: "composer") }
+            }
+        }.to_string();
+        for height in [8u16, 10, 12] {
+            // The historical shared menu root has no height or flex_shrink.
+            let original = model.component_views(Surface::Modal, 100, usize::from(height))
+                .into_iter().find_map(|view| match view {
+                    crate::components::View::Element { element, .. }
+                    | crate::components::View::IntrinsicElement { element, .. } => Some(element),
+                    _ => None,
+                }).unwrap();
+            let expected = frame(original, height);
+            assert_eq!(expected.lines().count(), usize::from(height));
+            assert!(expected.lines().nth(2).unwrap().starts_with('╭'), "{expected}");
+            assert!(expected.contains("profile-1"), "{expected}");
+            let actual = frame(component_slot(&model, Surface::Modal, 100, height, None).element().unwrap(), height);
+            assert_eq!(actual, expected, "terminal height {height}");
         }
     }
 

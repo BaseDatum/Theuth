@@ -114,6 +114,6 @@ impl Component for BroadcastPanel {
         let spinner = cx.spinner();
         let rows = menu.rows(spinner);
         let count = rows.len().min(10) + 3;
-        Some(View::Element { rows: count, replace: false, element: crate::ui::menu_view(menu.title(), rows, menu.cursor, cx.width as u16, cx.height as u16, false) })
+        Some(View::IntrinsicElement { rows: count, replace: false, element: crate::ui::menu_view(menu.title(), rows, menu.cursor, cx.width as u16, cx.height as u16, false) })
     }
 }

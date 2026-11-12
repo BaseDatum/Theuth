@@ -373,7 +373,7 @@ impl Component for Peers {
             Surface::Header(HeaderSlot::Communication) => self.communication.as_ref().map(|state| View::Text(if state.effective { "  ·  communication on" } else { "  ·  communication off" }.into())),
             Surface::Modal => {
                 let Some(Menu::Peers { cursor, .. }) = self.menu else { return None };
-                Some(View::Element { element: crate::ui::menu_view(self.peers_title(), self.peers_rows().iter().map(PeerRow::line).collect(), cursor,
+                Some(View::IntrinsicElement { element: crate::ui::menu_view(self.peers_title(), self.peers_rows().iter().map(PeerRow::line).collect(), cursor,
                     cx.width as u16, cx.height as u16, false), rows: 0, replace: false })
             }
             _ => None,

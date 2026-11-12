@@ -550,7 +550,7 @@ impl Component for Mcp {
                         t.registered.as_deref().filter(|n| *n != t.name).map_or_else(String::new, |n| format!("  as {n}")),
                     ),
                 }).collect();
-                Some(View::Element { rows: rows.len().min(10) + 3, replace: false,
+                Some(View::IntrinsicElement { rows: rows.len().min(10) + 3, replace: false,
                     element: crate::ui::menu_view(title, rows, *cursor, cx.width as u16, cx.height as u16, false) })
             }
             _ => None,

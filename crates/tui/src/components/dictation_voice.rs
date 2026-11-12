@@ -395,16 +395,16 @@ impl Component for DictationVoice {
     }
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> {
         match at {
-            Surface::ComposerHeader => self.dictation.as_ref().map(|d| View::Element {
+            Surface::ComposerHeader => self.dictation.as_ref().map(|d| View::IntrinsicElement {
                 element: element!(MixedText(contents: dictation_header(d, cx.frame), wrap: TextWrap::NoWrap)).into_any(), rows: 1, replace: true,
             }),
             Surface::Composer => self.dictation.as_ref().map(|d| {
                 let contents = dictation_region(d);
                 let (text, _) = d.splice();
                 let rows = text.split('\n').map(|line| unicode_width::UnicodeWidthStr::width(line).max(1).div_ceil(cx.width.saturating_sub(2).max(1))).sum();
-                View::Element { element: element!(MixedText(contents, wrap: TextWrap::Wrap)).into_any(), rows, replace: true }
+                View::IntrinsicElement { element: element!(MixedText(contents, wrap: TextWrap::Wrap)).into_any(), rows, replace: true }
             }),
-            Surface::Hint => self.suggestion.as_ref().map(|s| View::Element {
+            Surface::Hint => self.suggestion.as_ref().map(|s| View::IntrinsicElement {
                 element: element!(IView(height: 1, padding_left: 1) { Text(content: s.line(), color: OCHRE, wrap: TextWrap::NoWrap) }).into_any(), rows: 1, replace: false,
             }),
             _ => None,

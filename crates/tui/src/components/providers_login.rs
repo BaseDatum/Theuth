@@ -382,7 +382,7 @@ impl Component for ProvidersLogin {
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> {
         if matches!(at, Surface::PromptBadge) {
             let prompt = self.prompt.as_ref()?;
-            return Some(View::Element {
+            return Some(View::IntrinsicElement {
                 element: element!(Layout(height: 1, padding_left: 1) {
                     Text(content: prompt.hint(), color: crate::ui::OCHRE)
                 }).into_any(),
@@ -392,6 +392,6 @@ impl Component for ProvidersLogin {
         if !matches!(at, Surface::Modal) { return None; }
         let (items, cursor) = self.menu.as_ref()?;
         let rows = items.iter().map(|r| format!("{:<8} {:<20} {}", if r.mcp { "mcp" } else { "provider" }, r.name, r.status)).collect();
-        Some(View::Element { element: crate::ui::menu_view("login  ⏎ log in  esc close".into(), rows, *cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: false })
+        Some(View::IntrinsicElement { element: crate::ui::menu_view("login  ⏎ log in  esc close".into(), rows, *cursor, cx.width as u16, cx.height as u16, false), rows: 0, replace: false })
     }
 }

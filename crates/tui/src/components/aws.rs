@@ -95,7 +95,7 @@ impl Component for Aws {
     fn view(&self, at: Surface<'_>, cx: &ViewCx<'_>) -> Option<View> {
         if !matches!(at, Surface::Modal) { return None }
         let (_, cursor) = self.picker.as_ref()?;
-        Some(View::Element { element: crate::ui::menu_view(
+        Some(View::IntrinsicElement { element: crate::ui::menu_view(
             "aws profile  ⏎ use for every session's Bedrock calls from the next request  esc close".into(),
             self.rows(), *cursor, cx.width as u16, cx.height as u16, false,
         ), rows: 0, replace: true })

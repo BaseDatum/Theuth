@@ -442,7 +442,7 @@ impl Component for Knowledge {
                 let tall = matches!(self.menu, Some(Menu::KnowledgeHistory { revision: Some(_), .. }));
                 let height = cx.height as u16;
                 let count = rows.len().min(if tall { usize::from(height.saturating_sub(10)).max(10) } else { 10 }) + 3;
-                Some(View::Element { rows: count, replace: false, element: crate::ui::menu_view(title, rows, cursor, cx.width as u16, height, tall) })
+                Some(View::IntrinsicElement { rows: count, replace: false, element: crate::ui::menu_view(title, rows, cursor, cx.width as u16, height, tall) })
             }
             _ => None,
         }

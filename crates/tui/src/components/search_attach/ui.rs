@@ -65,7 +65,7 @@ pub(super) fn search_box(s: &search::State, attach: bool, editor: Option<EditorC
             }
         }
         .into_any();
-        return PanelView::Element { rows: usize::from(height), replace: false, element };
+        return PanelView::IntrinsicElement { rows: usize::from(height), replace: false, element };
     }
     // Every row in order, and the one the focus sits on: a box too short
     // for them all drops leading rows until that one is in view.
@@ -207,7 +207,7 @@ pub(super) fn search_box(s: &search::State, attach: bool, editor: Option<EditorC
 
 pub(super) fn inspect_hint(i: &search::Inspect) -> PanelView {
     let text = format!("earlier messages · {} · message {}{}   ↑↓ scroll  ⏎/j jump to latest  esc/b back to results", short(i.session), i.seq, if i.found { "" } else { " (not on this page)" });
-    PanelView::Element { rows: 1, replace: false, element: element!(View(height: 1, padding_left: 1) {
+    PanelView::IntrinsicElement { rows: 1, replace: false, element: element!(View(height: 1, padding_left: 1) {
         Text(content: text, color: OCHRE, wrap: TextWrap::NoWrap)
     }).into_any() }
 }

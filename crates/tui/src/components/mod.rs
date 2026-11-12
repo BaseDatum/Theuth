@@ -505,7 +505,7 @@ pub enum Surface<'a> {
     Composer,
     /// Composer hint.
     Hint,
-    /// Prompt-adjacent badge.
+    /// Prompt-adjacent element, or Text projected inside the active approval/question.
     PromptBadge,
     /// Stable transcript decoration location.
     Entry {
@@ -583,7 +583,7 @@ pub struct EditorConfig {
 }
 /// Owned presentation; requested rows are used for both layout and view.
 pub enum View {
-    /// Plain header/status segment, or non-wrapping slot text.
+    /// Plain header/status segment, inline PromptBadge projection, or non-wrapping slot text.
     Text(String),
     /// Toolkit-owned view with exact geometry.
     Element {
@@ -607,7 +607,7 @@ pub enum View {
     Editor {
         /// Value, focus and typed edit callback, never a mutable handle.
         editor: EditorConfig,
-        /// Receives only the rendered input element.
+        /// Receives only the rendered input; the returned root owns its intrinsic layout.
         render: Box<dyn FnOnce(AnyElement<'static>) -> AnyElement<'static>>,
         /// Exact reserved rows.
         rows: usize,

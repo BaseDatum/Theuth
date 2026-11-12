@@ -201,7 +201,7 @@ impl Component for Costs {
                 let (cost, cursor) = self.menu.as_ref()?;
                 let title = format!("cost · {} · rev {}   esc close   (owner summary; nothing is summed here)", short(cost.session), cost.revision);
                 let rows = self.cost_rows();
-                Some(View::Element { rows: rows.len().min(cx.height.saturating_sub(10).max(10)) + 3, replace: true,
+                Some(View::IntrinsicElement { rows: rows.len().min(cx.height.saturating_sub(10).max(10)) + 3, replace: true,
                     element: crate::ui::menu_view(title, rows, *cursor, cx.width as u16, cx.height as u16, true) })
             }
             _ => None,

@@ -429,7 +429,7 @@ impl Component for Todos {
         match at {
             Surface::Pinned => {
                 let card = self.todo_card(cx.width, cx.height, blocked)?;
-                Some(View::Element { rows: card.height(), element: render(card), replace: false })
+                Some(View::IntrinsicElement { rows: card.height(), element: render(card), replace: false })
             }
             Surface::Status(StatusSlot::Pinned) if self.focused(blocked) => Some(View::Text("  ·  todos: ↑↓ scroll · esc closes · tab editor".into())),
             _ => None,
