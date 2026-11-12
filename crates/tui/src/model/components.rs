@@ -136,6 +136,7 @@ impl Model {
                     self.effort = effort;
                 }
                 CoreAction::AwaitingEffort(pending) => self.awaiting_effort = pending,
+                CoreAction::AwaitingSession(pending) => self.awaiting_session = pending,
                 CoreAction::PostTo(message) => {
                     if let Some(reply) = self.components.address(message) {
                         self.receive(UiEvent::Component(reply), emit);
